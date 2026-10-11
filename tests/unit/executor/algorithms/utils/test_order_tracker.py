@@ -10,6 +10,7 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
+from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.order_channel_health import OrderChannelHealth
@@ -17,6 +18,7 @@ from axile.executor.models.unified_account_assets import Position, PositionDirec
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.termination import ExecutionTerminated
+from tests.fixtures.algorithm_fakes import ClockStub
 
 
 class _Logger:
@@ -351,6 +353,94 @@ class _ReconcileExecutor(_ChaseExecutor):
     def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
         self.reconcile_calls.append((symbol, order_id))
         return self.terminal_to_return
+
+
+class _TimeoutCancelExecutor(_ReconcileExecutor):
+    """撤单不推送回报，仅允许后续查询确认真实终态。"""
+
+    def __init__(self, order: UnifiedOrder, *, cancel_ok: bool = True, confirm_after: int = 1) -> None:
+        super().__init__()
+        self.order = order
+        self.cancel_ok = cancel_ok
+        self.confirm_after = confirm_after
+        self.cancel_calls: list[str] = []
+        self.query_error = False
+
+    def get_pending_orders(self) -> list[UnifiedOrder]:
+        if not self.cancel_calls:
+            return [self.order]
+        if self.query_error:
+            raise OSError("order query unavailable")
+        return []
+
+    def cancel_order(self, order_id: str) -> bool:
+        self.cancel_calls.append(order_id)
+        return self.cancel_ok
+
+    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+        self.reconcile_calls.append((symbol, order_id))
+        if len(self.reconcile_calls) < self.confirm_after:
+            return None
+        return self.terminal_to_return
+
+
+@pytest.mark.parametrize("cancel_ok", [True, False])
+@pytest.mark.parametrize("terminal_status", [OrderStatus.CANCELED, OrderStatus.FILLED])
+def test_timeout_cancel_reconciles_terminal_before_result(cancel_ok: bool, terminal_status: OrderStatus) -> None:
+    """丢失回报时仍确认撤单/成交竞态，结果不得误报订单终态未知。"""
+    order = _build_pending_order("cancel-without-ws")
+    executor = _TimeoutCancelExecutor(order, cancel_ok=cancel_ok)
+    filled = order.volume if terminal_status == OrderStatus.FILLED else 25.0
+    executor.terminal_to_return = order.model_copy(
+        update={"status": terminal_status, "filled_volume": filled, "avg_price": order.price}
+    )
+    tracker = OrderTracker(executor=executor, clock=ClockStub())
+    tracker.add_order(order)
+
+    tracker.wait_for_completion(timeout=0)
+
+    assert executor.cancel_calls == [order.order_id]
+    assert not tracker.pending_orders
+    assert tracker.completed_orders[order.order_id].filled_volume == filled
+    outcome = summarize_outcome(0, filled, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
+    assert outcome["error"] != "订单最终状态尚未确认（含撤单结果未知）"
+    assert outcome["status"].value == ("SUCCEEDED" if terminal_status == OrderStatus.FILLED else "PARTIAL")
+
+
+def test_timeout_cancel_does_not_extend_deadline_for_delayed_terminal() -> None:
+    order = _build_pending_order("delayed-cancel")
+    executor = _TimeoutCancelExecutor(order, confirm_after=2)
+    executor.terminal_to_return = order.model_copy(update={"status": OrderStatus.CANCELED})
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker.add_order(order)
+
+    tracker.wait_for_completion(timeout=0)
+
+    assert len(executor.reconcile_calls) == 1
+    assert executor.cancel_calls == [order.order_id]
+    assert order.order_id in tracker.pending_orders
+    assert clock.time() == 0
+    assert executor._placed == 0
+
+
+@pytest.mark.parametrize("query_error", [False, True])
+def test_timeout_cancel_keeps_unknown_when_confirmation_unavailable(query_error: bool) -> None:
+    order = _build_pending_order("unknown-cancel")
+    executor = _TimeoutCancelExecutor(order)
+    executor.query_error = query_error
+    clock = ClockStub()
+    tracker = OrderTracker(executor=executor, clock=clock)
+    tracker.add_order(order)
+
+    tracker.wait_for_completion(timeout=0)
+
+    assert order.order_id in tracker.pending_orders
+    assert not tracker.completed_orders
+    assert len(executor.reconcile_calls) == (0 if query_error else 1)
+    assert clock.time() == 0
+    outcome = summarize_outcome(0, 0, order.volume, tracker.get_all_orders(), tracker.get_all_trades())
+    assert outcome["error"] == "订单最终状态尚未确认（含撤单结果未知）"
 
 
 def test_query_pending_orders_propagates_ctp_session_recovery() -> None:
