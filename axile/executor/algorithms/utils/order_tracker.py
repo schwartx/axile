@@ -618,6 +618,10 @@ class OrderTracker:
         self._logger.info(f"正在撤销所有未成交订单: pending={self.get_pending_count()}")
         self.executor.handle_termination_checkpoint()
         failed_order_ids = cancel_pending_orders_via_query(self.executor)
+        self._reconcile_timeout_cancellations()
+        # 撤单可能与全部成交竞态；只有真实终态能消除撤单请求失败，不能仅看返回值。
+        with self.lock:
+            failed_order_ids = [order_id for order_id in failed_order_ids if order_id not in self.completed_orders]
         if failed_order_ids:
             message = "撤单失败，订单终态尚未确认"
             self.explicit_error = message
@@ -626,6 +630,18 @@ class OrderTracker:
             raise error
 
         return False
+
+    def _reconcile_timeout_cancellations(self) -> None:
+        """在回调注销前补查一次超时撤单终态，不额外等待、追单或重新报单。
+
+        复用渠道的真实终态对账能力；不支持该能力的渠道保持原有回调路径。
+        查询失败或仍未终态时保留 pending，由结果聚合明确报告未知状态。
+        已耗尽执行等待期限，因此不再开启确认等待窗口；网络请求受渠道自身超时限制。
+        """
+        if not callable(getattr(self.executor, "reconcile_terminal_order", None)):
+            return
+        self.executor.handle_termination_checkpoint()
+        self._query_pending_orders()
 
     def _get_effective_refresh_interval(
         self,
