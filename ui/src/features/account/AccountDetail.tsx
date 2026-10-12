@@ -432,14 +432,80 @@ export function AccountDetail({
           </div>
         )}
 
-        {/*
-         * 状态区固定为「标题行 + 副行」两行结构，高度不随运行态增减（框不动，戏在框里演）。
-         * 主句常驻 InkRewrite prose：暂停↔执行、执行↔清仓、启停空闲句均墨褪再显。
-         * 执行中：生命体征 + phase 副标事件门控，不叠日记（phase 连刷勿糊墨）。
-         * 可点：在途 → 当前执行；空闲 → 最近执行。外层始终 div，避免 Link remount 打断换字。
-         */}
+        <div className="mt-5">
+          <div className="flex items-center gap-1.5 text-[14px] text-ink-2">
+            <span>{assetTerms.fullLabel}</span>
+            <Tooltip content="刷新账户资产">
+              <span className="inline-flex">
+                <button
+                  type="button"
+                  onClick={onRefreshAssets}
+                  disabled={refreshingAssets}
+                  aria-label={refreshingAssets ? '正在查询账户资产' : '刷新账户资产'}
+                  title="刷新账户资产"
+                  className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <RefreshCw
+                    size={14}
+                    className={refreshingAssets ? 'animate-spin motion-reduce:animate-none' : undefined}
+                  />
+                </button>
+              </span>
+            </Tooltip>
+          </div>
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              {/* 当前权益独立于历史绩效金额。 */}
+              <div
+                className="num mt-0.5 text-[35px] font-[640] tracking-tight"
+              >
+                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
+                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
+              </div>
+              <div className="mt-1 text-xs text-ink-3">{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</div>
+              <div className="mt-1.5 text-[14.5px] text-ink-2">
+                {pct == null && <span>{dayLabel} — · </span>}
+                <span className="text-xs text-ink-3">{statusLabel}{statusLabel ? ' · ' : ''}</span>
+                {pct != null && (
+                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
+                    {dayLabel} {pct >= 0 ? '+' : '−'}
+                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
+                  </span>
+                )}
+                {' · 组合 '}
+                {portfolioId != null ? (
+                  <Link
+                    to={`/portfolios/${portfolioId}/edit`}
+                    className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
+                  >
+                    {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
+                    <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
+                  </Link>
+                ) : (
+                  <span className="align-middle text-ink-3">未绑定</span>
+                )}
+                <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
+                  <span className="ml-0.5 inline-flex align-middle">
+                    <Link
+                      to={`/accounts/${accountId}/edit/portfolio`}
+                      aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
+                      className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
+                    >
+                      <ArrowLeftRight size={13} aria-hidden />
+                    </Link>
+                  </span>
+                </Tooltip>
+              </div>
+            </div>
+            {/* 仅账户累计收益线展开；专用导航关闭此次金额/标题共享过渡。 */}
+            <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={150} height={46} />
+          </div>
+        </div>
+
+        {/* 最近执行：结论与记录摘要共享一行，窄屏按完整信息组换行。 */}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5">
         <div
-          className={`relative mt-[18px] inline-flex max-w-full min-w-0 items-center gap-2 text-[20px] font-[640] tracking-tight transition-[padding-left] duration-[440ms] ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none sm:text-[24px] ${
+          className={`relative inline-flex max-w-full min-w-0 items-center gap-2 text-[14px] font-semibold tracking-tight transition-[padding-left] duration-[440ms] ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
             isBusy ? 'pl-[18px]' : 'pl-0'
           } ${isTerminating ? 'text-warn' : isBusy ? 'text-accent' : idleStatusTextClass}${
             statusNavId ? ' cursor-pointer hover:opacity-80' : ''
@@ -514,85 +580,16 @@ export function AccountDetail({
             </span>
           )}
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+        <div className="min-w-0 text-[13px] text-ink-3">
           {latestRecord && latestOutcome ? (
-            <div className="text-[14px] text-ink-3">
-              上次 {formatRecentExecution(latestRecord.created_at, Date.now())}
-              {latestOutcome.symbolCount > 0 ? ` · 涉及 ${latestOutcome.symbolCount} 个品种` : ''}
+            <div>
+              {formatRecentExecution(latestRecord.created_at, Date.now())}
+              {latestOutcome.symbolCount > 0 ? ` · ${latestOutcome.symbolCount} 个品种` : ''}
               {latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
             </div>
           ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
-          {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}
         </div>
 
-        <div className="mt-6 border-t border-line pt-4">
-          <div className="flex items-center gap-1.5 text-[14px] text-ink-2">
-            <span>{assetTerms.fullLabel}</span>
-            <Tooltip content="刷新账户资产">
-              <span className="inline-flex">
-                <button
-                  type="button"
-                  onClick={onRefreshAssets}
-                  disabled={refreshingAssets}
-                  aria-label={refreshingAssets ? '正在查询账户资产' : '刷新账户资产'}
-                  title="刷新账户资产"
-                  className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
-                >
-                  <RefreshCw
-                    size={14}
-                    className={refreshingAssets ? 'animate-spin motion-reduce:animate-none' : undefined}
-                  />
-                </button>
-              </span>
-            </Tooltip>
-          </div>
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              {/* 当前权益独立于历史绩效金额。 */}
-              <div
-                className="num mt-0.5 text-[35px] font-[640] tracking-tight"
-              >
-                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
-                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
-              </div>
-              <div className="mt-1 text-xs text-ink-3">{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</div>
-              <div className="mt-1.5 text-[14.5px] text-ink-2">
-                {pct == null && <span>{dayLabel} — · </span>}
-                <span className="text-xs text-ink-3">{statusLabel}{statusLabel ? ' · ' : ''}</span>
-                {pct != null && (
-                  <span className={`num ${pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'}`}>
-                    {dayLabel} {pct >= 0 ? '+' : '−'}
-                    <NumberTicker value={Math.abs(pct)} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />
-                  </span>
-                )}
-                {' · 组合 '}
-                {portfolioId != null ? (
-                  <Link
-                    to={`/portfolios/${portfolioId}/edit`}
-                    className="inline-flex min-w-0 max-w-60 align-middle font-semibold text-accent hover:underline"
-                  >
-                    {/* 组合名是自由文本、长度无界：槽位截断 + hover 原地播全名。 */}
-                    <OverflowText className="min-w-0" text={portfolioName ?? `#${portfolioId}`} />
-                  </Link>
-                ) : (
-                  <span className="align-middle text-ink-3">未绑定</span>
-                )}
-                <Tooltip content={portfolioId != null ? '更换组合' : '绑定组合'}>
-                  <span className="ml-0.5 inline-flex align-middle">
-                    <Link
-                      to={`/accounts/${accountId}/edit/portfolio`}
-                      aria-label={portfolioId != null ? '更换组合' : '绑定组合'}
-                      className="grid h-5 w-5 place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1"
-                    >
-                      <ArrowLeftRight size={13} aria-hidden />
-                    </Link>
-                  </span>
-                </Tooltip>
-              </div>
-            </div>
-            {/* 仅账户累计收益线展开；专用导航关闭此次金额/标题共享过渡。 */}
-            <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={150} height={46} />
-          </div>
         </div>
 
         {/*
@@ -633,6 +630,7 @@ export function AccountDetail({
             vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'empty' && algorithmRefOf(acc?.empty_positions_algorithm) ? accountConfigVtName(accountId, 'empty') : undefined}
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
+          {acc && <span className="ml-auto"><NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} /></span>}
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />
