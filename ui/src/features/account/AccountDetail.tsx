@@ -503,7 +503,7 @@ export function AccountDetail({
         </div>
 
         {/* 最近执行：结论与记录摘要共享一行，窄屏按完整信息组换行。 */}
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5">
         <div
           className={`relative inline-flex max-w-full min-w-0 items-center gap-2 text-[14px] font-semibold tracking-tight transition-[padding-left] duration-[440ms] ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
             isBusy ? 'pl-[18px]' : 'pl-0'
@@ -599,7 +599,7 @@ export function AccountDetail({
          * 四项等距左对齐；算法名过长时 OverflowText 截断。整项可点跳编辑分区。
          * 杠杆 / 品种值去摘要；算法名去对应选择器。算法入口只飞本次点击的名称。
          */}
-        <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-3.5 text-[14px]">
+        <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-2 text-[14px]">
           <HeroConfigItem
             label="杠杆"
             to={`/accounts/${accountId}/edit/leverage`}
