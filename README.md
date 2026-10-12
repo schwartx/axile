@@ -50,6 +50,8 @@ Axile 遵循**单回环安全模型（Local Loopback Only）**与**只读证据�
 | **GoldMiner (掘金)** | GM SDK | A股、ETF 及多品种跨市场策略执行（支持 Linux/Win） | `uv sync --extra gm` |
 | **XtQuant (迅投 QMT)** | XtQuant 客户端组件 | 券商极速柜台接入，支持股票与两融 | 独立集成 |
 
+CTP 依赖 `openctp-ctp==6.7.11.*`，当前锁定 `6.7.11.0`。该版本提供 Linux x86_64 和 Windows 安装包，暂未提供 macOS 安装包。
+
 ### 3. 持仓估值多级容错与对账 (Valuation Fallback)
 为了避免盘后结算、休市与茶歇期间行情缺失导致账户资产失真，Axile 实施**报单盘口校验**与**盯市估值链**完全解耦：
 * **下单时**：严格要求双边买卖盘口实时且新鲜，超时立即拒绝；

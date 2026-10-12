@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # CTP交易所版本依赖
-ctp = ["openctp-ctp==6.7.7.*"]
+ctp = ["openctp-ctp==6.7.11.*"]
 gm = ["gm>=3.0.183; sys_platform != 'darwin'"]
 tqsdk = ["tqsdk>=3.10.2,<3.11"]
 all = ["axile[ctp]", "axile[gm]", "axile[tqsdk]"]

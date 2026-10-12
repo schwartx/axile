@@ -18,6 +18,18 @@ pytestmark = pytest.mark.slow
         "from axile.executor.ctp.spi import TraderSpi, MarketSpi; a=TraderSpi(None); b=MarketSpi(None); del a,b",
         """
 import tempfile
+from openctp_ctp import thosttraderapi as td
+with tempfile.TemporaryDirectory() as path:
+    trader = td.CThostFtdcTraderApi.CreateFtdcTraderApi(path + '/td')
+    trader.Init()
+    try:
+        result = trader.ReqUserLogin(td.CThostFtdcReqUserLoginField(), 1)
+        assert isinstance(result, int)
+    finally:
+        trader.Release()
+""",
+        """
+import tempfile
 from axile.executor.ctp.spi import TraderSpi, MarketSpi
 from openctp_ctp import thosttraderapi as td, thostmduserapi as md
 with tempfile.TemporaryDirectory() as path:
@@ -34,7 +46,7 @@ with tempfile.TemporaryDirectory() as path:
     trader.Release()
 """,
     ],
-    ids=["import-trader-first", "import-market-first", "conversion", "spi", "release"],
+    ids=["import-trader-first", "import-market-first", "conversion", "spi", "native-login", "release"],
 )
 def test_native_process_exits_cleanly(code):
     result = subprocess.run(

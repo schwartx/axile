@@ -174,7 +174,7 @@ def test_build_order_cancel_falls_back_to_exchange_key(config: CTPAccountConfig)
     assert request.OrderSysID == "100"
 
 
-def test_trader_login_uses_openctp_677_signature(config: CTPAccountConfig) -> None:
+def test_trader_login_uses_openctp_6711_signature(config: CTPAccountConfig) -> None:
     executor = CTPExecutor(TradeChannel.CTP)
     executor.account_config = config
     executor._trader_api = Mock()
