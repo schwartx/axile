@@ -29,12 +29,12 @@ bun run preview
 | `.vitepress/config.mts` | 导航、搜索、语言和 `/axile/` 部署前缀 |
 | `.vitepress/theme/` | 文档站样式与可用键盘操作的截图放大 |
 | `site/assets/screenshots/` | 原始截图，位于站点源目录内，供开发服务与构建统一读取 |
-| `guide-materials/` | 配图草稿、示例代码、截图校验清单与采集记录 |
+| `site/examples/` | 正文引用的 Python 与 CSV 示例 |
 | `.vitepress/dist/` | 生成产物，不提交 |
 
-站点只从 `site/` 生成页面。Markdown 通过相对路径引用原图和示例代码，构建时打包实际引用的资源；原始素材中的运行证据、复现替身和作者笔记不会作为页面发布。
+站点从 `site/` 生成页面。Markdown 通过相对路径引用图片和示例代码，构建时打包实际引用的资源。
 
-截图原图保留不改，不在素材稿目录中保存副本。更新页面时，为截图提供具体的 alt 和图说。替换素材需要同步更新 `guide-materials/manifest.json` 的路径、文件尺寸和 SHA-256；清单中的路径相对 `guide-materials/`。示例不得使用真实凭据、真实账户资产或未注明来源的绩效数字。
+图片统一保存在 `site/assets/screenshots/`。更新页面时，为截图提供具体的 alt 和图说。示例使用示例数据，账户连接时填写自己的有效凭据。
 
 ## GitHub Pages 首次启用
 

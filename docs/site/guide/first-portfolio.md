@@ -3,7 +3,7 @@
 本页走完创建组合、验证函数、创建账户和查看执行结果的完整流程。先完成一次手动操作，再安排自动执行。
 
 ::: info 截图中的账户
-截图使用离线教学账户，演示凭据不能用于正常连接。正式安装的天勤本地模拟仍需要有效的天勤账号和密码。有关截图环境，见[演示数据说明](/reference/screenshots)。
+截图使用示例账户，示例凭据不能用于正常连接。正式安装的天勤本地模拟仍需要有效的天勤账号和密码。
 :::
 
 ## 1. 创建组合
@@ -48,9 +48,9 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 为账户命名，选择运行模式，再填写对应凭据。天勤有实盘账户、快期模拟和本地模拟三种表单；本地模拟还要填写初始资金。
 
-![天勤本地模拟连接表单](../assets/screenshots/03-first-portfolio/04-connect-demo-account.png)
+![天勤本地模拟连接表单](../assets/screenshots/03-first-portfolio/04-connect-account.png)
 
-<p class="caption">图中初始资金为 1,000,000，账号为无效演示字符串。正常使用时填写自己的有效天勤凭据。</p>
+<p class="caption">图中初始资金为 1,000,000，账号为无效示例字符串。正常使用时填写自己的有效天勤凭据。</p>
 
 本地模拟资金和持仓保存在当前 Worker 中，日盘或夜盘 Worker 重建后会重置。需要连续模拟账户状态时，应理解快期模拟与本地模拟的差异。
 
@@ -76,16 +76,16 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![创建账户前确认目标和运行状态](../assets/screenshots/03-first-portfolio/07-confirm-account.png)
 
-<p class="caption">向导默认多空杠杆为 3。下一步会先把教学账户的杠杆改成 1，以便按相同数字理解目标换算。</p>
+<p class="caption">向导默认多空杠杆为 3。下一步会先把示例账户的杠杆改成 1，以便按相同数字理解目标换算。</p>
 
 ## 8. 核对目标后手动执行
 
-进入账户“杠杆设置”，把教学例子的多空杠杆都设为 1 并保存。回到账户概览，先刷新账户资产，再重新计算目标，检查“持仓 vs 目标”。
+进入账户“杠杆设置”，把示例的多空杠杆都设为 1 并保存。回到账户概览，先刷新账户资产，再重新计算目标，检查“持仓 vs 目标”。
 
 ![执行前的持仓与目标对照](../assets/screenshots/04-targets/02-before-rebalance.png)
 
 确认实际账户配置后，点击“立即执行”。这个按钮会直接触发执行。执行结束后，点击结果行进入详情。
 
-![完整演示执行的各品种结果与执行链路](../assets/screenshots/07-results/01-completed-execution.png)
+![完整示例执行的各品种结果与执行链路](../assets/screenshots/07-results/01-completed-execution.png)
 
 到这里，你已经找到从组合函数到订单与成交的完整路径。继续阅读[目标与持仓](/guide/targets)，理解图中的目标手数。

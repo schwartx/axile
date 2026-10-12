@@ -39,7 +39,6 @@ export default defineConfig({
         { text: '通知函数', link: '/reference/notifications' },
         { text: '执行算法', link: '/reference/algorithms' },
         { text: '渠道与配置', link: '/reference/channels' },
-        { text: '截图与演示数据', link: '/reference/screenshots' },
       ] },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/zengbin93/axile' }],
@@ -74,7 +73,7 @@ export default defineConfig({
     lightModeSwitchTitle: '切换浅色主题',
     darkModeSwitchTitle: '切换深色主题',
     footer: {
-      message: '截图使用离线演示数据 · Axile 公共核心',
+      message: 'Axile 公共核心使用文档',
       copyright: 'Apache-2.0 · Axile',
     },
   },

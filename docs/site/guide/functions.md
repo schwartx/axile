@@ -4,7 +4,7 @@
 
 ## 第一步：只返回固定权重
 
-<<< ../../guide-materials/05-functions/examples/fixed_weights.py
+<<< ../examples/fixed_weights.py
 
 这个函数只有一个参数 `context`，返回 Python 字典。正数代表多头，负数代表空头，`{}` 代表目标空仓。这里的数字是完整目标，不是在现有持仓上的增量。
 
@@ -27,19 +27,19 @@
 “试跑”表示 Axile 不会自动执行函数返回的目标。如果函数主动调用 `context.executor` 的交易方法，仍会产生真实委托。入门函数应使用查询能力并返回权重。
 :::
 
-选择教学账户后，使用同一个固定函数再次试跑，观察数据来源提示和返回结果。
+选择示例账户后，使用同一个固定函数再次试跑，观察数据来源提示和返回结果。
 
 ![使用账户 Context 试跑固定目标函数](../assets/screenshots/05-functions/02-account-context-run.png)
 
-<p class="caption">图中的账户上下文来自离线替身；真实使用时，这一选项连接的是你选择的账户。</p>
+<p class="caption">账户上下文读取所选账户的数据，使用前先确认账户名称。</p>
 
 ## 第三步：读取账户权益
 
 假设想表达十万元名义敞口，可以先除以账户权益，换成原始目标权重：
 
-<<< ../../guide-materials/05-functions/examples/equity_to_weight.py
+<<< ../examples/equity_to_weight.py
 
-在一百万元教学权益下返回 `0.1`。函数检查非正权益，避免无效除法。账户杠杆仍会在后续执行阶段应用，因此实际敞口要结合杠杆核对。
+在一百万元示例权益下返回 `0.1`。函数检查非正权益，避免无效除法。账户杠杆仍会在后续执行阶段应用，因此实际敞口要结合杠杆核对。
 
 ![读取权益并将十万元换成 0.1 的原始目标权重](../assets/screenshots/05-functions/04-equity-to-weight.png)
 
@@ -47,11 +47,11 @@
 
 如果上游研究程序已经输出目标权重，可以先用 CSV 把两者连起来。例如，在 Axile 的运行目录放置 `signals/target_weights.csv`：
 
-<<< ../../guide-materials/05-functions/examples/target_weights.csv{csv}
+<<< ../examples/target_weights.csv{csv}
 
 组合函数读取这份文件：
 
-<<< ../../guide-materials/05-functions/examples/csv_weights.py
+<<< ../examples/csv_weights.py
 
 这里明确拒绝空文件、重复品种和非有限数字。缺少信号时直接返回 `{}` 会表达空仓目标，应根据自己的业务语义决定如何处理数据缺失。文件路径相对服务运行目录；样例试跑和账户 Worker 都要能够访问它。
 

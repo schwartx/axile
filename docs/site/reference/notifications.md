@@ -6,7 +6,7 @@
 
 下面的示例只打印本地摘要，不发送外部消息：
 
-<<< ../../guide-materials/06-daily/examples/notify_summary.py
+<<< ../examples/notify_summary.py
 
 ## 事件与可选字段
 

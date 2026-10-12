@@ -1,4 +1,4 @@
-"""返回固定原始目标权重的教学示例。"""
+"""返回固定原始目标权重的示例。"""
 
 from axile.server.context import Context
 

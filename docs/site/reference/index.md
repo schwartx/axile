@@ -8,7 +8,6 @@
 | 接收执行事件，配置账户通知 | [通知函数](/reference/notifications) |
 | 选择下单算法，理解参数和扩展入口 | [执行算法](/reference/algorithms) |
 | 安装渠道依赖，配置环境、日志和算法目录 | [渠道与配置](/reference/channels) |
-| 理解截图来源、演示凭据和验证范围 | [截图与演示数据](/reference/screenshots) |
 
 ## 内置开发说明
 

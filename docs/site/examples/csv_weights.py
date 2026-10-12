@@ -1,4 +1,4 @@
-"""从本地 CSV 读取教学信号；文件位置相对 Axile 服务的运行目录。"""
+"""从本地 CSV 读取信号；文件位置相对 Axile 服务的运行目录。"""
 
 import csv
 import math

@@ -43,13 +43,13 @@
 
 ![禁投与风险品种的标签输入](../assets/screenshots/06-daily/05-symbol-controls.png)
 
-<p class="caption">这里使用 au2612 和 cu2611 演示输入。主教学组合包含 rb2701 与 ag2612。</p>
+<p class="caption">这里使用 au2612 和 cu2611 示例输入。本例组合包含 rb2701 与 ag2612。</p>
 
 ## 编写账户通知函数
 
 账户执行通知接收脱敏的事件快照。先使用一个只打印摘要的函数，理解字段和试跑事件：
 
-<<< ../../guide-materials/06-daily/examples/notify_summary.py
+<<< ../examples/notify_summary.py
 
 ![通知函数编辑器、试跑事件与成功结果](../assets/screenshots/06-daily/02-notification-function.png)
 
