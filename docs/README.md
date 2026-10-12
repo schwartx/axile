@@ -28,12 +28,13 @@ bun run preview
 | `site/public/` | 图标和流程示意图 |
 | `.vitepress/config.mts` | 导航、搜索、语言和 `/axile/` 部署前缀 |
 | `.vitepress/theme/` | 文档站样式与可用键盘操作的截图放大 |
-| `guide-materials/` | 原始截图、配图草稿、示例代码与采集记录 |
+| `site/assets/screenshots/` | 原始截图，位于站点源目录内，供开发服务与构建统一读取 |
+| `guide-materials/` | 配图草稿、示例代码、截图校验清单与采集记录 |
 | `.vitepress/dist/` | 生成产物，不提交 |
 
 站点只从 `site/` 生成页面。Markdown 通过相对路径引用原图和示例代码，构建时打包实际引用的资源；原始素材中的运行证据、复现替身和作者笔记不会作为页面发布。
 
-截图原图保留不改。更新页面时，为截图提供具体的 alt 和图说。替换素材需要同步更新 `guide-materials/manifest.json` 的文件尺寸和 SHA-256。示例不得使用真实凭据、真实账户资产或未注明来源的绩效数字。
+截图原图保留不改，不在素材稿目录中保存副本。更新页面时，为截图提供具体的 alt 和图说。替换素材需要同步更新 `guide-materials/manifest.json` 的路径、文件尺寸和 SHA-256；清单中的路径相对 `guide-materials/`。示例不得使用真实凭据、真实账户资产或未注明来源的绩效数字。
 
 ## GitHub Pages 首次启用
 
@@ -49,4 +50,4 @@ bun run preview
 
 ## 提交前验证
 
-运行 `bun run build` 检查构建和 Markdown 死链接，再使用浏览器检查首页、章节导航、中文搜索、代码复制、截图放大与移动端布局。依赖使用 `package.json` 中的固定版本及 `bun.lock`，CI 使用冻结锁文件安装。
+运行 `bun run build` 检查构建和 Markdown 死链接。在 `bun run dev` 和 `bun run preview` 两种模式下检查全部章节的图片加载，再检查首页、章节导航、中文搜索、代码复制、截图放大与移动端布局。依赖使用 `package.json` 中的固定版本及 `bun.lock`，CI 使用冻结锁文件安装。

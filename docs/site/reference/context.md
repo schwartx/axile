@@ -26,7 +26,7 @@ def calculate_portfolio(context):
 | `query_trades(symbol, order_id)` | `list[TradeRecord]` | 查询指定订单的成交明细 |
 | `executor` | 当前渠道执行器 | 完整、共享且常驻的执行器对象 |
 
-![内置 Context API 的字段和方法说明](../../guide-materials/08-reference/02-context-api.png)
+![内置 Context API 的字段和方法说明](../assets/screenshots/08-reference/02-context-api.png)
 
 ## 常用模型字段
 

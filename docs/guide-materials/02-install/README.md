@@ -2,16 +2,16 @@
 
 目标：第一次打开 Axile，完成初始化并进入控制台。
 
-![第一次启动](01-first-start.png)
+![第一次启动](../../site/assets/screenshots/02-install/01-first-start.png)
 
 图说：首次启动进入初始化向导。系统执行告警为选填项；未配置 Webhook 时不会推送消息。这里可以先继续，再到系统告警页面配置。
 
 | 顺序 | 图片 | 操作与预期结果 |
 | --- | --- | --- |
-| 1 | [首次启动](01-first-start.png) | 选择告警方式；本次留空，不发送外部消息 |
-| 2 | [确认初始化](02-confirm.png) | 核对设置，保存配置 |
-| 3 | [高级选项](03-advanced.png) | 了解数据库、环境、日志和用户算法目录，一般沿用默认值 |
-| 4 | [空控制台](04-empty-console.png) | 服务正常、尚无账户，开始创建组合和账户 |
+| 1 | [首次启动](../../site/assets/screenshots/02-install/01-first-start.png) | 选择告警方式；本次留空，不发送外部消息 |
+| 2 | [确认初始化](../../site/assets/screenshots/02-install/02-confirm.png) | 核对设置，保存配置 |
+| 3 | [高级选项](../../site/assets/screenshots/02-install/03-advanced.png) | 了解数据库、环境、日志和用户算法目录，一般沿用默认值 |
+| 4 | [空控制台](../../site/assets/screenshots/02-install/04-empty-console.png) | 服务正常、尚无账户，开始创建组合和账户 |
 
 供正文使用的源码安装步骤（在独立的 Axile 仓库根目录运行）：
 

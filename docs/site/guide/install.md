@@ -52,7 +52,7 @@ uv run axile --host 127.0.0.1 --port 8000
 
 系统告警用于账户执行异常或总超时。它是选填项，可以先留空，之后在“系统告警”中配置。
 
-![首次启动的系统告警设置](../../guide-materials/02-install/01-first-start.png)
+![首次启动的系统告警设置](../assets/screenshots/02-install/01-first-start.png)
 
 <p class="caption">未配置 Webhook 时不推送消息。这里可以直接进入下一步。</p>
 
@@ -60,13 +60,13 @@ uv run axile --host 127.0.0.1 --port 8000
 
 核对设置后点击“保存并启动”。初始化会写出配置文件。
 
-![初始化确认页](../../guide-materials/02-install/02-confirm.png)
+![初始化确认页](../assets/screenshots/02-install/02-confirm.png)
 
 ### 3. 按需查看高级选项
 
 数据库、日志和算法目录有默认值，通常可以直接沿用。运行环境 `local`、`staging`、`production` 控制日志详细程度；账户是否实盘或模拟，在账户连接设置中选择。
 
-![初始化高级选项](../../guide-materials/02-install/03-advanced.png)
+![初始化高级选项](../assets/screenshots/02-install/03-advanced.png)
 
 ::: info 保存后再次启动
 当前版本在初始化保存后结束服务进程，交由外部 supervisor 拉起。直接使用上面的裸命令启动时，需要再次执行同一条 `uv run axile ...` 命令，再刷新浏览器。
@@ -76,6 +76,6 @@ uv run axile --host 127.0.0.1 --port 8000
 
 启动完成后会看到空控制台。顶部显示服务正常，页面提示尚无账户。
 
-![首次初始化后的空控制台](../../guide-materials/02-install/04-empty-console.png)
+![首次初始化后的空控制台](../assets/screenshots/02-install/04-empty-console.png)
 
 下一步[创建第一个组合](/guide/first-portfolio)。

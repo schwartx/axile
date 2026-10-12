@@ -2,15 +2,15 @@
 
 目标：让读者知道如何把已有的量化信号交给 Axile，并找到日常操作入口。
 
-![公共版控制台](01-dashboard.png)
+![公共版控制台](../../site/assets/screenshots/01-introduction/01-dashboard.png)
 
 图说：所有账户集中显示在控制台中。点击一个账户，可以进一步查看持仓、执行记录以及配置。这里的账户与资金均为离线演示数据。
 
 | 图片 | 位置 | 说明重点 |
 | --- | --- | --- |
-| [01 控制台](01-dashboard.png) | `/` | 服务状态、账户入口、创建账户与组合的入口 |
-| [02 账户概览](02-account-overview.png) | `/accounts/1` | 权益、绑定组合、持仓对照、自动执行和近期活动 |
-| [03 所有组合](03-portfolios.png) | `/portfolios` | 组合保存目标计算函数，可供账户跟随 |
+| [01 控制台](../../site/assets/screenshots/01-introduction/01-dashboard.png) | `/` | 服务状态、账户入口、创建账户与组合的入口 |
+| [02 账户概览](../../site/assets/screenshots/01-introduction/02-account-overview.png) | `/accounts/1` | 权益、绑定组合、持仓对照、自动执行和近期活动 |
+| [03 所有组合](../../site/assets/screenshots/01-introduction/03-portfolios.png) | `/portfolios` | 组合保存目标计算函数，可供账户跟随 |
 
 建议正文：组合函数负责计算「品种 → 原始目标权重」。账户提供资金、交易连接、杠杆和执行设置。一次执行把目标转换为可执行数量，再由下单算法处理订单，最后留下持仓与执行证据。
 

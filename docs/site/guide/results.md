@@ -10,13 +10,13 @@
 
 完整场景中，rb2701 从多 6 手变成多 12 手，ag2612 从空 1 手变成空 2 手。结果页展示账户结论、各品种目标和实际持仓，以及执行链路。
 
-![完整执行的品种结果和执行链路](../../guide-materials/07-results/01-completed-execution.png)
+![完整执行的品种结果和执行链路](../assets/screenshots/07-results/01-completed-execution.png)
 
 ## 展开订单与成交
 
 打开品种的“订单与成交”，把委托数量、已成交数量、成交明细和订单终态连起来看。
 
-![完整成交订单的委托和成交树](../../guide-materials/07-results/02-order-and-fill.png)
+![完整成交订单的委托和成交树](../assets/screenshots/07-results/02-order-and-fill.png)
 
 <p class="caption">订单描述提交了什么，成交描述实际发生了什么。缺少证据时，不应从状态标题推断所有细节。</p>
 
@@ -24,13 +24,13 @@
 
 持仓已达到本次可执行目标时，可以得到“无需调仓”。这与执行失败或没有收到结果不同。
 
-![目标已到位时显示无需调仓](../../guide-materials/07-results/03-noop.png)
+![目标已到位时显示无需调仓](../assets/screenshots/07-results/03-noop.png)
 
 ## 部分成交：核对剩余缺口
 
 部分场景中，rb2701 可执行目标仍为多 12 手，本次只从 6 手增加到 7 手，剩余 5 手。另一品种完成，账户结论显示“执行未全部完成”。
 
-![部分成交后的实际持仓、可执行目标与差额](../../guide-materials/07-results/04-partial-execution.png)
+![部分成交后的实际持仓、可执行目标与差额](../assets/screenshots/07-results/04-partial-execution.png)
 
 | 指标 | 本例含义 | 数字 |
 | --- | --- | ---: |
@@ -40,7 +40,7 @@
 
 展开订单，能同时看到成交 1 手和剩余委托已撤销。
 
-![部分成交后撤销剩余委托的终态](../../guide-materials/07-results/05-partial-order.png)
+![部分成交后撤销剩余委托的终态](../assets/screenshots/07-results/05-partial-order.png)
 
 <p class="caption">夹具原因码 DOCS.PARTIAL_FILL 只用于本文教学，不是公共算法的正式错误码。</p>
 
@@ -48,21 +48,21 @@
 
 回到控制台，可以看到偏离提示，再进入该账户进一步排查。
 
-![控制台中有偏离的账户](../../guide-materials/07-results/06-deviation-dashboard.png)
+![控制台中有偏离的账户](../assets/screenshots/07-results/06-deviation-dashboard.png)
 
 ## 在执行记录中缩小范围
 
 “按执行”适合查看每次任务的结论和成交规模；“按品种”加搜索，适合追踪一个品种的连续变化。
 
-![完成、空跑和部分完成的执行记录列表](../../guide-materials/07-results/07-execution-list.png)
+![完成、空跑和部分完成的执行记录列表](../assets/screenshots/07-results/07-execution-list.png)
 
-![按品种搜索 rb2701 的结果](../../guide-materials/07-results/08-symbol-filter.png)
+![按品种搜索 rb2701 的结果](../assets/screenshots/07-results/08-symbol-filter.png)
 
 ## 查看绩效与执行时间线
 
 绩效页面提供账户收益、组合回测口径、成交点和异常时间线。可以切换数量换算后的目标与原始目标权重口径，或切换观测序列与自然时间。
 
-![绩效页面及执行异常时间线](../../guide-materials/07-results/09-performance.png)
+![绩效页面及执行异常时间线](../assets/screenshots/07-results/09-performance.png)
 
 <p class="caption">这里仅有同一天的夹具观测，价格和权益固定，曲线与成本用于解释界面，不能评价策略收益或成交质量。</p>
 

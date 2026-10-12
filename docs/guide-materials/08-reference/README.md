@@ -2,16 +2,16 @@
 
 目标：在读者完成入门路线后，提供准确的函数契约、Context 查询和扩展入口。
 
-![Context API](02-context-api.png)
+![Context API](../../site/assets/screenshots/08-reference/02-context-api.png)
 
 图说：统一 Context 提供账户资产、持仓、行情、未完成订单和成交查询。先查这里，再使用依赖具体渠道的完整 executor。
 
 | 图片 | 位置 | 说明重点 |
 | --- | --- | --- |
-| [函数契约与上下文](01-function-contract.png) | 前端 `/docs/custom-calc` | 何时执行、样例与账户的差异、真实交易副作用边界 |
-| [Context API](02-context-api.png) | 同页 `#api` | 字段、方法、类型和缓存范围 |
-| [高级设置](03-advanced-settings.png) | `/settings/advanced` | 数据库、日志、算法目录配置；重启生效 |
-| [公共算法目录](04-public-algorithms.png) | `/accounts/1/edit/algorithm`，展开主交易算法 | 当前渠道可选的 POV、SINGLE-MAKER、TARGET-POS-TASK、TWAP |
+| [函数契约与上下文](../../site/assets/screenshots/08-reference/01-function-contract.png) | 前端 `/docs/custom-calc` | 何时执行、样例与账户的差异、真实交易副作用边界 |
+| [Context API](../../site/assets/screenshots/08-reference/02-context-api.png) | 同页 `#api` | 字段、方法、类型和缓存范围 |
+| [高级设置](../../site/assets/screenshots/08-reference/03-advanced-settings.png) | `/settings/advanced` | 数据库、日志、算法目录配置；重启生效 |
+| [公共算法目录](../../site/assets/screenshots/08-reference/04-public-algorithms.png) | `/accounts/1/edit/algorithm`，展开主交易算法 | 当前渠道可选的 POV、SINGLE-MAKER、TARGET-POS-TASK、TWAP |
 
 可直接复用的源码和既有资料：
 

@@ -23,7 +23,7 @@ Axile 公共核心内置 CTP、掘金和天勤。选择渠道前，先安装对�
 
 ## 高级设置
 
-![系统高级设置中的数据库、日志和用户算法目录](../../guide-materials/08-reference/03-advanced-settings.png)
+![系统高级设置中的数据库、日志和用户算法目录](../assets/screenshots/08-reference/03-advanced-settings.png)
 
 | 设置 | 含义 |
 | --- | --- |

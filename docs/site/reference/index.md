@@ -14,7 +14,7 @@
 
 组合编辑器中包含 Context 和函数契约说明。本站将常用内容整理成可以直接访问的参考页。
 
-![内置组合函数契约和上下文说明](../../guide-materials/08-reference/01-function-contract.png)
+![内置组合函数契约和上下文说明](../assets/screenshots/08-reference/01-function-contract.png)
 
 ## 两种自定义开发
 

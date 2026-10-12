@@ -18,7 +18,7 @@
 
 在账户“杠杆设置”中分别配置多头和空头。本例把向导默认的 3 改成 1，权重精度为 0.01。
 
-![教学账户的一倍多空杠杆设置](../../guide-materials/04-targets/01-leverage.png)
+![教学账户的一倍多空杠杆设置](../assets/screenshots/04-targets/01-leverage.png)
 
 <p class="caption">保存配置不会立即下单，从下次调仓开始生效。</p>
 
@@ -39,7 +39,7 @@
 
 国内期货数量按整手向零截断。在执行详情中，展开品种目标即可看到换算依据。
 
-![展开目标数量后的权益、价格和合约乘数依据](../../guide-materials/04-targets/04-sizing-evidence.png)
+![展开目标数量后的权益、价格和合约乘数依据](../assets/screenshots/04-targets/04-sizing-evidence.png)
 
 <p class="caption">“精确换算”表示有足够的权益与行情依据，并不表示没有取整；这里仍从 12.5 手截成 12 手。</p>
 
@@ -47,11 +47,11 @@
 
 执行前，教学账户持有 rb2701 多 6 手、ag2612 空 1 手，两个品种都需要调整。
 
-![执行前两个品种都待调整](../../guide-materials/04-targets/02-before-rebalance.png)
+![执行前两个品种都待调整](../assets/screenshots/04-targets/02-before-rebalance.png)
 
 执行后，持仓达到多 12 手、空 2 手：
 
-![执行后达到可执行目标](../../guide-materials/04-targets/03-after-rebalance.png)
+![执行后达到可执行目标](../assets/screenshots/04-targets/03-after-rebalance.png)
 
 rb2701 的实际名义敞口为 `12 × 3,200 × 10 = 384,000` 元，占权益 38.4%。ag2612 的实际空头名义敞口为 240,000 元，占权益 24.0%。它们与原始百分比有差异，但已达到可执行整数手目标。
 
@@ -59,7 +59,7 @@ rb2701 的实际名义敞口为 `12 × 3,200 × 10 = 384,000` 元，占权益 38
 
 “持仓明细”同时展示账户目标、可执行目标和实际持仓。排查偏离时，先核对这三列，再看订单和成交。
 
-![持仓明细中的百分比、目标手数与实际持仓](../../guide-materials/04-targets/05-holdings-detail.png)
+![持仓明细中的百分比、目标手数与实际持仓](../assets/screenshots/04-targets/05-holdings-detail.png)
 
 ::: tip 不只看百分比
 价格、权益、账户精度和交易单位都会影响目标。目标与持仓百分比不完全相等时，先查看数量依据；显示到位也不等于每一笔订单都已妥善收尾，仍需结合[执行结果](/guide/results)。

@@ -143,7 +143,7 @@
     "ruff_format_and_lint": "passed",
     "shell_syntax": "passed",
     "documentation_links": "passed",
-    "gallery_images_loaded": "42 passed in ego-browser",
+    "gallery_images_loaded": "42 passed",
     "start_demo_script": "passed; restarted final service using support/start-demo.sh"
   },
   "limitations": [

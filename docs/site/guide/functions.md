@@ -14,7 +14,7 @@
 
 组合编辑器可以使用样例数据，也可以选择一个账户。
 
-![选择样例数据或账户作为试跑数据来源](../../guide-materials/05-functions/01-data-source.png)
+![选择样例数据或账户作为试跑数据来源](../assets/screenshots/05-functions/01-data-source.png)
 
 | 项目 | 样例数据 | 账户上下文 |
 | --- | --- | --- |
@@ -29,7 +29,7 @@
 
 选择教学账户后，使用同一个固定函数再次试跑，观察数据来源提示和返回结果。
 
-![使用账户 Context 试跑固定目标函数](../../guide-materials/05-functions/02-account-context-run.png)
+![使用账户 Context 试跑固定目标函数](../assets/screenshots/05-functions/02-account-context-run.png)
 
 <p class="caption">图中的账户上下文来自离线替身；真实使用时，这一选项连接的是你选择的账户。</p>
 
@@ -41,7 +41,7 @@
 
 在一百万元教学权益下返回 `0.1`。函数检查非正权益，避免无效除法。账户杠杆仍会在后续执行阶段应用，因此实际敞口要结合杠杆核对。
 
-![读取权益并将十万元换成 0.1 的原始目标权重](../../guide-materials/05-functions/04-equity-to-weight.png)
+![读取权益并将十万元换成 0.1 的原始目标权重](../assets/screenshots/05-functions/04-equity-to-weight.png)
 
 ## 第四步：接入自己的信号
 
@@ -61,7 +61,7 @@
 
 截图中故意把 `total_asset` 写成 `total_assets`。试跑面板显示 `AttributeError`，并提供“定位到第 6 行”。
 
-![函数拼写错误的错误行与 traceback](../../guide-materials/05-functions/03-runtime-error.png)
+![函数拼写错误的错误行与 traceback](../assets/screenshots/05-functions/03-runtime-error.png)
 
 排查时先看错误类型和行号，再展开 traceback。把字段改回正确名称，重新试跑，确认返回值之后再保存。代码提示、运行失败和保存状态是不同信息。
 

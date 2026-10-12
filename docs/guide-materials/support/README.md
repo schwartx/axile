@@ -42,6 +42,6 @@ bash axile/docs/guide-materials/support/start-demo.sh /tmp/axile-docs-20261012
 
 先停止同一实例的旧进程，避免端口冲突。脚本仅维护指定临时目录，默认端口 8019；需要换端口时设置 `AXILE_DOCS_PORT`。在另一目录运行会创建全新的空数据库，需按章节 03 在界面创建组合与账户。初始资金填 1,000,000，用户名使用 `offline-docs-main`，其他教学输入见章节说明。
 
-截图使用同一个 ego-browser TaskSpace，固定浅色主题和 1440 × 1000 视口。所有原图都直接来自 `page.screenshot()`，没有粘贴假数据或修改 DOM 文本。
+截图采用浅色主题，尺寸为 1440 × 1000，原图未经内容改写。
 
 [运行环境与执行证据摘要](runtime-proof.json) · [全部图片清单](../manifest.json) · [采集发现](findings.md)

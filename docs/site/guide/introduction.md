@@ -20,7 +20,7 @@
 
 打开首页，先看服务状态和需要关注的账户，再进入具体账户。尚未创建账户时，页面会提示创建；已有账户会集中显示在这里。
 
-![公共版 Axile 控制台](../../guide-materials/01-introduction/01-dashboard.png)
+![公共版 Axile 控制台](../assets/screenshots/01-introduction/01-dashboard.png)
 
 <p class="caption">示例中只有一个离线教学账户。所有账户、所有组合和新建入口都在侧栏。</p>
 
@@ -28,7 +28,7 @@
 
 账户概览展示权益、绑定组合、杠杆与算法，以及当前持仓和目标的对照。页面下方可以查看自动执行安排和近期活动。
 
-![账户概览与持仓目标对照](../../guide-materials/01-introduction/02-account-overview.png)
+![账户概览与持仓目标对照](../assets/screenshots/01-introduction/02-account-overview.png)
 
 <p class="caption">看到“已调仓到位”后，仍可进入执行详情查看数量依据、订单终态和成交记录。</p>
 
@@ -36,7 +36,7 @@
 
 进入“所有组合”，查看各组合及其跟随账户。打开组合后，在 Python 编辑器中编写 `calculate_portfolio(context)`，试跑并检查返回值。
 
-![所有组合及其目标权重摘要](../../guide-materials/01-introduction/03-portfolios.png)
+![所有组合及其目标权重摘要](../assets/screenshots/01-introduction/03-portfolios.png)
 
 ## 本指南的贯穿例子
 

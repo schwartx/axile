@@ -4,7 +4,7 @@
 
 ## 当前公共算法目录
 
-![天勤账户可选的公共下单算法](../../guide-materials/08-reference/04-public-algorithms.png)
+![天勤账户可选的公共下单算法](../assets/screenshots/08-reference/04-public-algorithms.png)
 
 | 算法 | 用途 | 需要理解的边界 |
 | --- | --- | --- |

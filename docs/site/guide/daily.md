@@ -6,7 +6,7 @@
 
 在账户“定时任务”中设置节奏。快捷方式可以选择日盘收盘或固定间隔，按需开启夜盘，并预览补发安排。页面时间为北京时间。
 
-![自动调仓的快捷排程与交易日历预览](../../guide-materials/06-daily/01-schedule-preview.png)
+![自动调仓的快捷排程与交易日历预览](../assets/screenshots/06-daily/01-schedule-preview.png)
 
 <p class="caption">开启自动执行之前，先看预览中的实际时间。教程账户最终保持自动执行关闭。</p>
 
@@ -29,11 +29,11 @@
 
 “执行流控”按下单、查询、撤单等操作展示限制。限制可能作用于账户合计，也可能作用于每个品种。
 
-![执行流控预设和操作分类](../../guide-materials/06-daily/03-execution-control.png)
+![执行流控预设和操作分类](../assets/screenshots/06-daily/03-execution-control.png)
 
 展开“下单”，可以查看每分钟额度、每日额度和最小间隔，以及超额后的排队或阻断行为。
 
-![下单操作的额度、间隔和超额处理](../../guide-materials/06-daily/04-rate-rules.png)
+![下单操作的额度、间隔和超额处理](../assets/screenshots/06-daily/04-rate-rules.png)
 
 <p class="caption">图中数字是当前预设的展示，不是适用于所有渠道的统一参数建议。保存后从下一次执行开始生效。</p>
 
@@ -41,7 +41,7 @@
 
 “禁投”用于不建仓的品种，“风险品种”限制为仅减不加。输入支持 Enter、Tab、逗号或空格确认，也可以批量粘贴。
 
-![禁投与风险品种的标签输入](../../guide-materials/06-daily/05-symbol-controls.png)
+![禁投与风险品种的标签输入](../assets/screenshots/06-daily/05-symbol-controls.png)
 
 <p class="caption">这里使用 au2612 和 cu2611 演示输入。主教学组合包含 rb2701 与 ag2612。</p>
 
@@ -51,7 +51,7 @@
 
 <<< ../../guide-materials/06-daily/examples/notify_summary.py
 
-![通知函数编辑器、试跑事件与成功结果](../../guide-materials/06-daily/02-notification-function.png)
+![通知函数编辑器、试跑事件与成功结果](../assets/screenshots/06-daily/02-notification-function.png)
 
 试跑会执行当前草稿；保存后才用于后续通知。真实通知函数可能在试跑时向外发消息，应处理 `is_test`。同步、异步入口以及可选字段见[通知函数参考](/reference/notifications)。
 
@@ -59,6 +59,6 @@
 
 系统告警用于执行异常或总超时，其设置入口与账户执行通知不同。可以配置默认 Webhook，也可以使用自定义函数。
 
-![系统执行告警设置](../../guide-materials/06-daily/06-system-alert.png)
+![系统执行告警设置](../assets/screenshots/06-daily/06-system-alert.png)
 
 未配置 Webhook 时不发送默认告警。示例通知只打印本地摘要，没有向外部服务发送消息。

@@ -35,7 +35,7 @@ features:
 <h2>账户、组合和每一次执行，都有地方可查。</h2>
 <p>在控制台查看权益和账户状态，进入账户核对持仓与目标，再展开执行详情查看订单和成交。截图可以点击放大，也可以用键盘聚焦后按 Enter。</p>
 
-![Axile 公共版控制台，显示一个离线教学账户](../guide-materials/01-introduction/01-dashboard.png)
+![Axile 公共版控制台，显示一个离线教学账户](assets/screenshots/01-introduction/01-dashboard.png)
 
 <p class="caption">本文档对应 Axile 0.19.1。截图中的账户、行情和成交使用离线演示数据，详见<a href="./reference/screenshots.html">截图与演示数据说明</a>。</p>
 

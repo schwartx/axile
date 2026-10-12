@@ -2,16 +2,16 @@
 
 目标：从固定权重开始，学会选择上下文、读取权益、定位错误，再接入自己的信号。
 
-![权益换算目标权重](04-equity-to-weight.png)
+![权益换算目标权重](../../site/assets/screenshots/05-functions/04-equity-to-weight.png)
 
 图说：函数读取 `context.account.total_asset`，把十万元名义敞口换成原始目标权重。演示权益为一百万元，所以返回 0.1。这里仅说明接口用法，账户杠杆仍在后续执行阶段处理。
 
 | 图片 | 操作 | 说明重点 |
 | --- | --- | --- |
-| [数据来源选择](01-data-source.png) | 打开「试跑数据来源」 | 样例与账户上下文的区别 |
-| [账户上下文试跑](02-account-context-run.png) | 选择教学账户，再试跑并保存 | 通用 Context 来自选定账户；本环境提供离线夹具 |
-| [报错定位](03-runtime-error.png) | 把 `total_asset` 故意拼成 `total_assets` | AttributeError、错误行号、定位按钮、traceback |
-| [修正后通过](04-equity-to-weight.png) | 改回正确字段，并处理非正权益 | 读权益、计算返回值、检查试跑输出 |
+| [数据来源选择](../../site/assets/screenshots/05-functions/01-data-source.png) | 打开「试跑数据来源」 | 样例与账户上下文的区别 |
+| [账户上下文试跑](../../site/assets/screenshots/05-functions/02-account-context-run.png) | 选择教学账户，再试跑并保存 | 通用 Context 来自选定账户；本环境提供离线夹具 |
+| [报错定位](../../site/assets/screenshots/05-functions/03-runtime-error.png) | 把 `total_asset` 故意拼成 `total_assets` | AttributeError、错误行号、定位按钮、traceback |
+| [修正后通过](../../site/assets/screenshots/05-functions/04-equity-to-weight.png) | 改回正确字段，并处理非正权益 | 读权益、计算返回值、检查试跑输出 |
 
 建议分四步写正文：
 

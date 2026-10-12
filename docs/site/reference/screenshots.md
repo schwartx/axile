@@ -1,6 +1,6 @@
 # 截图与演示数据
 
-本站使用 2026-10-12 采集的 **42 张原始截图**，对应 Axile 0.19.1。截图由 ego-browser 操作公共版 Axile 页面生成，浅色主题，尺寸 1440 × 1000，可以点击或用键盘放大查看。
+本指南截图对应 Axile 0.19.1，采用浅色主题，尺寸为 1440 × 1000。点击图片，或用键盘聚焦后按 Enter，可以放大查看。
 
 ## 数据是什么来源
 
@@ -33,4 +33,4 @@
 
 ## 素材与复现
 
-原图、校验和、配图稿和离线复现说明保存在仓库 [docs/guide-materials](https://github.com/zengbin93/axile/tree/main/docs/guide-materials)。这些作者资料没有作为额外页面发布到本站。
+原图统一保存在仓库 [docs/site/assets/screenshots](https://github.com/zengbin93/axile/tree/main/docs/site/assets/screenshots)，原素材目录不再保留图片副本。校验和、配图稿和离线复现说明保存在 [docs/guide-materials](https://github.com/zengbin93/axile/tree/main/docs/guide-materials)。这些作者资料没有作为额外页面发布到本站。

@@ -2,17 +2,17 @@
 
 目标：解释为什么返回 40% 的权重，界面最终显示多 12 手、38.4% 的持仓，仍然可以到位。
 
-![手数换算依据](04-sizing-evidence.png)
+![手数换算依据](../../site/assets/screenshots/04-targets/04-sizing-evidence.png)
 
 图说：展开品种的目标数量，可以看到权益、账户目标权重、价格和合约乘数。原始计算为 12.5 手，国内期货数量按整手向零截断，可执行目标为多 12 手。到位判断比较可执行目标和实际持仓。
 
 | 图片 | 位置 | 说明重点 |
 | --- | --- | --- |
-| [杠杆设置](01-leverage.png) | `/accounts/1/edit/leverage` | 本例把多空杠杆从默认 3 改成 1 |
-| [执行前对照](02-before-rebalance.png) | `/accounts/1` | 起始多 6 手、空 1 手，两个品种待调整 |
-| [执行后对照](03-after-rebalance.png) | `/accounts/1` | 多 12 手、空 2 手，达到可执行目标 |
-| [换算依据](04-sizing-evidence.png) | 首次执行详情，展开 rb2701 目标 | 权重、权益、价格、乘数、取整前后数量 |
-| [持仓明细](05-holdings-detail.png) | `/accounts/1/holdings` | 原始百分比与可执行数量同时查看 |
+| [杠杆设置](../../site/assets/screenshots/04-targets/01-leverage.png) | `/accounts/1/edit/leverage` | 本例把多空杠杆从默认 3 改成 1 |
+| [执行前对照](../../site/assets/screenshots/04-targets/02-before-rebalance.png) | `/accounts/1` | 起始多 6 手、空 1 手，两个品种待调整 |
+| [执行后对照](../../site/assets/screenshots/04-targets/03-after-rebalance.png) | `/accounts/1` | 多 12 手、空 2 手，达到可执行目标 |
+| [换算依据](../../site/assets/screenshots/04-targets/04-sizing-evidence.png) | 首次执行详情，展开 rb2701 目标 | 权重、权益、价格、乘数、取整前后数量 |
+| [持仓明细](../../site/assets/screenshots/04-targets/05-holdings-detail.png) | `/accounts/1/holdings` | 原始百分比与可执行数量同时查看 |
 
 本例多空杠杆均为 1，权重精度为 0.01：
 
