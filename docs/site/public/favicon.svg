@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none">
+  <!-- axile 商标：轴上两点（当前持仓 → 目标权重）。固定色，明暗标签页均可见。 -->
+  <path d="M4 19.75h16.25" stroke="#6b7680" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M4.25 4v15.75" stroke="#6b7680" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="9" cy="15" r="2.1" fill="#39424b"/>
+  <circle cx="16.25" cy="7.75" r="2.7" fill="#0d7f96"/>
+</svg>

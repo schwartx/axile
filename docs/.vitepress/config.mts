@@ -9,12 +9,12 @@ export default defineConfig({
   cleanUrls: false,
   lastUpdated: true,
   head: [
-    ['link', { rel: 'icon', href: '/axile/mark.svg', type: 'image/svg+xml' }],
+    ['link', { rel: 'icon', href: '/axile/favicon.svg', type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#078b9f' }],
   ],
   sitemap: { hostname: 'https://zengbin93.github.io/axile/' },
   themeConfig: {
-    logo: '/mark.svg',
+    logo: '/favicon.svg',
     siteTitle: 'Axile 使用文档',
     nav: [
       { text: '使用指南', link: '/guide/introduction' },
