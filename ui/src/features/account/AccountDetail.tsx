@@ -524,9 +524,6 @@ export function AccountDetail({
           ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
           {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}
         </div>
-        <div className={`grid transition-[grid-template-rows] duration-200 ${!isBusy && latestOutcome && ['BLOCKED', 'PARTIAL', 'FAILED'].includes(latestOutcome.state) && latestOutcome.reason ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-          <div className="min-h-0 overflow-hidden"><p className="mt-1 text-[14px] text-warn">{latestOutcome?.reason}</p></div>
-        </div>
 
         <div className="mt-6 border-t border-line pt-4">
           <div className="flex items-center gap-1.5 text-[14px] text-ink-2">
