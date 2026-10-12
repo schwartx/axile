@@ -30,7 +30,6 @@ import {
 } from '@/features/account/holdingPreview'
 import { ScheduleSummary, ScheduleTimeline, ScheduleTimelineSkeleton } from '@/features/account/ScheduleTimeline'
 import {
-  accountAssetTerms,
   INTEGRITY_ICON,
   INTEGRITY_TEXT_CLASS,
   positionValueLabelOf,
@@ -104,7 +103,6 @@ export function AccountDetail({
   const tDetail = useViewTransitionState(`/accounts/${accountId}`)
   const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
   const nameVt = tDetail || tEdit
-  const assetTerms = accountAssetTerms(item.trade_channel)
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const channelSchedule = channelDescriptor?.schedule
   const scheduleKind = channelSchedule?.kind
@@ -432,9 +430,18 @@ export function AccountDetail({
           </div>
         )}
 
-        <div className="mt-5">
-          <div className="flex items-center gap-1.5 text-[14px] text-ink-2">
-            <span>{assetTerms.fullLabel}</span>
+        <div>
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              {/* 当前权益独立于历史绩效金额。 */}
+              <div
+                className="num text-[35px] leading-tight font-[640] tracking-tight"
+              >
+                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
+                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
+              </div>
+              <div className="mt-1 flex items-center gap-1.5 text-xs text-ink-3">
+                <span>{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</span>
             <Tooltip content="刷新账户资产">
               <span className="inline-flex">
                 <button
@@ -452,17 +459,7 @@ export function AccountDetail({
                 </button>
               </span>
             </Tooltip>
-          </div>
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              {/* 当前权益独立于历史绩效金额。 */}
-              <div
-                className="num mt-0.5 text-[35px] font-[640] tracking-tight"
-              >
-                {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
-                <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
               </div>
-              <div className="mt-1 text-xs text-ink-3">{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</div>
               <div className="mt-1.5 text-[14.5px] text-ink-2">
                 {pct == null && <span>{dayLabel} — · </span>}
                 <span className="text-xs text-ink-3">{statusLabel}{statusLabel ? ' · ' : ''}</span>
