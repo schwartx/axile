@@ -12,11 +12,11 @@ export function NotificationIndicator(props: NotificationIndicatorProps) {
       <Link
         to={`/accounts/${props.account.id}/edit/notification`}
         aria-label={`${detail}，编辑通知`}
-        className={`inline-flex shrink-0 items-center gap-1.5 rounded-sm text-[13px] no-underline hover:text-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-4 ${result === false ? 'text-warn' : 'text-ink-1'}`}
+        className={`inline-flex shrink-0 items-center gap-1.5 rounded-sm text-[13px] no-underline hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-4 ${result === false ? 'text-warn' : 'text-ink-3'}`}
       >
         {configured && (
           <span className="relative inline-flex h-5 w-5 items-center justify-center" aria-hidden="true">
-            <Bell size={16} />
+            <Bell size={13} />
             {result !== null && (
               <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-surface p-px">
                 {result ? <Check size={10} strokeWidth={3} /> : <X size={10} strokeWidth={3} />}

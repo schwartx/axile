@@ -431,8 +431,8 @@ export function AccountDetail({
         )}
 
         <div>
-          <div className="flex items-end justify-between gap-4">
-            <div>
+          <div className="grid grid-cols-1 items-center gap-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="min-w-0">
               {/* 当前权益独立于历史绩效金额。 */}
               <div
                 className="num text-[35px] leading-tight font-[640] tracking-tight"
@@ -495,7 +495,9 @@ export function AccountDetail({
               </div>
             </div>
             {/* 仅账户累计收益线展开；专用导航关闭此次金额/标题共享过渡。 */}
-            <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={150} height={46} />
+            <div className="flex min-w-0 items-center justify-end">
+              <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={64} />
+            </div>
           </div>
         </div>
 
@@ -577,7 +579,7 @@ export function AccountDetail({
             </span>
           )}
         </div>
-        <div className="min-w-0 text-[13px] text-ink-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-[13px] text-ink-3">
           {latestRecord && latestOutcome ? (
             <div>
               {formatRecentExecution(latestRecord.created_at, Date.now())}
@@ -585,6 +587,7 @@ export function AccountDetail({
               {latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
             </div>
           ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
+          {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}
         </div>
 
         </div>
@@ -627,7 +630,6 @@ export function AccountDetail({
             vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'empty' && algorithmRefOf(acc?.empty_positions_algorithm) ? accountConfigVtName(accountId, 'empty') : undefined}
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
-          {acc && <span className="ml-auto"><NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} /></span>}
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />

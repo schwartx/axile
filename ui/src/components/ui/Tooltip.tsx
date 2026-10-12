@@ -158,7 +158,7 @@ export function Tooltip({
         pos &&
         createPortal(
           <div
-            className="pointer-events-none fixed z-[60]"
+            className="pointer-events-none fixed z-[60] w-max max-w-[min(320px,90vw)]"
             style={{
               left: pos.centerX,
               transform: `translateX(calc(-50% + ${dx}px))`,

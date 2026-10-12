@@ -29,12 +29,12 @@ export function PerformanceCurveLink({ accountId, summary, source, width, height
     to={`/accounts/${accountId}/history`}
     aria-label="查看全部区间累计绩效"
     title="全部区间累计收益"
-    className="group -m-2 block cursor-pointer rounded p-2 focus-visible:outline-2 focus-visible:outline-accent"
+    className={`group block cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-accent ${source === 'detail' ? '-m-0.5 w-full max-w-[264px] p-0.5 [&_svg]:h-auto [&_svg]:w-full' : '-m-2 p-2'}`}
     onPointerEnter={() => void checkPerformance(accountId, 'all')}
     onFocus={() => void checkPerformance(accountId, 'all')}
     onClick={event => event.stopPropagation()}
   >
-    <span className="inline-block opacity-70 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+    <span className={`${source === 'detail' ? 'block' : 'inline-block'} opacity-70 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none`}>
       <Sparkline data={summary?.points ?? []} width={width} height={height} />
     </span>
   </Link>
