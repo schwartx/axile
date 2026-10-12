@@ -1,9 +1,9 @@
 # 03 · 跑通第一个组合
 
-本页走完创建组合、验证函数、创建账户和查看执行结果的完整流程。先完成一次手动操作，再安排自动执行。
+先创建组合和账户，手动执行一次调仓，确认结果后再设置自动执行。
 
 ::: info 截图中的账户
-截图使用示例账户，示例凭据不能用于正常连接。正式安装的天勤本地模拟仍需要有效的天勤账号和密码。
+截图中的登录信息仅为示例，不能用于连接。天勤本地模拟也需要有效的天勤账号和密码。
 :::
 
 ## 1. 创建组合
@@ -26,11 +26,11 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
     return {"rb2701": 0.4, "ag2612": -0.25}
 ```
 
-选择“样例数据”，点击“试跑并保存”。你应该看到两个品种，权重分别为 `0.4000` 和 `-0.2500`。正数是目标多头，负数是目标空头。
+选择“样例数据”，点击“试跑并保存”。结果中会列出两个品种，权重分别为 `0.4000` 和 `-0.2500`，对应目标多头和目标空头。
 
 ![固定目标函数的样例试跑结果](../assets/screenshots/03-first-portfolio/02-sample-run.png)
 
-<p class="caption">固定权重函数没有读取 context，编辑器提示参数未使用是代码提示；运行是否通过看“试跑结果”。</p>
+<p class="caption">这个函数没有读取 context，编辑器会提示参数未使用。函数是否运行成功，看“试跑结果”。</p>
 
 ::: warning 目标权重与下单数量
 `0.4` 表示原始目标权重，不是买 0.4 手，也不是“在现有仓位上加 40%”。账户还会应用杠杆、精度和数量规则，详见[目标与持仓](/guide/targets)。
@@ -42,7 +42,7 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![公共核心的渠道选择页](../assets/screenshots/03-first-portfolio/03-public-channels.png)
 
-<p class="caption">本次环境安装了天勤依赖，CTP 与掘金显示暂不可用。渠道依赖的安装方式见[渠道参考](/reference/channels)。</p>
+<p class="caption">图中只安装了天勤依赖，CTP 与掘金显示暂不可用。安装方式见[渠道参考](/reference/channels)。</p>
 
 ## 4. 填写连接信息
 
@@ -50,9 +50,9 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![天勤本地模拟连接表单](../assets/screenshots/03-first-portfolio/04-connect-account.png)
 
-<p class="caption">图中初始资金为 1,000,000，账号为无效示例字符串。正常使用时填写自己的有效天勤凭据。</p>
+<p class="caption">本例初始资金为 1,000,000。连接时填写自己的有效天勤账号和密码，不能照抄图中的登录信息。</p>
 
-本地模拟资金和持仓保存在当前 Worker 中，日盘或夜盘 Worker 重建后会重置。需要连续模拟账户状态时，应理解快期模拟与本地模拟的差异。
+本地模拟的资金和持仓保存在当前 Worker 中，日盘或夜盘 Worker 重建后会重置。需要保留连续的模拟账户状态时，要留意它与快期模拟的区别。
 
 ## 5. 绑定刚创建的组合
 
@@ -64,7 +64,7 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ## 6. 查看交易方式
 
-天勤期货默认使用“期货目标持仓”算法。先理解报价方式、开平仓设置和最大等待；其他算法见[执行算法参考](/reference/algorithms)。
+天勤期货默认使用“期货目标持仓”算法。检查报价方式、开平仓设置和最大等待时间。其他算法见[执行算法参考](/reference/algorithms)。
 
 ![期货目标持仓的交易方式设置](../assets/screenshots/03-first-portfolio/06-trading-method.png)
 
@@ -76,11 +76,11 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![创建账户前确认目标和运行状态](../assets/screenshots/03-first-portfolio/07-confirm-account.png)
 
-<p class="caption">向导默认多空杠杆为 3。下一步会先把示例账户的杠杆改成 1，以便按相同数字理解目标换算。</p>
+<p class="caption">向导默认多空杠杆为 3。本例创建账户后会改成 1，后文的数量计算也按一倍杠杆说明。</p>
 
 ## 8. 核对目标后手动执行
 
-进入账户“杠杆设置”，把示例的多空杠杆都设为 1 并保存。回到账户概览，先刷新账户资产，再重新计算目标，检查“持仓 vs 目标”。
+进入账户“杠杆设置”，把多空杠杆都设为 1 并保存。回到账户概览，刷新账户资产，重新计算目标，然后检查“持仓 vs 目标”。
 
 ![执行前的持仓与目标对照](../assets/screenshots/04-targets/02-before-rebalance.png)
 
@@ -88,4 +88,4 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![完整示例执行的各品种结果与执行链路](../assets/screenshots/07-results/01-completed-execution.png)
 
-到这里，你已经找到从组合函数到订单与成交的完整路径。继续阅读[目标与持仓](/guide/targets)，理解图中的目标手数。
+[目标与持仓](/guide/targets)说明图中的目标手数如何计算。

@@ -34,11 +34,11 @@ bun run preview
 
 站点从 `site/` 生成页面。Markdown 通过相对路径引用图片和示例代码，构建时打包实际引用的资源。
 
-图片统一保存在 `site/assets/screenshots/`。更新页面时，为截图提供具体的 alt 和图说。示例使用示例数据，账户连接时填写自己的有效凭据。
+图片统一保存在 `site/assets/screenshots/`，每张图需要写清 alt 和图说。文档中的数值为示例，连接账户时填写自己的有效凭据。
 
 ## GitHub Pages 首次启用
 
-仓库管理员需要先完成一次设置：
+首次发布前，由仓库管理员设置：
 
 1. 进入仓库 **Settings → Pages**。
 2. 将 **Build and deployment → Source** 设为 **GitHub Actions**。
@@ -46,7 +46,7 @@ bun run preview
 
 `.github/workflows/docs.yml` 在 PR 上使用只读权限构建，在 `main` 的文档变更或手动运行时上传产物，并通过单独的部署任务发布。PR 不申请 Pages 写权限，也不创建部署环境。
 
-当前文档站的 `base` 为 `/axile/`，保留 `.html` 页面地址，支持 GitHub Pages 下的直接访问与刷新。迁移自定义域名时，需要同时更新 `base`、sitemap、图标路径和本页目标地址。
+站点的 `base` 为 `/axile/`，页面地址保留 `.html`，可以在 GitHub Pages 上直接访问和刷新。改用自定义域名时，要同步修改 `base`、sitemap、图标路径和本页的网址。
 
 ## 提交前验证
 

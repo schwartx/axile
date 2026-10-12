@@ -1,6 +1,6 @@
 # Context 查询接口
 
-`calculate_portfolio(context)` 通过 Context 读取统一模型。优先使用这些跨渠道查询，再考虑需要渠道专有能力的完整 executor。
+在 `calculate_portfolio(context)` 中，可以通过 Context 读取账户和行情的统一模型。常用查询可直接用下表中的跨渠道方法，需要渠道专有功能时再使用完整 executor。
 
 ## 函数契约
 
@@ -9,7 +9,7 @@ def calculate_portfolio(context):
     return {"rb2701": 0.4, "ag2612": -0.25}
 ```
 
-函数必须且只能接收一个 `context` 参数。返回 `dict[str, float]`：字符串品种代码映射到有限数字，布尔值不算数字。正数表示目标多头，负数表示目标空头，空字典表示目标空仓。
+函数只能接收一个参数 `context`，返回 `dict[str, float]`。字典的键是字符串品种代码，值是有限数字，不能用布尔值。正数表示目标多头，负数表示目标空头，空字典表示目标空仓。
 
 返回值是原始目标权重，之后仍会应用账户杠杆、精度和执行控制。调用时机见[组合函数指南](/guide/functions#什么时候会调用函数)。
 
@@ -49,14 +49,14 @@ quote = context.get_quote("rb2701")
 
 ## 缓存范围
 
-账户资产和已获取行情只在当前一次函数调用内缓存。相同品种的行情会复用；下一次计算会创建新的 Context。行情 `extra` 中的渠道字段不保证在样例上下文中存在。
+账户资产和已查询的行情只在本次函数调用内缓存，同一品种的行情会复用。下一次计算会创建新的 Context。样例上下文中可能没有行情 `extra` 里的渠道字段。
 
 ## 完整 executor
 
-::: warning 这是真实对象
-`context.executor` 不是只读代理。主动调用 `execute`、`empty_positions` 或渠道下单方法会产生真实交易，包含在真实账户“试跑”中调用的情况。
+::: warning executor 可以下单
+`context.executor` 是实际的渠道执行器，调用 `execute`、`empty_positions` 或渠道下单方法会产生真实交易。在真实账户中试跑函数时，也一样可以下单。
 :::
 
-成功请求后，executor、回调和模块全局状态可能继续复用。避免无意修改属性、遗留回调或启动永久线程。自行创建的资源应在 `finally` 中释放；脚本失败、超时或 Worker 异常后，系统会丢弃该 Worker 并在下次调用重建。
+一次请求成功后，executor、回调和模块全局状态可能继续复用。修改属性、注册回调或启动永久线程时，要考虑对后续调用的影响。自行创建的资源应在 `finally` 中释放。脚本失败、超时或 Worker 异常后，系统会丢弃该 Worker，在下次调用时重建。
 
-需要精确模型定义时，查阅 [Context 源码](https://github.com/zengbin93/axile/blob/main/axile/server/context.py) 和[统一模型目录](https://github.com/zengbin93/axile/tree/main/axile/executor/models)。
+完整定义见 [Context 源码](https://github.com/zengbin93/axile/blob/main/axile/server/context.py) 和[统一模型目录](https://github.com/zengbin93/axile/tree/main/axile/executor/models)。

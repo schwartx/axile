@@ -32,8 +32,8 @@ features:
 <div class="home-preview">
 
 <p class="preview-label">通过 Web 界面配置与运行</p>
-<h2>账户、组合和每一次执行，都有地方可查。</h2>
-<p>在控制台查看权益和账户状态，进入账户核对持仓与目标，再展开执行详情查看订单和成交。截图可以点击放大，也可以用键盘聚焦后按 Enter。</p>
+<h2>查看账户、持仓和执行记录</h2>
+<p>控制台显示账户权益和运行状态。进入账户后，可以比较当前持仓与目标；执行详情里有对应的订单和成交记录。点击截图可以放大，键盘聚焦后按 Enter 也可以。</p>
 
 ![Axile 公共版控制台，显示一个示例账户](assets/screenshots/01-introduction/01-dashboard.png)
 
