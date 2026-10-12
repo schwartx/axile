@@ -386,7 +386,7 @@ export function AccountDetail({
         </div>
       </div>
       {/* Hero */}
-      <Card className="p-6">
+      <Card className="p-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex flex-none items-center gap-3">
             {/* 与舰队卡 / 组合行 / 编辑页标题名配对做共享元素 FLIP（平移 + 微缩）。 */}
