@@ -108,6 +108,7 @@ class _FakeHandle:
         join_stops: bool = True,
     ) -> None:
         self.account_id = 2
+        self.monitor = None
         self.process = _FakeProcess(is_alive=is_alive, join_stops=join_stops)
         self.connection = _FakeConnection(poll_result=poll_result)
         self.control_connection = _FakeControlConnection()

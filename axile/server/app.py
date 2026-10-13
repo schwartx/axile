@@ -218,6 +218,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.warning("axile 未完成初始化配置，进入初始化向导模式（跳过调度与账户加载）。")
         yield
         return
+    from axile.server.account_control.monitor import monitor, recover_sessions
+
+    await recover_sessions()
+    monitor.start()
     _load_configured_algorithm_directories()
     _load_configured_algorithm_modules()
     register_china_channel_jobs(scheduler)
@@ -240,6 +244,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await monitor.close()
         scheduler.shutdown()
         await analysis.stop()
         await shutdown_dispatchers()

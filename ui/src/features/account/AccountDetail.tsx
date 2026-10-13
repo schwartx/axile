@@ -1,3 +1,4 @@
+import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
 import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
@@ -596,7 +597,7 @@ export function AccountDetail({
          * 配置带：hero 最后一层（名称 → 状态 → 资产 → 配置），label 领值的「· 外分组」
          * 形态——每项是独立 inline 单元，折行只发生在项间，算法参数句内部的「·」不再
          * 与分段符糊成一片。带常挂（缓存/骨架占位），卡高不随账户详情到位而长个。
-         * 四项等距左对齐；算法名过长时 OverflowText 截断。整项可点跳编辑分区。
+         * 五项等距左对齐；算法名过长时 OverflowText 截断。整项可点跳编辑分区。
          * 杠杆 / 品种值去摘要；算法名去对应选择器。算法入口只飞本次点击的名称。
          */}
         <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1.5 border-t border-line pt-2 text-[14px]">
@@ -630,6 +631,7 @@ export function AccountDetail({
             vtName={tEditAlgorithm && algorithmTransitionSlot(accountId) === 'empty' && algorithmRefOf(acc?.empty_positions_algorithm) ? accountConfigVtName(accountId, 'empty') : undefined}
             onActivate={(event) => activateAlgorithm('empty', event)}
           />
+          <AccountControlSummary accountId={accountId} />
         </div>
       </Card>
       <CopyAccountDialog accountId={accountId} name={item.name} isStarted={isStarted} isBusy={isBusy} open={copyOpen} onClose={() => setCopyOpen(false)} />

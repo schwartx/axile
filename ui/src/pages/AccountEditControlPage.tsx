@@ -1,3 +1,4 @@
+import { AccountControlLive } from '@/features/account/ControlMonitor'
 /** 账户流控结构化编辑页。界面只展示中文业务语义，内部键仅用于数据索引。 */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -642,7 +643,7 @@ export function AccountEditControlPage() {
         account_control_preset: presetKey,
         account_control_override: normalized,
       })
-      toast('流控已更新')
+      toast('已保存，下次执行生效')
       void refreshAccounts()
       // 保存后留在本页：刷新 dirty 基线（acc 的 preset 与 model.override），
       // 否则底栏不会收敛（此前靠跳页卸载掩盖）。
@@ -682,6 +683,7 @@ export function AccountEditControlPage() {
       </Section>
       <ErrorNotice title="预设方案预览失败" error={previewError} variant="mutation" />
 
+      <AccountControlLive accountId={accountId} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
 
       {other.length > 0 && (

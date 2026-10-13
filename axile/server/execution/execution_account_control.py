@@ -2,6 +2,10 @@
 
 from typing import cast
 
+from loguru import logger
+from sqlalchemy import update
+from sqlmodel import col
+
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
 from axile.executor.account_control.models import AccountControlCounterDeltaWrite, AccountControlEventWrite
 from axile.executor.account_control.presets import resolve_account_control_policy
@@ -9,9 +13,12 @@ from axile.executor.account_control.snapshot import (
     AccountControlCounterSnapshot,
     AccountControlRecentAllowedSnapshot,
 )
+from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.server.account_control import providers
 from axile.server.account_control.store import AccountControlStore
 from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import AccountContext
+from axile.server.db.models.account_control_session import AccountControlSession
 
 
 async def build_account_control_guard(
@@ -49,7 +56,7 @@ async def build_account_control_guard(
         store = AccountControlStore(session)
         baseline = await store.load_daily_counters(account.id, control_window.control_date)
         recent_allowed_snapshot = await store.load_recent_allowed_timestamps(account.id)
-    return AccountControlGuard(
+    guard = AccountControlGuard(
         account_id=account.id,
         execution_id=execution_id,
         channel=account.trade_channel,
@@ -57,6 +64,24 @@ async def build_account_control_guard(
         baseline=baseline,
         recent_allowed_snapshot=recent_allowed_snapshot,
     )
+
+    try:
+        async with SessionLocal() as session:
+            session.add(
+                AccountControlSession(
+                    instance_id=guard.instance_id,
+                    account_id=account.id,
+                    execution_id=execution_id,
+                    timezone=policy.timezone,
+                    started_at_ms=clock_now_ms(),
+                )
+            )
+            await session.commit()
+    except Exception:
+        guard.monitor_incomplete = True
+        logger.exception("流控监控会话登记失败，统计完整性未知")
+    providers.register(guard)
+    return guard
 
 
 async def flush_account_control_records(executor: object) -> None:
@@ -81,11 +106,21 @@ async def flush_account_control_records(executor: object) -> None:
         "tuple[list[AccountControlCounterDeltaWrite], list[AccountControlEventWrite]]",
         export_records(),
     )
-    if not counter_deltas and not events:
-        return
-
-    async with SessionLocal() as session:
-        await AccountControlStore(session).flush_execution_records(
-            counter_deltas=counter_deltas,
-            events=events,
-        )
+    getter = getattr(executor, "get_account_control_guard", None)
+    guard = cast(AccountControlGuard | None, getter() if callable(getter) else None)
+    try:
+        async with SessionLocal() as session:
+            if guard is not None:
+                await session.execute(
+                    update(AccountControlSession)
+                    .where(col(AccountControlSession.instance_id) == guard.instance_id)
+                    .values(status="closed", finished_at_ms=clock_now_ms())
+                )
+            await AccountControlStore(session).flush_execution_records(counter_deltas=counter_deltas, events=events)
+    except BaseException:
+        if guard is not None:
+            providers.finish(guard, committed=False)
+        raise
+    else:
+        if guard is not None:
+            providers.finish(guard, committed=True)

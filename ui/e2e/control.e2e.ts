@@ -1,0 +1,36 @@
+import { expect, test } from '@playwright/test'
+function snapshot() {
+  const metric = (operation: string, value: number, limit: number, label: string) => ({ id: `account:${operation}:per_day`, operation, scope: 'account', symbol: null, rule: 'per_day', value, limit, remaining: limit - value, estimated_wait_ms: 0, on_trigger: 'wait', label })
+  const metrics = [metric('place_order', 123, 500, '今日报单'), metric('cancel_order', 80, 400, '今日撤单'), metric('query_order', 12, 5000, 'query_order')]
+  return { stream_id: 'e2e', version: 1, kind: 'snapshot', data: [{ account_id: 1, execution_id: 'e', instance_id: 'g', seq: 1, sampled_at_ms: Date.now(), status: 'running', stale: false, incomplete: false, pending_policy: true, timezone: 'Asia/Shanghai', control_date: '2026-10-13', actual_policy: {}, saved_policy: {}, rules: metrics, metrics, waiting_total: 0, waiting: [], records: [] }] }
+}
+test.beforeEach(async ({ page }) => {
+  page.on('pageerror', (error) => { throw error })
+  await page.route('**/api/v1/account/control/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n` }))
+  await page.goto('/e2e/control.html')
+})
+test('card opens only the dialog, supports keyboard and persists exactly two preferences', async ({ page }) => {
+  const card = page.getByRole('button', { name: /^流控/ })
+  await expect(card).toContainText('123/500')
+  await card.focus(); await page.keyboard.press('Enter')
+  const dialog = page.getByRole('dialog', { name: '账户流控' })
+  await expect(dialog).toBeVisible()
+  await expect(page.locator('#navigation')).toHaveText('未进入账户详情')
+  await expect(dialog.getByLabel('关注指标 1')).toHaveValue('account:place_order:per_day')
+  await expect(dialog.getByLabel('关注指标 1').locator('option[value="account:cancel_order:per_day"]')).toBeDisabled()
+  await dialog.getByLabel('关注指标 1').selectOption('account:query_order:per_day')
+  await expect(dialog.getByRole('link', { name: /打开当前账户流控设置/ })).toHaveAttribute('href', '/accounts/1/edit/control')
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible(); await expect(card).toBeFocused()
+  await page.reload()
+  await expect(page.getByRole('button', { name: /流控.*查单/ })).toContainText('12/5000')
+})
+test('narrow screen and disconnect retain known values and policy notice', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await expect(page.getByText('已保存配置与当前实例不同；下次执行生效，以下仍为当前实例规则。')).toBeVisible()
+  await page.getByRole('button', { name: '模拟断连' }).click()
+  await expect(page.getByRole('button', { name: /流控.*陈旧/ })).toContainText('123/500')
+  await page.getByRole('button', { name: /流控.*陈旧/ }).click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
