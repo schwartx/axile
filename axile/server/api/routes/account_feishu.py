@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal, NamedTuple
+from copy import deepcopy
+from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.feishu import push_feishu_card
@@ -28,7 +30,10 @@ from axile.server.account_assets import query_account_assets
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account import AccountContext
+from axile.server.db.models.supplement import NotificationEvent
+from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
+from axile.server.repositories import get_recent_execute_records_by_account_id
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
 
 router = APIRouter()
@@ -293,36 +298,70 @@ async def test_account_feishu(
     return AccountFeishuTestResult(ok=True, message="样例卡片已发送，请在群内确认。")
 
 
+async def _load_notification_preview_context(
+    session: AsyncSession,
+    account: AccountContext,
+) -> dict[str, Any]:
+    """复用最近一次执行的脱敏通知快照，不连接渠道或模拟成交。"""
+    records = await get_recent_execute_records_by_account_id(session, account.id, limit=1)
+    if not records:
+        raise ValueError("当前账户暂无执行记录，无法试跑通知")
+    record = records[0]
+    event = (
+        await session.scalar(
+            select(NotificationEvent).where(
+                NotificationEvent.account_id == account.id,
+                NotificationEvent.id == f"execution:{record.execution_id}",
+            )
+        )
+        if record.execution_id
+        else None
+    )
+    extra = record.raw_result.get("extra")
+    captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
+    if event is not None and event.context:
+        context = deepcopy(event.context)
+    elif isinstance(captured, dict) and captured:
+        context = deepcopy(captured)
+    else:
+        raw = normalize_legacy_result(deepcopy(record.raw_result))
+        if not isinstance(raw, dict):
+            raise ValueError("最近一次执行没有可用的通知快照")
+        inputs = raw.get("inputs") or deepcopy(record.raw_input)
+        if isinstance(inputs, dict):
+            raw["inputs"] = {**inputs, "account_config": account.account_config}
+        try:
+            output = UnifiedStandardOutput.model_validate(raw)
+        except ValueError as exc:
+            raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
+        context = build_execution_notification_context(_TestNotificationSource(account.name), output)
+        context["execution"]["notified_at"] = record.created_at
+    context["is_test"] = True
+    context["event_type"] = "execution.finished"
+    execution = context.get("execution")
+    if isinstance(execution, dict):
+        execution["is_test"] = True
+        execution["id"] = record.execution_id
+        execution.setdefault("notified_at", record.created_at)
+    return context
+
+
 @router.post("/{account_id}/notification/test", response_model=AccountFeishuTestResult)
 async def test_account_notification_function(
     session: SessionDep,
     account_id: int,
     payload: AccountNotificationFunctionTestRequest,
 ) -> AccountFeishuTestResult:
-    """在独立进程中用脱敏样例执行结果运行页面草稿函数。"""
+    """复用最近一次执行的真实快照，在独立进程中运行页面草稿函数。"""
     account = await _get_account_or_404(session, account_id)
-    output = await _build_sample_output(session, account, UnifiedAccountAssets.unavailable())
-    context = build_execution_notification_context(_TestNotificationSource(account.name), output, is_test=True)
-    execution = context.get("execution")
-    if isinstance(execution, dict):
-        current = clock_now().isoformat()
-        execution["supplements"] = (
-            [
-                {
-                    "group_id": "test",
-                    "base_scheduled_at": current,
-                    "scheduled_at": current,
-                    "index": account.supplement.count,
-                    "configured_count": account.supplement.count,
-                    "effective_count": account.supplement.count,
-                    "is_last": True,
-                    "group_status": "completed",
-                    "end_reason": None,
-                }
-            ]
-            if account.supplement
-            else []
-        )
+    key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
+    if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:
+        return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
+    try:
+        context = await _load_notification_preview_context(session, account)
+    except ValueError as exc:
+        return AccountFeishuTestResult(ok=False, message=str(exc))
+    await session.close()
     if payload.event_type == "supplement.cancelled":
         context = {
             "event_id": "supplement:test:cancelled",
@@ -338,12 +377,9 @@ async def test_account_notification_function(
                 "steps": [],
             },
             "last_execution": context,
-            "last_execution_at": clock_now().isoformat(),
+            "last_execution_at": (context.get("execution") or {}).get("notified_at"),
         }
-    key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
-    if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:
-        return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
     result = await asyncio.to_thread(run_notification_function, payload.code, context, feishu_key=key)
     return AccountFeishuTestResult(
-        ok=result.ok, message="样例函数运行成功" if result.ok else result.error or "运行失败"
+        ok=result.ok, message="已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败"
     )
