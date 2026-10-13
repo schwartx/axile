@@ -5,7 +5,6 @@ import { getAccountControlPolicy } from '@/lib/api/accounts'
 import type { AccountControlPolicyEditorModel } from '@/types/api'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Link } from '@/components/ui/nav'
-import { Tooltip } from '@/components/ui/Tooltip'
 import { ControlWaitingList } from '@/features/account/ControlActivity'
 import {
   OPERATIONS, CONTROL_WINDOWS, operationName, metricLabel, controlCandidates, searchControlCandidates, canAddMetric,
@@ -175,22 +174,20 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
     close()
   }
   return <>
-    <Tooltip content="本地放行并预占额度的尝试数；下游失败仍计数。今日按自然日、本分钟按固定分钟窗口统计。点击调整摘要或查看当前等待。">
-      <button
-        type="button"
-        onClick={(event) => { event.stopPropagation(); setDraft([...selected]); setOpen(true) }}
-        className="group flex min-w-0 max-w-full flex-none cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-[14px]"
-      >
-        <span className="flex-none text-ink-3">流控</span>
-        <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
-          {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
-        </span>
-        {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
-          : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
-          : frame?.stale ? <span className="flex-none text-warn">陈旧</span>
-          : frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
-      </button>
-    </Tooltip>
+    <button
+      type="button"
+      onClick={(event) => { event.stopPropagation(); setDraft([...selected]); setOpen(true) }}
+      className="group flex min-w-0 max-w-full flex-none cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-[14px]"
+    >
+      <span className="flex-none text-ink-3">流控</span>
+      <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
+        {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
+      </span>
+      {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
+        : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
+        : frame?.stale ? <span className="flex-none text-warn">陈旧</span>
+        : frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
+    </button>
     <ControlDialog model={model} loading={loading} failed={failed} retry={() => setAttempt((value) => value + 1)} names={names} open={open} frame={frame} accountId={accountId} accountName={accountName} selected={selected} draft={draft} onDraftChange={setDraft} onSave={save} onClose={close} />
   </>
 }
