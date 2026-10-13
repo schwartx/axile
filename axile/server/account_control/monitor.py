@@ -58,7 +58,7 @@ class AccountControlMonitor:
         self._local_tasks: dict[int, asyncio.Task[Any]] = {}
         self._sources: dict[int, list[tuple[Any, Any, bool]]] = {}
         self._outcomes: dict[str, str] = {}
-        self._history: dict[int, tuple[object, dict[str, Any]]] = {}
+        self._history: dict[int, tuple[object, AccountControlGuard, list[dict[str, Any]]]] = {}
         self._refresh_lock = asyncio.Lock()
 
     def start(self) -> None:
@@ -267,18 +267,45 @@ class AccountControlMonitor:
         )
         cached = self._history.get(account.id)
         if cached is not None and cached[0] == signature:
-            return dict(cached[1])
-        store = AccountControlStore(db)
-        baseline = await store.load_daily_counters(account.id, window.control_date)
-        recent = await store.load_recent_allowed_timestamps(account.id)
-        guard = AccountControlGuard(
-            account_id=account.id,
-            execution_id=None,
-            channel=account.trade_channel,
-            policy=policy,
-            baseline=baseline,
-            recent_allowed_snapshot=recent,
-        )
+            guard, records = cached[1:]
+        else:
+            store = AccountControlStore(db)
+            baseline = await store.load_daily_counters(account.id, window.control_date)
+            recent = await store.load_recent_allowed_timestamps(account.id)
+            guard = AccountControlGuard(
+                account_id=account.id,
+                execution_id=None,
+                channel=account.trade_channel,
+                policy=policy,
+                baseline=baseline,
+                recent_allowed_snapshot=recent,
+            )
+            events = (
+                (
+                    await db.execute(
+                        select(AccountControlEvent)
+                        .where(col(AccountControlEvent.account_id) == account.id)
+                        .order_by(col(AccountControlEvent.occurred_at_ms).desc(), col(AccountControlEvent.id).desc())
+                        .limit(100)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            records = [
+                {
+                    "event_uid": event.event_uid,
+                    "occurred_at_ms": event.occurred_at_ms,
+                    "operation": event.operation,
+                    "symbol": event.symbol,
+                    "decision": event.decision.value,
+                    "outcome": event.outcome,
+                    "metadata": event.metadata_,
+                }
+                for event in events
+            ]
+            self._history[account.id] = signature, guard, records
+        # 仅缓存持久化输入；间隔用量和预计等待随每次采样的当前时间重算。
         frame = guard.monitor_snapshot()
         frame.update(
             status="idle",
@@ -288,9 +315,9 @@ class AccountControlMonitor:
             sampled_at_ms=clock_now_ms(),
             actual_policy=None,
             actual_fingerprint=None,
+            records=records,
         )
-        self._history[account.id] = signature, frame
-        return dict(frame)
+        return frame
 
 
 monitor = AccountControlMonitor()

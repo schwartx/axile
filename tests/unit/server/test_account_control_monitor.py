@@ -75,6 +75,11 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
             await monitor.refresh()
             assert used(monitor.frames[1]) == 123
             assert monitor.frames[1]["status"] == "idle"
+            assert len(monitor.frames[1]["records"]) == 3
+            assert all(event["outcome"] == "submitted" for event in monitor.frames[1]["records"])
+            restarted = monitor_module.AccountControlMonitor()
+            await restarted.refresh()
+            assert restarted.frames[1]["records"] == monitor.frames[1]["records"]
             second = await persistence.build_account_control_guard(account, "same-execution")
             await monitor.refresh()
             assert used(monitor.frames[1]) == 123
@@ -89,6 +94,36 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
                 assert any(e.outcome == "broker_rejected" for e in events)
                 sessions = (await db.execute(select(AccountControlSession))).scalars().all()
                 assert all(s.status == "closed" for s in sessions)
+            assert len(monitor.frames[1]["records"]) == 4
+            assert any(e["outcome"] == "broker_rejected" for e in monitor.frames[1]["records"])
+
+    asyncio.run(scenario())
+
+
+def test_idle_interval_is_recomputed_without_reloading_history(monkeypatch):
+    from axile.executor.algorithms.utils import clock as clock_module
+
+    now = [1800000010.0]
+    monkeypatch.setattr(clock_module, "_default_clock", SimpleNamespace(time=lambda: now[0], sleep=lambda _: None))
+
+    async def scenario():
+        async with database(monkeypatch) as (_, account, monitor):
+            guard = await persistence.build_account_control_guard(account, "interval")
+            guard.begin_operation("place_order").record_outcome("submitted")
+            await persistence.flush_account_control_records(executor(guard))
+            await monitor.refresh()
+
+            def interval():
+                return next(r for r in monitor.frames[1]["rules"] if r["id"] == "account:place_order:min_interval_ms")
+
+            assert interval()["estimated_wait_ms"] == 300
+            cached = monitor._history[1]
+            now[0] += 0.6
+            await monitor.refresh()
+            assert monitor._history[1] is cached
+            assert interval()["value"] == 600
+            assert interval()["estimated_wait_ms"] == 0
+            assert len(monitor.frames[1]["records"]) == 1
 
     asyncio.run(scenario())
 
