@@ -7,11 +7,15 @@ export interface ConnectionValidationError {
   error_id?: number | null
   details?: string | null
 }
+export interface ValidationStepDetails {
+  title: string
+  rows: Array<{ key: string; value: string | number | boolean | null }>
+}
 export interface ConnectionValidationJob {
   validation_id: string
   channel: string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-  steps: Array<{ id: string; label: string; status: ValidationStepStatus; error?: ConnectionValidationError | null }>
+  steps: Array<{ id: string; label: string; status: ValidationStepStatus; error?: ConnectionValidationError | null; details?: ValidationStepDetails | null }>
   created_at: string
   finished_at: string | null
   error: ConnectionValidationError | null

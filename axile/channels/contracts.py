@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,7 +18,18 @@ if TYPE_CHECKING:
 type ChannelId = str
 type ExecutionBackend = Literal["thread", "process"]
 type ScheduleKind = Literal["continuous", "cn_stock", "cn_futures"]
-type ConnectionProgress = Callable[[str, Literal["running", "passed"]], None]
+
+
+class ConnectionProgress(Protocol):
+    """上报阶段状态及可选的结构化详情。"""
+
+    def __call__(
+        self, step: str, status: Literal["running", "passed"], details: dict[str, object] | None = None
+    ) -> None:
+        """接收阶段状态和可选详情。"""
+        ...
+
+
 type ConnectionValidator = Callable[[BaseAccountConfig, ConnectionProgress], None]
 type ExecutorFactory = Callable[[BaseAccountConfig], "AbstractExecutor"]
 type TargetTransform = Callable[[dict[str, float], pd.DataFrame], pd.DataFrame]

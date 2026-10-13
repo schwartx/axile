@@ -47,7 +47,11 @@ def validation_worker(connection: Connection) -> None:
         validate = plugin.validate_connection
         if validate is None:
             raise RuntimeError("渠道未声明验证器")
-        validate(config, lambda step, status: send({"step": step, "status": status}))
+
+        def report(step, status, details=None):
+            send({"step": step, "status": status, "details": details})
+
+        validate(config, report)
         send({"result": "succeeded"})
     except Exception as exc:  # noqa: BLE001 - 在进程边界组装结构化错误
         error_id = getattr(exc, "error_id", None)

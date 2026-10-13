@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, LoaderCircle, RadioTower, TriangleAlert } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { ConnectionValidationErrorModal, type ValidationErrorSelection } from '@/features/account/connectionValidation/ConnectionValidationErrorModal'
+import { ValidationStepDetailsModal } from '@/features/account/connectionValidation/ValidationStepDetailsModal'
 import { ConnectionValidationSession } from '@/features/account/connectionValidation/connectionValidationSession'
-import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, type ConnectionValidationJob, type ValidationStepStatus } from '@/lib/api/connectionValidation'
+import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, type ConnectionValidationJob, type ValidationStepStatus, type ValidationStepDetails } from '@/lib/api/connectionValidation'
 import type { ChannelCapability } from '@/types/api'
 
 const stepLabels: Record<ValidationStepStatus, string> = {
@@ -39,10 +40,11 @@ function ValidationMessage({ message, inset = false, onDetails }: { message?: st
 }
 
 /** 图标在固定槽内交接，运行圆环只在该阶段真实执行时挂载。 */
-function ValidationStepRow({ step, busy, onDetails }: {
+function ValidationStepRow({ step, busy, onDetails, onStepDetails }: {
   step: ConnectionValidationJob['steps'][number]
   busy: boolean
   onDetails: () => void
+  onStepDetails: (record: ValidationStepDetails) => void
 }) {
   const running = step.status === 'running' && busy
   const failed = step.status === 'failed'
@@ -62,8 +64,15 @@ function ValidationStepRow({ step, busy, onDetails }: {
           </span>
           {step.label}
         </span>
-        <span className="w-12 shrink-0 text-right text-[12px] leading-5">
+        <span className="flex shrink-0 items-center gap-2 text-right text-[12px] leading-5">
           <InkRewrite text={stepLabels[step.status]} textClassName={tone} />
+          <span inert={!step.details} aria-hidden={!step.details}
+            className={`grid transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${step.details ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
+            <span className="min-w-0 overflow-hidden">
+              <button type="button" aria-haspopup="dialog" onClick={() => { if (step.details) onStepDetails(step.details) }}
+                className="cursor-pointer whitespace-nowrap text-accent underline-offset-4 hover:underline">查看详情</button>
+            </span>
+          </span>
         </span>
       </div>
       <ValidationMessage message={step.error?.message} inset onDetails={step.error ? onDetails : undefined} />
@@ -82,6 +91,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   const [starting, setStarting] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [selectedError, setSelectedError] = useState<ValidationErrorSelection | null>(null)
+  const [selectedDetails, setSelectedDetails] = useState<ValidationStepDetails | null>(null)
   const session = useRef<ConnectionValidationSession | null>(null)
   // 配置只在内存中比较，不进入 React key、DOM、URL 或持久化存储。
   const configVersion = JSON.stringify(config)
@@ -94,6 +104,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
     session.current = null
     setJob(null)
     setSelectedError(null)
+    setSelectedDetails(null)
     setError(null)
     setStarting(false)
     setCancelling(false)
@@ -115,6 +126,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
     session.current?.dispose()
     setJob(null)
     setSelectedError(null)
+    setSelectedDetails(null)
     setError(null)
     setStarting(true)
     setResultVersion(configVersion)
@@ -155,7 +167,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
         </button>
       </div>
       <ol aria-label="连接检查步骤" aria-busy={busy} className="mt-3 border-t border-line pt-1">
-        {steps.map((step) => <ValidationStepRow key={step.id} step={step} busy={busy} onDetails={() => {
+        {steps.map((step) => <ValidationStepRow key={step.id} step={step} busy={busy} onStepDetails={setSelectedDetails} onDetails={() => {
           if (step.error) setSelectedError({ stage: step.label, error: step.error })
         }} />)}
       </ol>
@@ -178,6 +190,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
           </div>
         </div>
       </div>
+      <ValidationStepDetailsModal details={current ? selectedDetails : null} onClose={() => setSelectedDetails(null)} />
       <ConnectionValidationErrorModal selection={selectedError} onClose={() => setSelectedError(null)} />
     </section>
   )

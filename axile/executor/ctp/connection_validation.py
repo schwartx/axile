@@ -19,7 +19,14 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
     executor = CTPExecutor(TradeChannel.CTP)
     try:
         executor.account_config = config
-        executor.set_connection_progress(report)
+
+        def progress(step, status):
+            if step == "settlement" and status == "passed" and executor.settlement_confirmation is not None:
+                report(step, status, _settlement_details(executor.settlement_confirmation))
+            else:
+                report(step, status)
+
+        executor.set_connection_progress(progress)
         executor.set_trading_calendar(ShinnyTradingCalendar())
         executor.set_channel_calendar("china")
         # 验证尚无持久化账户，但 guard 需要完整身份才会启用。
@@ -37,3 +44,23 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
         executor._initialize_connection(config)
     finally:
         executor.close()
+
+
+def _settlement_details(record: dict[str, object]) -> dict[str, object]:
+    """将柜台确认记录转换为通用详情行；原始账号完整保留。"""
+    fields = (
+        ("确认日期", "confirm_date"),
+        ("确认时间", "confirm_time"),
+        ("结算编号", "settlement_id"),
+        ("经纪公司代码", "broker_id"),
+        ("投资者代码", "investor_id"),
+        ("资金账号", "account_id"),
+        ("币种", "currency_id"),
+    )
+    return {
+        "title": "结算确认记录",
+        "rows": [
+            {"key": "确认方式", "value": "当日已有确认" if record.get("source") == "existing" else "本次连接自动确认"},
+            *({"key": label, "value": record.get(key)} for label, key in fields),
+        ],
+    }

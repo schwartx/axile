@@ -33,6 +33,20 @@ class ValidationErrorPublic(BaseModel):
     details: str | None = None
 
 
+class ValidationDetailRow(BaseModel):
+    """保持渠道声明顺序的键值行，允许同名字段与空值。"""
+
+    key: str
+    value: str | int | float | bool | None
+
+
+class ValidationStepDetails(BaseModel):
+    """渠道提供展示内容，服务与前端不解释业务字段。"""
+
+    title: str
+    rows: list[ValidationDetailRow]
+
+
 class ValidationStepPublic(BaseModel):
     """阶段的完整快照。"""
 
@@ -40,6 +54,7 @@ class ValidationStepPublic(BaseModel):
     label: str
     status: Literal["pending", "running", "passed", "failed", "skipped"] = "pending"
     error: ValidationErrorPublic | None = None
+    details: ValidationStepDetails | None = None
 
 
 class ValidationJob(BaseModel):
@@ -129,6 +144,9 @@ class ValidationService:
         if "step" in event:
             for step in job.steps:
                 if step.id == event["step"] and event.get("status") in {"running", "passed"}:
+                    details = event.get("details")
+                    if isinstance(details, dict):
+                        step.details = ValidationStepDetails.model_validate(details)
                     step.status = event["status"]  # type: ignore[assignment]
                     job.status = "running"
                     return

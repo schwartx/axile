@@ -148,7 +148,10 @@ def _ctp_plugin() -> ChannelPlugin:
                         ("settlement", "结算确认"),
                         ("instruments", "合约目录查询"),
                         ("market_login", "行情登录"),
-                        ("reconciliation", "会话对账（订单、成交、持仓、资金）"),
+                        ("query_orders", "订单查询"),
+                        ("query_trades", "成交查询"),
+                        ("query_positions", "持仓查询"),
+                        ("query_account", "资金查询"),
                         ("ready", "会话就绪"),
                     )
                 ),

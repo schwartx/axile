@@ -53,3 +53,11 @@ def test_market_spi_forwards_quote_identity() -> None:
     spi.OnRtnDepthMarketData(row)
 
     owner._on_quote.assert_called_once_with(row)
+
+
+def test_trader_spi_preserves_settlement_record() -> None:
+    owner = Mock()
+    spi = TraderSpi(owner)
+    row, info = object(), object()
+    spi.OnRspSettlementInfoConfirm(row, info, 15, True)
+    owner._settled.assert_called_once_with(info, 15, row)

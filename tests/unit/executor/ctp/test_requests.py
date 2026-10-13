@@ -310,6 +310,8 @@ def test_settlement_query_skips_confirmation_for_current_trading_day(config: CTP
     executor._ensure_settlement_confirmed()
 
     executor._trader_api.ReqSettlementInfoConfirm.assert_not_called()
+    assert executor.settlement_confirmation["source"] == "existing"
+    assert executor.settlement_confirmation["confirm_date"] == "20260824"
 
 
 def test_settlement_query_confirms_when_current_day_is_missing(config: CTPAccountConfig) -> None:
@@ -317,7 +319,20 @@ def test_settlement_query_confirms_when_current_day_is_missing(config: CTPAccoun
     executor._query = Mock(return_value=[SimpleNamespace(ConfirmDate="20260821")])
 
     def confirm(_request: object, _request_id: int) -> int:
-        executor._settled(None, _request_id)
+        executor._settled(
+            None,
+            _request_id,
+            SimpleNamespace(
+                BrokerID="9999",
+                InvestorID="full-investor",
+                ConfirmDate="20260824",
+                ConfirmTime="09:02:15",
+                SettlementID=0,
+                AccountID="full-account",
+                CurrencyID="CNY",
+                Password="must-not-leak",
+            ),
+        )
         return 0
 
     executor._trader_api.ReqSettlementInfoConfirm.side_effect = confirm
@@ -325,6 +340,18 @@ def test_settlement_query_confirms_when_current_day_is_missing(config: CTPAccoun
     executor._ensure_settlement_confirmed()
 
     executor._trader_api.ReqSettlementInfoConfirm.assert_called_once()
+    assert executor.settlement_confirmation == {
+        "source": "submitted",
+        "broker_id": "9999",
+        "investor_id": "full-investor",
+        "confirm_date": "20260824",
+        "confirm_time": "09:02:15",
+        "settlement_id": 0,
+        "account_id": "full-account",
+        "currency_id": "CNY",
+    }
+    executor._settled(None, 999, SimpleNamespace(AccountID="stale-response"))
+    assert executor.settlement_confirmation["account_id"] == "full-account"
 
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

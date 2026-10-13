@@ -20,7 +20,10 @@ def test_connection_progress_matches_real_startup(monkeypatch):
                 "settlement",
                 "instruments",
                 "market_login",
-                "reconciliation",
+                "query_orders",
+                "query_trades",
+                "query_positions",
+                "query_account",
                 "ready",
             )
             for status in ("running", "passed")
@@ -132,3 +135,83 @@ def test_validation_applies_shared_throttle_to_actual_native_queries(monkeypatch
     assert [name for name, _timestamp in sent] == list(names)
     assert all(later[1] - earlier[1] >= 1500 for earlier, later in zip(sent, sent[1:]))
     assert clock.sleep_calls
+
+
+def test_validator_reports_settlement_record_before_later_stages(monkeypatch):
+    from axile.executor.ctp import connection_validation
+
+    broker = ScriptedBroker(monkeypatch)
+    monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
+    events = []
+    connection_validation.validate_connection(
+        broker.executor.account_config,
+        lambda step, status, details=None: events.append((step, status, details)),
+    )
+    passed = next(event for event in events if event[:2] == ("settlement", "passed"))
+    assert passed[2]["title"] == "结算确认记录"
+    assert passed[2]["rows"][0] == {"key": "确认方式", "value": "本次连接自动确认"}
+    assert events.index(passed) < next(i for i, event in enumerate(events) if event[0] == "instruments")
+
+
+@pytest.mark.parametrize("source, label", [("existing", "当日已有确认"), ("submitted", "本次连接自动确认")])
+def test_settlement_details_preserve_values_and_order(source, label):
+    from axile.executor.ctp.connection_validation import _settlement_details
+
+    details = _settlement_details({"source": source, "account_id": "full-account", "settlement_id": 0})
+    assert details == {
+        "title": "结算确认记录",
+        "rows": [
+            {"key": "确认方式", "value": label},
+            {"key": "确认日期", "value": None},
+            {"key": "确认时间", "value": None},
+            {"key": "结算编号", "value": 0},
+            {"key": "经纪公司代码", "value": None},
+            {"key": "投资者代码", "value": None},
+            {"key": "资金账号", "value": "full-account"},
+            {"key": "币种", "value": None},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "request_name, step",
+    [
+        ("ReqQryOrder", "query_orders"),
+        ("ReqQryTrade", "query_trades"),
+        ("ReqQryInvestorPosition", "query_positions"),
+        ("ReqQryTradingAccount", "query_account"),
+    ],
+)
+@pytest.mark.parametrize("failure", ["broker_error", "wrong_day"])
+def test_session_query_failure_stays_on_actual_step(monkeypatch, request_name, step, failure):
+    from types import SimpleNamespace
+
+    from axile.executor.ctp.ctp_execute import CtpRequestError
+
+    broker = ScriptedBroker(monkeypatch)
+    events = []
+    broker.executor.set_connection_progress(lambda stage, status: events.append((stage, status)))
+    if failure == "broker_error":
+        broker.errors[request_name] = SimpleNamespace(ErrorID=999, ErrorMsg="查询拒绝")
+    else:
+        broker.rows[request_name] = [SimpleNamespace(TradingDay="20000101")]
+    with pytest.raises(CtpRequestError):
+        broker.start()
+    assert events[-1] == (step, "running")
+    assert (step, "passed") not in events
+    assert ("ready", "running") not in events
+    assert not broker.executor._verify_connection()
+
+
+def test_empty_funds_does_not_pass_funds_stage(monkeypatch):
+    from axile.executor.ctp.ctp_execute import CtpRequestError
+
+    broker = ScriptedBroker(monkeypatch)
+    broker.rows["ReqQryTradingAccount"] = []
+    events = []
+    broker.executor.set_connection_progress(lambda stage, status: events.append((stage, status)))
+    with pytest.raises(CtpRequestError, match="资金查询返回空结果"):
+        broker.start()
+    assert events[-1] == ("query_account", "running")
+    for step in ("query_orders", "query_trades", "query_positions"):
+        assert (step, "passed") in events

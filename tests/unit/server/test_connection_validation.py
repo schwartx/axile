@@ -82,7 +82,7 @@ def test_progress_failure_and_cancellation_snapshots(client, service, monkeypatc
     assert response.status_code == 202
     result = response.json()
     job_id = result["validation_id"]
-    assert len(result["steps"]) == 8
+    assert len(result["steps"]) == 11
     job = service.jobs[job_id]
     service.apply_event(job, {"step": "trader_connection", "status": "running"})
     service.apply_event(job, {"step": "trader_connection", "status": "passed"})
@@ -259,3 +259,31 @@ def test_existing_account_validation_missing_account_does_not_connect(client, se
     response = client.post("/api/v1/account/404/connection-validation", json={"account_config": {}})
     assert response.status_code == 404
     spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("step_id", ["settlement", "trader_login"])
+def test_generic_details_survive_later_failure(client, service, monkeypatch, step_id):
+    monkeypatch.setattr(service, "_start", lambda *_args: None)
+    response = client.post("/api/v1/channel-validations", json={"channel": "ctp", "account_config": CONFIG})
+    job_id = response.json()["validation_id"]
+    job = service.jobs[job_id]
+    details = {
+        "title": "渠道步骤详情",
+        "rows": [
+            {"key": "账号", "value": "full-account"},
+            {"key": "编号", "value": 0},
+            {"key": "状态", "value": False},
+            {"key": "状态", "value": True},
+            {"key": "缺失", "value": None},
+            {"key": "空文本", "value": ""},
+            {"key": "小数", "value": 1.25},
+        ],
+    }
+    service.apply_event(job, {"step": step_id, "status": "passed", "details": details})
+    service.apply_event(job, {"step": "instruments", "status": "running"})
+    service.fail(job, "CONNECTION.STAGE_TIMEOUT", "合约查询超时")
+    result = client.get(f"/api/v1/channel-validations/{job_id}").json()
+    step = next(step for step in result["steps"] if step["id"] == step_id)
+    assert step["status"] == "passed"
+    assert step["details"] == details
+    assert isinstance(step["details"]["rows"][2]["value"], bool)
