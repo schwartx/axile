@@ -25,6 +25,7 @@ import {
   resolveAccountControlScope,
   sameAccountControlOverride,
 } from '@/features/account/accountControlPolicy'
+import { ControlRecentRecords, ControlWaitingSection } from '@/features/account/ControlActivity'
 import { ControlScopeUsage, ControlSymbolUsage, ControlUsageNotice } from '@/features/account/ControlUsage'
 import { useLiveControl, type ControlFrame } from '@/stores/liveControl'
 import { AccountPageTitle } from '@/features/account/pageHead'
@@ -622,6 +623,7 @@ export function AccountEditControlPage() {
     })
   }
 
+  const operationNames = Object.fromEntries(model.operations.map((operation) => [operation.key, operation.display_name]))
   const operationRows = model.operations.filter((meta) => effective.operations[meta.key])
   const common = operationRows.filter((meta) => COMMON_KEYS.includes(meta.key) || Boolean(override.operations[meta.key]))
   const other = operationRows.filter((meta) => !common.includes(meta))
@@ -675,25 +677,28 @@ export function AccountEditControlPage() {
 
       <Section label="预设方案">
         <div className="rounded-[12px] border border-line bg-surface px-4 py-3 md:col-span-2">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="w-24 flex-none text-[13px] text-ink-2">当前方案</div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div className="flex flex-none items-center gap-3">
+            <span className="text-[13px] text-ink-2">当前方案</span>
             <Select<string>
               ariaLabel="流控预设方案"
               disabled={previewing}
               value={presetKey}
               onChange={(value) => void switchPreset(value)}
-              className="w-full justify-between px-3 py-2 text-[15px] sm:w-64"
+              className="w-40 justify-between px-3 py-2 text-[15px]"
               options={model.compatible_presets.map((item) => ({ value: item.key, label: item.display_name, hint: item.description }))}
             />
+            </div>
             <span className="text-[13px] text-ink-3">{model.compatible_presets.find((item) => item.key === presetKey)?.description}</span>
+            <div className="flex flex-none items-center gap-3 text-[13px]"><span className="text-ink-2">统计时区</span><span className="text-ink-1">{model.timezone_display_name}</span></div>
+            <ControlUsageNotice frame={monitorFrame} editing={dirty} inline />
           </div>
-          <div className="mt-2.5 flex gap-3 text-[13px]"><span className="w-24 flex-none text-ink-2">统计时区</span><span className="text-ink-1">{model.timezone_display_name}</span></div>
           {previewNote && <p className="mt-2 text-[13px] text-ink-2">{previewNote}</p>}
-          <ControlUsageNotice frame={monitorFrame} editing={dirty} />
         </div>
       </Section>
       <ErrorNotice title="预设方案预览失败" error={previewError} variant="mutation" />
 
+      <ControlWaitingSection frame={monitorFrame} operationNames={operationNames} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
 
       {other.length > 0 && (
@@ -739,6 +744,7 @@ export function AccountEditControlPage() {
         </Section>
       )}
 
+      <ControlRecentRecords frame={monitorFrame} operationNames={operationNames} />
       <EditSaveBar changes={changes} blocked={Boolean(errors.length || previewing)} onCancel={cancelEdit} onSave={() => void save()} saving={saving} error={saveError} />
     </section>
   )

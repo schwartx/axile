@@ -1,98 +1,196 @@
 import { useEffect, useRef, useState } from 'react'
+import { Segmented } from '@/components/ui/Segmented'
+import { OverflowText } from '@/components/ui/OverflowText'
+import { getAccountControlPolicy } from '@/lib/api/accounts'
+import type { AccountControlPolicyEditorModel } from '@/types/api'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Link } from '@/components/ui/nav'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { ControlWaitingList } from '@/features/account/ControlActivity'
+import {
+  OPERATIONS, CONTROL_WINDOWS, operationName, metricLabel, controlCandidates, searchControlCandidates, canAddMetric,
+  readControlPreferences,
+  saveControlPreferences,
+} from '@/features/account/controlPreferences'
 import { useLiveControl, type ControlFrame, type ControlRule } from '@/stores/liveControl'
-import { DEFAULT_CONTROL_METRICS, readControlPreferences, saveControlPreferences } from '@/features/account/controlPreferences'
+import { useDomainStore } from '@/stores/domain'
 
-const OP: Record<string, string> = { place_order: '报单', cancel_order: '撤单', cancel_order_ctp: 'CTP 原生撤单', query_order: '查单', option_exercise: '期权行权', option_abandon: '期权放弃', option_self_close: '期权自对冲', cancel_option_exercise: '撤销期权行权', cancel_option_abandon: '撤销期权放弃', cancel_option_self_close: '撤销期权自对冲' }
-const operation = (key: string) => OP[key] ?? key
+function metricRules(frame: ControlFrame | undefined): ControlRule[] {
+  // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
+  return [...(frame?.metrics ?? []), ...(frame?.rules ?? [])]
+}
 function controlValue(rule: ControlRule | undefined): string {
   if (!rule || rule.value == null) return '未知'
-  if (rule.limit === 0) return `${rule.value} / 0（禁用）`
-  return rule.limit == null ? `${rule.value}（无限制）` : `${rule.value} / ${rule.limit}`
+  if (rule.limit === 0) return `${rule.value}/0（禁用）`
+  return rule.limit == null ? `${rule.value}（无限制）` : `${rule.value}/${rule.limit}`
 }
-function statusText(frame: ControlFrame | undefined) {
-  if (!frame) return '数据未知'
-  const parts = []
-  if (frame.stale) parts.push('数据陈旧，保留最后已知值')
-  if (frame.incomplete) parts.push('统计可能不完整：存在未完成会话或落库失败')
-  if (frame.status === 'idle') parts.push('无运行实例；展示已确认历史累计')
-  if (frame.status === 'disabled') parts.push('流控未启用')
-  if (frame.status === 'unknown') parts.push('运行实例数据未知；保留已知值')
-  if (frame.waiting_total) parts.push(`${frame.waiting_total} 个请求等待`)
-  if (frame.records.some((r) => r.decision === 'blocked')) parts.push('最近有请求被阻断')
-  return parts.join(' · ') || '实时数据'
-}
-export function ControlRules({ frame }: { frame: ControlFrame | undefined }) {
-  return <div className="space-y-2 text-[13px]">
-    <p className={frame?.stale || frame?.incomplete || frame?.waiting_total ? 'text-warn' : 'text-ink-3'}>{statusText(frame)}</p>
-    <p className="text-ink-3">更新：{frame?.sampled_at_ms ? new Date(frame.sampled_at_ms).toLocaleTimeString() : '未知'} · {frame?.timezone ?? '时区未知'} · 自然日／固定分钟窗口</p>
-    {frame?.pending_policy && <p className="text-warn">已保存配置与当前实例不同；下次执行生效，以下仍为当前实例规则。</p>}
-    <div className="overflow-x-auto"><table className="w-full text-left text-[13px]">
-      <thead className="text-ink-3"><tr><th className="py-2">规则</th><th>用量／上限</th><th>剩余／等待</th></tr></thead>
-      <tbody>{frame?.rules.map((rule) => <tr key={rule.id} className="border-t border-line">
-        <td className="py-2 pr-3">{rule.scope === 'group' ? '共享组' : rule.scope === 'symbol' ? rule.symbol : '账户'} · {operation(rule.operation)} · {rule.rule === 'per_day' ? '每日' : rule.rule === 'per_minute' ? '每分钟' : '最小间隔'}</td>
-        <td className="pr-3">{rule.rule === 'min_interval_ms' ? `${rule.limit} ms` : controlValue(rule)}</td>
-        <td>{rule.rule === 'min_interval_ms' ? `预计 ${rule.estimated_wait_ms} ms` : rule.value == null ? '未知' : rule.remaining == null ? '无限制' : rule.remaining}{rule.on_trigger && ` · ${rule.on_trigger === 'wait' ? '超额等待' : '超额阻断'}`}</td>
-      </tr>)}</tbody>
-    </table></div>
-    <p className="text-ink-3">统计本地放行并预占额度的尝试，下游拒绝或失败仍计数；不是成功报撤单或成交。普通撤单不与 CTP 原生撤单相加，期权操作单列。</p>
-    <p className="text-ink-3">等待时间为估计，新请求可能改变顺序；间隔按本地放行时间计算。</p>
-  </div>
-}
-function ControlDialog({ open, frame, accountId, selected, onSelect, onClose }: { open: boolean; frame: ControlFrame | undefined; accountId: number; selected: [string, string]; onSelect: (keys: [string, string]) => void; onClose: () => void }) {
-  const options = frame?.metrics ?? []
-  return <CenteredModal open={open} title="账户流控" onClose={onClose} widthClassName="w-[768px]">
-      <ControlRules frame={frame} />
-      <h3 className="mt-4 font-semibold">等待请求（{frame?.waiting_total ?? '未知'}）</h3>
-      {frame?.waiting.map((q) => <p key={q.id} className="mt-2 text-[13px]">{operation(q.operation)} · {q.symbol ?? '账户'} · 优先级 {q.priority} · 已等待 {(q.waited_ms / 1000).toFixed(1)} 秒 · {q.kind === 'quota' ? '额度等待' : '排队等待'}{q.estimated_wait_ms != null && ` · 预计 ${(q.estimated_wait_ms / 1000).toFixed(1)} 秒`} {q.hits.map((hit) => String(hit.message ?? '')).join('、')}</p>)}
-      {frame?.waiting_total === 0 && <p className="mt-2 text-[13px] text-ink-3">暂无等待</p>}
-      {!!frame && frame.waiting_total > frame.waiting.length && <p className="text-ink-3">仅展示前 {frame.waiting.length} 项</p>}
-      <h3 className="mt-4 font-semibold">最近记录（最多 100 条）</h3>
-      {frame?.records.map((r) => <p key={r.event_uid} className="mt-2 text-[13px]">{new Date(r.occurred_at_ms).toLocaleTimeString()} · {operation(r.operation)} · {r.symbol ?? '账户'} · {r.decision === 'blocked' ? '本地阻断' : '已放行'} · {({ submitted: '已提交，最终结果未知', accepted: '已提交，最终结果未知', pending: '结果未知', downstream_error: '下游异常', broker_rejected: '柜台拒绝', broker_sync_rejected: '柜台同步拒绝', broker_acknowledged: '柜台已确认', policy_blocked: '规则阻断', fetched: '查询已返回' } as Record<string, string>)[r.outcome] ?? '结果未知'} {String((r.metadata.account_control_hit as Record<string, unknown> | undefined)?.message ?? '')}</p>)}
-      {frame?.records.length === 0 && <p className="mt-2 text-[13px] text-ink-3">暂无记录</p>}
-      <h3 className="mt-4 font-semibold">账户卡关注指标</h3>
-      <div className="my-2 flex flex-wrap gap-2">{selected.map((value, index) => <select key={index} aria-label={`关注指标 ${index + 1}`} value={value} onChange={(event) => { const next: [string, string] = [...selected]; next[index] = event.target.value; onSelect(next) }} className="max-w-full rounded border border-line bg-surface px-2 py-1">
-        {options.length ? options.map((option) => <option key={option.id} value={option.id} disabled={selected[1 - index] === option.id}>{option.label?.startsWith('今日') ? option.label : `今日${operation(option.operation)}`}</option>) : <option value={value}>{DEFAULT_CONTROL_METRICS[index] === value ? index ? '今日撤单' : '今日报单' : value}</option>}
-      </select>)}</div>
-      <p className="mb-4 text-[13px] text-ink-3">恰好两项；仅保存在此浏览器此账户，不修改交易限额。</p>
-      <Link to={`/accounts/${accountId}/edit/control`} onClick={onClose} className="text-accent">打开当前账户流控设置 ›</Link>
+
+function ControlDialog({ open, frame, accountId, accountName, selected, draft, onDraftChange, onSave, onClose, model, loading, failed, retry, names }: {
+  model: AccountControlPolicyEditorModel | null
+  loading: boolean
+  failed: boolean
+  retry: () => void
+  names: Record<string, string>
+  open: boolean
+  frame: ControlFrame | undefined
+  accountId: number
+  accountName: string | undefined
+  selected: string[]
+  draft: string[]
+  onDraftChange: (keys: string[]) => void
+  onSave: () => void
+  onClose: () => void
+}) {
+  const [adding, setAdding] = useState(false)
+  const [query, setQuery] = useState('')
+  const [operation, setOperation] = useState<string | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const addRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const rowsRef = useRef<HTMLDivElement>(null)
+  const backRef = useRef<HTMLButtonElement>(null)
+  const scroll = useRef(0)
+  useEffect(() => { if (!open) { setAdding(false); setOperation(null); setQuery('') } }, [open])
+  const candidates = searchControlCandidates(controlCandidates(model?.operations ?? [], Object.keys(model?.effective_policy.operations ?? {}), metricRules(frame)), query)
+  const focusRow = (index: number) => requestAnimationFrame(() => rowsRef.current?.children[index]?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus())
+  const add = (window: string) => {
+    const id = `account:${operation}:${window}`
+    if (!canAddMetric(draft, id)) return
+    onDraftChange([...draft, id]); setAdding(false); setOperation(null); setQuery(''); focusRow(draft.length)
+  }
+  const dirty = JSON.stringify(draft) !== JSON.stringify(selected)
+  const unknownWaiting = !frame || frame.status === 'unknown' || frame.status === 'incomplete'
+  return <CenteredModal
+    open={open}
+    title="账户流控"
+    subtitle={accountName ?? `账户 #${accountId}`}
+    onClose={onClose}
+    footer={<div className="mt-1 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
+      <button type="button" className="cursor-pointer rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2" onClick={onClose}>取消</button>
+      <button type="button" className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45" disabled={!dirty || draft.length === 0 || draft.length > 3} onClick={onSave}>保存</button>
+    </div>}
+  >
+    <div className="space-y-5">
+      <section aria-label="当前等待">
+        <h3 className="mb-2 text-sm font-[640]">当前等待({unknownWaiting ? '未知' : frame.waiting_total})</h3>
+        <div className="max-h-56 overflow-y-auto"><ControlWaitingList frame={frame} operationNames={names} /></div>
+      </section>
+      <section aria-label="摘要显示设置">
+        <div className="flex justify-between"><h3 className="text-sm font-[640]">摘要显示设置</h3><span className="text-xs text-ink-3">{draft.length}/3</span></div>
+        <div ref={rowsRef} className="divide-y divide-line">
+          {draft.map((id, index) => {
+            const [, key, window] = id.split(':')
+            const name = operationName(key, names)
+            // 窗口是行内可变值，不参与行身份，避免切换时重建滑块。
+            return <div key={`${key}:${index}`} className="flex items-center gap-2 py-2">
+              <OverflowText text={name} className="min-w-0 flex-1 text-sm" />
+              <div role="group" aria-label={`${name}时间窗口`}><Segmented size="sm" value={window} options={CONTROL_WINDOWS.map((item) => ({ ...item, disabled: item.value !== window && draft.includes(`account:${key}:${item.value}`), label: `${item.label}${item.value !== window && draft.includes(`account:${key}:${item.value}`) ? '（已添加）' : ''}` }))} onChange={(value) => {
+                if (draft.includes(`account:${key}:${value}`)) return
+                onDraftChange(draft.map((old, i) => i === index ? `account:${key}:${value}` : old)); focusRow(index)
+              }} /></div>
+              <button type="button" aria-label={`移除${name}${window === 'per_day' ? '今日' : '本分钟'}`} className="p-1 text-ink-3" onClick={() => {
+                onDraftChange(draft.filter((old) => old !== id))
+                if (draft.length > 1) focusRow(Math.min(index, draft.length - 2)); else requestAnimationFrame(() => addRef.current?.focus())
+              }}>×</button>
+            </div>
+          })}
+        </div>
+        {draft.length < 3 ? <button ref={addRef} type="button" aria-expanded={adding} className="py-2 text-sm text-accent" onClick={() => {
+          setAdding(!adding); setOperation(null)
+          requestAnimationFrame(() => adding ? addRef.current?.focus() : searchRef.current?.focus())
+        }}>{adding ? '收起' : '＋ 添加指标'}</button> : <p className="py-2 text-xs text-ink-3">最多显示三项，移除一项后可添加</p>}
+        <div inert={!adding || draft.length >= 3} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${adding && draft.length < 3 ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="min-h-0 overflow-hidden">
+            <div hidden={operation !== null}>
+              <input ref={searchRef} aria-label="搜索操作" placeholder="搜索操作…" value={query} onChange={(event) => { setQuery(event.target.value); if (listRef.current) listRef.current.scrollTop = 0 }} className="mb-1 h-8 w-full rounded-[7px] border border-line bg-surface px-2.5 text-[13px] text-ink-1 outline-none placeholder:text-ink-3 focus:border-accent" />
+              <div ref={listRef} className="max-h-[min(240px,35vh)] overflow-y-auto overscroll-contain">
+                {candidates.map((row, index) => <div key={row.key}>
+                  {!query.trim() && row.category !== candidates[index - 1]?.category && <h4 className="py-1 text-xs text-ink-3">{row.category}</h4>}
+                  <button type="button" aria-label={`添加${row.name}`} className="flex w-full items-center gap-2 border-b border-line py-2 text-left text-sm" onClick={() => {
+                    scroll.current = listRef.current?.scrollTop ?? 0; setOperation(row.key); requestAnimationFrame(() => backRef.current?.focus())
+                  }}><OverflowText text={row.name} className="min-w-0 flex-1" /><span className="text-xs text-ink-3">{CONTROL_WINDOWS.filter((window) => draft.includes(`account:${row.key}:${window.value}`)).map((window) => `${window.label}已添加`).join(' · ')}</span><span aria-hidden>›</span></button>
+                </div>)}
+                {!candidates.length && <p className="py-2 text-xs text-ink-3">暂无匹配操作</p>}
+              </div>
+            </div>
+            <div hidden={operation === null} className="space-y-2 pb-2">
+              <button ref={backRef} type="button" className="text-sm text-accent" onClick={() => { setOperation(null); requestAnimationFrame(() => { if (listRef.current) listRef.current.scrollTop = scroll.current; searchRef.current?.focus() }) }}>返回操作列表</button>
+              <p className="text-sm">{operationName(operation ?? '', names)}</p>
+              <div className="flex gap-2">{CONTROL_WINDOWS.map((window) => {
+                const exists = draft.includes(`account:${operation}:${window.value}`)
+                return <button key={window.value} type="button" disabled={exists || draft.length >= 3} aria-label={`添加${operationName(operation ?? '', names)}${window.label}`} className="rounded-lg border border-line px-3 py-2 text-sm disabled:text-ink-3" onClick={() => add(window.value)}>{window.label}{exists ? '（已添加）' : ' ＋'}</button>
+              })}</div>
+            </div>
+          </div>
+        </div>
+        {loading && <p className="text-xs text-ink-3" role="status">正在读取操作目录…</p>}
+        {failed && <p className="text-xs text-warn" role="status">操作目录加载失败，可添加已有实时操作。<button type="button" onClick={retry} className="ml-2 text-accent">重试</button></p>}
+        <p className={`mt-2 text-xs ${draft.length === 0 ? 'text-warn' : 'text-ink-3'}`}>{draft.length === 0 ? '请至少选择一项摘要。' : '选择 1～3 项，保存后显示在账户摘要中。'}偏好仅保存在此浏览器此账户，不修改交易限额。</p>
+      </section>
+
+      <div className="border-t border-line pt-3">
+        {(frame?.stale || frame?.incomplete) && <p className="mb-2 text-xs text-warn">{[frame.stale ? '数据陈旧，保留最后已知值' : '', frame.incomplete ? '统计可能不完整' : ''].filter(Boolean).join(' · ')}</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Link to={`/accounts/${accountId}/edit/control`} onClick={onClose} className="text-[13.5px] font-semibold text-accent hover:underline">完整流控详情 →</Link>
+          {frame?.sampled_at_ms && <span className="num text-xs text-ink-3">{new Date(frame.sampled_at_ms).toLocaleTimeString()} 更新</span>}
+        </div>
+      </div>
+    </div>
   </CenteredModal>
 }
+
 export function AccountControlSummary({ accountId }: { accountId: number }) {
-  const frame = useLiveControl((s) => s.frames[accountId])
+  return <AccountControlSummaryContent key={accountId} accountId={accountId} />
+}
+
+function AccountControlSummaryContent({ accountId }: { accountId: number }) {
+  const frame = useLiveControl((state) => state.frames[accountId])
+  const accountName = useDomainStore((state) => state.accounts?.find((account) => account.account_id === accountId)?.name)
   const [open, setOpen] = useState(false)
-  const [selected, setSelected] = useState<[string, string]>(() => readControlPreferences(accountId))
-  const close = useRef(() => setOpen(false)).current
+  const [selected, setSelected] = useState(() => readControlPreferences(accountId))
+  const [draft, setDraft] = useState(selected)
+  const [model, setModel] = useState<AccountControlPolicyEditorModel | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
-    if (!frame || !frame.metrics.length || selected.every((id, index) => id === DEFAULT_CONTROL_METRICS[index])) return
-    if (selected.some((id) => !frame.metrics.some((m) => m.id === id))) {
-      const next: [string, string] = [...DEFAULT_CONTROL_METRICS]
-      setSelected(next); saveControlPreferences(accountId, next)
-    }
-  }, [frame, selected, accountId])
+    if (!open) return
+    const controller = new AbortController()
+    setLoading(true); setFailed(false)
+    getAccountControlPolicy(accountId, undefined, controller.signal).then((value) => {
+      if (!controller.signal.aborted) setModel(value)
+    }).catch(() => { if (!controller.signal.aborted) setFailed(true) }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false)
+    })
+    return () => controller.abort()
+  }, [open, accountId, attempt])
+  const names = { ...OPERATIONS, ...Object.fromEntries((model?.operations ?? []).map((operation) => [operation.key, operation.display_name])) }
+
+  const rules = metricRules(frame)
+  const close = () => setOpen(false)
+  const save = () => {
+    if (draft.length < 1 || draft.length > 3) return
+    setSelected([...draft])
+    saveControlPreferences(accountId, draft)
+    close()
+  }
   return <>
-    <Tooltip content="今日本地放行并预占额度的尝试数；下游失败仍计数。点击查看流控详情。">
-    <button
-      type="button"
-      onClick={(event) => { event.stopPropagation(); setOpen(true) }}
-      className="group flex min-w-0 max-w-full flex-none cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-[14px]"
-    >
-      <span className="flex-none text-ink-3">流控</span>
-      <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
-        {selected.map((id, index) => {
-          const metric = frame?.metrics.find((m) => m.id === id)
-          const label = metric ? operation(metric.operation) : index ? '撤单' : '报单'
-          return `${label} ${controlValue(metric).replaceAll(' / ', '/')}`
-        }).join(' · ')}
-      </span>
-      {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
-        : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
-        : frame?.stale ? <span className="flex-none text-warn">陈旧</span>
-        : frame?.records.some((r) => r.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
-    </button>
+    <Tooltip content="本地放行并预占额度的尝试数；下游失败仍计数。今日按自然日、本分钟按固定分钟窗口统计。点击调整摘要或查看当前等待。">
+      <button
+        type="button"
+        onClick={(event) => { event.stopPropagation(); setDraft([...selected]); setOpen(true) }}
+        className="group flex min-w-0 max-w-full flex-none cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-[14px]"
+      >
+        <span className="flex-none text-ink-3">流控</span>
+        <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
+          {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
+        </span>
+        {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
+          : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
+          : frame?.stale ? <span className="flex-none text-warn">陈旧</span>
+          : frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
+      </button>
     </Tooltip>
-    <ControlDialog open={open} frame={frame} accountId={accountId} selected={selected} onSelect={(next) => { setSelected(next); saveControlPreferences(accountId, next) }} onClose={close} />
+    <ControlDialog model={model} loading={loading} failed={failed} retry={() => setAttempt((value) => value + 1)} names={names} open={open} frame={frame} accountId={accountId} accountName={accountName} selected={selected} draft={draft} onDraftChange={setDraft} onSave={save} onClose={close} />
   </>
 }

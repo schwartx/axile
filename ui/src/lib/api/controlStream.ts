@@ -8,8 +8,8 @@ export function useLiveControlSync() {
     const sync = () => {
       stream?.close()
       stream = null
-      useLiveControl.getState().disconnect()
-      if (document.hidden) return
+      if (document.hidden) { useLiveControl.getState().disconnect(); return }
+      useLiveControl.getState().beginReconnect()
       const current = new EventSource('/api/v1/account/control/stream')
       stream = current
       const receive = (event: Event) => {
@@ -23,7 +23,7 @@ export function useLiveControlSync() {
     }
     sync()
     document.addEventListener('visibilitychange', sync)
-    const timer = window.setInterval(() => useLiveControl.getState().expire(Date.now()), 1000)
+    const timer = window.setInterval(() => { if (!document.hidden) useLiveControl.getState().expire(Date.now()) }, 1000)
     return () => { stream?.close(); document.removeEventListener('visibilitychange', sync); window.clearInterval(timer) }
   }, [])
 }

@@ -47,12 +47,14 @@ interface State {
   version: number
   connected: boolean
   lastReceivedAt: number | null
+  disconnectedAt: number | null
   apply: (message: ControlEnvelope) => void
-  disconnect: () => void
+  beginReconnect: (now?: number) => void
+  disconnect: (now?: number) => void
   expire: (now: number) => void
 }
 export const useLiveControl = create<State>((set) => ({
-  frames: {}, streamId: null, version: -1, connected: false, lastReceivedAt: null,
+  frames: {}, streamId: null, version: -1, connected: false, lastReceivedAt: null, disconnectedAt: null,
   apply: (message) => set((state) => {
     if (message.kind !== 'snapshot' && message.stream_id !== state.streamId) return state
     if (message.stream_id === state.streamId && (message.version < state.version || (message.version === state.version && (message.kind !== 'snapshot' || state.connected)))) return state
@@ -62,14 +64,18 @@ export const useLiveControl = create<State>((set) => ({
     for (const fresh of message.freshness ?? []) {
       if (frames[fresh.account_id]) frames[fresh.account_id] = { ...frames[fresh.account_id], sampled_at_ms: fresh.sampled_at_ms, stale: fresh.stale }
     }
-    return { frames, streamId: message.stream_id, version: message.version, connected: true, lastReceivedAt: Date.now() }
+    return { frames, streamId: message.stream_id, version: message.version, connected: true, lastReceivedAt: Date.now(), disconnectedAt: null }
   }),
-  disconnect: () => set((state) => ({ connected: false, frames: Object.fromEntries(Object.entries(state.frames).map(([id, frame]) => [id, { ...frame, stale: true }])) })),
+  // 主动重连给一次缓冲；连续报错不延长已有缓冲，也不清除服务端告警。
+  beginReconnect: (now = Date.now()) => set({ connected: false, disconnectedAt: now }),
+  disconnect: (now = Date.now()) => set((state) => ({ connected: false, disconnectedAt: state.disconnectedAt ?? now })),
   expire: (now) => set((state) => {
+    const since = state.disconnectedAt ?? state.lastReceivedAt
+    if (since != null && now - since <= 5000) return state
     let changed = false
     const frames = { ...state.frames }
     for (const frame of Object.values(frames)) {
-      if (!frame.stale && (!state.lastReceivedAt || now - state.lastReceivedAt > 5000)) {
+      if (!frame.stale) {
         frames[frame.account_id] = { ...frame, stale: true }; changed = true
       }
     }
