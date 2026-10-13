@@ -8,19 +8,19 @@ const fields: ChannelAccountField[] = [
   { name: 'password', label: '密码', kind: 'secret', width: 'full', required: true },
 ]
 
-const account = { account_configured: true }
+const account = { connection_values: { investor_id: '1001', password: 'saved-secret' } }
 
-describe('连接设置敏感字段不回显', () => {
-  test('初始草稿不包含任何已保存的连接值', () => {
-    expect(initialConnectionDraft(account, fields)).toEqual({ investor_id: '', password: '' })
+describe('连接设置回显', () => {
+  test('初始草稿包含已保存的连接值', () => {
+    expect(initialConnectionDraft(account, fields)).toEqual({ investor_id: '1001', password: 'saved-secret' })
   })
 
-  test('密码留空时不把旧值带回网络请求', () => {
-    expect(mergedConnectionConfig(account, fields, { investor_id: '1002', password: '' })).toEqual({ investor_id: '1002' })
+  test('密码清空时提交空值', () => {
+    expect(mergedConnectionConfig(fields, { investor_id: '1002', password: '' })).toEqual({ investor_id: '1002', password: '' })
   })
 
   test('填入新密码时才替换', () => {
-    expect(mergedConnectionConfig(account, fields, { investor_id: '1001', password: 'new-secret' }).password).toBe('new-secret')
+    expect(mergedConnectionConfig(fields, { investor_id: '1001', password: 'new-secret' }).password).toBe('new-secret')
   })
 
   test('对象键顺序不会被误判为改动', () => {
@@ -34,8 +34,8 @@ test('修改密钥保留测试网及已关闭的连接开关', () => {
     { name: 'websocket_enabled', label: 'WebSocket', kind: 'boolean', width: 'full', required: false, default: true },
     { name: 'password', label: '密码', kind: 'secret', width: 'full', required: true },
   ]
-  const account = { account_configured: true, connection_values: { network: 'testnet', websocket_enabled: false, password: 'must-not-display' } }
+  const account = { account_configured: true, connection_values: { network: 'testnet', websocket_enabled: false, password: 'saved-secret' } }
   const draft = initialConnectionDraft(account, fields)
-  expect(draft).toEqual({ network: 'testnet', websocket_enabled: false, password: '' })
-  expect(mergedConnectionConfig(account, fields, { ...draft, password: 'new' })).toEqual({ network: 'testnet', websocket_enabled: false, password: 'new' })
+  expect(draft).toEqual({ network: 'testnet', websocket_enabled: false, password: 'saved-secret' })
+  expect(mergedConnectionConfig(fields, { ...draft, password: 'new' })).toEqual({ network: 'testnet', websocket_enabled: false, password: 'new' })
 })

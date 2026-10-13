@@ -1,4 +1,4 @@
-/** 账户连接设置：按渠道描述渲染字段，敏感值只写不回显。 */
+/** 账户连接设置：按渠道描述渲染字段，支持已保存凭据回显。 */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
@@ -72,7 +72,7 @@ export function AccountEditConnectionPage() {
       return next
     })
   }
-  const nextConfig = mergedConnectionConfig(acc, fields, draft)
+  const nextConfig = mergedConnectionConfig(fields, draft)
   const changed = !sameConnectionConfig(draft, initialConnectionDraft(acc, fields))
 
   const validate = () => {
@@ -83,7 +83,6 @@ export function AccountEditConnectionPage() {
       if (field.kind === 'select') {
         if (field.required && !field.options?.some((option) => option.value === value)) nextErrors[field.name] = `请选择${field.label}`
       } else if (field.kind !== 'boolean') {
-        if (field.kind === 'secret' && acc.account_configured && !String(value ?? '').trim()) continue
         const error = connectionValueError({ kind: field.kind, value: String(value ?? ''), required: field.required, label: field.label, placeholder: field.placeholder, constraints: field.constraints })
         if (error) nextErrors[field.name] = error
       }
@@ -118,14 +117,13 @@ export function AccountEditConnectionPage() {
     const raw = draft[field.name] ?? field.default ?? ''
     if (field.kind === 'boolean') return <Segmented value={raw === true ? 'true' : 'false'} options={[{ value: 'false', label: '关闭' }, { value: 'true', label: '启用' }]} onChange={(value) => setField(field, value === 'true')} />
     if (field.kind === 'select') return <Segmented value={String(raw)} options={field.options ?? []} onChange={(value) => setField(field, value)} />
-    const configuredSecret = field.kind === 'secret' && acc.account_configured
-    return <ConnectionField label={field.label} kind={field.kind} value={String(raw)} required={field.required} placeholder={configuredSecret ? '已配置 · 留空保持不变' : field.placeholder} help={configuredSecret ? '密钥不回显；只有填入新值才会替换。' : field.help} error={errors[field.name]} constraints={field.constraints} clipboard={field.clipboard} onChange={(value) => setField(field, value)} />
+    return <ConnectionField label={field.label} kind={field.kind} value={String(raw)} required={field.required} placeholder={field.placeholder} help={field.help} error={errors[field.name]} constraints={field.constraints} clipboard={field.clipboard} onChange={(value) => setField(field, value)} />
   }
 
   return (
     <section>
       {title}
-      <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">修改会在下次创建执行器时生效；密码与密钥不会回显。</div>
+      <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">修改会在下次创建执行器时生效。</div>
       <div className={`relative mt-7 ${channelDescriptor?.connection_validation ? 'xl:grid xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start xl:gap-8' : ''}`}>
       <div className="min-w-0 [&>div]:mt-0">
       <Section label={`${channelDescriptor?.label ?? acc.trade_channel} 连接`}>

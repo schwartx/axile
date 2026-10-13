@@ -204,7 +204,8 @@ def test_worker_returns_exact_error_original(monkeypatch, broker_error):
 @pytest.mark.parametrize(
     "draft, expected_password",
     [
-        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, CONFIG["password"]),
+        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, None),
+        ({"investor_id": "draft-account"}, CONFIG["password"]),
         ({"password": "new-password", "investor_id": "draft-account"}, "new-password"),
     ],
 )
@@ -226,6 +227,12 @@ def test_existing_account_uses_draft_and_saved_secrets_without_saving(
     spawn = Mock()
     monkeypatch.setattr(service, "_start", spawn)
     response = client.post("/api/v1/account/42/connection-validation", json={"account_config": draft})
+    if expected_password is None:
+        assert response.status_code == 422
+        spawn.assert_not_called()
+        assert stored.account_config == CONFIG
+        session.commit.assert_not_called()
+        return
     assert response.status_code == 202
     config = spawn.call_args.args[1]
     assert config["password"] == expected_password

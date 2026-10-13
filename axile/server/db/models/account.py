@@ -272,8 +272,8 @@ type AccountContext = Account | AccountSnapshot
 class AccountPublic(SQLModel):
     """账户读取响应。
 
-    与持久化模型刻意分离。连接配置和 webhook 是可复用凭证，绝不能通过读取接口
-    返回；调用方只能获知凭证是否已经配置，以及渠道声明的非密钥连接字段。
+    与持久化模型分离。渠道声明的连接字段包含密码与密钥，供编辑回显；
+    webhook 仅返回是否已配置。
     """
 
     backtest_weight_type: WeightType = "ts"

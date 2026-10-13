@@ -58,9 +58,7 @@ async def create_account_validation(
         raise HTTPException(422, "渠道不支持连接验证")
     draft = payload["account_config"]
     assert isinstance(draft, dict)
-    secret_fields = {field.name for field in plugin.descriptor.account_form.fields if field.kind == "secret"}
-    changes = {key: value for key, value in draft.items() if key not in secret_fields or value not in (None, "")}
-    config = {**account.account_config, **changes}
+    config = {**account.account_config, **draft}
     try:
         return service.create(channel, config)
     except ValidationRejected as exc:
