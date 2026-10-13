@@ -51,6 +51,7 @@ def test_migration_history_is_linear() -> None:
         "0021_notification_result.py",
         "0022_system_notification_state.py",
         "0023_supplements.py",
+        "0024_account_control_monitor.py",
     ]
     initial = _load_migration(migration_paths[0])
     calendar = _load_migration(migration_paths[1])

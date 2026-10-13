@@ -40,6 +40,7 @@ from axile.server.db.models.account_control import (
     AccountControlEventListPublic,
     AccountControlEventPublic,
 )
+from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import (
     AccountRuntimeSync,
@@ -175,6 +176,7 @@ __all__ = [
     "AccountControlCounterDelta",
     "AccountControlEventBase",
     "AccountControlEvent",
+    "AccountControlSession",
     "AccountControlAuditSummaryPublic",
     "AccountControlAuditExecutionPublic",
     "AccountControlAuditExecutionListPublic",

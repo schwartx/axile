@@ -78,3 +78,86 @@ def test_native_reject_replays_only_into_matching_session(monkeypatch, callback,
         assert len(captured) == 2
     finally:
         executor.close()
+
+
+@pytest.mark.parametrize("callback", ["OnRspOrderInsert", "OnErrRtnOrderInsert"])
+def test_native_reject_updates_control_attempt_without_refunding(monkeypatch, callback):
+    from axile.common.trade_channel import TradeChannel
+    from axile.executor.account_control.guard import AccountControlGuard
+    from axile.executor.account_control.presets import resolve_account_control_policy
+    from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+
+    broker = ScriptedBroker(monkeypatch)
+    executor = broker.start()
+    try:
+        executor.initialize_websocket(["ag2612"])
+        broker.quote()
+        monkeypatch.setattr(executor, "_get_ctp_session_block_reason", lambda _symbol: None)
+        guard = AccountControlGuard(
+            account_id=1,
+            execution_id="control-reject",
+            channel=TradeChannel.CTP,
+            policy=resolve_account_control_policy("default"),
+            baseline=AccountControlCounterSnapshot(),
+        )
+        executor.set_account_control_guard(guard)
+
+        def reject(request, rid):
+            info = SimpleNamespace(ErrorID=31, ErrorMsg="offline rejection")
+            handler = getattr(broker.trader_spi, callback)
+            if callback == "OnRspOrderInsert":
+                handler(request, info, rid, True)
+            else:
+                handler(request, info)
+            return 0
+
+        broker.trader.ReqOrderInsert.side_effect = reject
+        executor.place_order("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, offset_flag="open")
+        frame = guard.monitor_snapshot()
+        event = frame["records"][0]
+        assert event["outcome"] == "broker_rejected"
+        assert event["metadata"]["error_id"] == 31
+        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order") == 1
+    finally:
+        executor.close()
+
+
+def test_cancel_reject_updates_both_control_layers_separately(monkeypatch):
+    from axile.common.trade_channel import TradeChannel
+    from axile.executor.account_control.guard import AccountControlGuard
+    from axile.executor.account_control.presets import resolve_account_control_policy
+    from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+
+    broker = ScriptedBroker(monkeypatch)
+    executor = broker.start()
+    try:
+        executor.initialize_websocket(["ag2612"])
+        broker.quote()
+        monkeypatch.setattr(executor, "_get_ctp_session_block_reason", lambda _symbol: None)
+        broker.trader.ReqOrderInsert.return_value = 0
+        order = executor.place_order("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, offset_flag="open")
+        guard = AccountControlGuard(
+            account_id=1,
+            execution_id="control-cancel",
+            channel=TradeChannel.CTP,
+            policy=resolve_account_control_policy("default"),
+            baseline=AccountControlCounterSnapshot(),
+        )
+        executor.set_account_control_guard(guard)
+
+        def reject(request, rid):
+            broker.trader_spi.OnRspOrderAction(
+                request, SimpleNamespace(ErrorID=26, ErrorMsg="offline reject"), rid, True
+            )
+            return 0
+
+        broker.trader.ReqOrderAction.side_effect = reject
+        assert executor.cancel_order("ag2612", order.order_id)
+        frame = guard.monitor_snapshot()
+        events = [r for r in frame["records"] if r["operation"] in {"cancel_order", "cancel_order_ctp"}]
+        assert len(events) == 2
+        assert all(r["outcome"] == "broker_rejected" for r in events)
+        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "cancel_order") == 1
+        assert next(m["value"] for m in frame["metrics"] if m["operation"] == "cancel_order_ctp") == 1
+    finally:
+        executor.close()

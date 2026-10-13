@@ -20,6 +20,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
+from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.protocol import (
@@ -137,6 +138,7 @@ class _WorkerBackendHandle:
     request_lock: Lock = field(default_factory=Lock)
     retired: bool = False
     catalog: CatalogSession | None = None
+    monitor: RemoteMonitor | None = None
 
 
 class WorkerBackendManager:
@@ -198,9 +200,10 @@ class WorkerBackendManager:
         parent_conn, child_conn = self._ctx.Pipe(duplex=True)
         child_control_conn, parent_control_conn = self._ctx.Pipe(duplex=False)
         parent_catalog, child_catalog = self._ctx.Pipe(duplex=True)
+        parent_monitor, child_monitor = self._ctx.Pipe(duplex=True)
         process = self._ctx.Process(
             target=run_worker_backend_loop,
-            args=(child_conn, account_id, child_control_conn, child_catalog),
+            args=(child_conn, account_id, child_control_conn, child_catalog, child_monitor),
             name=f"axile-execution-worker-{account_id}",
             daemon=True,
         )
@@ -208,6 +211,7 @@ class WorkerBackendManager:
         child_conn.close()
         child_control_conn.close()
         child_catalog.close()
+        child_monitor.close()
         catalog = CatalogSession(cast("Connection", parent_catalog), self._catalog_store)
         catalog.thread.start()
         return _WorkerBackendHandle(
@@ -216,6 +220,7 @@ class WorkerBackendManager:
             connection=cast("Connection", parent_conn),
             control_connection=cast("Connection", parent_control_conn),
             catalog=catalog,
+            monitor=RemoteMonitor(parent_monitor, account_id, process.is_alive),
         )
 
     def _send_shutdown(self, handle: _WorkerBackendHandle) -> None:
@@ -260,6 +265,8 @@ class WorkerBackendManager:
             if callable(kill):
                 kill()
                 handle.process.join(timeout=2.0)
+        if handle.monitor is not None:
+            handle.monitor.close()
         if handle.catalog is not None:
             handle.catalog.close()
 
@@ -286,6 +293,8 @@ class WorkerBackendManager:
         if handle.process.is_alive():
             handle.process.terminate()
             handle.process.join(timeout=2.0)
+        if handle.monitor is not None:
+            handle.monitor.close()
         if handle.catalog is not None:
             handle.catalog.close()
 

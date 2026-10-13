@@ -282,9 +282,11 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 self._require_session_ready()
             if before_send is not None:
                 before_send(rid)
+            self._link_control_request(guard, rid, name, req)
             code = int(getattr(self._trader_api, name)(req, rid))
         if code == 0:
             return rid
+        self._control_request_result(rid, "broker_sync_rejected", {"return_code": code})
         meanings = {
             -1: "网络连接失败",
             -2: "前置未处理请求队列超限",
@@ -306,6 +308,53 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         if code == -1:
             self._invalidate_connection(message)
         raise CtpRequestError(message, return_code=code, execution_error=f"{meaning}，请求未受理")
+
+    def _link_control_request(self, guard, rid, name, req) -> None:
+        """在发送前登记有界关联，回调可先于同步调用返回。"""
+        from collections import OrderedDict
+
+        if guard is None or not hasattr(guard, "active_attempt_indices"):
+            return
+        indices = guard.active_attempt_indices()
+        if not indices:
+            return
+        links = getattr(self, "_control_request_links", None)
+        if links is None:
+            links = self._control_request_links = OrderedDict()
+        ref = str(getattr(req, "OrderRef", ""))
+        identity = stable_order_id(self._trading_day, self._front_id, self._session_id, ref)
+        links[rid] = (guard, indices, name, ref, identity)
+        while len(links) > 512:
+            links.popitem(last=False)
+
+    def _control_request_result(self, rid, outcome, metadata=None) -> None:
+        """只更新真实关联到的旧 guard，不消费或退回额度。"""
+        link = getattr(self, "_control_request_links", {}).get(rid)
+        if link is not None:
+            guard, indices, _, _, _ = link
+            for index in indices:
+                guard.update_event_outcome(index, outcome=outcome, metadata=metadata)
+
+    def _control_order_result(self, row, outcome, metadata=None, *, order_id=None) -> None:
+        ref = str(getattr(row, "OrderRef", ""))
+        if not ref:
+            return
+        links = getattr(self, "_control_request_links", {})
+        matches = [
+            rid
+            for rid, (_, _, name, order_ref, identity) in list(links.items())
+            if name == "ReqOrderInsert" and ref == order_ref and order_id == identity
+        ]
+        if len(matches) == 1:
+            self._control_request_result(matches[0], outcome, metadata)
+
+    def _on_control_action_error(self, row, info, request_id=None) -> None:
+        """撤单拒绝仅按请求身份关联，不能用订单号猜测多次撤单。"""
+        detail = insert_error_detail(info)
+        if detail is not None:
+            rid = request_id or getattr(row, "RequestID", None)
+            self._control_request_result(rid, "broker_rejected", {"error_id": detail[0], "error_msg": detail[1]})
+        self._log_error(info, "撤单")
 
     def _send_trader_request(self, operation, name, req, *, symbol=None, before_send=None) -> int:
         """经通用账户控制发送一次 TraderApi 请求，不在适配层重试。"""
@@ -1127,6 +1176,9 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         # 订单回调可能同步触发撤单后的补单；先交付成交并解除待关联门禁，
         # 使跟踪器按完整成交量计算剩余量，再允许订单终态驱动下一步。
         self._replay_unassociated_trades()
+        self._control_order_result(
+            row, "broker_rejected" if o.status == OrderStatus.REJECTED else "broker_acknowledged", order_id=o.order_id
+        )
         self._dispatch(self._order_callbacks, o)
 
     def _on_trade(self, row):
@@ -1203,6 +1255,9 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             if not order_id:
                 self.logger.error(f"报单拒绝无法关联订单: ErrorID={error_id}, {error_msg}, source={source}")
                 return
+            self._control_order_result(
+                row, "broker_rejected", {"error_id": error_id, "error_msg": error_msg}, order_id=order_id
+            )
             key = dict(self._order_keys.get(order_id, {}))
             symbol = str(getattr(row, "InstrumentID", "") or key.get("symbol", "") or "")
             if not symbol:

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import RLock, local
 from typing import Callable
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -220,6 +221,9 @@ class _QueuedRequest:
 
     seq: int
     priority: int
+    operation: str
+    symbol: str | None
+    entered_at_ms: int
 
 
 def resolve_control_window(
@@ -349,6 +353,11 @@ class AccountControlGuard:
         wait_poll_interval_ms: int = 100,
         termination_checkpoint: Callable[[str | None], None] | None = None,
     ) -> None:
+        self.instance_id = uuid4().hex
+        self.monitor_incomplete = False
+        self._monitor_seq = 0
+        self.monitor_outcome_sink: Callable[[AccountControlEventWrite], None] | None = None
+        self._monitor_waits: dict[int, dict[str, object]] = {}
         self.account_id = account_id
         self.execution_id = execution_id
         self.channel = channel
@@ -423,7 +432,13 @@ class AccountControlGuard:
         with self._state_lock:
             self._queue_seq += 1
             operation_policy = self.policy.operations.get(operation, AccountControlOperationPolicy())
-            queued = _QueuedRequest(seq=self._queue_seq, priority=operation_policy.priority)
+            queued = _QueuedRequest(
+                seq=self._queue_seq,
+                priority=operation_policy.priority,
+                operation=operation,
+                symbol=symbol,
+                entered_at_ms=int(self._wait_clock.time() * 1000),
+            )
             self._wait_queue.append(queued)
 
         metadata = _business_metadata(metadata)
@@ -437,6 +452,7 @@ class AccountControlGuard:
                     head = min(self._wait_queue, key=lambda item: (item.priority, item.seq))
                     if head != queued:
                         wait_ms = self._wait_poll_interval_ms
+                        self._monitor_waits[queued.seq] = {"kind": "queue", "hits": []}
                     else:
                         resolved_attempt = self._resolve_operation_attempt(operation=operation, symbol=symbol)
                         scheduling_metadata: dict[str, object] = {}
@@ -479,6 +495,11 @@ class AccountControlGuard:
                                 resolved_attempt=resolved_attempt,
                             )
                         hit = resolved_attempt.decision
+                        self._monitor_waits[queued.seq] = {
+                            "kind": "quota",
+                            "estimated_wait_ms": hit.wait_ms,
+                            "hits": [] if hit.details is None else [hit.details.to_metadata()],
+                        }
                         if hit.details is not None and hit.details.identity not in wait_details:
                             wait_details[hit.details.identity] = hit.details
                             logger.debug(hit.details.message())
@@ -491,8 +512,29 @@ class AccountControlGuard:
                 waited_ms += wait_ms
         finally:
             with self._state_lock:
+                self._monitor_waits.pop(queued.seq, None)
                 if queued in self._wait_queue:
                     self._wait_queue.remove(queued)
+
+    def monitor_snapshot(self) -> dict[str, object]:
+        """复制只读监控输入；展示计算不占用交易评估锁。"""
+        from copy import copy
+
+        from axile.executor.account_control.monitor import render_guard_snapshot
+
+        with self._state_lock:
+            self._monitor_seq += 1
+            frozen = copy(self)
+            frozen._account_counters = dict(self._account_counters)
+            frozen._symbol_counters = dict(self._symbol_counters)
+            frozen._group_counters = dict(self._group_counters)
+            frozen._recent_account_allowed_at = dict(self._recent_account_allowed_at)
+            frozen._recent_symbol_allowed_at = dict(self._recent_symbol_allowed_at)
+            frozen._recent_group_allowed_at = dict(self._recent_group_allowed_at)
+            frozen._wait_queue = list(self._wait_queue)
+            frozen._monitor_waits = dict(self._monitor_waits)
+            frozen._events = list(self._events[-100:])
+        return render_guard_snapshot(frozen)
 
     def current_waited_ms(self) -> int:
         """返回当前线程最近一次获准请求的累计等待毫秒数。"""
@@ -521,14 +563,29 @@ class AccountControlGuard:
         metadata : Mapping[str, object] | None, optional
             需要合并到原事件中的附加元数据。
         """
+        active = list(getattr(self._thread_state, "active_attempts", []))
+        self._thread_state.active_attempts = [index for index in active if index != event_index]
         with self._state_lock:
             event = self._events[event_index]
-            self._events[event_index] = event.model_copy(
+            # 同步返回可能晚于异步拒绝，不能把已知拒绝覆盖成“已提交”。
+            if event.outcome in {"broker_rejected", "broker_sync_rejected"}:
+                outcome = event.outcome
+            updated = event.model_copy(
                 update={
                     "outcome": outcome,
                     "metadata": _merge_metadata(event.metadata, _business_metadata(metadata)),
                 }
             )
+            self._events[event_index] = updated
+        if self.monitor_outcome_sink is not None:
+            try:
+                self.monitor_outcome_sink(updated)
+            except Exception:
+                logger.exception("流控结果监控回填失败")
+
+    def active_attempt_indices(self) -> tuple[int, ...]:
+        """取得当前线程受控调用身份，供渠道在真实发送前关联回调。"""
+        return tuple(getattr(self._thread_state, "active_attempts", ()))
 
     def flush_records(self) -> tuple[list[AccountControlCounterDeltaWrite], list[AccountControlEventWrite]]:
         """
@@ -576,7 +633,7 @@ class AccountControlGuard:
         symbol: str | None,
         decision: AccountControlDecision,
     ) -> str:
-        return f"{self.execution_id}:{seq}:{operation}:{symbol or '-'}:{decision.value}"
+        return f"{self.execution_id}:{self.instance_id}:{seq}:{operation}:{symbol or '-'}:{decision.value}"
 
     def _resolve_operation_attempt(
         self,
@@ -654,6 +711,9 @@ class AccountControlGuard:
             outcome="pending",
             occurred_at_ms=resolved_attempt.context.occurred_at_ms,
         )
+        active = list(getattr(self._thread_state, "active_attempts", []))
+        active.append(event_index)
+        self._thread_state.active_attempts = active
         return AccountControlAttempt(self, event_index)
 
     def _should_track_symbol_scope(self, *, operation: str, symbol: str | None) -> bool:
@@ -766,7 +826,7 @@ class AccountControlGuard:
                     operation=operation,
                     delta_count=delta_count,
                     delta_uid=(
-                        f"{self.execution_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
+                        f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
                         f"{AccountControlScopeType.ACCOUNT.value}:-:{operation}"
                     ),
                 )
@@ -795,7 +855,7 @@ class AccountControlGuard:
                     operation=operation,
                     delta_count=delta_count,
                     delta_uid=(
-                        f"{self.execution_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
+                        f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
                         f"{AccountControlScopeType.SYMBOL.value}:{symbol}:{operation}"
                     ),
                 )

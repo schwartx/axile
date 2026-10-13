@@ -335,7 +335,9 @@ async def _load_notification_preview_context(
         except ValueError as exc:
             raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
         context = build_execution_notification_context(_TestNotificationSource(account.name), output)
-        context["execution"]["notified_at"] = record.created_at
+        execution = context.get("execution")
+        if isinstance(execution, dict):
+            execution["notified_at"] = record.created_at
     context["is_test"] = True
     context["event_type"] = "execution.finished"
     execution = context.get("execution")

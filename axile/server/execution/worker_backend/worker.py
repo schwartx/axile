@@ -495,6 +495,7 @@ def run_worker_backend_loop(
     account_id: int,
     control_connection: Connection,
     catalog_connection: Connection | None = None,
+    monitor_connection: Connection | None = None,
 ) -> None:
     """运行多进程 worker 的阻塞请求循环.
 
@@ -505,6 +506,12 @@ def run_worker_backend_loop(
     account_id : int
         该 worker 绑定的账户标识。
     """
+    if monitor_connection is not None:
+        from axile.server.account_control.ipc import serve
+
+        threading.Thread(
+            target=serve, args=(monitor_connection, account_id), daemon=True, name=f"axile-worker-monitor-{account_id}"
+        ).start()
     state = _WorkerBackendState(account_id=account_id)
     catalog = RemoteCatalogProvider(catalog_connection) if catalog_connection is not None else None
     state.catalog_provider = catalog

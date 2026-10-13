@@ -25,6 +25,9 @@ import {
   resolveAccountControlScope,
   sameAccountControlOverride,
 } from '@/features/account/accountControlPolicy'
+import { ControlRecentRecords, ControlWaitingSection } from '@/features/account/ControlActivity'
+import { ControlScopeUsage, ControlSymbolUsage, ControlUsageNotice } from '@/features/account/ControlUsage'
+import { useLiveControl, type ControlFrame } from '@/stores/liveControl'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { getAccount, getAccountControlPolicy, updateAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -421,6 +424,7 @@ function ControlScopeEditor({
 }
 
 function ControlOperationRow({
+  monitorFrame,
   meta,
   preset,
   effective,
@@ -429,6 +433,7 @@ function ControlOperationRow({
   onToggle,
   onChange,
 }: {
+  monitorFrame: ControlFrame | undefined
   meta: AccountControlOperationMeta
   preset: AccountControlOperationPolicy
   effective: AccountControlOperationPolicy
@@ -464,9 +469,11 @@ function ControlOperationRow({
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
             <span className="mr-2 text-ink-3">账户合计</span>{scopeSummary(effective.account)}
+            <ControlScopeUsage frame={monitorFrame} operation={meta.key} />
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
             <span className="mr-2 text-ink-3">每个品种</span>{scopeSummary(effective.symbol)}
+            {effective.symbol && <ControlSymbolUsage frame={monitorFrame} operation={meta.key} />}
           </span>
           <span className="flex flex-none items-baseline gap-2">
             {customCount > 0 && <span className="text-[12px] text-accent">已改 {customCount} 处</span>}
@@ -480,7 +487,10 @@ function ControlOperationRow({
             <ControlPriorityField preset={preset.priority} custom={custom?.priority} onChange={setPriority} />
             <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
               <ControlScopeEditor label="账户合计" preset={preset.account} custom={custom?.account} onChange={(scope) => setScope('account', scope)} />
-              <ControlScopeEditor label="每个品种" preset={preset.symbol} custom={custom?.symbol} onChange={(scope) => setScope('symbol', scope)} />
+              <div>
+                <ControlScopeEditor label="每个品种" preset={preset.symbol} custom={custom?.symbol} onChange={(scope) => setScope('symbol', scope)} />
+                <ControlSymbolUsage frame={monitorFrame} operation={meta.key} expanded />
+              </div>
             </div>
           </div>
         </div>
@@ -493,6 +503,7 @@ function ControlOperationRow({
 export function AccountEditControlPage() {
   const { id } = useParams()
   const accountId = Number(id)
+  const monitorFrame = useLiveControl((state) => state.frames[accountId])
   const toast = useToastStore((state) => state.toast)
   const accounts = useDomainStore((state) => state.accounts)
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
@@ -612,12 +623,14 @@ export function AccountEditControlPage() {
     })
   }
 
+  const operationNames = Object.fromEntries(model.operations.map((operation) => [operation.key, operation.display_name]))
   const operationRows = model.operations.filter((meta) => effective.operations[meta.key])
   const common = operationRows.filter((meta) => COMMON_KEYS.includes(meta.key) || Boolean(override.operations[meta.key]))
   const other = operationRows.filter((meta) => !common.includes(meta))
   const renderOperation = (meta: AccountControlOperationMeta) => (
     <ControlOperationRow
       key={meta.key}
+      monitorFrame={monitorFrame}
       meta={meta}
       preset={model.preset_policy.operations[meta.key] ?? { priority: 100, account: {} }}
       effective={effective.operations[meta.key]}
@@ -642,7 +655,7 @@ export function AccountEditControlPage() {
         account_control_preset: presetKey,
         account_control_override: normalized,
       })
-      toast('流控已更新')
+      toast('已保存，下次执行生效')
       void refreshAccounts()
       // 保存后留在本页：刷新 dirty 基线（acc 的 preset 与 model.override），
       // 否则底栏不会收敛（此前靠跳页卸载掩盖）。
@@ -664,24 +677,28 @@ export function AccountEditControlPage() {
 
       <Section label="预设方案">
         <div className="rounded-[12px] border border-line bg-surface px-4 py-3 md:col-span-2">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="w-24 flex-none text-[13px] text-ink-2">当前方案</div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div className="flex flex-none items-center gap-3">
+            <span className="text-[13px] text-ink-2">当前方案</span>
             <Select<string>
               ariaLabel="流控预设方案"
               disabled={previewing}
               value={presetKey}
               onChange={(value) => void switchPreset(value)}
-              className="w-full justify-between px-3 py-2 text-[15px] sm:w-64"
+              className="w-40 justify-between px-3 py-2 text-[15px]"
               options={model.compatible_presets.map((item) => ({ value: item.key, label: item.display_name, hint: item.description }))}
             />
+            </div>
             <span className="text-[13px] text-ink-3">{model.compatible_presets.find((item) => item.key === presetKey)?.description}</span>
+            <div className="flex flex-none items-center gap-3 text-[13px]"><span className="text-ink-2">统计时区</span><span className="text-ink-1">{model.timezone_display_name}</span></div>
+            <ControlUsageNotice frame={monitorFrame} editing={dirty} inline />
           </div>
-          <div className="mt-2.5 flex gap-3 text-[13px]"><span className="w-24 flex-none text-ink-2">统计时区</span><span className="text-ink-1">{model.timezone_display_name}</span></div>
           {previewNote && <p className="mt-2 text-[13px] text-ink-2">{previewNote}</p>}
         </div>
       </Section>
       <ErrorNotice title="预设方案预览失败" error={previewError} variant="mutation" />
 
+      <ControlWaitingSection frame={monitorFrame} operationNames={operationNames} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
 
       {other.length > 0 && (
@@ -711,7 +728,7 @@ export function AccountEditControlPage() {
                     {/* 与操作卡同家族：标题 | 摘要 | 已改 ⌄ 单行横排；描述挪进展开区 */}
                     <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
                       <span className="flex-none text-[15px] font-semibold text-ink-1">{group.display_name}</span>
-                      <span className={`min-w-0 flex-1 basis-40 text-[13px] ${open ? 'text-ink-3' : 'text-ink-2'}`}>{scopeSummary(current)}</span>
+                      <span className={`min-w-0 flex-1 basis-40 text-[13px] ${open ? 'text-ink-3' : 'text-ink-2'}`}>{scopeSummary(current)}<ControlScopeUsage frame={monitorFrame} operation={group.key} scope="group" /></span>
                       <span className="flex flex-none items-baseline gap-2">
                         {custom && <span className="text-[12px] text-accent">已改</span>}
                         <span className="text-[13px] text-ink-3" aria-hidden>{open ? '⌄' : '›'}</span>
@@ -727,6 +744,7 @@ export function AccountEditControlPage() {
         </Section>
       )}
 
+      <ControlRecentRecords frame={monitorFrame} operationNames={operationNames} />
       <EditSaveBar changes={changes} blocked={Boolean(errors.length || previewing)} onCancel={cancelEdit} onSave={() => void save()} saving={saving} error={saveError} />
     </section>
   )
