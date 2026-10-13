@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bitcoin, ChartCandlestick, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
-import { ConnectionValidation } from '@/features/setup/ConnectionValidation'
+import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
 import { executionTimeoutError } from '@/features/account/executionTimeout'
 import { LeverageInput } from '@/features/account/LeverageInput'
@@ -365,7 +365,7 @@ export function AcctConnect() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className={`mx-auto grid max-w-[1728px] grid-cols-1 items-start gap-6 px-5 pt-8 pb-6 sm:px-12 ${descriptor?.connection_validation ? 'xl:grid-cols-[minmax(0,720px)_minmax(260px,320px)] xl:gap-10' : ''}`}>
+        <div className={`relative mx-auto grid max-w-[1728px] grid-cols-1 items-start gap-6 px-5 pt-8 pb-6 sm:px-12 ${descriptor?.connection_validation ? 'xl:grid-cols-[minmax(0,720px)_minmax(260px,320px)] xl:gap-10' : ''}`}>
           <div className="min-w-0">
           <WizardHeading
           kicker="账户设置 · 2 / 6"
@@ -440,12 +440,10 @@ export function AcctConnect() {
             </div>
           </div>
           </div>
-          {descriptor?.connection_validation && <aside className="min-w-0 max-w-[720px] xl:sticky xl:top-8">
-            <ConnectionValidation
+          {descriptor?.connection_validation && <ConnectionValidationAside
               descriptor={descriptor}
               config={visibleChannelAccountConfig(fields, acct.config)}
-            />
-          </aside>}
+            />}
         </div>
       </div>
       <WizardNav

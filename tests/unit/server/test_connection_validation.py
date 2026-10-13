@@ -31,6 +31,7 @@ def client(service, monkeypatch):
     monkeypatch.setattr(routes, "service", service)
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/v1")
+    app.include_router(routes.account_router, prefix="/api/v1")
     with TestClient(app) as client:
         yield client
         client.portal.call(service.close)
@@ -198,3 +199,56 @@ def test_worker_returns_exact_error_original(monkeypatch, broker_error):
     assert result["result"] == "failed"
     assert "details" not in result["diagnostic"]
     pipe.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "draft, expected_password",
+    [
+        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, CONFIG["password"]),
+        ({"password": "new-password", "investor_id": "draft-account"}, "new-password"),
+    ],
+)
+def test_existing_account_uses_draft_and_saved_secrets_without_saving(
+    client, service, monkeypatch, draft, expected_password
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from axile.server.api.deps import get_db
+
+    stored = SimpleNamespace(trade_channel="ctp", account_config=CONFIG.copy())
+    session = SimpleNamespace(get=AsyncMock(return_value=stored), commit=AsyncMock())
+
+    async def db():
+        yield session
+
+    client.app.dependency_overrides[get_db] = db
+    spawn = Mock()
+    monkeypatch.setattr(service, "_start", spawn)
+    response = client.post("/api/v1/account/42/connection-validation", json={"account_config": draft})
+    assert response.status_code == 202
+    config = spawn.call_args.args[1]
+    assert config["password"] == expected_password
+    assert config["auth_code"] == CONFIG["auth_code"]
+    assert config["investor_id"] == "draft-account"
+    assert stored.account_config == CONFIG
+    session.commit.assert_not_called()
+    assert "private-password" not in response.text
+    assert "new-password" not in response.text
+
+
+def test_existing_account_validation_missing_account_does_not_connect(client, service, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from axile.server.api.deps import get_db
+
+    async def db():
+        yield SimpleNamespace(get=AsyncMock(return_value=None))
+
+    client.app.dependency_overrides[get_db] = db
+    spawn = Mock()
+    monkeypatch.setattr(service, "_start", spawn)
+    response = client.post("/api/v1/account/404/connection-validation", json={"account_config": {}})
+    assert response.status_code == 404
+    spawn.assert_not_called()

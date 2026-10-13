@@ -4,15 +4,17 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from axile.channels import get_channel
+from axile.server.api.deps import SessionDep
 from axile.server.connection_validation import ValidationJob, ValidationRejected, service
+from axile.server.db.models import Account
 
 router = APIRouter(prefix="/channel-validations", tags=["channel-validations"])
+account_router = APIRouter(prefix="/account", tags=["channel-validations"])
 
 
-@router.post("", response_model=ValidationJob, status_code=202)
-async def create_validation(request: Request, response: Response) -> ValidationJob:
-    """手动解析含凭据请求，保证任何 422 都不会携带原始 input。"""
-    response.headers["Cache-Control"] = "no-store"
+async def _read_config(request: Request) -> dict[str, object]:
+    """解析含凭据请求，不把请求原文带入格式错误响应。"""
     body = await request.body()
     if len(body) > 64 * 1024:
         raise HTTPException(413, "连接配置过大")
@@ -20,12 +22,47 @@ async def create_validation(request: Request, response: Response) -> ValidationJ
         payload = json.loads(body)
     except ValueError as exc:
         raise HTTPException(422, "连接配置格式不正确") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("channel"), str):
-        raise HTTPException(422, "请指定交易渠道")
-    if not isinstance(payload.get("account_config"), dict):
+    if not isinstance(payload, dict) or not isinstance(payload.get("account_config"), dict):
         raise HTTPException(422, "请填写连接配置")
+    return payload
+
+
+@router.post("", response_model=ValidationJob, status_code=202)
+async def create_validation(request: Request, response: Response) -> ValidationJob:
+    """手动解析含凭据请求，保证任何 422 都不会携带原始 input。"""
+    response.headers["Cache-Control"] = "no-store"
+    payload = await _read_config(request)
+    if not isinstance(payload.get("channel"), str):
+        raise HTTPException(422, "请指定交易渠道")
     try:
-        return service.create(payload["channel"], payload["account_config"])
+        channel, config = payload["channel"], payload["account_config"]
+        assert isinstance(channel, str) and isinstance(config, dict)
+        return service.create(channel, config)
+    except ValidationRejected as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@account_router.post("/{account_id}/connection-validation", response_model=ValidationJob, status_code=202)
+async def create_account_validation(
+    account_id: int, request: Request, response: Response, session: SessionDep
+) -> ValidationJob:
+    """只读合并已保存凭据与当前草稿，运行验证但不保存、不改变账户运行状态。"""
+    response.headers["Cache-Control"] = "no-store"
+    payload = await _read_config(request)
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(404, "账户不存在")
+    channel = str(account.trade_channel)
+    plugin = get_channel(channel)
+    if plugin.descriptor.connection_validation is None:
+        raise HTTPException(422, "渠道不支持连接验证")
+    draft = payload["account_config"]
+    assert isinstance(draft, dict)
+    secret_fields = {field.name for field in plugin.descriptor.account_form.fields if field.kind == "secret"}
+    changes = {key: value for key, value in draft.items() if key not in secret_fields or value not in (None, "")}
+    config = {**account.account_config, **changes}
+    try:
+        return service.create(channel, config)
     except ValidationRejected as exc:
         raise HTTPException(exc.status, str(exc)) from exc
 

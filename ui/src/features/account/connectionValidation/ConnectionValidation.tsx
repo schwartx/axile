@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, LoaderCircle, RadioTower, TriangleAlert } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
-import { ConnectionValidationErrorModal, type ValidationErrorSelection } from '@/features/setup/ConnectionValidationErrorModal'
-import { ConnectionValidationSession } from '@/features/setup/connectionValidationSession'
-import { validationRunning, type ConnectionValidationJob, type ValidationStepStatus } from '@/lib/api/connectionValidation'
+import { ConnectionValidationErrorModal, type ValidationErrorSelection } from '@/features/account/connectionValidation/ConnectionValidationErrorModal'
+import { ConnectionValidationSession } from '@/features/account/connectionValidation/connectionValidationSession'
+import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, type ConnectionValidationJob, type ValidationStepStatus } from '@/lib/api/connectionValidation'
 import type { ChannelCapability } from '@/types/api'
 
 const stepLabels: Record<ValidationStepStatus, string> = {
@@ -72,9 +72,10 @@ function ValidationStepRow({ step, busy, onDetails }: {
 }
 
 /** 检查项由渠道描述提供；组件不依赖 CTP 的阶段标识或数量。 */
-export function ConnectionValidation({ descriptor, config }: {
+export function ConnectionValidation({ descriptor, config, accountId }: {
   descriptor: ChannelCapability
   config: Record<string, unknown>
+  accountId?: number
 }) {
   const [job, setJob] = useState<ConnectionValidationJob | null>(null)
   const [error, setError] = useState<Error | null>(null)
@@ -98,7 +99,7 @@ export function ConnectionValidation({ descriptor, config }: {
     setCancelling(false)
     setResultVersion(configVersion)
     return () => { session.current?.dispose() }
-  }, [descriptor.channel, configVersion])
+  }, [descriptor.channel, configVersion, accountId])
 
   const declaration = descriptor.connection_validation
   if (!declaration) return null
@@ -131,6 +132,7 @@ export function ConnectionValidation({ descriptor, config }: {
         setStarting(false)
         setCancelling(false)
       },
+      accountId == null ? connectionValidationApi : connectionValidationApiForAccount(accountId),
     )
     session.current = next
     void next.start(descriptor.channel, config)
@@ -162,8 +164,7 @@ export function ConnectionValidation({ descriptor, config }: {
       )} onDetails={shownError || shownJob?.error ? () => setSelectedError({
         stage: '连接验证', error: shownJob?.error ?? { reason_code: 'CONNECTION.REQUEST_FAILED', message: shownError!.message },
       }) : undefined} />
-      <div className="mt-2 border-t border-line pt-3">
-        <p className="text-[12px] leading-relaxed text-ink-3">{declaration.notice}</p>
+      <div>
         {!enabled && <p className="mt-2 text-[12px] text-warn">当前服务器缺少此渠道依赖，安装后才能验证连接。</p>}
         <div inert={!shownJob?.finished_at && !(busy && shownJob)} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${shownJob?.finished_at || (busy && shownJob) ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">

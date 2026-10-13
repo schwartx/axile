@@ -29,3 +29,13 @@ export const connectionValidationApi = {
 export function validationRunning(job: ConnectionValidationJob): boolean {
   return job.status === 'queued' || job.status === 'running'
 }
+
+/** 已有账户由服务端合并保存凭据与当前草稿，查询和取消复用通用任务接口。 */
+export function connectionValidationApiForAccount(accountId: number): typeof connectionValidationApi {
+  return {
+    ...connectionValidationApi,
+    create: (_channel, account_config) => apiSend<ConnectionValidationJob>(
+      'POST', `/account/${accountId}/connection-validation`, { account_config },
+    ),
+  }
+}
