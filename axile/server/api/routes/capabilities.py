@@ -14,6 +14,7 @@ from axile.channels import (
     ChannelUnits,
     list_channels,
 )
+from axile.channels.contracts import ChannelConnectionValidation
 from axile.server.channel_capabilities import install_extra, missing_packages
 
 router = APIRouter(prefix="/capabilities", tags=["capabilities"])
@@ -49,6 +50,7 @@ class ChannelCapabilityPublic(BaseModel):
     calendar: ChannelCalendar | None
     schedule: ChannelSchedule
     portfolio: ChannelPortfolioPreset
+    connection_validation: ChannelConnectionValidation | None = None
     available: bool
     missing_packages: list[str]
     install_extra: str | None

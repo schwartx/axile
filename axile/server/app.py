@@ -244,6 +244,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        from axile.server.connection_validation import service as validation_service
+
+        await validation_service.close()
         await monitor.close()
         scheduler.shutdown()
         await analysis.stop()

@@ -15,6 +15,7 @@ from axile.channels.contracts import (
     ChannelAccountNotice,
     ChannelAccountOption,
     ChannelCalendar,
+    ChannelConnectionValidation,
     ChannelDefaults,
     ChannelDescriptor,
     ChannelEndpointConstraints,
@@ -27,6 +28,8 @@ from axile.channels.contracts import (
     ChannelSessionWindow,
     ChannelUi,
     ChannelUnits,
+    ConnectionProgress,
+    ConnectionValidationStep,
 )
 from axile.channels.schedule_clock import (
     CN_FUTURES_WINDOWS,
@@ -85,6 +88,13 @@ def _create_ctp_executor(config: BaseAccountConfig):
     return executor
 
 
+def _validate_ctp_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
+    """延迟加载 SDK，并通过正常执行器验证一个临时会话。"""
+    from axile.executor.ctp.connection_validation import validate_connection
+
+    validate_connection(config, report)
+
+
 def _create_gm_executor(config: BaseAccountConfig):
     """根据已验证的掘金配置创建执行器."""
     from axile.executor.gm import GMExecutor
@@ -123,7 +133,26 @@ def _ctp_plugin() -> ChannelPlugin:
                 quantity_label="手",
                 quantity_max_decimals=0,
             ),
-            ui=ChannelUi(position_value_label="货值"),
+            ui=ChannelUi(
+                position_value_label="货值",
+                account_connect_lead="填写凭据后可验证账户连接；验证通过仅代表本次接入成功。",
+            ),
+            connection_validation=ChannelConnectionValidation(
+                notice="使用当前凭据连接柜台，查询账户并确认当日结算；不创建账户、不下单。",
+                steps=tuple(
+                    ConnectionValidationStep(id=key, label=label)
+                    for key, label in (
+                        ("trader_connection", "交易前置连接"),
+                        ("authenticate", "授权码认证"),
+                        ("trader_login", "交易账户登录"),
+                        ("settlement", "结算确认"),
+                        ("instruments", "合约目录查询"),
+                        ("market_login", "行情登录"),
+                        ("reconciliation", "会话对账（订单、成交、持仓、资金）"),
+                        ("ready", "会话就绪"),
+                    )
+                ),
+            ),
             defaults=ChannelDefaults(
                 account_control_preset="ctp",
                 long_leverage=3,
@@ -175,6 +204,7 @@ def _ctp_plugin() -> ChannelPlugin:
         ),
         account_config_model=CTPAccountConfig,
         create_executor=_create_ctp_executor,
+        validate_connection=_validate_ctp_connection,
         target_transform=_contribution_target,
         execution_backend="process",
         required_modules=("openctp_ctp",),

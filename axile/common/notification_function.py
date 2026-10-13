@@ -67,11 +67,14 @@ def run_notification_function(
             [sys.executable, "-m", "axile.common.notification_function", "--child"],
             input=json.dumps({"code": code, "context": context}, ensure_ascii=False),
             text=True,
+            encoding="utf-8",
             capture_output=True,
             timeout=NOTIFICATION_FUNCTION_TIMEOUT_SECONDS,
             check=False,
             env={
                 **os.environ,
+                # 管道协议固定为 UTF-8，避免 Windows 默认代码页及继承的编码设置影响中文通知。
+                "PYTHONIOENCODING": "utf-8",
                 "AXILE_ACCOUNT_FEISHU_KEY": feishu_key or "",
                 "AXILE_SYSTEM_FEISHU_KEY": system_feishu_key or "",
             },

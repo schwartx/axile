@@ -63,6 +63,7 @@ export interface DirectoryListing {
 
 /** 单个渠道的依赖可用性，对应 `ChannelCapabilityPublic`。 */
 export interface ChannelCapability {
+  connection_validation?: { steps: Array<{ id: string; label: string }>; notice: string } | null
   channel: TradeChannel
   label: string
   description: string

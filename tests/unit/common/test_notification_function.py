@@ -17,6 +17,31 @@ def test_notification_function_runs_with_context() -> None:
     assert result.ok is True
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_notification_uses_utf8_pipes(monkeypatch, fails) -> None:
+    """父子进程固定使用 UTF-8，中文源码、日志与异常不受系统编码影响。"""
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    original_run = notification_function.subprocess.run
+
+    def run_with_legacy_default(*args, **kwargs):
+        # 在 UTF-8 开发环境中模拟 Windows 的管道默认编码。
+        kwargs.setdefault("encoding", "cp1252")
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(notification_function.subprocess, "run", run_with_legacy_default)
+    code = """def notify(context):
+    assert context["name"] == "中文账户 🚀"
+    print("通知日志 🚀")
+    if context["fails"]:
+        raise RuntimeError("通知失败 🚀")
+"""
+    result = run_notification_function(code, {"name": "中文账户 🚀", "fails": fails})
+    assert result.ok is (not fails)
+    if fails:
+        assert result.error == "RuntimeError: 通知失败 🚀"
+        assert result.error_line == 5
+
+
 def test_notification_function_accepts_public_context_annotation() -> None:
     """编辑器提供的类型标注在隔离通知进程中也可导入。"""
     code = (

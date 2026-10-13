@@ -106,12 +106,14 @@ class CtpRequestError(RuntimeError):
         return_code: int | None = None,
         execution_error: str | None = None,
         error_id: int | None = None,
+        broker_message: str | None = None,
         reason_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.return_code = return_code
         self.execution_error = execution_error
         self.error_id = error_id
+        self.broker_message = broker_message
         self.reason_code = reason_code
 
 
@@ -213,6 +215,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._ready = False
         self._invalid_reason = None
         self._connection_started = False
+        self._connection_progress = None
         self._subscriptions = set()
         self._subscription_acks = set()
         self._subscription_errors = {}
@@ -255,6 +258,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             f"{name}失败: ErrorID={code}, {getattr(info, 'ErrorMsg', '')}",
             execution_error=reason,
             error_id=code,
+            broker_message=str(getattr(info, "ErrorMsg", "") or ""),
             reason_code=reason_code,
         )
 
@@ -404,6 +408,15 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             runtime.handle_termination_checkpoint()
 
     @override
+    def set_connection_progress(self, callback) -> None:
+        """绑定只传递阶段标识的诊断回调，不输出凭据或原生响应。"""
+        self._connection_progress = callback
+
+    def _report_connection(self, step: str, status: str) -> None:
+        callback = self._connection_progress
+        if callback is not None:
+            callback(step, status)
+
     def _initialize_connection(self, account_config):
         with self._lock:
             self._require_active_connection()
@@ -419,6 +432,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._timeout = float(getattr(account_config, "query_timeout", 15))
         self._flow_dir = Path(tempfile.mkdtemp(prefix="axile-ctp-"))
         try:
+            self._report_connection("trader_connection", "running")
             path = self._flow_dir / "trader"
             path.mkdir()
             self._trader_api = td.CThostFtdcTraderApi.CreateFtdcTraderApi(str(path) + "/")
@@ -430,7 +444,11 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._trader_api.Init()
             self._wait(self._auth, "认证")
             self._wait(self._login, "登录")
+            self._report_connection("trader_login", "passed")
+            self._report_connection("settlement", "running")
             self._ensure_settlement_confirmed()
+            self._report_connection("settlement", "passed")
+            self._report_connection("instruments", "running")
             self._instruments = self._catalog_provider.get(
                 (account_config.broker_id, account_config.td_front, self._trading_day),
                 self._load_catalog,
@@ -439,6 +457,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._catalog_progress("合约目录就绪")
             if not self._instruments:
                 raise CtpRequestError("CTP 合约查询返回空结果")
+            self._report_connection("instruments", "passed")
+            self._report_connection("market_login", "running")
             path = self._flow_dir / "market"
             path.mkdir()
             self._market_api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
@@ -447,7 +467,11 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._market_api.RegisterFront(account_config.md_front)
             self._market_api.Init()
             self._wait(self._md_login, "行情登录")
+            self._report_connection("market_login", "passed")
+            self._report_connection("reconciliation", "running")
             self._reconcile_session()
+            self._report_connection("reconciliation", "passed")
+            self._report_connection("ready", "running")
             with self._lock:
                 self._require_active_connection()
                 # 查询与实时回报不构成柜台原子快照；合并查询期间到达的成交，
@@ -459,6 +483,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 )
                 self._startup_trades.clear()
                 self._ready = True
+            self._report_connection("ready", "passed")
         except Exception:
             self.close()
             raise
@@ -470,12 +495,16 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             if self._trader_connected:
                 return
             self._trader_connected = True
+        self._report_connection("trader_connection", "passed")
+        self._report_connection("authenticate", "running")
         req = build_authenticate(self._config())
         self._send_stage(self._auth, "authenticate", "ReqAuthenticate", req)
 
     def _authenticated(self, row, info, request_id):
         if not self._finish_stage(self._auth, info, "认证", request_id):
             return
+        self._report_connection("authenticate", "passed")
+        self._report_connection("trader_login", "running")
         req = build_trader_login(self._config())
         self._send_stage(self._login, "trader_login", "ReqUserLogin", req)
 

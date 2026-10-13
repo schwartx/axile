@@ -114,25 +114,45 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
             data-lpignore="true"
             data-bwignore="true"
             aria-invalid={message ? true : undefined}
-            aria-describedby={message || help ? `${id}-message` : undefined}
+            aria-describedby={`${id}-keys${message || help ? ` ${id}-message` : ''}`}
+            aria-keyshortcuts="Alt+ArrowDown"
             className={`min-w-0 flex-1 bg-transparent text-[16px] leading-7 outline-none placeholder:text-ink-3 ${mono ? 'font-mono' : ''}`}
             style={maskStyle}
             onChange={(event) => onChange(event.target.value)}
             onPaste={handlePaste}
-            onKeyDown={onKeyDown}
+            onKeyDown={(event) => {
+              if (event.altKey && event.key === 'ArrowDown') {
+                event.preventDefault()
+                event.currentTarget.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+                return
+              }
+              onKeyDown(event)
+            }}
             onBlur={(event) => {
               setRevealed(false)
               onBlur?.(event.currentTarget.value)
             }}
           />
-          <div className="flex h-8 flex-none items-center" onClick={(event) => event.stopPropagation()}>
+          <div className="flex h-8 flex-none items-center" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              inputRef.current?.focus()
+              return
+            }
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault()
+            const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+            const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+            buttons[(index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
+          }}>
             {onBrowse && (
-              <button type="button" title="选择文件夹" aria-label="选择文件夹" className="grid h-8 w-8 cursor-pointer place-items-center text-ink-2 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={onBrowse}>
+              <button tabIndex={-1} type="button" title="选择文件夹" aria-label="选择文件夹" className="grid h-8 w-8 cursor-pointer place-items-center text-ink-2 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={onBrowse}>
                 <FolderOpen size={16} />
               </button>
             )}
             <button
               ref={anchorRef}
+              tabIndex={-1}
               type="button"
               title={pasteLabel}
               aria-label={pasteLabel}
@@ -148,18 +168,19 @@ export const ConnectionFieldInput = forwardRef<HTMLInputElement, Props>(function
               <ClipboardPaste size={16} className={showReadingFeedback ? 'animate-pulse text-ink-2 motion-reduce:animate-none' : undefined} />
             </button>
             {secret && (
-              <button type="button" title={revealed ? '隐藏内容' : '显示内容'} aria-label={revealed ? '隐藏内容' : '显示内容'} className="grid h-8 w-8 cursor-pointer place-items-center text-ink-2 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={() => setRevealed((current) => !current)}>
+              <button tabIndex={-1} type="button" title={revealed ? '隐藏内容' : '显示内容'} aria-label={revealed ? '隐藏内容' : '显示内容'} className="grid h-8 w-8 cursor-pointer place-items-center text-ink-2 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={() => setRevealed((current) => !current)}>
                 {revealed ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             )}
             {value && (
-              <button type="button" title="清空" aria-label={`清空${label}`} className="grid h-8 w-8 cursor-pointer place-items-center text-ink-3 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={() => onChange('')}>
+              <button tabIndex={-1} type="button" title="清空" aria-label={`清空${label}`} className="grid h-8 w-8 cursor-pointer place-items-center text-ink-3 hover:text-ink-1" onMouseDown={(event) => event.preventDefault()} onClick={() => onChange('')}>
                 <X size={15} />
               </button>
             )}
           </div>
         </div>
       </div>
+      <span id={`${id}-keys`} className="sr-only">按 Alt 加向下箭头进入字段操作，左右箭头切换操作，Escape 返回输入框。</span>
       {(message || help) && (
         <div id={`${id}-message`} className={`mt-1 min-h-4 text-[13px] ${message ? 'text-warn' : 'text-ink-3'}`}>
           {message ?? help}

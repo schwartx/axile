@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 type ChannelId = str
 type ExecutionBackend = Literal["thread", "process"]
 type ScheduleKind = Literal["continuous", "cn_stock", "cn_futures"]
+type ConnectionProgress = Callable[[str, Literal["running", "passed"]], None]
+type ConnectionValidator = Callable[[BaseAccountConfig, ConnectionProgress], None]
 type ExecutorFactory = Callable[[BaseAccountConfig], "AbstractExecutor"]
 type TargetTransform = Callable[[dict[str, float], pd.DataFrame], pd.DataFrame]
 type CanonicalizeSymbol = Callable[[str], str]
@@ -322,6 +324,20 @@ class ChannelPortfolioPreset(_FrozenDescriptorModel):
     example_symbols: tuple[str, ...] = Field(min_length=1)
 
 
+class ConnectionValidationStep(_FrozenDescriptorModel):
+    """一个渠道声明的连接检查项；标识只在该渠道内有意义。"""
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    label: str = Field(min_length=1)
+
+
+class ChannelConnectionValidation(_FrozenDescriptorModel):
+    """渠道的连接验证能力，具体流程由渠道自己的验证器实现。"""
+
+    steps: tuple[ConnectionValidationStep, ...] = Field(min_length=1)
+    notice: str = Field(min_length=1)
+
+
 class ChannelDescriptor(_FrozenDescriptorModel):
     """
     描述前端与 API 可见的渠道静态能力.
@@ -371,6 +387,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     account_form: ChannelAccountForm
     schedule: ChannelSchedule
     calendar: ChannelCalendar | None = None
+    connection_validation: ChannelConnectionValidation | None = None
     portfolio: ChannelPortfolioPreset
 
 
@@ -420,9 +437,12 @@ class ChannelPlugin:
     canonicalize_symbol: CanonicalizeSymbol = _identity_symbol
     quantize_target_quantity: QuantizeTargetQuantity | None = None
     requires_pre_connect_guard: bool = False
+    validate_connection: ConnectionValidator | None = None
 
     def __post_init__(self) -> None:
         """校验插件运行时契约中的基本不变量."""
+        if (self.validate_connection is None) != (self.descriptor.connection_validation is None):
+            raise ValueError("连接验证描述与验证器必须同时声明")
         if not issubclass(self.account_config_model, BaseAccountConfig):
             raise TypeError("account_config_model 必须继承 BaseAccountConfig")
         if self.max_parallel_symbols is not None and self.max_parallel_symbols < 1:
