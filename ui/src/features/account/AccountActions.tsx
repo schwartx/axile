@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Copy, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -182,10 +183,12 @@ export function AccountActions(props: AccountActionsProps) {
             }}
           >
             <button className={menuItem} onClick={() => { closeMenu(); props.onEdit() }}>
-              ✎ 编辑账户
+              <Pencil size={16} className="shrink-0" aria-hidden />
+              <span>编辑账户</span>
             </button>
             <button className={menuItem} onClick={() => { closeMenu(); props.onCopy() }}>
-              复制账户
+              <Copy size={16} className="shrink-0" aria-hidden />
+              <span>复制账户</span>
             </button>
             <div className="mx-1.5 my-1.5 h-px bg-line" />
             <button
@@ -201,7 +204,8 @@ export function AccountActions(props: AccountActionsProps) {
                 })
               }}
             >
-              🗑 删除账户
+              <Trash2 size={16} className="shrink-0" aria-hidden />
+              <span>删除账户</span>
             </button>
           </div>
         )}
