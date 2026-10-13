@@ -41,7 +41,7 @@ test('key-value details and lazy records support filtering sorting pagination an
   await login.click()
   const loginDialog = page.getByRole('dialog', { name: '交易账户登录信息' })
   await expect(loginDialog).toContainText('full-account')
-  await expect(loginDialog.getByRole('cell', { name: '0', exact: true })).toBeVisible()
+  await expect(loginDialog.getByText('0', { exact: true })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(login).toBeFocused()
   await orders.getByRole('button', { name: '查看详情' }).click()

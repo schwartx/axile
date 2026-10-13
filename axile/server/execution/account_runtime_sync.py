@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
@@ -214,14 +215,16 @@ async def reconcile_scheduled_account(
 async def recover_account_runtime_on_startup(
     sched: Scheduler, *, session_factory: async_sessionmaker[AsyncSession] | None = None
 ) -> None:
-    """只携带账户 ID 进入恢复循环，单账户故障不污染后续账户会话。"""
+    """并发恢复独立账户；慢连接只占用本账户任务，不串行阻塞其他账户。"""
     factory = session_factory or SessionLocal
     async with factory() as session:
         account_ids = list((await session.scalars(select(Account.id))).all())
-    for account_id in account_ids:
-        if account_id is None:
-            continue
+
+    async def recover(account_id: int) -> None:
         try:
             await reconcile_account_runtime(account_id, sched, session_factory=factory)
         except Exception:  # noqa: BLE001 - 单账户故障不阻断其他账户恢复
             logger.exception("启动恢复账户运行态失败 account_id={}", account_id)
+
+    # gather 保留各任务的生命周期；取消总任务时同时取消各账户恢复。
+    await asyncio.gather(*(recover(account_id) for account_id in account_ids if account_id is not None))

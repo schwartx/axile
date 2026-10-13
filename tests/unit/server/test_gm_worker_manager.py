@@ -855,3 +855,29 @@ def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch
 
     assert manager._workers == {}
     assert disposed == [handle]
+
+
+def test_shutdown_does_not_wait_indefinitely_for_account_recovery_lock():
+    """服务退出时，即使账户准备仍持有请求锁，也应回收该 worker。"""
+    manager = WorkerBackendManager(shutdown_recv_timeout=0.01)
+    handle = _FakeHandle(join_stops=False)
+    manager._workers[5] = handle
+    handle.request_lock.acquire()
+    stopped = Event()
+
+    def shutdown():
+        try:
+            manager.shutdown_all()
+        finally:
+            stopped.set()
+
+    thread = Thread(target=shutdown, daemon=True)
+    thread.start()
+    try:
+        assert stopped.wait(1), "关停不应等待账户初始化请求锁"
+        assert handle.process.terminate_called
+        assert handle.connection.closed
+        assert handle.connection.sent_commands == []
+    finally:
+        handle.request_lock.release()
+        thread.join(timeout=1)

@@ -188,6 +188,14 @@ get_directory_algorithm_modules = _get_directory_algorithm_modules
 load_configured_algorithm_modules = _load_configured_algorithm_modules
 
 
+async def _recover_accounts_in_background() -> None:
+    """账户连接属于账户运行态，恢复失败不能阻止 API 提供服务。"""
+    try:
+        await init_scheduler()
+    except Exception:  # noqa: BLE001 - 后台恢复入口必须记录异常而非传播到服务生命周期
+        logger.exception("后台恢复账户运行态失败")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """
@@ -226,7 +234,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _load_configured_algorithm_modules()
     register_china_channel_jobs(scheduler)
     scheduler.start()
-    await init_scheduler()
     from axile.server.execution import notification_outbox
     from axile.server.execution.supplements import recover_supplements
 
@@ -240,12 +247,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     analysis = AnalysisManager(SessionLocal)
     _.state.analysis_manager = analysis
     await analysis.start()
+    # 核心服务先就绪；每个账户独立恢复，不等待柜台登录、合约查询或账户限流。
+    account_recovery = asyncio.create_task(_recover_accounts_in_background(), name="axile-account-recovery")
+    _.state.account_recovery = account_recovery
     logger.warning("axile已经成功运行!")
     try:
         yield
     finally:
         from axile.server.connection_validation import service as validation_service
 
+        account_recovery.cancel()
+        await asyncio.gather(account_recovery, return_exceptions=True)
         await validation_service.close()
         await monitor.close()
         scheduler.shutdown()

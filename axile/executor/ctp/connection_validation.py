@@ -1,13 +1,17 @@
 """验证临时 CTP 会话，复用原有连接顺序、查询屏障与账户控制。"""
 
+from collections.abc import Callable, Mapping
+from typing import override
 from uuid import uuid4
+
+from openctp_ctp import thosttraderapi as td
 
 from axile.channels.contracts import ConnectionProgress
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
-from axile.executor.ctp.ctp_execute import CTPExecutor
+from axile.executor.ctp.ctp_execute import CTPExecutor, CtpRequestError
 from axile.executor.ctp.validation_details import (
     account_details,
     instrument_details,
@@ -16,8 +20,41 @@ from axile.executor.ctp.validation_details import (
     position_details,
     trade_details,
 )
+from axile.executor.ctp_catalog import CatalogKey, CatalogRows, CatalogStore, InstrumentRecord, LocalCatalogProvider
 from axile.executor.models.unified_input_accounts import BaseAccountConfig, CTPAccountConfig
 from axile.executor.trading_calendar import ShinnyTradingCalendar
+
+
+class _ValidationCatalogProvider(LocalCatalogProvider):
+    """只验证上期所螺纹钢查询；独立缓存避免样本目录污染执行器全量目录。"""
+
+    def __init__(self, executor: CTPExecutor) -> None:
+        super().__init__(CatalogStore())
+        self.executor = executor
+
+    @override
+    def get(
+        self, key: CatalogKey, loader: Callable[[], CatalogRows], checkpoint: Callable[[], None] | None = None
+    ) -> Mapping[str, InstrumentRecord]:
+        """以品种查询代替全量加载，保留原有查询完成与错误屏障。"""
+        return super().get(key, self._load_sample, checkpoint)
+
+    def _load_sample(self) -> CatalogRows:
+        request = td.CThostFtdcQryInstrumentField()
+        request.ExchangeID = "SHFE"
+        request.ProductID = "rb"
+        self.executor._catalog_queried = True
+        rows = self.executor._query("ReqQryInstrument", request)
+        catalog = {
+            str(getattr(row, "InstrumentID")): vars(row)
+            for row in rows
+            if getattr(row, "InstrumentID", "")
+            and getattr(row, "ExchangeID", "") == "SHFE"
+            and getattr(row, "ProductID", "") == "rb"
+        }
+        if not catalog:
+            raise CtpRequestError("螺纹钢合约查询返回空结果")
+        return catalog
 
 
 def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
@@ -36,6 +73,7 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
                 report(step, status, details)
 
         executor.set_connection_progress(progress)
+        executor.set_catalog_provider(_ValidationCatalogProvider(executor))
         executor.set_trading_calendar(ShinnyTradingCalendar())
         executor.set_channel_calendar("china")
         # 验证尚无持久化账户，但 guard 需要完整身份才会启用。
@@ -80,7 +118,7 @@ def _step_details(executor: CTPExecutor, step: str) -> dict[str, object] | None:
     if step == "settlement" and executor.settlement_confirmation is not None:
         return _settlement_details(executor.settlement_confirmation)
     if step == "instruments":
-        return instrument_details(executor._instruments, queried=executor._catalog_queried)
+        return instrument_details(executor._instruments, queried=executor._catalog_queried, scope="螺纹钢（SHFE · rb）")
     builders = {
         "trader_login": login_details,
         "query_orders": order_details,

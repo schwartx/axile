@@ -137,10 +137,12 @@ def _table(
     }
 
 
-def instrument_details(instruments: Mapping[str, object], *, queried: bool) -> dict[str, object]:
-    """展示当前交易日目录，无论目录来自缓存还是本次柜台查询。"""
+def instrument_details(
+    instruments: Mapping[str, object], *, queried: bool, scope: str | None = None
+) -> dict[str, object]:
+    """展示实际查询范围与来源，避免把样本称为全市场目录。"""
     return _table(
-        "合约目录",
+        "合约查询记录",
         (
             ("InstrumentID", "合约代码", "text"),
             ("InstrumentName", "名称", "text"),
@@ -151,9 +153,9 @@ def instrument_details(instruments: Mapping[str, object], *, queried: bool) -> d
             ("ExpireDate", "到期日", "date"),
         ),
         instruments.values(),
-        summary=f"{len(instruments)} 个合约",
+        summary=f"{len(instruments)} 个螺纹钢合约" if scope else f"{len(instruments)} 个合约",
         translations={"ProductClass": _PRODUCT},
-        description=f"目录来源：{'本次柜台查询' if queried else '缓存'}",
+        description=f"查询范围：{scope or '全部合约'}；数据来源：{'本次柜台查询' if queried else '缓存'}",
     )
 
 

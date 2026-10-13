@@ -146,7 +146,7 @@ def _ctp_plugin() -> ChannelPlugin:
                         ("authenticate", "授权码认证"),
                         ("trader_login", "交易账户登录"),
                         ("settlement", "结算确认"),
-                        ("instruments", "合约目录查询"),
+                        ("instruments", "合约查询验证（螺纹钢）"),
                         ("market_login", "行情登录"),
                         ("query_orders", "订单查询"),
                         ("query_trades", "成交查询"),

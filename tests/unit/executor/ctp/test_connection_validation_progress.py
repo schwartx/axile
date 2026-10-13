@@ -5,6 +5,14 @@ import pytest
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
 
 
+def _validation_broker(monkeypatch):
+    broker = ScriptedBroker(monkeypatch)
+    instrument = broker.rows["ReqQryInstrument"][0]
+    instrument.InstrumentID = "rb2701"
+    instrument.ProductID = "rb"
+    return broker
+
+
 def test_connection_progress_matches_real_startup(monkeypatch):
     broker = ScriptedBroker(monkeypatch)
     events = []
@@ -118,7 +126,7 @@ def test_validation_applies_shared_throttle_to_actual_native_queries(monkeypatch
     from axile.executor.ctp import connection_validation
     from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
-    broker = ScriptedBroker(monkeypatch)
+    broker = _validation_broker(monkeypatch)
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
     previous_clock = get_default_clock()
     clock = _AdvancingClock(datetime(2026, 10, 13, 10, 0))
@@ -140,7 +148,7 @@ def test_validation_applies_shared_throttle_to_actual_native_queries(monkeypatch
 def test_validator_reports_settlement_record_before_later_stages(monkeypatch):
     from axile.executor.ctp import connection_validation
 
-    broker = ScriptedBroker(monkeypatch)
+    broker = _validation_broker(monkeypatch)
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
     events = []
     connection_validation.validate_connection(
@@ -220,7 +228,7 @@ def test_empty_funds_does_not_pass_funds_stage(monkeypatch):
 def test_validation_emits_only_useful_details_before_following_queries(monkeypatch):
     from axile.executor.ctp import connection_validation
 
-    broker = ScriptedBroker(monkeypatch)
+    broker = _validation_broker(monkeypatch)
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
     details = {}
 
@@ -247,3 +255,63 @@ def test_validation_emits_only_useful_details_before_following_queries(monkeypat
     assert details["query_trades"]["rows"]
     assert details["trader_login"]["rows"][0]["value"] == broker.day
     assert "本次柜台查询" in details["instruments"]["description"]
+
+
+def test_validation_queries_rb_without_reusing_or_overwriting_full_catalog(monkeypatch):
+    from axile.executor.ctp import connection_validation
+
+    broker = _validation_broker(monkeypatch)
+    original_provider = broker.executor._catalog_provider
+    key = ("9999", broker.executor.account_config.td_front, broker.day)
+    original_provider.get(key, lambda: {"ag2612": {"InstrumentID": "ag2612", "ProductID": "ag"}})
+    monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
+    events = []
+    connection_validation.validate_connection(
+        broker.executor.account_config,
+        lambda step, status, details=None: events.append((step, status, details)),
+    )
+    request = broker.trader.ReqQryInstrument.call_args.args[0]
+    assert request.ProductID == "rb"
+    assert request.ExchangeID == "SHFE"
+    broker.trader.ReqQryInstrument.assert_called_once()
+    assert list(broker.executor._instruments) == ["rb2701"]
+    details = next(data for step, status, data in events if step == "instruments" and status == "passed")
+    assert "螺纹钢" in details["description"]
+    assert details["rows"][0][0] == "rb2701"
+
+    def no_reload():
+        pytest.fail("原有全量目录缓存应保持有效")
+
+    assert list(original_provider.get(key, no_reload)) == ["ag2612"]
+
+
+@pytest.mark.parametrize("wrong_product", [False, True])
+def test_validation_empty_rb_query_fails_without_full_market_fallback(monkeypatch, wrong_product):
+    from axile.executor.ctp import connection_validation
+    from axile.executor.ctp.ctp_execute import CtpRequestError
+
+    broker = ScriptedBroker(monkeypatch) if wrong_product else _validation_broker(monkeypatch)
+    if not wrong_product:
+        broker.rows["ReqQryInstrument"] = []
+    monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
+    events = []
+    with pytest.raises(CtpRequestError, match="螺纹钢合约查询返回空结果"):
+        connection_validation.validate_connection(
+            broker.executor.account_config,
+            lambda step, status, details=None: events.append((step, status)),
+        )
+    assert events[-1] == ("instruments", "running")
+    broker.trader.ReqQryInstrument.assert_called_once()
+    assert broker.trader.ReqQryInstrument.call_args.args[0].ProductID == "rb"
+
+
+def test_regular_executor_still_requests_full_catalog(monkeypatch):
+    broker = ScriptedBroker(monkeypatch)
+    try:
+        broker.start()
+        request = broker.trader.ReqQryInstrument.call_args.args[0]
+        assert request.ProductID == ""
+        assert request.ExchangeID == ""
+        assert "ag2612" in broker.executor._instruments
+    finally:
+        broker.executor.close()

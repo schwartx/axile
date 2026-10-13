@@ -180,20 +180,19 @@ def test_startup_retries_synchronized_accounts_and_isolates_failure(
     """重启重建内存态，即使上次成功也准备；首个账户失败不污染后续连接。"""
 
     async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db") as (factory, sessions):
+        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
             async with factory() as session, session.begin():
                 session.add(AccountRuntimeSync(account_id=1, status="synchronized"))
             calls: list[int | None] = []
 
             async def prepare(account: Account, **_kwargs: object) -> None:
-                assert all(not session.in_transaction() for session in sessions)
                 calls.append(account.id)
                 if account.id == 1:
                     raise RuntimeError("offline")
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
             await runtime.recover_account_runtime_on_startup(MagicMock(), session_factory=factory)
-            assert calls == [1, 2]
+            assert sorted(calls) == [1, 2]
             async with factory() as session:
                 rows = list(
                     (await session.scalars(select(AccountRuntimeSync).order_by(AccountRuntimeSync.account_id))).all()
@@ -289,5 +288,52 @@ def test_only_explicit_ctp_prepare_error_is_pending(tmp_path, monkeypatch, bound
             assert sync.status == "failed"
             assert sync.last_error == "账户通道准备未完成"
             assert "SDK" not in sync.last_error
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("wal", [False, True])
+def test_slow_startup_account_does_not_block_another_account(tmp_path, monkeypatch, wal):
+    """首个账户卡在柜台时，其他账户仍独立恢复并提交 synchronized 状态。"""
+
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db", wal=wal) as (factory, _sessions):
+            slow_started, release_slow, healthy_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            original_finish = runtime._finish_attempt
+
+            async def prepare(account, **_kwargs):
+                if account.id == 1:
+                    slow_started.set()
+                    await release_slow.wait()
+                    raise RuntimeError("柜台不可用")
+
+            async def finish(account_id, *args, **kwargs):
+                sync = await original_finish(account_id, *args, **kwargs)
+                if account_id == 2:
+                    healthy_finished.set()
+                return sync
+
+            monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
+            monkeypatch.setattr(runtime, "_finish_attempt", finish)
+            recovery = asyncio.create_task(
+                runtime.recover_account_runtime_on_startup(MagicMock(), session_factory=factory)
+            )
+            try:
+                await asyncio.wait_for(slow_started.wait(), 2)
+                await asyncio.wait_for(healthy_finished.wait(), 2)
+                assert not recovery.done()
+                async with factory() as session:
+                    states = {
+                        row.account_id: row.status for row in (await session.scalars(select(AccountRuntimeSync))).all()
+                    }
+                assert states == {1: "pending", 2: "synchronized"}
+            finally:
+                release_slow.set()
+                await asyncio.wait_for(recovery, 2)
+            async with factory() as session:
+                states = {
+                    row.account_id: row.status for row in (await session.scalars(select(AccountRuntimeSync))).all()
+                }
+            assert states == {1: "failed", 2: "synchronized"}
 
     asyncio.run(scenario())

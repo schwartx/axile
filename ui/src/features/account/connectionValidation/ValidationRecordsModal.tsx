@@ -97,19 +97,20 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
         </select>)}
       </div>
       <div role="region" aria-label="查询记录表格" tabIndex={0} className="min-h-[300px] max-h-[52vh] overflow-auto rounded-lg border border-line outline-none focus-visible:ring-1 focus-visible:ring-accent">
-        <table className="w-full table-fixed border-collapse text-left text-[12px]" style={{ minWidth: Math.max(600, table.columns.length * 132) }}>
-          <thead className="sticky top-0 z-1 bg-fill text-ink-3"><tr>
-            {table.columns.map((column) => <th key={column.key} scope="col" className="border-b border-line px-3 py-2 font-normal"
+        <table className="w-full table-fixed border-separate border-spacing-0 text-left text-[12px]" style={{ minWidth: Math.max(600, table.columns.length * 132) }}>
+          <thead className="text-ink-2"><tr>
+            {/* 暗色 fill 为半透明；固定表头先铺 surface，遮住滚动正文，分隔线随单元格固定。 */}
+            {table.columns.map((column) => <th key={column.key} scope="col" className="sticky top-0 z-1 border-b border-line bg-surface bg-[linear-gradient(var(--color-fill),var(--color-fill))] px-3 py-2 font-normal"
               aria-sort={sort?.key === column.key ? sort.descending ? 'descending' : 'ascending' : 'none'}>
               <button type="button" onClick={() => { setSort({ key: column.key, descending: sort?.key === column.key ? !sort.descending : false }); setPage(1) }}
                 className="flex w-full cursor-pointer items-center gap-2 text-left">
-                {column.label}<span aria-hidden="true">{sort?.key === column.key ? sort.descending ? '↓' : '↑' : '↕'}</span>
+                {column.label}<span aria-hidden="true" className={`w-3 shrink-0 text-center ${sort?.key === column.key ? 'text-accent' : 'text-ink-3'}`}>{sort?.key === column.key ? sort.descending ? '↓' : '↑' : '↕'}</span>
               </button>
             </th>)}
           </tr></thead>
-          <tbody className="divide-y divide-line text-ink-1">
-            {rows.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((index) => <tr key={index}>
-              {table.columns.map((column, columnIndex) => <td key={column.key} className="whitespace-pre-wrap px-3 py-2 align-top tabular-nums [overflow-wrap:anywhere]">{validationCellText(table.rows[index][columnIndex])}</td>)}
+          <tbody className="text-ink-1">
+            {rows.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((index) => <tr key={index} className="[&:last-child>td]:border-b-0">
+              {table.columns.map((column, columnIndex) => <td key={column.key} className="border-b border-line whitespace-pre-wrap px-3 py-2 align-top tabular-nums [overflow-wrap:anywhere]">{validationCellText(table.rows[index][columnIndex])}</td>)}
             </tr>)}
           </tbody>
         </table>
