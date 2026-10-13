@@ -49,6 +49,8 @@ def test_routes_release_transactions_before_worker(
                 called = True
 
             class Manager:
+                configure_catalog_account = MagicMock()
+
                 async def get_account_assets(self, account: Account) -> UnifiedAccountAssets:
                     await write_from_worker(account)
                     return UnifiedAccountAssets(available_cash=1000, total_asset=1000, market_value=0, positions=[])
@@ -169,6 +171,8 @@ def test_session_prepare_reloads_after_waiting_for_runtime_lock(
             prepared: list[str] = []
 
             class Manager:
+                configure_catalog_account = MagicMock()
+
                 async def prepare_account(self, account: Account):
                     assert all(not session.in_transaction() for session in sessions)
                     prepared.append(account.name)

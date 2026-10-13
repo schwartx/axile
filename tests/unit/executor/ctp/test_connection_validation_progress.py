@@ -26,7 +26,6 @@ def test_connection_progress_matches_real_startup(monkeypatch):
                 "authenticate",
                 "trader_login",
                 "settlement",
-                "instruments",
                 "market_login",
                 "query_orders",
                 "query_trades",
@@ -259,11 +258,13 @@ def test_validation_emits_only_useful_details_before_following_queries(monkeypat
 
 def test_validation_queries_rb_without_reusing_or_overwriting_full_catalog(monkeypatch):
     from axile.executor.ctp import connection_validation
+    from axile.executor.instrument_catalog_records import Instrument
 
     broker = _validation_broker(monkeypatch)
-    original_provider = broker.executor._catalog_provider
-    key = ("9999", broker.executor.account_config.td_front, broker.day)
-    original_provider.get(key, lambda: {"ag2612": {"InstrumentID": "ag2612", "ProductID": "ag"}})
+    original_provider = broker.executor._instrument_provider
+    row = Instrument("SHFE", "ag2612", "FUTURE", 15, 1)
+    original_provider.bind(lambda symbols, timeout: [row])
+    original_provider.ensure([row.key])
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
     events = []
     connection_validation.validate_connection(
@@ -279,10 +280,7 @@ def test_validation_queries_rb_without_reusing_or_overwriting_full_catalog(monke
     assert "螺纹钢" in details["description"]
     assert details["rows"][0][0] == "rb2701"
 
-    def no_reload():
-        pytest.fail("原有全量目录缓存应保持有效")
-
-    assert list(original_provider.get(key, no_reload)) == ["ag2612"]
+    assert original_provider.ensure([row.key]) == {row.key: row}
 
 
 @pytest.mark.parametrize("wrong_product", [False, True])
@@ -305,13 +303,17 @@ def test_validation_empty_rb_query_fails_without_full_market_fallback(monkeypatc
     assert broker.trader.ReqQryInstrument.call_args.args[0].ProductID == "rb"
 
 
-def test_regular_executor_still_requests_full_catalog(monkeypatch):
+def test_regular_executor_connects_without_full_catalog(monkeypatch):
+    from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
+
     broker = ScriptedBroker(monkeypatch)
+    broker.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(InstrumentCatalog()))
     try:
         broker.start()
+        broker.trader.ReqQryInstrument.assert_not_called()
+        assert broker.executor._instruments == {}
+        assert broker.executor.get_tick_size("ag2612") == 1
         request = broker.trader.ReqQryInstrument.call_args.args[0]
-        assert request.ProductID == ""
-        assert request.ExchangeID == ""
-        assert "ag2612" in broker.executor._instruments
+        assert request.InstrumentID == "ag2612"
     finally:
         broker.executor.close()

@@ -11,6 +11,7 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
+from functools import partial
 from typing import cast
 
 from loguru import logger
@@ -291,6 +292,14 @@ def _resolve_prepared_executor(
         已完成请求级准备的执行器实例。
     """
     executor = _resolve_executor(state, account, initialize=False)
+    if account.trade_channel == TradeChannel.CTP:
+        from axile.server.execution.catalog_control import catalog_control_scope
+
+        setattr(executor, "_catalog_control_factory", partial(catalog_control_scope, account))
+    if state.catalog_provider is not None:
+        set_instruments = getattr(executor, "set_instrument_catalog_provider", None)
+        if callable(set_instruments):
+            set_instruments(state.catalog_provider)
     _prepare_executor(
         executor=executor,
         account=account,
@@ -301,10 +310,8 @@ def _resolve_prepared_executor(
     verify = getattr(executor, "_verify_connection", None)
     if callable(verify) and not bool(verify()):
         catalog = state.catalog_provider
-        set_catalog = getattr(executor, "set_catalog_provider", None)
-        if catalog is not None and callable(set_catalog):
-            set_catalog(catalog)
-        else:
+        set_catalog = getattr(executor, "set_instrument_catalog_provider", None)
+        if not callable(set_catalog):
             catalog = None
         end_attempted = False
         try:

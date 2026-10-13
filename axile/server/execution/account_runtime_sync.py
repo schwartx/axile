@@ -20,6 +20,7 @@ from axile.server.db.models import Account
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSync, AccountRuntimeSyncAttempt
 from axile.server.db.models.base import now_str
+from axile.server.db.models.execution import ExecuteRecord
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend.manager import WorkerBackendExecutionError
@@ -38,6 +39,7 @@ class _RuntimeTarget:
     revision: int
     reset_worker: bool
     portfolio_id: int | None
+    last_execution: str = ""
 
 
 async def enqueue_account_runtime_sync(
@@ -112,7 +114,13 @@ async def _begin_attempt(
         )
         assert sync is not None
         portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
-        return _RuntimeTarget(account.snapshot(), sync.revision, sync.reset_worker, portfolio_id)
+        last_execution = await session.scalar(
+            select(ExecuteRecord.created_at)
+            .where(ExecuteRecord.account_id == account_id)
+            .order_by(col(ExecuteRecord.id).desc())
+            .limit(1)
+        )
+        return _RuntimeTarget(account.snapshot(), sync.revision, sync.reset_worker, portfolio_id, last_execution or "")
 
 
 async def _finish_attempt(
@@ -151,7 +159,7 @@ async def _prepare_runtime_target(
     """仅在渠道准备边界识别明确的柜台未初始化；scheduler 错误不能降级。"""
     reset = target.reset_worker or (target.account.trade_channel == TradeChannel.TQ and mode in {"day", "night"})
     try:
-        await reconcile_china_channel_account(target.account, reset=reset)
+        await reconcile_china_channel_account(target.account, reset=reset, last_execution=target.last_execution)
     except WorkerBackendExecutionError as exc:
         if target.account.trade_channel != TradeChannel.CTP or exc.reason_code != "CTP_NOT_INITIALIZED":
             raise

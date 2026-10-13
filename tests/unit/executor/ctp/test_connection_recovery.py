@@ -11,7 +11,7 @@ from openctp_ctp import thosttraderapi as td
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.ctp.ctp_execute import CTPExecutor, CtpRequestError, CtpSessionRecoveryRequired
-from axile.executor.ctp_catalog import CatalogStore, LocalCatalogProvider
+from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.server.execution.worker_backend import worker_state
@@ -40,7 +40,7 @@ class ScriptedBroker:
 
     def __init__(self, monkeypatch, *, day="20260909", session=2):
         self.executor = CTPExecutor(TradeChannel.CTP)
-        self.executor.set_catalog_provider(LocalCatalogProvider(CatalogStore()))
+        self.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(InstrumentCatalog()))
         self.executor.account_config = CTPAccountConfig(
             broker_id="9999",
             investor_id="100001",
@@ -121,7 +121,8 @@ class ScriptedBroker:
     def _response(self, name):
         def respond(_request, rid):
             self.events.append(name)
-            assert not self.executor._verify_connection()
+            if name != "ReqQryInstrument":
+                assert not self.executor._verify_connection()
             if name in self.hooks:
                 self.hooks[name]()
             callback = getattr(self.trader_spi, name.replace("Req", "OnRsp", 1))
@@ -182,7 +183,6 @@ def test_startup_waits_for_all_stages_and_recovers_old_session_trade(broker):
         "ReqUserLogin",
         "ReqQrySettlementInfoConfirm",
         "ReqSettlementInfoConfirm",
-        "ReqQryInstrument",
         "MarketLogin",
         "ReqQryOrder",
         "ReqQryTrade",
@@ -284,7 +284,7 @@ def test_stage_timeout_is_sticky_and_late_login_does_not_restore_readiness(broke
     assert broker.executor._trading_day == ""
 
 
-@pytest.mark.parametrize("name", ["ReqQryInstrument", "ReqQryTradingAccount"])
+@pytest.mark.parametrize("name", ["ReqQryTradingAccount"])
 def test_missing_required_snapshot_never_becomes_ready(broker, name):
     broker.rows[name] = []
     with pytest.raises(CtpRequestError, match="空结果"):
@@ -460,16 +460,19 @@ def test_worker_rebuilds_disconnected_ctp_with_fresh_stages_and_metadata(broker,
 
 
 def test_two_accounts_share_catalog_but_keep_independent_login_and_recovery(monkeypatch):
-    provider = LocalCatalogProvider(CatalogStore())
+    from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
+
+    catalog = InstrumentCatalog()
     first = ScriptedBroker(monkeypatch)
-    first.executor.set_catalog_provider(provider)
+    first.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(catalog))
     try:
         first.start()
         second = ScriptedBroker(monkeypatch, session=3)
         second.executor.account_config.investor_id = "100002"
-        second.executor.set_catalog_provider(provider)
+        second.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(catalog))
         try:
             second.start()
+            first.executor.get_tick_size("ag2612")
             assert first.events.count("ReqQryInstrument") == 1
             assert "ReqQryInstrument" not in second.events
             assert "ReqAuthenticate" in second.events
@@ -481,10 +484,10 @@ def test_two_accounts_share_catalog_but_keep_independent_login_and_recovery(monk
         finally:
             second.executor.close()
         next_day = ScriptedBroker(monkeypatch, day="20260910")
-        next_day.executor.set_catalog_provider(provider)
+        next_day.executor.set_instrument_catalog_provider(LocalInstrumentCatalogProvider(catalog))
         try:
             next_day.start()
-            assert next_day.events.count("ReqQryInstrument") == 1
+            assert next_day.events.count("ReqQryInstrument") == 0
         finally:
             next_day.executor.close()
     finally:
@@ -496,14 +499,14 @@ def test_reconciliation_progress_keeps_watchdog_alive_over_sixty_seconds(broker,
     updated = [100.0]
     phases = []
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.time.monotonic", lambda: now[0])
-    provider = LocalCatalogProvider(CatalogStore())
+    provider = LocalInstrumentCatalogProvider(InstrumentCatalog())
 
     def progress(phase):
         phases.append(phase)
         updated[0] = now[0]
 
     monkeypatch.setattr(provider, "progress", progress)
-    broker.executor.set_catalog_provider(provider)
+    broker.executor.set_instrument_catalog_provider(provider)
     handle = SimpleNamespace(catalog=SimpleNamespace(snapshot=lambda _: (True, updated[0], 100.0, 0.0)))
     request = SimpleNamespace(request_id="test")
 

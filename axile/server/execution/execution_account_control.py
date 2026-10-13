@@ -24,6 +24,8 @@ from axile.server.db.models.account_control_session import AccountControlSession
 async def build_account_control_guard(
     account: AccountContext,
     execution_id: str | None,
+    *,
+    register_monitor: bool = True,
 ) -> AccountControlGuard:
     """
     构造本次 execution 使用的账户控制防护层.
@@ -80,7 +82,8 @@ async def build_account_control_guard(
     except Exception:
         guard.monitor_incomplete = True
         logger.exception("流控监控会话登记失败，统计完整性未知")
-    providers.register(guard)
+    if register_monitor:
+        providers.register(guard)
     return guard
 
 

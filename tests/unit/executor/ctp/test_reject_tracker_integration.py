@@ -64,6 +64,7 @@ def test_native_reject_replays_only_into_matching_session(monkeypatch, callback,
         assert tracker.completed_orders[old_id].status == OrderStatus.REJECTED
         assert tracker.all_done_event.is_set()
         # 合约目录为只读快照；本测试替换本地测试目录模拟交易规则变化。
+        executor._catalog_frozen = True
         instrument = SimpleNamespace(**executor._instruments["ag2612"].values)
         executor._instruments = {"ag2612": instrument}
         instrument.MinLimitOrderVolume = 3

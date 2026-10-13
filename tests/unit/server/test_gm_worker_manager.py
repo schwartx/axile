@@ -99,6 +99,7 @@ class _FakeControlConnection:
 
 class _FakeHandle:
     catalog = None
+    instruments = None
 
     def __init__(
         self,
@@ -881,3 +882,21 @@ def test_shutdown_does_not_wait_indefinitely_for_account_recovery_lock():
     finally:
         handle.request_lock.release()
         thread.join(timeout=1)
+
+
+def test_execution_activity_does_not_reenable_paused_catalog_source():
+    from unittest.mock import Mock
+
+    manager = WorkerBackendManager()
+    handle = _FakeHandle()
+    handle.catalog = Mock()
+    manager._workers[2] = handle
+    paused = build_account(id=2, is_started=False)
+    try:
+        manager.configure_catalog_account(paused, last_execution="2026-10-13 20:00:00")
+        manager._record_catalog_execution(2)
+        assert manager._catalog_accounts[2][1] is False
+        assert handle.catalog.configure.call_args.kwargs["enabled"] is False
+        assert manager._catalog_accounts[2][2] >= "2026-10-13T20:00:00"
+    finally:
+        manager.close()

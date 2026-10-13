@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -12,6 +13,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar, cast
 
+from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
+from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, normalize_catalog_symbol
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
 T = TypeVar("T")
@@ -131,7 +134,7 @@ class TQRuntime:
 
     @property
     def resolver(self) -> TQSymbolResolver:
-        """返回初始化阶段构建的只读 symbol 解析器."""
+        """返回当前执行器的按需 symbol 解析器副本。"""
         if self._resolver is None:
             raise RuntimeError("TqSdk symbol 索引尚未就绪")
         return self._resolver
@@ -268,42 +271,73 @@ class TQRuntime:
             raise RuntimeError(f"TqSdk 运行时关闭失败: {self._close_error}") from self._close_error
 
     def _build_catalog(self, api: object) -> TQSymbolResolver:
-        query_quotes = getattr(api, "query_quotes")
-        records: dict[str, TQInstrument] = {}
-        for ins_class in ("FUTURE", "OPTION", "COMBINE"):
-            for expired in (False, True):
-                try:
-                    symbols = query_quotes(ins_class=ins_class, expired=expired)
-                except TypeError:
-                    if expired:
-                        continue
-                    symbols = query_quotes(ins_class=ins_class)
-                for raw_symbol in symbols:
-                    symbol = str(raw_symbol)
-                    if "." not in symbol:
-                        continue
-                    exchange_id, instrument_id = symbol.split(".", 1)
-                    records[symbol] = TQInstrument(symbol, instrument_id, exchange_id, ins_class, expired)
-        # query_quotes 不会订阅实时行情；无类别过滤的结果用于补齐指数、连续合约、
-        # 股票和现货等只读品种，衍生品记录仍保留上面的精确类别与可交易属性。
-        for expired in (False, True):
+        return TQSymbolResolver([], loader=self._load_symbol)
+
+    def _load_symbol(self, symbol: str) -> list[TQInstrument]:
+        if "." in symbol and symbol.split(".", 1)[0] not in EXCHANGES:
+            exchange, local = symbol.split(".", 1)
+            return [TQInstrument(symbol, local, exchange, "QUOTE_ONLY")]
+        rows = self.query_catalog([symbol], 5.0)
+        return [TQInstrument(r.key, r.symbol, r.exchange, r.kind) for r in rows]
+
+    def install_catalog(self, rows: list[Instrument], loader: Callable[[str], list[TQInstrument]]) -> None:
+        """原子替换执行器的解析器副本，不读取实时行情规格。"""
+        self._resolver = TQSymbolResolver(
+            [TQInstrument(r.key, r.symbol, r.exchange, r.kind) for r in rows], loader=loader
+        )
+
+    def query_catalog(self, symbols: list[str] | None, timeout: float) -> list[Instrument]:
+        """在 owner 协程内查询基础资料，调用线程只等待有界结果。"""
+        done = threading.Event()
+        result: list[Instrument] = []
+        errors: list[Exception] = []
+        deadline = clock_monotonic() + timeout
+
+        async def collect(api: object) -> None:
             try:
-                symbols = query_quotes(expired=expired)
-            except TypeError:
-                continue
-            for raw_symbol in symbols:
-                symbol = str(raw_symbol)
-                if symbol in records or "." not in symbol:
+                result.extend(await self._query_catalog_async(api, symbols, deadline))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        task = self.call(lambda api: getattr(api, "create_task")(collect(api)), timeout=timeout)
+        if not get_default_clock().event_wait(done, max(0.0, deadline - clock_monotonic())):
+            self._commands.put(_Command(lambda api: getattr(task, "cancel")()))
+            raise TimeoutError("TQ 合约基础资料查询超时")
+        if errors:
+            raise errors[0]
+        return result
+
+    @staticmethod
+    async def _sdk_result(value):
+        if hasattr(value, "__await__"):
+            return await value
+        return value
+
+    async def _query_catalog_async(self, api: object, symbols: list[str] | None, deadline: float) -> list[Instrument]:
+        requested = {normalize_catalog_symbol(symbol) for symbol in symbols} if symbols is not None else None
+        products: set[str] = set()
+        if requested is not None:
+            for symbol in requested:
+                match = re.search(r"[A-Za-z_]+(?=\d)", symbol.split(".", 1)[-1])
+                if match is None:
+                    raise ValueError(f"无法解析天勤合约代码: {symbol}")
+                products.add(match.group())
+        records: dict[str, Instrument] = {}
+        for kind in ("FUTURE", "OPTION", "COMBINE"):
+            if clock_monotonic() >= deadline:
+                raise TimeoutError("TQ 合约代码目录查询超时")
+            filters = {"product_id": sorted(products)} if requested is not None and kind != "OPTION" else {}
+            found = await self._sdk_result(getattr(api, "query_quotes")(ins_class=kind, expired=False, **filters))
+            for raw in found:
+                exchange, _, symbol = str(raw).partition(".")
+                if exchange not in EXCHANGES or not symbol:
                     continue
-                exchange_id, instrument_id = symbol.split(".", 1)
-                records[symbol] = TQInstrument(
-                    symbol,
-                    instrument_id,
-                    exchange_id,
-                    "QUOTE_ONLY",
-                    expired,
-                )
-        return TQSymbolResolver(list(records.values()))
+                record = Instrument(exchange, symbol, kind)
+                if requested is None or requested.intersection((record.key, record.symbol)):
+                    records[record.key] = record
+        return list(records.values())
 
     def _emit(self, kind: str, payload: dict[str, object]) -> None:
         for listener in tuple(self._listeners):

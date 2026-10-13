@@ -13,9 +13,11 @@ from zoneinfo import ZoneInfo
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.exceptions import AccountControlBlockedError
+from axile.executor.catalog_execution import CatalogExecutionMixin
 from axile.executor.china_futures_session import is_within_possible_china_futures_session
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
+from axile.executor.instrument_catalog import InstrumentCatalogProvider
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
@@ -25,6 +27,7 @@ from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.runtime import TQRuntime, snapshot_entity
+from axile.executor.tq.symbols import TQInstrument
 
 # TqSdk 数值标志 + CTP 风格语义标志（算法层统一按 CTP 语义传递）。
 _OFFSET_MAP = {
@@ -152,10 +155,11 @@ class TQExecutionEngine(ExecutionEngine):
         return super()._derive_dispatch_error(status, symbol_results)
 
 
-class TQExecutor(AbstractExecutor):
+class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     """将 TqSdk 原语适配到 Axile 通用执行器契约."""
 
     def __init__(self, account_config: TQAccountConfig) -> None:
+        self._init_instrument_catalog()
         self._runtime: TQRuntime | None = None
         self._quotes: dict[str, UnifiedPriceData] = {}
         self._order_callbacks: list[OrderUpdateCallback] = []
@@ -191,6 +195,54 @@ class TQExecutor(AbstractExecutor):
         runtime = TQRuntime(lambda: self._build_api(account_config))
         runtime.add_listener(self._on_runtime_event)
         self._runtime = runtime
+        self._instrument_provider.bind(runtime.query_catalog, channel="tq")
+        runtime.install_catalog([], self._resolve_catalog_symbol)
+
+    def _install_catalog(self, rows) -> None:
+        self._require_runtime().install_catalog(list(self._catalog_records.values()), self._resolve_catalog_symbol)
+
+    @override
+    def set_instrument_catalog_provider(self, provider: InstrumentCatalogProvider) -> None:
+        """TQ 构造时已连接；注入主服务目录时迁移现有查询来源。"""
+        if self._instrument_provider is provider:
+            return
+        self._instrument_provider.close()
+        super().set_instrument_catalog_provider(provider)
+        if self._runtime is not None:
+            provider.bind(self._runtime.query_catalog, channel="tq")
+
+    def _resolve_catalog_symbol(self, symbol: str) -> list[TQInstrument]:
+        from axile.executor.instrument_catalog_records import EXCHANGES
+
+        if "." in symbol and symbol.split(".", 1)[0] not in EXCHANGES:
+            exchange, local = symbol.split(".", 1)
+            return [TQInstrument(symbol, local, exchange, "QUOTE_ONLY")]
+        self._ensure_instrument_symbols([symbol])
+        row = self._catalog_record(symbol)
+        if row is None:
+            raise ValueError(f"缺少合约资料: {symbol}")
+        return [TQInstrument(row.key, row.symbol, row.exchange, row.kind)]
+
+    def _catalog_related_symbols(self) -> list[str]:
+        def collect(api):
+            positions = getattr(api, "get_position")()
+            orders = getattr(api, "get_order")()
+            symbols = [
+                str(symbol)
+                for symbol, row in positions.items()
+                if any(
+                    float(getattr(row, name, 0) or 0) != 0
+                    for name in ("pos_long_today", "pos_long_his", "pos_short_today", "pos_short_his")
+                )
+            ]
+            symbols.extend(
+                f"{row.exchange_id}.{row.instrument_id}"
+                for row in orders.values()
+                if getattr(row, "status", "") == "ALIVE"
+            )
+            return symbols
+
+        return self._require_runtime().call(collect)
 
     def _require_runtime(self) -> TQRuntime:
         if self._runtime is None:
@@ -304,7 +356,7 @@ class TQExecutor(AbstractExecutor):
         for symbol in dict.fromkeys(symbols):
             try:
                 tq_symbol = runtime.resolver.to_tq(symbol, for_trade=True)
-            except ValueError:
+            except (ValueError, RuntimeError, TimeoutError):
                 results[symbol] = TQTradingTimeCheck(TQTradingTimeStatus.QUOTE_TRADING_TIME_UNAVAILABLE)
             else:
                 pending[symbol] = self._trading_sessions(tq_symbol)
@@ -360,6 +412,7 @@ class TQExecutor(AbstractExecutor):
             return account, positions
 
         account, positions = runtime.call(query)
+        self._ensure_instrument_symbols(list(positions))
         quotes = runtime.quote_snapshots(list(positions)) if positions else {}
         return account_to_unified(account, positions, runtime.resolver, quotes)
 
@@ -399,6 +452,7 @@ class TQExecutor(AbstractExecutor):
     ) -> UnifiedOrder:
         if not float(volume).is_integer() or volume <= 0:
             raise ValueError("TqSdk 委托数量必须为正整数手")
+        self._ensure_instrument_symbols([symbol])
         runtime = self._require_runtime()
         tq_symbol = runtime.resolver.to_tq(symbol, for_trade=True)
         sessions = self._trading_sessions(tq_symbol)
@@ -635,6 +689,7 @@ class TQExecutor(AbstractExecutor):
         if self._closed:
             return
         self._closed = True
+        self._instrument_provider.close()
         if self._runtime is not None:
             self._runtime.close()
 

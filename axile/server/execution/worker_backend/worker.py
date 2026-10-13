@@ -576,8 +576,6 @@ def run_worker_backend_loop(
                 request_id,
             )
     finally:
-        if catalog_connection is not None:
-            catalog_connection.close()
         try:
             _close_executor(state.executor)
         except BaseException as close_exc:  # noqa: BLE001 - 清理异常也必须可见
@@ -585,6 +583,8 @@ def run_worker_backend_loop(
                 "执行器清理失败 | account_id={}",
                 account_id,
             )
+        if catalog is not None:
+            catalog.stop()
         try:
             connection.close()
         except OSError as close_exc:

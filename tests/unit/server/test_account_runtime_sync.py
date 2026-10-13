@@ -35,7 +35,7 @@ def test_old_result_cannot_overwrite_new_revision(
 
             monkeypatch.setattr(runtime, "_finish_attempt", observe_finish)
 
-            async def prepare(account: Account, *, reset: bool) -> None:
+            async def prepare(account: Account, *, reset: bool, last_execution: str = "") -> None:
                 assert all(not session.in_transaction() for session in sessions)
                 observed.append((account.name, reset))
                 if len(observed) == 1:
@@ -218,7 +218,7 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
             mode = "pending"
             resets = []
 
-            async def prepare(account, *, reset):
+            async def prepare(account, *, reset, last_execution=""):
                 assert all(not session.in_transaction() for session in sessions)
                 resets.append(reset)
                 if mode == "pending":
@@ -335,5 +335,19 @@ def test_slow_startup_account_does_not_block_another_account(tmp_path, monkeypat
                     row.account_id: row.status for row in (await session.scalars(select(AccountRuntimeSync))).all()
                 }
             assert states == {1: "failed", 2: "synchronized"}
+
+    asyncio.run(scenario())
+
+
+def test_runtime_target_keeps_latest_execution_time_for_catalog_preference(tmp_path):
+    from axile.server.db.models.execution import ExecuteRecord
+
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
+            async with factory() as session, session.begin():
+                session.add(ExecuteRecord(account_id=1, is_success=1, created_at="2026-10-13 20:00:00"))
+                session.add(ExecuteRecord(account_id=1, is_success=0, created_at="2026-10-13 21:00:00"))
+            target = await runtime._begin_attempt(1, factory)
+            assert target.last_execution == "2026-10-13 21:00:00"
 
     asyncio.run(scenario())

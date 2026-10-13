@@ -5,17 +5,35 @@ from collections.abc import Coroutine
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
+from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.tq import TQExecutor
 from axile.executor.tq.tq_execute import TQTradingTimeCheck, TQTradingTimeStatus
+from tests.unit.executor.tq._catalog_test_support import CatalogApiMixin
 
 
-class FakeApi:
+def test_injected_catalog_registers_existing_tq_connection_once(executor, monkeypatch):
+    instance, _ = executor
+    original = instance._instrument_provider
+    catalog = InstrumentCatalog()
+    provider = LocalInstrumentCatalogProvider(catalog)
+    bind = Mock(wraps=provider.bind)
+    monkeypatch.setattr(provider, "bind", bind)
+    instance.set_instrument_catalog_provider(provider)
+    instance.set_instrument_catalog_provider(provider)
+    bind.assert_called_once()
+    assert original.catalog.status()["sources"] == 0
+    assert catalog.status()["sources"] == 1
+    assert provider.ensure(["SHFE.rb2610"])["SHFE.rb2610"].multiplier is None
+
+
+class FakeApi(CatalogApiMixin):
     def __init__(self) -> None:
         self.quote = {
             "exchange_id": "SHFE",
@@ -58,9 +76,6 @@ class FakeApi:
         self.quote_calls = 0
         self.closed = False
         self.loop: asyncio.AbstractEventLoop | None = None
-
-    def query_quotes(self, *, ins_class: str, expired: bool = False) -> list[str]:
-        return ["SHFE.rb2610"] if ins_class == "FUTURE" and not expired else []
 
     def create_task(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task:
         if self.loop is None:
@@ -229,7 +244,7 @@ def test_stale_market_refresh_reuses_snapshot_and_remains_stale(executor: tuple[
     assert api.quote_calls == 1
 
 
-def test_missing_first_quote_returns_empty_market_but_metadata_times_out(
+def test_missing_first_quote_keeps_code_directory_but_cannot_supply_specs(
     executor: tuple[TQExecutor, FakeApi], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     instance, api = executor
@@ -241,9 +256,25 @@ def test_missing_first_quote_returns_empty_market_but_metadata_times_out(
     runtime = instance._require_runtime()
     read = runtime.quote_snapshots
     monkeypatch.setattr(runtime, "quote_snapshots", lambda symbols, **_kwargs: read(symbols, timeout=0.02))
+    instance._ensure_instrument_symbols(["rb2610"])
+    assert instance._catalog_record("rb2610").multiplier is None
     assert instance.get_market_data(["rb2610"]) == {}
-    with pytest.raises(TimeoutError, match="SHFE.rb2610"):
+    with pytest.raises(TimeoutError, match="首次行情订阅超时"):
         instance.get_tick_size("rb2610")
+    assert not api.insert_args
+
+
+def test_tq_uses_quote_specs_even_when_shared_catalog_contains_ctp_specs(executor):
+    from axile.executor.instrument_catalog_records import Instrument
+
+    instance, api = executor
+    provider = instance._instrument_provider
+    provider.catalog.register(
+        "ctp", lambda symbols, timeout: [Instrument("SHFE", "rb2610", "FUTURE", 100, 5)], channel="ctp"
+    )
+    api.quote["price_tick"] = 2
+    api.quote["volume_multiple"] = 20
+    assert instance.get_tick_size("rb2610") == 2
     assets = UnifiedAccountAssets(available_cash=1_000_000, total_asset=1_000_000, market_value=0, positions=[])
-    with pytest.raises(TimeoutError, match="SHFE.rb2610"):
-        instance._calculate_generic_volume(0.32, 3200, assets, {"contract_multiplier": 10}, symbol="rb2610")
+    assert instance._calculate_generic_volume(0.32, 3200, assets, {}, symbol="rb2610") == 5
+    assert instance.get_account_assets().positions[0].market_value == 3200 * 3 * 20

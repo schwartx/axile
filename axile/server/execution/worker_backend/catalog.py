@@ -1,207 +1,274 @@
-"""独立合约目录管道；服务线程从不获取账户业务请求锁。"""
+"""独立目录管道：共享查询与初始化进度复用同一连接。"""
 
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable, Mapping
-from hashlib import sha256
+from dataclasses import dataclass, field
 from multiprocessing.connection import Connection
 from typing import Any
 from uuid import uuid4
 
-from loguru import logger
-
-from axile.executor.ctp_catalog import (
-    CatalogKey,
-    CatalogLoad,
-    CatalogRows,
-    CatalogStore,
-    InstrumentRecord,
-    decode_catalog,
-)
+from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
+from axile.executor.instrument_catalog import CatalogError, InstrumentCatalog, Query
+from axile.executor.instrument_catalog_records import Instrument
 
 
-class CatalogSession:
-    """主进程观察到的初始化进度，与业务 request_id 绑定。"""
+@dataclass
+class _Response:
+    ready: threading.Event = field(default_factory=threading.Event)
+    payload: dict[str, Any] = field(default_factory=dict)
 
-    def __init__(self, connection: Connection, store: CatalogStore) -> None:
+
+class _CatalogPipe:
+    """允许双向请求交错，超时响应按 ID 丢弃，不污染下一次请求。"""
+
+    def __init__(self, connection: Connection) -> None:
         self.connection = connection
-        self.store = store
+        self._send_lock = threading.Lock()
+        self._lock = threading.Lock()
+        self._pending: dict[str, _Response] = {}
+        self._closed = threading.Event()
+        self.thread = threading.Thread(target=self._receive, daemon=True, name="instrument-catalog-ipc")
+
+    def _send(self, message: dict) -> None:
+        with self._send_lock:
+            if self._closed.is_set():
+                raise CatalogError("合约目录管道已关闭")
+            self.connection.send(message)
+
+    def _request(self, op: str, timeout: float, checkpoint: Callable[[], None] | None = None, **payload: Any) -> Any:
+        request_id, response = uuid4().hex, _Response()
+        with self._lock:
+            self._pending[request_id] = response
+        try:
+            self._send({"id": request_id, "op": op, "timeout": timeout, **payload})
+            deadline = clock_monotonic() + timeout
+            while not response.ready.is_set():
+                if checkpoint is not None:
+                    checkpoint()
+                if self._closed.is_set():
+                    raise CatalogError("合约目录来源已退出")
+                remaining = deadline - clock_monotonic()
+                if remaining <= 0:
+                    raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
+                get_default_clock().event_wait(response.ready, min(remaining, 0.05))
+            if response.payload.get("error"):
+                raise CatalogError(
+                    response.payload["error"], response.payload.get("reason_code", "CATALOG.UNAVAILABLE")
+                )
+            return response.payload.get("result")
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
+    def _receive(self) -> None:
+        try:
+            while not self._closed.is_set():
+                message = self.connection.recv()
+                if "reply" in message:
+                    with self._lock:
+                        response = self._pending.get(message["reply"])
+                        if response is not None:
+                            response.payload = message
+                            response.ready.set()
+                elif message["op"] in {"bind", "unbind", "begin", "end", "progress"}:
+                    self._handle(message)
+                else:
+                    threading.Thread(
+                        target=self._handle, args=(message,), daemon=True, name="instrument-catalog-request"
+                    ).start()
+        except (EOFError, OSError):
+            pass
+        finally:
+            self._closed.set()
+            self._disconnected()
+
+    def _handle(self, message: dict) -> None:
+        try:
+            result = self._dispatch(message)
+            response = {"reply": message["id"], "result": result}
+        except Exception as exc:
+            response = {
+                "reply": message["id"],
+                "error": str(exc),
+                "reason_code": getattr(exc, "reason_code", "CATALOG.UNAVAILABLE"),
+            }
+        try:
+            self._send(response)
+        except (OSError, CatalogError):
+            pass
+
+    def _dispatch(self, message: dict) -> Any:
+        raise NotImplementedError
+
+    def _disconnected(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        """关闭管道并使所有在途请求立即观察到退出。"""
+        self._closed.set()
+        self._disconnected()
+        with self._send_lock:
+            if not self.connection.closed:
+                self.connection.close()
+
+
+class CatalogSession(_CatalogPipe):
+    """主服务目录代理，当前 worker 可作为查询来源。"""
+
+    def __init__(self, connection: Connection, catalog: InstrumentCatalog, *, enabled: bool = True) -> None:
+        super().__init__(connection)
+        self.catalog = catalog
         self.owner = uuid4().hex
+        self.source: str | None = None
+        self._query: Query | None = None
+        self.enabled = enabled
+        self.channel = self.last_execution = ""
+        self._source_lock = threading.RLock()
         self.request_id = ""
         self.active = False
-        self.updated = 0.0
-        self.started = 0.0
-        self.finished = 0.0
-        self.lock = threading.Lock()
-        self.loads: dict[str, tuple[CatalogKey, CatalogLoad]] = {}
-        self.thread = threading.Thread(target=self._serve, name="ctp-catalog", daemon=True)
-        self.phase = ""
-        self.phase_started = 0.0
+        self.updated = self.started = self.finished = 0.0
+        self.thread.start()
 
     def snapshot(self, request_id: str) -> tuple[bool, float, float, float]:
-        """读取当前请求的初始化进度，隔离旧请求。"""
-        with self.lock:
+        """进度只作用于对应请求，后续业务不得继承旧请求的时间额度。"""
+        with self._lock:
             if self.request_id != request_id:
                 return False, 0.0, 0.0, 0.0
             return self.active, self.updated, self.started, self.finished
 
-    def _progress(self, message: dict[str, Any]) -> None:
-        now = time.monotonic()
-        with self.lock:
-            if message["op"] == "begin":
-                self.request_id = message["request_id"]
-                self.started = now
-                self.finished = 0.0
-                self.active = True
-            elif message["op"] == "end":
-                self.finished = now
-                self.active = False
-            self.updated = now
-        phase = str(message.get("phase", message["op"]))
-        if phase != self.phase:
-            if self.phase:
-                logger.debug("CTP 初始化阶段 | phase={} elapsed={:.3f}s", self.phase, now - self.phase_started)
-            self.phase, self.phase_started = phase, now
-        for _, load in self.loads.values():
-            if load.owner == self.owner:
-                self.store.advance(load)
+    def close(self) -> None:
+        """与 worker 生命周期同步关闭。"""
+        self.stop()
 
-    def _dispatch(self, message: dict[str, Any]) -> dict[str, Any]:
+    def configure(self, *, channel: str, enabled: bool, last_execution: str) -> None:
+        """账户暂停后立即移除来源；恢复时沿用已登录会话。"""
+        with self._source_lock:
+            self.channel, self.enabled, self.last_execution = channel, enabled, last_execution
+            self._register_source()
+
+    def _register_source(self) -> None:
+        if self.source is None or self._query is None:
+            return
+        if self.enabled and not self._closed.is_set():
+            self.catalog.register(self.source, self._query, channel=self.channel, last_execution=self.last_execution)
+        else:
+            self.catalog.unregister(self.source)
+
+    def _dispatch(self, message: dict) -> Any:
         op = message["op"]
         if op in {"begin", "end", "progress"}:
-            self._progress(message)
-            return {}
-        if op == "acquire":
-            key = tuple(message["key"])
-            load = self.store.acquire(key, self.owner)
-            self.loads.clear()
-            self.loads[load.token] = (key, load)
-            data, _, _ = self.store.inspect(load)
-            source = sha256(repr(key[:2]).encode()).hexdigest()[:12]
-            logger.info(
-                "CTP 合约目录 | source={} trading_day={} state={}",
-                source,
-                key[2],
-                "hit" if data is not None else "load" if load.owner == self.owner else "wait",
+            with self._lock:
+                if op == "begin":
+                    self.request_id = message["request_id"]
+                    self.started, self.finished, self.active = clock_monotonic(), 0.0, True
+                elif message["request_id"] != self.request_id or not self.active:
+                    return None
+                elif op == "end":
+                    self.finished, self.active = clock_monotonic(), False
+                self.updated = clock_monotonic()
+            return None
+        if op == "bind":
+            epoch = message["epoch"]
+
+            def query(symbols: list[str] | None, timeout: float) -> list[Instrument]:
+                rows = self._request("query", timeout, symbols=symbols, epoch=epoch)
+                return [Instrument.from_wire(row) for row in rows]
+
+            with self._source_lock:
+                self._disconnected()
+                if self._closed.is_set():
+                    raise CatalogError("合约目录管道已关闭")
+                self.source = f"{self.owner}:{epoch}"
+                self._query = query
+                self.channel = message.get("channel") or self.channel
+                self._register_source()
+                if self._closed.is_set():
+                    self._disconnected()
+            return None
+        if op == "unbind":
+            self._disconnected()
+            return None
+        if op == "ensure":
+            rows = self.catalog.ensure(
+                message["symbols"],
+                self._check_alive,
+                message["timeout"],
+                require_specs=message.get("require_specs", False),
             )
-            return {"token": load.token, "owner": load.owner == self.owner}
-        key, load = self.loads[message["token"]]
-        if op == "poll":
-            data, error, progress = self.store.inspect(load)
-            return {"data": data, "error": error, "progress": progress}
-        if load.owner != self.owner:
-            raise RuntimeError("只有目录加载者可以发布结果")
-        if op == "publish":
-            self.store.publish(key, load, message["rows"])
-            logger.info("CTP 合约目录已缓存 | trading_day={} records={}", key[2], len(message["rows"]))
-        elif op == "fail":
-            self.store.fail(load, message["error"])
-        else:
-            raise ValueError(f"未知目录操作: {op}")
-        return {}
+            return {symbol: row.wire() for symbol, row in rows.items()}
+        raise CatalogError(f"未知目录操作: {op}")
 
-    def _serve(self) -> None:
-        try:
-            while True:
-                message = self.connection.recv()
-                try:
-                    response = self._dispatch(message)
-                except Exception as exc:
-                    response = {"rpc_error": str(exc)}
-                self.connection.send(response)
-        except (EOFError, OSError):
-            pass
-        finally:
-            self.store.release_owner(self.owner)
-            self._close_connection()
+    def _check_alive(self) -> None:
+        if self._closed.is_set():
+            raise CatalogError("合约资料等待者已退出")
 
-    def _close_connection(self) -> None:
-        # Connection.close 的检查与系统 close 并非线程原子操作。
-        with self.lock:
-            if not self.connection.closed:
-                self.connection.close()
-
-    def close(self) -> None:
-        """停止目录服务并唤醒失败代次的等待者。"""
-        self.store.release_owner(self.owner)
-        self._close_connection()
-        self.thread.join(timeout=1)
+    def _disconnected(self) -> None:
+        with self._source_lock:
+            if self.source is not None:
+                self.catalog.unregister(self.source)
+                self.source = None
+                self._query = None
 
 
-class RemoteCatalogProvider:
-    """worker 目录客户端；同步 RPC 由锁串行化，允许 SPI 报告进度。"""
+class RemoteCatalogProvider(_CatalogPipe):
+    """worker 客户端；主线程等待资料时仍能响应主服务的查询请求。"""
 
     def __init__(self, connection: Connection) -> None:
-        self.connection = connection
-        self.lock = threading.Lock()
-        self.request_id = ""
-        self.failed = False
+        super().__init__(connection)
+        self.query: Query | None = None
+        self.epoch = self.request_id = ""
+        self.thread.start()
 
-    def _rpc(self, op: str, **payload: Any) -> dict[str, Any]:
-        with self.lock:
-            if self.failed:
-                raise RuntimeError("合约目录通道已失效，必须重建 worker")
-            try:
-                self.connection.send({"op": op, **payload})
-                if not self.connection.poll(60):
-                    raise TimeoutError("主进程合约目录服务无响应")
-                response = self.connection.recv()
-                if not isinstance(response, dict):
-                    raise ValueError("合约目录服务返回了无效响应")
-            except Exception:
-                # 没有收到本次响应时，不能再用该流读取任何下一次响应。
-                self.failed = True
-                try:
-                    self.connection.close()
-                except OSError as close_error:
-                    logger.opt(exception=close_error).warning("失效目录管道关闭失败")
-                raise
-        if "rpc_error" in response:
-            raise RuntimeError(response["rpc_error"])
-        return response
+    def bind(self, query: Query, *, channel: str = "") -> None:
+        """注册当前会话，旧会话请求由独立尝试标识隔离。"""
+        with self._lock:
+            self.query = query
+            self.epoch = uuid4().hex
+        self._request("bind", 5.0, epoch=self.epoch, channel=channel)
+
+    def ensure(
+        self,
+        symbols: list[str],
+        checkpoint: Callable[[], None] | None = None,
+        timeout: float | None = None,
+        *,
+        require_specs: bool = False,
+    ) -> Mapping[str, Instrument]:
+        """同步等待本次所需资料，取消不取消其他共享等待者。"""
+        rows = self._request(
+            "ensure", 15.0 if timeout is None else timeout, checkpoint, symbols=symbols, require_specs=require_specs
+        )
+        return {symbol: Instrument.from_wire(row) for symbol, row in rows.items()}
 
     def begin(self) -> None:
-        """标记本请求进入 CTP 初始化。"""
-        self._rpc("begin", request_id=self.request_id)
+        """标记当前请求进入初始化。"""
+        self._request("begin", 5.0, request_id=self.request_id)
 
     def end(self) -> None:
         """结束初始化计时，恢复业务响应预算。"""
-        self._rpc("end")
+        self._request("end", 5.0, request_id=self.request_id)
 
     def progress(self, phase: str) -> None:
-        """发送实际进展，不发送无条件保活心跳。"""
-        self._rpc("progress", phase=phase)
+        """只发送实际进展，目录轮询不延长看门狗。"""
+        self._request("progress", 5.0, request_id=self.request_id, phase=phase)
 
-    def get(
-        self, key: CatalogKey, loader: Callable[[], CatalogRows], checkpoint: Callable[[], None] | None = None
-    ) -> Mapping[str, InstrumentRecord]:
-        """从主进程获取目录，获得加载权的 worker 才请求柜台。"""
-        acquired = self._rpc("acquire", key=key)
-        token = acquired["token"]
-        if acquired["owner"]:
-            # 已缓存的加载者重连也走命中路径，不能重复查询。
-            status = self._rpc("poll", token=token)
-            if status["data"] is None and status["error"] is None:
-                try:
-                    self._rpc("publish", token=token, rows=loader())
-                except BaseException as exc:
-                    try:
-                        self._rpc("fail", token=token, error=str(exc))
-                    except Exception as notification_error:
-                        logger.opt(exception=notification_error).warning("目录加载失败通知发送失败，保留原始异常")
-                    raise
-        observed = -1
-        while True:
-            if checkpoint is not None:
-                checkpoint()
-            status = self._rpc("poll", token=token)
-            if status["error"] is not None:
-                raise RuntimeError(status["error"])
-            if status["data"] is not None:
-                return decode_catalog(status["data"])
-            if status["progress"] != observed:
-                observed = status["progress"]
-                self.progress("等待共享目录：加载者有进展")
-            time.sleep(0.1)
+    def close(self) -> None:
+        """仅注销当前执行器，保留 worker 管道供新会话复用。"""
+        with self._lock:
+            self.query = None
+        if not self._closed.is_set():
+            self._request("unbind", 5.0)
+
+    def _dispatch(self, message: dict) -> Any:
+        with self._lock:
+            query = self.query
+            if message["op"] != "query" or message["epoch"] != self.epoch or query is None:
+                raise CatalogError("合约查询来源会话已失效")
+        return [row.wire() for row in query(message["symbols"], message["timeout"])]
+
+    @property
+    def failed(self) -> bool:
+        """管道断开后要求重建 worker；普通请求超时可安全复用带 ID 的管道。"""
+        return self._closed.is_set()

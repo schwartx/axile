@@ -173,6 +173,12 @@ class AbstractExecutorCapabilityMixin:
         """在渠道连接及其运行时目录就绪后规范化标准输入."""
         return standard_input
 
+    def _prepare_instrument_catalog(self, standard_input: UnifiedStandardInput) -> None:
+        """渠道可在 planning 前准备本次所需合约资料。"""
+
+    def _release_instrument_catalog(self) -> None:
+        """渠道可在执行结束时解除固定资料副本。"""
+
     def _validate_input(self, standard_input: UnifiedStandardInput) -> None:
         """
         执行通用输入验证.

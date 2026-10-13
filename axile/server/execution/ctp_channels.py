@@ -60,14 +60,20 @@ async def prepare_china_channel_accounts(
     mode: Literal["startup", "day", "night"],
 ) -> None:
     """准备全部已启用的国内常驻执行渠道."""
+    from axile.server.execution.catalog_preheat import arm_catalog_preheat
+
+    arm_catalog_preheat()
     await _prepare_accounts(await _started_china_channel_accounts(), mode)
 
 
-async def reconcile_china_channel_account(account: AccountContext, *, reset: bool = False) -> None:
+async def reconcile_china_channel_account(
+    account: AccountContext, *, reset: bool = False, last_execution: str = ""
+) -> None:
     """对齐 CTP 或天勤账户的常驻 worker."""
     if account.id is None:
         return
     manager = get_worker_backend_manager()
+    manager.configure_catalog_account(account, last_execution=last_execution)
     if reset:
         await manager.drop_account(int(account.id))
     if account.trade_channel not in {TradeChannel.CTP, TradeChannel.TQ} or not account.is_started:
