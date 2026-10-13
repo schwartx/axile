@@ -1,5 +1,7 @@
 """验证临时 CTP 会话，复用原有连接顺序、查询屏障与账户控制。"""
 
+from uuid import uuid4
+
 from axile.channels.contracts import ConnectionProgress
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
@@ -20,10 +22,13 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
         executor.set_connection_progress(report)
         executor.set_trading_calendar(ShinnyTradingCalendar())
         executor.set_channel_calendar("china")
+        # 验证尚无持久化账户，但 guard 需要完整身份才会启用。
+        # 每次会话使用独立的内存身份；不查询数据库，也不持久化其控制记录。
+        validation_identity = uuid4()
         executor.set_account_control_guard(
             AccountControlGuard(
-                account_id=None,
-                execution_id=None,
+                account_id=validation_identity.int,
+                execution_id=f"connection-validation-{validation_identity.hex}",
                 channel=TradeChannel.CTP,
                 policy=resolve_account_control_policy("ctp"),
                 baseline=AccountControlCounterSnapshot(),

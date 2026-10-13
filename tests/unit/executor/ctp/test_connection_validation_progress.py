@@ -106,3 +106,29 @@ def test_broker_error_preserves_exact_original_text():
     error = CTPExecutor._error(SimpleNamespace(ErrorID=3, ErrorMsg=original), "登录")
     assert error.error_id == 3
     assert error.broker_message == original
+
+
+def test_validation_applies_shared_throttle_to_actual_native_queries(monkeypatch):
+    from datetime import datetime
+
+    from axile.executor.algorithms.utils.clock import get_default_clock, set_default_clock
+    from axile.executor.ctp import connection_validation
+    from tests.unit.executor.test_account_control_guard import _AdvancingClock
+
+    broker = ScriptedBroker(monkeypatch)
+    monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
+    previous_clock = get_default_clock()
+    clock = _AdvancingClock(datetime(2026, 10, 13, 10, 0))
+    sent = []
+    names = ("ReqQryOrder", "ReqQryTrade", "ReqQryInvestorPosition", "ReqQryTradingAccount")
+    for name in names:
+        broker.hooks[name] = lambda name=name: sent.append((name, int(clock.time() * 1000)))
+    set_default_clock(clock)
+    try:
+        connection_validation.validate_connection(broker.executor.account_config, lambda *_args: None)
+    finally:
+        set_default_clock(previous_clock)
+        broker.executor.close()
+    assert [name for name, _timestamp in sent] == list(names)
+    assert all(later[1] - earlier[1] >= 1500 for earlier, later in zip(sent, sent[1:]))
+    assert clock.sleep_calls
