@@ -14,7 +14,8 @@ const { rows: _rows, ...tableSummary } = table
 const steps = [
   { id: 'trader_connection', label: '交易前置连接' }, { id: 'authenticate', label: '授权码认证' },
   { id: 'trader_login', label: '交易账户登录', details: { title: '交易账户登录信息', rows: [{ key: '用户代码', value: 'full-account' }, { key: '前置编号', value: 0 }] } },
-  { id: 'settlement', label: '结算确认' }, { id: 'instruments', label: '合约目录查询' },
+  { id: 'settlement', label: '结算确认' },
+  { id: 'instruments', label: '合约查询（螺纹钢）', details: { ...tableSummary, title: '合约查询记录', summary: '12 个螺纹钢合约', row_count: 12 } },
   { id: 'market_login', label: '行情登录' }, { id: 'query_orders', label: '订单查询', details: tableSummary },
   { id: 'query_trades', label: '成交查询' },
   { id: 'query_positions', label: '持仓查询', details: { ...tableSummary, title: '持仓查询记录', summary: '0 条持仓记录', row_count: 0 } },
@@ -34,9 +35,10 @@ test('key-value details and lazy records support filtering sorting pagination an
   let reads = 0
   await page.route('**/steps/query_orders/table', (route) => { reads++; return route.fulfill({ json: table }) })
   const orders = page.locator('[data-validation-step="query_orders"]')
-  await expect(orders).toContainText('60 条订单')
+  await expect(orders).toContainText('60 条')
   await expect(page.locator('[data-validation-step="trader_connection"]').getByRole('button')).toHaveCount(0)
   expect(reads).toBe(0)
+  await page.screenshot({ path: '/tmp/axon-validation-compact.png', fullPage: true })
   const login = page.locator('[data-validation-step="trader_login"]').getByRole('button', { name: '查看详情' })
   await login.click()
   const loginDialog = page.getByRole('dialog', { name: '交易账户登录信息' })

@@ -53,9 +53,12 @@ function ValidationStepRow({ step, busy, onDetails, onStepDetails }: {
   const idle = !running && !failed && !passed
   const tone = failed ? 'text-warn' : running || passed ? 'text-ink-1' : 'text-ink-3'
   const iconClass = 'absolute transition-opacity duration-200 motion-reduce:transition-none'
+  const tableSummary = step.details && isValidationTable(step.details)
+    ? step.details.summary.replace(/^(\d+\s*[条个])(?:订单|成交|持仓记录|(?:螺纹钢)?合约)$/, '$1')
+    : ''
   return (
-    <li data-validation-step={step.id} data-status={step.status} className="py-2">
-      <div className={`flex items-start justify-between gap-3 text-[13px] transition-colors duration-200 motion-reduce:transition-none ${tone}`}>
+    <li data-validation-step={step.id} data-status={step.status} className="py-1">
+      <div className={`grid grid-cols-[minmax(0,1fr)_36px_48px] items-start gap-x-2 text-[13px] transition-colors duration-200 motion-reduce:transition-none ${tone}`}>
         <span className="flex min-w-0 items-start gap-2 leading-5">
           <span className="relative flex h-5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
             <Circle size={10} className={`${iconClass} ${idle ? 'opacity-100' : 'opacity-0'}`} />
@@ -63,25 +66,23 @@ function ValidationStepRow({ step, busy, onDetails, onStepDetails }: {
             <TriangleAlert size={14} className={`${iconClass} ${failed ? 'opacity-100' : 'opacity-0'}`} />
             {running && <LoaderCircle size={14} className="absolute animate-spin motion-reduce:animate-none" />}
           </span>
-          <span className="min-w-0">
-            {step.label}
-            <span inert={!step.details || !isValidationTable(step.details)}
-              className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${step.details && isValidationTable(step.details) ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-              <span className="min-h-0 overflow-hidden text-[11px] text-ink-3">
-                {step.details && isValidationTable(step.details) ? <InkRewrite text={step.details.summary} /> : null}
+          <span className="flex min-w-0 flex-wrap items-baseline gap-x-1">
+            <span>{step.label}</span>
+            <span inert={!tableSummary} aria-hidden={!tableSummary}
+              className={`grid transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${tableSummary ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
+              <span className="min-w-0 overflow-hidden text-[11px] leading-4 text-ink-3">
+                <InkRewrite text={tableSummary ? `· ${tableSummary}` : ''} />
               </span>
             </span>
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-2 text-right text-[12px] leading-5">
+        <span className="text-right text-[12px] leading-5">
           <InkRewrite text={stepLabels[step.status]} textClassName={tone} />
-          <span inert={!step.details} aria-hidden={!step.details}
-            className={`grid transition-[grid-template-columns] duration-200 motion-reduce:transition-none ${step.details ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]'}`}>
-            <span className="min-w-0 overflow-hidden">
-              <button type="button" aria-haspopup="dialog" onClick={() => { if (step.details) onStepDetails() }}
-                className="cursor-pointer whitespace-nowrap text-accent underline-offset-4 hover:underline">查看详情</button>
-            </span>
-          </span>
+        </span>
+        <span inert={!step.details} aria-hidden={!step.details}
+          className={`text-right text-[12px] leading-5 transition-opacity duration-200 motion-reduce:transition-none ${step.details ? 'opacity-100' : 'opacity-0'}`}>
+          <button type="button" aria-haspopup="dialog" onClick={() => { if (step.details) onStepDetails() }}
+            className="cursor-pointer whitespace-nowrap text-accent underline-offset-4 hover:underline">查看详情</button>
         </span>
       </div>
       <ValidationMessage message={step.error?.message} inset onDetails={step.error ? onDetails : undefined} />
