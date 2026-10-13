@@ -138,8 +138,11 @@ uv run axile
 
 ## 📚 详细文档
 
+* [图文使用指南与函数参考](https://zengbin93.github.io/axile/)
+* [文档源码、本地预览与 Pages 部署](docs/README.md)
+
 * [系统架构设计与执行拓扑细节全景 (HTML)](docs/architecture-design-details.html)
-* [Python 策略编辑器与 LSP 工作台设计 (Markdown)](docs/python-editor.md)
+* [Context 查询与组合函数参考](https://zengbin93.github.io/axile/reference/context.html)
 
 ---
 
