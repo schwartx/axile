@@ -13,6 +13,8 @@ import { WeightBars } from '@/components/viz/WeightBars'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ConnectionField } from '@/components/ui/ConnectionField'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
+import { PortfolioCodePreview } from '@/features/portfolio/PortfolioCodePreview'
+import { PortfolioChoiceCard } from '@/features/setup/PortfolioChoiceCard'
 import { DirectoryPicker } from '@/components/ui/DirectoryPicker'
 import type { ClipboardCandidate } from '@/components/ui/connectionFieldClipboard'
 import {
@@ -38,6 +40,7 @@ import {
   visibleChannelAccountConfig,
 } from '@/features/setup/channelAccountFields'
 import type {
+  PortfolioLite,
   ChannelAccountField,
   ChannelCapability,
 } from '@/types/api'
@@ -459,25 +462,21 @@ export function AcctPortfolio() {
   const portfolios = useDomainStore((s) => s.portfolios)
   const list = portfolios ?? []
   const [createOpen, setCreateOpen] = useState(false)
+  const [preview, setPreview] = useState<PortfolioLite | null>(null)
+  const error = useDomainStore((s) => s.portfoliosError)
+  const refresh = useDomainStore((s) => s.refreshPortfolios)
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
-        <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="账户按组合算出的目标持仓来调仓。">
+        <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，可查看目标持仓和策略代码。">
+          <ErrorNotice title="组合列表加载失败" error={error} onRetry={refresh} />
           <div className="grid grid-cols-1 gap-3">
-            {portfolios == null && <p className="text-[15px] text-ink-2">加载组合…</p>}
+            {portfolios == null && !error && <p className="text-[15px] text-ink-2">加载组合…</p>}
+            {portfolios?.length === 0 && <p className="text-[15px] text-ink-2">还没有组合，可以先新建一个。</p>}
             {list.map((p) => (
-              <button
-                key={p.id}
-                className={`flex w-full items-start gap-4 rounded-[14px] border p-[18px] text-left transition ${acct.portfolioId === p.id ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]' : 'border-line bg-surface hover:border-ink-3/30'}`}
-                onClick={() => setAcct({ portfolioId: p.id })}
-              >
-                <span className="grid h-11 w-11 flex-none place-items-center rounded-xl bg-fill text-[23px]">🎯</span>
-                <span>
-                  <span className="block text-[17px] font-[620]">{p.name}</span>
-                  <span className="mt-0.5 block text-[14px] text-ink-2">{p.market}{p.description ? ` · ${p.description}` : ''}</span>
-                </span>
-              </button>
+              <PortfolioChoiceCard key={p.id} portfolio={p} selected={acct.portfolioId === p.id && p.id != null}
+                onSelect={() => setAcct({ portfolioId: p.id })} onPreview={() => setPreview(p)} />
             ))}
             <button
               type="button"
@@ -493,7 +492,9 @@ export function AcctPortfolio() {
           </div>
         </WizardPage>
       </div>
-      <WizardNav prevTo="/setup/acct/connect" nextTo="/setup/acct/trade" nextDisabled={acct.portfolioId == null} />
+      <WizardNav prevTo="/setup/acct/connect" nextTo="/setup/acct/trade" nextDisabled={!list.some((p) => p.id != null && p.id === acct.portfolioId)} />
+      {preview && <PortfolioCodePreview portfolio={preview} selected={acct.portfolioId === preview.id && preview.id != null}
+        onClose={() => setPreview(null)} onSelect={() => { setAcct({ portfolioId: preview.id }); setPreview(null) }} />}
       <CreatePortfolioModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}

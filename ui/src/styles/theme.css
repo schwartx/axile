@@ -722,3 +722,45 @@
     transform: none;
   }
 }
+
+/* 代码预览：弹窗及遮罩同进同退，保留原生 dialog 的焦点与模态语义。 */
+.code-preview-dialog {
+  opacity: 1;
+  translate: 0 0;
+  transition: opacity 160ms cubic-bezier(.4, 0, .2, 1), translate 160ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.code-preview-dialog::backdrop {
+  background: var(--color-scrim);
+  opacity: 1;
+  transition: opacity 160ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.code-preview-dialog[data-closing] {
+  opacity: 0;
+  translate: 0 6px;
+}
+
+.code-preview-dialog[data-closing]::backdrop {
+  opacity: 0;
+}
+
+@starting-style {
+  .code-preview-dialog[open] {
+    opacity: 0;
+    translate: 0 6px;
+  }
+  .code-preview-dialog[open]::backdrop {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .code-preview-dialog,
+  .code-preview-dialog::backdrop {
+    transition: none;
+  }
+  .code-preview-dialog[data-closing] {
+    translate: 0 0;
+  }
+}
