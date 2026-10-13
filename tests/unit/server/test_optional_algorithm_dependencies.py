@@ -51,12 +51,15 @@ _HTTP_SETUP = """
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from axile.server.api.routes import account_crud, algorithms
+from axile.server.execution import notification_outbox
 from tests.unit.server.test_account_control_routes import (
     _account_payload, _build_app, _noop_async, _RouteSession,
     _seed_account_control_registry, _synchronized_runtime_sync,
 )
 _seed_account_control_registry.__wrapped__()
 patch = MonkeyPatch()
+# 路由仅验证算法发现与账户契约，通知出站任务不能访问真实数据库。
+patch.setattr(notification_outbox, "wake_notifications", lambda account_id: None)
 patch.setattr(account_crud, "parse_cron_expr", lambda expr: ["fake-trigger"])
 patch.setattr(account_crud, "add_record_portfolio_account", _noop_async)
 patch.setattr(account_crud, "enqueue_account_runtime_sync", _noop_async)
