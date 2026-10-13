@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from 'react'
 import { Link } from '@/components/ui/nav'
+import { CenteredModal } from '@/components/ui/CenteredModal'
 import { SupplementControls } from '@/features/setup/SupplementControls'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { MOTION_LAYOUT, useRemountFade } from '@/lib/viewTransition'
@@ -137,14 +138,6 @@ function TimerQuickModalReady({
     setSaveError(null)
   }, [open, market, cronExpr, nightSchedule, supplement])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !saving) onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose, saving])
 
   const patch = (p: Partial<TimerEditorState>) => {
     setSaveError(null)
@@ -196,165 +189,135 @@ function TimerQuickModalReady({
     'transition-[border-color,background-color,box-shadow] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none'
 
   return (
-    <>
-      <div
-        className={`fixed inset-0 z-[35] bg-scrim transition-opacity duration-150 ${
-          open ? 'opacity-100' : 'pointer-events-none opacity-0'
-        }`}
-        onClick={() => !saving && onClose()}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="调整定时任务"
-        className={`fixed left-1/2 top-1/2 z-[36] flex max-h-[86vh] w-[480px] max-w-[92vw] -translate-x-1/2 flex-col rounded-[18px] bg-surface shadow-[0_24px_60px_rgba(0,0,0,0.24)] transition-all duration-150 ${
-          open ? '-translate-y-1/2 opacity-100' : 'pointer-events-none -translate-y-[46%] opacity-0'
-        }`}
-      >
-        {open && (
-          <>
-            <div className="flex items-start justify-between px-[22px] pt-5 pb-3">
+    <CenteredModal
+      open={open}
+      title="定时任务"
+      subtitle={`${accountName} · 快捷预设 · 时间均为北京时间`}
+      ariaLabel="调整定时任务"
+      onClose={onClose}
+      closeDisabled={saving}
+      footer={
+        <div className="mt-1 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
+          <button
+            type="button"
+            className="cursor-pointer rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2 disabled:opacity-45"
+            onClick={onClose}
+            disabled={saving}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
+            onClick={() => void save()}
+            disabled={saving || !dirty}
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      }
+    >
+      {fromComplex && (
+        <div className="mb-4 rounded-[10px] border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[13.5px] text-ink-2">
+          当前为高级或自定义节奏。在此保存将改为下方快捷预设；完整编辑请到账户编辑页。
+        </div>
+      )}
+
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Switch ariaLabel="自动调仓" on={state.autoOn} onClick={() => patch({ autoOn: !state.autoOn })} />
+          <div>
+            <div className="text-sm font-[640]">{state.autoOn ? '自动调仓已开' : '自动调仓已关'}</div>
+            <div className="text-xs text-ink-3">
+              {state.autoOn ? '按下方节奏自动执行' : '仅手动 / 外接触发'}
+            </div>
+          </div>
+        </div>
+
+        <div
+          className={`grid transition-[grid-template-rows,opacity] ${MOTION_LAYOUT} ${
+            state.autoOn ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className={`space-y-4 ${state.autoOn && autoOnFade ? 'panel-fade-in' : ''}`}>
               <div>
-                <div className="text-[18px] font-[640]">定时任务</div>
-                <div className="mt-1 text-[14px] text-ink-2">
-                  {accountName} · 快捷预设 · 时间均为北京时间
+                <div className="mb-2 text-sm font-[640]">节奏</div>
+                <div className="flex flex-wrap gap-2">
+                  {PRESETS[market].map((p) => {
+                    const on = state.presetIds.includes(p.id)
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => pickPreset(p.id)}
+                        className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
+                          on
+                            ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]'
+                            : 'border-line bg-surface'
+                        }`}
+                      >
+                        <div className="text-sm font-[640]">{p.label}</div>
+                        {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
-              <button
-                type="button"
-                className="cursor-pointer text-[21px] leading-none text-ink-3 hover:text-ink-1"
-                onClick={() => !saving && onClose()}
-                aria-label="关闭"
-              >
-                ✕
-              </button>
-            </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-[22px] pb-2">
-              {fromComplex && (
-                <div className="mb-4 rounded-[10px] border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[13.5px] text-ink-2">
-                  当前为高级或自定义节奏。在此保存将改为下方快捷预设；完整编辑请到账户编辑页。
+              {nightSchedule && (
+                <div className="flex items-center gap-3">
+                  <Switch
+                    ariaLabel={nightSchedule.label}
+                    on={state.nightOn}
+                    onClick={() => patch({ nightOn: !state.nightOn })}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm font-[640]">{nightSchedule.label}</div>
+                    <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
+                  </div>
                 </div>
               )}
 
-              <div className="space-y-5">
-                <div className="flex items-center gap-3">
-                  <Switch ariaLabel="自动调仓" on={state.autoOn} onClick={() => patch({ autoOn: !state.autoOn })} />
-                  <div>
-                    <div className="text-sm font-[640]">{state.autoOn ? '自动调仓已开' : '自动调仓已关'}</div>
-                    <div className="text-xs text-ink-3">
-                      {state.autoOn ? '按下方节奏自动执行' : '仅手动 / 外接触发'}
-                    </div>
-                  </div>
+              <SupplementControls
+                supN={state.supN}
+                supM={state.supM}
+                onN={(supN) => patch({ supN })}
+                onM={(supM) => patch({ supM })}
+              />
+
+              <div>
+                <div className="mb-1 text-sm font-[640]">
+                  下次排程 <span className="text-xs font-normal text-ink-3">预览 · 北京时间</span>
                 </div>
-
-                <div
-                  className={`grid transition-[grid-template-rows,opacity] ${MOTION_LAYOUT} ${
-                    state.autoOn ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
-                  }`}
-                >
-                  <div className="overflow-hidden">
-                    <div className={`space-y-4 ${state.autoOn && autoOnFade ? 'panel-fade-in' : ''}`}>
-                      <div>
-                        <div className="mb-2 text-sm font-[640]">节奏</div>
-                        <div className="flex flex-wrap gap-2">
-                          {PRESETS[market].map((p) => {
-                            const on = state.presetIds.includes(p.id)
-                            return (
-                              <button
-                                key={p.id}
-                                type="button"
-                                onClick={() => pickPreset(p.id)}
-                                className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
-                                  on
-                                    ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]'
-                                    : 'border-line bg-surface'
-                                }`}
-                              >
-                                <div className="text-sm font-[640]">{p.label}</div>
-                                {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-
-                      {nightSchedule && (
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            ariaLabel={nightSchedule.label}
-                            on={state.nightOn}
-                            onClick={() => patch({ nightOn: !state.nightOn })}
-                          />
-                          <div className="min-w-0">
-                            <div className="text-sm font-[640]">{nightSchedule.label}</div>
-                            <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
-                          </div>
-                        </div>
-                      )}
-
-                      <SupplementControls
-                        supN={state.supN}
-                        supM={state.supM}
-                        onN={(supN) => patch({ supN })}
-                        onM={(supM) => patch({ supM })}
-                      />
-
-                      <div>
-                        <div className="mb-1 text-sm font-[640]">
-                          下次排程 <span className="text-xs font-normal text-ink-3">预览 · 北京时间</span>
-                        </div>
-                        <div className="flex flex-wrap gap-x-3 gap-y-1">
-                          {fires.length ? (
-                            fires.map((f, i) => (
-                              <span key={i} className={`text-sm ${i === 0 ? 'font-[640]' : 'text-ink-3'}`}>
-                                {fmtFire(f)}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-sm text-ink-3">— 选择节奏后显示 —</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="border-t border-line pt-3">
-                  <Link
-                    to={`/accounts/${accountId}/edit/timer`}
-                    className="text-[13.5px] font-semibold text-accent hover:underline"
-                    onClick={onClose}
-                  >
-                    更多节奏 · 多时刻与自定义 →
-                  </Link>
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  {fires.length ? (
+                    fires.map((f, i) => (
+                      <span key={i} className={`text-sm ${i === 0 ? 'font-[640]' : 'text-ink-3'}`}>
+                        {fmtFire(f)}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-ink-3">— 选择节奏后显示 —</span>
+                  )}
                 </div>
               </div>
-              <ErrorNotice title="保存定时任务失败" error={saveError} variant="mutation" onRetry={save} />
             </div>
+          </div>
+        </div>
 
-            <div className="mt-1 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
-              <button
-                type="button"
-                className="cursor-pointer rounded-[9px] border border-line bg-surface px-4 py-2 text-sm text-ink-2 disabled:opacity-45"
-                onClick={onClose}
-                disabled={saving}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="cursor-pointer rounded-[9px] border border-ink-1 bg-ink-1 px-[18px] py-2 text-sm font-[550] text-surface disabled:opacity-45"
-                onClick={() => void save()}
-                disabled={saving || !dirty}
-              >
-                {saving ? '保存中…' : '保存'}
-              </button>
-            </div>
-          </>
-        )}
+        <div className="border-t border-line pt-3">
+          <Link
+            to={`/accounts/${accountId}/edit/timer`}
+            className="text-[13.5px] font-semibold text-accent hover:underline"
+            onClick={onClose}
+          >
+            更多节奏 · 多时刻与自定义 →
+          </Link>
+        </div>
       </div>
-    </>
+      <ErrorNotice title="保存定时任务失败" error={saveError} variant="mutation" onRetry={save} />
+    </CenteredModal>
   )
 }
 

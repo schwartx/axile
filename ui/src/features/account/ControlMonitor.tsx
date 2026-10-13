@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Link } from '@/components/ui/nav'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { useLiveControl, type ControlFrame, type ControlRule } from '@/stores/liveControl'
@@ -41,27 +41,9 @@ export function ControlRules({ frame }: { frame: ControlFrame | undefined }) {
     <p className="text-ink-3">等待时间为估计，新请求可能改变顺序；间隔按本地放行时间计算。</p>
   </div>
 }
-function ControlDialog({ frame, accountId, selected, onSelect, onClose }: { frame: ControlFrame | undefined; accountId: number; selected: [string, string]; onSelect: (keys: [string, string]) => void; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null
-    const panel = ref.current
-    panel?.focus()
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onClose() }
-      if (event.key !== 'Tab' || !panel) return
-      const items = [...panel.querySelectorAll<HTMLElement>('button, a[href], select')].filter((item) => !item.hasAttribute('disabled'))
-      const first = items[0], last = items.at(-1)
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) { event.preventDefault(); last?.focus() }
-      else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel)) { event.preventDefault(); first?.focus() }
-    }
-    document.addEventListener('keydown', keydown)
-    return () => { document.removeEventListener('keydown', keydown); previous?.focus() }
-  }, [onClose])
+function ControlDialog({ open, frame, accountId, selected, onSelect, onClose }: { open: boolean; frame: ControlFrame | undefined; accountId: number; selected: [string, string]; onSelect: (keys: [string, string]) => void; onClose: () => void }) {
   const options = frame?.metrics ?? []
-  return createPortal(<div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4" onClick={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) onClose() }}>
-    <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label="账户流控" className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-line bg-surface p-5 text-ink-1">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold">账户流控</h2><button type="button" onClick={onClose} className="rounded px-3 py-1 hover:bg-fill">关闭</button></div>
+  return <CenteredModal open={open} title="账户流控" onClose={onClose} widthClassName="w-[768px]">
       <ControlRules frame={frame} />
       <h3 className="mt-4 font-semibold">等待请求（{frame?.waiting_total ?? '未知'}）</h3>
       {frame?.waiting.map((q) => <p key={q.id} className="mt-2 text-[13px]">{operation(q.operation)} · {q.symbol ?? '账户'} · 优先级 {q.priority} · 已等待 {(q.waited_ms / 1000).toFixed(1)} 秒 · {q.kind === 'quota' ? '额度等待' : '排队等待'}{q.estimated_wait_ms != null && ` · 预计 ${(q.estimated_wait_ms / 1000).toFixed(1)} 秒`} {q.hits.map((hit) => String(hit.message ?? '')).join('、')}</p>)}
@@ -76,8 +58,7 @@ function ControlDialog({ frame, accountId, selected, onSelect, onClose }: { fram
       </select>)}</div>
       <p className="mb-4 text-[13px] text-ink-3">恰好两项；仅保存在此浏览器此账户，不修改交易限额。</p>
       <Link to={`/accounts/${accountId}/edit/control`} onClick={onClose} className="text-accent">打开当前账户流控设置 ›</Link>
-    </div>
-  </div>, document.body)
+  </CenteredModal>
 }
 export function AccountControlSummary({ accountId }: { accountId: number }) {
   const frame = useLiveControl((s) => s.frames[accountId])
@@ -112,6 +93,6 @@ export function AccountControlSummary({ accountId }: { accountId: number }) {
         : frame?.records.some((r) => r.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
     </button>
     </Tooltip>
-    {open && <ControlDialog frame={frame} accountId={accountId} selected={selected} onSelect={(next) => { setSelected(next); saveControlPreferences(accountId, next) }} onClose={close} />}
+    <ControlDialog open={open} frame={frame} accountId={accountId} selected={selected} onSelect={(next) => { setSelected(next); saveControlPreferences(accountId, next) }} onClose={close} />
   </>
 }
