@@ -11,7 +11,7 @@ import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { ExposureBar } from '@/components/viz/ExposureBar'
 import { INTEGRITY_ICON, INTEGRITY_TEXT_CLASS, INTEGRITY_ORDER, channelLabel } from '@/features/dashboard/display'
 import { isExecutingStatus, phaseLabel, runVerb } from '@/features/dashboard/execProgress'
-import { integrityOf, gateOf, stateVerdict, holdingText, type Integrity } from '@/lib/derive'
+import { integrityOf, needsAdjustmentAttention, gateOf, stateVerdict, holdingText, type Integrity } from '@/lib/derive'
 import { displayCurrencyUnit } from '@/lib/format'
 import { useRunning } from '@/stores/liveExec'
 import type { AccountDashboardItem } from '@/types/api'
@@ -45,7 +45,7 @@ function FleetCard({
   // 卡边：在跑走 accent（run 档，不碰红绿）；否则注意/失败同为琥珀，失败以更重边框强度区分。
   const borderCls = live
     ? 'border-accent/45 bg-accent-soft/40'
-    : state.integrity === 'off'
+    : needsAdjustmentAttention(item)
       ? 'border-warn/45 bg-warn-tint'
       : 'border-transparent'
 
@@ -78,11 +78,11 @@ function FleetCard({
               ? `⟳ 正在${runVerb(live.kind)} · ${phaseLabel(live.phase)}${live.pendingExecutionId ? ' · 结束后再调一次' : ''}`
               : '等待执行'}
           </span>
-        ) : (
-          <span className={`ml-auto inline-flex items-center gap-1.5 text-[14.5px] font-semibold ${INTEGRITY_TEXT_CLASS[state.integrity]}`}>
-            {INTEGRITY_ICON[state.integrity]} {state.text}
+        ) : state.text !== gate.label ? (
+          <span className={`ml-auto inline-flex items-center gap-1.5 text-[14.5px] font-semibold ${gate.gate === 'paused' ? 'text-ink-3' : INTEGRITY_TEXT_CLASS[state.integrity]}`}>
+            {gate.gate !== 'paused' && INTEGRITY_ICON[state.integrity]} {state.text}
           </span>
-        )}
+        ) : <span className="ml-auto" />}
         <button
           type="button"
           className="inline-flex flex-none items-center gap-1 rounded-chip border border-line px-2.5 py-1 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1"
@@ -131,24 +131,27 @@ export function FleetView({
   portfolioNames: Map<number, string>
 }) {
   const withIntegrity = items.map((item) => ({ item, integrity: integrityOf(item).integrity }))
-  const offCount = withIntegrity.filter((x) => x.integrity === 'off').length
-  const unknownCount = withIntegrity.filter((x) => x.integrity === 'unknown').length
-  // 汇总只把「偏离」算作要看的风险；「未知」是缺证据、给中性待办；全在位才敢报「系统正常」。
+  const pausedCount = items.filter((item) => !item.is_started).length
+  const offCount = items.filter(needsAdjustmentAttention).length
+  const unknownCount = withIntegrity.filter((x) => x.item.is_started && x.integrity === 'unknown').length
+  // 自动账户偏离才提醒；暂停数量作为中性上下文，避免暗示全部到位。
   const rollup: { key: Integrity; text: string } =
     offCount > 0
       ? { key: 'off', text: `${items.length} 个账户 · ${offCount} 个需要看看` }
       : unknownCount > 0
         ? { key: 'unknown', text: `${items.length} 个账户 · ${unknownCount} 个待对账` }
-        : { key: 'aligned', text: `${items.length} 个账户 · 全部到位 · 系统正常` }
+        : pausedCount > 0
+          ? { key: 'unknown', text: `${items.length} 个账户 · ${pausedCount} 个已暂停` }
+          : { key: 'aligned', text: `${items.length} 个账户 · 全部到位 · 系统正常` }
 
-  const sorted = [...withIntegrity].sort((a, b) => INTEGRITY_ORDER[a.integrity] - INTEGRITY_ORDER[b.integrity])
+  const sorted = [...withIntegrity].sort((a, b) => (a.item.is_started ? INTEGRITY_ORDER[a.integrity] : 3) - (b.item.is_started ? INTEGRITY_ORDER[b.integrity] : 3))
 
   return (
     <section>
       {/* 摘要与创建入口是一个左簇：按钮贴着状态句回答「要加一个在这里」，不甩到宽屏右缘。 */}
       <div className="mx-0.5 my-2 mb-6 flex flex-wrap items-center gap-3">
         <span className={`inline-flex items-center gap-1.5 text-[17px] font-[640] ${INTEGRITY_TEXT_CLASS[rollup.key]}`}>
-          {INTEGRITY_ICON[rollup.key]} {rollup.text}
+          {rollup.key !== 'unknown' && INTEGRITY_ICON[rollup.key]} {rollup.text}
         </span>
         <Link
           to="/setup/acct/channel"

@@ -32,7 +32,7 @@ export type StatusLevel = 'ok' | 'warn' | 'bad' | 'run'
  * 在位性轴：账户此刻在不在你要它待的位置（观察到的现实）。
  *
  * 「风险」轴——钱对不对得上意图，是新闻、可行动、该不可遮。与档位（自动/暂停）正交：
- * 账户可以「暂停且偏离」（最坏格：偏了又不会自愈），也可以「自动且偏离」（会自动纠正）。
+ * 账户可以暂停且偏离；主动暂停时，偏离作为中性事实保留，不要求立即调仓。
  */
 export type Integrity = 'aligned' | 'off' | 'unknown' // 在位 / 偏离 / 未知
 
@@ -64,8 +64,9 @@ export interface GateStatus {
  */
 export function integrityOf(item: AccountDashboardItem): IntegrityStatus {
   if (item.off_symbol_count == null) {
-    if (item.last_exec_at == null) return { integrity: 'unknown', text: '尚无执行记录 · 先跑一次对账' }
-    return { integrity: 'unknown', text: '目标或持仓未知 · 需要看看' }
+    if (item.last_exec_at == null) return { integrity: 'unknown', text: '等待首次对账' }
+    if (item.asset_observed_at == null) return { integrity: 'unknown', text: '持仓待查询' }
+    return { integrity: 'unknown', text: '等待目标与持仓对账' }
   }
   if (item.off_symbol_count === 0) return { integrity: 'aligned', text: '已按策略到位' }
   return { integrity: 'off', text: `${item.off_symbol_count} 只待调整` }
@@ -81,12 +82,17 @@ export function gateOf(item: AccountDashboardItem): GateStatus {
   return item.is_started ? { gate: 'auto', label: '自动' } : { gate: 'paused', label: '已暂停' }
 }
 
+/** 自动账户偏离目标时需要调仓提醒；主动暂停不因偏离告警。 */
+export function needsAdjustmentAttention(item: AccountDashboardItem): boolean {
+  return item.is_started && integrityOf(item).integrity === 'off'
+}
+
 /** 在位性 × 档位 的四象限判词。 */
 export interface StateVerdict {
   integrity: Integrity
   /** 头条主句。 */
   text: string
-  /** 是否加重——仅「暂停且偏离」：偏了又关了自动纠偏、不会自愈。琥珀内用字重承载，不新增颜色。 */
+  /** 是否加重——自动账户敞口偏高时强调。 */
   loud: boolean
 }
 
@@ -106,14 +112,18 @@ function lastAttemptFailed(item: AccountDashboardItem): boolean {
 /**
  * 由在位性 × 档位 × 上次尝试性质合成判词与音量.
  *
- * 偏离本身来自仓位差。暂停+偏离最重（不会自愈）；自动+盘中失败才说「未到位将重试」。
+ * 偏离本身来自仓位差。主动暂停使用中性说明；自动+盘中失败才说「未到位将重试」。
  * 详情 Hero 不展示账户级数量，舰队卡可保留该上下文。
  */
 export function stateVerdict(item: AccountDashboardItem, showOffCount = true): StateVerdict {
   const { integrity, text } = integrityOf(item)
+  if (integrity === 'unknown' && !item.is_started) return { integrity, text: '已暂停', loud: false }
   if (integrity !== 'off') return { integrity, text, loud: false }
   const countText = showOffCount && item.off_symbol_count != null ? `${item.off_symbol_count} 只待调整 · ` : ''
-  if (gateOf(item).gate === 'paused') return { integrity, text: `${countText}自动纠偏已关，需手动`, loud: true }
+  if (gateOf(item).gate === 'paused') {
+    const pausedText = showOffCount ? `${item.off_symbol_count} 只偏离目标 · 账户已暂停` : '偏离目标 · 账户已暂停'
+    return { integrity, text: pausedText, loud: false }
+  }
   if (item.last_output_status === 'BLOCKED') {
     const next = item.next_run_time ? formatPlannedAt(item.next_run_time) : null
     return { integrity, text: next ? `${countText}等待下次 ${next}` : `${countText}等待下次自动执行`, loud: false }

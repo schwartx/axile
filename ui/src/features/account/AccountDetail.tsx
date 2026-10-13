@@ -249,14 +249,14 @@ export function AccountDetail({
   const latestOutcome = latestRecord ? executionOutcome(latestRecord) : null
   const idleStatusTextClass = latestOutcome
     ? latestOutcome.warning ? 'text-warn' : 'text-ink-1'
-    : INTEGRITY_TEXT_CLASS[state.integrity]
+    : gate.gate === 'paused' ? 'text-ink-3' : INTEGRITY_TEXT_CLASS[state.integrity]
   const statusHeadline = isTerminating
     ? `正在终止${runVerb(runKind)}`
     : isExecuting
       ? `正在${runVerb(runKind)}`
       : isQueued
         ? '等待执行'
-        : latestOutcome?.text ?? `${INTEGRITY_ICON[state.integrity]} ${state.text}`
+        : latestOutcome?.text ?? `${gate.gate === 'paused' ? '' : `${INTEGRITY_ICON[state.integrity]} `}${state.text}`
   const latestExecId = !isBusy ? latestRecord?.execution_id ?? null : null
   const statusNavId = runningExecId ?? latestExecId
   const goStatusNav = statusNavId

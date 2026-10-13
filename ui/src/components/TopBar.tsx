@@ -1,7 +1,7 @@
 import { useEffect, useState, type RefObject } from 'react'
 import { Link } from '@/components/ui/nav'
 import { useDomainStore } from '@/stores/domain'
-import { integrityOf } from '@/lib/derive'
+import { needsAdjustmentAttention } from '@/lib/derive'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { timeAgo } from '@/lib/format'
 import { Menu, RefreshCw, TriangleAlert } from 'lucide-react'
@@ -29,8 +29,8 @@ export function TopBar({
   const connecting = accounts == null && error == null
   const online = accounts != null && error == null && updatedAt != null
   // 全舰队「偏离」计数（风险轴）：常驻顶栏、跟着翻页；随 5s 轮询自动增减，账户对回目标即清零。
-  // 只由 integrity 派生，不看档位——暂停的账户照样计入（暂停+偏离最坏，绝不因暂停漏计）。
-  const offCount = (accounts ?? []).filter((a) => integrityOf(a).integrity === 'off').length
+  // 主动暂停的持仓偏离属于预期状态，不计入调仓提醒。
+  const offCount = (accounts ?? []).filter(needsAdjustmentAttention).length
 
   // 让「N 秒前」随时间走动，每秒重算一次。
   const [, force] = useState(0)

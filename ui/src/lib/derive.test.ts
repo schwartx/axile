@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { integrityOf, gateOf, observedTotalAsset, rebalancePlan, stateVerdict } from './derive'
+import { integrityOf, needsAdjustmentAttention, gateOf, observedTotalAsset, rebalancePlan, stateVerdict } from './derive'
 import type { AccountDashboardItem, Position } from '../types/api'
 
 /** 造一个仪表盘项；只填两轴关心的字段，其余给中性占位。 */
@@ -56,7 +56,7 @@ test('is_started=false → 暂停', () => {
   expect(gateOf(item({ is_started: false })).gate).toBe('paused')
 })
 
-// ── 正交性：暂停不再吃掉失败（截图那格） ──
+// ── 正交性：暂停保留偏离事实，但不要求立即调仓 ──
 
 test('暂停 + 偏离：档位=暂停 且 在位性=偏离（两轴各说各的）', () => {
   const it = item({ is_started: false, off_symbol_count: 5, last_exec_at: '2026-07-21T12:53:25' })
@@ -94,12 +94,12 @@ test('自动 + 偏离 + 盘中失败 + 高杠杆 → 敞口偏高（加重）', 
   expect(v.loud).toBe(true)
 })
 
-test('暂停 + 偏离 → 需手动（加重，最坏格）', () => {
+test('暂停 + 偏离 → 中性说明，不要求手动调仓', () => {
   const v = stateVerdict(item({ is_started: false, off_symbol_count: 5, last_exec_at: '2026-07-21T12:53:25' }))
-  expect(v.text).toBe('5 只待调整 · 自动纠偏已关，需手动')
-  expect(v.loud).toBe(true)
+  expect(v.text).toBe('5 只偏离目标 · 账户已暂停')
+  expect(v.loud).toBe(false)
   expect(stateVerdict(item({ is_started: false, off_symbol_count: 5, last_exec_at: '2026-07-21T12:53:25' }), false).text)
-    .toBe('自动纠偏已关，需手动')
+    .toBe('偏离目标 · 账户已暂停')
 })
 
 test('自动 + 偏离 + BLOCKED → 下次排程，不说失败、不加重', () => {
@@ -160,4 +160,27 @@ test('观测权益优先快照，0 也是有效值', () => {
   expect(observedTotalAsset({ positions: [] }, 995_215.24)).toBe(995_215.24)
   expect(observedTotalAsset(undefined, 995_215.24)).toBe(995_215.24)
   expect(observedTotalAsset(undefined, undefined)).toBe(0)
+})
+
+test('调仓提醒随暂停和恢复切换，保留实际偏离事实', () => {
+  const paused = item({ is_started: false, off_symbol_count: 5 })
+  expect(integrityOf(paused).integrity).toBe('off')
+  expect(needsAdjustmentAttention(paused)).toBe(false)
+  expect(needsAdjustmentAttention({ ...paused, is_started: true })).toBe(true)
+  expect(needsAdjustmentAttention(item({ off_symbol_count: 0 }))).toBe(false)
+  expect(needsAdjustmentAttention(item({ off_symbol_count: null }))).toBe(false)
+})
+
+test('暂停账户数据不足只说明已暂停，不催促查询或执行', () => {
+  for (const last_exec_at of [null, '2026-07-21T12:00:00']) {
+    const v = stateVerdict(item({ is_started: false, off_symbol_count: null, last_exec_at }))
+    expect(v).toEqual({ integrity: 'unknown', text: '已暂停', loud: false })
+  }
+})
+
+test('运行账户数据不足时说明等待阶段，不暗示异常', () => {
+  expect(stateVerdict(item({ off_symbol_count: null })).text).toBe('等待首次对账')
+  expect(stateVerdict(item({ off_symbol_count: null, last_exec_at: 't' })).text).toBe('持仓待查询')
+  expect(stateVerdict(item({ off_symbol_count: null, last_exec_at: 't', asset_observed_at: 't' })).text)
+    .toBe('等待目标与持仓对账')
 })
