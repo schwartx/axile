@@ -216,6 +216,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._invalid_reason = None
         self._connection_started = False
         self._connection_progress = None
+        self.connection_records: dict[str, object] = {}
+        self._catalog_queried = False
         self.settlement_confirmation: dict[str, object] | None = None
         self._subscriptions = set()
         self._subscription_acks = set()
@@ -395,6 +397,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._catalog_progress_at = now
 
     def _load_catalog(self):
+        self._catalog_queried = True
         rows = self._query("ReqQryInstrument", td.CThostFtdcQryInstrumentField())
         self._catalog_progress("构建合约目录")
         catalog = {str(getattr(x, "InstrumentID")): vars(x) for x in rows if getattr(x, "InstrumentID", "")}
@@ -520,6 +523,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._front_id = int(row.FrontID)
             self._session_id = int(row.SessionID)
             self._order_ref = int(row.MaxOrderRef or 0) + 1
+            if self._connection_progress is not None:
+                self.connection_records["trader_login"] = _copy_native_row(row)
             self._finish_stage(self._login, info, "登录", request_id)
 
     def _ensure_settlement_confirmed(self):
@@ -799,18 +804,26 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         for row in orders:
             self._remember_order(row)
             self._catalog_progress("对账记录", throttled=True)
+        if self._connection_progress is not None:
+            self.connection_records["query_orders"] = orders
         self._report_connection("query_orders", "passed")
         trades = self._query_session_rows("query_trades", "ReqQryTrade", build_query_trades(c, ""))
         converted_trades = []
         for row in trades:
             converted_trades.append(self._convert_trade(row))
             self._catalog_progress("对账记录", throttled=True)
+        if self._connection_progress is not None:
+            self.connection_records["query_trades"] = trades
         self._report_connection("query_trades", "passed")
         positions = self._query_session_rows("query_positions", "ReqQryInvestorPosition", build_query_positions(c))
+        if self._connection_progress is not None:
+            self.connection_records["query_positions"] = positions
         self._report_connection("query_positions", "passed")
         accounts = self._query_session_rows("query_account", "ReqQryTradingAccount", build_query_account(c))
         if not accounts:
             raise CtpRequestError("会话对账资金查询返回空结果")
+        if self._connection_progress is not None:
+            self.connection_records["query_account"] = accounts
         self._report_connection("query_account", "passed")
         self._report_connection("ready", "running")
         quotes, quote_errors = self._position_valuation_quotes(positions)

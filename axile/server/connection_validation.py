@@ -47,6 +47,32 @@ class ValidationStepDetails(BaseModel):
     rows: list[ValidationDetailRow]
 
 
+class ValidationTableColumn(BaseModel):
+    """通用记录列的名称与排序类型。"""
+
+    key: str
+    label: str
+    type: Literal["text", "number", "date", "time"] = "text"
+    filterable: bool = False
+
+
+class ValidationTableSummary(BaseModel):
+    """轮询只返回表格描述，完整数据按需读取。"""
+
+    kind: Literal["table"] = "table"
+    title: str
+    summary: str
+    description: str | None = None
+    columns: list[ValidationTableColumn]
+    row_count: int
+
+
+class ValidationTable(ValidationTableSummary):
+    """验证时的只读记录快照，不通过此接口触发柜台查询。"""
+
+    rows: list[list[str | int | float | bool | None]]
+
+
 class ValidationStepPublic(BaseModel):
     """阶段的完整快照。"""
 
@@ -54,7 +80,7 @@ class ValidationStepPublic(BaseModel):
     label: str
     status: Literal["pending", "running", "passed", "failed", "skipped"] = "pending"
     error: ValidationErrorPublic | None = None
-    details: ValidationStepDetails | None = None
+    details: ValidationStepDetails | ValidationTableSummary | None = None
 
 
 class ValidationJob(BaseModel):
@@ -75,6 +101,7 @@ class ValidationService:
     def __init__(self, *, timeout: float = 180, retention: float = 600) -> None:
         self.jobs: dict[str, ValidationJob] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.tables: dict[str, dict[str, ValidationTable]] = {}
         self.expires: dict[str, float] = {}
         self.timeout = timeout
         self.retention = retention
@@ -122,6 +149,7 @@ class ValidationService:
         for key, deadline in list(self.expires.items()):
             if now >= deadline:
                 self.jobs.pop(key, None)
+                self.tables.pop(key, None)
                 self.expires.pop(key, None)
 
     def get(self, validation_id: str) -> ValidationJob:
@@ -146,7 +174,7 @@ class ValidationService:
                 if step.id == event["step"] and event.get("status") in {"running", "passed"}:
                     details = event.get("details")
                     if isinstance(details, dict):
-                        step.details = ValidationStepDetails.model_validate(details)
+                        self._apply_details(job, step, details)
                     step.status = event["status"]  # type: ignore[assignment]
                     job.status = "running"
                     return
@@ -168,6 +196,26 @@ class ValidationService:
                 self._finish(job, "succeeded")
             else:
                 self.fail(job, "CONNECTION.INCOMPLETE", "连接验证未完成全部检查")
+
+    def _apply_details(self, job: ValidationJob, step: ValidationStepPublic, details: dict[str, object]) -> None:
+        """将记录集合单独保存，避免轮询反复传输大目录。"""
+        if details.get("kind") == "table":
+            rows = details.get("rows", [])
+            if not isinstance(rows, list):
+                raise ValueError("表格记录必须为列表")
+            table = ValidationTable.model_validate({**details, "row_count": len(rows)})
+            self.tables.setdefault(job.validation_id, {})[step.id] = table
+            step.details = ValidationTableSummary.model_validate(table.model_dump(exclude={"rows"}))
+        else:
+            step.details = ValidationStepDetails.model_validate(details)
+
+    def get_table(self, validation_id: str, step_id: str) -> ValidationTable:
+        """读取已有快照；完成、失败或取消后仍在任务保留期内可查。"""
+        self.get(validation_id)
+        table = self.tables.get(validation_id, {}).get(step_id)
+        if table is None:
+            raise ValidationRejected(404, "该检查项尚无记录表格")
+        return table
 
     def fail(
         self, job: ValidationJob, code: str, message: str, error_id: object = None, details: object = None

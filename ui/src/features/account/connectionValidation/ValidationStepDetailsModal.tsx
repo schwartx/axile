@@ -1,10 +1,10 @@
 import { useRef } from 'react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import type { ValidationStepDetails } from '@/lib/api/connectionValidation'
+import type { ValidationKeyValueDetails } from '@/lib/api/connectionValidation'
 
 /** 渠道只提供有序键值行；关闭时保留内容，直到共用弹窗完成过渡。 */
 export function ValidationStepDetailsModal({ details, onClose }: {
-  details: ValidationStepDetails | null
+  details: ValidationKeyValueDetails | null
   onClose: () => void
 }) {
   const lastDetails = useRef(details)

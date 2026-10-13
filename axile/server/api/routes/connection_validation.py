@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from axile.channels import get_channel
 from axile.server.api.deps import SessionDep
-from axile.server.connection_validation import ValidationJob, ValidationRejected, service
+from axile.server.connection_validation import ValidationJob, ValidationRejected, ValidationTable, service
 from axile.server.db.models import Account
 
 router = APIRouter(prefix="/channel-validations", tags=["channel-validations"])
@@ -67,7 +67,7 @@ async def create_account_validation(
 
 @router.get("/{validation_id}", response_model=ValidationJob)
 async def get_validation(validation_id: str, response: Response) -> ValidationJob:
-    """返回完整阶段快照，不包含账户或凭据。"""
+    """返回阶段状态与展示摘要，不包含登录凭据或完整表格。"""
     response.headers["Cache-Control"] = "no-store"
     try:
         return service.get(validation_id)
@@ -80,5 +80,15 @@ async def cancel_validation(validation_id: str) -> ValidationJob:
     """显式取消并回收临时连接。"""
     try:
         return await service.cancel(validation_id)
+    except ValidationRejected as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@router.get("/{validation_id}/steps/{step_id}/table", response_model=ValidationTable)
+async def get_validation_table(validation_id: str, step_id: str, response: Response) -> ValidationTable:
+    """按需读取验证时的表格快照，不发起新的柜台请求。"""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return service.get_table(validation_id, step_id)
     except ValidationRejected as exc:
         raise HTTPException(exc.status, str(exc)) from exc

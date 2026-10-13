@@ -215,3 +215,35 @@ def test_empty_funds_does_not_pass_funds_stage(monkeypatch):
     assert events[-1] == ("query_account", "running")
     for step in ("query_orders", "query_trades", "query_positions"):
         assert (step, "passed") in events
+
+
+def test_validation_emits_only_useful_details_before_following_queries(monkeypatch):
+    from axile.executor.ctp import connection_validation
+
+    broker = ScriptedBroker(monkeypatch)
+    monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)
+    details = {}
+
+    def report(step, status, data=None):
+        if data is not None:
+            assert status == "passed"
+            details[step] = data
+            assert not broker.executor._verify_connection()
+        if step == "query_trades" and status == "running":
+            assert "query_orders" in details
+
+    connection_validation.validate_connection(broker.executor.account_config, report)
+    assert set(details) == {
+        "trader_login",
+        "settlement",
+        "instruments",
+        "query_orders",
+        "query_trades",
+        "query_positions",
+        "query_account",
+    }
+    assert details["query_positions"]["rows"] == []
+    assert details["query_orders"]["kind"] == "table"
+    assert details["query_trades"]["rows"]
+    assert details["trader_login"]["rows"][0]["value"] == broker.day
+    assert "本次柜台查询" in details["instruments"]["description"]

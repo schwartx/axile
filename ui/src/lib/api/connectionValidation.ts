@@ -7,10 +7,39 @@ export interface ConnectionValidationError {
   error_id?: number | null
   details?: string | null
 }
-export interface ValidationStepDetails {
+export type ValidationCell = string | number | boolean | null
+
+export interface ValidationKeyValueDetails {
   title: string
-  rows: Array<{ key: string; value: string | number | boolean | null }>
+  rows: Array<{ key: string; value: ValidationCell }>
 }
+export interface ValidationTableColumn {
+  key: string
+  label: string
+  type: 'text' | 'number' | 'date' | 'time'
+  filterable?: boolean
+}
+export interface ValidationTableSummary {
+  kind: 'table'
+  title: string
+  summary: string
+  description?: string | null
+  columns: ValidationTableColumn[]
+  row_count: number
+}
+export interface ValidationTable extends ValidationTableSummary {
+  rows: ValidationCell[][]
+}
+export type ValidationStepDetails = ValidationKeyValueDetails | ValidationTableSummary
+export function isValidationTable(details: ValidationStepDetails): details is ValidationTableSummary {
+  return 'kind' in details && details.kind === 'table'
+}
+
+/** 表格快照只在查看时读取一次，独立于阶段状态的轮询。 */
+export const getValidationTable = (id: string, stepId: string, signal?: AbortSignal) => apiGet<ValidationTable>(
+  `/channel-validations/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}/table`, signal,
+)
+
 export interface ConnectionValidationJob {
   validation_id: string
   channel: string

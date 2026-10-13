@@ -287,3 +287,44 @@ def test_generic_details_survive_later_failure(client, service, monkeypatch, ste
     assert step["status"] == "passed"
     assert step["details"] == details
     assert isinstance(step["details"]["rows"][2]["value"], bool)
+
+
+@pytest.mark.parametrize("rows", [[], [["000123", 0, False, None], ["000124", 1.25, True, ""]]])
+def test_table_snapshot_is_lazy_and_survives_later_failure(client, service, monkeypatch, rows):
+    spawn = Mock()
+    monkeypatch.setattr(service, "_start", spawn)
+    job = service.create("ctp", CONFIG)
+    columns = [
+        {"key": key, "label": key, "type": kind, "filterable": False}
+        for key, kind in (("id", "text"), ("quantity", "number"), ("flag", "text"), ("missing", "text"))
+    ]
+    service.apply_event(
+        job,
+        {
+            "step": "query_orders",
+            "status": "passed",
+            "details": {
+                "kind": "table",
+                "title": "记录",
+                "summary": f"{len(rows)} 条",
+                "columns": columns,
+                "rows": rows,
+            },
+        },
+    )
+    service.apply_event(job, {"step": "query_trades", "status": "running"})
+    service.fail(job, "CONNECTION.STAGE_TIMEOUT", "成交查询超时")
+    snapshot = client.get(f"/api/v1/channel-validations/{job.validation_id}").json()
+    details = next(step for step in snapshot["steps"] if step["id"] == "query_orders")["details"]
+    assert details["row_count"] == len(rows)
+    assert "rows" not in details
+    response = client.get(f"/api/v1/channel-validations/{job.validation_id}/steps/query_orders/table")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["rows"] == rows
+    assert response.json()["columns"] == columns
+    assert client.get(f"/api/v1/channel-validations/{job.validation_id}/steps/query_trades/table").status_code == 404
+    spawn.assert_called_once()
+    service.expires[job.validation_id] = 0
+    assert client.get(f"/api/v1/channel-validations/{job.validation_id}/steps/query_orders/table").status_code == 404
+    assert job.validation_id not in service.tables
