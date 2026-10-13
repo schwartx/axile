@@ -106,12 +106,14 @@ class CtpRequestError(RuntimeError):
         return_code: int | None = None,
         execution_error: str | None = None,
         error_id: int | None = None,
+        broker_message: str | None = None,
         reason_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.return_code = return_code
         self.execution_error = execution_error
         self.error_id = error_id
+        self.broker_message = broker_message
         self.reason_code = reason_code
 
 
@@ -213,6 +215,10 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._ready = False
         self._invalid_reason = None
         self._connection_started = False
+        self._connection_progress = None
+        self.connection_records: dict[str, object] = {}
+        self._catalog_queried = False
+        self.settlement_confirmation: dict[str, object] | None = None
         self._subscriptions = set()
         self._subscription_acks = set()
         self._subscription_errors = {}
@@ -255,6 +261,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             f"{name}失败: ErrorID={code}, {getattr(info, 'ErrorMsg', '')}",
             execution_error=reason,
             error_id=code,
+            broker_message=str(getattr(info, "ErrorMsg", "") or ""),
             reason_code=reason_code,
         )
 
@@ -390,6 +397,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._catalog_progress_at = now
 
     def _load_catalog(self):
+        self._catalog_queried = True
         rows = self._query("ReqQryInstrument", td.CThostFtdcQryInstrumentField())
         self._catalog_progress("构建合约目录")
         catalog = {str(getattr(x, "InstrumentID")): vars(x) for x in rows if getattr(x, "InstrumentID", "")}
@@ -404,6 +412,15 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             runtime.handle_termination_checkpoint()
 
     @override
+    def set_connection_progress(self, callback) -> None:
+        """绑定只传递阶段标识的诊断回调，不输出凭据或原生响应。"""
+        self._connection_progress = callback
+
+    def _report_connection(self, step: str, status: str) -> None:
+        callback = self._connection_progress
+        if callback is not None:
+            callback(step, status)
+
     def _initialize_connection(self, account_config):
         with self._lock:
             self._require_active_connection()
@@ -419,6 +436,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._timeout = float(getattr(account_config, "query_timeout", 15))
         self._flow_dir = Path(tempfile.mkdtemp(prefix="axile-ctp-"))
         try:
+            self._report_connection("trader_connection", "running")
             path = self._flow_dir / "trader"
             path.mkdir()
             self._trader_api = td.CThostFtdcTraderApi.CreateFtdcTraderApi(str(path) + "/")
@@ -430,7 +448,11 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._trader_api.Init()
             self._wait(self._auth, "认证")
             self._wait(self._login, "登录")
+            self._report_connection("trader_login", "passed")
+            self._report_connection("settlement", "running")
             self._ensure_settlement_confirmed()
+            self._report_connection("settlement", "passed")
+            self._report_connection("instruments", "running")
             self._instruments = self._catalog_provider.get(
                 (account_config.broker_id, account_config.td_front, self._trading_day),
                 self._load_catalog,
@@ -439,6 +461,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._catalog_progress("合约目录就绪")
             if not self._instruments:
                 raise CtpRequestError("CTP 合约查询返回空结果")
+            self._report_connection("instruments", "passed")
+            self._report_connection("market_login", "running")
             path = self._flow_dir / "market"
             path.mkdir()
             self._market_api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
@@ -447,6 +471,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._market_api.RegisterFront(account_config.md_front)
             self._market_api.Init()
             self._wait(self._md_login, "行情登录")
+            self._report_connection("market_login", "passed")
             self._reconcile_session()
             with self._lock:
                 self._require_active_connection()
@@ -459,6 +484,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 )
                 self._startup_trades.clear()
                 self._ready = True
+            self._report_connection("ready", "passed")
         except Exception:
             self.close()
             raise
@@ -470,12 +496,16 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             if self._trader_connected:
                 return
             self._trader_connected = True
+        self._report_connection("trader_connection", "passed")
+        self._report_connection("authenticate", "running")
         req = build_authenticate(self._config())
         self._send_stage(self._auth, "authenticate", "ReqAuthenticate", req)
 
     def _authenticated(self, row, info, request_id):
         if not self._finish_stage(self._auth, info, "认证", request_id):
             return
+        self._report_connection("authenticate", "passed")
+        self._report_connection("trader_login", "running")
         req = build_trader_login(self._config())
         self._send_stage(self._login, "trader_login", "ReqUserLogin", req)
 
@@ -493,21 +523,43 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._front_id = int(row.FrontID)
             self._session_id = int(row.SessionID)
             self._order_ref = int(row.MaxOrderRef or 0) + 1
+            if self._connection_progress is not None:
+                self.connection_records["trader_login"] = _copy_native_row(row)
             self._finish_stage(self._login, info, "登录", request_id)
 
     def _ensure_settlement_confirmed(self):
         """查询柜台状态，并仅在当前交易日未确认时发送确认。"""
         c = self._config()
         rows = self._query("ReqQrySettlementInfoConfirm", build_query_settlement_confirm(c))
-        if any(str(getattr(row, "ConfirmDate", "") or "") == self._trading_day for row in rows):
-            self._settlement.done.set()
-            return
+        for row in rows:
+            if str(getattr(row, "ConfirmDate", "") or "") == self._trading_day:
+                self.settlement_confirmation = self._settlement_record(row, "existing")
+                self._settlement.done.set()
+                return
         req = build_settlement_confirm(self._config())
         self._send_stage(self._settlement, "confirm_settlement", "ReqSettlementInfoConfirm", req)
         self._wait(self._settlement, "结算确认")
 
-    def _settled(self, info, request_id):
-        self._finish_stage(self._settlement, info, "结算确认", request_id)
+    @staticmethod
+    def _settlement_record(row, source):
+        """仅提取确认记录字段，不传递原生对象或登录凭据。"""
+        fields = {
+            "broker_id": "BrokerID",
+            "investor_id": "InvestorID",
+            "confirm_date": "ConfirmDate",
+            "confirm_time": "ConfirmTime",
+            "settlement_id": "SettlementID",
+            "account_id": "AccountID",
+            "currency_id": "CurrencyID",
+        }
+        return {"source": source, **{key: getattr(row, field, None) for key, field in fields.items()}}
+
+    def _settled(self, info, request_id, row=None):
+        with self._lock:
+            if self._accept_stage(self._settlement, request_id) and not self._error(info, "结算确认"):
+                # 先保存记录再唤醒等待线程，确保 passed 事件始终携带详情。
+                self.settlement_confirmation = self._settlement_record(row, "submitted")
+            self._finish_stage(self._settlement, info, "结算确认", request_id)
 
     def _market_connected_cb(self):
         with self._lock:
@@ -748,24 +800,32 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         这是柜台查询屏障，不承诺多次查询在柜台侧构成原子快照。
         """
         c = self._config()
-        orders = self._query("ReqQryOrder", build_query_orders(c))
+        orders = self._query_session_rows("query_orders", "ReqQryOrder", build_query_orders(c))
         for row in orders:
             self._remember_order(row)
             self._catalog_progress("对账记录", throttled=True)
-        trades = self._query("ReqQryTrade", build_query_trades(c, ""))
+        if self._connection_progress is not None:
+            self.connection_records["query_orders"] = orders
+        self._report_connection("query_orders", "passed")
+        trades = self._query_session_rows("query_trades", "ReqQryTrade", build_query_trades(c, ""))
         converted_trades = []
         for row in trades:
             converted_trades.append(self._convert_trade(row))
             self._catalog_progress("对账记录", throttled=True)
-        positions = self._query("ReqQryInvestorPosition", build_query_positions(c))
-        accounts = self._query("ReqQryTradingAccount", build_query_account(c))
+        if self._connection_progress is not None:
+            self.connection_records["query_trades"] = trades
+        self._report_connection("query_trades", "passed")
+        positions = self._query_session_rows("query_positions", "ReqQryInvestorPosition", build_query_positions(c))
+        if self._connection_progress is not None:
+            self.connection_records["query_positions"] = positions
+        self._report_connection("query_positions", "passed")
+        accounts = self._query_session_rows("query_account", "ReqQryTradingAccount", build_query_account(c))
         if not accounts:
             raise CtpRequestError("会话对账资金查询返回空结果")
-        for row in [*orders, *trades, *positions, *accounts]:
-            day = str(getattr(row, "TradingDay", "") or "")
-            if day and day != self._trading_day:
-                raise CtpRequestError(f"会话对账交易日不一致: expected={self._trading_day}, actual={day}")
-            self._catalog_progress("对账记录", throttled=True)
+        if self._connection_progress is not None:
+            self.connection_records["query_account"] = accounts
+        self._report_connection("query_account", "passed")
+        self._report_connection("ready", "running")
         quotes, quote_errors = self._position_valuation_quotes(positions)
         self._recovery_snapshot = {
             "trading_day": self._trading_day,
@@ -780,6 +840,17 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             "orders": orders,
             "trades": converted_trades,
         }
+
+    def _query_session_rows(self, step, request_name, request):
+        """查询并逐阶段校验交易日，让失败归属于实际执行的检查项。"""
+        self._report_connection(step, "running")
+        rows = self._query(request_name, request)
+        for row in rows:
+            day = str(getattr(row, "TradingDay", "") or "")
+            if day and day != self._trading_day:
+                raise CtpRequestError(f"会话对账交易日不一致: expected={self._trading_day}, actual={day}")
+            self._catalog_progress("对账记录", throttled=True)
+        return rows
 
     def _remember_order(self, row):
         """保存柜台原始会话键及交易所键，供成交和撤单恢复使用。"""

@@ -1,0 +1,131 @@
+"""验证临时 CTP 会话，复用原有连接顺序、查询屏障与账户控制。"""
+
+from collections.abc import Callable, Mapping
+from typing import override
+from uuid import uuid4
+
+from openctp_ctp import thosttraderapi as td
+
+from axile.channels.contracts import ConnectionProgress
+from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.guard import AccountControlGuard
+from axile.executor.account_control.presets import resolve_account_control_policy
+from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
+from axile.executor.ctp.ctp_execute import CTPExecutor, CtpRequestError
+from axile.executor.ctp.validation_details import (
+    account_details,
+    instrument_details,
+    login_details,
+    order_details,
+    position_details,
+    trade_details,
+)
+from axile.executor.ctp_catalog import CatalogKey, CatalogRows, CatalogStore, InstrumentRecord, LocalCatalogProvider
+from axile.executor.models.unified_input_accounts import BaseAccountConfig, CTPAccountConfig
+from axile.executor.trading_calendar import ShinnyTradingCalendar
+
+
+class _ValidationCatalogProvider(LocalCatalogProvider):
+    """只验证上期所螺纹钢查询；独立缓存避免样本目录污染执行器全量目录。"""
+
+    def __init__(self, executor: CTPExecutor) -> None:
+        super().__init__(CatalogStore())
+        self.executor = executor
+
+    @override
+    def get(
+        self, key: CatalogKey, loader: Callable[[], CatalogRows], checkpoint: Callable[[], None] | None = None
+    ) -> Mapping[str, InstrumentRecord]:
+        """以品种查询代替全量加载，保留原有查询完成与错误屏障。"""
+        return super().get(key, self._load_sample, checkpoint)
+
+    def _load_sample(self) -> CatalogRows:
+        request = td.CThostFtdcQryInstrumentField()
+        request.ExchangeID = "SHFE"
+        request.ProductID = "rb"
+        self.executor._catalog_queried = True
+        rows = self.executor._query("ReqQryInstrument", request)
+        catalog = {
+            str(getattr(row, "InstrumentID")): vars(row)
+            for row in rows
+            if getattr(row, "InstrumentID", "")
+            and getattr(row, "ExchangeID", "") == "SHFE"
+            and getattr(row, "ProductID", "") == "rb"
+        }
+        if not catalog:
+            raise CtpRequestError("螺纹钢合约查询返回空结果")
+        return catalog
+
+
+def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
+    """只创建临时执行器；无论验证结果如何，都释放原生 API。"""
+    if not isinstance(config, CTPAccountConfig):
+        raise TypeError("CTP 配置类型不匹配")
+    executor = CTPExecutor(TradeChannel.CTP)
+    try:
+        executor.account_config = config
+
+        def progress(step, status):
+            details = _step_details(executor, step) if status == "passed" else None
+            if details is None:
+                report(step, status)
+            else:
+                report(step, status, details)
+
+        executor.set_connection_progress(progress)
+        executor.set_catalog_provider(_ValidationCatalogProvider(executor))
+        executor.set_trading_calendar(ShinnyTradingCalendar())
+        executor.set_channel_calendar("china")
+        # 验证尚无持久化账户，但 guard 需要完整身份才会启用。
+        # 每次会话使用独立的内存身份；不查询数据库，也不持久化其控制记录。
+        validation_identity = uuid4()
+        executor.set_account_control_guard(
+            AccountControlGuard(
+                account_id=validation_identity.int,
+                execution_id=f"connection-validation-{validation_identity.hex}",
+                channel=TradeChannel.CTP,
+                policy=resolve_account_control_policy("ctp"),
+                baseline=AccountControlCounterSnapshot(),
+            )
+        )
+        executor._initialize_connection(config)
+    finally:
+        executor.close()
+
+
+def _settlement_details(record: dict[str, object]) -> dict[str, object]:
+    """将柜台确认记录转换为通用详情行；原始账号完整保留。"""
+    fields = (
+        ("确认日期", "confirm_date"),
+        ("确认时间", "confirm_time"),
+        ("结算编号", "settlement_id"),
+        ("经纪公司代码", "broker_id"),
+        ("投资者代码", "investor_id"),
+        ("资金账号", "account_id"),
+        ("币种", "currency_id"),
+    )
+    return {
+        "title": "结算确认记录",
+        "rows": [
+            {"key": "确认方式", "value": "当日已有确认" if record.get("source") == "existing" else "本次连接自动确认"},
+            *({"key": label, "value": record.get(key)} for label, key in fields),
+        ],
+    }
+
+
+def _step_details(executor: CTPExecutor, step: str) -> dict[str, object] | None:
+    """只为有可读业务数据的阶段构造详情。"""
+    if step == "settlement" and executor.settlement_confirmation is not None:
+        return _settlement_details(executor.settlement_confirmation)
+    if step == "instruments":
+        return instrument_details(executor._instruments, queried=executor._catalog_queried, scope="螺纹钢（SHFE · rb）")
+    builders = {
+        "trader_login": login_details,
+        "query_orders": order_details,
+        "query_trades": trade_details,
+        "query_positions": position_details,
+        "query_account": account_details,
+    }
+    if step in builders and step in executor.connection_records:
+        return builders[step](executor.connection_records[step])
+    return None

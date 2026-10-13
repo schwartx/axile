@@ -77,7 +77,7 @@ class AccountCopyRequest(BaseModel):
 
 
 def _account_public(account: Account) -> AccountPublic:
-    """将持久化账户转换为不含凭证的读取 DTO。"""
+    """将持久化账户转换为包含连接编辑值的读取 DTO。"""
     # ``AccountPublic`` 有从凭证派生的摘要字段，并不属于 ORM 模型；先补全输入
     # 再校验，避免 Pydantic 在响应构造阶段把已提交的更新误报为 500。
     return AccountPublic.model_validate(
@@ -98,7 +98,7 @@ def _account_public(account: Account) -> AccountPublic:
             "connection_values": {
                 field.name: account.account_config[field.name]
                 for field in get_channel(str(account.trade_channel)).descriptor.account_form.fields
-                if field.kind != "secret" and field.name in account.account_config
+                if field.name in account.account_config
             },
             "feishu_configured": bool(account.feishu_key),
             "notification_state": account.notification_state,

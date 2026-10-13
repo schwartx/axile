@@ -220,19 +220,23 @@ class WorkerBackendManager:
             connection=cast("Connection", parent_conn),
             control_connection=cast("Connection", parent_control_conn),
             catalog=catalog,
-            monitor=RemoteMonitor(parent_monitor, account_id, process.is_alive),
+            monitor=RemoteMonitor(cast("Connection", parent_monitor), account_id, process.is_alive),
         )
 
-    def _send_shutdown(self, handle: _WorkerBackendHandle) -> None:
+    def _send_shutdown(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> None:
         request = WorkerBackendRequest.shutdown(
             request_id=uuid4().hex,
             reason="manager_shutdown",
         )
-        with handle.request_lock:
+        if not handle.request_lock.acquire(timeout=lock_timeout):
+            raise WorkerBackendTimeoutError("worker backend shutdown 等待在途请求超时")
+        try:
             handle.connection.send(request)
             if not handle.connection.poll(self._shutdown_recv_timeout):
                 raise WorkerBackendTimeoutError(f"worker backend shutdown 响应超时（{self._shutdown_recv_timeout}s）")
             response = handle.connection.recv()
+        finally:
+            handle.request_lock.release()
 
         if not isinstance(response, WorkerBackendResponse):
             raise WorkerBackendExecutionError("worker backend shutdown 返回了未知响应类型")
@@ -270,10 +274,10 @@ class WorkerBackendManager:
         if handle.catalog is not None:
             handle.catalog.close()
 
-    def _dispose_handle(self, handle: _WorkerBackendHandle) -> None:
+    def _dispose_handle(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> None:
         try:
             if not handle.connection.closed and handle.process.is_alive():
-                self._send_shutdown(handle)
+                self._send_shutdown(handle, lock_timeout=lock_timeout)
         except (BrokenPipeError, EOFError, OSError, WorkerBackendExecutionError):
             pass
         try:
@@ -785,7 +789,8 @@ class WorkerBackendManager:
             workers = list(self._workers.items())
             self._workers.clear()
         for _account_id, handle in workers:
-            self._dispose_handle(handle)
+            # 服务关停时不能等待仍在后台恢复的请求锁；其线程会随 worker 退出而解除等待。
+            self._dispose_handle(handle, lock_timeout=self._shutdown_recv_timeout)
 
     def close(self) -> None:
         """关闭所有多进程 worker，兼容 atexit 钩子。."""

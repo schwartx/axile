@@ -32,7 +32,7 @@ class TraderSpi(td.CThostFtdcTraderSpi):
         self.owner._logged_in(row, info, request_id)
 
     def OnRspSettlementInfoConfirm(self, row, info, request_id, is_last):
-        self.owner._settled(info, request_id)
+        self.owner._settled(info, request_id, row)
 
     def OnRspQrySettlementInfoConfirm(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)

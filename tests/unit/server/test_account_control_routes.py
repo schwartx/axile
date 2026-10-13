@@ -167,14 +167,14 @@ def _build_account(
     )
 
 
-def test_account_public_does_not_serialize_credentials() -> None:
+def test_account_public_returns_connection_credentials_but_omits_webhook() -> None:
     account = _build_account()
     account.account_config["password"] = "unique-account-password"
     account.feishu_key = "unique-feishu-webhook-key"
 
     payload = account_crud_routes._account_public(account).model_dump_json()
 
-    assert "unique-account-password" not in payload
+    assert "unique-account-password" in payload
     assert "unique-feishu-webhook-key" not in payload
     assert '"account_config"' not in payload
     assert '"feishu_key"' not in payload
@@ -652,15 +652,15 @@ def test_account_write_dtos_forbid_unknown_fields_and_publish_edit_contract() ->
     assert any(error["loc"][-1] == "unknown" for error in unknown_update.json()["detail"])
 
 
-def test_account_connection_values_only_expose_declared_non_secret_fields() -> None:
+def test_account_connection_values_expose_all_declared_fields() -> None:
     """连接编辑只回显声明的非密钥字段，未知扩展也不泄露。"""
     account = _build_account()
     account.account_config["private_extension"] = "hidden"
     public = account_crud_routes._account_public(account)
     assert public.connection_values["investor_id"] == "test"
     assert public.connection_values["td_front"] == "tcp://td:1"
-    assert "password" not in public.connection_values
-    assert "auth_code" not in public.connection_values
+    assert public.connection_values["password"] == account.account_config["password"]
+    assert public.connection_values["auth_code"] == account.account_config["auth_code"]
     assert "private_extension" not in public.connection_values
 
 
