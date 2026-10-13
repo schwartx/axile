@@ -1,4 +1,3 @@
-import { AccountControlLive } from '@/features/account/ControlMonitor'
 /** 账户流控结构化编辑页。界面只展示中文业务语义，内部键仅用于数据索引。 */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -26,6 +25,8 @@ import {
   resolveAccountControlScope,
   sameAccountControlOverride,
 } from '@/features/account/accountControlPolicy'
+import { ControlScopeUsage, ControlSymbolUsage, ControlUsageNotice } from '@/features/account/ControlUsage'
+import { useLiveControl, type ControlFrame } from '@/stores/liveControl'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { getAccount, getAccountControlPolicy, updateAccount } from '@/lib/api/accounts'
 import { usePolling } from '@/lib/hooks/usePolling'
@@ -422,6 +423,7 @@ function ControlScopeEditor({
 }
 
 function ControlOperationRow({
+  monitorFrame,
   meta,
   preset,
   effective,
@@ -430,6 +432,7 @@ function ControlOperationRow({
   onToggle,
   onChange,
 }: {
+  monitorFrame: ControlFrame | undefined
   meta: AccountControlOperationMeta
   preset: AccountControlOperationPolicy
   effective: AccountControlOperationPolicy
@@ -465,9 +468,11 @@ function ControlOperationRow({
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
             <span className="mr-2 text-ink-3">账户合计</span>{scopeSummary(effective.account)}
+            <ControlScopeUsage frame={monitorFrame} operation={meta.key} />
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
             <span className="mr-2 text-ink-3">每个品种</span>{scopeSummary(effective.symbol)}
+            {effective.symbol && <ControlSymbolUsage frame={monitorFrame} operation={meta.key} />}
           </span>
           <span className="flex flex-none items-baseline gap-2">
             {customCount > 0 && <span className="text-[12px] text-accent">已改 {customCount} 处</span>}
@@ -481,7 +486,10 @@ function ControlOperationRow({
             <ControlPriorityField preset={preset.priority} custom={custom?.priority} onChange={setPriority} />
             <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
               <ControlScopeEditor label="账户合计" preset={preset.account} custom={custom?.account} onChange={(scope) => setScope('account', scope)} />
-              <ControlScopeEditor label="每个品种" preset={preset.symbol} custom={custom?.symbol} onChange={(scope) => setScope('symbol', scope)} />
+              <div>
+                <ControlScopeEditor label="每个品种" preset={preset.symbol} custom={custom?.symbol} onChange={(scope) => setScope('symbol', scope)} />
+                <ControlSymbolUsage frame={monitorFrame} operation={meta.key} expanded />
+              </div>
             </div>
           </div>
         </div>
@@ -494,6 +502,7 @@ function ControlOperationRow({
 export function AccountEditControlPage() {
   const { id } = useParams()
   const accountId = Number(id)
+  const monitorFrame = useLiveControl((state) => state.frames[accountId])
   const toast = useToastStore((state) => state.toast)
   const accounts = useDomainStore((state) => state.accounts)
   const refreshAccounts = useDomainStore((state) => state.refreshAccounts)
@@ -619,6 +628,7 @@ export function AccountEditControlPage() {
   const renderOperation = (meta: AccountControlOperationMeta) => (
     <ControlOperationRow
       key={meta.key}
+      monitorFrame={monitorFrame}
       meta={meta}
       preset={model.preset_policy.operations[meta.key] ?? { priority: 100, account: {} }}
       effective={effective.operations[meta.key]}
@@ -679,11 +689,11 @@ export function AccountEditControlPage() {
           </div>
           <div className="mt-2.5 flex gap-3 text-[13px]"><span className="w-24 flex-none text-ink-2">统计时区</span><span className="text-ink-1">{model.timezone_display_name}</span></div>
           {previewNote && <p className="mt-2 text-[13px] text-ink-2">{previewNote}</p>}
+          <ControlUsageNotice frame={monitorFrame} editing={dirty} />
         </div>
       </Section>
       <ErrorNotice title="预设方案预览失败" error={previewError} variant="mutation" />
 
-      <AccountControlLive accountId={accountId} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
 
       {other.length > 0 && (
@@ -713,7 +723,7 @@ export function AccountEditControlPage() {
                     {/* 与操作卡同家族：标题 | 摘要 | 已改 ⌄ 单行横排；描述挪进展开区 */}
                     <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
                       <span className="flex-none text-[15px] font-semibold text-ink-1">{group.display_name}</span>
-                      <span className={`min-w-0 flex-1 basis-40 text-[13px] ${open ? 'text-ink-3' : 'text-ink-2'}`}>{scopeSummary(current)}</span>
+                      <span className={`min-w-0 flex-1 basis-40 text-[13px] ${open ? 'text-ink-3' : 'text-ink-2'}`}>{scopeSummary(current)}<ControlScopeUsage frame={monitorFrame} operation={group.key} scope="group" /></span>
                       <span className="flex flex-none items-baseline gap-2">
                         {custom && <span className="text-[12px] text-accent">已改</span>}
                         <span className="text-[13px] text-ink-3" aria-hidden>{open ? '⌄' : '›'}</span>

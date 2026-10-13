@@ -41,10 +41,6 @@ export function ControlRules({ frame }: { frame: ControlFrame | undefined }) {
     <p className="text-ink-3">等待时间为估计，新请求可能改变顺序；间隔按本地放行时间计算。</p>
   </div>
 }
-export function AccountControlLive({ accountId }: { accountId: number }) {
-  const frame = useLiveControl((s) => s.frames[accountId])
-  return <div className="my-4 rounded-lg border border-line p-4"><h2 className="mb-2 text-[14px] font-semibold">{frame?.status === 'running' ? '当前实例实际规则与用量' : frame?.status === 'incomplete' || frame?.status === 'unknown' ? '最后已知规则与用量' : '已保存规则与历史用量'}</h2><p className="mb-2 text-[13px] text-ink-3">上方表单为编辑值，保存后从下一次执行生效。</p><ControlRules frame={frame} /></div>
-}
 function ControlDialog({ frame, accountId, selected, onSelect, onClose }: { frame: ControlFrame | undefined; accountId: number; selected: [string, string]; onSelect: (keys: [string, string]) => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {

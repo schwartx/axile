@@ -27,7 +27,8 @@ test('card opens only the dialog, supports keyboard and persists exactly two pre
 })
 test('narrow screen and disconnect retain known values and policy notice', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
-  await expect(page.getByText('已保存配置与当前实例不同；下次执行生效，以下仍为当前实例规则。')).toBeVisible()
+  await expect(page.getByText('今日已用 123/500 · 剩余 377', { exact: true })).toBeVisible()
+  await expect(page.getByText(/已保存配置下次执行生效/)).toBeVisible()
   await page.getByRole('button', { name: '模拟断连' }).click()
   await expect(page.getByRole('button', { name: /流控.*陈旧/ })).toContainText('123/500')
   await page.getByRole('button', { name: /流控.*陈旧/ }).click()
