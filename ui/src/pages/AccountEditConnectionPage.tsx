@@ -123,7 +123,6 @@ export function AccountEditConnectionPage() {
   return (
     <section>
       {title}
-      <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">修改会在下次创建执行器时生效。</div>
       <div className={`relative mt-7 ${channelDescriptor?.connection_validation ? 'xl:grid xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start xl:gap-8' : ''}`}>
       <div className="min-w-0 [&>div]:mt-0">
       <Section label={`${channelDescriptor?.label ?? acc.trade_channel} 连接`}>
