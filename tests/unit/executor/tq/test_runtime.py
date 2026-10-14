@@ -10,25 +10,16 @@ from typing import Any
 import pytest
 
 from axile.executor.tq.runtime import TQRuntime
+from tests.unit.executor.tq._catalog_test_support import CatalogApiMixin
 
 
-class FakeApi:
+class FakeApi(CatalogApiMixin):
     def __init__(self) -> None:
         self.owner = threading.get_ident()
         self.query_count = 0
         self.wait_count = 0
         self.closed = False
         self.loop: asyncio.AbstractEventLoop | None = None
-
-    def query_quotes(self, *, ins_class: str | None = None, expired: bool = False) -> list[str]:
-        self.query_count += 1
-        if expired:
-            return []
-        if ins_class == "FUTURE":
-            return ["SHFE.rb2610"]
-        if ins_class is None:
-            return ["SHFE.rb2610", "KQ.m@SHFE.rb", "SSWE.AU9999"]
-        return []
 
     def create_task(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task:
         if self.loop is None:
@@ -63,7 +54,7 @@ class FakeApi:
         self.closed = True
 
 
-def test_runtime_owns_api_and_builds_catalog_once() -> None:
+def test_runtime_owns_api_and_queries_catalog_only_on_demand() -> None:
     api: FakeApi | None = None
 
     def factory() -> FakeApi:
@@ -77,16 +68,57 @@ def test_runtime_owns_api_and_builds_catalog_once() -> None:
         assert api is not None
         assert owner == api.owner
         assert owner != threading.get_ident()
+        assert api.query_count == 0
         assert runtime.resolver.to_tq("rb2610") == "SHFE.rb2610"
         assert runtime.resolver.to_tq("KQ.m@SHFE.rb") == "KQ.m@SHFE.rb"
         with pytest.raises(ValueError, match="仅支持行情查询"):
             runtime.resolver.to_tq("KQ.m@SHFE.rb", for_trade=True)
-        assert api.query_count == 8
+        assert api.query_count == 3
         assert api.wait_count >= 1
     finally:
         runtime.close()
 
     assert api is not None and api.closed is True
+
+
+def test_full_catalog_only_queries_codes_and_does_not_fetch_specs():
+    api = FakeApi()
+    api.options = ["DCE.m2701-C-3000"]
+    api.combines = ["DCE.SP m2701&m2705"]
+    api.futures = ["SHFE.rb2610", "HKEX.HSI2701"]
+    # SDK 详情接口或私有 GraphQL 不应再进入调用链。
+    api.query_symbol_info = lambda *_args, **_kwargs: pytest.fail("must not query full metadata")
+    api._get_symbol_list = lambda *_args, **_kwargs: pytest.fail("must not use private GraphQL")
+    runtime = TQRuntime(lambda: api)
+    try:
+        rows = runtime.query_catalog(None, 1)
+        assert {(r.key, r.kind) for r in rows} == {
+            ("SHFE.rb2610", "FUTURE"),
+            ("DCE.m2701-C-3000", "OPTION"),
+            ("DCE.SP m2701&m2705", "COMBINE"),
+        }
+        assert all(r.multiplier is None and r.tick is None and not r.extra for r in rows)
+        assert api.query_count == 3
+    finally:
+        runtime.close()
+
+
+def test_failed_code_query_propagates_without_partial_full_result():
+    api = FakeApi()
+    query_quotes = api.query_quotes
+
+    def query(**kwargs):
+        if kwargs["ins_class"] == "OPTION":
+            raise RuntimeError("query failed")
+        return query_quotes(**kwargs)
+
+    api.query_quotes = query
+    runtime = TQRuntime(lambda: api)
+    try:
+        with pytest.raises(RuntimeError, match="query failed"):
+            runtime.query_catalog(None, 1)
+    finally:
+        runtime.close()
 
 
 def test_pending_command_timeout_cancels_before_execution() -> None:

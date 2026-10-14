@@ -9,6 +9,7 @@ Notes
 
 from __future__ import annotations
 
+from _thread import RLock as RLockType
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -394,6 +395,14 @@ class AccountControlGuard:
             等待轮询期间反复调用的检查函数；参数为当前 symbol。
         """
         self._termination_checkpoint = callback
+
+    def share_group_timestamps(self, timestamps: dict[GroupRecentKey, int], lock: RLockType) -> None:
+        """同一物理会话的独立任务共用发送间隔，不共用审计事件。"""
+        with lock:
+            for key, value in self._recent_group_allowed_at.items():
+                timestamps[key] = max(timestamps.get(key, value), value)
+            self._recent_group_allowed_at = timestamps
+            self._state_lock = lock
 
     def begin_operation(
         self,

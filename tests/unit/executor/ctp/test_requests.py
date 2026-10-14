@@ -274,6 +274,7 @@ def test_market_subscription_encodes_instrument_ids() -> None:
     executor = CTPExecutor(TradeChannel.CTP)
     executor._ready = executor._trader_connected = executor._market_connected = True
     executor._instruments = {"rb2610": object()}
+    executor._ensure_instrument_symbols = Mock()
     executor._market_api = Mock()
     executor._market_api.SubscribeMarketData.return_value = 0
     executor._monitoring = False
@@ -367,6 +368,7 @@ class _CalendarStub:
 
 def _submit_point_executor(config: CTPAccountConfig) -> CTPExecutor:
     executor = CTPExecutor(TradeChannel.CTP)
+    executor._ensure_instrument_symbols = Mock()
     executor._ready = executor._trader_connected = executor._market_connected = True
     executor._quotes = {symbol: fresh_quote(symbol, "20260824") for symbol in ("ag2612", "bu2612")}
     executor._subscription_acks = {"ag2612", "bu2612"}

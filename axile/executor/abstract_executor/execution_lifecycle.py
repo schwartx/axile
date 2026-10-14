@@ -88,10 +88,11 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
 
             executor.logger.debug("开始执行交易")
             executor._ensure_connection()
-            standard_input = executor._normalize_connected_standard_input(standard_input)
             # 总超时的计时零点：连接已就绪、planning 尚未开始，因此执行器构造与登录耗时
             # 不计入额度（要覆盖登录挂死需要另一个 pre-flight 超时）。
             executor._reset_execution_state(standard_input)
+            executor._prepare_instrument_catalog(standard_input)
+            standard_input = executor._normalize_connected_standard_input(standard_input)
 
             # 非交易时间直接在入口层返回阻断结果，避免继续进入规划和下单阶段。
             if not executor._check_trading_time():
@@ -131,6 +132,7 @@ class AbstractExecutorExecutionLifecycleMixin(AbstractExecutorExecutionRuntimeFa
             executor.logger.error(f"执行失败: {exc}")
             raise
         finally:
+            executor._release_instrument_catalog()
             # cleanup 与 runtime 生命周期分开控制，便于长连接或排障场景单独保留 runtime。
             if cleanup:
                 executor._cleanup()

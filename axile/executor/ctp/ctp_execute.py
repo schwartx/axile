@@ -6,7 +6,8 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.utils import clock_now
+from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
+from axile.executor.catalog_execution import CatalogExecutionMixin
 from axile.executor.china_futures_session import is_within_possible_china_futures_session
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.combination import split_combination_position
@@ -67,7 +70,6 @@ from axile.executor.ctp.requests import (
     resolve_offset,
 )
 from axile.executor.ctp.spi import MarketSpi, TraderSpi
-from axile.executor.ctp_catalog import LOCAL_CATALOG, CatalogProvider
 from axile.executor.ctp_product_sessions import (
     decide_ctp_product_session,
     get_ctp_product_sessions,
@@ -75,6 +77,7 @@ from axile.executor.ctp_product_sessions import (
 from axile.executor.ctp_query_wait import QueryIdleClock
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
+from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
@@ -133,6 +136,7 @@ class _PendingQuery:
     done: threading.Event
     error: Exception | None = None
     idle: QueryIdleClock | None = None
+    timeout: float | None = None
 
 
 @dataclass
@@ -183,15 +187,21 @@ class CtpExecutionEngine(ExecutionEngine):
         return super()._derive_dispatch_error(status, symbol_results)
 
 
-class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
+class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient):
     """直接持有 OpenCTP API 的统一执行器。"""
 
+    _catalog_requires_specs = True
+
     def __init__(self, channel_type: TradeChannel, account_config: AccountConfig | None = None) -> None:
+        self._init_instrument_catalog()
+        self._catalog_query_state = threading.local()
+        self._catalog_control_factory = None
+        self._control_group_timestamps = {}
+        self._validation_catalog: Callable[[], Mapping[str, InstrumentRecord]] | None = None
         self._trader_api = self._market_api = None
         self._trader_spi = self._market_spi = None
         self._pending_queries = {}
         self._instruments = {}
-        self._catalog_provider = LOCAL_CATALOG
         self._catalog_progress_at = 0.0
         self._quotes = {}
         self._valuation_quotes = {}
@@ -276,11 +286,13 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _call_trader_request(self, name, req, *, before_send=None) -> int:
         """直接发送一次 TraderApi 请求，不附加账户控制或适配层重试。"""
-        guard = self.get_account_control_guard()
+        guard = getattr(self._catalog_query_state, "guard", None) or self.get_account_control_guard()
         rid = self._next_id()
         # 账户控制可能等待很久，故门禁必须落在等待之后的原生请求发送点。
         with self._lock:
             self._require_active_connection()
+            if name.startswith("ReqQry"):
+                self._catalog_checkpoint()
             if name in {"ReqOrderInsert", "ReqExecOrderInsert", "ReqOptionSelfCloseInsert"}:
                 self._require_new_order_ready(str(req.InstrumentID))
                 if name == "ReqOrderInsert":
@@ -365,7 +377,10 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _send_trader_request(self, operation, name, req, *, symbol=None, before_send=None) -> int:
         """经通用账户控制发送一次 TraderApi 请求，不在适配层重试。"""
-        guard = self.get_account_control_guard()
+        guard = getattr(self._catalog_query_state, "guard", None) or self.get_account_control_guard()
+        share = getattr(guard, "share_group_timestamps", None)
+        if callable(share):
+            share(self._control_group_timestamps, self._lock)
 
         return run_controlled_call(
             guard=guard,
@@ -384,29 +399,92 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             raise stage.error
         self._catalog_progress(name)
 
-    def set_catalog_provider(self, provider: CatalogProvider) -> None:
-        """在连接前注入目录提供器；账户认证仍由当前执行器完成。"""
-        self._catalog_provider = provider
+    def _install_catalog(self, rows: Mapping[str, Instrument]) -> None:
+        self._instruments = {row.symbol: row.ctp() for row in self._catalog_records.values()}
+
+    def _catalog_related_symbols(self) -> list[str]:
+        c = self._config()
+        positions = self._query("ReqQryInvestorPosition", build_query_positions(c))
+        orders = self._query("ReqQryOrder", build_query_orders(c))
+        return self._position_catalog_symbols(positions) + [
+            str(row.InstrumentID)
+            for row in orders
+            if getattr(row, "InstrumentID", "") and int(getattr(row, "VolumeTotal", 0) or 0) > 0
+        ]
+
+    @staticmethod
+    def _position_catalog_symbols(positions) -> list[str]:
+        result = []
+        for row in positions:
+            if int(getattr(row, "Position", 0) or 0) <= 0:
+                continue
+            for leg in split_combination_position(row) or [row]:
+                symbol = leg.get("InstrumentID", "") if isinstance(leg, dict) else getattr(leg, "InstrumentID", "")
+                if symbol:
+                    result.append(str(symbol))
+        return result
+
+    def _query_catalog(self, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
+        """复用当前会话；全量发一次，按需由 CTP 逐个指定合约。"""
+        state = self._catalog_query_state
+        state.active = True
+        state.deadline = clock_monotonic() + timeout if symbols is None and timeout is not None else None
+        records = []
+        try:
+            for symbol in symbols if symbols is not None else [None]:
+                request = td.CThostFtdcQryInstrumentField()
+                if symbol is not None:
+                    exchange, separator, local = symbol.partition(".")
+                    request.InstrumentID = local if separator else exchange
+                    if separator:
+                        request.ExchangeID = exchange
+                response_timeout = timeout if state.deadline is None else state.deadline - clock_monotonic()
+                if response_timeout is not None and response_timeout <= 0:
+                    raise TimeoutError("合约资料查询超时")
+                rows = self._query("ReqQryInstrument", request, timeout=response_timeout)
+                records.extend(
+                    record
+                    for row in rows
+                    if (record := from_ctp(vars(row))) is not None and (symbols is not None or record.kind != "COMBINE")
+                )
+            return records
+        finally:
+            state.active = False
+            state.deadline = state.guard = None
+
+    @contextmanager
+    def _catalog_query_control(self):
+        """取得查询权后才读取控制基线，记录刷盘完成后释放查询权。"""
+        state = getattr(self, "_catalog_query_state", None)
+        factory = getattr(self, "_catalog_control_factory", None)
+        if state is None or not getattr(state, "active", False) or factory is None:
+            yield
+            return
+        with factory(self._catalog_checkpoint) as guard:
+            state.guard = guard
+            try:
+                yield
+            finally:
+                state.guard = None
 
     def _catalog_progress(self, phase: str, *, throttled: bool = False) -> None:
         if self._ready:
             return
         now = time.monotonic()
         if not throttled or now - self._catalog_progress_at >= 1:
-            self._catalog_provider.progress(phase)
+            self._instrument_provider.progress(phase)
             self._catalog_progress_at = now
-
-    def _load_catalog(self):
-        self._catalog_queried = True
-        rows = self._query("ReqQryInstrument", td.CThostFtdcQryInstrumentField())
-        self._catalog_progress("构建合约目录")
-        catalog = {str(getattr(x, "InstrumentID")): vars(x) for x in rows if getattr(x, "InstrumentID", "")}
-        if not catalog:
-            raise CtpRequestError("CTP 合约查询返回空结果")
-        return catalog
 
     def _catalog_checkpoint(self):
         self._require_active_connection()
+        state = getattr(self, "_catalog_query_state", None)
+        if getattr(state, "active", False):
+            if state.deadline is not None and clock_monotonic() >= state.deadline:
+                raise TimeoutError("合约资料查询超时")
+            return
+        preparation = getattr(self, "_catalog_prepare_deadline", None)
+        if preparation is not None and clock_monotonic() >= preparation:
+            raise TimeoutError("等待合约资料超时")
         runtime = self.get_active_execution_runtime()
         if runtime is not None:
             runtime.handle_termination_checkpoint()
@@ -452,16 +530,10 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._report_connection("settlement", "running")
             self._ensure_settlement_confirmed()
             self._report_connection("settlement", "passed")
-            self._report_connection("instruments", "running")
-            self._instruments = self._catalog_provider.get(
-                (account_config.broker_id, account_config.td_front, self._trading_day),
-                self._load_catalog,
-                self._catalog_checkpoint,
-            )
-            self._catalog_progress("合约目录就绪")
-            if not self._instruments:
-                raise CtpRequestError("CTP 合约查询返回空结果")
-            self._report_connection("instruments", "passed")
+            if self._validation_catalog:
+                self._report_connection("instruments", "running")
+                self._instruments = self._validation_catalog()
+                self._report_connection("instruments", "passed")
             self._report_connection("market_login", "running")
             path = self._flow_dir / "market"
             path.mkdir()
@@ -472,6 +544,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self._market_api.Init()
             self._wait(self._md_login, "行情登录")
             self._report_connection("market_login", "passed")
+            if not self._validation_catalog:
+                self._instrument_provider.bind(self._query_catalog, channel="ctp")
             self._reconcile_session()
             with self._lock:
                 self._require_active_connection()
@@ -697,8 +771,26 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 p.error = error
                 p.done.set()
 
+    @contextmanager
+    def _query_slot(self, timeout: float | None):
+        """复用会话互斥锁，等待期间检查取消及来源退出。"""
+        deadline = None if timeout is None else clock_monotonic() + timeout
+        while not self._query_lock.acquire(blocking=False):
+            self._catalog_checkpoint()
+            remaining = 0.01 if deadline is None else deadline - clock_monotonic()
+            if remaining <= 0:
+                raise TimeoutError("等待 CTP 查询权超时")
+            get_default_clock().sleep(min(0.01, remaining))
+        try:
+            yield
+        finally:
+            self._query_lock.release()
+
     def _query(self, name, req, *, symbol=None, timeout=None):
-        with self._query_lock:
+        wait_seconds = self._timeout if timeout is None else timeout
+        state = self._catalog_query_state
+        slot_timeout = None if getattr(state, "active", False) and state.deadline is None else wait_seconds
+        with self._query_slot(slot_timeout), self._catalog_query_control():
             operation = {
                 "ReqQryInstrument": "query_instruments",
                 "ReqQryTradingAccount": "query_account",
@@ -709,8 +801,9 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 "ReqQrySettlementInfoConfirm": "query_settlement_status",
             }[name]
             pending = _PendingQuery([], threading.Event())
+            pending.timeout = wait_seconds
             if name == "ReqQryInstrument":
-                pending.idle = QueryIdleClock()
+                pending.idle = QueryIdleClock(clock_monotonic)
             pending_rid = None
 
             def register_pending(rid):
@@ -730,7 +823,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
                 raise
             assert pending_rid is not None
             try:
-                self._wait_query(pending, name, timeout=timeout)
+                self._wait_query(pending, name, timeout=wait_seconds)
                 if pending.error:
                     raise pending.error
                 self._catalog_progress(f"{name}完成")
@@ -741,11 +834,14 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _wait_query(self, pending, name, *, timeout=None):
         wait_seconds = self._timeout if timeout is None else timeout
+        deadline = clock_monotonic() + wait_seconds
         if pending.idle is None:
-            if not pending.done.wait(wait_seconds):
-                raise TimeoutError(f"{name}超时")
+            while not pending.done.is_set() and not get_default_clock().event_wait(pending.done, 0.05):
+                self._catalog_checkpoint()
+                if clock_monotonic() >= deadline:
+                    raise TimeoutError(f"{name}超时")
             return
-        while not pending.done.wait(0.05):
+        while not pending.done.is_set() and not get_default_clock().event_wait(pending.done, 0.05):
             self._catalog_checkpoint()
             if pending.idle.timed_out(wait_seconds, pending.done):
                 raise TimeoutError(f"{name}超时：连续 {wait_seconds:g} 秒无回调")
@@ -760,7 +856,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         p = self._pending_queries.get(rid)
         if not p or p.done.is_set():
             return
-        if p.idle is not None and not p.idle.enter(self._timeout):
+        if p.idle is not None and not p.idle.enter(self._timeout if p.timeout is None else p.timeout):
             return
         try:
             with self._lock:
@@ -816,6 +912,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             self.connection_records["query_trades"] = trades
         self._report_connection("query_trades", "passed")
         positions = self._query_session_rows("query_positions", "ReqQryInvestorPosition", build_query_positions(c))
+        if not self._validation_catalog:
+            self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
         if self._connection_progress is not None:
             self.connection_records["query_positions"] = positions
         self._report_connection("query_positions", "passed")
@@ -968,6 +1066,10 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
         return list(dict.fromkeys(self._normalize_ctp_symbol(symbol) for symbol in values))
 
     def _normalize_ctp_symbol(self, symbol: str) -> str:
+        if "." in symbol:
+            record = self._catalog_record(symbol)
+            if record is not None:
+                return record.symbol
         if symbol in self._instruments:
             return symbol
         trading_day = str(getattr(self, "_trading_day", ""))
@@ -994,6 +1096,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
             raise CtpRequestError("资金查询返回空结果")
         p = build_query_positions(c)
         positions = self._query("ReqQryInvestorPosition", p)
+        if not self._validation_catalog:
+            self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
         quotes, quote_errors = self._position_valuation_quotes(positions)
         return account_to_unified(accounts[-1], positions, self._instruments, quotes=quotes, quote_errors=quote_errors)
 
@@ -1166,6 +1270,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
         with self._lock:
             self._require_new_order_ready(symbol)
+        self._ensure_instrument_symbols([symbol])
         if symbol not in self._instruments:
             raise ValueError(f"未知 CTP 合约: {symbol}")
         trade_rule = kwargs.get("trade_rule")
@@ -1419,6 +1524,8 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     @override
     def get_tick_size(self, symbol):
+        if symbol not in self._instruments:
+            self._ensure_instrument_symbols([symbol])
         x = self._instruments.get(symbol)
         v = float(getattr(x, "PriceTick", 0) or 0) if x else 0
         return v if v > 0 else None
@@ -1627,6 +1734,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
     def initialize_websocket(self, symbols=None):
         if not symbols:
             return
+        self._ensure_instrument_symbols(list(symbols))
         unknown = [x for x in symbols if x not in self._instruments]
         if unknown:
             raise ValueError(f"未知 CTP 合约: {unknown}")
@@ -1805,6 +1913,7 @@ class CTPExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def close(self):
         """按行情、交易顺序幂等释放 API。"""
+        self._instrument_provider.close()
         with self._lock:
             if self._closed:
                 return

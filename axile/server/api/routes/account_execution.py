@@ -15,6 +15,7 @@ from loguru import logger
 from sqlmodel import col, func, select
 
 from axile.channels import get_channel
+from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
@@ -40,6 +41,7 @@ from axile.server.db.models import (
     TargetWeightSnapshot,
     TargetWeightSnapshotPublic,
 )
+from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.legacy_compat import normalize_execution_event_details, normalize_legacy_result
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
 from axile.server.execution.live import live_hub
@@ -642,6 +644,8 @@ async def empty_all_positions(
     session.add(db_account)
     await session.commit()
     delete_job(sched, account_id)
+    if db_account.trade_channel in {TradeChannel.CTP, TradeChannel.TQ}:
+        await reconcile_china_channel_account(db_account.snapshot())
 
     try:
         submitted = await enqueue_empty_positions(account_id, algorithm=algorithm)

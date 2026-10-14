@@ -249,6 +249,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await analysis.start()
     # 核心服务先就绪；每个账户独立恢复，不等待柜台登录、合约查询或账户限流。
     account_recovery = asyncio.create_task(_recover_accounts_in_background(), name="axile-account-recovery")
+    from axile.server.execution.catalog_preheat import arm_catalog_preheat
+
+    arm_catalog_preheat()
     _.state.account_recovery = account_recovery
     logger.warning("axile已经成功运行!")
     try:

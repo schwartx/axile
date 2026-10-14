@@ -13,8 +13,8 @@ from typing import cast
 from uuid import uuid4
 
 from axile.common.trade_channel import TradeChannel
-from axile.executor.algorithms.utils.clock import clock_monotonic
-from axile.executor.ctp_catalog import CatalogStore
+from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
+from axile.executor.instrument_catalog import InstrumentCatalog
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -191,7 +191,8 @@ class WorkerBackendManager:
         self._lock = Lock()
         # 一账户一常驻 worker；无空闲回收/无上限是有意取舍，理由与重评估阈值见类 docstring。
         self._workers: dict[int, _WorkerBackendHandle] = {}
-        self._catalog_store = CatalogStore()
+        self.instrument_catalog = InstrumentCatalog()
+        self._catalog_accounts: dict[int, tuple[str, bool, str]] = {}
         self._execute_recv_timeout = execute_recv_timeout
         self._shutdown_recv_timeout = shutdown_recv_timeout
         atexit.register(self.close)
@@ -212,8 +213,9 @@ class WorkerBackendManager:
         child_control_conn.close()
         child_catalog.close()
         child_monitor.close()
-        catalog = CatalogSession(cast("Connection", parent_catalog), self._catalog_store)
-        catalog.thread.start()
+        catalog = CatalogSession(cast("Connection", parent_catalog), self.instrument_catalog, enabled=False)
+        channel, enabled, last_execution = self._catalog_accounts.get(account_id, ("", False, ""))
+        catalog.configure(channel=channel, enabled=enabled, last_execution=last_execution)
         return _WorkerBackendHandle(
             account_id=account_id,
             process=process,
@@ -222,6 +224,28 @@ class WorkerBackendManager:
             catalog=catalog,
             monitor=RemoteMonitor(cast("Connection", parent_monitor), account_id, process.is_alive),
         )
+
+    def configure_catalog_account(self, account: AccountContext, *, last_execution: str = "") -> None:
+        """目录只使用非暂停账户，优先 CTP 与最近执行的账户。"""
+        account_id = _require_account_id(account)
+        with self._lock:
+            previous = self._catalog_accounts.get(account_id, ("", False, ""))[2]
+            latest = max(previous, last_execution.replace(" ", "T"))
+            channel, enabled = str(account.trade_channel), account.is_started
+            self._catalog_accounts[account_id] = channel, enabled, latest
+            handle = self._workers.get(account_id)
+            if handle is not None and handle.catalog is not None:
+                handle.catalog.configure(channel=channel, enabled=enabled, last_execution=latest)
+
+    def _record_catalog_execution(self, account_id: int) -> None:
+        """只更新使用时间，避免在途请求的旧快照重新启用已暂停来源。"""
+        with self._lock:
+            channel, enabled, _ = self._catalog_accounts[account_id]
+            latest = clock_now_iso().replace(" ", "T")
+            self._catalog_accounts[account_id] = channel, enabled, latest
+            handle = self._workers.get(account_id)
+            if handle is not None and handle.catalog is not None:
+                handle.catalog.configure(channel=channel, enabled=enabled, last_execution=latest)
 
     def _send_shutdown(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> None:
         request = WorkerBackendRequest.shutdown(
@@ -431,6 +455,15 @@ class WorkerBackendManager:
             with handle.request_lock:
                 if handle.retired:
                     continue
+                if request.account_payload:
+                    from axile.server.db.models.account import AccountSnapshot
+
+                    with self._lock:
+                        known_account = account_id in self._catalog_accounts
+                    if not known_account:
+                        self.configure_catalog_account(AccountSnapshot.model_validate(request.account_payload))
+                    if request.command in {"execute_trade", "empty_positions"}:
+                        self._record_catalog_execution(account_id)
                 try:
                     handle.connection.send(request)
                     response, force_termination = self._receive_response(
@@ -785,6 +818,7 @@ class WorkerBackendManager:
 
     def shutdown_all(self) -> None:
         """显式关闭所有多进程 worker。."""
+        self.instrument_catalog.close()
         with self._lock:
             workers = list(self._workers.items())
             self._workers.clear()

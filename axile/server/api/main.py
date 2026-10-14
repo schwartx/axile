@@ -9,6 +9,7 @@ from axile.server.api.routes import (
     connection_validation,
     editor,
     init,
+    instrument_catalog,
     portfolio,
     utils,
 )
@@ -20,6 +21,7 @@ api_router.include_router(connection_validation.router)
 api_router.include_router(connection_validation.account_router)
 api_router.include_router(algorithms.router)
 api_router.include_router(init.router)
+api_router.include_router(instrument_catalog.router)
 api_router.include_router(account.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(editor.router)

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TypeVar
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, czce_is_option_instrument
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.models.unified_input import UnifiedStandardInput
 
 _TRADE_CLASSES = frozenset({"FUTURE", "OPTION", "COMBINE"})
@@ -35,13 +35,29 @@ class TQInstrument:
 class TQSymbolResolver:
     """解析 CTP InstrumentID，并对未知和重名代码显式失败."""
 
-    def __init__(self, instruments: list[TQInstrument], *, reference_year: int | None = None) -> None:
+    def __init__(
+        self,
+        instruments: list[TQInstrument],
+        *,
+        reference_year: int | None = None,
+        loader: Callable[[str], list[TQInstrument]] | None = None,
+    ) -> None:
         self._by_full: dict[str, TQInstrument] = {item.symbol: item for item in instruments}
         by_local: dict[str, list[TQInstrument]] = {}
         for item in instruments:
             by_local.setdefault(item.instrument_id, []).append(item)
         self._by_local: dict[str, list[TQInstrument]] = by_local
-        self._reference_year: int = reference_year or datetime.now().year
+        self._reference_year: int = reference_year or clock_now().year
+        self._loader = loader
+
+    def _load_missing(self, symbol: str) -> None:
+        if self._loader is None:
+            return
+        for item in self._loader(symbol):
+            self._by_full[item.symbol] = item
+            current = self._by_local.setdefault(item.instrument_id, [])
+            current[:] = [old for old in current if old.symbol != item.symbol]
+            current.append(item)
 
     def _czce_alias_candidates(self, symbol: str) -> list[TQInstrument]:
         exchange_id: str | None = None
@@ -73,6 +89,8 @@ class TQSymbolResolver:
 
     def to_tq(self, symbol: str, *, for_trade: bool = False) -> str:
         """将通用 symbol 转换为 TqSdk 完整代码."""
+        if symbol not in self._by_full and symbol not in self._by_local and not self._czce_alias_candidates(symbol):
+            self._load_missing(symbol)
         if "." in symbol:
             item = self._by_full.get(symbol)
             if item is None:

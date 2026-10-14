@@ -16,6 +16,7 @@ from tests.unit.executor.ctp._quote_test_support import fresh_quote
 def _executor(*, closed: bool) -> CTPExecutor:
     executor = CTPExecutor.__new__(CTPExecutor)
     executor._lock = threading.RLock()
+    executor._catalog_query_state = threading.local()
     executor._timeout = 0.01
     executor._instruments = {"rb2610": SimpleNamespace(ExchangeID="SHFE", VolumeMultiple=10)}
     executor._valuation_quotes = {}

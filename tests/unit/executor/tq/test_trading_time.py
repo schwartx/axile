@@ -29,7 +29,10 @@ class _Calendar:
         return self.rows
 
 
-class FakeApi:
+from tests.unit.executor.tq._catalog_test_support import CatalogApiMixin
+
+
+class FakeApi(CatalogApiMixin):
     futures = [
         "SHFE.rb2610",
         "SHFE.ag2612",
@@ -56,17 +59,9 @@ class FakeApi:
         self.calendar_rows: list[dict[str, object]] | None = None
         self.closed_dates: set[date] = set()
 
-    def query_quotes(self, *, ins_class: str | None = None, expired: bool = False) -> list[str]:
-        if expired:
-            return []
-        return {
-            "FUTURE": self.futures,
-            "OPTION": self.options,
-            "COMBINE": self.combines,
-        }.get(ins_class, self.futures + self.options + self.combines)
-
     def wait_update(self, *, deadline: float) -> bool:
         del deadline
+        self.pump_catalog()
         return False
 
     def is_changing(self, _entity: object) -> bool:
@@ -102,7 +97,7 @@ class FakeApi:
         }
 
     def close(self) -> None:
-        pass
+        self.close_catalog()
 
 
 @pytest.fixture
@@ -305,7 +300,7 @@ def test_engine_blocks_symbol_sessions_without_market_io(monkeypatch: pytest.Mon
     assert market_requests == [["ag2612"]]
 
 
-def test_execute_blocks_unresolved_symbol_without_stopping_sibling(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_missing_required_contract_fails_before_any_order(monkeypatch: pytest.MonkeyPatch) -> None:
     api = FakeApi()
     monkeypatch.setattr(TQExecutor, "_build_api", staticmethod(lambda _config: api))
     instance = TQExecutor(TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"))
@@ -358,30 +353,23 @@ def test_execute_blocks_unresolved_symbol_without_stopping_sibling(monkeypatch: 
             ),
         )
 
-        output = instance.execute(
-            UnifiedStandardInput(
-                channel_type=TradeChannel.TQ,
-                account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
-                curr_target={"rb2610": 0.1, "SHFE.missing2601": 0.1},
-                algorithm={"method": "SINGLE-MAKER"},
-            ),
-            cleanup=False,
-        )
+        from axile.executor.instrument_catalog import CatalogError
+
+        with pytest.raises(CatalogError):
+            instance.execute(
+                UnifiedStandardInput(
+                    channel_type=TradeChannel.TQ,
+                    account_config=TQAccountConfig(account_mode="kq", tq_username="user", tq_password="secret"),
+                    curr_target={"rb2610": 0.1, "SHFE.missing2601": 0.1},
+                    algorithm={"method": "SINGLE-MAKER"},
+                ),
+                cleanup=False,
+            )
     finally:
         instance.close()
 
-    blocked = output.symbol_results["SHFE.missing2601"]
-    assert output.status is ExecutionStatus.PARTIAL
-    assert output.symbol_results["rb2610"].status is ExecutionStatus.SUCCEEDED
-    assert blocked.status is ExecutionStatus.BLOCKED
-    assert blocked.error == "无法获取品种交易时段"
-    assert blocked.memory == {
-        "symbol_decision_reason_code": TQTradingTimeStatus.QUOTE_TRADING_TIME_UNAVAILABLE.value,
-        "symbol_decision_reason_family": ExecutionReasonFamily.MARKET_RULE.value,
-    }
-    assert blocked.sizing is not None
-    assert blocked.sizing.status is TargetSizingStatus.UNAVAILABLE
-    assert market_requests == [["rb2610"]]
+    assert api.insert_calls == 0
+    assert market_requests == []
 
 
 def test_engine_blocks_all_symbol_sessions_without_execution_io(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -544,6 +532,7 @@ def test_place_order_checks_and_submits_in_one_runtime_command(
     executor: tuple[TQExecutor, FakeApi], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     instance, api = executor
+    instance._ensure_instrument_symbols(["rb2610"])
     runtime = instance._require_runtime()
     call = runtime.call
     calls = 0

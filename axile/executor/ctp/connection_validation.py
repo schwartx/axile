@@ -1,7 +1,6 @@
 """验证临时 CTP 会话，复用原有连接顺序、查询屏障与账户控制。"""
 
-from collections.abc import Callable, Mapping
-from typing import override
+from types import MappingProxyType
 from uuid import uuid4
 
 from openctp_ctp import thosttraderapi as td
@@ -20,41 +19,27 @@ from axile.executor.ctp.validation_details import (
     position_details,
     trade_details,
 )
-from axile.executor.ctp_catalog import CatalogKey, CatalogRows, CatalogStore, InstrumentRecord, LocalCatalogProvider
+from axile.executor.instrument_catalog_records import InstrumentRecord
 from axile.executor.models.unified_input_accounts import BaseAccountConfig, CTPAccountConfig
 from axile.executor.trading_calendar import ShinnyTradingCalendar
 
 
-class _ValidationCatalogProvider(LocalCatalogProvider):
-    """只验证上期所螺纹钢查询；独立缓存避免样本目录污染执行器全量目录。"""
-
-    def __init__(self, executor: CTPExecutor) -> None:
-        super().__init__(CatalogStore())
-        self.executor = executor
-
-    @override
-    def get(
-        self, key: CatalogKey, loader: Callable[[], CatalogRows], checkpoint: Callable[[], None] | None = None
-    ) -> Mapping[str, InstrumentRecord]:
-        """以品种查询代替全量加载，保留原有查询完成与错误屏障。"""
-        return super().get(key, self._load_sample, checkpoint)
-
-    def _load_sample(self) -> CatalogRows:
-        request = td.CThostFtdcQryInstrumentField()
-        request.ExchangeID = "SHFE"
-        request.ProductID = "rb"
-        self.executor._catalog_queried = True
-        rows = self.executor._query("ReqQryInstrument", request)
-        catalog = {
-            str(getattr(row, "InstrumentID")): vars(row)
-            for row in rows
-            if getattr(row, "InstrumentID", "")
-            and getattr(row, "ExchangeID", "") == "SHFE"
-            and getattr(row, "ProductID", "") == "rb"
-        }
-        if not catalog:
-            raise CtpRequestError("螺纹钢合约查询返回空结果")
-        return catalog
+def _load_sample(executor: CTPExecutor) -> dict[str, InstrumentRecord]:
+    """连接诊断始终真实查询螺纹钢样本，不经过共享缓存。"""
+    request = td.CThostFtdcQryInstrumentField()
+    request.ExchangeID, request.ProductID = "SHFE", "rb"
+    executor._catalog_queried = True
+    rows = executor._query("ReqQryInstrument", request)
+    catalog = {
+        str(row.InstrumentID): InstrumentRecord(MappingProxyType(vars(row)))
+        for row in rows
+        if getattr(row, "InstrumentID", "")
+        and getattr(row, "ExchangeID", "") == "SHFE"
+        and getattr(row, "ProductID", "") == "rb"
+    }
+    if not catalog:
+        raise CtpRequestError("螺纹钢合约查询返回空结果")
+    return catalog
 
 
 def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
@@ -73,7 +58,7 @@ def validate_connection(config: BaseAccountConfig, report: ConnectionProgress) -
                 report(step, status, details)
 
         executor.set_connection_progress(progress)
-        executor.set_catalog_provider(_ValidationCatalogProvider(executor))
+        executor._validation_catalog = lambda: _load_sample(executor)
         executor.set_trading_calendar(ShinnyTradingCalendar())
         executor.set_channel_calendar("china")
         # 验证尚无持久化账户，但 guard 需要完整身份才会启用。

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -36,6 +36,8 @@ def test_prepare_china_accounts_isolates_account_failures(tmp_path: Path, monkey
     prepared: list[tuple[int | None, str | None]] = []
 
     class Manager:
+        configure_catalog_account = MagicMock()
+
         async def prepare_account(self, account: object, expected: str | None = None) -> dict[str, object]:
             account_id = getattr(account, "id")
             prepared.append((account_id, expected))
@@ -64,6 +66,8 @@ def test_tq_worker_is_rebuilt_before_session_prepare(tmp_path: Path, monkeypatch
     calls: list[tuple[str, int]] = []
 
     class Manager:
+        configure_catalog_account = MagicMock()
+
         async def drop_account(self, account_id: int) -> None:
             calls.append(("drop", account_id))
 
@@ -85,3 +89,12 @@ def test_tq_worker_is_rebuilt_before_session_prepare(tmp_path: Path, monkeypatch
 
     asyncio.run(scenario())
     assert calls == [("drop", 1), ("prepare", 1)]
+
+
+def test_pausing_account_immediately_disables_its_catalog_source(monkeypatch):
+    account = build_account(id=1, is_started=False)
+    manager = SimpleNamespace(configure_catalog_account=MagicMock(), prepare_account=AsyncMock())
+    monkeypatch.setattr(ctp_channels, "get_worker_backend_manager", lambda: manager)
+    asyncio.run(ctp_channels.reconcile_china_channel_account(account))
+    manager.configure_catalog_account.assert_called_once_with(account, last_execution="")
+    manager.prepare_account.assert_not_awaited()
