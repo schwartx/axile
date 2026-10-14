@@ -511,4 +511,51 @@ def test_connection_observer_ignores_command_errors_and_reports_event_pump_stop(
         time.sleep(0.001)
     assert observations[-1].status == "error"
     assert "事件泵中断" in observations[-1].error["technical_detail"]
+    assert observations[-1].label == "天勤运行时异常"
+    assert "事件泵运行" in str(observations[-1].presentation)
     runtime.close()
+
+
+def test_api_factory_failure_content_does_not_guess_account_or_password():
+    from axile.executor.connection_state import ConnectionMonitor
+
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+
+    def failed_factory():
+        raise ValueError("factory original evidence")
+
+    with pytest.raises(RuntimeError, match="初始化失败"):
+        TQRuntime(failed_factory, connection=monitor)
+    assert observations[-1].label == "天勤连接失败"
+    assert observations[-1].error["technical_detail"] == "factory original evidence"
+    assert "API 工厂初始化" in str(observations[-1].presentation)
+    assert "密码错误" not in str(observations[-1].presentation)
+
+
+def test_api_initialization_timeout_keeps_its_snapshot_after_late_factory_failure():
+    from axile.executor.connection_state import ConnectionMonitor
+
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+    release = threading.Event()
+    owners = []
+
+    def waiting_factory():
+        owners.append(threading.current_thread())
+        release.wait(1)
+        raise RuntimeError("late factory failure")
+
+    try:
+        with pytest.raises(TimeoutError):
+            TQRuntime(waiting_factory, command_timeout=0.02, connection=monitor)
+        observation = observations[-1]
+        assert observation.label == "天勤连接超时"
+        assert "运行时初始化等待" in str(observation.presentation)
+    finally:
+        release.set()
+        for owner in owners:
+            owner.join(timeout=1)
+    assert observations[-1] == observation

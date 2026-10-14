@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 const SRC_ROOT = join(import.meta.dir, '..', '..')
 /** 审计/证据视图是技术原文的合法居所，默认折叠展示。 */
-const ALLOWED = new Set(['history/ExecutionEvidence.tsx', 'history/executionEvidenceModel.ts', 'features/history/executionErrorAdapter.ts', 'features/history/ExecutionErrorEvidence.tsx', 'lib/errorInfo.ts'])
+const ALLOWED = new Set(['history/ExecutionEvidence.tsx', 'history/executionEvidenceModel.ts', 'features/history/executionErrorAdapter.ts', 'features/history/ExecutionErrorEvidence.tsx', 'components/ui/ErrorDetailsContent.tsx', 'lib/errorInfo.ts'])
 
 function collect(dir: string, base = ''): string[] {
   const files: string[] = []

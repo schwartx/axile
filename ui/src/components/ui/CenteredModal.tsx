@@ -69,7 +69,7 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
     >
       <div className="flex items-start justify-between px-[22px] pt-5 pb-3">
         <div className="min-w-0">
-          <h2 id={titleId} className="text-[18px] font-[640]">{title}</h2>
+          <h2 id={titleId} className="text-[18px] font-[640] [overflow-wrap:anywhere]">{title}</h2>
           {subtitle && <div className="mt-1 text-[14px] text-ink-2">{subtitle}</div>}
         </div>
         <button type="button" className="cursor-pointer text-[21px] leading-none text-ink-3 hover:text-ink-1 disabled:cursor-default" onClick={close} disabled={closeDisabled} aria-label="关闭">✕</button>

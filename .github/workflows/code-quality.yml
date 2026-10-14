@@ -100,6 +100,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     env:
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
@@ -138,9 +141,11 @@ jobs:
           --cov=axile --cov-report=xml --cov-report=term-missing --cov-fail-under=69
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      timeout-minutes: 5
       with:
+        use_oidc: true
+        fail_ci_if_error: true
         files: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
-      continue-on-error: true

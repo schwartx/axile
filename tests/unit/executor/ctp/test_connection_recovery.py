@@ -661,3 +661,116 @@ def test_native_account_query_recovers_without_new_login_callback(broker):
     executor._query("ReqQryTradingAccount", SimpleNamespace())
     assert observations[-1].status == "ok"
     assert observations[-1].error is None
+
+
+@pytest.mark.parametrize("kind", ["交易", "行情"])
+def test_disconnect_presentation_preserves_native_reason_through_invalidation(broker, kind):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    executor = broker.start()
+    executor._disconnected(kind, 4097)
+    observation = observations[-1]
+    assert observation.label == f"{kind}前置断开"
+    assert "4097" in str(observation.presentation)
+    assert "已失效" in str(observation.presentation)
+    with pytest.raises(CtpSessionRecoveryRequired) as raised:
+        executor._require_active_connection()
+    connection_monitor(executor).failed(raised.value)
+    assert observations[-1].label == observation.label
+    assert observations[-1].presentation == observation.presentation
+    assert observations[-1].observed_at == observation.observed_at
+    assert observations[-1].error["technical_detail"] == observation.error["technical_detail"]
+    assert "_require_active_connection" in observations[-1].error["propagation_traceback"]
+
+
+@pytest.mark.parametrize("operation,label", [("ReqAuthenticate", "认证失败"), ("ReqUserLogin", "交易登录失败")])
+def test_stage_rejection_keeps_channel_content_and_original_evidence(broker, operation, label):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    broker.errors[operation] = SimpleNamespace(ErrorID=999, ErrorMsg="柜台原始证据")
+    with pytest.raises(CtpRequestError):
+        broker.start()
+    assert observations[-1].label == label
+    assert "柜台原始证据" in observations[-1].error["technical_detail"]
+    assert "999" in str(observations[-1].presentation)
+
+
+@pytest.mark.parametrize(
+    "operation,code,label",
+    [
+        ("ReqAuthenticate", -3, "认证失败"),
+        ("ReqUserLogin", -3, "交易登录失败"),
+        ("ReqQryTradingAccount", -3, None),
+        ("ReqSettlementInfoConfirm", -3, None),
+        ("ReqQryTradingAccount", -1, "交易网络异常"),
+        ("ReqQryTradingAccount", -2, "前置请求队列超限"),
+    ],
+)
+def test_native_rejections_keep_existing_stage_and_query_boundaries(broker, operation, code, label):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    getattr(broker.trader, operation).side_effect = lambda *_args: code
+    with pytest.raises(CtpRequestError):
+        broker.start()
+    failures = [observation for observation in observations if observation.status == "error"]
+    if label is None:
+        assert failures == []
+    else:
+        assert failures[-1].label == label
+        assert failures[-1].error["return_code"] == code
+        assert (
+            str(code) in str(failures[-1].presentation)
+            or operation.startswith("ReqAuth")
+            or operation == "ReqUserLogin"
+        )
+
+
+def test_stage_timeout_content_survives_session_wrapper(broker, monkeypatch):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    broker.trader.ReqUserLogin.side_effect = None
+    broker.trader.ReqUserLogin.return_value = 0
+    monkeypatch.setattr(broker.executor._login.done, "wait", lambda _timeout: False)
+    with pytest.raises(TimeoutError):
+        broker.start()
+    assert observations[-1].label == "交易登录超时"
+    assert observations[-1].error["exception_type"] == "TimeoutError"
+
+
+@pytest.mark.parametrize("kind", ["交易", "行情"])
+def test_native_api_initialization_failure_has_stage_content(broker, monkeypatch, kind):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+
+    def fail(_path):
+        raise OSError("native API initialization original")
+
+    api_type = td.CThostFtdcTraderApi if kind == "交易" else md.CThostFtdcMdApi
+    monkeypatch.setattr(api_type, "CreateFtdcTraderApi" if kind == "交易" else "CreateFtdcMdApi", fail)
+    with pytest.raises(OSError):
+        broker.start()
+    assert observations[-1].label == f"{kind}连接初始化失败"
+    assert observations[-1].error["technical_detail"] == "native API initialization original"
+
+
+def test_missing_configuration_names_fields_without_values(broker):
+    from axile.executor.connection_state import connection_monitor
+
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    broker.executor.account_config = broker.executor.account_config.model_copy(update={"password": ""})
+    with pytest.raises(ValueError):
+        broker.start()
+    assert observations[-1].label == "连接配置不完整"
+    assert "password" in str(observations[-1].presentation)
+    assert "test" not in str(observations[-1].presentation)

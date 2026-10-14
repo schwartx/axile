@@ -164,10 +164,19 @@ export interface AccountConnection {
   status: 'unknown' | 'ok' | 'error'
   observed_at: string | null
   message: string | null
+  label?: string | null
+}
+
+export interface ConnectionPresentation {
+  title?: string | null
+  summary?: string | null
+  sections?: { title?: string | null; text?: string | null; fields?: { label: string; value: string }[]; steps?: string[] }[]
+  actions?: { label: string; intent: string }[]
 }
 
 export interface AccountConnectionDetail extends AccountConnection {
   error: Record<string, unknown> | null
+  presentation?: ConnectionPresentation | null
 }
 
 export interface Account {
