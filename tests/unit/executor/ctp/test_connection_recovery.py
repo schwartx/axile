@@ -421,6 +421,7 @@ def test_market_login_day_mismatch_blocks_startup(broker):
 
 def test_quote_timeout_can_recover_with_fresh_quote_without_disconnect(broker):
     executor = broker.start()
+    executor._ensure_instrument_symbols(["ag2612"])
     executor._timeout = 0
     with pytest.raises(TimeoutError, match="行情等待超时"):
         executor.get_market_data(["ag2612"])
