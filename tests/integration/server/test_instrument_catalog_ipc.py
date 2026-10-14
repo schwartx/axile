@@ -57,16 +57,18 @@ def test_spawn_workers_share_one_service_catalog_and_reuse_after_owner_exit():
             assert control.recv() == "ready"
         for control in controls:
             control.send("read")
+        ticks = []
         for control in controls:
             assert control.poll(5)
-            assert control.recv() == 1
+            ticks.append(control.recv())
+        assert ticks[0] == ticks[1] == catalog.snapshot()[ROW.key].tick
         assert queries.get(timeout=2) == [ROW.key]
         assert queries.empty()
         processes[0].terminate()
         processes[0].join(5)
         controls[1].send("read")
         assert controls[1].poll(5)
-        assert controls[1].recv() == 1
+        assert controls[1].recv() == ticks[0]
     finally:
         for process in processes:
             if process.is_alive():
@@ -265,25 +267,32 @@ def test_query_and_initialization_progress_share_one_pipe_without_deadlock(monke
         session.stop()
 
 
-def test_paused_source_is_excluded_and_resume_reuses_logged_in_session():
+@pytest.mark.parametrize(("channel", "require_specs"), [("ctp", True), ("tq", False)])
+def test_paused_account_can_fill_its_own_cold_cache_without_enabling_refresh(channel, require_specs):
     ctx = multiprocessing.get_context("spawn")
     parent, child = ctx.Pipe()
     catalog = InstrumentCatalog()
     session = CatalogSession(parent, catalog, enabled=False)
     provider = RemoteCatalogProvider(child)
     calls = []
-    provider.bind(lambda symbols, timeout: calls.append(symbols) or [ROW], channel="ctp")
+    row = ROW if require_specs else Instrument(ROW.exchange, ROW.symbol, ROW.kind)
+    provider.bind(lambda symbols, timeout: calls.append(symbols) or [row], channel=channel)
     try:
+        assert not catalog.snapshot()
         assert catalog.status()["sources"] == 0
-        with pytest.raises(Exception, match="没有可用"):
-            provider.ensure([ROW.key], require_specs=True)
-        assert not calls
-        session.configure(channel="ctp", enabled=True, last_execution="2026-10-13T21:00:00")
-        assert provider.ensure([ROW.key], require_specs=True)[ROW.key] == ROW
+        assert provider.ensure([ROW.key], require_specs=require_specs)[ROW.key] == row
         assert calls == [[ROW.key]]
-        session.configure(channel="ctp", enabled=False, last_execution="2026-10-13T21:00:00")
         assert catalog.status()["sources"] == 0
-        assert catalog.snapshot()[ROW.key] == ROW
+        # 暂停会话只供自身执行补齐，仍不成为其他请求的公共查询来源。
+        with pytest.raises(Exception, match="没有可用"):
+            catalog.ensure(["SHFE.ag2701"], require_specs=require_specs)
+        session.configure(channel=channel, enabled=True, last_execution="2026-10-13T21:00:00")
+        assert catalog.status()["sources"] == 1
+        assert provider.ensure([ROW.key], require_specs=require_specs)[ROW.key] == row
+        assert calls == [[ROW.key]]
+        session.configure(channel=channel, enabled=False, last_execution="2026-10-13T21:00:00")
+        assert catalog.status()["sources"] == 0
+        assert catalog.snapshot()[ROW.key] == row
     finally:
         provider.stop()
         session.stop()

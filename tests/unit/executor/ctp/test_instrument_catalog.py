@@ -100,17 +100,20 @@ def _controlled_executor(monkeypatch, *, respond):
     return executor, clock, guards, sent
 
 
-def test_ctp_multiple_contracts_use_flow_control_without_a_group_timeout(monkeypatch):
+@pytest.mark.parametrize("clear_positions", [False, True])
+def test_paused_ctp_execution_fills_multiple_contracts_without_preheating(monkeypatch, clear_positions):
     executor, clock, guards, sent = _controlled_executor(monkeypatch, respond=True)
     # 十二个合约跨过原来的 5 秒来源和 15 秒准备期限，虚拟时钟不实际等待。
     symbols = [f"SHFE.rb27{month:02}" for month in range(1, 13)]
     catalog = InstrumentCatalog(CatalogLimits(ensure=0.01, demand_source=0.01))
     provider = LocalInstrumentCatalogProvider(catalog)
-    provider.bind(executor._query_catalog, channel="ctp")
+    query = executor._query_catalog
+    provider.bind(query, channel="ctp")
+    catalog.register(provider.owner, query, channel="ctp", enabled=False)
     executor.set_instrument_catalog_provider(provider)
-    monkeypatch.setattr(executor, "_catalog_related_symbols", lambda: [])
+    monkeypatch.setattr(executor, "_catalog_related_symbols", lambda: symbols if clear_positions else [])
     standard_input = SimpleNamespace(
-        curr_target=dict.fromkeys(symbols, 1),
+        curr_target={} if clear_positions else dict.fromkeys(symbols, 1),
         last_target={},
         trade_rules={},
         symbol_algorithms={},
@@ -118,6 +121,8 @@ def test_ctp_multiple_contracts_use_flow_control_without_a_group_timeout(monkeyp
         risk_symbols=[],
     )
     started = clock.time()
+    assert not catalog.snapshot()
+    assert catalog.status()["sources"] == 0
     executor._prepare_instrument_catalog(standard_input)
     assert executor._catalog_frozen
     assert set(catalog.snapshot()) == set(symbols)
@@ -126,6 +131,7 @@ def test_ctp_multiple_contracts_use_flow_control_without_a_group_timeout(monkeyp
     assert all(int(later[1] * 1000) - int(earlier[1] * 1000) >= 1500 for earlier, later in zip(sent, sent[1:]))
     assert all(timeout == 0.2 for _, _, timeout in sent)
     assert clock.time() - started > 15
+    assert catalog.status()["sources"] == 0
 
 
 def test_ctp_no_response_times_out_after_sending_and_releases_query_slot(monkeypatch):

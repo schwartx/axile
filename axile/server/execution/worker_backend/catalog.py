@@ -145,7 +145,7 @@ class CatalogSession(_CatalogPipe):
         self.stop()
 
     def configure(self, *, channel: str, enabled: bool, last_execution: str) -> None:
-        """账户暂停后立即移除来源；恢复时沿用已登录会话。"""
+        """暂停只退出公共刷新来源，执行仍能用自己的已登录会话补齐。"""
         with self._source_lock:
             self.channel, self.enabled, self.last_execution = channel, enabled, last_execution
             self._register_source()
@@ -153,8 +153,10 @@ class CatalogSession(_CatalogPipe):
     def _register_source(self) -> None:
         if self.source is None or self._query is None:
             return
-        if self.enabled and not self._closed.is_set():
-            self.catalog.register(self.source, self._query, channel=self.channel, last_execution=self.last_execution)
+        if not self._closed.is_set():
+            self.catalog.register(
+                self.source, self._query, channel=self.channel, last_execution=self.last_execution, enabled=self.enabled
+            )
         else:
             self.catalog.unregister(self.source)
 
@@ -198,6 +200,7 @@ class CatalogSession(_CatalogPipe):
                 self._check_alive,
                 message["timeout"],
                 require_specs=message.get("require_specs", False),
+                source_name=self.source,
             )
             return {symbol: row.wire() for symbol, row in rows.items()}
         raise CatalogError(f"未知目录操作: {op}")

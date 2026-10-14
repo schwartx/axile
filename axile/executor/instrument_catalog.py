@@ -57,6 +57,7 @@ class _Source:
     query: Query
     channel: str = ""
     last_execution: str = ""
+    enabled: bool = True
 
 
 class InstrumentCatalog:
@@ -76,20 +77,22 @@ class InstrumentCatalog:
         self._closed = False
         self._automatic: tuple[str, float] | None = None
 
-    def register(self, name: str, query: Query, *, channel: str = "", last_execution: str = "") -> None:
-        """注册已登录且具备查询能力的会话。"""
+    def register(
+        self, name: str, query: Query, *, channel: str = "", last_execution: str = "", enabled: bool = True
+    ) -> None:
+        """保留已登录会话；只有启用的来源参与公共目录刷新。"""
         with self._lock:
             if not self._closed:
-                self._sources[name] = _Source(query, channel, last_execution)
+                self._sources[name] = _Source(query, channel, last_execution, enabled)
             automatic = self._automatic
-        if automatic is not None and get_default_clock().time() <= automatic[1]:
+        if enabled and automatic is not None and get_default_clock().time() <= automatic[1]:
             self.refresh(automatic[0])
 
     def arm_refresh(self, session: str, until: float) -> None:
         """盘前先登记场次；首个账户就绪后即可预热，无须等待其他账户。"""
         with self._lock:
             self._automatic = (session, until)
-            available = bool(self._sources)
+            available = any(source.enabled for source in self._sources.values())
         if available and get_default_clock().time() <= until:
             self.refresh(session)
 
@@ -132,8 +135,9 @@ class InstrumentCatalog:
         timeout: float | None = None,
         *,
         require_specs: bool = False,
+        source_name: str | None = None,
     ) -> dict[str, Instrument]:
-        """合并本次缺失列表；重叠合约共享查询，取消仅结束当前等待。"""
+        """缺失资料由执行账户补齐；重叠查询共享，取消仅结束当前等待。"""
         if timeout is None and not require_specs:
             timeout = self.limits.ensure
         deadline = None if timeout is None else clock_monotonic() + timeout
@@ -157,7 +161,10 @@ class InstrumentCatalog:
                     waits.append(attempt)
                 if fresh:
                     threading.Thread(
-                        target=self._fill, args=(fresh, batch, require_specs), daemon=True, name="instrument-demand"
+                        target=self._fill,
+                        args=(fresh, batch, require_specs, source_name),
+                        daemon=True,
+                        name="instrument-demand",
                     ).start()
             for attempt in waits:
                 while not attempt.done.is_set():
@@ -205,6 +212,7 @@ class InstrumentCatalog:
         task: dict | None = None,
         *,
         require_specs: bool = False,
+        source_name: str | None = None,
     ) -> list[Instrument]:
         errors = []
         tried: set[str] = set()
@@ -219,7 +227,9 @@ class InstrumentCatalog:
                     (
                         (name, source)
                         for name, source in self._sources.items()
-                        if name not in tried and (not require_specs or source.channel == "ctp")
+                        if name not in tried
+                        and (not require_specs or source.channel == "ctp")
+                        and (name == source_name if source_name is not None else source.enabled)
                     ),
                     key=lambda item: (item[1].channel == "ctp", item[1].last_execution),
                     reverse=True,
@@ -242,7 +252,11 @@ class InstrumentCatalog:
                 rows = self._call(query, symbols, timeout)
                 with self._lock:
                     current_source = self._sources.get(name)
-                    if current_source is None or current_source.query is not query:
+                    if (
+                        current_source is None
+                        or current_source.query is not query
+                        or (source_name is None and not current_source.enabled)
+                    ):
                         raise CatalogError("合约查询来源已退出")
                     if task is not None:
                         task["phase"] = "validating"
@@ -260,10 +274,10 @@ class InstrumentCatalog:
                 errors.append(str(exc))
         raise CatalogError("获取合约资料失败: " + ("; ".join(errors) if errors else "没有可用的已登录查询来源"))
 
-    def _fill(self, symbols: list[str], attempt: _Attempt, require_specs: bool) -> None:
+    def _fill(self, symbols: list[str], attempt: _Attempt, require_specs: bool, source_name: str | None) -> None:
         try:
             deadline = None if require_specs else clock_monotonic() + self.limits.ensure
-            rows = self._load(symbols, deadline, require_specs=require_specs)
+            rows = self._load(symbols, deadline, require_specs=require_specs, source_name=source_name)
             with self._lock:
                 if not self._closed:
                     for row in rows:
@@ -346,7 +360,7 @@ class InstrumentCatalog:
                 "records": len(self.snapshot()),
                 "last_success_at": self._last_success,
                 "last_error": self._last_error,
-                "sources": len(self._sources),
+                "sources": sum(source.enabled for source in self._sources.values()),
                 "current_task": self.task(self._active) if self._active else None,
             }
 
@@ -404,7 +418,7 @@ class LocalInstrumentCatalogProvider:
         require_specs: bool = False,
     ) -> Mapping[str, Instrument]:
         """仅请求必要资料。"""
-        return self.catalog.ensure(symbols, checkpoint, timeout, require_specs=require_specs)
+        return self.catalog.ensure(symbols, checkpoint, timeout, require_specs=require_specs, source_name=self.owner)
 
     def close(self) -> None:
         """注销来源。"""

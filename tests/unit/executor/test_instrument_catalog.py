@@ -124,6 +124,38 @@ def test_empty_cache_demand_never_requests_full_and_rebuild_reuses_results():
         InstrumentCatalog().ensure([RB.key])
 
 
+def test_execution_fills_missing_specs_using_its_own_account_even_with_a_preferred_source():
+    catalog = InstrumentCatalog()
+    calls = []
+    catalog.register(
+        "recent-ctp",
+        lambda symbols, timeout: pytest.fail("execution must query its own account"),
+        channel="ctp",
+        last_execution="2026-10-14T09:00:00",
+    )
+    codes = LocalInstrumentCatalogProvider(catalog)
+    codes.bind(lambda symbols, timeout: [Instrument(RB.exchange, RB.symbol, RB.kind)], channel="tq")
+    assert not codes.ensure([RB.key])[RB.key].has_specs
+    executor = LocalInstrumentCatalogProvider(catalog)
+    executor.bind(lambda symbols, timeout: calls.append(symbols) or [RB], channel="ctp")
+    assert executor.ensure([RB.key], require_specs=True)[RB.key] == RB
+    assert executor.ensure([RB.key], require_specs=True)[RB.key] == RB
+    assert calls == [[RB.key]]
+
+
+def test_paused_session_does_not_trigger_preheating_or_supply_full_refresh():
+    catalog = InstrumentCatalog()
+    calls = []
+    catalog.arm_refresh("day", time.time() + 1)
+    catalog.register("paused", lambda symbols, timeout: calls.append(symbols) or [RB], channel="ctp", enabled=False)
+    assert catalog.status()["current_task"] is None
+    assert catalog.status()["sources"] == 0
+    assert catalog.ensure([RB.key], require_specs=True, source_name="paused")[RB.key] == RB
+    assert finish(catalog, catalog.refresh())["status"] == "failed"
+    assert calls == [[RB.key]]
+    assert catalog.snapshot() == {RB.key: RB}
+
+
 def test_waiter_timeout_never_restarts_execution_on_late_result():
     catalog = InstrumentCatalog()
     release = threading.Event()
