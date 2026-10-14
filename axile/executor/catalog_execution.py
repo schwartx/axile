@@ -39,9 +39,11 @@ class CatalogExecutionMixin:
     def _catalog_related_symbols(self) -> list[str]:
         raise NotImplementedError
 
-    def _ensure_instrument_symbols(self, symbols: list[str], timeout: float = 15.0) -> None:
+    def _ensure_instrument_symbols(self, symbols: list[str], timeout: float | None = None) -> None:
         """递归补齐期权标的及组合腿，并保留本次的独立引用。"""
-        deadline = clock_monotonic() + timeout
+        if timeout is None and not self._catalog_requires_specs:
+            timeout = 15.0
+        deadline = None if timeout is None else clock_monotonic() + timeout
         required = list(dict.fromkeys(symbols))
         while required:
             self._catalog_checkpoint()
@@ -50,8 +52,8 @@ class CatalogExecutionMixin:
                 if missing:
                     raise CatalogError(f"执行固定资料中缺少合约: {', '.join(missing)}")
                 return
-            remaining = deadline - clock_monotonic()
-            if remaining <= 0:
+            remaining = None if deadline is None else deadline - clock_monotonic()
+            if remaining is not None and remaining <= 0:
                 raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
             rows = self._instrument_provider.ensure(
                 required, self._catalog_checkpoint, remaining, require_specs=self._catalog_requires_specs
@@ -123,11 +125,16 @@ class CatalogExecutionMixin:
         ):
             symbols.extend(values)
         started = clock_monotonic()
-        self._catalog_prepare_deadline = started + 15.0
+        self._catalog_prepare_deadline = None if self._catalog_requires_specs else started + 15.0
         self._catalog_event(ExecutionEventType.INSTRUMENTS_WAITING, symbols, started)
         try:
             symbols.extend(self._catalog_related_symbols())
-            self._ensure_instrument_symbols(symbols, max(0.0, 15.0 - (clock_monotonic() - started)))
+            remaining = (
+                None
+                if self._catalog_prepare_deadline is None
+                else max(0.0, self._catalog_prepare_deadline - clock_monotonic())
+            )
+            self._ensure_instrument_symbols(symbols, remaining)
             self._catalog_checkpoint()
             self._catalog_frozen = True
         except Exception as exc:

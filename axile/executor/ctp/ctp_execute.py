@@ -424,10 +424,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     result.append(str(symbol))
         return result
 
-    def _query_catalog(self, symbols: list[str] | None, timeout: float) -> list[Instrument]:
+    def _query_catalog(self, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         """复用当前会话；全量发一次，按需由 CTP 逐个指定合约。"""
         state = self._catalog_query_state
-        state.deadline = clock_monotonic() + timeout
+        state.active = True
+        state.deadline = clock_monotonic() + timeout if symbols is None and timeout is not None else None
         records = []
         try:
             for symbol in symbols if symbols is not None else [None]:
@@ -437,13 +438,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     request.InstrumentID = local if separator else exchange
                     if separator:
                         request.ExchangeID = exchange
-                remaining = state.deadline - clock_monotonic()
-                if remaining <= 0:
+                response_timeout = timeout if state.deadline is None else state.deadline - clock_monotonic()
+                if response_timeout is not None and response_timeout <= 0:
                     raise TimeoutError("合约资料查询超时")
-                rows = self._query("ReqQryInstrument", request, timeout=remaining)
+                rows = self._query("ReqQryInstrument", request, timeout=response_timeout)
                 records.extend(record for row in rows if (record := from_ctp(vars(row))) is not None)
             return records
         finally:
+            state.active = False
             state.deadline = state.guard = None
 
     @contextmanager
@@ -451,10 +453,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """取得查询权后才读取控制基线，记录刷盘完成后释放查询权。"""
         state = getattr(self, "_catalog_query_state", None)
         factory = getattr(self, "_catalog_control_factory", None)
-        if state is None or getattr(state, "deadline", None) is None or factory is None:
+        if state is None or not getattr(state, "active", False) or factory is None:
             yield
             return
-        with factory(state.deadline) as guard:
+        with factory(self._catalog_checkpoint) as guard:
             state.guard = guard
             try:
                 yield
@@ -471,9 +473,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _catalog_checkpoint(self):
         self._require_active_connection()
-        deadline = getattr(getattr(self, "_catalog_query_state", None), "deadline", None)
-        if deadline is not None:
-            if clock_monotonic() >= deadline:
+        state = getattr(self, "_catalog_query_state", None)
+        if getattr(state, "active", False):
+            if state.deadline is not None and clock_monotonic() >= state.deadline:
                 raise TimeoutError("合约资料查询超时")
             return
         preparation = getattr(self, "_catalog_prepare_deadline", None)
@@ -766,12 +768,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 p.done.set()
 
     @contextmanager
-    def _query_slot(self, timeout: float):
-        """复用会话互斥锁，有界等待；不调度或抢占已发送的查询。"""
-        deadline = clock_monotonic() + timeout
+    def _query_slot(self, timeout: float | None):
+        """复用会话互斥锁，等待期间检查取消及来源退出。"""
+        deadline = None if timeout is None else clock_monotonic() + timeout
         while not self._query_lock.acquire(blocking=False):
             self._catalog_checkpoint()
-            remaining = deadline - clock_monotonic()
+            remaining = 0.01 if deadline is None else deadline - clock_monotonic()
             if remaining <= 0:
                 raise TimeoutError("等待 CTP 查询权超时")
             get_default_clock().sleep(min(0.01, remaining))
@@ -782,8 +784,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query(self, name, req, *, symbol=None, timeout=None):
         wait_seconds = self._timeout if timeout is None else timeout
-        deadline = clock_monotonic() + wait_seconds
-        with self._query_slot(wait_seconds), self._catalog_query_control():
+        state = self._catalog_query_state
+        slot_timeout = None if getattr(state, "active", False) and state.deadline is None else wait_seconds
+        with self._query_slot(slot_timeout), self._catalog_query_control():
             operation = {
                 "ReqQryInstrument": "query_instruments",
                 "ReqQryTradingAccount": "query_account",
@@ -796,7 +799,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             pending = _PendingQuery([], threading.Event())
             pending.timeout = wait_seconds
             if name == "ReqQryInstrument":
-                pending.idle = QueryIdleClock()
+                pending.idle = QueryIdleClock(clock_monotonic)
             pending_rid = None
 
             def register_pending(rid):
@@ -816,11 +819,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 raise
             assert pending_rid is not None
             try:
-                bounded = getattr(getattr(self, "_catalog_query_state", None), "deadline", None) is not None
-                remaining = deadline - clock_monotonic() if bounded else wait_seconds
-                if remaining <= 0 and not pending.done.is_set():
-                    raise TimeoutError(f"{name}超时")
-                self._wait_query(pending, name, timeout=max(0, remaining))
+                self._wait_query(pending, name, timeout=wait_seconds)
                 if pending.error:
                     raise pending.error
                 self._catalog_progress(f"{name}完成")
@@ -840,11 +839,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             return
         while not pending.done.is_set() and not get_default_clock().event_wait(pending.done, 0.05):
             self._catalog_checkpoint()
-            if (
-                getattr(getattr(self, "_catalog_query_state", None), "deadline", None) is not None
-                and clock_monotonic() >= deadline
-            ):
-                raise TimeoutError(f"{name}超时")
             if pending.idle.timed_out(wait_seconds, pending.done):
                 raise TimeoutError(f"{name}超时：连续 {wait_seconds:g} 秒无回调")
         self.logger.info(

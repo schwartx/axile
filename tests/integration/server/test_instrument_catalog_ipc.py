@@ -106,7 +106,8 @@ def test_late_response_is_discarded_without_desynchronizing_next_rpc():
         session.stop()
 
 
-def test_closing_source_unblocks_query_and_switches_to_next_source():
+@pytest.mark.parametrize("require_specs", [False, True])
+def test_closing_source_unblocks_query_and_switches_to_next_source(require_specs):
     ctx = multiprocessing.get_context("spawn")
     parent, child = ctx.Pipe()
     catalog = InstrumentCatalog(CatalogLimits(demand_source=1, ensure=2))
@@ -119,11 +120,11 @@ def test_closing_source_unblocks_query_and_switches_to_next_source():
         release.wait(2)
         return [Instrument("SHFE", "rb2701", "FUTURE", 10, 9)]
 
-    provider.bind(query)
-    catalog.register("replacement", lambda symbols, timeout: [ROW])
+    provider.bind(query, channel="ctp")
+    catalog.register("replacement", lambda symbols, timeout: [ROW], channel="ctp")
     try:
         with ThreadPoolExecutor(1) as pool:
-            pending = pool.submit(catalog.ensure, [ROW.key])
+            pending = pool.submit(catalog.ensure, [ROW.key], require_specs=require_specs)
             assert entered.wait(1)
             provider.stop()
             assert provider.failed
@@ -135,6 +136,99 @@ def test_closing_source_unblocks_query_and_switches_to_next_source():
         release.set()
         provider.stop()
         session.stop()
+
+
+def test_ctp_specs_demand_waits_across_previous_group_and_rpc_deadlines(monkeypatch):
+    parent, child = multiprocessing.Pipe()
+    catalog = InstrumentCatalog()
+    session = CatalogSession(parent, catalog)
+    provider = RemoteCatalogProvider(child)
+    now = [10.0]
+    for module in ("axile.executor.instrument_catalog", "axile.server.execution.worker_backend.catalog"):
+        monkeypatch.setattr(f"{module}.clock_monotonic", lambda: now[0])
+    entered, crossed_deadline, release = threading.Event(), threading.Event(), threading.Event()
+    high_clock_checks = 0
+    timeouts = []
+
+    def query(symbols, timeout):
+        timeouts.append(timeout)
+        now[0] = 30.0
+        entered.set()
+        assert release.wait(2)
+        return [ROW]
+
+    def checkpoint():
+        nonlocal high_clock_checks
+        if now[0] == 30.0:
+            high_clock_checks += 1
+            if high_clock_checks >= 2:
+                crossed_deadline.set()
+
+    provider.bind(query, channel="ctp")
+    try:
+        with ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(provider.ensure, [ROW.key], checkpoint, require_specs=True)
+            try:
+                assert entered.wait(1)
+                # Observe a complete RPC wait iteration after the old 15-second deadline.
+                assert crossed_deadline.wait(1)
+                assert not pending.done()
+            finally:
+                release.set()
+            assert pending.result(1)[ROW.key] == ROW
+        assert timeouts == [None]
+    finally:
+        release.set()
+        provider.stop()
+        session.stop()
+
+
+def test_canceling_one_ctp_specs_rpc_waiter_keeps_shared_query_alive(monkeypatch):
+    catalog = InstrumentCatalog()
+    pairs = [multiprocessing.Pipe(), multiprocessing.Pipe()]
+    sessions = [CatalogSession(parent, catalog) for parent, _ in pairs]
+    providers = [RemoteCatalogProvider(child) for _, child in pairs]
+    entered, joined, cancel, release = (threading.Event() for _ in range(4))
+    calls = []
+
+    def query(symbols, timeout):
+        calls.append(symbols)
+        entered.set()
+        assert release.wait(2)
+        return [ROW]
+
+    def checkpoint():
+        if cancel.is_set():
+            raise RuntimeError("cancelled waiter")
+
+    check_alive = sessions[1]._check_alive
+
+    def joined_checkpoint():
+        check_alive()
+        joined.set()
+
+    monkeypatch.setattr(sessions[1], "_check_alive", joined_checkpoint)
+    providers[0].bind(query, channel="ctp")
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            first = pool.submit(providers[0].ensure, [ROW.key], checkpoint, require_specs=True)
+            try:
+                assert entered.wait(1)
+                second = pool.submit(providers[1].ensure, [ROW.key], require_specs=True)
+                assert joined.wait(1)
+                cancel.set()
+                with pytest.raises(RuntimeError, match="cancelled waiter"):
+                    first.result(1)
+            finally:
+                release.set()
+            assert second.result(1)[ROW.key] == ROW
+        assert calls == [[ROW.key]]
+    finally:
+        release.set()
+        for provider in providers:
+            provider.stop()
+        for session in sessions:
+            session.stop()
 
 
 def test_query_and_initialization_progress_share_one_pipe_without_deadlock(monkeypatch):

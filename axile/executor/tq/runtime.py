@@ -286,8 +286,9 @@ class TQRuntime:
             [TQInstrument(r.key, r.symbol, r.exchange, r.kind) for r in rows], loader=loader
         )
 
-    def query_catalog(self, symbols: list[str] | None, timeout: float) -> list[Instrument]:
+    def query_catalog(self, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         """在 owner 协程内查询基础资料，调用线程只等待有界结果。"""
+        timeout = self._command_timeout if timeout is None else timeout
         done = threading.Event()
         result: list[Instrument] = []
         errors: list[Exception] = []

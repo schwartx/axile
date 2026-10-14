@@ -13,7 +13,7 @@ from uuid import uuid4
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso, get_default_clock
 from axile.executor.instrument_catalog_records import Instrument, normalize_catalog_symbol
 
-type Query = Callable[[list[str] | None, float], list[Instrument]]
+type Query = Callable[[list[str] | None, float | None], list[Instrument]]
 
 
 class CatalogError(RuntimeError):
@@ -27,7 +27,7 @@ class CatalogError(RuntimeError):
 
 @dataclass(frozen=True)
 class CatalogLimits:
-    """目录任务的总等待预算，包含排队和来源切换。"""
+    """有界目录查询的等待配置；CTP 按需补齐由单次响应超时控制。"""
 
     ensure: float = 15.0
     demand_source: float = 5.0
@@ -134,7 +134,9 @@ class InstrumentCatalog:
         require_specs: bool = False,
     ) -> dict[str, Instrument]:
         """合并本次缺失列表；重叠合约共享查询，取消仅结束当前等待。"""
-        deadline = clock_monotonic() + (self.limits.ensure if timeout is None else timeout)
+        if timeout is None and not require_specs:
+            timeout = self.limits.ensure
+        deadline = None if timeout is None else clock_monotonic() + timeout
         while True:
             with self._lock:
                 current = {raw: self._find(raw) for raw in symbols}
@@ -161,7 +163,7 @@ class InstrumentCatalog:
                 while not attempt.done.is_set():
                     if checkpoint is not None:
                         checkpoint()
-                    remaining = deadline - clock_monotonic()
+                    remaining = 0.05 if deadline is None else deadline - clock_monotonic()
                     if remaining <= 0:
                         raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
                     get_default_clock().event_wait(attempt.done, min(0.05, remaining))
@@ -170,10 +172,10 @@ class InstrumentCatalog:
                 if attempt.error is not None:
                     raise attempt.error
             # 刷新可能替换了等待期间的结果；在同一锁内复制全部必要资料。
-            if clock_monotonic() >= deadline:
+            if deadline is not None and clock_monotonic() >= deadline:
                 raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
 
-    def _call(self, query: Query, symbols: list[str] | None, timeout: float) -> list[Instrument]:
+    def _call(self, query: Query, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         attempt = _Attempt()
 
         def invoke() -> None:
@@ -185,20 +187,30 @@ class InstrumentCatalog:
                 attempt.done.set()
 
         threading.Thread(target=invoke, daemon=True, name="instrument-source").start()
-        if not get_default_clock().event_wait(attempt.done, timeout):
+        if timeout is None:
+            while not get_default_clock().event_wait(attempt.done, 0.05):
+                with self._lock:
+                    if self._closed or not any(source.query is query for source in self._sources.values()):
+                        raise CatalogError("合约查询来源已退出")
+        elif not get_default_clock().event_wait(attempt.done, timeout):
             raise CatalogError("合约查询来源超时", "CATALOG.TIMEOUT")
         if attempt.error is not None:
             raise attempt.error
         return attempt.rows or []
 
     def _load(
-        self, symbols: list[str] | None, deadline: float, task: dict | None = None, *, require_specs: bool = False
+        self,
+        symbols: list[str] | None,
+        deadline: float | None,
+        task: dict | None = None,
+        *,
+        require_specs: bool = False,
     ) -> list[Instrument]:
         errors = []
         tried: set[str] = set()
         while True:
-            remaining = deadline - clock_monotonic()
-            if remaining <= 0:
+            remaining = None if deadline is None else deadline - clock_monotonic()
+            if remaining is not None and remaining <= 0:
                 break
             with self._lock:
                 if self._closed:
@@ -222,9 +234,12 @@ class InstrumentCatalog:
                     task["attempts"] += 1
                     task["phase"] = "querying"
             try:
-                rows = self._call(
-                    query, symbols, min(remaining, self.limits.source if symbols is None else self.limits.demand_source)
+                timeout = (
+                    None
+                    if remaining is None
+                    else min(remaining, self.limits.source if symbols is None else self.limits.demand_source)
                 )
+                rows = self._call(query, symbols, timeout)
                 with self._lock:
                     current_source = self._sources.get(name)
                     if current_source is None or current_source.query is not query:
@@ -247,7 +262,8 @@ class InstrumentCatalog:
 
     def _fill(self, symbols: list[str], attempt: _Attempt, require_specs: bool) -> None:
         try:
-            rows = self._load(symbols, clock_monotonic() + self.limits.ensure, require_specs=require_specs)
+            deadline = None if require_specs else clock_monotonic() + self.limits.ensure
+            rows = self._load(symbols, deadline, require_specs=require_specs)
             with self._lock:
                 if not self._closed:
                     for row in rows:

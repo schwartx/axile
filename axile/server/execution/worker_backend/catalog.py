@@ -37,19 +37,21 @@ class _CatalogPipe:
                 raise CatalogError("合约目录管道已关闭")
             self.connection.send(message)
 
-    def _request(self, op: str, timeout: float, checkpoint: Callable[[], None] | None = None, **payload: Any) -> Any:
+    def _request(
+        self, op: str, timeout: float | None, checkpoint: Callable[[], None] | None = None, **payload: Any
+    ) -> Any:
         request_id, response = uuid4().hex, _Response()
         with self._lock:
             self._pending[request_id] = response
         try:
             self._send({"id": request_id, "op": op, "timeout": timeout, **payload})
-            deadline = clock_monotonic() + timeout
+            deadline = None if timeout is None else clock_monotonic() + timeout
             while not response.ready.is_set():
                 if checkpoint is not None:
                     checkpoint()
                 if self._closed.is_set():
                     raise CatalogError("合约目录来源已退出")
-                remaining = deadline - clock_monotonic()
+                remaining = 0.05 if deadline is None else deadline - clock_monotonic()
                 if remaining <= 0:
                     raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
                 get_default_clock().event_wait(response.ready, min(remaining, 0.05))
@@ -172,7 +174,7 @@ class CatalogSession(_CatalogPipe):
         if op == "bind":
             epoch = message["epoch"]
 
-            def query(symbols: list[str] | None, timeout: float) -> list[Instrument]:
+            def query(symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
                 rows = self._request("query", timeout, symbols=symbols, epoch=epoch)
                 return [Instrument.from_wire(row) for row in rows]
 
@@ -237,9 +239,9 @@ class RemoteCatalogProvider(_CatalogPipe):
         require_specs: bool = False,
     ) -> Mapping[str, Instrument]:
         """同步等待本次所需资料，取消不取消其他共享等待者。"""
-        rows = self._request(
-            "ensure", 15.0 if timeout is None else timeout, checkpoint, symbols=symbols, require_specs=require_specs
-        )
+        if timeout is None and not require_specs:
+            timeout = 15.0
+        rows = self._request("ensure", timeout, checkpoint, symbols=symbols, require_specs=require_specs)
         return {symbol: Instrument.from_wire(row) for symbol, row in rows.items()}
 
     def begin(self) -> None:
