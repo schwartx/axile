@@ -1187,6 +1187,9 @@ def test_gm_missing_or_disconnected_account_fails_startup(account_startup, monke
         "未找到账户" if status is None else {4: "账户正在断开", 5: "账户已断开", 6: "账户状态异常"}[status["state"]]
     )
     assert "wanted" in str(observations[-1].presentation)
+    assert "_check_account_startup" in observations[-1].error["traceback"] + observations[-1].error.get(
+        "propagation_traceback", ""
+    )
     if status is None:
         assert "未找到" in str(errors[0])
     else:
@@ -1254,6 +1257,9 @@ def test_gm_terminal_content_uses_real_failed_stage(monkeypatch, timeout):
     assert observations[-1].label == ("终端启动超时" if timeout else "终端启动失败")
     assert "terminal" in str(observations[-1].presentation)
     assert ("等待终端端口监听" if timeout else "读取终端端口配置") in str(observations[-1].presentation)
+    assert "_start_gm_desktop_if_not" in observations[-1].error["traceback"] + observations[-1].error.get(
+        "propagation_traceback", ""
+    )
 
 
 def test_gm_outer_bridge_failure_preserves_timeout_observation(monkeypatch):

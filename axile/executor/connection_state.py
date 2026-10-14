@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from loguru import logger
@@ -75,6 +75,17 @@ def preserve_connection_failure(error: BaseException, source: BaseException) -> 
     if observation is not None:
         setattr(error, "_connection_observation", observation)
         setattr(error, "error_scope", CONNECTION_ERROR_SCOPE)
+
+
+def _with_propagation_traceback(observation: ConnectionObservation, error: BaseException) -> ConnectionObservation:
+    """首次 raise 前上报的错误在传播后补全调用栈，不丢弃原始 SDK 证据。"""
+    if error.__traceback__ is None:
+        return observation
+    trace = "".join(traceback.format_exception(error))
+    details = dict(observation.error or {})
+    if trace in (details.get("traceback"), details.get("propagation_traceback")):
+        return observation
+    return replace(observation, error={**details, "propagation_traceback": trace})
 
 
 ConnectionObserver = Callable[[ConnectionObservation], None]
@@ -148,6 +159,8 @@ class ConnectionMonitor:
         previous = _failure_observation(error)
         if previous is not None:
             # 外层连接边界的通用文案不能覆盖内层已确认的故障。
+            previous = _with_propagation_traceback(previous, error)
+            setattr(error, "_connection_observation", previous)
             self._publish(previous)
             return
         raw = str(getattr(error, "technical_detail", None) or error)

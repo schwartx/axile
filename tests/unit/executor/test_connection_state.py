@@ -117,7 +117,11 @@ def test_wrapped_failure_and_outer_connecting_keep_specific_snapshot_but_new_err
             wrapped = RuntimeError("上层包装")
             preserve_connection_failure(wrapped, root)
             raise wrapped from root
-    assert observations[-1] == original
+    assert observations[-1].observed_at == original.observed_at
+    assert observations[-1].presentation == original.presentation
+    assert observations[-1].error["traceback"] == original.error["traceback"]
+    assert "上层包装" in observations[-1].error["propagation_traceback"]
+    assert "test_wrapped_failure" in observations[-1].error["propagation_traceback"]
     assert observations[-1].error["technical_detail"] == "最初的 SDK 证据"
     assert observations[-1].label == "明确阶段失败"
     monitor.failed(RuntimeError("新的独立故障"))

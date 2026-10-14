@@ -678,7 +678,11 @@ def test_disconnect_presentation_preserves_native_reason_through_invalidation(br
     with pytest.raises(CtpSessionRecoveryRequired) as raised:
         executor._require_active_connection()
     connection_monitor(executor).failed(raised.value)
-    assert observations[-1] == observation
+    assert observations[-1].label == observation.label
+    assert observations[-1].presentation == observation.presentation
+    assert observations[-1].observed_at == observation.observed_at
+    assert observations[-1].error["technical_detail"] == observation.error["technical_detail"]
+    assert "_require_active_connection" in observations[-1].error["propagation_traceback"]
 
 
 @pytest.mark.parametrize("operation,label", [("ReqAuthenticate", "认证失败"), ("ReqUserLogin", "交易登录失败")])
