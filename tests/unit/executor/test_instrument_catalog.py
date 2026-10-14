@@ -82,7 +82,7 @@ def test_successful_full_refresh_replaces_even_concurrent_demand_rows():
     assert "version" not in catalog.status()
 
 
-@pytest.mark.parametrize("bad", [[], [replace(RB, tick=-1)], [replace(RB, multiplier=float("nan"))]])
+@pytest.mark.parametrize("bad", [[], [replace(RB, tick=0)], [replace(RB, multiplier=float("nan"))]])
 def test_invalid_full_result_never_replaces_cache(bad):
     catalog = InstrumentCatalog()
     catalog.register("good", lambda symbols, timeout: [RB])
@@ -233,35 +233,6 @@ def test_code_only_records_are_valid_but_ctp_specs_are_required_separately():
     with pytest.raises(ValueError, match="规格缺失"):
         record.validate(require_specs=True)
     assert Instrument.from_wire(record.wire()) == record
-
-
-@pytest.mark.parametrize("multiplier,tick", [(0, 1), (10, 0), (0, 0)])
-def test_ctp_full_refresh_preserves_zero_specs_but_execution_requires_positive_specs(multiplier, tick):
-    native = {
-        "InstrumentID": "SP b2702&b2703",
-        "ExchangeID": "DCE",
-        "ProductClass": "3",
-        "VolumeMultiple": multiplier,
-        "PriceTick": tick,
-    }
-    combination = from_ctp(native)
-    assert combination is not None
-    calls = []
-    catalog = InstrumentCatalog()
-    catalog.register("ctp", lambda symbols, timeout: calls.append(symbols) or [RB, combination], channel="ctp")
-    task = finish(catalog, catalog.refresh())
-    assert task["status"] == "succeeded" and task["records"] == 2
-    assert catalog.snapshot() == {RB.key: RB, combination.key: combination}
-    assert combination.multiplier == multiplier and combination.tick == tick
-    assert combination.ctp().VolumeMultiple == multiplier and combination.ctp().PriceTick == tick
-    assert dict(combination.extra) == native
-    assert not combination.has_specs
-    assert catalog.ensure([combination.key])[combination.key] == combination
-    assert catalog.ensure([RB.key], require_specs=True)[RB.key] == RB
-    with pytest.raises(CatalogError, match="规格缺失"):
-        catalog.ensure([combination.key], require_specs=True)
-    assert calls == [None, [combination.key]]
-    assert catalog.snapshot()[combination.key] == combination
 
 
 def test_ctp_enriches_code_only_cache_without_calling_tq_for_specs():

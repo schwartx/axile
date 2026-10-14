@@ -27,15 +27,23 @@ def _row():
     )
 
 
-def test_ctp_full_refresh_uses_exactly_one_native_query():
+@pytest.mark.parametrize("combination_multiplier", [0, 10])
+def test_ctp_full_refresh_uses_exactly_one_native_query_and_filters_combinations(combination_multiplier):
     executor = CTPExecutor(TradeChannel.CTP)
-    executor._query = Mock(return_value=[_row()])
+    combination = SimpleNamespace(
+        InstrumentID="SP b2702&b2703",
+        ExchangeID="DCE",
+        ProductClass="3",
+        VolumeMultiple=combination_multiplier,
+        PriceTick=1,
+    )
+    executor._query = Mock(return_value=[_row(), combination])
     records = executor._query_catalog(None, 60)
     executor._query.assert_called_once()
     name, request = executor._query.call_args.args
     assert name == "ReqQryInstrument"
     assert request.InstrumentID == request.ExchangeID == request.ProductID == ""
-    assert records[0].key == "SHFE.rb2701"
+    assert [record.key for record in records] == ["SHFE.rb2701"]
 
 
 def test_ctp_demand_query_is_scoped_to_the_missing_contract():

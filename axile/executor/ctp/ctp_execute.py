@@ -442,7 +442,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 if response_timeout is not None and response_timeout <= 0:
                     raise TimeoutError("合约资料查询超时")
                 rows = self._query("ReqQryInstrument", request, timeout=response_timeout)
-                records.extend(record for row in rows if (record := from_ctp(vars(row))) is not None)
+                records.extend(
+                    record
+                    for row in rows
+                    if (record := from_ctp(vars(row))) is not None and (symbols is not None or record.kind != "COMBINE")
+                )
             return records
         finally:
             state.active = False
