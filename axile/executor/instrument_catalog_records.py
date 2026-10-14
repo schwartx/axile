@@ -80,11 +80,11 @@ class Instrument:
         return all(value is not None and math.isfinite(value) and value > 0 for value in (self.multiplier, self.tick))
 
     def validate(self, *, require_specs: bool = False) -> None:
-        """允许只有代码的目录记录；渠道需要时单独检查规格。"""
+        """目录保留原生零值规格；执行需要时单独检查正数规格。"""
         if self.exchange not in EXCHANGES or not self.symbol or self.kind not in {"FUTURE", "OPTION", "COMBINE"}:
             raise ValueError(f"无效合约标识或类型: {self.key}")
         if (require_specs and not self.has_specs) or any(
-            value is not None and (not math.isfinite(value) or value <= 0) for value in (self.multiplier, self.tick)
+            value is not None and (not math.isfinite(value) or value < 0) for value in (self.multiplier, self.tick)
         ):
             raise ValueError(f"合约基础规格缺失: {self.key}")
         if self.expired():

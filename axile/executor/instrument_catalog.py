@@ -259,7 +259,7 @@ class InstrumentCatalog:
                 if not rows:
                     raise CatalogError("合约查询返回空结果或合约已下市", "CATALOG.NOT_FOUND")
                 for row in rows:
-                    row.validate(require_specs=require_specs or source.channel == "ctp")
+                    row.validate(require_specs=require_specs)
                 if symbols is not None:
                     for symbol in symbols:
                         matches = [r for r in rows if normalize_catalog_symbol(symbol) in {r.key, r.symbol}]
