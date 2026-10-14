@@ -72,8 +72,15 @@ export function PythonFixture() {
     <div ref={setStatus} />
   </main>
 }
+function AccountFixture() {
+  const [current, setCurrent] = useState(item)
+  return <>
+    <button type="button" onClick={() => setCurrent({ ...item, account_id: 8, name: '合成账户 B' })}>切换账户</button>
+    <AccountDetail accountId={current.account_id} item={current} />
+  </>
+}
 const mode = new URLSearchParams(location.search).get('mode') ?? 'basic'
-const element = mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountDetail accountId={7} item={item} /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
+const element = mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountFixture /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
 const path = mode === 'portfolio' ? '/portfolios/9/edit' : mode === 'holdings' ? '/accounts/7/holdings' : '/accounts/7'
 const pattern = mode === 'portfolio' ? '/portfolios/:id/edit' : mode === 'holdings' ? '/accounts/:id/holdings' : '/accounts/:id'
 const router = createMemoryRouter([{ path: pattern, element }, { path: '*', element: <p>已离开测试上下文</p> }], { initialEntries: [path] })

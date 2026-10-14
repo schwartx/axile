@@ -21,7 +21,7 @@ export function quickFixMenuPosition(anchor: Box, width: number, height: number,
 let closeActiveMenu: (() => void) | null = null
 
 /** 在 hover 按钮或光标附近显示紧凑的修复列表。 */
-export function showQuickFixMenu(view: EditorView, anchor: Box, items: QuickFixMenuItem[], host?: HTMLElement, onDismiss?: () => void): void {
+export function showQuickFixMenu(view: EditorView, anchor: Box, items: QuickFixMenuItem[], host?: HTMLElement, onDismiss?: () => void, unavailable = false): void {
   closeActiveMenu?.()
   const menu = document.createElement('div')
   menu.className = 'cm-python-quickFixMenu'
@@ -75,7 +75,14 @@ export function showQuickFixMenu(view: EditorView, anchor: Box, items: QuickFixM
   } else {
     const empty = menu.appendChild(document.createElement('div'))
     empty.className = 'cm-python-quickFixMenu-empty'
-    empty.textContent = '当前位置没有可用的快速修复'
+    if (unavailable) empty.style.color = 'var(--color-warn)'
+    empty.textContent = unavailable ? '快速修复暂不可用，请查看代码检查中的错误详情' : '当前位置没有可用的快速修复'
+  }
+  if (unavailable && items.length) {
+    const note = menu.appendChild(document.createElement('div'))
+    note.className = 'cm-python-quickFixMenu-empty'
+    note.style.color = 'var(--color-warn)'
+    note.textContent = '部分修复读取失败，错误详情见代码检查。'
   }
   const container = host ?? document.body
   container.appendChild(menu)

@@ -11,6 +11,13 @@ async function editorCommand(page: Page, name: string) {
   await page.getByRole('menuitem', { name, exact: true }).click()
 }
 
+async function sourceCode(page: Page) {
+  return page.evaluate(async () => {
+    const path = '/e2e/editorDocument.ts'
+    return (await import(path)).visibleEditorCode() as string | null
+  })
+}
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => { throw error })
   await page.goto('/e2e/editor.html')
@@ -108,9 +115,10 @@ test('definition opens a read-only source tab and rename is undoable', async ({ 
   await expect(page.locator('.cm-content:visible')).toHaveAttribute('aria-readonly', 'true')
   await page.locator('.cm-content:visible').click()
   await page.keyboard.press('ControlOrMeta+Home')
-  const source = await page.locator('.cm-content:visible').innerText()
+  const source = await sourceCode(page)
+  expect(source).not.toBeNull()
   await page.keyboard.type('cannot_edit_source')
-  await expect.poll(() => page.locator('.cm-content:visible').innerText()).toBe(source)
+  await expect.poll(() => sourceCode(page)).toBe(source)
   await page.getByRole('button', { name: '关闭 context.py', exact: true }).click()
   await expect(page.locator('.cm-content').first()).toBeFocused()
   await page.keyboard.press('Home')
@@ -142,9 +150,10 @@ test('modifier click follows a definition and clears its link on release', async
   await expect(page.locator('.cm-content:visible')).toHaveAttribute('aria-readonly', 'true')
   await page.locator('.cm-content:visible').click()
   await page.keyboard.press('ControlOrMeta+Home')
-  const source = await page.locator('.cm-content:visible').innerText()
+  const source = await sourceCode(page)
+  expect(source).not.toBeNull()
   await page.keyboard.type('cannot_edit_source')
-  await expect.poll(() => page.locator('.cm-content:visible').innerText()).toBe(source)
+  await expect.poll(() => sourceCode(page)).toBe(source)
 })
 
 test('hover, signature help and quick fixes use ty results', async ({ page }) => {

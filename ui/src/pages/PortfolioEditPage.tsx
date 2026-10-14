@@ -19,6 +19,8 @@ import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
 import { channelLabel } from '@/features/dashboard/display'
 import { WeightResult } from '@/features/portfolio/WeightResult'
 import { SnapshotResult } from '@/features/portfolio/SnapshotResult'
+import { BatchExecutionResults } from '@/features/portfolio/BatchExecutionResults'
+import type { BatchResult } from '@/features/portfolio/batchExecutionSnapshot'
 import { targetSnapshotText } from '@/features/portfolio/targetSnapshotDisplay'
 import { targetWeightSummary } from '@/features/portfolio/portfolioCardSummary'
 import { useCustomCalcValidation } from '@/features/portfolio/useCustomCalcValidation'
@@ -35,10 +37,8 @@ import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
 import { useLiveExecStore } from '@/stores/liveExec'
 import { useToastStore } from '@/stores/ui'
-import type { ExecutionTrigger } from '@/types/api'
 
 const INSPECTOR_WIDTH_KEY = 'axon.portfolioWorkbench.inspectorWidth'
-interface BatchResult { accountId: number; name: string; trigger: ExecutionTrigger | null; error: Error | null; pending: boolean }
 
 const PANEL_SPLIT_KEY = 'axon.portfolioWorkbench.panelSplit'
 
@@ -164,6 +164,7 @@ export function PortfolioEditPage() {
     setConfirm({ title: '全部跟随账户立即执行',
       body: `通知跟随本组合的账户（${followers.map(follower => follower.name).join('、')}）立即按最新目标调仓。`, okText: '通知执行',
       onConfirm: async () => {
+        setBatchResults([])
         await Promise.all(followers.map(follower => notifyFollower(follower.account_id, follower.name)))
       },
     })
@@ -542,12 +543,7 @@ export function PortfolioEditPage() {
                 </Tooltip>
               ) : undefined}
           >
-              <div aria-label="批量执行受理结果">{batchResults.map(result => <div key={result.accountId} className="mb-3 border-b border-line pb-2 text-[13px]">
-                <div>{result.name} · {result.pending ? '正在提交' : result.trigger ? result.trigger.accepted === 'coalesced' ? '已合并受理' : '已受理' : '受理失败'}</div>
-                {result.trigger && <Link to={`/accounts/${result.accountId}/executions/${result.trigger.execution_id}`} className="break-all text-accent">{result.trigger.execution_id}</Link>}
-                <ErrorNotice title={`${result.name} 执行请求失败`} error={result.error} evidence={[{ label: '账户', value: String(result.accountId) }]}
-                  onRetry={() => notifyFollower(result.accountId, result.name)} contextKey={portfolioId} />
-              </div>)}</div>
+              <BatchExecutionResults key={portfolioId} portfolioId={portfolioId} results={batchResults} onRetry={notifyFollower} />
               {followers.length > 0 ? (
                 <ul className="flex flex-col">
                   {followers.map((account) => (

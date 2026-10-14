@@ -3,8 +3,10 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, showDialog, type Decora
 import { foldService } from '@codemirror/language'
 import { isolateHistory } from '@codemirror/commands'
 import { LSPPlugin } from '@codemirror/lsp-client'
-import type { CodeAction, Command, Diagnostic, FoldingRange, InlayHint, SemanticTokens, SemanticTokensOptions, TextEdit, WorkspaceEdit } from 'vscode-languageserver-protocol'
-import { checkPythonContract, type PythonEditorKind } from '@/components/ui/pythonEditorContract'
+import type { CodeAction, FoldingRange, InlayHint, SemanticTokens, SemanticTokensOptions, TextEdit, WorkspaceEdit } from 'vscode-languageserver-protocol'
+import type { PythonEditorKind } from '@/components/ui/pythonEditorContract'
+import { setPythonQuickFixError } from '@/components/ui/pythonChecks'
+import { beginPythonQuickFixRequest, pythonRequestError, readPythonQuickFixOptions } from '@/components/ui/pythonQuickFixRequests'
 import { showQuickFixMenu } from '@/components/ui/pythonQuickFixMenu'
 
 type Visuals = { decorations: DecorationSet; folds: { from: number; to: number }[] }
@@ -164,25 +166,23 @@ export function quickFix(view: EditorView, kind: PythonEditorKind, from?: number
   const plugin = LSPPlugin.get(view)
   if (!plugin || view.state.readOnly) { onDismiss?.(); return false }
   const doc = view.state.doc
+  const latestRequest = beginPythonQuickFixRequest(view)
+  const current = () => latestRequest() && view.state.doc === doc && LSPPlugin.get(view) === plugin && plugin.client.connected
+  const reportError = (cause: unknown) => {
+    if (current()) view.dispatch({ effects: setPythonQuickFixError.of(pythonRequestError(cause)) })
+  }
   const targetFrom = from ?? view.state.selection.main.from
   const targetTo = to ?? view.state.selection.main.to
   const range = { start: plugin.toPosition(targetFrom), end: plugin.toPosition(targetTo) }
   void (async () => {
     try {
       plugin.client.sync()
-      const [contractResult, tyResult] = await Promise.allSettled([
-        checkPythonContract(doc.toString(), kind),
-        plugin.client.request<object, { items?: Diagnostic[] }>('textDocument/diagnostic', { textDocument: { uri: plugin.uri } }),
-      ])
-      const diagnostics = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
-      const actions = await plugin.client.request<object, (CodeAction | Command)[] | null>('textDocument/codeAction', {
-        textDocument: { uri: plugin.uri }, range,
-        context: { diagnostics, only: ['quickfix'], triggerKind: 1 },
-      }).catch(() => null)
-      if (view.state.doc !== doc) { onDismiss?.(); return }
-      const fixes = (actions ?? []).filter((item): item is CodeAction => typeof item.command !== 'string' && !('disabled' in item && item.disabled))
+      const options = await readPythonQuickFixOptions(plugin.client, { uri: plugin.uri, code: doc.toString(), kind, range })
+      if (!current()) return
+      view.dispatch({ effects: setPythonQuickFixError.of(options.error) })
+      const fixes = options.actions.filter((item): item is CodeAction => typeof item.command !== 'string' && !('disabled' in item && item.disabled))
       const cursor = plugin.toPosition(targetFrom)
-      for (const fix of contractResult.status === 'fulfilled' ? contractResult.value.fixes : []) {
+      for (const fix of options.contract?.fixes ?? []) {
         const annotation = fix.edits[0]
         if (!annotation || annotation.range.start.line !== cursor.line) continue
         fixes.push({ title: fix.title, kind: 'quickfix', edit: { changes: { [plugin.uri]: fix.edits } } })
@@ -193,12 +193,13 @@ export function quickFix(view: EditorView, kind: PythonEditorKind, from?: number
         apply: () => { void (async () => {
           try {
             const resolved = fix.edit ? fix : await plugin.client.request<CodeAction, CodeAction>('codeAction/resolve', fix)
+            if (!current()) return
             if (!resolved.edit) throw new Error('此修复没有可应用的代码修改')
             applyWorkspaceEdit(view, resolved.edit, doc)
-          } catch (error) { plugin.reportError('快速修复失败', error) }
+          } catch (error) { reportError(error) }
         })() },
-      })), host?.isConnected ? host : undefined, onDismiss)
-    } catch (error) { onDismiss?.(); plugin.reportError('快速修复失败', error) }
+      })), host?.isConnected ? host : undefined, onDismiss, options.error !== null)
+    } catch (error) { if (current()) { onDismiss?.(); reportError(error) } }
   })()
   return true
 }

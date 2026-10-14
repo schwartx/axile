@@ -1,4 +1,5 @@
-import { checkingSource, checkSource, type PythonChecks, type PythonCheckSource } from '@/components/ui/pythonChecks'
+import { checkingSource, checkSource, setPythonQuickFixError, type PythonChecks, type PythonCheckSource } from '@/components/ui/pythonChecks'
+import { beginPythonQuickFixRequest, readPythonCodeActions } from '@/components/ui/pythonQuickFixRequests'
 import { Compartment, Text } from '@codemirror/state'
 import { EditorView, ViewPlugin, keymap, showDialog, type ViewUpdate } from '@codemirror/view'
 import { linter, forceLinting, type Diagnostic } from '@codemirror/lint'
@@ -8,7 +9,7 @@ import { pythonHover } from '@/components/ui/pythonHover'
 import { apiGet } from '@/lib/api/client'
 import { checkPythonContract, type PythonEditorKind } from '@/components/ui/pythonEditorContract'
 import { pythonVisualFeatures, quickFix, renamePythonSymbol } from '@/components/ui/pythonLanguageFeatures'
-import type { CodeAction, Command, Diagnostic as ProtocolDiagnostic, DocumentSymbol, SymbolInformation } from 'vscode-languageserver-protocol'
+import type { Diagnostic as ProtocolDiagnostic, DocumentSymbol, SymbolInformation } from 'vscode-languageserver-protocol'
 import { actionTargetsDiagnostic } from '@/components/ui/pythonQuickFixAvailability'
 import { pythonDefinitionClick } from '@/components/ui/pythonDefinitionClick'
 
@@ -35,6 +36,8 @@ export function connectPython(
   let analysisGeneration = 0
   let documentVersion = 0
   let connectionError = new Error('代码分析器尚未连接')
+  let latestChecks: PythonChecks | null = null
+  const publishChecks = (checks: PythonChecks) => { latestChecks = checks; onChecks?.(checks) }
   const offset = (doc: Text, position: { line: number; character: number }) => {
     const line = doc.line(Math.min(Math.max(position.line + 1, 1), doc.lines))
     return Math.min(line.to, line.from + Math.max(position.character, 0))
@@ -43,22 +46,20 @@ export function connectPython(
     const plugin = LSPPlugin.get(editor)
     const doc = editor.state.doc
     const generation = ++analysisGeneration
+    const quickFixCurrent = beginPythonQuickFixRequest(editor)
     const version = documentVersion
-    const initial: PythonChecks = { document: doc.toString(), version, generation, lsp: checkingSource(), contract: checkingSource() }
-    onChecks?.(initial)
+    const initial: PythonChecks = { document: doc.toString(), version, generation, lsp: checkingSource(), contract: checkingSource(), quickFixError: null }
+    publishChecks(initial)
+    const current = () => !disposed && editor.state.doc === doc && generation === analysisGeneration
+    const updateChecks = (patch: Partial<PythonChecks>) => {
+      if (current() && latestChecks?.generation === generation) publishChecks({ ...latestChecks, ...patch })
+    }
     try {
-      let latest = initial
       const observe = <T>(source: 'lsp' | 'contract', request: Promise<T>, diagnostics: (value: T) => PythonCheckSource['diagnostics']) => request.then(value => {
-        if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
-          latest = { ...latest, [source]: checkSource({ status: 'fulfilled', value: diagnostics(value) }) }
-          onChecks?.(latest)
-        }
+        updateChecks({ [source]: checkSource({ status: 'fulfilled', value: diagnostics(value) }) })
         return value
       }, reason => {
-        if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
-          latest = { ...latest, [source]: checkSource({ status: 'rejected', reason }) }
-          onChecks?.(latest)
-        }
+        updateChecks({ [source]: checkSource({ status: 'rejected', reason }) })
         throw reason
       })
       const tyRead = Promise.resolve().then(() => {
@@ -73,19 +74,18 @@ export function connectPython(
       if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
       const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
       const contractItems = contractResult.status === 'fulfilled' ? contractResult.value.diagnostics : []
-      const codeActions = tyItems.length && active && plugin ? await active.request<object, (CodeAction | Command)[] | null>(
-        'textDocument/codeAction', {
-          textDocument: { uri },
-          range: { start: { line: 0, character: 0 }, end: plugin.toPosition(doc.length) },
-          context: { diagnostics: tyItems, only: ['quickfix'], triggerKind: 1 },
-        },
-      ).catch(() => null) : null
+      const actionResult = tyItems.length && active && plugin && quickFixCurrent() ? await readPythonCodeActions(active, {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 0 }, end: plugin.toPosition(doc.length) },
+        context: { diagnostics: tyItems, only: ['quickfix'], triggerKind: 1 },
+      }) : { actions: [], error: null }
       if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
+      if (actionResult.error && quickFixCurrent()) updateChecks({ quickFixError: actionResult.error })
       return [...tyItems, ...contractItems].map((item) => {
         const isContract = 'source' in item && item.source === '入口契约'
         const canFix = !editor.state.readOnly && (isContract
           ? item.severity === 3 && (contractResult.status === 'fulfilled' && contractResult.value.fixes.some((fix) => fix.edits[0]?.range.start.line === item.range.start.line))
-          : (codeActions ?? []).some((action) => actionTargetsDiagnostic(action, item)))
+          : actionResult.actions.some((action) => actionTargetsDiagnostic(action, item)))
         return {
           from: offset(doc, item.range.start),
           to: offset(doc, item.range.end),
@@ -98,7 +98,7 @@ export function connectPython(
     } catch (cause) {
       if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
         const failed = checkSource({ status: 'rejected', reason: cause })
-        onChecks?.({ ...initial, lsp: failed, contract: failed })
+        updateChecks({ lsp: failed, contract: failed })
       }
       return []
     }
@@ -109,11 +109,16 @@ export function connectPython(
   })
   const watcher = ViewPlugin.fromClass(class {
     update(update: ViewUpdate) {
+      for (const transaction of update.transactions) for (const effect of transaction.effects) {
+        if (effect.is(setPythonQuickFixError) && latestChecks?.document === update.state.doc.toString()) {
+          publishChecks({ ...latestChecks, quickFixError: effect.value })
+        }
+      }
       if (!update.docChanged) return
       documentVersion += 1
       analysisGeneration += 1
       queueMicrotask(() => {
-        if (!disposed && view.state.doc === update.state.doc) onChecks?.({ document: update.state.doc.toString(), version: documentVersion, generation: analysisGeneration, lsp: checkingSource(), contract: checkingSource() })
+        if (!disposed && view.state.doc === update.state.doc) publishChecks({ document: update.state.doc.toString(), version: documentVersion, generation: analysisGeneration, lsp: checkingSource(), contract: checkingSource(), quickFixError: null })
       })
     }
   })

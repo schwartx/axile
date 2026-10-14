@@ -24,6 +24,25 @@ async function clipboard(page: Page) {
 }
 async function copied(page: Page) { return page.evaluate(() => (window as unknown as { copied: string }).copied) }
 
+/** 合成 LSP 只让快速修复失败，诊断仍成功返回。 */
+async function quickFixLsp(page: Page, diagnostic: boolean, fail: () => boolean) {
+  await page.routeWebSocket('**/api/v1/editor/lsp', socket => {
+    socket.onMessage(data => {
+      const request = JSON.parse(String(data))
+      if (request.id == null) return
+      if (request.method === 'textDocument/codeAction' && fail()) {
+        socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: raw('快速修复') } }))
+        return
+      }
+      const result = request.method === 'initialize' ? { capabilities: { textDocumentSync: 1, diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false }, codeActionProvider: true } }
+        : request.method === 'textDocument/diagnostic' ? { kind: 'full', items: diagnostic ? [{ message: '仍然有效的 LSP 诊断', severity: 2, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] : [] }
+        : request.method === 'textDocument/codeAction' ? [] : null
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
+    })
+    socket.send(JSON.stringify({ type: 'session', rootUri: 'file:///synthetic', uri: 'file:///synthetic/main.py' }))
+  })
+}
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', error => { throw error })
   await clipboard(page)
@@ -228,6 +247,60 @@ test('account restores runtime failure on entry and all holdings sources retain 
   expect(reads.target_snapshot).toBe(original.target_snapshot)
 })
 
+for (const failed of [false, true]) test(`asset refresh settles independently of an automatic toggle, failed=${failed}`, async ({ page }) => {
+  await defaults(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let refreshes = 0
+  await page.route('**/api/v1/account/7/assets/refresh', async route => {
+    if (++refreshes === 1) {
+      await pending
+      if (failed) return route.fulfill({ status: 502, json: { detail: raw('资产刷新') } })
+    }
+    return route.fulfill({ json: { assets: { total_asset: 100 }, created_at: '2026-10-14T10:00:00' } })
+  })
+  await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, is_started: route.request().method() === 'PATCH', runtime_sync: sync() } }))
+  await page.goto('/e2e/errors.html?mode=account')
+  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
+  await expect.poll(() => refreshes).toBe(1)
+  await expect(page.getByRole('button', { name: '正在查询账户资产', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: '启动自动执行', exact: true }).click()
+  await expect(page.getByRole('button', { name: '暂停自动执行', exact: true })).toBeEnabled()
+  release()
+  const refresh = page.getByRole('button', { name: '刷新账户资产', exact: true })
+  await expect(refresh).toBeEnabled()
+  const notice = page.getByRole('status').filter({ hasText: '账户资产刷新失败' })
+  if (failed) {
+    await expect(notice).toContainText('资产刷新开始')
+    await notice.getByRole('button', { name: '重试：账户资产刷新失败' }).click()
+  } else await refresh.click()
+  await expect.poll(() => refreshes).toBe(2)
+  await expect(refresh).toBeEnabled()
+  await expect(notice).toHaveCount(0)
+})
+
+test('a late asset request cannot clear the new account loading state or display its old failure', async ({ page }) => {
+  await defaults(page)
+  const release = new Map<string, () => void>()
+  await page.route(/\/api\/v1\/account\/[78]\/assets\/refresh$/, async route => {
+    const id = route.request().url().split('/').at(-3)!
+    await new Promise<void>(resolve => { release.set(id, resolve) })
+    return id === '7' ? route.fulfill({ status: 502, json: { detail: raw('旧账户资产') } }) : route.fulfill({ json: { assets: { total_asset: 100 } } })
+  })
+  await page.route('**/api/v1/account/8', route => route.fulfill({ json: { ...account, id: 8, name: '合成账户 B' } }))
+  await page.goto('/e2e/errors.html?mode=account')
+  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
+  await expect.poll(() => release.has('7')).toBe(true)
+  await page.getByRole('button', { name: '切换账户', exact: true }).click()
+  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
+  await expect.poll(() => release.has('8')).toBe(true)
+  release.get('7')!()
+  await expect(page.getByRole('button', { name: '正在查询账户资产', exact: true })).toBeDisabled()
+  release.get('8')!()
+  await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeEnabled()
+  await expect(page.getByText('旧账户资产开始', { exact: false })).toHaveCount(0)
+})
+
 test('batch execution keeps accepted ids and retries only the rejected account', async ({ page }) => {
   await defaults(page)
   const counts: Record<string, number> = {}
@@ -240,13 +313,111 @@ test('batch execution keeps accepted ids and retries only the rejected account',
   await page.goto('/e2e/errors.html?mode=portfolio')
   await page.getByRole('button', { name: '立即执行', exact: true }).click()
   await page.getByRole('button', { name: '通知执行', exact: true }).click()
-  const results = page.getByLabel('批量执行受理结果')
+  const results = page.getByRole('region', { name: '批量执行受理结果', exact: true })
   await expect(results).toContainText('合成账户 A · 已受理')
   await expect(results).toContainText('accepted-7')
   await expect(results).toContainText('合成账户 B · 受理失败')
-  await results.getByRole('button', { name: '重试：合成账户 B 执行请求失败' }).click()
+  await results.getByRole('button', { name: '查看批量结果详情' }).click()
+  const dialog = page.getByRole('dialog', { name: '批量执行受理结果' })
+  await expect(dialog).toContainText('accepted-7')
+  await expect(dialog).toContainText('尾部根因-账户B拒绝')
+  await dialog.getByRole('button', { name: '复制全部结果' }).click()
+  const original = await copied(page)
+  expect(original).toContain('accepted-7')
+  expect(original).toContain(raw('账户B拒绝'))
+  await results.getByRole('button', { name: '重试：合成账户 B 执行请求失败' }).evaluate((node: HTMLButtonElement) => node.click())
   await expect(results).toContainText('accepted-8')
+  await expect(dialog).not.toContainText('accepted-8')
+  await dialog.getByRole('button', { name: '已复制', exact: true }).click()
+  expect(await copied(page)).toBe(original)
+  await page.keyboard.press('Escape')
+  await results.getByRole('button', { name: '查看批量结果详情' }).click()
+  await expect(dialog).toContainText('accepted-8')
+  await expect(dialog).not.toContainText('尾部根因-账户B拒绝')
   expect(counts).toEqual({ '7': 1, '8': 2 })
+})
+
+test('batch details include all rejected accounts and complete originals in one copy', async ({ page }) => {
+  await defaults(page)
+  await page.route('**/api/v1/account/execute/*', route => {
+    const id = route.request().url().split('/').at(-1)!
+    return route.fulfill({ status: 409, json: { detail: { message: raw(`账户${id}`), code: `REJECTED_${id}`, request_id: `req-${id}` } } })
+  })
+  await page.goto('/e2e/errors.html?mode=portfolio')
+  await page.getByRole('button', { name: '立即执行', exact: true }).click()
+  await page.getByRole('button', { name: '通知执行', exact: true }).click()
+  const results = page.getByRole('region', { name: '批量执行受理结果', exact: true })
+  await expect(results).toContainText('合成账户 A · 受理失败')
+  await expect(results).toContainText('合成账户 B · 受理失败')
+  await results.getByRole('button', { name: '查看批量结果详情' }).click()
+  const dialog = page.getByRole('dialog', { name: '批量执行受理结果' })
+  await dialog.getByRole('button', { name: '复制全部结果' }).click()
+  const text = await copied(page)
+  for (const id of ['7', '8']) {
+    expect(text).toContain(raw(`账户${id}`))
+    expect(text).toContain(`REJECTED_${id}`)
+    expect(text).toContain(`req-${id}`)
+  }
+})
+
+test('pending batch copies identify their incomplete scope and stay frozen after the last request settles', async ({ page }) => {
+  await defaults(page)
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/v1/account/execute/*', async route => {
+    const id = route.request().url().split('/').at(-1)!
+    if (id === '8') await pending
+    return route.fulfill({ json: { execution_id: `accepted-${id}`, accepted: 'created' } })
+  })
+  await page.goto('/e2e/errors.html?mode=portfolio')
+  await page.getByRole('button', { name: '立即执行', exact: true }).click()
+  await page.getByRole('button', { name: '通知执行', exact: true }).click()
+  const results = page.getByRole('region', { name: '批量执行受理结果', exact: true })
+  await expect(results).toContainText('accepted-7')
+  await results.getByRole('button', { name: '查看批量结果详情' }).click()
+  const dialog = page.getByRole('dialog', { name: '批量执行受理结果' })
+  await expect(dialog).toContainText('1 个仍在提交，结果尚未齐全')
+  await dialog.getByRole('button', { name: '复制当前结果' }).click()
+  expect(await copied(page)).toContain('受理结果待确认')
+  release()
+  await expect(results).toContainText('accepted-8')
+  await expect(dialog).not.toContainText('accepted-8')
+  await expect(dialog.getByRole('button', { name: '复制全部结果' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await results.getByRole('button', { name: '查看批量结果详情' }).click()
+  await expect(dialog.getByRole('button', { name: '复制全部结果' })).toBeVisible()
+  await expect(dialog).toContainText('accepted-8')
+})
+
+for (const background of [true, false]) test(`quick fix failure preserves diagnostics and supports complete details and actual retry, background=${background}`, async ({ page }) => {
+  let failed = true
+  await quickFixLsp(page, background, () => failed)
+  await page.route('**/api/v1/editor/contract', route => route.fulfill({ json: { diagnostics: [], fixes: [] } }))
+  await page.goto('/e2e/errors.html?mode=python')
+  const panel = page.getByRole('region', { name: '代码检查' })
+  await expect(page.getByRole('status', { name: '代码分析器' })).toHaveAttribute('data-state', 'ready')
+  if (!background) {
+    await page.locator('.cm-content').first().click()
+    await page.keyboard.press('ControlOrMeta+.')
+    await expect(page.getByRole('menu', { name: '快速修复', exact: true })).toContainText('快速修复暂不可用')
+    await expect(page.getByRole('menu')).not.toContainText('当前位置没有可用的快速修复')
+    await page.keyboard.press('Escape')
+  }
+  const notice = panel.getByRole('status').filter({ hasText: '快速修复暂不可用' })
+  await expect(notice).toContainText('快速修复开始')
+  await expect(panel).toContainText(`LSP 诊断：检查完成 · ${background ? 1 : 0} 条诊断`)
+  await expect(panel).toContainText('入口契约检查：检查完成')
+  if (background) await expect(panel).toContainText('仍然有效的 LSP 诊断')
+  await notice.getByRole('button', { name: '查看错误详情' }).click()
+  await expect(page.getByRole('dialog')).toContainText('尾部根因-快速修复')
+  await page.getByRole('dialog').getByRole('button', { name: '复制错误信息' }).click()
+  expect(await copied(page)).toContain(raw('快速修复'))
+  await page.keyboard.press('Escape')
+  failed = false
+  await notice.getByRole('button', { name: '重试：快速修复暂不可用' }).click()
+  await expect(page.getByRole('menu', { name: '快速修复', exact: true })).toContainText('当前位置没有可用的快速修复')
+  await expect(notice).toHaveCount(0)
+  if (background) await expect(panel).toContainText('仍然有效的 LSP 诊断')
 })
 
 test('advanced configuration read failure remains on page with full error and retry', async ({ page }) => {

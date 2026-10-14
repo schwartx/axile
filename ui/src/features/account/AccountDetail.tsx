@@ -103,7 +103,14 @@ export function AccountDetail({
   const [toggling, setToggling] = useState(false)
   const togglingRef = useRef(false)
   const toggleGeneration = useRef(0)
-  useEffect(() => { setToggleError(null); setAssetRefreshError(null); setRefreshingAssets(false); setStartedOverride(null); setToggling(false); togglingRef.current = false; return () => { toggleGeneration.current += 1 } }, [accountId])
+  const assetRefreshRequest = useRef({ generation: 0, busy: false })
+  useEffect(() => {
+    const assetRequest = assetRefreshRequest.current
+    setToggleError(null); setAssetRefreshError(null); setRefreshingAssets(false); setStartedOverride(null); setToggling(false)
+    togglingRef.current = false
+    assetRequest.busy = false
+    return () => { toggleGeneration.current += 1; assetRequest.generation += 1 }
+  }, [accountId])
   const [timerOpen, setTimerOpen] = useState(false)
   const [refreshingAssets, setRefreshingAssets] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
@@ -364,20 +371,25 @@ export function AccountDetail({
     }
   }
   const onRefreshAssets = async () => {
-    if (refreshingAssets) return
-    const generation = toggleGeneration.current
+    const request = assetRefreshRequest.current
+    if (request.busy) return
+    request.busy = true
+    // 启停只使自己的请求失效；资产请求仅随账户切换或卸载失效。
+    const generation = ++request.generation
     setRefreshingAssets(true)
     setAssetRefreshError(null)
     try {
       await refreshAccountAssets(accountId)
-      if (generation !== toggleGeneration.current) return
+      if (generation !== request.generation) return
       await Promise.all([refreshAssetSnapshots(), refreshComparison()])
+      if (generation !== request.generation) return
       await onDashboardRefresh?.()
+      if (generation !== request.generation) return
       toast('账户资产已刷新')
     } catch (e) {
-      if (generation === toggleGeneration.current) setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
+      if (generation === request.generation) setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
     } finally {
-      if (generation === toggleGeneration.current) setRefreshingAssets(false)
+      if (generation === request.generation) { request.busy = false; setRefreshingAssets(false) }
     }
   }
 

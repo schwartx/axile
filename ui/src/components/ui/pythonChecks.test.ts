@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import { checkingSource, checkSource, checksAreEmpty, type PythonChecks } from './pythonChecks'
 const empty = checkSource({ status: 'fulfilled', value: [] })
-const snapshot: PythonChecks = { document: 'code', version: 1, generation: 1, lsp: empty, contract: empty }
+const snapshot: PythonChecks = { document: 'code', version: 1, generation: 1, lsp: empty, contract: empty, quickFixError: null }
 
 test('only both completed sources can claim no static diagnostics', () => {
   expect(checksAreEmpty(snapshot)).toBe(true)

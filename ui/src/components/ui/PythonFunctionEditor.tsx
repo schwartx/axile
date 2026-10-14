@@ -48,6 +48,7 @@ export interface PythonValidationState {
 export interface PythonEditorHandle {
   focus: () => void
   check: () => void
+  retryQuickFix: () => void
   revealLine: (line: number) => void
   replaceCode: (code: string) => void
 }
@@ -274,6 +275,7 @@ export function PythonFunctionEditor({
     ref,
     () => ({
       check: () => { const editor = cmRef.current?.view; if (editor) forceLinting(editor) },
+      retryQuickFix: () => { const editor = cmRef.current?.view; if (editor) quickFix(editor, kind) },
       focus: () => cmRef.current?.view?.focus(),
       revealLine: (lineNo: number) => {
         const view = cmRef.current?.view
@@ -284,7 +286,7 @@ export function PythonFunctionEditor({
       },
       replaceCode,
     }),
-    [replaceCode],
+    [replaceCode, kind],
   )
 
   useEffect(() => {
@@ -567,7 +569,7 @@ export function PythonFunctionEditor({
           fill ? 'flex min-h-0 flex-1 flex-col' : ''
         }`}
       >
-        <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} />
+        <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} onQuickFixRetry={() => { if (view) quickFix(view, kind) }} />
         {/* 工具条：状态句同槽换字；图标槽恒占 14px，出现/消失不推字。 */}
         <div className={`flex flex-none flex-wrap items-center gap-x-3.5 gap-y-2 border-b px-3.5 py-2.5 ${style.band}`}>
           <span className="flex min-w-[130px] flex-1 items-center gap-1.5 text-[14px] font-[520]">
