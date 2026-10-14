@@ -170,3 +170,114 @@ def test_account_deletion_cascades_latest_state_and_rejects_late_callback(databa
     assert service.begin_connection_instance(account) is None
     with Session(engine) as session:
         assert session.get(AccountConnectionState, 1) is None
+
+
+def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(database):
+    import asyncio
+
+    engine, account = database
+    with service.report_connection_for_account(account):
+        monitor = ConnectionMonitor()
+    content = {
+        "title": "测试渠道自由详情",
+        "sections": [{"fields": [{"label": "本次事实", "value": "断开"}], "steps": ["检查目标"]}],
+    }
+    monitor.failed(RuntimeError("SDK 原始错误"), label="此前未注册的自由文案", presentation=content)
+    with Session(engine) as session:
+        current = session.get(Account, 1)
+        summary = service.public_connection(current).model_dump()
+        detail = service.public_connection(current, detail=True).model_dump()
+        assert summary["label"] == "此前未注册的自由文案"
+        assert "error" not in summary and "presentation" not in summary
+        assert detail["presentation"]["title"] == "测试渠道自由详情"
+        assert detail["error"]["technical_detail"] == "SDK 原始错误"
+    # worker 业务响应与独立监控使用同一个 collector 载荷。
+    worker = service.ConnectionCollector(service.begin_connection_instance(account))
+    observation = ConnectionObservation("error", "2026-10-14T14:47:18", "worker故障", {}, "worker 自由文案", content)
+    worker.observe(observation)
+    first = worker.snapshot()
+    worker.observe(observation)
+    assert worker.snapshot() == first
+    service.consume_connection_snapshot(first)
+    service.consume_connection_snapshot(first)
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, 1)
+        assert row.label == "worker 自由文案" and row.presentation["title"] == "测试渠道自由详情"
+        assert row.sequence == 1 and row.observed_at == observation.observed_at
+    # 同配置重连仍未成功，保留上一故障；新实例和序号保护整份内容。
+    newer = service.begin_connection_instance(account)
+    service.consume_connection_snapshot(first)
+    with Session(engine) as session:
+        assert session.get(AccountConnectionState, 1).label == "worker 自由文案"
+    service.record_connection_observation(newer, 1, ConnectionObservation("error", "later", "未知新故障", {}))
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, 1)
+        assert row.label is None and row.presentation is None
+    service.record_connection_observation(newer, 2, observation)
+    # 用真实异步配置重置入口验证四个故障字段同时清除。
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    async def reset():
+        async_engine = create_async_engine(str(engine.url).replace("sqlite:", "sqlite+aiosqlite:"))
+        async with AsyncSession(async_engine) as session:
+            current = await session.get(Account, 1)
+            await session.refresh(current, ["settings"])
+            current.account_config = {**current.account_config, "password": "new"}
+            await service.reset_connection_for_config(session, current)
+            await session.commit()
+        await async_engine.dispose()
+
+    asyncio.run(reset())
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, 1)
+        assert row.status == "unknown"
+        assert all(getattr(row, field) is None for field in ("label", "presentation", "message", "error"))
+
+
+def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(database, monkeypatch):
+    from axile.server.account_control import ipc
+
+    engine, account = database
+    collector = service.ConnectionCollector(service.begin_connection_instance(account))
+    monkeypatch.setattr(ipc.providers, "snapshot", lambda _account_id: None)
+    parent, child = Pipe()
+    server = threading.Thread(target=ipc.serve, args=(child, 1, collector.snapshot), daemon=True)
+    server.start()
+    collector.observe(
+        ConnectionObservation("error", "confirmed", "空闲断线", {}, "自定义空闲故障", {"title": "空闲期间观察"})
+    )
+    monitor = ipc.RemoteMonitor(parent, 1)
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with Session(engine) as session:
+                row = session.get(AccountConnectionState, 1)
+                if row.label == "自定义空闲故障":
+                    assert row.presentation["title"] == "空闲期间观察"
+                    assert row.observed_at == "confirmed"
+                    break
+            time.sleep(0.01)
+        else:
+            pytest.fail("独立监控未保存展示内容")
+    finally:
+        monitor.close()
+        server.join(timeout=2)
+
+
+def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    service.record_connection_observation(
+        binding,
+        1,
+        ConnectionObservation("error", "confirmed", "原始故障", {"technical_detail": "完整证据"}, "有效标签"),
+    )
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, 1)
+        row.presentation = {"title": 123, "sections": "invalid"}
+        session.add(row)
+        session.commit()
+    with Session(engine) as session:
+        detail = service.public_connection(session.get(Account, 1), detail=True)
+        assert detail.presentation is None
+        assert detail.label == "有效标签" and detail.error["technical_detail"] == "完整证据"

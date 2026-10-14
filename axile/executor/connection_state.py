@@ -13,6 +13,7 @@ from typing import Literal
 from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_now_iso
+from axile.executor.connection_presentation import PresentationInput, presentation_snapshot
 
 CONNECTION_ERROR_SCOPE = "account_connection"
 
@@ -39,6 +40,41 @@ class ConnectionObservation:
     observed_at: str
     message: str | None = None
     error: dict[str, object] | None = None
+    label: str | None = None
+    presentation: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """旧位置参数保持原义，正常结果清除故障内容。"""
+        label = self.label.strip() if isinstance(self.label, str) else None
+        object.__setattr__(self, "label", (label or None) if self.status == "error" else None)
+        object.__setattr__(
+            self, "presentation", presentation_snapshot(self.presentation) if self.status == "error" else None
+        )
+        if self.status == "ok":
+            object.__setattr__(self, "message", None)
+            object.__setattr__(self, "error", None)
+
+
+def _failure_observation(error: BaseException) -> ConnectionObservation | None:
+    """只沿同一异常及显式 cause 查找，不继承 monitor 的历史结果。"""
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        observation = getattr(error, "_connection_observation", None)
+        if isinstance(observation, ConnectionObservation):
+            return observation
+        if error.__cause__ is None:
+            break
+        error = error.__cause__
+    return None
+
+
+def preserve_connection_failure(error: BaseException, source: BaseException) -> None:
+    """包装同一故障时显式保留其观察和完整原始证据。"""
+    observation = _failure_observation(source)
+    if observation is not None:
+        setattr(error, "_connection_observation", observation)
+        setattr(error, "error_scope", CONNECTION_ERROR_SCOPE)
 
 
 ConnectionObserver = Callable[[ConnectionObservation], None]
@@ -83,12 +119,12 @@ class ConnectionMonitor:
             self._active = False
 
     @contextmanager
-    def connecting(self) -> Iterator[None]:
+    def connecting(self, *, label: str | None = None, presentation: PresentationInput = None) -> Iterator[None]:
         """仅包围实际连接建立代码，业务查询和转换不进入此边界。"""
         try:
             yield
         except Exception as exc:
-            self.failed(exc)
+            self.failed(exc, label=label, presentation=presentation)
             raise
 
     def succeeded(self) -> None:
@@ -106,9 +142,14 @@ class ConnectionMonitor:
             if revision == self._failure_revision:
                 self.succeeded()
 
-    def failed(self, error: BaseException) -> None:
+    def failed(self, error: BaseException, *, label: str | None = None, presentation: PresentationInput = None) -> None:
         """连接故障发生处标记归属并固定完整异常链。"""
         error.error_scope = CONNECTION_ERROR_SCOPE  # type: ignore[attr-defined]
+        previous = _failure_observation(error)
+        if previous is not None:
+            # 外层连接边界的通用文案不能覆盖内层已确认的故障。
+            self._publish(previous)
+            return
         raw = str(getattr(error, "technical_detail", None) or error)
         message = str(getattr(error, "execution_error", None) or raw or type(error).__name__)
         details: dict[str, object] = {
@@ -122,7 +163,11 @@ class ConnectionMonitor:
             value = getattr(error, key, None)
             if isinstance(value, (str, int)):
                 details[key] = value
-        self._publish(ConnectionObservation("error", clock_now_iso(), message, details))
+        observation = ConnectionObservation(
+            "error", clock_now_iso(), message, details, label, presentation_snapshot(presentation)
+        )
+        setattr(error, "_connection_observation", observation)
+        self._publish(observation)
 
     def _publish(self, observation: ConnectionObservation) -> None:
         with self._lock:

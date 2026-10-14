@@ -87,6 +87,7 @@ def begin_connection_instance(account: object) -> ConnectionBinding | None:
             if state.config_key != key:
                 state.config_key = key
                 state.status, state.observed_at, state.message, state.error = "unknown", None, None, None
+                state.label, state.presentation = None, None
             state.instance_id, state.sequence = uuid4().hex, 0
             session.add(state)
             session.commit()
@@ -199,7 +200,15 @@ async def reset_connection_for_config(session, account: object) -> None:
     from sqlalchemy.dialects.sqlite import insert
 
     values = dict(
-        config_key=key, instance_id="", sequence=0, status="unknown", observed_at=None, message=None, error=None
+        config_key=key,
+        instance_id="",
+        sequence=0,
+        status="unknown",
+        observed_at=None,
+        message=None,
+        error=None,
+        label=None,
+        presentation=None,
     )
     statement = insert(AccountConnectionState).values(account_id=getattr(account, "id"), **values)
     await session.execute(

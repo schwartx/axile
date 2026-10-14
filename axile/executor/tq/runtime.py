@@ -16,6 +16,7 @@ from typing import Literal, TypeVar, cast
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, normalize_catalog_symbol
+from axile.executor.tq.connection import report_tq_failure
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
 T = TypeVar("T")
@@ -137,7 +138,7 @@ class TQRuntime:
         self._thread.start()
         if not self._ready.wait(command_timeout):
             error = TimeoutError("TqSdk 运行时初始化超时")
-            self._connection.failed(error)
+            report_tq_failure(self._connection, error, "天勤连接超时", "运行时初始化等待")
             self._connection.close()
             raise error
         if self._startup_error is not None:
@@ -387,7 +388,7 @@ class TQRuntime:
             try:
                 api = self._api_factory()
             except BaseException as exc:
-                self._connection.failed(exc)
+                report_tq_failure(self._connection, exc, "天勤连接失败", "API 工厂初始化")
                 raise
             self._connection.succeeded()
             self._api = api
@@ -428,7 +429,7 @@ class TQRuntime:
                     raise
         except BaseException as exc:  # noqa: BLE001 - 保存事件泵异常供同步调用方读取
             self._runtime_error = exc
-            self._connection.failed(exc)
+            report_tq_failure(self._connection, exc, "天勤运行时异常", "事件泵运行")
         finally:
             self._shutdown(api)
 

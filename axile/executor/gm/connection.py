@@ -1,0 +1,84 @@
+"""GM 已确认连接事实的操作员说明，不解释 SDK 错误文本。"""
+
+from collections.abc import Mapping, Sequence
+
+from axile.executor.connection_presentation import connection_problem
+from axile.executor.connection_state import ConnectionMonitor
+from axile.executor.gm.common import AccConnectionState
+
+
+def report_gm_failure(
+    monitor: ConnectionMonitor,
+    error: BaseException,
+    label: str,
+    summary: str,
+    *,
+    facts: Mapping[str, object] | None = None,
+    steps: Sequence[str] = (),
+    facts_title: str = "已确认的信息",
+    steps_title: str = "建议检查",
+) -> None:
+    """展示构造延迟到观察边界，失败不影响原始故障。"""
+    monitor.failed(
+        error,
+        label=label,
+        presentation=lambda: connection_problem(
+            label,
+            summary,
+            facts=facts,
+            steps=steps,
+            facts_title=facts_title,
+            steps_title=steps_title,
+        ),
+    )
+
+
+def report_account_status(monitor: ConnectionMonitor, error: BaseException, account_id: str, status: dict) -> None:
+    """账户原生状态只解释目标账户，不推断终端进程状态。"""
+    state = status.get("state")
+    labels: dict[int, str] = {
+        AccConnectionState.DISCONNECTING: "账户正在断开",
+        AccConnectionState.DISCONNECTED: "账户已断开",
+        AccConnectionState.ERROR: "账户状态异常",
+    }
+    label = labels.get(state, "账户状态异常") if isinstance(state, int) else "账户状态异常"
+    report_gm_failure(
+        monitor,
+        error,
+        label,
+        "已收到目标交易账户的状态信息，当前账户未处于已登录状态。",
+        facts={
+            "目标账户": account_id,
+            "账户状态": state,
+            "状态说明": status.get("error") or status.get("error_msg") or status.get("message"),
+        },
+        facts_title="账户状态",
+        steps_title="账户登录检查",
+        steps=("检查该交易账户在当前 GM 服务中的登录情况。", "核对账户 ID 和该账户的访问权限。"),
+    )
+
+
+def report_runtime_failure(monitor: ConnectionMonitor, error: BaseException, *, authentication: bool = False) -> None:
+    """明确鉴权证据与运行线程异常分别展示，1026 不推断为 Token 失效。"""
+    if authentication or getattr(error, "status", None) == 1000:
+        report_gm_failure(
+            monitor,
+            error,
+            "Token 无效",
+            "GM SDK 明确报告 Token 无效或已失效。",
+            facts={"鉴权证据": getattr(error, "status", None) or type(error).__name__},
+            facts_title="鉴权证据",
+            steps_title="Token 检查",
+            steps=("核对当前 GM Token 是否有效。", "更新连接设置中的 Token 后重新启动账户运行时。"),
+        )
+        return
+    report_gm_failure(
+        monitor,
+        error,
+        "交易运行时异常",
+        "GM 策略运行线程报告异常，具体原因请查看技术详情。",
+        facts={"失败阶段": "策略运行线程", "异常类型": type(error).__name__},
+        facts_title="运行时信息",
+        steps_title="恢复检查",
+        steps=("检查 GM 交易服务和网络访问情况。", "根据技术详情处理故障后重新启动账户运行时。"),
+    )

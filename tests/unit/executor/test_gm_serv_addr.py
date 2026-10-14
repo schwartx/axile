@@ -1183,6 +1183,10 @@ def test_gm_missing_or_disconnected_account_fails_startup(account_startup, monke
     assert len(errors) == 1 and connection_error_scope(errors[0]) == "account_connection"
     assert observations[-1].status == "error"
     assert stops == ["timer", "runtime"]
+    assert observations[-1].label == (
+        "未找到账户" if status is None else {4: "账户正在断开", 5: "账户已断开", 6: "账户状态异常"}[status["state"]]
+    )
+    assert "wanted" in str(observations[-1].presentation)
     if status is None:
         assert "未找到" in str(errors[0])
     else:
@@ -1206,3 +1210,93 @@ def test_gm_account_verification_error_reaches_startup_owner(account_startup, mo
     assert errors == [error]
     assert not context.ready_event.is_set()
     assert observations[-1].error["technical_detail"] == "状态查询原始错误"
+
+
+def test_gm_authentication_content_survives_normalization():
+    from axile.executor.connection_state import ConnectionMonitor
+    from axile.executor.gm.connection import report_runtime_failure
+    from axile.executor.gm.core.strategy_bridge import _normalize_startup_error
+
+    class AuthenticationFailure(RuntimeError):
+        status = 1000
+
+    observations = []
+    monitor = ConnectionMonitor()
+    monitor.bind(observations.append)
+    error = AuthenticationFailure("SDK authentication original")
+    report_runtime_failure(monitor, error)
+    normalized = _normalize_startup_error(error)
+    monitor.failed(normalized)
+    assert observations[-1].label == "Token 无效"
+    assert "1000" in str(observations[-1].presentation)
+    assert observations[-1].error["technical_detail"] == "SDK authentication original"
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_gm_terminal_content_uses_real_failed_stage(monkeypatch, timeout):
+    from axile.executor.connection_state import connection_monitor
+
+    executor = object.__new__(GMExecutor)
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    if timeout:
+        monkeypatch.setattr(executor, "_get_rpc_port_from_dir", lambda _path: 7001)
+        monkeypatch.setattr(executor, "_wait_for_port_listen", lambda *_args: False)
+        monkeypatch.setattr("axile.executor.gm.gm_execute.subprocess.Popen", lambda *_args, **_kwargs: None)
+    else:
+
+        def missing(_path):
+            raise FileNotFoundError("synthetic gmserv.json missing")
+
+        monkeypatch.setattr(executor, "_get_rpc_port_from_dir", missing)
+    with pytest.raises((FileNotFoundError, ValueError)):
+        executor._start_gm_desktop_if_not("/synthetic-terminal")
+    assert observations[-1].label == ("终端启动超时" if timeout else "终端启动失败")
+    assert "terminal" in str(observations[-1].presentation)
+    assert ("等待终端端口监听" if timeout else "读取终端端口配置") in str(observations[-1].presentation)
+
+
+def test_gm_outer_bridge_failure_preserves_timeout_observation(monkeypatch):
+    from types import SimpleNamespace
+
+    from axile.executor.connection_state import connection_monitor
+
+    executor = object.__new__(GMExecutor)
+    executor._strategy_bridge = None
+    executor._gm_config = SimpleNamespace(token="synthetic", account_id="wanted", serv_addr="synthetic:1")
+    executor._callback_dispatcher = object()
+    executor._subscribe_symbols = []
+    executor.account_id = "wanted"
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    bridge = GMStrategyBridge(token="synthetic", account_id="wanted", callback_dispatcher=object())
+    release = threading.Event()
+    bridge._execute_strategy = lambda _file: release.wait(1)
+    bridge._compute_startup_grace_timeout = lambda _timeout: 0
+    monkeypatch.setattr("axile.executor.gm.gm_execute.GMStrategyBridge", lambda **_kwargs: bridge)
+    try:
+        with pytest.raises(RuntimeError, match="GM bridge 启动失败"):
+            executor._ensure_strategy_bridge(timeout=0.01)
+        assert observations[-1].label == "连接超时"
+        assert observations[-1].presentation["title"] == "连接超时"
+        assert observations[-1].error["exception_type"] == "TimeoutError"
+    finally:
+        release.set()
+        bridge.stop()
+
+
+def test_account_status_authentication_evidence_keeps_token_content(account_startup, monkeypatch):
+    context, observations, errors, _ = account_startup
+
+    class AuthenticationError(RuntimeError):
+        status = 1000
+
+    def fail(_account_id):
+        raise AuthenticationError("structured authentication original")
+
+    monkeypatch.setattr(GMApiBridge, "get_account_status", fail)
+    gm_strategy_module.init(None)
+    gm_strategy_module._process_bridge_requests(None)
+    assert len(errors) == 1
+    assert observations[-1].label == "Token 无效"
+    assert observations[-1].presentation["sections"][0]["title"] == "鉴权证据"

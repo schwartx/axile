@@ -27,6 +27,7 @@ from axile.executor.gm.common import (
     convert_gm_status_to_string,
     from_gm_price,
 )
+from axile.executor.gm.connection import report_account_status, report_gm_failure, report_runtime_failure
 from axile.executor.gm.core.api_bridge import GMApiBridge, GMBridgeRequestPayload, GMSubscribeSymbolsRequest
 from axile.executor.gm.core.bridge_context import GMStrategyRuntimeContext, get_gm_strategy_runtime_context
 from axile.executor.gm.core.callback_dispatcher import GMRuntimeLogLevel
@@ -229,7 +230,10 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
             context.ready_event.set()
             _update_startup_phase("ready_signaled", account_state=state)
     elif state in {AccConnectionState.DISCONNECTING, AccConnectionState.DISCONNECTED, AccConnectionState.ERROR}:
-        raise RuntimeError(f"GM 账户尚未登录，无法初始化: account_id={context.account_id}, status={status}")
+        error = RuntimeError(f"GM 账户尚未登录，无法初始化: account_id={context.account_id}, status={status}")
+        if context.connection_monitor is not None:
+            report_account_status(context.connection_monitor, error, context.account_id, status)
+        raise error
 
 
 def _fail_account_startup(context: GMStrategyRuntimeContext, error: Exception) -> None:
@@ -257,9 +261,32 @@ def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
     try:
         status = GMApiBridge.get_account_status(context.account_id)
         if status is None:
-            raise RuntimeError(f"GM 未找到配置的交易账户，请检查账户 ID 或访问权限: {context.account_id}")
+            error = RuntimeError(f"GM 未找到配置的交易账户，请检查账户 ID 或访问权限: {context.account_id}")
+            if context.connection_monitor is not None:
+                report_gm_failure(
+                    context.connection_monitor,
+                    error,
+                    "未找到账户",
+                    "当前运行时未找到配置的交易账户，具体原因尚未确认。",
+                    facts={"目标账户": context.account_id, "查找结果": "未找到目标账户"},
+                    facts_title="账户查找结果",
+                    steps_title="账户与权限检查",
+                    steps=("核对账户 ID 与当前连接的 GM 服务是否对应。", "确认当前用户有权访问该交易账户。"),
+                )
+            raise error
         _apply_account_startup_status(context, status)
     except Exception as error:
+        if context.connection_monitor is not None and getattr(error, "status", None) == 1000:
+            report_runtime_failure(context.connection_monitor, error)
+        if context.connection_monitor is not None:
+            report_gm_failure(
+                context.connection_monitor,
+                error,
+                "账户状态读取失败",
+                "初始交易账户状态读取过程报告异常。",
+                facts={"目标账户": context.account_id, "失败阶段": "初始账户状态读取"},
+                steps=("检查当前 GM 服务及目标账户的访问权限。",),
+            )
         _fail_account_startup(context, error)
     return context.ready_event.is_set()
 
@@ -369,7 +396,9 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
     if state == AccConnectionState.LOGGEDIN:
         context.connection_monitor.succeeded()
     elif state in {AccConnectionState.ERROR, AccConnectionState.DISCONNECTED}:
-        context.connection_monitor.failed(RuntimeError(f"账户连接异常: {status}"))
+        report_account_status(
+            context.connection_monitor, RuntimeError(f"账户连接异常: {status}"), context.account_id, status
+        )
 
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:
@@ -397,7 +426,16 @@ def on_trade_data_disconnected(_context: Context) -> None:
     _emit_runtime_log("warning", "交易通道已断开")
     context = _get_bridge_context()
     if context is not None and context.connection_monitor is not None:
-        context.connection_monitor.failed(ConnectionError("交易通道已断开"))
+        report_gm_failure(
+            context.connection_monitor,
+            ConnectionError("交易通道已断开"),
+            "交易通道断开",
+            "已收到 GM 交易数据通道断开回调。",
+            facts={"断开对象": "交易数据通道", "证据": "on_trade_data_disconnected"},
+            facts_title="断线证据",
+            steps_title="交易服务检查",
+            steps=("检查 GM 交易服务和网络访问情况。", "该回调无法确认本地终端进程是否退出。"),
+        )
 
 
 def _process_bridge_requests(_context: Context) -> None:
