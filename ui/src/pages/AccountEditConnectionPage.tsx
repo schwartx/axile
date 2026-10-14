@@ -1,5 +1,5 @@
 /** 账户连接设置：按渠道描述渲染字段，支持已保存凭据回显。 */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
 import { ConnectionValidationAside } from '@/features/account/connectionValidation/ConnectionValidationAside'
 
@@ -120,12 +120,9 @@ export function AccountEditConnectionPage() {
     return <ConnectionField label={field.label} kind={field.kind} value={String(raw)} required={field.required} placeholder={field.placeholder} help={field.help} error={errors[field.name]} constraints={field.constraints} clipboard={field.clipboard} onChange={(value) => setField(field, value)} />
   }
 
-  return (
-    <section>
-      {title}
-      <div className={`relative mt-7 ${channelDescriptor?.connection_validation ? 'xl:grid xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start xl:gap-8' : ''}`}>
+  const renderForm = (action?: ReactNode) => (
       <div className="min-w-0 [&>div]:mt-0">
-      <Section label={`${channelDescriptor?.label ?? acc.trade_channel} 连接`}>
+      <Section label={`${channelDescriptor?.label ?? acc.trade_channel} 连接`} action={action}>
         {fields.map((field) => {
           if (isConditionalRevealField(fields, field)) return null
           const visible = channelAccountFieldVisible(field, draft)
@@ -135,9 +132,15 @@ export function AccountEditConnectionPage() {
         })}
       </Section>
       </div>
-      {channelDescriptor?.connection_validation && <ConnectionValidationAside
+  )
+
+  return (
+    <section>
+      {title}
+      <div className={`relative mt-7 ${channelDescriptor?.connection_validation ? 'xl:grid xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start xl:gap-8' : ''}`}>
+      {channelDescriptor?.connection_validation ? <ConnectionValidationAside
         descriptor={channelDescriptor} config={nextConfig} accountId={accountId}
-      />}
+      >{renderForm}</ConnectionValidationAside> : renderForm()}
       </div>
       <EditSaveBar changes={changed ? ['连接设置已改'] : []} blocked={Object.keys(errors).length > 0} onCancel={cancelEdit} onSave={() => void save()} error={saveError} />
     </section>

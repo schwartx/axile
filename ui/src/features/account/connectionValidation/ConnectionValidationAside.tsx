@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type ComponentProps } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { RadioTower, X } from 'lucide-react'
 import { ConnectionValidation } from '@/features/account/connectionValidation/ConnectionValidation'
 
 /** 宽屏固定在表单右侧；窄屏从右侧展开同一组件，验证状态不会因展开收起丢失。 */
-export function ConnectionValidationAside(props: ComponentProps<typeof ConnectionValidation>) {
+export function ConnectionValidationAside({ children, ...props }: ComponentProps<typeof ConnectionValidation> & { children?: (trigger: ReactNode) => ReactNode }) {
   const [open, setOpen] = useState(false)
   const [wide, setWide] = useState(() => window.matchMedia('(min-width: 1280px)').matches)
   const panel = useRef<HTMLDivElement>(null)
@@ -19,7 +19,8 @@ export function ConnectionValidationAside(props: ComponentProps<typeof Connectio
     const previous = document.activeElement as HTMLElement | null
     panel.current?.focus({ preventScroll: true })
     const keyboard = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !panel.current?.contains(document.activeElement)) return
+      // 验证按钮禁用时浏览器可能把焦点退回 body，仍允许 Escape 关闭面板。
+      if (!panel.current || event.defaultPrevented || (!panel.current.contains(document.activeElement) && document.activeElement !== document.body)) return
       if (event.key === 'Escape') {
         event.preventDefault()
         setOpen(false)
@@ -41,11 +42,14 @@ export function ConnectionValidationAside(props: ComponentProps<typeof Connectio
       previous?.focus({ preventScroll: true })
     }
   }, [open, wide])
-  return <aside className="absolute right-0 top-0 z-30 min-w-0 xl:sticky xl:top-8 xl:z-auto">
-    <button ref={trigger} type="button" onClick={() => setOpen(true)} aria-expanded={open} aria-haspopup="dialog"
-      className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-ink-2 xl:hidden">
+  const triggerButton = <button ref={trigger} type="button" onClick={() => setOpen(true)} aria-expanded={open} aria-haspopup="dialog"
+      className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-ink-2 xl:hidden">
       <RadioTower size={15} aria-hidden="true" />连接验证
     </button>
+  return <>
+    {children?.(triggerButton)}
+    <aside className="absolute right-0 top-0 z-30 min-w-0 xl:sticky xl:top-8 xl:z-auto">
+    {!children && triggerButton}
     <div aria-hidden="true" onClick={() => setOpen(false)} className={`fixed inset-0 bg-scrim transition-opacity duration-200 motion-reduce:transition-none xl:hidden ${open ? 'opacity-100' : 'pointer-events-none opacity-0'}`} />
     <div ref={panel} tabIndex={wide ? undefined : -1} role={wide ? undefined : 'dialog'} aria-modal={wide ? undefined : true}
       aria-label={wide ? undefined : '账户连接验证面板'} inert={!wide && !open}
@@ -56,4 +60,5 @@ export function ConnectionValidationAside(props: ComponentProps<typeof Connectio
       <ConnectionValidation {...props} />
     </div>
   </aside>
+  </>
 }

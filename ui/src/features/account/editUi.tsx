@@ -67,12 +67,13 @@ export function EditError({
 /**
  * 小节：eyebrow 标题 + 发丝线，正文两列网格。
  */
-export function Section({ label, children }: { label: string; children: ReactNode }) {
+export function Section({ label, action, children }: { label: string; action?: ReactNode; children: ReactNode }) {
   return (
     <div className="mt-7">
       <div className="mb-2 flex items-center gap-3">
         <span className="text-[12px] font-semibold tracking-wide text-ink-3">{label}</span>
-        <span className="h-px flex-1 bg-line" />
+        <span className="h-px min-w-0 flex-1 bg-line" />
+        {action}
       </div>
       <div className="grid grid-cols-1 gap-x-8 gap-y-3 md:grid-cols-2">{children}</div>
     </div>

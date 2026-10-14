@@ -6,6 +6,8 @@ import { ValidationRecordsModal, type ValidationTableSelection } from '@/feature
 import { ValidationStepDetailsModal } from '@/features/account/connectionValidation/ValidationStepDetailsModal'
 import { ConnectionValidationSession } from '@/features/account/connectionValidation/connectionValidationSession'
 import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, isValidationTable, type ConnectionValidationJob, type ValidationStepStatus, type ValidationKeyValueDetails } from '@/lib/api/connectionValidation'
+import { useDomainStore } from '@/stores/domain'
+import { isConnectionError } from '@/lib/errorInfo'
 import type { ChannelCapability } from '@/types/api'
 
 const stepLabels: Record<ValidationStepStatus, string> = {
@@ -96,6 +98,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   config: Record<string, unknown>
   accountId?: number
 }) {
+  const serverUnavailable = useDomainStore((state) => isConnectionError(state.accountsError))
   const [job, setJob] = useState<ConnectionValidationJob | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [starting, setStarting] = useState(false)
@@ -130,7 +133,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   const shownJob = current ? job : null
   const shownError = current ? error : null
   const busy = current && (starting || (!error && !!job && validationRunning(job)))
-  const enabled = descriptor.available
+  const enabled = descriptor.available && !serverUnavailable
   const steps: ConnectionValidationJob["steps"] = shownJob?.steps ?? declaration.steps.map((step) => ({ ...step, status: 'pending' as const, error: null }))
 
   const start = () => {
@@ -194,7 +197,8 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
         stage: '连接验证', error: shownJob?.error ?? { reason_code: 'CONNECTION.REQUEST_FAILED', message: shownError!.message },
       }) : undefined} />
       <div>
-        {!enabled && <p className="mt-2 text-[12px] text-warn">当前服务器缺少此渠道依赖，安装后才能验证连接。</p>}
+        <ValidationMessage message={serverUnavailable ? '无法连接 axile 服务，连接验证暂不可用。请在顶部重试连接服务器。' : null} />
+        {!descriptor.available && <p className="mt-2 text-[12px] text-warn">当前服务器缺少此渠道依赖，安装后才能验证连接。</p>}
         <div inert={!shownJob?.finished_at && !(busy && shownJob)} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${shownJob?.finished_at || (busy && shownJob) ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             <div className="pt-2 text-[11px] leading-5 text-ink-3">
