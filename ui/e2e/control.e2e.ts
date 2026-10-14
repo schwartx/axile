@@ -6,7 +6,7 @@ function snapshot() {
 }
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => { throw error })
-  await page.route('**/api/v1/account/control/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(snapshot())}\n\n` }))
+  await page.route('**/api/v1/events/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: control.snapshot\ndata: ${JSON.stringify(snapshot())}\n\n` }))
   await page.route('**/api/v1/account/1/control/policy', (route) => route.fulfill({ json: {
     operations: ['place_order', 'cancel_order', 'query_order', ...Array.from({ length: 20 }, (_, i) => `extension_${i}`), 'global_only'].map((key) => ({ key, display_name: key.startsWith('extension_') ? `扩展操作${key.slice(10)}` : ({ place_order: '报单', cancel_order: '撤单', query_order: '查单' }[key] ?? key), category: '查询' })),
     effective_policy: { operations: Object.fromEntries(['place_order', 'cancel_order', 'query_order', ...Array.from({ length: 20 }, (_, i) => `extension_${i}`)].map((key) => [key, { account: {} }])) },
@@ -134,7 +134,7 @@ test('page displays waiting reasons and asynchronous rejection without opening t
     waiting: [{ id: 1, operation: 'place_order', symbol: 'rb2610', priority: 100, kind: 'quota', entered_at_ms: Date.now() - 1200, waited_ms: 1200, estimated_wait_ms: 800, hits: [{ message: '账户分钟额度已用 20/20' }] }],
     records: [{ event_uid: 'event-rejected', occurred_at_ms: Date.now(), operation: 'place_order', symbol: 'rb2610', decision: 'allowed', outcome: 'broker_rejected', metadata: { error_id: 31, error_msg: '柜台返回：资金不足' } }],
   }] }
-  await page.route('**/api/v1/account/control/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(current)}\n\n` }))
+  await page.route('**/api/v1/events/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: control.snapshot\ndata: ${JSON.stringify(current)}\n\n` }))
   await page.reload()
   const waitingToggle = page.getByRole('button', { name: '等待请求(1)', exact: true })
   await expect(waitingToggle).toHaveAttribute('aria-expanded', 'false')
@@ -157,7 +157,7 @@ test('page displays waiting reasons and asynchronous rejection without opening t
 test('reopening the live stream does not flash a stale warning', async ({ page }) => {
   const current = snapshot()
   current.data[0].pending_policy = false
-  await page.route('**/api/v1/account/control/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(current)}\n\n` }))
+  await page.route('**/api/v1/events/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: control.snapshot\ndata: ${JSON.stringify(current)}\n\n` }))
   await page.reload()
   const notice = page.getByText(/^当前实例用量/)
   await expect(notice).toHaveClass(/text-ink-3/)

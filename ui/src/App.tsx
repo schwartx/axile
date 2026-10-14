@@ -6,8 +6,7 @@ import { InitWizard } from '@/features/init/InitWizard'
 import { initStatus, initValuesFromStatus, type InitValues } from '@/lib/api/init'
 import { useDomainSync } from '@/stores/domain'
 import { useChannelCatalogSync } from '@/stores/channels'
-import { useLiveControlSync } from '@/lib/api/controlStream'
-import { useLiveExecSync } from '@/lib/api/executionStream'
+import { useBusinessSync } from '@/lib/api/businessStream'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AccountDetailPage } from '@/pages/AccountDetailPage'
 import { AccountEditPage } from '@/pages/AccountEditPage'
@@ -43,8 +42,7 @@ import {
 function ConfiguredApp() {
   useChannelCatalogSync()
   useDomainSync()
-  useLiveExecSync()
-  useLiveControlSync()
+  useBusinessSync()
   return (
     <>
       <ScrollRestoration />

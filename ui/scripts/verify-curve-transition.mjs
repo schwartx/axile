@@ -44,7 +44,7 @@ async function createPage({ width = 1440, reducedMotion = 'no-preference', color
     } else if (path.endsWith('/rebalance_plan')) json = { rows: [], current_gross_weight: 0, target_gross_weight: 0 }
     else if (path.endsWith('/target_snapshot')) json = { status: 'empty', rows: [], weights: [], error: null }
     else if (path.endsWith('/next_run_time')) json = { next_execution_times: [] }
-    else if (path.endsWith('/executions/stream')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' })
+    else if (path.endsWith('/events/stream')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': test\n\n' })
     else if (path.endsWith('/refresh')) json = { status: 'pending' }
     else if (request.method() !== 'GET') throw new Error(`Unexpected write ${request.method()} ${path}`)
     await route.fulfill({ json }).catch(() => {})

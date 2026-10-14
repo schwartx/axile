@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import math
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
 from sqlmodel import col, func, select
 
@@ -45,7 +42,6 @@ from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.legacy_compat import normalize_execution_event_details, normalize_legacy_result
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
-from axile.server.execution.live import live_hub
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import (
     AccountExecutionAlreadyRunningError,
@@ -428,57 +424,6 @@ async def refresh_account_target_snapshot(session: SessionDep, account_id: int) 
         return await _account_target_public(session, account, snapshot)
     finally:
         clear_target_refresh(portfolio_id, account_id)
-
-
-# 心跳间隔（秒）：无事件时也定期发注释帧，避免中间层因空闲断连。
-_SSE_HEARTBEAT_SEC = 15.0
-
-
-def _sse_frame(event: str, data: object) -> str:
-    """把一帧序列化为 SSE 线格式（``event:`` + ``data:`` + 空行）。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-@router.get("/executions/stream")
-async def executions_stream(request: Request) -> StreamingResponse:
-    """
-    执行实时态 SSE 流（全账户）.
-
-    连上先推一帧 ``snapshot``（当前所有在途执行 + 阶段），随后逐帧转发实时
-    ``event``；空闲时按 :data:`_SSE_HEARTBEAT_SEC` 发心跳注释保活。数据方向纯为
-    server→client，故用 SSE 而非 WebSocket。前端按 ``account_id`` 自行过滤。
-
-    Notes
-    -----
-    必须声明在 ``/executions/{execution_id}`` 之前，否则 ``stream`` 会被当作
-    ``execution_id`` 路径参数捕获。
-    """
-
-    async def _event_stream() -> AsyncIterator[str]:
-        async with live_hub.subscribe() as queue:
-            # 首帧：当前在途执行快照，保证「刚连上」即正确（冷渲染与 REST 同源）。
-            yield _sse_frame("snapshot", live_hub.snapshot())
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    frame = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_SEC)
-                except TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                event_name = cast("str", frame.get("type", "event"))
-                yield _sse_frame(event_name, frame)
-
-    return StreamingResponse(
-        _event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            # 关闭反向代理缓冲，确保逐帧实时下发。
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.get("/executions/{execution_id}", response_model=ExecutionStatusPublic)

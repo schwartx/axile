@@ -7,13 +7,13 @@ import { ControlScopeUsage, ControlUsageNotice } from '../src/features/account/C
 import { TimerQuickModal } from '../src/features/setup/TimerQuickModal'
 import { useChannelCatalogStore } from '../src/stores/channels'
 import type { ChannelCapability } from '../src/types/api'
-import { useLiveControlSync } from '../src/lib/api/controlStream'
+import { useBusinessSync } from '../src/lib/api/businessStream'
 import { useLiveControl } from '../src/stores/liveControl'
 import '../src/styles/theme.css'
 useChannelCatalogStore.setState({ channels: [{ channel: 'ctp', schedule: { kind: 'cn_futures', night: null } } as ChannelCapability] })
 export function Fixture() {
   const [timerOpen, setTimerOpen] = useState(false)
-  useLiveControlSync()
+  useBusinessSync()
   const frame = useLiveControl((state) => state.frames[1])
   return <main className="p-5">
     <div onClick={() => { document.getElementById('navigation')!.textContent = 'navigated' }}><h1>示例账户</h1><AccountControlSummary accountId={1} /></div>

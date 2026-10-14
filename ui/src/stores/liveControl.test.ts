@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from 'bun:test'
 import { useLiveControl, type ControlEnvelope, type ControlFrame } from './liveControl'
 const frame = (value = 123): ControlFrame => ({ account_id: 1, execution_id: 'e', instance_id: 'g', seq: 1, sampled_at_ms: 10000, status: 'running', stale: false, incomplete: false, pending_policy: false, timezone: 'Asia/Shanghai', control_date: '2026-10-13', actual_policy: {}, saved_policy: {}, rules: [], metrics: [{ id: 'account:place_order:per_day', operation: 'place_order', scope: 'account', symbol: null, rule: 'per_day', value, limit: 500, remaining: 500 - value, estimated_wait_ms: 0, on_trigger: 'wait' }], waiting_total: 0, waiting: [], records: [] })
 const message = (version: number, data = [frame()], kind: 'snapshot' | 'update' = 'snapshot', stream_id = 's'): ControlEnvelope => ({ stream_id, version, kind, data })
-beforeEach(() => useLiveControl.setState({ frames: {}, streamId: null, version: -1, connected: false, lastReceivedAt: null, disconnectedAt: null }))
+beforeEach(() => useLiveControl.setState({ frames: {}, streamId: null, version: -1, connected: false, error: null, lastReceivedAt: null, disconnectedAt: null }))
 test('snapshots replace complete counts and ignore duplicate or older versions', () => {
   const apply = useLiveControl.getState().apply
   apply(message(1)); apply(message(2, [frame(124)], 'update')); apply(message(1, [frame(0)], 'update'))
@@ -48,4 +48,18 @@ test('new stream requires full snapshot and removes accounts omitted from it', (
   expect(useLiveControl.getState().streamId).toBe('s')
   apply(message(0, [], 'snapshot', 'next'))
   expect(useLiveControl.getState().frames).toEqual({})
+})
+
+test('confirmed sampling failure immediately marks known values stale and clears only after recovery', () => {
+  const store = useLiveControl.getState()
+  store.apply(message(1))
+  store.disconnect(undefined, 'sampler unavailable')
+  expect(useLiveControl.getState().frames[1].metrics[0].value).toBe(123)
+  expect(useLiveControl.getState().frames[1].stale).toBe(true)
+  expect(useLiveControl.getState().error).toBe('sampler unavailable')
+  store.beginReconnect()
+  expect(useLiveControl.getState().frames[1].stale).toBe(true)
+  store.apply(message(2))
+  expect(useLiveControl.getState().frames[1].stale).toBe(false)
+  expect(useLiveControl.getState().error).toBeNull()
 })

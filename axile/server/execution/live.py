@@ -24,6 +24,7 @@ import contextlib
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from uuid import uuid4
 
 from axile.domain.execution import ExecutionEventType
 from axile.server.db.models import now_str
@@ -64,7 +65,7 @@ _TERMINAL_STATUS_BY_EVENT: dict[ExecutionEventType, str] = {
 
 # 终态项在进度镜像中保留多久（秒）再逐出，给「刚连上」的订阅者留一小段可见窗口。
 _EVICT_DELAY_SEC = 5.0
-# 每订阅者队列容量；满了丢最旧一帧（背压保护，见 _deliver）。
+# 每订阅者队列容量；满了改发权威全量快照（见 _deliver）。
 _QUEUE_MAXSIZE = 256
 
 
@@ -122,6 +123,8 @@ class ExecutionLiveHub:
         self._subscribers: set[asyncio.Queue[dict[str, object]]] = set()
         self._progress: dict[int, _Progress] = {}
         self._lock = threading.Lock()
+        self._stream_id = uuid4().hex
+        self._version = 0
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """绑定主事件循环（应在服务启动 lifespan 内调用）。"""
@@ -180,21 +183,23 @@ class ExecutionLiveHub:
                 pending_execution_id=None if cur is None else cur.pending_execution_id,
                 pending_kind=None if cur is None else cur.pending_kind,
             )
-            self._progress[account_id] = prog
-
-        frame: dict[str, object] = {
-            "type": "event",
-            "account_id": account_id,
-            "execution_id": execution_id,
-            "kind": prog.kind,
-            "phase": prog.phase,
-            "status": prog.status,
-            "event_type": et.value,
-            "symbol": symbol,
-            "seq": seq,
-            "ts": prog.updated_at,
-        }
-        self._fanout(frame)
+            # 上一张票的迟到终态仍可广播，但不能覆盖下一张票的权威镜像。
+            if terminal_status is None or cur is None or cur.execution_id == execution_id:
+                self._progress[account_id] = prog
+            self._broadcast_locked(
+                {
+                    "type": "event",
+                    "account_id": account_id,
+                    "execution_id": execution_id,
+                    "kind": prog.kind,
+                    "phase": prog.phase,
+                    "status": prog.status,
+                    "event_type": et.value,
+                    "symbol": symbol,
+                    "seq": seq,
+                    "ts": prog.updated_at,
+                }
+            )
         if terminal_status is not None:
             self._schedule_evict(account_id, execution_id)
 
@@ -230,18 +235,7 @@ class ExecutionLiveHub:
                 pending_kind=pending_kind,
             )
             self._progress[account_id] = prog
-        frame: dict[str, object] = {
-            "type": "event",
-            "account_id": account_id,
-            "execution_id": execution_id,
-            "kind": kind,
-            "phase": keep_phase,
-            "status": status,
-            "pending_execution_id": pending_execution_id,
-            "pending_kind": pending_kind,
-            "ts": now_str(),
-        }
-        self._fanout(frame)
+            self._broadcast_locked({"type": "event", **self._as_dict(prog)})
 
     def snapshot(self) -> list[dict[str, object]]:
         """返回当前所有仍在运行或排队的账户进度（SSE 首帧 / 冷渲染用）。"""
@@ -254,24 +248,35 @@ class ExecutionLiveHub:
             prog = self._progress.get(account_id)
             return self._as_dict(prog) if prog is not None else None
 
+    def snapshot_envelope(self) -> dict[str, object]:
+        """在同一把锁内读取全量及版本，供初连、重连与背压恢复使用。"""
+        with self._lock:
+            return {
+                "type": "snapshot",
+                "stream_id": self._stream_id,
+                "version": self._version,
+                "data": [self._as_dict(p) for p in self._progress.values() if p.status in _LIVE_STATUS],
+            }
+
     def clear_live_account(self, account_id: int) -> None:
         """账户槽位已空时立刻摘掉进度镜像，并向订阅者发终态帧."""
         with self._lock:
             cur = self._progress.pop(account_id, None)
-        if cur is None:
-            return
-        frame: dict[str, object] = {
-            "type": "event",
-            "account_id": account_id,
-            "execution_id": cur.execution_id,
-            "kind": cur.kind,
-            "phase": cur.phase,
-            "status": "done",
-            "pending_execution_id": None,
-            "pending_kind": None,
-            "ts": now_str(),
-        }
-        self._fanout(frame)
+            if cur is None:
+                return
+            self._broadcast_locked(
+                {
+                    "type": "event",
+                    "account_id": account_id,
+                    "execution_id": cur.execution_id,
+                    "kind": cur.kind,
+                    "phase": cur.phase,
+                    "status": "done",
+                    "pending_execution_id": None,
+                    "pending_kind": None,
+                    "ts": now_str(),
+                }
+            )
 
     @contextlib.asynccontextmanager
     async def subscribe(self) -> AsyncIterator[asyncio.Queue[dict[str, object]]]:
@@ -309,16 +314,21 @@ class ExecutionLiveHub:
             return
         loop.call_soon_threadsafe(self._deliver, frame)
 
+    def _broadcast_locked(self, frame: dict[str, object]) -> None:
+        """锁内分配版本并安排投递，保持跨线程发布与快照水位的顺序。"""
+        self._version += 1
+        frame.update(stream_id=self._stream_id, version=self._version)
+        self._fanout(frame)
+
     def _deliver(self, frame: dict[str, object]) -> None:
-        """在主循环线程内向各订阅者队列投递；队列满则丢最旧一帧（背压保护）。"""
+        """在主循环投递；队列满时用全量快照替换积压，恢复全部账户状态。"""
         for queue in self._subscribers:
             try:
                 queue.put_nowait(frame)
             except asyncio.QueueFull:
-                with contextlib.suppress(asyncio.QueueEmpty):
+                while not queue.empty():
                     queue.get_nowait()
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(frame)
+                queue.put_nowait(self.snapshot_envelope())
 
     def _schedule_evict(self, account_id: int, execution_id: str) -> None:
         loop = self._loop

@@ -64,6 +64,21 @@ CTP 依赖 `openctp-ctp==6.7.11.*`，当前锁定 `6.7.11.0`。该版本提供 L
 ### 5. 内置 Python IDE 策略工作台
 内置基于 `@codemirror/lsp-client` 与 `ty server` 语言服务的策略编辑器，提供类型诊断、代码补全、文档 Hover、定义跳转及代码折叠。每个工作区采用独立临时子进程沙箱隔离，源码只读预览防篡改。
 
+### 6. 前后端通信
+
+业务命令、全量查询和历史数据通过 `/api/v1` 下的 REST 接口访问。管理 UI 每个可见标签页只建立一条业务 SSE：`GET /api/v1/events/stream`。
+
+| SSE 事件 | 数据 |
+| --- | --- |
+| `execution.snapshot` | `{stream_id, version, data: RunFrame[]}`，替换当前在途执行集 |
+| `execution.event` | `RunFrame` 加 `stream_id/version`，更新单个执行状态 |
+| `control.snapshot` / `control.update` | 原流控 envelope，保留 `kind/data/removed/freshness` 与 `stream_id/version` |
+| `execution.error` / `control.error` | `{message}`，对应域暂不可用，保留最后已知数据 |
+
+两个业务域独立取得快照、处理版本和恢复状态；流控每轮采样原子提交，采样超时不会阻塞执行推送。重连从各域全量快照开始，执行队列溢出也重发全量。连接空闲时每 15 秒发送心跳，页面隐藏时关闭连接，恢复可见时重新订阅。账户仪表盘的 REST 对账和执行详情查询继续保留。
+
+旧的两条账户 SSE 路由已删除，调用方需迁移到统一入口并使用带业务前缀的事件名。Python 编辑器继续通过 `/api/v1/editor/lsp` WebSocket 与语言服务双向通信。
+
 ---
 
 ## 🖥️ Web UI 系统全貌

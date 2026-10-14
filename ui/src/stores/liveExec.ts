@@ -51,6 +51,11 @@ const ACTIVE_STATUS_ORDER: Record<string, number> = {
 }
 
 interface LiveExecState {
+  /** 执行域已取得当前连接的快照；流控域故障不影响该标记。 */
+  connected: boolean
+  error: string | null
+  beginReconnect: () => void
+  disconnect: (error?: string | null) => void
   /** account_id → 在途执行；不在跑的账户不出现在表中。 */
   running: Map<number, RunEntry>
   /** SSE 连上/重连的权威全量快照，直接替换运行集。 */
@@ -85,6 +90,10 @@ function toEntry(frame: RunFrame, updatedAt: number, prev?: RunEntry): RunEntry 
 }
 
 export const useLiveExecStore = create<LiveExecState>((set) => ({
+  connected: false,
+  error: null,
+  beginReconnect: () => set({ connected: false, error: null }),
+  disconnect: (error = null) => set({ connected: false, error }),
   running: new Map(),
 
   applySnapshot: (frames) =>
@@ -94,7 +103,7 @@ export const useLiveExecStore = create<LiveExecState>((set) => ({
       for (const f of frames) {
         if (!TERMINAL.has(f.status)) next.set(f.account_id, toEntry(f, now))
       }
-      return { running: next }
+      return { running: next, connected: true, error: null }
     }),
 
   applyEvent: (frame) =>
@@ -109,7 +118,7 @@ export const useLiveExecStore = create<LiveExecState>((set) => ({
       } else {
         next.set(frame.account_id, toEntry(frame, Date.now(), prev))
       }
-      return { running: next }
+      return { running: next, connected: true, error: null }
     }),
 
   reconcile: (accounts) =>

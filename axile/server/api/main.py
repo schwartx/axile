@@ -8,6 +8,7 @@ from axile.server.api.routes import (
     capabilities,
     connection_validation,
     editor,
+    events,
     init,
     instrument_catalog,
     portfolio,
@@ -25,3 +26,4 @@ api_router.include_router(instrument_catalog.router)
 api_router.include_router(account.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(editor.router)
+api_router.include_router(events.router)

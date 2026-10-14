@@ -58,6 +58,56 @@ def used(frame):
     return next(m["value"] for m in frame["metrics"] if m["operation"] == "place_order")
 
 
+def test_reconnecting_to_expired_cache_does_not_make_monitor_values_fresh(monkeypatch):
+    now = [10000]
+    monkeypatch.setattr(monitor_module, "clock_now_ms", lambda: now[0])
+    monitor = monitor_module.AccountControlMonitor()
+    monitor.frames = {1: {"account_id": 1, "sampled_at_ms": 10000, "stale": False}}
+    monitor._publish([], [])
+    assert monitor.snapshot()["data"][0]["stale"] is False
+    now[0] = 15001
+    assert monitor.snapshot()["data"][0]["stale"] is True
+    assert monitor.frames[1]["stale"] is False
+    monitor._publish([], [])
+    assert monitor.snapshot()["data"][0]["stale"] is False
+
+
+def test_snapshot_cannot_observe_half_completed_sampling_round(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (factory, _, monitor):
+            await monitor.refresh()
+            before = monitor.snapshot()
+            async with factory() as db:
+                db.add(build_account(id=2, portfolio_id=None))
+                await db.commit()
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            original = monitor._account_frame
+
+            async def delayed_frame(db, account, sessions):
+                if account.id == 2:
+                    entered.set()
+                    await release.wait()
+                frame = await original(db, account, sessions)
+                frame["waiting_total"] = 99
+                return frame
+
+            monkeypatch.setattr(monitor, "_account_frame", delayed_frame)
+            task = asyncio.create_task(monitor.refresh())
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                assert monitor.snapshot() == before
+            finally:
+                release.set()
+                await task
+            after = monitor.snapshot()
+            assert after["version"] == before["version"] + 1
+            assert len(after["data"]) == 2
+            assert all(frame["waiting_total"] == 99 for frame in after["data"])
+
+    asyncio.run(scenario())
+
+
 def executor(guard):
     return SimpleNamespace(get_account_control_guard=lambda: guard, export_account_control_records=guard.flush_records)
 

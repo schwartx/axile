@@ -52,6 +52,7 @@ class AccountControlMonitor:
     def __init__(self) -> None:
         self.stream_id = uuid4().hex
         self.version = 0
+        self._published_at_ms: int | None = None
         self.frames: dict[int, dict[str, Any]] = {}
         self.subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self.task: asyncio.Task[None] | None = None
@@ -86,6 +87,12 @@ class AccountControlMonitor:
         """用流会话与版本标识一帧。"""
         return {"stream_id": self.stream_id, "version": self.version, "kind": kind, "data": data}
 
+    def snapshot(self) -> dict[str, Any]:
+        """返回最近一次完整采样及其版本，不为订阅者单独触发采样。"""
+        stale = self._published_at_ms is None or clock_now_ms() - self._published_at_ms > 5000
+        data = [{**frame, "stale": True} if stale else frame for frame in self.frames.values()]
+        return self.envelope(data)
+
     @contextlib.asynccontextmanager
     async def subscribe(self) -> AsyncIterator[asyncio.Queue[dict[str, Any]]]:
         """注册有界订阅，在取得首帧之前开始接收变化。"""
@@ -98,6 +105,7 @@ class AccountControlMonitor:
 
     def _publish(self, changed: list[dict[str, Any]], removed: list[int]) -> None:
         self.version += 1
+        self._published_at_ms = clock_now_ms()
         frame = self.envelope(changed, kind="update")
         frame["removed"] = removed
         frame["freshness"] = [
@@ -108,7 +116,7 @@ class AccountControlMonitor:
             if queue.full():
                 while not queue.empty():
                     queue.get_nowait()
-                queue.put_nowait(self.envelope(list(self.frames.values())))
+                queue.put_nowait(self.snapshot())
             else:
                 queue.put_nowait(frame)
 
@@ -123,6 +131,7 @@ class AccountControlMonitor:
             sessions = (await db.execute(select(AccountControlSession))).scalars().all()
             await asyncio.gather(*(self._read_source(a.id) for a in accounts if a.id is not None))
             changed = []
+            frames = {}
             present = set()
             for account in accounts:
                 assert account.id is not None
@@ -134,11 +143,12 @@ class AccountControlMonitor:
                 previous = self.frames.get(account.id)
                 if self._content(previous) != self._content(frame):
                     changed.append(frame)
-                self.frames[account.id] = frame
+                frames[account.id] = frame
             removed = [key for key in self.frames if key not in present]
             for key in removed:
-                self.frames.pop(key)
                 self._history.pop(key, None)
+        # 整轮采样完成后同步提交，快照不会读到跨版本的半轮账户数据。
+        self.frames = frames
         self._publish(changed, removed)
 
     @staticmethod
