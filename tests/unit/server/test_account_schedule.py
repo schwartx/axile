@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import ValidationError
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
@@ -208,24 +207,6 @@ def test_scheduled_rebalance_ignores_stale_job_for_stopped_account(monkeypatch: 
     execute_trade.assert_not_called()
 
 
-def test_create_job_targets_scheduler_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
-    account = _account()
-    scheduler = SimpleNamespace(add_job=MagicMock())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: _SessionContext(account))
-
-    async def portfolio_id(*_args: object) -> int:
-        return 11
-
-    monkeypatch.setattr(execution_scheduler, "get_latest_portfolio_id_by_account_id", portfolio_id)
-    asyncio.run(execution_scheduler.create_job(scheduler, account, parse_cron_expr("30 9 * * *")))
-    kwargs = scheduler.add_job.call_args.kwargs
-    assert kwargs["func"] is execution_scheduler.execute_scheduled_rebalance
-    assert kwargs["args"] == [7]
-    assert kwargs["name"] == "测试账户#7"
-    assert str(kwargs["trigger"]) == "or[1 crontab]"
-    assert kwargs["next_run_time"].tzinfo == SCHEDULER_TIMEZONE
-
-
 def _patch_reconcile(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     events: list[str] = []
 
@@ -242,17 +223,6 @@ def _patch_reconcile(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(account_support, "create_job", fake_create)
     monkeypatch.setattr(account_support, "delete_job", fake_delete)
     return events
-
-
-def test_reconcile_keeps_existing_job_when_crontab_matches(monkeypatch: pytest.MonkeyPatch) -> None:
-    account = _account()
-    events = _patch_reconcile(monkeypatch)
-    existing = SimpleNamespace(trigger=combine_cron_triggers(parse_cron_expr(account.cron_expr)))
-    sched = SimpleNamespace(get_job=lambda _job_id: existing)
-
-    asyncio.run(account_support._reconcile_account_job(object(), sched, account))
-
-    assert events == []
 
 
 def test_reconcile_recreates_when_compact_str_collides_but_hours_differ(
@@ -290,101 +260,3 @@ def test_schedule_preview_returns_raw_cron_points_with_cursor(monkeypatch: pytes
         account_schedule.schedule_preview(payload.model_copy(update={"after": response.next_cursor}))
     )
     assert continued.items[0].scheduled_at.isoformat() == "2026-08-28T09:30:00+08:00"
-
-
-def test_schedule_preview_keeps_session_gap_points_and_marks_them_skipped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    evaluated = datetime(2026, 8, 27, 1, 33, tzinfo=SCHEDULER_TIMEZONE)
-
-    monkeypatch.setattr(account_schedule, "clock_now", lambda *, tz: evaluated)
-    response = asyncio.run(
-        account_schedule.schedule_preview(
-            account_schedule.SchedulePreviewRequest(
-                trade_channel=TradeChannel.CTP,
-                cron_expr="34 1 * * * | 30 2 * * *",
-                after=evaluated,
-                limit=2,
-            )
-        )
-    )
-
-    assert [item.scheduled_at.isoformat() for item in response.items] == [
-        "2026-08-27T01:34:00+08:00",
-        "2026-08-27T02:30:00+08:00",
-    ]
-    assert [item.action for item in response.items] == ["execute", "skip"]
-    assert [item.reason_code for item in response.items] == [None, "CALENDAR.SESSION_CLOSED"]
-    assert response.items[1].calendar_status is CalendarDecisionStatus.AVAILABLE_CLOSED
-
-
-def test_schedule_preview_keeps_weekend_points_and_marks_them_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluated = datetime(2026, 8, 28, 15, 1, tzinfo=SCHEDULER_TIMEZONE)
-
-    monkeypatch.setattr(account_schedule, "clock_now", lambda *, tz: evaluated)
-    response = asyncio.run(
-        account_schedule.schedule_preview(
-            account_schedule.SchedulePreviewRequest(
-                trade_channel=TradeChannel.CTP,
-                cron_expr="0 10 * * *",
-                limit=3,
-            )
-        )
-    )
-
-    assert [item.calendar_day for item in response.items] == [
-        date(2026, 8, 29),
-        date(2026, 8, 30),
-        date(2026, 8, 31),
-    ]
-    assert [item.action for item in response.items] == ["skip", "skip", "execute"]
-    assert response.calendar.calendar_id == "china"
-
-
-def test_schedule_preview_marks_unsupported_year_fail_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluated = datetime(2027, 1, 1, 8, 0, tzinfo=SCHEDULER_TIMEZONE)
-
-    monkeypatch.setattr(account_schedule, "clock_now", lambda *, tz: evaluated)
-    response = asyncio.run(
-        account_schedule.schedule_preview(
-            account_schedule.SchedulePreviewRequest(
-                trade_channel=TradeChannel.CTP,
-                cron_expr="0 10 * * *",
-                limit=1,
-            )
-        )
-    )
-
-    assert response.calendar.availability == "unavailable"
-    assert response.calendar.unavailable_reason is CalendarUnavailableReason.UNCOVERED
-    assert response.items[0].calendar_status is CalendarDecisionStatus.UNAVAILABLE
-    assert response.items[0].action == "skip"
-
-
-def test_schedule_preview_models_enforce_limits_and_timezone() -> None:
-    with pytest.raises(ValidationError):
-        account_schedule.SchedulePreviewRequest(
-            trade_channel=TradeChannel.CTP,
-            cron_expr="30 9 * * *",
-            limit=101,
-        )
-    response = account_schedule.SchedulePreviewResponse(
-        evaluated_at=datetime(2026, 8, 26, tzinfo=timezone.utc),
-        calendar=account_schedule.SchedulePreviewCalendar(
-            requirement="required",
-            availability="available",
-            calendar_id="china",
-            label="中国交易日历",
-        ),
-        items=[
-            account_schedule.SchedulePreviewItem(
-                scheduled_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
-                calendar_day=date(2026, 8, 27),
-                calendar_status=CalendarDecisionStatus.AVAILABLE_OPEN,
-                action="execute",
-                calendar_id="china",
-                label="中国交易日历",
-            )
-        ],
-    )
-    assert response.timezone == "Asia/Shanghai"

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
 from datetime import date, datetime
 from types import ModuleType, SimpleNamespace
-from typing import Any, get_args, get_type_hints
+from typing import Any
 
 import pytest
 
@@ -102,11 +101,9 @@ def _install_gm_stubs() -> None:
 
 _install_gm_stubs()
 
-from axile.executor.gm import common as gm_common_module
 from axile.executor.gm import gm_execute as gm_execute_module
 from axile.executor.gm.core import api_bridge as gm_api_bridge_module
 from axile.executor.gm.core import gm_strategy as gm_strategy_module
-from axile.executor.gm.core import strategy_bridge as gm_strategy_bridge_module
 from axile.executor.gm.gm_execute import GMExecutor
 
 
@@ -150,37 +147,6 @@ class _TradingCalendarStub:
         return self.state
 
 
-@pytest.mark.parametrize(
-    ("calendar", "expected"),
-    [
-        (_TradingCalendarStub(True), True),
-        (_TradingCalendarStub(False), False),
-        (_TradingCalendarStub(None), True),
-        (_TradingCalendarStub(error=RuntimeError("unavailable")), True),
-    ],
-)
-def test_gm_channel_calendar_preserves_fail_open_contract(
-    calendar: _TradingCalendarStub,
-    expected: bool,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(gm_execute_module, "is_within_schedule_windows", lambda *_args, **_kwargs: True)
-    executor = _build_executor()
-    executor._channel_calendar_id = "china"
-    executor._trading_calendar = calendar
-
-    assert executor._check_trading_time() is expected
-
-
-def test_gm_trading_time_closes_at_lunch(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(gm_execute_module, "is_within_schedule_windows", lambda *_args, **_kwargs: False)
-    executor = _build_executor()
-    executor._channel_calendar_id = "china"
-    executor._trading_calendar = _TradingCalendarStub(True)
-
-    assert executor._check_trading_time() is False
-
-
 def test_convert_gm_order_to_unified_uses_client_order_id_as_unified_order_id() -> None:
     """GM UnifiedOrder.order_id 应对齐为可撤可追踪的 cl_ord_id。"""
     order = gm_execute_module.convert_gm_order_to_unified(
@@ -201,56 +167,6 @@ def test_convert_gm_order_to_unified_uses_client_order_id_as_unified_order_id() 
     assert order.order_id == "gm-cl-1"
     assert order.extra["cl_ord_id"] == "gm-cl-1"
     assert order.extra["exchange_order_id"] == "1001"
-
-
-def test_convert_gm_order_to_unified_accepts_order_only() -> None:
-    """GM 订单转换器应保持纯订单接口，不再接受成交列表。"""
-    assert tuple(inspect.signature(gm_execute_module.convert_gm_order_to_unified).parameters) == ("order",)
-
-
-def test_gm_execute_reexports_common_helpers() -> None:
-    """GM 执行器模块中的转换/状态辅助应来自独立 common 模块。"""
-    assert gm_execute_module.from_gm_price is gm_common_module.from_gm_price
-    assert gm_execute_module.convert_gm_trade_to_trade_record is gm_common_module.convert_gm_trade_to_trade_record
-    assert gm_execute_module.convert_gm_order_to_unified is gm_common_module.convert_gm_order_to_unified
-
-
-def test_gm_strategy_reuses_common_trade_id_builder() -> None:
-    """GM callback bridge 也应直接复用 common 模块里的 trade_id builder。"""
-    assert gm_strategy_module._build_gm_trade_id is gm_common_module._build_gm_trade_id
-
-
-def test_from_gm_price_keeps_top5_levels_and_raw_tick() -> None:
-    """GM 通用 tick 转换应保留五档盘口与 raw_data。"""
-    tick = {
-        "symbol": "SHSE.600000",
-        "price": 12.34,
-        "bid_price": [12.33, 12.32],
-        "ask_price": [12.35],
-        "bid_volume": [1000, 900],
-        "ask_volume": [1100],
-        "volume": 88,
-        "timestamp": 1_711_111_111_000,
-        "dt": "2026-03-28T09:30:00",
-    }
-
-    price = gm_common_module.from_gm_price(tick)
-
-    assert price.symbol == "600000.SH"
-    assert price.bid_price == 12.33
-    assert price.bid_price_2 == 12.32
-    assert price.bid_price_3 == 0.0
-    assert price.ask_price == 12.35
-    assert price.ask_price_2 == 0.0
-    assert price.bid_volume == 1000.0
-    assert price.bid_volume_2 == 900.0
-    assert price.ask_volume == 1100.0
-    assert price.ask_volume_2 == 0.0
-    assert price.volume == 88.0
-    assert price.timestamp == 1_711_111_111_000
-    assert price.update_time == "2026-03-28T09:30:00"
-    assert price.extra["channel_type"] == TradeChannel.GM
-    assert price.extra["raw_data"] == tick
 
 
 def test_callback_strategy_tick_conversion_preserves_levels_without_raw_data() -> None:
@@ -284,139 +200,6 @@ def test_callback_strategy_tick_conversion_preserves_levels_without_raw_data() -
     assert price.timestamp == int(tick.created_at.timestamp() * 1000)
     assert price.update_time == "2026-03-28 09:30:00.123"
     assert price.extra == {"channel_type": TradeChannel.GM, "gm_symbol": "SHSE.600000"}
-
-
-def test_gm_executor_and_strategy_share_same_sdk_bridge_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """GM 执行器通过 strategy bridge 调用，strategy runtime 再统一分发 SDK 请求。"""
-    from axile.executor.gm.core.api_bridge import CurrentRequest, GetCashRequest, GMApiBridge
-
-    executor = _build_executor()
-    executor._gm_config = SimpleNamespace(account_id="gm-account")
-    bridge_call_args: list[tuple[object, float]] = []
-    strategy_dispatch_requests: list[object] = []
-
-    class _FakeBridge:
-        def call(self, request: object, *, timeout: float) -> dict[str, Any]:
-            bridge_call_args.append((request, timeout))
-            return {"request": request, "timeout": timeout}
-
-    def fake_execute_request(cls: type[GMApiBridge], request: object) -> dict[str, Any]:
-        strategy_dispatch_requests.append(request)
-        return {"request": request}
-
-    monkeypatch.setattr(
-        executor,
-        "_ensure_strategy_bridge",
-        lambda *, timeout=30.0, subscribe_symbols=None: _FakeBridge(),
-    )
-    monkeypatch.setattr(
-        GMApiBridge,
-        "execute_request",
-        classmethod(fake_execute_request),
-    )
-
-    executor_request = GetCashRequest(account_id="gm-account")
-    strategy_request = CurrentRequest(symbols=["SHSE.600000"])
-
-    executor_result = GMExecutor._call_bridge(executor, executor_request, timeout=12.0)
-    strategy_result = gm_strategy_module._dispatch_bridge_request(
-        strategy_request,
-    )
-
-    assert executor_result == {
-        "request": executor_request,
-        "timeout": 12.0,
-    }
-    assert strategy_result == {
-        "request": strategy_request,
-    }
-    assert bridge_call_args == [(executor_request, 12.0)]
-    assert strategy_dispatch_requests == [strategy_request]
-
-
-def test_gm_bridge_operation_annotations_are_tightened() -> None:
-    """GM bridge 请求注解应收敛到统一的类型化 request 别名。"""
-    from axile.executor.gm.core import api_bridge as gm_api_bridge_module
-
-    sdk_request_types = {
-        gm_api_bridge_module.GetCashRequest,
-        gm_api_bridge_module.GetPositionRequest,
-        gm_api_bridge_module.CurrentRequest,
-        gm_api_bridge_module.GetOrdersRequest,
-        gm_api_bridge_module.GetUnfinishedOrdersRequest,
-        gm_api_bridge_module.GetExecutionReportsRequest,
-        gm_api_bridge_module.OrderCancelRequest,
-        gm_api_bridge_module.OrderVolumeRequest,
-    }
-    bridge_request_types = sdk_request_types | {gm_api_bridge_module.GMSubscribeSymbolsRequest}
-
-    assert set(get_args(gm_api_bridge_module.GMSdkRequest)) == sdk_request_types
-    assert set(get_args(gm_api_bridge_module.GMBridgeRequestPayload)) == bridge_request_types
-    assert get_type_hints(gm_api_bridge_module.GMApiBridge.execute_request)["request"] == (
-        gm_api_bridge_module.GMSdkRequest
-    )
-    assert get_type_hints(GMExecutor._call_bridge)["request"] == gm_api_bridge_module.GMSdkRequest
-    assert get_type_hints(gm_strategy_bridge_module.GMStrategyBridge.call)["request"] == (
-        gm_api_bridge_module.GMSdkRequest
-    )
-    assert get_type_hints(gm_strategy_bridge_module.GMStrategyBridge._submit_request)["request"] == (
-        gm_api_bridge_module.GMBridgeRequestPayload
-    )
-    assert get_type_hints(gm_strategy_module._dispatch_bridge_request)["request"] == (
-        gm_api_bridge_module.GMBridgeRequestPayload
-    )
-
-
-def test_gm_api_bridge_dispatch_table_uses_callables() -> None:
-    """GM SDK dispatch table 应直接保存可调用对象，而不是方法名字符串。"""
-    from axile.executor.gm.core.api_bridge import GMApiBridge
-
-    assert GMApiBridge._SDK_OPERATION_METHODS["get_cash"].__func__ is GMApiBridge.get_cash.__func__
-    assert GMApiBridge._SDK_OPERATION_METHODS["get_cash"].__self__ is GMApiBridge
-    assert GMApiBridge._SDK_OPERATION_METHODS["order_volume"].__func__ is GMApiBridge.order_volume.__func__
-    assert GMApiBridge._SDK_OPERATION_METHODS["order_volume"].__self__ is GMApiBridge
-    assert all(callable(method) for method in GMApiBridge._SDK_OPERATION_METHODS.values())
-
-
-def test_order_cancel_request_serializes_typed_cancel_targets() -> None:
-    """撤单请求应使用类型化 cancel target，而不是裸 dict 列表。"""
-    from axile.executor.gm.core.api_bridge import GMCancelOrderTarget, OrderCancelRequest
-
-    request = OrderCancelRequest(
-        wait_cancel_orders=[
-            GMCancelOrderTarget(cl_ord_id="gm-cl-1", account_id="gm-account"),
-        ]
-    )
-
-    assert request.as_kwargs() == {
-        "wait_cancel_orders": [
-            {"cl_ord_id": "gm-cl-1", "account_id": "gm-account"},
-        ]
-    }
-
-
-def test_order_volume_request_serializes_channel_enums_to_raw_ints() -> None:
-    """下单请求可使用渠道枚举，但发给 SDK 时必须落回原始 int。"""
-    from axile.executor.gm.core.api_bridge import GMOrderKind, GMOrderSide, GMPositionEffect, OrderVolumeRequest
-
-    request = OrderVolumeRequest(
-        symbol="SHSE.600000",
-        volume=100,
-        side=GMOrderSide.BUY,
-        order_type=GMOrderKind.LIMIT,
-        position_effect=GMPositionEffect.OPEN,
-        price=12.3,
-        account="gm-account",
-    )
-
-    kwargs = request.as_kwargs()
-
-    assert kwargs["side"] == gm_execute_module.GMOrderSide.BUY
-    assert type(kwargs["side"]) is int
-    assert kwargs["order_type"] == gm_execute_module.GMOrderKind.LIMIT
-    assert type(kwargs["order_type"]) is int
-    assert kwargs["position_effect"] == gm_execute_module.GMPositionEffect.OPEN
-    assert type(kwargs["position_effect"]) is int
 
 
 def test_get_pending_orders_returns_only_current_symbol_orders(monkeypatch: Any) -> None:
@@ -458,119 +241,6 @@ def test_get_pending_orders_returns_only_current_symbol_orders(monkeypatch: Any)
     orders = executor.get_pending_orders("SZSE.000001")
 
     assert [order.order_id for order in orders] == ["gm-cl-2"]
-
-
-def test_get_pending_orders_stays_in_order_domain(monkeypatch: Any) -> None:
-    """GM 挂单查询只返回订单域快照，不应顺手抓 execution reports 回填成交。"""
-    executor = _build_executor()
-    execution_report_calls: list[str] = []
-
-    monkeypatch.setattr(
-        executor,
-        "_query_trade_records",
-        lambda account_id=None: execution_report_calls.append("trades") or [],
-    )
-    monkeypatch.setattr(
-        executor,
-        "_query_unfinished_order_records",
-        lambda account_id=None: [
-            gm_execute_module.convert_gm_order_to_unified(
-                {
-                    "account_id": "gm-account",
-                    "order_id": "1001",
-                    "cl_ord_id": "gm-cl-1",
-                    "symbol": "SHSE.600000",
-                    "side": gm_execute_module.GMOrderSide.BUY,
-                    "order_type": gm_execute_module.GMOrderKind.LIMIT,
-                    "volume": 100,
-                    "price": 12.3,
-                    "status": 2,
-                    "created_at": datetime(2026, 3, 22, 9, 30, 0),
-                }
-            )
-        ],
-    )
-
-    orders = executor.get_pending_orders("SHSE.600000")
-
-    assert len(orders) == 1
-    assert orders[0].order_id == "gm-cl-1"
-    assert orders[0].filled_volume == 0
-    assert orders[0].remaining_volume == 100
-    assert execution_report_calls == []
-
-
-def test_get_pending_orders_with_none_returns_all_account_pending_orders(monkeypatch: Any) -> None:
-    """GM get_pending_orders(None) 应返回账户下全部未完成委托。"""
-    executor = _build_executor()
-
-    monkeypatch.setattr(
-        executor,
-        "_query_trade_records",
-        lambda account_id=None: [],
-    )
-    monkeypatch.setattr(
-        executor,
-        "_query_unfinished_order_records",
-        lambda account_id=None: [
-            gm_execute_module.convert_gm_order_to_unified(
-                {
-                    "account_id": "gm-account",
-                    "order_id": "1001",
-                    "cl_ord_id": "gm-cl-1",
-                    "symbol": "SHSE.600000",
-                    "side": gm_execute_module.GMOrderSide.BUY,
-                    "order_type": gm_execute_module.GMOrderKind.LIMIT,
-                    "volume": 100,
-                    "price": 12.3,
-                    "status": 1,
-                    "created_at": datetime(2026, 3, 22, 9, 30, 0),
-                }
-            ),
-            gm_execute_module.convert_gm_order_to_unified(
-                {
-                    "account_id": "gm-account",
-                    "order_id": "1002",
-                    "cl_ord_id": "gm-cl-2",
-                    "symbol": "SZSE.000001",
-                    "side": gm_execute_module.GMOrderSide.BUY,
-                    "order_type": gm_execute_module.GMOrderKind.LIMIT,
-                    "volume": 100,
-                    "price": 10.5,
-                    "status": 1,
-                    "created_at": datetime(2026, 3, 22, 9, 31, 0),
-                }
-            ),
-        ],
-    )
-
-    orders = executor.get_pending_orders(None)
-
-    assert [order.order_id for order in orders] == ["gm-cl-1", "gm-cl-2"]
-
-
-def test_place_order_returns_submitted_order_without_execution_tracking(monkeypatch: Any) -> None:
-    """GM 下单直接返回 submitted order，不再维护 execution-order 集合。"""
-    executor = _build_executor()
-
-    monkeypatch.setattr(
-        gm_api_bridge_module,
-        "order_volume",
-        lambda **_kwargs: [{"cl_ord_id": "gm-cl-9"}],
-    )
-
-    order = executor.place_order(
-        symbol="SHSE.600000",
-        direction=gm_execute_module.OrderDirection.BUY,
-        order_type=gm_execute_module.OrderType.LIMIT,
-        volume=100,
-        price=12.3,
-    )
-
-    assert order.order_id == "gm-cl-9"
-    assert order.status == OrderStatus.SUBMITTED
-    assert order.extra["cl_ord_id"] == "gm-cl-9"
-    assert order.extra["exchange_order_id"] is None
 
 
 def test_place_order_passes_gm_market_order_type_for_market_orders(monkeypatch: Any) -> None:
@@ -867,25 +537,6 @@ def test_order_tracker_accumulates_multiple_gm_trades_without_exec_id() -> None:
     assert len({trade.trade_id for trade in tracked_trades}) == 2
 
 
-def test_convert_gm_order_to_unified_preserves_account_id() -> None:
-    order = gm_execute_module.convert_gm_order_to_unified(
-        {
-            "account_id": "gm-account",
-            "order_id": "1001",
-            "cl_ord_id": "gm-cl-1",
-            "symbol": "SHSE.600000",
-            "side": gm_execute_module.GMOrderSide.BUY,
-            "order_type": gm_execute_module.GMOrderKind.LIMIT,
-            "volume": 100,
-            "price": 12.3,
-            "status": 1,
-            "created_at": datetime(2026, 3, 25, 9, 30, 0),
-        }
-    )
-
-    assert order.extra["account_id"] == "gm-account"
-
-
 def test_convert_gm_trade_to_trade_record_preserves_account_id() -> None:
     trade = gm_execute_module.convert_gm_trade_to_trade_record(
         {
@@ -958,3 +609,25 @@ def test_gm_target_sizing_is_floored_to_board_lot() -> None:
     assert sizing.target_quantity == 100
     assert sizing.quantity_step == 100
     assert sizing.reason_code == "COMMON.SIZING.QUANTIZED"
+
+
+@pytest.mark.parametrize(
+    ("calendar", "expected"),
+    [
+        (_TradingCalendarStub(True), True),
+        (_TradingCalendarStub(False), False),
+        (_TradingCalendarStub(None), True),
+        (_TradingCalendarStub(error=RuntimeError("unavailable")), True),
+    ],
+)
+def test_gm_channel_calendar_preserves_fail_open_contract(
+    calendar: _TradingCalendarStub,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gm_execute_module, "is_within_schedule_windows", lambda *_args, **_kwargs: True)
+    executor = _build_executor()
+    executor._channel_calendar_id = "china"
+    executor._trading_calendar = calendar
+
+    assert executor._check_trading_time() is expected

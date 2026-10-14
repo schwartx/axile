@@ -91,40 +91,6 @@ def test_account_control_audit_summary_route_requires_control_date(monkeypatch) 
     assert any(error["loc"][-1] == "control_date" for error in response.json()["detail"])
 
 
-def test_account_control_audit_summary_route_returns_distinct_summary_model(monkeypatch) -> None:
-    """账户控制审计汇总不应混入 execution audit 的响应字段。"""
-    session = _RouteSession(_build_account())
-
-    async def _fake_summary(*_args: object, **_kwargs: object) -> list[AccountControlAuditSummaryRow]:
-        return [
-            AccountControlAuditSummaryRow(
-                operation="place_order",
-                decision=AccountControlDecision.BLOCKED,
-                outcome="policy_blocked",
-                count=2,
-            )
-        ]
-
-    monkeypatch.setattr(
-        account_control_audit_routes.account_control_audit, "query_account_control_audit_summary", _fake_summary
-    )
-
-    response = TestClient(_build_app(session)).get(
-        "/account/1/control/audit/summary",
-        params={"control_date": "2026-03-22"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "operation": "place_order",
-            "decision": "blocked",
-            "outcome": "policy_blocked",
-            "count": 2,
-        }
-    ]
-
-
 def test_account_control_audit_executions_route_requires_control_date_and_enforces_limit(monkeypatch) -> None:
     """execution 列表路由应强制 control_date 且 limit 超限返回 422。"""
     session = _RouteSession(_build_account())

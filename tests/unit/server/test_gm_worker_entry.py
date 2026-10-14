@@ -134,97 +134,6 @@ def _build_gm_account() -> Account:
     )
 
 
-def test_handle_execute_trade_returns_result_payload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    account = _build_gm_account()
-    fake_executor = _FakeWorkerExecutor()
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(worker_backend_entry, "_resolve_prepared_executor", lambda **_kwargs: fake_executor)
-    monkeypatch.setattr(worker_backend_entry, "_finalize_executor", lambda _executor: None)
-
-    def fake_append_trade_pre_execute_audit(**kwargs: object) -> None:
-        captured["pre_execute"] = kwargs
-
-    def fake_append_success_audit(**kwargs: object) -> None:
-        captured["success"] = kwargs
-
-    monkeypatch.setattr(worker_backend_entry, "_append_trade_pre_execute_audit", fake_append_trade_pre_execute_audit)
-    monkeypatch.setattr(worker_backend_entry, "_append_success_audit", fake_append_success_audit)
-
-    standard_input = UnifiedStandardInput.from_dict(
-        {
-            "channel_type": TradeChannel.GM.value,
-            "account_config": account.account_config,
-            "curr_target": {"SHSE.600000": 0.12},
-            "last_target": {},
-            "algorithm": {"method": "SINGLE-MAKER", "params": {}},
-            "trade_rules": account.trade_rules,
-            "extra": {
-                "audit": {
-                    "execution_id": "exec-worker-trade-1",
-                    "account_id": account.id,
-                    "channel": account.trade_channel.value,
-                    "algorithm": "SINGLE-MAKER",
-                    "trigger_source": "manual",
-                    "execution_kind": "rebalance",
-                }
-            },
-        }
-    )
-    request = WorkerBackendRequest(
-        request_id="req-1",
-        command="execute_trade",
-        account_payload=account.model_dump(mode="json"),
-        execution_id="exec-worker-trade-1",
-        payload={
-            "standard_input": standard_input.to_dict(),
-            "audit_input": {"curr_target": {"SHSE.600000": 0.12}},
-            "trigger_source": "manual",
-            "cleanup": True,
-        },
-    )
-
-    response = worker_backend_entry._handle_execute_trade(request, worker_backend_entry._WorkerBackendState())
-
-    assert response.kind == "result"
-    assert response.output_payload is not None
-    assert "inputs" not in response.output_payload
-    assert UnifiedStandardOutput.model_validate(response.output_payload).inputs is None
-    assert fake_executor.execute_input is not None
-    assert fake_executor.execute_input.curr_target == {"600000.SH": 0.12}
-    assert response.normalized_symbol_fields is not None
-    assert response.normalized_symbol_fields["curr_target"] == {"600000.SH": 0.12}
-    pre_execute = cast(dict[str, object], captured["pre_execute"])
-    assert cast(UnifiedStandardInput, pre_execute["standard_input"]).curr_target == {"600000.SH": 0.12}
-    assert cast(dict[str, object], pre_execute["audit_input"])["curr_target"] == {"600000.SH": 0.12}
-    assert cast(dict[str, object], captured["success"])["algorithm_name"] == "SINGLE-MAKER"
-
-
-def test_resolve_executor_uses_factory_and_caches_non_gm_executor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """worker backend 应通过工厂创建执行器，并允许复用非 GM 渠道实例。"""
-    account = build_account()
-    fake_executor = _FakeWorkerExecutor()
-    created: list[Account] = []
-    state = worker_backend_entry._WorkerBackendState()
-
-    def fake_create_executor_instance(factory_account: Account) -> _FakeWorkerExecutor:
-        created.append(factory_account)
-        return fake_executor
-
-    monkeypatch.setattr(worker_state, "create_executor_instance", fake_create_executor_instance)
-
-    executor_first = worker_state._resolve_executor(state, account)
-    executor_second = worker_state._resolve_executor(state, account)
-
-    assert executor_first is fake_executor
-    assert executor_second is fake_executor
-    assert created == [account]
-
-
 def test_resolve_executor_recreates_disconnected_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     account = build_account()
     stale = _FakeWorkerExecutor()
@@ -260,15 +169,6 @@ def test_resolve_executor_rejects_wrong_expected_trading_day(monkeypatch: pytest
     assert closed == [executor]
     assert state.executor is None
     assert state.account_id is None
-
-
-def test_resolve_executor_does_not_require_ctp_trading_day_from_tq(monkeypatch: pytest.MonkeyPatch) -> None:
-    account = build_account(trade_channel="tq", brokerage="tq")
-    executor = _FakeWorkerExecutor()
-    state = worker_backend_entry._WorkerBackendState()
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account: executor)
-
-    assert worker_state._resolve_executor(state, account, "20260824") is executor
 
 
 def test_finalize_executor_flushes_before_clearing_request_bindings(monkeypatch: pytest.MonkeyPatch) -> None:

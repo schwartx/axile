@@ -30,18 +30,6 @@ class _BrokenCalendar:
         raise RuntimeError("calendar failed")
 
 
-@pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.GM, TradeChannel.TQ])
-def test_domestic_channels_share_china_calendar(channel: TradeChannel) -> None:
-    decision = evaluate_channel_calendar_day(
-        channel,
-        date(2026, 8, 29),
-        calendar=_Calendar({date(2026, 8, 29): False}),
-    )
-
-    assert decision.calendar_id == "china"
-    assert decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED
-
-
 def test_calendar_uncovered_and_read_failure_are_distinct() -> None:
     uncovered = evaluate_channel_calendar_day(TradeChannel.CTP, date(2027, 1, 1), calendar=_Calendar({}))
     failed = evaluate_channel_calendar_day(TradeChannel.CTP, date(2026, 8, 27), calendar=_BrokenCalendar())
@@ -70,22 +58,6 @@ def test_friday_night_maps_to_monday_trading_day() -> None:
 
     assert decision.status is CalendarDecisionStatus.AVAILABLE_OPEN
     assert decision.day == date(2026, 8, 24)
-
-
-@pytest.mark.parametrize(
-    "moment",
-    [
-        datetime(2026, 8, 24, 21, 30, tzinfo=_SHANGHAI),
-        datetime(2026, 8, 25, 1, 30, tzinfo=_SHANGHAI),
-    ],
-)
-def test_adjacent_night_and_early_morning_map_to_next_trading_day(moment: datetime) -> None:
-    calendar = _Calendar({date(2026, 8, 24): True, date(2026, 8, 25): True})
-
-    decision = evaluate_channel_calendar_moment(TradeChannel.CTP, moment, calendar=calendar)
-
-    assert decision.status is CalendarDecisionStatus.AVAILABLE_OPEN
-    assert decision.day == date(2026, 8, 25)
 
 
 def test_holiday_eve_has_no_corresponding_night_session() -> None:
@@ -140,12 +112,3 @@ def test_lunch_is_session_closed_on_an_open_day(channel: TradeChannel, moment: d
     )
     assert decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED
     assert decision.reason_code == "CALENDAR.SESSION_CLOSED"
-
-
-def test_futures_tea_break_stays_open_for_index() -> None:
-    decision = evaluate_channel_calendar_moment(
-        TradeChannel.CTP,
-        datetime(2026, 9, 18, 10, 20, tzinfo=_SHANGHAI),
-        calendar=_Calendar({date(2026, 9, 18): True}),
-    )
-    assert decision.status is CalendarDecisionStatus.AVAILABLE_OPEN

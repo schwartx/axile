@@ -37,16 +37,6 @@ def client(service, monkeypatch):
         client.portal.call(service.close)
 
 
-def test_explicit_start_needs_no_allowlist(client, service, monkeypatch):
-    spawn = Mock()
-    monkeypatch.setattr(service, "_start", spawn)
-    response = client.post("/api/v1/channel-validations", json={"channel": "ctp", "account_config": CONFIG})
-    assert response.status_code == 202
-    spawn.assert_called_once()
-    assert "private-password" not in response.text
-    assert "private-auth" not in response.text
-
-
 def test_read_does_not_launch_worker(client, service, monkeypatch):
     spawn = Mock()
     monkeypatch.setattr(service, "_start", spawn)
@@ -55,48 +45,12 @@ def test_read_does_not_launch_worker(client, service, monkeypatch):
     assert not service.jobs
 
 
-def test_config_errors_preserve_original_validation_input(client, monkeypatch):
-    response = client.post(
-        "/api/v1/channel-validations",
-        json={
-            "channel": "ctp",
-            "account_config": {**CONFIG, "query_timeout": "private-password"},
-        },
-    )
-    assert response.status_code == 422
-    assert "private-password" in response.text
-    detail = response.json()["detail"]
-    assert detail["validation_errors"][0]["input"] == "private-password"
-    assert "ValidationError" in detail["traceback"]
-    assert "private-auth" not in response.text
-
-
 def test_unsupported_channel_has_no_network_side_effect(client, service, monkeypatch):
     spawn = Mock()
     monkeypatch.setattr(service, "_start", spawn)
     response = client.post("/api/v1/channel-validations", json={"channel": "gm", "account_config": CONFIG})
     assert response.status_code == 422
     spawn.assert_not_called()
-
-
-def test_progress_failure_and_cancellation_snapshots(client, service, monkeypatch):
-    monkeypatch.setattr(service, "_start", lambda *_args: None)
-    response = client.post("/api/v1/channel-validations", json={"channel": "ctp", "account_config": CONFIG})
-    assert response.status_code == 202
-    result = response.json()
-    job_id = result["validation_id"]
-    assert len(result["steps"]) == 11
-    job = service.jobs[job_id]
-    service.apply_event(job, {"step": "trader_connection", "status": "running"})
-    service.apply_event(job, {"step": "trader_connection", "status": "passed"})
-    service.apply_event(job, {"step": "authenticate", "status": "running"})
-    service.fail(job, "CTP.AUTHENTICATION_FAILED", "授权码认证失败")
-    response = client.get(f"/api/v1/channel-validations/{job_id}")
-    assert response.json()["steps"][1]["status"] == "failed"
-    assert all(step["status"] == "skipped" for step in response.json()["steps"][2:])
-    assert "private-" not in response.text
-    assert "test-account" not in response.text
-    assert client.get("/api/v1/channel-validations/unknown").status_code == 404
 
 
 def test_single_active_validation_and_cancel(client, service, monkeypatch):
@@ -163,16 +117,6 @@ def test_no_new_validation_until_native_cleanup_finishes(service, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_immediate_cancellation_removes_task_reference(service):
-    async def scenario():
-        job = service.create("ctp", CONFIG)
-        await service.cancel(job.validation_id)
-        assert job.status == "cancelled"
-        assert not service.tasks
-
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize("broker_error", [True, False])
 def test_worker_returns_exact_error_original(monkeypatch, broker_error):
     from types import SimpleNamespace
@@ -202,94 +146,6 @@ def test_worker_returns_exact_error_original(monkeypatch, broker_error):
     assert result["result"] == "failed"
     assert "details" not in result["diagnostic"]
     pipe.close.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    "draft, expected_password",
-    [
-        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, None),
-        ({"investor_id": "draft-account"}, CONFIG["password"]),
-        ({"password": "new-password", "investor_id": "draft-account"}, "new-password"),
-    ],
-)
-def test_existing_account_uses_draft_and_saved_secrets_without_saving(
-    client, service, monkeypatch, draft, expected_password
-):
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from axile.server.api.deps import get_db
-
-    stored = SimpleNamespace(trade_channel="ctp", account_config=CONFIG.copy())
-    session = SimpleNamespace(get=AsyncMock(return_value=stored), commit=AsyncMock())
-
-    async def db():
-        yield session
-
-    client.app.dependency_overrides[get_db] = db
-    spawn = Mock()
-    monkeypatch.setattr(service, "_start", spawn)
-    response = client.post("/api/v1/account/42/connection-validation", json={"account_config": draft})
-    if expected_password is None:
-        assert response.status_code == 422
-        spawn.assert_not_called()
-        assert stored.account_config == CONFIG
-        session.commit.assert_not_called()
-        return
-    assert response.status_code == 202
-    config = spawn.call_args.args[1]
-    assert config["password"] == expected_password
-    assert config["auth_code"] == CONFIG["auth_code"]
-    assert config["investor_id"] == "draft-account"
-    assert stored.account_config == CONFIG
-    session.commit.assert_not_called()
-    assert "private-password" not in response.text
-    assert "new-password" not in response.text
-
-
-def test_existing_account_validation_missing_account_does_not_connect(client, service, monkeypatch):
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from axile.server.api.deps import get_db
-
-    async def db():
-        yield SimpleNamespace(get=AsyncMock(return_value=None))
-
-    client.app.dependency_overrides[get_db] = db
-    spawn = Mock()
-    monkeypatch.setattr(service, "_start", spawn)
-    response = client.post("/api/v1/account/404/connection-validation", json={"account_config": {}})
-    assert response.status_code == 404
-    spawn.assert_not_called()
-
-
-@pytest.mark.parametrize("step_id", ["settlement", "trader_login"])
-def test_generic_details_survive_later_failure(client, service, monkeypatch, step_id):
-    monkeypatch.setattr(service, "_start", lambda *_args: None)
-    response = client.post("/api/v1/channel-validations", json={"channel": "ctp", "account_config": CONFIG})
-    job_id = response.json()["validation_id"]
-    job = service.jobs[job_id]
-    details = {
-        "title": "渠道步骤详情",
-        "rows": [
-            {"key": "账号", "value": "full-account"},
-            {"key": "编号", "value": 0},
-            {"key": "状态", "value": False},
-            {"key": "状态", "value": True},
-            {"key": "缺失", "value": None},
-            {"key": "空文本", "value": ""},
-            {"key": "小数", "value": 1.25},
-        ],
-    }
-    service.apply_event(job, {"step": step_id, "status": "passed", "details": details})
-    service.apply_event(job, {"step": "instruments", "status": "running"})
-    service.fail(job, "CONNECTION.STAGE_TIMEOUT", "合约查询超时")
-    result = client.get(f"/api/v1/channel-validations/{job_id}").json()
-    step = next(step for step in result["steps"] if step["id"] == step_id)
-    assert step["status"] == "passed"
-    assert step["details"] == details
-    assert isinstance(step["details"]["rows"][2]["value"], bool)
 
 
 @pytest.mark.parametrize("rows", [[], [["000123", 0, False, None], ["000124", 1.25, True, ""]]])

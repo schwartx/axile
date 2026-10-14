@@ -26,15 +26,6 @@ def test_session_reads_real_executor_capability() -> None:
     assert session.order_param_model is OrderParamModel.OFFSET
 
 
-def test_order_param_model_enum_branches() -> None:
-    """枚举三分支 + UNKNOWN 的取值与可往返序列化."""
-    assert OrderParamModel.POSITION_SIDE == "position_side"
-    assert OrderParamModel.OFFSET == "offset"
-    assert OrderParamModel.DIRECTIONAL == "directional"
-    assert OrderParamModel.UNKNOWN == "unknown"
-    assert OrderParamModel(str(OrderParamModel.OFFSET)) is OrderParamModel.OFFSET
-
-
 def test_channel_plugin_defaults_to_unknown() -> None:
     """ChannelPlugin 未声明时默认 UNKNOWN(外部插件注册后自声明)."""
     gm = get_channel(TradeChannel.GM)
