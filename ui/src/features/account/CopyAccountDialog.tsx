@@ -53,7 +53,7 @@ export function CopyAccountDialog({ accountId, name, isStarted, isBusy, open, on
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !copying) onClose() }}>
       <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-xl" role="dialog" aria-modal="true" aria-label="复制账户">
         <h2 className="text-lg font-semibold">复制账户</h2>
-        <p className="mt-2 text-sm text-ink-2">新账户默认暂停，旧账户历史保留。核对配置后手动执行一次，有效资产将成为新曲线的 0% 起点。</p>
+        <p className="mt-2 text-sm text-ink-2">仅复制配置和当前组合绑定，不复制执行历史，新账户默认暂停。旧账户历史保留；新收益曲线从新账户自身首个有效资产观测开始。</p>
         <p className="mt-2 text-sm text-ink-3">暂停只停止自动调度；旧账户仍可手动执行或重新启动，后续记录继续写入旧账户。</p>
         <label className="mt-4 block text-sm text-ink-2" htmlFor={`copy-account-name-${accountId}`}>新账户名称</label>
         <input id={`copy-account-name-${accountId}`} className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-ink-1" value={copyName} onChange={(event) => setCopyName(event.target.value)} />

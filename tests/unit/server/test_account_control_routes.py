@@ -11,17 +11,31 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel, select
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.registry import (
     ensure_default_account_control_registry_bootstrapped,
     reset_default_account_control_registry_for_tests,
 )
-from axile.server.api.deps import get_db, get_scheduler
+from axile.server.api.deps import HistoryPagination, get_db, get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
-from axile.server.db.models import Account, AccountCreate, AccountRuntimeSync, AccountUpdate
+from axile.server.api.routes.account_performance import _account_performance
+from axile.server.db.models import (
+    Account,
+    AccountAssetSnapshot,
+    AccountCreate,
+    AccountRuntimeSync,
+    AccountUpdate,
+    ExecuteRecord,
+    ExecutionEvent,
+    Portfolio,
+    PortfolioAccount,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -744,3 +758,155 @@ def test_notification_patch_preserves_omitted_fields_and_reports_saved_status(
     assert account.feishu_key == expected_key
     assert response.json()["execution_notification_status"] == expected_status
     assert "feishu_key" not in response.json()
+
+
+def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """有历史的账户复制后，新账户的执行、资产和收益独立开始。"""
+
+    async def no_sync(*args, **kwargs):
+        return None
+
+    async def reconciled(*args, **kwargs):
+        return SimpleNamespace(status="synchronized")
+
+    monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", no_sync)
+    monkeypatch.setattr(account_crud_routes, "_reconcile_committed_runtime", reconciled)
+    monkeypatch.setattr(account_crud_routes, "_account_public_with_runtime_sync", lambda account, sync: account)
+    monkeypatch.setattr(account_crud_routes, "get_running_execution_id", lambda _: None)
+    monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _: None)
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                source = _build_account()
+                source.is_started = False
+                session.add(
+                    Portfolio(
+                        id=1,
+                        name="组合",
+                        market="期货",
+                        custom_calc_py_code="def calculate_portfolio(context): return {}",
+                    )
+                )
+                session.add(source)
+                await session.flush()
+                old_result = {"account_assets": {"total_asset": 100}, "orders": [{"order_id": "old-order"}]}
+                session.add(
+                    ExecuteRecord(
+                        account_id=1,
+                        execution_id="old",
+                        is_success=1,
+                        raw_result=old_result,
+                        created_at="2026-01-01T09:00:00",
+                    )
+                )
+                session.add(
+                    AccountAssetSnapshot(
+                        account_id=1, source="execution", execution_id="old", assets={"total_asset": 100}
+                    )
+                )
+                session.add(
+                    ExecutionEvent(
+                        account_id=1,
+                        execution_id="old",
+                        channel=source.trade_channel,
+                        algorithm="SINGLE-MAKER",
+                        event_uid="old-event",
+                        event_type=ExecutionEventType.ORDER_SUBMITTED,
+                        status=ExecutionEventStatus.INFO,
+                        reason_family=ExecutionReasonFamily.SYSTEM,
+                        reason_code="ORDER.SUBMITTED",
+                        order_id="old-order",
+                    )
+                )
+                session.add(PortfolioAccount(account_id=1, portfolio_id=None))
+                session.add(PortfolioAccount(account_id=1, portfolio_id=1))
+                await session.commit()
+                copied = await account_crud_routes.copy_account(
+                    session, _Scheduler(), 1, account_crud_routes.AccountCopyRequest(name="新账户"), Response()
+                )
+                copied_id = copied.id
+                assert copied_id != 1
+                assert copied.is_started is False
+                for field in AccountCreate.model_fields:
+                    if field not in {"name", "is_started", "account_config"}:
+                        assert getattr(copied, field) == getattr(source, field)
+                assert all(copied.account_config[key] == value for key, value in source.account_config.items())
+                history = await account_crud_routes.list_execute_records(session, copied_id, HistoryPagination())
+                assert history.count == 0
+                assert history.data == []
+                assert (
+                    await session.execute(select(ExecutionEvent).where(ExecutionEvent.account_id == copied_id))
+                ).scalars().all() == []
+                assert (
+                    await session.execute(
+                        select(AccountAssetSnapshot).where(AccountAssetSnapshot.account_id == copied_id)
+                    )
+                ).scalars().all() == []
+                bindings = (
+                    (await session.execute(select(PortfolioAccount).where(PortfolioAccount.account_id == copied_id)))
+                    .scalars()
+                    .all()
+                )
+                assert len(bindings) == 1
+                assert bindings[0].portfolio_id == 1
+                empty = await _account_performance(session, copied_id, "all")
+                assert empty.baseline is None
+                assert empty.points == []
+                session.add(
+                    ExecuteRecord(
+                        account_id=copied_id,
+                        execution_id="new",
+                        is_success=1,
+                        raw_result={"account_assets": {"total_asset": 250}},
+                        created_at="2026-02-01T09:00:00",
+                    )
+                )
+                await session.commit()
+                history = await account_crud_routes.list_execute_records(session, copied_id, HistoryPagination())
+                assert history.count == 1
+                assert history.data[0].execution_id == "new"
+                original = await account_crud_routes.list_execute_records(session, 1, HistoryPagination())
+                assert original.count == 1
+                assert original.data[0].raw_result["orders"] == old_result["orders"]
+                stored = (
+                    await session.execute(select(ExecuteRecord).where(ExecuteRecord.account_id == 1))
+                ).scalar_one()
+                assert stored.raw_result == old_result
+                events = (
+                    (await session.execute(select(ExecutionEvent).where(ExecutionEvent.account_id == 1)))
+                    .scalars()
+                    .all()
+                )
+                assert len(events) == 1
+                assert events[0].order_id == "old-order"
+                assert (
+                    len(
+                        (
+                            await session.execute(
+                                select(AccountAssetSnapshot).where(AccountAssetSnapshot.account_id == 1)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    == 1
+                )
+                assert (
+                    len(
+                        (await session.execute(select(PortfolioAccount).where(PortfolioAccount.account_id == 1)))
+                        .scalars()
+                        .all()
+                    )
+                    == 2
+                )
+                performance = await _account_performance(session, copied_id, "all")
+                assert performance.baseline == "2026-02-01T09:00:00"
+                assert performance.points[0].account_return == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
