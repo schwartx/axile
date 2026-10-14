@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import TQAccountConfig
@@ -278,3 +279,65 @@ def test_tq_uses_quote_specs_even_when_shared_catalog_contains_ctp_specs(executo
     assets = UnifiedAccountAssets(available_cash=1_000_000, total_asset=1_000_000, market_value=0, positions=[])
     assert instance._calculate_generic_volume(0.32, 3200, assets, {}, symbol="rb2610") == 5
     assert instance.get_account_assets().positions[0].market_value == 3200 * 3 * 20
+
+
+@pytest.mark.parametrize("exchange", ["SHFE", "CZCE"])
+@pytest.mark.parametrize("qualified", [False, True])
+@pytest.mark.parametrize("warm", [False, True])
+def test_pending_orders_match_native_and_qualified_codes_without_querying_catalog(executor, exchange, qualified, warm):
+    instance, api = executor
+    year = clock_now().year + 1
+    local = "rb2610" if exchange == "SHFE" else f"CF{year % 10}01"
+    requested = "rb2610" if exchange == "SHFE" else f"CF{year % 100:02}01"
+    full = f"{exchange}.{local}"
+    api.order.update(exchange_id=exchange, instrument_id=local)
+    api.futures = [full]
+    if warm:
+        instance._ensure_instrument_symbols([full])
+    queries = getattr(api, "query_count", 0)
+    orders = instance.get_pending_orders(f"{exchange}.{requested}" if qualified else requested)
+    assert [order.order_id for order in orders] == ["o1"]
+    assert orders[0].symbol == local
+    assert orders[0].extra["tq_symbol"] == full
+    assert getattr(api, "query_count", 0) == queries
+
+
+@pytest.mark.parametrize("operation", ["market", "tick", "subscribe"])
+def test_readonly_complete_code_bypasses_active_catalog_but_cannot_place_orders(executor, operation):
+    instance, api = executor
+    symbol = "SHFE.rb2501"
+    api.quote["instrument_id"] = "rb2501"
+    if operation == "market":
+        assert instance.get_market_data([symbol])[symbol].last_price == 3200
+    elif operation == "tick":
+        assert instance.get_tick_size(symbol) == 1
+    else:
+        instance.initialize_websocket([symbol])
+        assert instance._require_runtime().quote_snapshot(symbol)["last_price"] == 3200
+    assert api.quote_calls == 1
+    assert getattr(api, "query_count", 0) == 0
+    assert instance._catalog_records == {}
+    with pytest.raises(RuntimeError, match="合约资料"):
+        instance._place_order_impl(symbol, OrderDirection.BUY, OrderType.LIMIT, 1, 3200)
+    assert not api.insert_args
+
+
+def test_complete_code_quote_error_is_returned_without_catalog_lookup(executor, monkeypatch):
+    instance, api = executor
+
+    async def unavailable(_symbol):
+        raise ValueError("quote unavailable")
+
+    monkeypatch.setattr(api, "get_quote", unavailable)
+    with pytest.raises(RuntimeError, match="quote unavailable"):
+        instance.get_tick_size("SHFE.rb2501")
+    assert getattr(api, "query_count", 0) == 0
+
+
+def test_qualified_pending_order_filter_preserves_exchange(executor, monkeypatch):
+    instance, api = executor
+    other = {**api.order, "exchange_id": "DCE", "order_id": "o2"}
+    monkeypatch.setattr(api, "get_order", lambda: {"o1": api.order, "o2": other})
+    assert [order.order_id for order in instance.get_pending_orders("SHFE.rb2610")] == ["o1"]
+    assert [order.order_id for order in instance.get_pending_orders("DCE.rb2610")] == ["o2"]
+    assert getattr(api, "query_count", 0) == 0

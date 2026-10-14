@@ -252,11 +252,7 @@ class InstrumentCatalog:
                 rows = self._call(query, symbols, timeout)
                 with self._lock:
                     current_source = self._sources.get(name)
-                    if (
-                        current_source is None
-                        or current_source.query is not query
-                        or (source_name is None and not current_source.enabled)
-                    ):
+                    if current_source is None or current_source.query is not query:
                         raise CatalogError("合约查询来源已退出")
                     if task is not None:
                         task["phase"] = "validating"

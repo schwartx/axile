@@ -18,6 +18,7 @@ from axile.executor.china_futures_session import is_within_possible_china_future
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
 from axile.executor.instrument_catalog import InstrumentCatalogProvider
+from axile.executor.instrument_catalog_records import normalize_catalog_symbol
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
@@ -418,13 +419,15 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
     def _quote_snapshot(self, symbol: str) -> dict[str, object]:
         runtime = self._require_runtime()
-        tq_symbol = runtime.resolver.to_tq(symbol)
+        tq_symbol = normalize_catalog_symbol(symbol) if "." in symbol else runtime.resolver.to_tq(symbol)
         return runtime.quote_snapshot(tq_symbol)
 
     @override
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
         runtime = self._require_runtime()
-        tq_symbols = [runtime.resolver.to_tq(symbol) for symbol in symbols]
+        tq_symbols = [
+            normalize_catalog_symbol(symbol) if "." in symbol else runtime.resolver.to_tq(symbol) for symbol in symbols
+        ]
         rows = runtime.quote_snapshots(tq_symbols)
         result: dict[str, UnifiedPriceData] = {}
         for row in rows.values():
@@ -514,9 +517,19 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     @override
     def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         runtime = self._require_runtime()
+        symbol = normalize_catalog_symbol(symbol) if symbol is not None else None
         rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
-        return [order for order in orders if order.is_active() and (symbol is None or order.symbol == symbol)]
+        return [
+            order
+            for order in orders
+            if order.is_active()
+            and (
+                symbol is None
+                or order.symbol == symbol
+                or normalize_catalog_symbol(str(order.extra["tq_symbol"])) == symbol
+            )
+        ]
 
     @override
     def _query_trades_impl(self, symbol: str, order_id: str) -> list[TradeRecord]:
@@ -612,7 +625,12 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def initialize_websocket(self, symbols: list[str] | None = None) -> None:
         if symbols:
             runtime = self._require_runtime()
-            runtime.subscribe([runtime.resolver.to_tq(symbol) for symbol in symbols])
+            runtime.subscribe(
+                [
+                    normalize_catalog_symbol(symbol) if "." in symbol else runtime.resolver.to_tq(symbol)
+                    for symbol in symbols
+                ]
+            )
             self._monitoring = True
 
     @override

@@ -9,6 +9,7 @@ from typing import Any
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.instrument_catalog_records import EXCHANGES, normalize_catalog_symbol
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -106,11 +107,16 @@ def order_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedOrder:
     exchange = str(_value(row, "exchange_id", "") or "")
     local = str(_value(row, "instrument_id", "") or "")
     full_symbol = f"{exchange}.{local}" if exchange and "." not in local else local
+    symbol = (
+        normalize_catalog_symbol(full_symbol).split(".", 1)[-1]
+        if exchange in EXCHANGES
+        else resolver.to_axile(full_symbol)
+    )
     volume = _float(row, "volume_orign")
     left = _float(row, "volume_left")
     return UnifiedOrder.create(
         order_id=str(_value(row, "order_id", "") or ""),
-        symbol=resolver.to_axile(full_symbol),
+        symbol=symbol,
         direction=OrderDirection.BUY.value if _value(row, "direction") == "BUY" else OrderDirection.SELL.value,
         order_type=OrderType.MARKET.value if _value(row, "price_type") == "ANY" else OrderType.LIMIT.value,
         volume=volume,

@@ -156,6 +156,37 @@ def test_paused_session_does_not_trigger_preheating_or_supply_full_refresh():
     assert catalog.snapshot() == {RB.key: RB}
 
 
+@pytest.mark.parametrize("change", ["pause", "rebind", "disconnect"])
+def test_refresh_accepts_paused_source_result_but_rejects_invalidated_sessions(change):
+    catalog = InstrumentCatalog()
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def query(symbols, timeout):
+        calls.append(symbols)
+        entered.set()
+        assert release.wait(1)
+        return [RB]
+
+    catalog.register("account", query, channel="ctp")
+    task = catalog.refresh()
+    assert entered.wait(1)
+    if change == "pause":
+        catalog.register("account", query, channel="ctp", enabled=False)
+    elif change == "rebind":
+        catalog.register("account", lambda symbols, timeout: [AG], channel="ctp", enabled=False)
+    else:
+        catalog.unregister("account")
+    release.set()
+    assert finish(catalog, task)["status"] == ("succeeded" if change == "pause" else "failed")
+    expected = {RB.key: RB} if change == "pause" else {}
+    if change == "pause":
+        assert catalog.ensure([RB.key], require_specs=True)[RB.key] == RB
+    assert finish(catalog, catalog.refresh())["status"] == "failed"
+    assert catalog.snapshot() == expected
+    assert calls == [None]
+
+
 def test_waiter_timeout_never_restarts_execution_on_late_result():
     catalog = InstrumentCatalog()
     release = threading.Event()
