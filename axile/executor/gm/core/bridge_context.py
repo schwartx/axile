@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -62,6 +63,10 @@ class GMStrategyRuntimeContext:
     timer_id: int = 0
     account_id: str = ""
     connection_monitor: ConnectionMonitor | None = None
+    strategy_initialized: bool = False
+    account_checked: bool = False
+    startup_failed: bool = False
+    startup_failure_handler: Callable[[Exception], None] | None = None
 
 
 # 当前设计固定为“一账户一 worker 进程，一进程一条 GM bridge”。
@@ -82,6 +87,7 @@ def install_gm_strategy_runtime_context(
     runtime_stop_lock: threading.Lock,
     account_id: str = "",
     connection_monitor: ConnectionMonitor | None = None,
+    startup_failure_handler: Callable[[Exception], None] | None = None,
 ) -> None:
     """
     注册当前 bridge 线程对应的 GM 策略运行时上下文.
@@ -122,6 +128,7 @@ def install_gm_strategy_runtime_context(
         runtime_stop_lock=runtime_stop_lock,
         account_id=account_id,
         connection_monitor=connection_monitor,
+        startup_failure_handler=startup_failure_handler,
     )
     _active_context = active_context
 

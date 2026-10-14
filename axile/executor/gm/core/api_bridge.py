@@ -336,6 +336,27 @@ class GMApiBridge:
 
     _SDK_OPERATION_METHODS: ClassVar[dict[GMSdkOperation, Callable[..., Any]]]
 
+    @staticmethod
+    def get_account_status(account_id: str) -> dict[str, Any] | None:
+        """直接读取指定账户的初始状态，避免依赖尚未发生的状态变化回调。"""
+        from gm.api._errors import check_gm_status  # type: ignore
+        from gm.csdk.c_sdk import py_gmi_get_account_status  # type: ignore
+        from gm.pb.account_pb2 import AccountStatuses  # type: ignore
+        from gm.pb.tradegw_service_pb2 import GetAccountStatusesReq  # type: ignore
+        from gm.pb_to_dict import protobuf_to_dict  # type: ignore
+
+        request = GetAccountStatusesReq()
+        request.account_ids.append(account_id)
+        code, payload = py_gmi_get_account_status(request.SerializeToString())
+        check_gm_status(code)
+        statuses = AccountStatuses()
+        if payload:
+            statuses.ParseFromString(payload)
+        for account in statuses.data:
+            if account.account_id == account_id:
+                return dict(protobuf_to_dict(account.status, including_default_value_fields=True))
+        return None
+
     @classmethod
     def execute_request(cls, request: GMSdkRequest) -> Any:
         """执行类型化的 GM SDK 请求."""

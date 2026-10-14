@@ -302,17 +302,19 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")
         bridge = self._ensure_strategy_bridge(timeout=timeout)
-        if request.operation in {
-            "get_cash",
-            "get_position",
-            "get_orders",
-            "get_unfinished_orders",
-            "get_execution_reports",
-            "order_volume",
-            "order_cancel",
-        } and getattr(request, "account_id", None) in {None, self.account_id}:
+        # GM 对无效账户也可能返回空列表；空持仓/订单不能证明账户有效。
+        if request.operation == "get_cash" and getattr(request, "account_id", None) in {None, self.account_id}:
             with connection_monitor(self).accessing():
-                return bridge.call(request, timeout=timeout)
+                cash = bridge.call(request, timeout=timeout)
+                returned_account = cash.get("account_id") if isinstance(cash, dict) else None
+                if not cash or returned_account not in {None, "", self.account_id}:
+                    error = RuntimeError(
+                        f"未获取到指定账户的有效资金信息，请检查账户 ID、登录状态和访问权限（账户 ID：{self.account_id}）"
+                    )
+                    connection_monitor(self).failed(error)
+                    logger.error("{}", error)
+                    raise error
+                return cash
         return bridge.call(request, timeout=timeout)
 
     # ==================== 实现 UnifiedCallbackClient 接口 ====================

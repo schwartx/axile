@@ -26,6 +26,7 @@ from typing import Protocol, TypeAlias
 
 from loguru import logger
 
+from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor
 from axile.executor.gm.core.api_bridge import GMBridgeRequestPayload, GMSdkRequest, GMSubscribeSymbolsRequest
 from axile.executor.gm.core.bridge_context import (
@@ -233,14 +234,9 @@ class GMStrategyBridge:
         self._thread.start()
 
         # 小步等待可同时观察 ready 与后台线程异常，避免线程早已退出却仍等满 30 秒。
-        deadline = time.monotonic() + max(timeout, 0.0)
-        while not self._ready_event.is_set() and self._startup_error is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            self._ready_event.wait(timeout=min(0.05, remaining))
+        self._wait_for_startup(timeout)
 
-        if self._ready_event.is_set():
+        if self._ready_event.is_set() and self._startup_error is None:
             self._running = True
             logger.success("StrategyBridge 启动成功")
             return True
@@ -256,7 +252,12 @@ class GMStrategyBridge:
             logger.warning(
                 f"StrategyBridge 启动在 {timeout} 秒内未就绪，但线程仍存活；继续等待 {grace_timeout} 秒宽限窗口"
             )
-            if self._ready_event.wait(timeout=grace_timeout):
+            self._wait_for_startup(grace_timeout)
+            if self._startup_error is not None:
+                startup_error = _normalize_startup_error(self._startup_error)
+                self.stop()
+                raise startup_error from self._startup_error
+            if self._ready_event.is_set():
                 self._running = True
                 logger.success("StrategyBridge 在宽限窗口内启动成功")
                 return True
@@ -265,6 +266,17 @@ class GMStrategyBridge:
         self.connection_monitor.failed(TimeoutError("GM 策略桥启动超时"))
         self.stop()
         return False
+
+    def _wait_for_startup(self, timeout: float) -> None:
+        deadline = clock_monotonic() + max(timeout, 0.0)
+        while not self._ready_event.is_set() and self._startup_error is None:
+            remaining = deadline - clock_monotonic()
+            if remaining <= 0:
+                break
+            get_default_clock().event_wait(self._ready_event, min(0.05, remaining))
+
+    def _account_startup_failed(self, error: Exception) -> None:
+        self._startup_error = error
 
     @staticmethod
     def _compute_startup_grace_timeout(timeout: float) -> float:
@@ -526,6 +538,7 @@ class GMStrategyBridge:
             runtime_stop_lock=self._runtime_stop_lock,
             account_id=self._account_id,
             connection_monitor=self.connection_monitor,
+            startup_failure_handler=self._account_startup_failed,
         )
 
         # 保存原始的 sys.argv，并临时替换为最小参数

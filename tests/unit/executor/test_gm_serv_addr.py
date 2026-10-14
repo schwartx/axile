@@ -104,11 +104,13 @@ _install_gm_stubs()
 from axile.executor.gm import gm_execute as gm_execute_module
 from axile.executor.gm.core import api_bridge as gm_api_bridge_module
 from axile.executor.gm.core import gm_strategy as gm_strategy_module
+from axile.executor.gm.core.api_bridge import GMApiBridge
 from axile.executor.gm.core.bridge_context import (
     clear_gm_strategy_runtime_context,
     get_gm_strategy_runtime_context,
     install_gm_strategy_runtime_context,
 )
+from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
 from axile.executor.gm.core.strategy_bridge import GMAuthenticationError, GMStrategyBridge
 from axile.executor.gm.gm_execute import GMExecutor
 from axile.executor.models.unified_input import GMAccountConfig
@@ -1035,8 +1037,8 @@ def test_gm_account_status_filters_identity_and_only_accepts_logged_in(monkeypat
     "operation,account_id,recovers",
     [
         ("get_cash", "account-id", True),
-        ("get_position", "account-id", True),
-        ("get_orders", "account-id", True),
+        ("get_position", "account-id", False),
+        ("get_orders", "account-id", False),
         ("current", None, False),
         ("get_cash", "other-account", False),
     ],
@@ -1049,7 +1051,9 @@ def test_account_bridge_access_recovers_only_current_account(monkeypatch, operat
     executor = _build_executor()
     executor.account_id = "account-id"
     executor._gm_config = object()
-    bridge = SimpleNamespace(call=lambda *_args, **_kwargs: [])
+    bridge = SimpleNamespace(
+        call=lambda request, **_kwargs: {"available": 0.0} if request.operation == "get_cash" else []
+    )
     monkeypatch.setattr(executor, "_ensure_strategy_bridge", lambda **_kwargs: bridge)
     monitor = connection_monitor(executor)
     observations = []
@@ -1057,3 +1061,148 @@ def test_account_bridge_access_recovers_only_current_account(monkeypatch, operat
     monitor.failed(RuntimeError("旧连接故障"))
     executor._call_bridge(SimpleNamespace(operation=operation, account_id=account_id))
     assert observations[-1].status == ("ok" if recovers else "error")
+
+
+@pytest.mark.parametrize("cash", [{}, None, {"account_id": "other-account", "available": 100}])
+def test_invalid_account_cash_fails_instead_of_publishing_zero_assets(monkeypatch, cash):
+    from types import SimpleNamespace
+
+    from axile.executor.connection_state import connection_error_scope, connection_monitor
+
+    executor = _build_executor()
+    executor.account_id = "wrong-account"
+    executor._gm_config = object()
+    bridge = SimpleNamespace(call=lambda request, **_kwargs: cash if request.operation == "get_cash" else [])
+    monkeypatch.setattr(executor, "_ensure_strategy_bridge", lambda **_kwargs: bridge)
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    with pytest.raises(RuntimeError, match="有效资金信息") as raised:
+        executor.get_account_assets()
+    assert connection_error_scope(raised.value) == "account_connection"
+    assert observations[-1].status == "error"
+    assert not any(item.status == "ok" for item in observations)
+
+
+def test_real_zero_balance_account_remains_valid(monkeypatch):
+    from types import SimpleNamespace
+
+    from axile.executor.connection_state import connection_monitor
+
+    executor = _build_executor()
+    executor.account_id = "valid-account"
+    executor._gm_config = object()
+    bridge = SimpleNamespace(
+        call=lambda request, **_kwargs: (
+            {"account_id": "valid-account", "available": 0.0} if request.operation == "get_cash" else []
+        )
+    )
+    monkeypatch.setattr(executor, "_ensure_strategy_bridge", lambda **_kwargs: bridge)
+    monitor = connection_monitor(executor)
+    observations = []
+    monitor.bind(observations.append)
+    monitor.failed(RuntimeError("旧连接错误"))
+    assert executor.get_account_assets().total_asset == 0
+    assert observations[-1].status == "ok"
+    assert observations[-1].error is None
+
+
+@pytest.fixture
+def account_startup(monkeypatch):
+    from axile.executor.connection_state import ConnectionMonitor
+
+    observations, errors, stops = [], [], []
+    monitor = ConnectionMonitor()
+    monitor.bind(observations.append)
+    install_gm_strategy_runtime_context(
+        dispatcher=GMCallbackDispatcher(),
+        ready_event=threading.Event(),
+        stop_event=threading.Event(),
+        stats={},
+        subscribe_symbols=[],
+        request_queue=queue.Queue(),
+        startup_state={},
+        runtime_stop_requested=threading.Event(),
+        runtime_stop_lock=threading.Lock(),
+        account_id="wanted",
+        connection_monitor=monitor,
+        startup_failure_handler=errors.append,
+    )
+    monkeypatch.setattr(gm_strategy_module, "timer", lambda *_args, **_kwargs: {"status": 0, "timer_id": 1})
+    monkeypatch.setattr(gm_strategy_module, "_stop_bridge_timer", lambda: stops.append("timer"))
+    monkeypatch.setattr(gm_strategy_module, "_request_soft_runtime_stop", lambda: stops.append("runtime"))
+    context = get_gm_strategy_runtime_context()
+    try:
+        yield context, observations, errors, stops
+    finally:
+        clear_gm_strategy_runtime_context()
+
+
+def test_gm_init_waits_for_explicit_initial_logged_in_state(account_startup, monkeypatch):
+    from unittest.mock import Mock
+
+    context, observations, errors, _ = account_startup
+    query = Mock(return_value={"state": 3})
+    monkeypatch.setattr(GMApiBridge, "get_account_status", query)
+    gm_strategy_module.init(None)
+    assert not context.ready_event.is_set()
+    assert observations == []
+    gm_strategy_module._process_bridge_requests(None)
+    assert context.ready_event.is_set()
+    assert observations[-1].status == "ok"
+    assert not errors
+    gm_strategy_module._process_bridge_requests(None)
+    query.assert_called_once_with("wanted")
+
+
+@pytest.mark.parametrize("state", [0, 1, 2])
+def test_gm_startup_pending_state_waits_for_matching_login_callback(account_startup, monkeypatch, state):
+    context, observations, errors, _ = account_startup
+    monkeypatch.setattr(GMApiBridge, "get_account_status", lambda _account_id: {"state": state})
+    gm_strategy_module.init(None)
+    gm_strategy_module._process_bridge_requests(None)
+    assert not context.ready_event.is_set()
+    assert observations == [] and not errors
+    gm_strategy_module.on_account_status(None, {"account_id": "foreign", "status": {"state": 3}})
+    assert not context.ready_event.is_set()
+    gm_strategy_module.on_account_status(None, {"account_id": "wanted", "status": {"state": 3}})
+    assert context.ready_event.is_set()
+    assert observations[-1].status == "ok"
+
+
+@pytest.mark.parametrize(
+    "status", [None, {"state": 4}, {"state": 5}, {"state": 6, "error": {"code": 12, "info": "账户拒绝登录"}}]
+)
+def test_gm_missing_or_disconnected_account_fails_startup(account_startup, monkeypatch, status):
+    from axile.executor.connection_state import connection_error_scope
+
+    context, observations, errors, stops = account_startup
+    monkeypatch.setattr(GMApiBridge, "get_account_status", lambda _account_id: status)
+    gm_strategy_module.init(None)
+    gm_strategy_module._process_bridge_requests(None)
+    assert not context.ready_event.is_set()
+    assert len(errors) == 1 and connection_error_scope(errors[0]) == "account_connection"
+    assert observations[-1].status == "error"
+    assert stops == ["timer", "runtime"]
+    if status is None:
+        assert "未找到" in str(errors[0])
+    else:
+        assert str(status) in str(errors[0])
+    # 失败已交还启动线程，迟到回调不能把失败的 bridge 复活。
+    gm_strategy_module.on_account_status(None, {"account_id": "wanted", "status": {"state": 3}})
+    assert not context.ready_event.is_set()
+    assert observations[-1].status == "error"
+
+
+def test_gm_account_verification_error_reaches_startup_owner(account_startup, monkeypatch):
+    context, observations, errors, _ = account_startup
+    error = RuntimeError("状态查询原始错误")
+
+    def fail(_account_id):
+        raise error
+
+    monkeypatch.setattr(GMApiBridge, "get_account_status", fail)
+    gm_strategy_module.init(None)
+    gm_strategy_module._process_bridge_requests(None)
+    assert errors == [error]
+    assert not context.ready_event.is_set()
+    assert observations[-1].error["technical_detail"] == "状态查询原始错误"

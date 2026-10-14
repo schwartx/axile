@@ -209,14 +209,59 @@ def init(_context: Context) -> None:
             _emit_runtime_log("info", f"订阅行情: {symbol}")
     _update_startup_phase("subscriptions_ready", subscribed_count=len(subscribe_symbols or []))
 
-    # 通知主线程策略已就绪
-    ready_event = None if context is None else context.ready_event
-    if ready_event:
-        ready_event.set()
-        _update_startup_phase("ready_signaled")
+    # init 回调可能发生在 SDK 账户加载之前；在事件泵的首次定时回调中验证账户。
+    if context is not None:
+        context.strategy_initialized = True
+        _update_startup_phase("account_validation_pending")
 
     # 记录初始化
-    _emit_runtime_log("info", "策略初始化完成，开始监听回调事件")
+    _emit_runtime_log("info", "策略初始化完成，等待交易账户登录确认")
+
+
+def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dict) -> None:
+    """只有已登录账户可以打开 bridge 的就绪门。"""
+    state = status.get("state", 0)
+    _update_startup_phase("account_status_checked", account_state=state)
+    if state == AccConnectionState.LOGGEDIN:
+        if context.connection_monitor is not None:
+            context.connection_monitor.succeeded()
+        if context.strategy_initialized:
+            context.ready_event.set()
+            _update_startup_phase("ready_signaled", account_state=state)
+    elif state in {AccConnectionState.DISCONNECTING, AccConnectionState.DISCONNECTED, AccConnectionState.ERROR}:
+        raise RuntimeError(f"GM 账户尚未登录，无法初始化: account_id={context.account_id}, status={status}")
+
+
+def _fail_account_startup(context: GMStrategyRuntimeContext, error: Exception) -> None:
+    """把 timer/callback 中的验证失败明确送回启动线程，不依赖 SDK 传播回调异常。"""
+    context.startup_failed = True
+    if context.connection_monitor is not None:
+        context.connection_monitor.failed(error)
+    _update_startup_phase("account_validation_failed", error=str(error))
+    if context.startup_failure_handler is not None:
+        context.startup_failure_handler(error)
+    _emit_runtime_log("error", str(error))
+    _stop_bridge_timer()
+    _request_soft_runtime_stop()
+
+
+def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
+    """读取初始状态一次，连接/登录中的后续结果由已有账户回调推进。"""
+    if context.startup_failed:
+        return False
+    if not context.account_id or context.ready_event.is_set():
+        return True
+    if not context.strategy_initialized or context.account_checked:
+        return False
+    context.account_checked = True
+    try:
+        status = GMApiBridge.get_account_status(context.account_id)
+        if status is None:
+            raise RuntimeError(f"GM 未找到配置的交易账户，请检查账户 ID 或访问权限: {context.account_id}")
+        _apply_account_startup_status(context, status)
+    except Exception as error:
+        _fail_account_startup(context, error)
+    return context.ready_event.is_set()
 
 
 def on_tick(_context: Context, tick: TickLikeDict2) -> None:
@@ -311,7 +356,15 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
     context = _get_bridge_context()
     if context is None or context.connection_monitor is None or account.get("account_id") != context.account_id:
         return
+    if getattr(context, "startup_failed", False):
+        return
     status = account.get("status") or {}
+    if getattr(context, "strategy_initialized", False) and not context.ready_event.is_set():
+        try:
+            _apply_account_startup_status(context, status)
+        except Exception as error:
+            _fail_account_startup(context, error)
+        return
     state = status.get("state")
     if state == AccConnectionState.LOGGEDIN:
         context.connection_monitor.succeeded()
@@ -356,6 +409,8 @@ def _process_bridge_requests(_context: Context) -> None:
 
     context = _get_bridge_context()
     if context is None:
+        return
+    if not _check_account_startup(context):
         return
     request_queue = context.request_queue
 
