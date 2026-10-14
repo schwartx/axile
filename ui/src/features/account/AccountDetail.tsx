@@ -1,4 +1,6 @@
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
+import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
@@ -381,13 +383,16 @@ export function AccountDetail({
     try {
       await refreshAccountAssets(accountId)
       if (generation !== request.generation) return
-      await Promise.all([refreshAssetSnapshots(), refreshComparison()])
+      await Promise.all([refreshAssetSnapshots(), refreshComparison(), account.refresh()])
       if (generation !== request.generation) return
       await onDashboardRefresh?.()
       if (generation !== request.generation) return
       toast('账户资产已刷新')
     } catch (e) {
-      if (generation === request.generation) setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
+      if (generation === request.generation) {
+        setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
+        void account.refresh()
+      }
     } finally {
       if (generation === request.generation) { request.busy = false; setRefreshingAssets(false) }
     }
@@ -395,9 +400,10 @@ export function AccountDetail({
 
   // 兼容尚未重启、dashboard 暂未携带 remark 的开发服务；详情到位后仍能展示已保存备注。
   const remark = account.data?.remark ?? item.remark
+  const connection = account.data?.connection ?? item.connection
 
   return (
-    <section>
+    <AccountConnectionContext.Provider value={!account.error && connection?.status === 'error'}><section>
       <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
       <ErrorNotice evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
       <ErrorNotice evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
@@ -444,6 +450,7 @@ export function AccountDetail({
               {channelLabel(item.trade_channel, item.market)}
             </Chip>
             {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
+            <AccountConnectionStatus accountId={accountId} connection={connection} />
           </div>
           {remark && (
             <OverflowText
@@ -697,7 +704,7 @@ export function AccountDetail({
               disabled={isExecuting || portfolioId == null}
               disabledReason={isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
               variant="compact"
-              onRecalculate={() => weights.recalculate().then(() => refreshComparison())}
+              onRecalculate={() => weights.recalculate().then(() => Promise.all([refreshComparison(), account.refresh()]))}
             />
             <Link
               to={`/accounts/${accountId}/holdings`}
@@ -956,7 +963,7 @@ export function AccountDetail({
           )
         })()}
       </Card>
-    </section>
+    </section></AccountConnectionContext.Provider>
   )
 }
 

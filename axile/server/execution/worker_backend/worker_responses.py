@@ -13,6 +13,7 @@ from typing import cast
 
 from loguru import logger
 
+from axile.executor.connection_state import connection_error_scope
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models.account import AccountContext
@@ -59,6 +60,7 @@ def _build_error_payload(exc: Exception) -> WorkerBackendErrorPayload:
         reason_code=getattr(exc, "reason_code", None),
         error_id=getattr(exc, "error_id", None),
         retryable=isinstance(exc, TimeoutError) or bool(getattr(exc, "requires_session_recovery", False)),
+        error_scope=connection_error_scope(exc),
     )
 
 

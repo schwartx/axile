@@ -1,8 +1,27 @@
 """连接验证阶段必须来自真实 SPI 回调，并保持原有初始化顺序。"""
 
+from datetime import datetime
+
 import pytest
 
+from axile.executor.algorithms.utils.clock import RealClock, get_default_clock, set_default_clock
+from axile.executor.ctp import connection_validation
 from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
+from tests.unit.executor.test_account_control_guard import _AdvancingClock
+
+
+@pytest.fixture(autouse=True)
+def _advance_validation_clock(monkeypatch):
+    # 仅加速 guard 的配额等待；目录查询线程和事件超时继续使用真实时钟。
+    guard_type = connection_validation.AccountControlGuard
+
+    def build_guard(**kwargs):
+        clock = get_default_clock()
+        if isinstance(clock, RealClock):
+            clock = _AdvancingClock(datetime(2026, 10, 13, 10, 0))
+        return guard_type(**kwargs, wait_clock=clock)
+
+    monkeypatch.setattr(connection_validation, "AccountControlGuard", build_guard)
 
 
 def _validation_broker(monkeypatch):
@@ -119,11 +138,7 @@ def test_broker_error_preserves_exact_original_text():
 
 
 def test_validation_applies_shared_throttle_to_actual_native_queries(monkeypatch):
-    from datetime import datetime
-
-    from axile.executor.algorithms.utils.clock import get_default_clock, set_default_clock
     from axile.executor.ctp import connection_validation
-    from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
     broker = _validation_broker(monkeypatch)
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: broker.executor)

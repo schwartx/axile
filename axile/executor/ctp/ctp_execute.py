@@ -27,6 +27,7 @@ from axile.executor.algorithms.utils import clock_now
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.catalog_execution import CatalogExecutionMixin
 from axile.executor.china_futures_session import is_within_possible_china_futures_session
+from axile.executor.connection_state import connection_error_scope, connection_monitor
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.combination import split_combination_position
 from axile.executor.ctp.converters import (
@@ -322,11 +323,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             f"已等待={waited_ms}ms；请求未受理、未自动重试"
         )
         if code == -2:
-            self._invalidate_connection(message)
-            raise CtpSessionRecoveryRequired(message, return_code=code, execution_error=f"{meaning}，请求未受理")
+            self._invalidate_connection(message, connection_failure=True)
+            error = CtpSessionRecoveryRequired(message, return_code=code, execution_error=f"{meaning}，请求未受理")
+            connection_monitor(self).failed(error)
+            raise error
         if code == -1:
-            self._invalidate_connection(message)
-        raise CtpRequestError(message, return_code=code, execution_error=f"{meaning}，请求未受理")
+            self._invalidate_connection(message, connection_failure=True)
+        error = CtpRequestError(message, return_code=code, execution_error=f"{meaning}，请求未受理")
+        if code == -1:
+            connection_monitor(self).failed(error)
+        raise error
 
     def _link_control_request(self, guard, rid, name, req) -> None:
         """在发送前登记有界关联，回调可先于同步调用返回。"""
@@ -393,8 +399,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _wait(self, stage, name):
         if not stage.done.wait(self._timeout):
-            self._invalidate_connection(f"{name}超时")
-            raise TimeoutError(f"{name}超时")
+            error = TimeoutError(f"{name}超时")
+            if stage is not self._settlement:
+                connection_monitor(self).failed(error)
+            self._invalidate_connection(error)
+            raise error
         if stage.error:
             raise stage.error
         self._catalog_progress(name)
@@ -510,20 +519,23 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         required = ("broker_id", "investor_id", "password", "td_front", "md_front", "app_id", "auth_code")
         missing = [x for x in required if not getattr(account_config, x, None)]
         if missing:
-            raise ValueError(f"CTP 配置缺少必填字段: {', '.join(missing)}")
+            error = ValueError(f"CTP 配置缺少必填字段: {', '.join(missing)}")
+            connection_monitor(self).failed(error)
+            raise error
         self._timeout = float(getattr(account_config, "query_timeout", 15))
         self._flow_dir = Path(tempfile.mkdtemp(prefix="axile-ctp-"))
         try:
             self._report_connection("trader_connection", "running")
             path = self._flow_dir / "trader"
             path.mkdir()
-            self._trader_api = td.CThostFtdcTraderApi.CreateFtdcTraderApi(str(path) + "/")
-            self._trader_spi = TraderSpi(self)
-            self._trader_api.RegisterSpi(self._trader_spi)
-            self._trader_api.RegisterFront(account_config.td_front)
-            self._trader_api.SubscribePrivateTopic(td.THOST_TERT_QUICK)
-            self._trader_api.SubscribePublicTopic(td.THOST_TERT_QUICK)
-            self._trader_api.Init()
+            with connection_monitor(self).connecting():
+                self._trader_api = td.CThostFtdcTraderApi.CreateFtdcTraderApi(str(path) + "/")
+                self._trader_spi = TraderSpi(self)
+                self._trader_api.RegisterSpi(self._trader_spi)
+                self._trader_api.RegisterFront(account_config.td_front)
+                self._trader_api.SubscribePrivateTopic(td.THOST_TERT_QUICK)
+                self._trader_api.SubscribePublicTopic(td.THOST_TERT_QUICK)
+                self._trader_api.Init()
             self._wait(self._auth, "认证")
             self._wait(self._login, "登录")
             self._report_connection("trader_login", "passed")
@@ -537,11 +549,12 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._report_connection("market_login", "running")
             path = self._flow_dir / "market"
             path.mkdir()
-            self._market_api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
-            self._market_spi = MarketSpi(self)
-            self._market_api.RegisterSpi(self._market_spi)
-            self._market_api.RegisterFront(account_config.md_front)
-            self._market_api.Init()
+            with connection_monitor(self).connecting():
+                self._market_api = md.CThostFtdcMdApi.CreateFtdcMdApi(str(path) + "/")
+                self._market_spi = MarketSpi(self)
+                self._market_api.RegisterSpi(self._market_spi)
+                self._market_api.RegisterFront(account_config.md_front)
+                self._market_api.Init()
             self._wait(self._md_login, "行情登录")
             self._report_connection("market_login", "passed")
             if not self._validation_catalog:
@@ -591,7 +604,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._finish_stage(self._login, info, "登录", request_id)
                 return
             if row is None or not str(row.TradingDay).isdigit() or len(str(row.TradingDay)) != 8:
-                self._invalidate_connection("交易登录缺少有效交易日")
+                self._invalidate_connection("交易登录缺少有效交易日", connection_failure=True)
                 return
             self._trading_day = str(row.TradingDay)
             self._front_id = int(row.FrontID)
@@ -647,7 +660,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._md_login.request_id = self._next_id()
                 self._check(self._market_api.ReqUserLogin(req, self._md_login.request_id), "行情登录")
         except Exception as e:
-            self._invalidate_connection(str(e))
+            connection_monitor(self).failed(e)
+            self._invalidate_connection(e)
 
     def _market_logged_in(self, row, info, request_id):
         with self._lock:
@@ -662,9 +676,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if not self._accept_stage(self._md_login, request_id):
                 return
             if not self._error(info, "行情登录") and str(getattr(row, "TradingDay", "")) != self._trading_day:
-                self._invalidate_connection("行情登录交易日与交易会话不一致")
+                self._invalidate_connection("行情登录交易日与交易会话不一致", connection_failure=True)
                 return
-            self._finish_stage(self._md_login, info, "行情登录", request_id)
+            if (
+                self._finish_stage(self._md_login, info, "行情登录", request_id)
+                and self._auth.done.is_set()
+                and self._auth.error is None
+                and self._login.done.is_set()
+                and self._login.error is None
+            ):
+                connection_monitor(self).succeeded()
 
     def _disconnected(self, kind, reason):
         with self._lock:
@@ -673,11 +694,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             else:
                 self._market_connected = False
             self._connection_error = f"CTP {kind}前置已断开"
-            self._invalidate_connection(f"CTP {kind}前置断线: {reason}")
+            self._invalidate_connection(f"CTP {kind}前置断线: {reason}", connection_failure=True)
 
-    def _invalidate_connection(self, reason):
+    def _invalidate_connection(self, reason, *, connection_failure=False):
         """永久撤销就绪状态；保留首个失效原因及其可读错误契约。"""
         with self._lock:
+            if self._closed:
+                return
             if not self._invalid_reason:
                 self._invalid_reason = str(reason)
                 self._connection_failure = CtpSessionRecoveryRequired(
@@ -688,6 +711,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     error_id=getattr(reason, "error_id", None),
                     reason_code=getattr(reason, "reason_code", None),
                 )
+                if connection_failure or (isinstance(reason, BaseException) and connection_error_scope(reason)):
+                    connection_monitor(self).failed(self._connection_failure)
             self._ready = False
             self._monitoring = False
             self._quotes.clear()
@@ -727,7 +752,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         try:
             self._send_trader_request(operation, name, req, before_send=lambda rid: setattr(stage, "request_id", rid))
         except Exception as e:
-            self._invalidate_connection(str(e))
+            if stage is not self._settlement:
+                connection_monitor(self).failed(e)
+            self._invalidate_connection(e)
 
     def _accept_stage(self, stage, request_id):
         accepted = (
@@ -756,6 +783,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 return False
             error = self._error(info, name)
             if error:
+                if stage is not self._settlement:
+                    connection_monitor(self).failed(error)
                 self._invalidate_connection(error)
                 return False
             stage.done.set()
@@ -1658,7 +1687,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if q.symbol not in self._subscriptions:
                 return
             if q.extra.get("trading_day") != self._trading_day:
-                self._invalidate_connection("行情交易日变化，请重建 CTP 会话")
+                self._invalidate_connection("行情交易日变化，请重建 CTP 会话", connection_failure=True)
                 return
             self._normalize_quote_time(q)
             q.extra["received_at"] = received_at
@@ -1913,6 +1942,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def close(self):
         """按行情、交易顺序幂等释放 API。"""
+        connection_monitor(self).close()
         self._instrument_provider.close()
         with self._lock:
             if self._closed:

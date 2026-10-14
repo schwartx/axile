@@ -9,6 +9,7 @@ from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils import clock_now
+from axile.executor.connection_state import connection_monitor
 from axile.executor.execution_query_runtime import ExecutionQueryRuntime, ExecutionQueryRuntimeBridge
 from axile.executor.execution_runtime import ExecutionRuntime, ExecutionRuntimeBindings
 from axile.executor.models.unified_input import AccountConfig, UnifiedStandardInput
@@ -53,6 +54,7 @@ class AbstractExecutorExecutionRuntimeHostMixin:
         executor._execution_query_runtime_bridge = ExecutionQueryRuntimeBridge(executor)
         executor._trading_calendar = None
         executor._channel_calendar_id = None
+        connection_monitor(executor)
         if account_config is not None:
             executor._initialize_connection(account_config)
 

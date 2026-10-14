@@ -53,6 +53,7 @@ class WorkerBackendErrorPayload:
     error_id: int | None = None
     technical_detail: str | None = None
     traceback: str | None = None
+    error_scope: str | None = None
 
 
 @dataclass(slots=True)
@@ -93,6 +94,7 @@ class WorkerBackendRequest:
     account_payload: dict[str, object]
     execution_id: str | None
     payload: dict[str, object]
+    connection_binding: dict[str, object] | None = None
 
     @classmethod
     def shutdown(cls, request_id: str, reason: str = "manager_shutdown") -> "WorkerBackendRequest":
@@ -173,3 +175,4 @@ class WorkerBackendResponse:
     cancel_unconfirmed: bool = False
     normalized_symbol_fields: dict[str, object] | None = None
     requires_worker_restart: bool = False
+    connection_snapshot: dict[str, object] | None = None

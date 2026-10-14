@@ -29,6 +29,7 @@ from axile.server.db.models.account_asset import (
     AccountAssetSnapshotPublic,
     AccountAssetSnapshotSource,
 )
+from axile.server.db.models.account_connection import AccountConnectionState
 from axile.server.db.models.account_control import (
     AccountControlAuditExecutionListPublic,
     AccountControlAuditExecutionPublic,
@@ -108,6 +109,7 @@ ExecuteRecord.model_rebuild()
 
 
 __all__ = [
+    "AccountConnectionState",
     "NotificationEvent",
     "SupplementGroup",
     "SupplementStep",

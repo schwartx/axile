@@ -984,3 +984,48 @@ def test_cleanup_stops_callback_monitoring_without_clearing_callbacks() -> None:
     assert events == ["stop_bridge"]
     assert executor._strategy_bridge is None
     assert executor._callback_monitoring is False
+
+
+def test_gm_1026_startup_reports_connection_failure_before_execution():
+    from axile.executor.connection_state import connection_error_scope, connection_observer_scope
+
+    observations = []
+    with connection_observer_scope(observations.append):
+        bridge = GMStrategyBridge(token="test", account_id="test", callback_dispatcher=object())
+
+    class UpdateTokenError(RuntimeError):
+        status = 1026
+
+    def fail(_filename):
+        raise UpdateTokenError("更新令牌错误 status=1026")
+
+    bridge._execute_strategy = fail
+    with pytest.raises(RuntimeError) as raised:
+        bridge.start(timeout=0.5)
+    assert connection_error_scope(raised.value) == "account_connection"
+    assert observations[-1].status == "error"
+    assert "1026" in observations[-1].error["technical_detail"]
+    assert "fail" in observations[-1].error["traceback"]
+
+
+def test_gm_account_status_filters_identity_and_only_accepts_logged_in(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from axile.executor.connection_state import ConnectionMonitor
+    from axile.executor.gm.core import gm_strategy
+
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+    context = SimpleNamespace(account_id="wanted", connection_monitor=monitor, stop_event=threading.Event())
+    monkeypatch.setattr(gm_strategy, "_get_bridge_context", lambda: context)
+    gm_strategy.on_account_status(None, {"account_id": "other", "status": {"state": 3}})
+    gm_strategy.on_account_status(None, {"account_id": "wanted", "status": {"state": 2}})
+    assert observations == []
+    gm_strategy.on_account_status(None, {"account_id": "wanted", "status": {"state": 3}})
+    assert observations[-1].status == "ok"
+    gm_strategy.on_trade_data_disconnected(None)
+    assert observations[-1].status == "error"
+    gm_strategy.on_account_status(None, {"account_id": "wanted", "status": {"state": 3}})
+    assert observations[-1].status == "ok" and observations[-1].error is None

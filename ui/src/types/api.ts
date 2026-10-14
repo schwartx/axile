@@ -160,7 +160,18 @@ export interface AccountRuntimeSync {
   synchronized_at: string | null
 }
 
+export interface AccountConnection {
+  status: 'unknown' | 'ok' | 'error'
+  observed_at: string | null
+  message: string | null
+}
+
+export interface AccountConnectionDetail extends AccountConnection {
+  error: Record<string, unknown> | null
+}
+
 export interface Account {
+  connection?: AccountConnection
   copied_from_account_id?: number | null
   copied_from_account_name?: string | null
   runtime_sync?: AccountRuntimeSync | null
@@ -344,6 +355,7 @@ export interface AccountControlPolicyEditorModel {
 
 /** 仪表盘聚合中的单账户项，对应 `AccountDashboardItemPublic`。 */
 export interface AccountDashboardItem {
+  connection?: AccountConnection
   account_id: number
   name: string
   remark: string | null

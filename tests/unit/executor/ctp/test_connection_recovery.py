@@ -603,3 +603,40 @@ def test_worker_retries_authentication_with_a_new_executor_after_not_initialized
         assert worker_state._resolve_executor(state, account) is current
     finally:
         replacement.executor.close()
+
+
+@pytest.mark.parametrize(
+    "operation,is_connection",
+    [
+        ("ReqAuthenticate", True),
+        ("ReqUserLogin", True),
+        ("ReqSettlementInfoConfirm", False),
+        ("ReqQryTradingAccount", False),
+    ],
+)
+def test_connection_status_does_not_absorb_business_startup_failures(monkeypatch, operation, is_connection):
+    from axile.executor.connection_state import connection_monitor
+
+    broker = ScriptedBroker(monkeypatch)
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    broker.errors[operation] = SimpleNamespace(ErrorID=3, ErrorMsg="柜台原文")
+    with pytest.raises(CtpRequestError):
+        broker.start()
+    assert any(item.status == "error" for item in observations) is is_connection
+
+
+def test_connection_status_reports_login_disconnect_and_ignores_active_close(monkeypatch):
+    from axile.executor.connection_state import connection_monitor
+
+    broker = ScriptedBroker(monkeypatch)
+    observations = []
+    connection_monitor(broker.executor).bind(observations.append)
+    executor = broker.start()
+    assert observations[-1].status == "ok"
+    broker.trader_spi.OnFrontDisconnected(4097)
+    assert observations[-1].status == "error"
+    executor.close()
+    count = len(observations)
+    broker.market_spi.OnFrontDisconnected(4097)
+    assert len(observations) == count

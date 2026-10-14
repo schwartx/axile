@@ -51,6 +51,10 @@ class _RouteSession:
         if self.account is not None and self.account.id is None:
             self.account.id = 1
 
+    async def execute(self, _statement: object) -> None:
+        """配置更新同时执行连接状态的条件覆盖；实体细节由持久化测试验证。"""
+        return None
+
     async def commit(self) -> None:
         return None
 

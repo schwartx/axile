@@ -12,6 +12,8 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
+from axile.executor.connection_state import ConnectionMonitor
+
 if TYPE_CHECKING:
     from axile.executor.gm.core.strategy_bridge import GMBridgeEventSink, GMBridgeRequest
 
@@ -58,6 +60,8 @@ class GMStrategyRuntimeContext:
     runtime_stop_requested: threading.Event
     runtime_stop_lock: threading.Lock
     timer_id: int = 0
+    account_id: str = ""
+    connection_monitor: ConnectionMonitor | None = None
 
 
 # 当前设计固定为“一账户一 worker 进程，一进程一条 GM bridge”。
@@ -76,6 +80,8 @@ def install_gm_strategy_runtime_context(
     startup_state: dict[str, GMStartupStateValue],
     runtime_stop_requested: threading.Event,
     runtime_stop_lock: threading.Lock,
+    account_id: str = "",
+    connection_monitor: ConnectionMonitor | None = None,
 ) -> None:
     """
     注册当前 bridge 线程对应的 GM 策略运行时上下文.
@@ -114,6 +120,8 @@ def install_gm_strategy_runtime_context(
         startup_state=startup_state,
         runtime_stop_requested=runtime_stop_requested,
         runtime_stop_lock=runtime_stop_lock,
+        account_id=account_id,
+        connection_monitor=connection_monitor,
     )
     _active_context = active_context
 

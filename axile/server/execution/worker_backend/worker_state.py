@@ -18,7 +18,9 @@ from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.connection_state import connection_observer_scope
 from axile.executor.termination import ExecutionTerminationController
+from axile.server.connection_state import ConnectionCollector
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.audit_sink import build_server_execution_audit_sink
 from axile.server.execution.execution_account_control import (
@@ -45,6 +47,7 @@ class _WorkerBackendState:
     requires_worker_restart: bool = False
     account_id: int | None = None
     config_signature: str | None = None
+    connection_collector: ConnectionCollector = field(default_factory=ConnectionCollector)
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     active_execution_id: str | None = None
     termination_event: threading.Event = field(default_factory=threading.Event)
@@ -114,6 +117,9 @@ def _close_executor(executor: object | None) -> None:
     """清理请求级状态并释放缓存执行器。"""
     if executor is None:
         return
+    monitor = getattr(executor, "_connection_monitor", None)
+    if monitor is not None:
+        monitor.close()
     finalize_error = None
     try:
         _finalize_executor(executor)
@@ -198,9 +204,11 @@ def _resolve_executor(
     state.executor = None
     state.account_id = None
     state.config_signature = None
-    state.executor = (
-        create_executor_instance(account) if initialize else create_executor_instance(account, initialize=False)
-    )
+    # 只在宿主构造账户执行器时绑定；用户函数自行构造的其他执行器不能污染本账户。
+    with connection_observer_scope(state.connection_collector.observe):
+        state.executor = (
+            create_executor_instance(account) if initialize else create_executor_instance(account, initialize=False)
+        )
     state.account_id = account.id
     state.config_signature = signature
     if expected_trading_day and requires_exact_trading_day:

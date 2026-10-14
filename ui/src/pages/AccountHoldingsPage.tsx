@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useParams } from 'react-router'
+import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AccountConnectionContext } from '@/lib/accountConnection'
 import { Card } from '@/components/ui/Card'
 import { Skeleton, SkeletonLines } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -78,7 +80,7 @@ export function AccountHoldingsPage() {
   const holdingsStale = !latestAssets || (positions.length === 0 && holdingsCount > 0)
 
   return (
-    <section>
+    <AccountConnectionContext.Provider value={!account.error && account.data?.connection?.status === 'error'}><section>
       <div className="flex flex-wrap items-baseline gap-3">
         <AccountPageTitle
           accountId={accountId}
@@ -87,6 +89,7 @@ export function AccountHoldingsPage() {
           channel={tradeChannel}
           market={item?.market ?? account.data?.market}
         />
+        <AccountConnectionStatus accountId={accountId} connection={account.data?.connection ?? item?.connection} />
       </div>
 
       <Card className="mt-4 px-6 py-5">
@@ -101,7 +104,7 @@ export function AccountHoldingsPage() {
             readError={weights.error}
             disabled={isExecutingStatus(running?.status) || portfolioId == null}
             disabledReason={isExecutingStatus(running?.status) ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
-            onRecalculate={() => void weights.recalculate()}
+            onRecalculate={() => void weights.recalculate().then(() => account.refresh())}
           />
         </div>
         {(!snapshots.data || !weights.data || !comparison.data) && (snapshots.loading || weights.loading || comparison.loading) ? (
@@ -141,6 +144,6 @@ export function AccountHoldingsPage() {
         <ErrorNotice evidence={accountEvidence} title="调仓计划读取失败" error={comparison.error} variant={comparison.data ? 'stale' : 'section'}
           updatedAt={comparison.updatedAt} onRetry={comparison.refresh} contextKey={accountId} />
       </Card>
-    </section>
+    </section></AccountConnectionContext.Provider>
   )
 }

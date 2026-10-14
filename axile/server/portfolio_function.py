@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from axile.common.function_contract import accepts_context
+from axile.executor.connection_state import connection_error_scope
 from axile.server.context import Context
 
 
@@ -23,6 +24,7 @@ class PortfolioFunctionError(ValueError):
         error_type: str | None = None,
         error_message: str | None = None,
         formatted_traceback: str | None = None,
+        error_scope: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_line: int | None = error_line
@@ -30,6 +32,7 @@ class PortfolioFunctionError(ValueError):
         self.error_type: str | None = error_type
         self.error_message: str | None = error_message
         self.formatted_traceback: str | None = formatted_traceback
+        self.error_scope = error_scope
 
 
 @dataclass(slots=True)
@@ -53,6 +56,7 @@ class PortfolioFunctionResult:
             "error_type": error.error_type,
             "error_message": error.error_message,
             "traceback": error.formatted_traceback,
+            "error_scope": error.error_scope,
         }
 
     @classmethod
@@ -71,6 +75,7 @@ class PortfolioFunctionResult:
                 error_type=str(payload.get("error_type") or "RuntimeError"),
                 error_message=str(payload.get("error_message") or message),
                 formatted_traceback=str(payload.get("traceback") or ""),
+                error_scope=cast("str | None", payload.get("error_scope")),
             ),
         )
 
@@ -95,6 +100,7 @@ def _error_from_exception(exc: BaseException) -> PortfolioFunctionError:
         error_type=type(exc).__name__,
         error_message=message,
         formatted_traceback=getattr(exc, "formatted_traceback", None) or "".join(traceback.format_exception(exc)),
+        error_scope=connection_error_scope(exc),
     )
 
 

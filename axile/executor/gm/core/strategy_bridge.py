@@ -26,6 +26,7 @@ from typing import Protocol, TypeAlias
 
 from loguru import logger
 
+from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor
 from axile.executor.gm.core.api_bridge import GMBridgeRequestPayload, GMSdkRequest, GMSubscribeSymbolsRequest
 from axile.executor.gm.core.bridge_context import (
     GMStartupHistoryEntry,
@@ -46,6 +47,9 @@ SignalHandler: TypeAlias = int | Callable[[int, FrameType | None], None] | None
 class GMBridgeStartupError(RuntimeError):
     """GM bridge 启动失败."""
 
+    execution_error: str
+    error_scope: str
+
 
 class GMAuthenticationError(GMBridgeStartupError):
     """GM token 无效或已失效."""
@@ -61,6 +65,7 @@ def _normalize_startup_error(error: Exception) -> GMBridgeStartupError:
     else:
         normalized = GMBridgeStartupError(f"GM bridge 启动失败: {message or error.__class__.__name__}")
         normalized.execution_error = "GM 启动失败，具体原因未确认"
+    normalized.error_scope = CONNECTION_ERROR_SCOPE
     return normalized
 
 
@@ -169,6 +174,7 @@ class GMStrategyBridge:
         self._strategy_id = strategy_id or f"axile_callback_{int(time.time())}"
         self._serv_addr = serv_addr
         self._subscribe_symbols = subscribe_symbols or []
+        self.connection_monitor = ConnectionMonitor()
 
         # 线程控制
         self._running = False
@@ -256,6 +262,7 @@ class GMStrategyBridge:
                 return True
 
         logger.error(f"StrategyBridge 启动超时 ({timeout}秒), {self._build_startup_timeout_summary()}")
+        self.connection_monitor.failed(TimeoutError("GM 策略桥启动超时"))
         self.stop()
         return False
 
@@ -493,11 +500,15 @@ class GMStrategyBridge:
         except Exception as e:
             self._stats["errors"] += 1
             self._startup_error = e
+            if not self._stop_event.is_set():
+                self.connection_monitor.failed(e)
             self._update_startup_state("thread_error", error=str(e))
             logger.opt(exception=e).error("策略框架运行出错: {}", e)
         finally:
             self._update_startup_state("thread_exiting")
             self._running = False
+            if not self._stop_event.is_set() and self._startup_error is None:
+                self.connection_monitor.failed(RuntimeError("GM 策略运行时意外停止"))
 
     def _execute_strategy(self, strategy_file: str) -> None:
         """执行策略文件."""
@@ -513,6 +524,8 @@ class GMStrategyBridge:
             startup_state=self._startup_state,
             runtime_stop_requested=self._runtime_stop_requested,
             runtime_stop_lock=self._runtime_stop_lock,
+            account_id=self._account_id,
+            connection_monitor=self.connection_monitor,
         )
 
         # 保存原始的 sys.argv，并临时替换为最小参数

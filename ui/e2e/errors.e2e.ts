@@ -521,3 +521,59 @@ test('a comparison-only failure has its own error and retry without hiding succe
   await notice.getByRole('button', { name: '重试：调仓计划读取失败' }).click()
   await expect.poll(() => reads).toBe(2)
 })
+
+
+test('账户连接标识读取后端三态，连接错误集中展示，业务错误保留原位置', async ({ page }) => {
+  await defaults(page)
+  let state: 'unknown' | 'ok' | 'error' = 'unknown'
+  let business = false
+  const connection = () => ({ status: state, observed_at: state === 'unknown' ? null : '2026-10-14T14:47:18', message: state === 'error' ? '更新令牌错误' : null })
+  await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, connection: connection() } }))
+  await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...connection(), error: state === 'error' ? { technical_detail: raw('GM1026'), traceback: raw('GM1026') } : null } }))
+  await page.route('**/api/v1/account/7/assets/refresh', route => {
+    if (business) return route.fulfill({ status: 502, json: { detail: { message: '资金查询业务拒绝' } } })
+    state = 'error'
+    return route.fulfill({ status: 502, json: { detail: { message: '更新令牌错误', error_scope: 'account_connection' } } })
+  })
+  await page.goto('/e2e/errors.html?mode=account')
+  await expect(page.getByRole('button', { name: '账户连通状态：未知' })).toBeVisible()
+  await page.getByRole('button', { name: '刷新账户资产' }).click()
+  await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: '账户资产刷新失败' })).toHaveCount(0)
+  await page.getByRole('button', { name: '账户连通状态：异常' }).click()
+  const modal = page.getByRole('dialog', { name: '账户连接详情' })
+  await expect(modal).toContainText('尾部根因-GM1026')
+  await modal.getByRole('button', { name: '复制错误信息' }).click()
+  expect(await copied(page)).toContain('尾部根因-GM1026')
+  await modal.getByRole('button', { name: '关闭详情' }).click()
+  state = 'ok'
+  business = true
+  await page.reload()
+  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+  await page.getByRole('button', { name: '刷新账户资产' }).click()
+  await expect(page.getByText('资金查询业务拒绝', { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+})
+
+test('目标计算中的连接错误归到账户，脚本错误不改变连接标识', async ({ page }) => {
+  await defaults(page)
+  let failed = false
+  let business = false
+  await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, connection: { status: failed ? 'error' : 'ok', observed_at: '2026-10-14T14:47:18', message: failed ? '更新令牌错误' : null } } }))
+  await page.route('**/api/v1/account/7/target_snapshot/refresh', route => {
+    if (business) return route.fulfill({ status: 500, json: { detail: { message: '脚本第2行业务错误' } } })
+    failed = true
+    return route.fulfill({ status: 500, json: { detail: { message: '更新令牌错误', error_scope: 'account_connection' } } })
+  })
+  await page.goto('/e2e/errors.html?mode=account')
+  await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
+  await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
+  await expect(page.getByText('因账户连接异常无法计算', { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(page.getByRole('status').filter({ hasText: '更新令牌错误' })).toHaveCount(0)
+  failed = false
+  business = true
+  await page.reload()
+  await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
+  await expect(page.getByText('脚本第2行业务错误', { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+})

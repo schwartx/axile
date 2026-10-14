@@ -13,6 +13,7 @@ from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATI
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.account_settings import SETTINGS_FIELDS, AccountSettings, SupplementSettings
@@ -190,6 +191,12 @@ class Account(SQLModel, AsyncAttrs, table=True):
         )
     )
 
+    connection_state: AccountConnectionState | None = Relationship(
+        sa_relationship=relationship(
+            "AccountConnectionState", uselist=False, lazy="selectin", cascade="all, delete-orphan", single_parent=True
+        )
+    )
+
     settings: AccountSettings = Relationship(
         sa_relationship=relationship(
             "AccountSettings", uselist=False, lazy="selectin", cascade="all, delete-orphan", single_parent=True
@@ -311,6 +318,7 @@ class AccountPublic(SQLModel):
     created_at: str
     runtime_sync: AccountRuntimeSyncPublic | None = None
     notification_state: AccountNotificationStatePublic | None = None
+    connection: AccountConnectionPublic = Field(default_factory=AccountConnectionPublic)
 
     @computed_field
     @property
@@ -413,6 +421,7 @@ class AccountDashboardItemPublic(SQLModel):
     """
 
     account_id: int
+    connection: AccountConnectionPublic = Field(default_factory=AccountConnectionPublic)
     name: str
     remark: Optional[str] = None
     market: str

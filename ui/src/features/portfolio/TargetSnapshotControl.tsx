@@ -1,4 +1,6 @@
 import type { ErrorEvidence } from '@/lib/errorInfo'
+import { useContext } from 'react'
+import { AccountConnectionContext, isAccountConnectionError } from '@/lib/accountConnection'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { RefreshCw } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
@@ -34,6 +36,7 @@ export function TargetSnapshotControl({
   onRecalculate: () => void
 }) {
   const failure = error ?? readError
+  const accountBlocked = useContext(AccountConnectionContext) && isAccountConnectionError(failure)
   const tooltip = disabledReason ?? (recalculating ? '正在重新计算目标权重' : '重新计算当前目标权重')
   const meta = loading && !snapshot
     ? '正在读取目标权重…'
@@ -69,7 +72,7 @@ export function TargetSnapshotControl({
       <div className="min-w-0"><div className="flex min-w-0 items-center gap-0.5">
         <Tooltip content={meta}>
           <span className={`min-w-0 text-[13px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
-            <InkRewrite text={compactMeta} tone="label" />
+            <InkRewrite text={accountBlocked ? '因账户连接异常无法计算' : compactMeta} tone="label" />
           </span>
         </Tooltip>
         {refreshButton}
@@ -81,7 +84,7 @@ export function TargetSnapshotControl({
     <div>
       <div className="flex min-w-0 items-center justify-between gap-3">
         <div title={meta} className={`min-w-0 text-[13.5px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
-          <InkRewrite text={meta} tone="label" />
+          <InkRewrite text={accountBlocked ? '因账户连接异常无法计算' : meta} tone="label" />
         </div>
         {refreshButton}
       </div>

@@ -16,7 +16,9 @@ _remotes: dict[int, RemoteMonitor] = {}
 _lock = Lock()
 
 
-def serve(connection: Connection, account_id: int) -> None:
+def serve(
+    connection: Connection, account_id: int, connection_snapshot: Callable[[], dict[str, object] | None] | None = None
+) -> None:
     """Worker 监控线程只读取当前进程的 guard。"""
     try:
         while connection.recv() is not None:
@@ -25,7 +27,7 @@ def serve(connection: Connection, account_id: int) -> None:
             except Exception:
                 logger.exception("worker 流控快照读取失败")
                 frame = {"monitor_error": True}
-            connection.send(frame)
+            connection.send({"flow": frame, "connection": connection_snapshot()} if connection_snapshot else frame)
     except (EOFError, OSError):
         pass
     finally:
@@ -58,6 +60,11 @@ class RemoteMonitor:
                     if self.stop.is_set():
                         return
                 frame = self.connection.recv()
+                if isinstance(frame, dict) and "flow" in frame:
+                    from axile.server.connection_state import consume_connection_snapshot
+
+                    consume_connection_snapshot(frame.get("connection"))
+                    frame = frame["flow"]
                 if frame is None or not frame.get("monitor_error"):
                     self.frame = frame
                     self.sampled_at_ms = clock_now_ms()

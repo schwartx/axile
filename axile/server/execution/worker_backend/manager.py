@@ -21,7 +21,8 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
 from axile.server.account_control.ipc import RemoteMonitor
-from axile.server.db.models.account import AccountContext
+from axile.server.connection_state import ConnectionBinding
+from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
@@ -50,6 +51,7 @@ class WorkerBackendExecutionError(RuntimeError):
         retryable: bool = False,
         technical_detail: str | None = None,
         formatted_traceback: str | None = None,
+        error_scope: str | None = None,
     ) -> None:
         """保留 IPC 原文、traceback 与机器码，不从原文推断业务状态。"""
         super().__init__(message)
@@ -59,6 +61,7 @@ class WorkerBackendExecutionError(RuntimeError):
         self.retryable = retryable
         self.technical_detail = technical_detail
         self.formatted_traceback = formatted_traceback
+        self.error_scope = error_scope
 
 
 class WorkerBackendTimeoutError(WorkerBackendExecutionError):
@@ -143,6 +146,7 @@ class _WorkerBackendHandle:
     retired: bool = False
     catalog: CatalogSession | None = None
     monitor: RemoteMonitor | None = None
+    connection_binding: ConnectionBinding | None = None
 
 
 class WorkerBackendManager:
@@ -421,6 +425,24 @@ class WorkerBackendManager:
             self._workers[account_id] = handle
             return handle
 
+    @staticmethod
+    def _bind_connection_request(handle: _WorkerBackendHandle, request: WorkerBackendRequest) -> AccountSnapshot:
+        """连接观察绑定到当前配置和 worker，不让重试携带已退役实例的令牌。"""
+        from dataclasses import asdict
+
+        from axile.server.connection_state import begin_connection_instance, connection_config_key
+        from axile.server.db.models.account import AccountSnapshot
+
+        account = AccountSnapshot.model_validate(request.account_payload)
+        key = connection_config_key(account.trade_channel, account.account_config)
+        binding = getattr(handle, "connection_binding", None)
+        if binding is None or binding.config_key != key:
+            handle.connection_binding = begin_connection_instance(account)
+        request.connection_binding = (
+            asdict(handle.connection_binding) if handle.connection_binding is not None else None
+        )
+        return account
+
     def _request_blocking(
         self,
         account_id: int,
@@ -460,12 +482,12 @@ class WorkerBackendManager:
                 if handle.retired:
                     continue
                 if request.account_payload:
-                    from axile.server.db.models.account import AccountSnapshot
+                    account_snapshot = self._bind_connection_request(handle, request)
 
                     with self._lock:
                         known_account = account_id in self._catalog_accounts
                     if not known_account:
-                        self.configure_catalog_account(AccountSnapshot.model_validate(request.account_payload))
+                        self.configure_catalog_account(account_snapshot)
                     if request.command in {"execute_trade", "empty_positions"}:
                         self._record_catalog_execution(account_id)
                 try:
@@ -481,6 +503,9 @@ class WorkerBackendManager:
                         raise WorkerBackendExecutionError("worker backend 返回了未知响应类型")
                     if response.request_id != request.request_id:
                         raise WorkerBackendExecutionError("worker backend 返回了不匹配的 request_id")
+                    from axile.server.connection_state import consume_connection_snapshot
+
+                    consume_connection_snapshot(getattr(response, "connection_snapshot", None))
                     if self._requires_ctp_session_recovery(response):
                         self._force_drop_worker(account_id, handle)
             break
@@ -636,6 +661,7 @@ class WorkerBackendManager:
                 retryable=error.retryable if error else False,
                 technical_detail=getattr(error, "technical_detail", None),
                 formatted_traceback=getattr(error, "traceback", None),
+                error_scope=getattr(error, "error_scope", None),
             )
         return response.output_payload
 
@@ -667,6 +693,7 @@ class WorkerBackendManager:
                 retryable=getattr(response.error, "retryable", False),
                 technical_detail=getattr(response.error, "technical_detail", None),
                 formatted_traceback=getattr(response.error, "traceback", None),
+                error_scope=getattr(response.error, "error_scope", None),
             )
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
@@ -704,6 +731,7 @@ class WorkerBackendManager:
                 retryable=getattr(response.error, "retryable", False),
                 technical_detail=getattr(response.error, "technical_detail", None),
                 formatted_traceback=getattr(response.error, "traceback", None),
+                error_scope=getattr(response.error, "error_scope", None),
             )
         try:
             result = PortfolioFunctionResult.from_payload(response.output_payload)

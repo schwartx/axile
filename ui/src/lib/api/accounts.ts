@@ -3,6 +3,7 @@ import { apiGet, apiSend } from '@/lib/api/client'
 import type { CostSummary, CostTrade } from '@/features/history/costs'
 import type {
   Account,
+  AccountConnectionDetail,
   AccountRuntimeSync,
   AccountDashboard,
   AccountRebalancePlan,
@@ -15,6 +16,11 @@ import type {
   PortfolioAccountList,
   TargetWeightSnapshot,
 } from '@/types/api'
+
+/** 只读最新连接观察，绝不触发 SDK。 */
+export function getAccountConnection(id: number, signal?: AbortSignal): Promise<AccountConnectionDetail> {
+  return apiGet(`/account/${id}/connection`, signal)
+}
 
 /** 账户写入载荷；凭证只能从表单写入，绝不会存在于读取模型中。 */
 export type AccountUpdatePayload = Partial<Account> & {

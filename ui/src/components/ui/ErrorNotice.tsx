@@ -8,6 +8,7 @@ import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { errorInfo, type ErrorEvidence, type ErrorInfo } from '@/lib/errorInfo'
 import { timeAgo } from '@/lib/format'
+import { AccountConnectionContext, isAccountConnectionError } from '@/lib/accountConnection'
 
 export type ErrorNoticeVariant = 'section' | 'compact' | 'mutation' | 'stale'
 
@@ -35,7 +36,8 @@ export function ErrorNotice({
 }: ErrorNoticeProps) {
   const inModal = useContext(ModalContentContext)
   const inlineDetails = embedded || inModal
-  const hasError = error != null
+  const accountErrorHandled = useContext(AccountConnectionContext)
+  const hasError = error != null && !(accountErrorHandled && isAccountConnectionError(error))
   const current = useMemo(() => hasError ? errorInfo(error) : null, [error, hasError])
   const [retained, setRetained] = useState<ErrorInfo | null>(current)
   const [selection, setSelection] = useState<{ title: string; info: ErrorInfo } | null>(null)

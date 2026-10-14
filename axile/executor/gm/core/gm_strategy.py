@@ -20,6 +20,7 @@ from gm.model.storage import Context  # type: ignore
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.gm.common import (
+    AccConnectionState,
     _build_gm_trade_id,
     convert_gm_order_type_to_type,
     convert_gm_side_to_direction,
@@ -307,6 +308,15 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
     if _is_stopped():
         return
     _emit_runtime_log("info", f"账户状态更新: {account}")
+    context = _get_bridge_context()
+    if context is None or context.connection_monitor is None or account.get("account_id") != context.account_id:
+        return
+    status = account.get("status") or {}
+    state = status.get("state")
+    if state == AccConnectionState.LOGGEDIN:
+        context.connection_monitor.succeeded()
+    elif state in {AccConnectionState.ERROR, AccConnectionState.DISCONNECTED}:
+        context.connection_monitor.failed(RuntimeError(f"账户连接异常: {status}"))
 
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:
@@ -332,6 +342,9 @@ def on_trade_data_disconnected(_context: Context) -> None:
     if _is_stopped():
         return
     _emit_runtime_log("warning", "交易通道已断开")
+    context = _get_bridge_context()
+    if context is not None and context.connection_monitor is not None:
+        context.connection_monitor.failed(ConnectionError("交易通道已断开"))
 
 
 def _process_bridge_requests(_context: Context) -> None:

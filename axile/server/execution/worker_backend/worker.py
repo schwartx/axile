@@ -507,13 +507,18 @@ def run_worker_backend_loop(
     account_id : int
         该 worker 绑定的账户标识。
     """
+    from axile.server.connection_state import ConnectionBinding, ConnectionCollector
+
+    state = _WorkerBackendState(account_id=account_id)
     if monitor_connection is not None:
         from axile.server.account_control.ipc import serve
 
         threading.Thread(
-            target=serve, args=(monitor_connection, account_id), daemon=True, name=f"axile-worker-monitor-{account_id}"
+            target=serve,
+            args=(monitor_connection, account_id, lambda: state.connection_collector.snapshot()),
+            daemon=True,
+            name=f"axile-worker-monitor-{account_id}",
         ).start()
-    state = _WorkerBackendState(account_id=account_id)
     catalog = RemoteCatalogProvider(catalog_connection) if catalog_connection is not None else None
     state.catalog_provider = catalog
     control_thread = threading.Thread(
@@ -538,7 +543,19 @@ def run_worker_backend_loop(
             current_request = cast(WorkerBackendRequest, raw_request)
             if catalog is not None:
                 catalog.request_id = current_request.request_id
+            binding = (
+                ConnectionBinding(
+                    account_id=int(str(current_request.connection_binding["account_id"])),
+                    config_key=str(current_request.connection_binding["config_key"]),
+                    instance_id=str(current_request.connection_binding["instance_id"]),
+                )
+                if current_request.connection_binding
+                else None
+            )
+            if state.connection_collector.binding != binding:
+                state.connection_collector = ConnectionCollector(binding)
             response = _handle_worker_request(current_request, state)
+            response.connection_snapshot = state.connection_collector.snapshot()
             response.requires_worker_restart = (
                 response.requires_worker_restart
                 or state.requires_worker_restart

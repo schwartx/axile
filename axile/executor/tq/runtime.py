@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Literal, TypeVar, cast
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
+from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.instrument_catalog_records import EXCHANGES, Instrument, normalize_catalog_symbol
 from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
@@ -107,7 +108,14 @@ class _QuoteSubscription:
 class TQRuntime:
     """TqApi 单线程运行时与同步命令桥."""
 
-    def __init__(self, api_factory: Callable[[], object], *, command_timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_factory: Callable[[], object],
+        *,
+        command_timeout: float = 30.0,
+        connection: ConnectionMonitor | None = None,
+    ) -> None:
+        self._connection = connection or ConnectionMonitor()
         self._api_factory = api_factory
         self._command_timeout = command_timeout
         self._commands: queue.Queue[_Command | None] = queue.Queue()
@@ -128,7 +136,10 @@ class TQRuntime:
         self._thread = threading.Thread(target=self._run, name="axile-tqsdk-runtime", daemon=True)
         self._thread.start()
         if not self._ready.wait(command_timeout):
-            raise TimeoutError("TqSdk 运行时初始化超时")
+            error = TimeoutError("TqSdk 运行时初始化超时")
+            self._connection.failed(error)
+            self._connection.close()
+            raise error
         if self._startup_error is not None:
             raise RuntimeError(f"TqSdk 运行时初始化失败: {self._startup_error}") from self._startup_error
 
@@ -373,7 +384,12 @@ class TQRuntime:
 
     def _run(self) -> None:
         try:
-            api = self._api_factory()
+            try:
+                api = self._api_factory()
+            except BaseException as exc:
+                self._connection.failed(exc)
+                raise
+            self._connection.succeeded()
             self._api = api
             self._resolver = self._build_catalog(api)
         except BaseException as exc:  # noqa: BLE001 - 必须把 owner thread 初始化错误交给调用方
@@ -412,6 +428,7 @@ class TQRuntime:
                     raise
         except BaseException as exc:  # noqa: BLE001 - 保存事件泵异常供同步调用方读取
             self._runtime_error = exc
+            self._connection.failed(exc)
         finally:
             self._shutdown(api)
 

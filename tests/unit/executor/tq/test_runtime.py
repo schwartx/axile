@@ -482,3 +482,33 @@ def test_cached_snapshot_does_not_queue_behind_owner(quote_runtime: TQRuntime) -
         finally:
             release.set()
         blocking.result(timeout=1)
+
+
+def test_connection_observer_ignores_command_errors_and_reports_event_pump_stop():
+    from axile.executor.connection_state import ConnectionMonitor, connection_error_scope
+
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+    runtime = TQRuntime(FakeApi, connection=monitor)
+    try:
+        assert observations[-1].status == "ok"
+        with pytest.raises(RuntimeError) as raised:
+            runtime.call(lambda _api: (_ for _ in ()).throw(ValueError("普通查询拒绝")))
+        assert connection_error_scope(raised.value) is None
+        assert observations[-1].status == "ok"
+    finally:
+        runtime.close()
+    assert observations[-1].status == "ok"
+
+    class BrokenApi(FakeApi):
+        def wait_update(self, *, deadline):
+            raise RuntimeError("后台事件泵中断")
+
+    runtime = TQRuntime(BrokenApi, connection=monitor)
+    deadline = time.monotonic() + 2
+    while runtime.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert observations[-1].status == "error"
+    assert "事件泵中断" in observations[-1].error["technical_detail"]
+    runtime.close()

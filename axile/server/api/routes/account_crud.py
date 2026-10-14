@@ -39,6 +39,7 @@ from axile.server.db.models import (
     PortfolioAccountListPublic,
     PortfolioAccountPublic,
 )
+from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.performance import PerformanceSummary
 from axile.server.execution.account_runtime_sync import enqueue_account_runtime_sync, reconcile_account_runtime
@@ -80,6 +81,8 @@ def _account_public(account: Account) -> AccountPublic:
     """将持久化账户转换为包含连接编辑值的读取 DTO。"""
     # ``AccountPublic`` 有从凭证派生的摘要字段，并不属于 ORM 模型；先补全输入
     # 再校验，避免 Pydantic 在响应构造阶段把已提交的更新误报为 500。
+    from axile.server.connection_state import public_connection
+
     return AccountPublic.model_validate(
         {
             name: getattr(account, name)
@@ -91,6 +94,7 @@ def _account_public(account: Account) -> AccountPublic:
                 "feishu_configured",
                 "runtime_sync",
                 "notification_state",
+                "connection",
             }
         }
         | {
@@ -102,6 +106,7 @@ def _account_public(account: Account) -> AccountPublic:
             },
             "feishu_configured": bool(account.feishu_key),
             "notification_state": account.notification_state,
+            "connection": public_connection(account),
         }
     )
 
@@ -465,6 +470,8 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
     ``previous_close`` 是该观测日之前的绩效日末，供卡片用当前权益算日涨跌。
     执行记录、资产、目标与绩效均批量读取，避免逐账户查询。
     """
+    from axile.server.connection_state import public_connection
+
     accounts = (await session.execute(select(Account))).scalars().all()
     bindings = await get_portfolios_every_account(session)
 
@@ -573,6 +580,7 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
                 holdings_count=holdings_count,
                 position_weights=position_weights,
                 performance=performance,
+                connection=public_connection(account),
                 asset_observed_at=latest_snapshot.created_at if latest_snapshot is not None else None,
                 previous_close=previous_close,
                 last_is_success=latest.is_success if latest is not None else None,
@@ -612,6 +620,14 @@ async def delete_account(session: SessionDep, sched: SchedDep, account_id: int) 
 async def account_info(session: SessionDep, account_id: int) -> AccountPublic:
     """获取账户详情."""
     return _account_public(await _get_account_or_404(session, account_id))
+
+
+@router.get("/{account_id}/connection", response_model=AccountConnectionDetail)
+async def account_connection(session: SessionDep, account_id: int) -> AccountConnectionDetail:
+    """只读取最新连接结果及完整详情，不触发 SDK。"""
+    from axile.server.connection_state import public_connection
+
+    return cast(AccountConnectionDetail, public_connection(await _get_account_or_404(session, account_id), detail=True))
 
 
 @router.get(
@@ -792,6 +808,11 @@ async def _update_account(
             )
         await _sync_portfolio_binding_update(session, db_account, account_id, data)
         db_account.sqlmodel_update(data)
+
+        from axile.server.connection_state import reset_connection_for_config
+
+        if "account_config" in data or "trade_channel" in data:
+            await reset_connection_for_config(session, db_account)
 
         session.add(db_account)
         await enqueue_account_runtime_sync(session, account_id, reset_worker=runtime_changed)

@@ -34,6 +34,7 @@ from axile.channels.schedule_clock import CN_STOCK_WINDOWS, is_within_schedule_w
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.connection_state import connection_monitor
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.gm.common import (
     convert_gm_order_to_unified,
@@ -151,7 +152,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             terminal_path = account_config.terminal_path
             if terminal_path is None:
                 raise RuntimeError("GM terminal 模式缺少终端目录")
-            self.just_started = self._start_gm_desktop_if_not(terminal_path)
+            with connection_monitor(self).connecting():
+                self.just_started = self._start_gm_desktop_if_not(terminal_path)
 
         logger.success(f"账户 {self.account_id} 初始化完成，GM runtime 将通过 bridge 懒启动")
 
@@ -286,8 +288,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             serv_addr=self._gm_config.serv_addr,
             subscribe_symbols=gm_symbols,
         )
+        bridge.connection_monitor = connection_monitor(self)
         if not bridge.start(timeout=timeout):
-            raise RuntimeError("GM bridge 启动失败")
+            error = RuntimeError("GM bridge 启动失败")
+            connection_monitor(self).failed(error)
+            raise error
         self._strategy_bridge = bridge
         self._callback_monitoring = True
         return self._strategy_bridge
@@ -331,6 +336,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def stop(self) -> None:
         """停止回调客户端并清理资源."""
+        connection_monitor(self).close()
         self.stop_callback_monitoring()
         self._callback_dispatcher.clear_all_callbacks()
         logger.info("执行器已停止")

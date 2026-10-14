@@ -15,6 +15,7 @@ from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.catalog_execution import CatalogExecutionMixin
 from axile.executor.china_futures_session import is_within_possible_china_futures_session
+from axile.executor.connection_state import connection_monitor
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
 from axile.executor.instrument_catalog import InstrumentCatalogProvider
@@ -193,7 +194,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _initialize_connection(self, account_config: AccountConfig) -> None:
         if not isinstance(account_config, TQAccountConfig):
             raise TypeError("TQExecutor requires TQAccountConfig")
-        runtime = TQRuntime(lambda: self._build_api(account_config))
+        runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
         self._runtime = runtime
         self._instrument_provider.bind(runtime.query_catalog, channel="tq")
@@ -704,6 +705,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
     def close(self) -> None:
         """关闭 TqSdk owner thread 与 API."""
+        connection_monitor(self).close()
         if self._closed:
             return
         self._closed = True

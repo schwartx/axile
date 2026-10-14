@@ -7,6 +7,10 @@ import math
 import traceback
 from typing import Any
 
+from pydantic import BaseModel
+
+from axile.executor.connection_state import connection_error_scope
+
 
 def _finite_error_values(value: Any) -> Any:
     """非有限浮点数也不属于 JSON 值，保留其原始字符串。"""
@@ -21,7 +25,14 @@ def _finite_error_values(value: Any) -> Any:
 
 def json_error_value(value: Any) -> Any:
     """保留全部字段，JSON 不支持的异常值使用其原始字符串。"""
-    return json.loads(json.dumps(_finite_error_values(value), default=str, ensure_ascii=False, allow_nan=False))
+    return json.loads(
+        json.dumps(
+            _finite_error_values(value),
+            default=lambda item: item.model_dump(mode="json") if isinstance(item, BaseModel) else str(item),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    )
 
 
 def exception_details(exc: BaseException, message: str | None = None) -> dict[str, object]:
@@ -35,6 +46,9 @@ def exception_details(exc: BaseException, message: str | None = None) -> dict[st
         "traceback": trace,
         "exception_type": type(exc).__name__,
     }
+    scope = connection_error_scope(exc)
+    if scope is not None:
+        result["error_scope"] = scope
     code = getattr(exc, "reason_code", None)
     if code is not None:
         result["code"] = code
