@@ -3,9 +3,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from shutil import copyfile
 from tempfile import TemporaryDirectory
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
@@ -23,16 +25,27 @@ from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionS
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
 
 
+@pytest.fixture(scope="module")
+def schema_template(tmp_path_factory):
+    """只共享已关闭的空库文件，各用例仍拥有独立数据库和连接。"""
+    path = tmp_path_factory.mktemp("supplement-schema") / "template.db"
+    engine = sa.create_engine(f"sqlite:///{path}")
+    try:
+        SQLModel.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+    return path
+
+
 def open_moment(channel, moment):
     return CalendarDayDecision(channel=str(channel), day=moment.date(), status=CalendarDecisionStatus.NOT_REQUIRED)
 
 
 @asynccontextmanager
-async def database(monkeypatch, *, enabled=True):
+async def database(monkeypatch, schema_template, *, enabled=True):
     temporary = TemporaryDirectory()
+    copyfile(schema_template, f"{temporary.name}/supplement.db")
     engine = create_async_engine(f"sqlite+aiosqlite:///{temporary.name}/supplement.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     for module in (intents, supplements, supplement_notifications, notification_outbox):
         monkeypatch.setattr(module, "SessionLocal", factory)
@@ -113,9 +126,9 @@ def test_plan_cuts_next_base_and_session(monkeypatch):
     assert points == [BASE, BASE + timedelta(minutes=1)]
 
 
-def test_coalescing_preserves_all_steps_and_last_marker(monkeypatch):
+def test_coalescing_preserves_all_steps_and_last_marker(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, now):
+        async with database(monkeypatch, schema_template) as (factory, now):
             group, steps = await seed(factory)
             for index, step in enumerate(steps):
                 now[0] = BASE + timedelta(minutes=index)
@@ -129,9 +142,9 @@ def test_coalescing_preserves_all_steps_and_last_marker(monkeypatch):
     asyncio.run(run())
 
 
-def test_cancel_pending_is_idempotent_and_blocks_stale_trigger(monkeypatch):
+def test_cancel_pending_is_idempotent_and_blocks_stale_trigger(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             group, steps = await seed(factory)
             assert await supplements.cancel_groups(1, "terminated")
             assert not await supplements.cancel_groups(1, "terminated")
@@ -144,9 +157,9 @@ def test_cancel_pending_is_idempotent_and_blocks_stale_trigger(monkeypatch):
     asyncio.run(run())
 
 
-def test_cancel_preserves_shared_manual_request(monkeypatch):
+def test_cancel_preserves_shared_manual_request(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             _group, steps = await seed(factory)
             await supplements.fire_step(steps[0].id)
             result = await intents.submit_intent(1, ExecutionKind.REBALANCE, "manual")
@@ -156,9 +169,9 @@ def test_cancel_preserves_shared_manual_request(monkeypatch):
     asyncio.run(run())
 
 
-def test_cancel_revokes_pure_supplement_queue(monkeypatch):
+def test_cancel_revokes_pure_supplement_queue(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             _group, steps = await seed(factory)
             await supplements.fire_step(steps[0].id)
             async with factory() as session:
@@ -169,9 +182,9 @@ def test_cancel_revokes_pure_supplement_queue(monkeypatch):
     asyncio.run(run())
 
 
-def test_running_cancel_waits_then_orders_execution_before_cancel(monkeypatch):
+def test_running_cancel_waits_then_orders_execution_before_cancel(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             group, steps = await seed(factory)
             await supplements.fire_step(steps[0].id)
             async with factory() as session:
@@ -198,9 +211,9 @@ def test_running_cancel_waits_then_orders_execution_before_cancel(monkeypatch):
     asyncio.run(run())
 
 
-def test_expiration_cancels_missed_last_step(monkeypatch):
+def test_expiration_cancels_missed_last_step(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, now):
+        async with database(monkeypatch, schema_template) as (factory, now):
             group, _steps = await seed(factory)
             now[0] = BASE + timedelta(minutes=16)
             await supplements.expire_group(group.id)
@@ -211,9 +224,9 @@ def test_expiration_cancels_missed_last_step(monkeypatch):
     asyncio.run(run())
 
 
-def test_old_account_creates_no_group_or_cancel_event(monkeypatch):
+def test_old_account_creates_no_group_or_cancel_event(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch, enabled=False) as (factory, _now):
+        async with database(monkeypatch, schema_template, enabled=False) as (factory, _now):
             await supplements.create_group(1, BASE)
             assert not await supplements.cancel_groups(1, "terminated")
             async with factory() as session:
@@ -223,9 +236,9 @@ def test_old_account_creates_no_group_or_cancel_event(monkeypatch):
     asyncio.run(run())
 
 
-def test_failed_execution_keeps_future_supplements(monkeypatch):
+def test_failed_execution_keeps_future_supplements(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             group, steps = await seed(factory)
             await supplements.fire_step(steps[0].id)
             async with factory() as session:
@@ -243,9 +256,9 @@ def test_failed_execution_keeps_future_supplements(monkeypatch):
     asyncio.run(run())
 
 
-def test_recovery_only_restores_future_steps(monkeypatch):
+def test_recovery_only_restores_future_steps(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, now):
+        async with database(monkeypatch, schema_template) as (factory, now):
             group, steps = await seed(factory)
             async with factory() as session:
                 step = await session.get(SupplementStep, steps[0].id)
@@ -267,9 +280,9 @@ def test_recovery_only_restores_future_steps(monkeypatch):
     asyncio.run(run())
 
 
-def test_cancel_races_with_trigger_without_starting_invalid_request(monkeypatch):
+def test_cancel_races_with_trigger_without_starting_invalid_request(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             _group, steps = await seed(factory)
             await asyncio.gather(supplements.fire_step(steps[0].id), supplements.cancel_groups(1, "terminated"))
             async with factory() as session:
@@ -286,14 +299,14 @@ def test_cancel_races_with_trigger_without_starting_invalid_request(monkeypatch)
     asyncio.run(run())
 
 
-def test_terminate_between_executions_uses_existing_route(monkeypatch):
+def test_terminate_between_executions_uses_existing_route(monkeypatch, schema_template):
     from fastapi import HTTPException, Response
 
     from axile.server.api.routes import account_execution
     from axile.server.db.models.execution import ExecutionTerminateRequest
 
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             await seed(factory)
             async with factory() as session:
                 response = Response()
@@ -304,7 +317,7 @@ def test_terminate_between_executions_uses_existing_route(monkeypatch):
                 assert result.execution_id is None
                 assert result.status is None
                 assert result.message == "已取消剩余补发"
-        async with database(monkeypatch, enabled=False) as (factory, _now):
+        async with database(monkeypatch, schema_template, enabled=False) as (factory, _now):
             async with factory() as session:
                 with pytest.raises(HTTPException) as caught:
                     await account_execution.terminate_account_execution(
@@ -374,11 +387,11 @@ def test_preview_paginates_supplements_from_same_base(monkeypatch):
     asyncio.run(run())
 
 
-def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch):
+def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch, schema_template):
     from axile.common.notification_function import NotificationFunctionResult
 
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             async with factory() as session:
                 account = await session.get(Account, 1)
                 account.execution_notification_code = "def notify(context):\n    pass"
@@ -413,9 +426,9 @@ def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch):
     asyncio.run(run())
 
 
-def test_recovery_skips_intermediate_miss_but_keeps_future_last(monkeypatch):
+def test_recovery_skips_intermediate_miss_but_keeps_future_last(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, now):
+        async with database(monkeypatch, schema_template) as (factory, now):
             group, steps = await seed(factory)
             async with factory() as session:
                 base = await session.get(SupplementStep, steps[0].id)
@@ -501,9 +514,9 @@ def test_migration_only_upgrades_exact_old_default():
     engine.dispose()
 
 
-def test_stale_base_callback_cannot_use_changed_cron(monkeypatch):
+def test_stale_base_callback_cannot_use_changed_cron(monkeypatch, schema_template):
     async def run():
-        async with database(monkeypatch) as (factory, _now):
+        async with database(monkeypatch, schema_template) as (factory, _now):
             async with factory() as session:
                 account = await session.get(Account, 1)
                 account.cron_expr = "45 9 * * *"

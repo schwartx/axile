@@ -5,6 +5,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
@@ -91,16 +92,36 @@ def record(index=1, **kwargs):
     )
 
 
+def _create_schema(connection):
+    SQLModel.metadata.create_all(connection)
+    migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
+    migration.install_triggers(connection)
+    settings_migration = _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py")
+    settings_migration.install_settings_trigger(connection)
+
+
+@pytest.fixture(scope="module")
+def schema_template(tmp_path_factory):
+    """模板包含真实索引和触发器，复制前关闭全部连接。"""
+    path = tmp_path_factory.mktemp("analysis-schema") / "template.db"
+    engine = sa.create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            _create_schema(connection)
+    finally:
+        engine.dispose()
+    return path
+
+
 @asynccontextmanager
-async def database(tmp_path, count=3):
+async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
+    if not fresh_schema:
+        copyfile(schema_template, tmp_path / "analysis.db")
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'analysis.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-        await conn.run_sync(migration.install_triggers)
-        settings_migration = _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py")
-        await conn.run_sync(settings_migration.install_settings_trigger)
+    if fresh_schema:
+        async with engine.begin() as conn:
+            await conn.run_sync(_create_schema)
     async with sessions() as session:
         session.add(build_account(id=2, account_control_preset="default"))
         await session.commit()
@@ -122,9 +143,9 @@ async def snapshot(sessions):
         return await read_snapshot(session, 2, "all")
 
 
-def test_legacy_performance_waits_for_current_settings(tmp_path):
+def test_legacy_performance_waits_for_current_settings(tmp_path, schema_template):
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             async with sessions() as session:
@@ -149,11 +170,11 @@ def test_legacy_performance_waits_for_current_settings(tmp_path):
     asyncio.run(check())
 
 
-def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path):
+def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, schema_template):
     """2160 条小时观测完整进入同版卡片，不再取最近 200 条。"""
 
     async def check():
-        async with database(tmp_path, count=0) as (engine, sessions, manager):
+        async with database(tmp_path, schema_template, count=0) as (engine, sessions, manager):
             async with sessions() as session:
                 rows = [record(i + 1) for i in range(2160)]
                 for i, row in enumerate(rows):
@@ -198,11 +219,11 @@ def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path):
     asyncio.run(check())
 
 
-def test_legacy_summary_waits_for_equity_and_rebuilds_on_logic_upgrade(tmp_path):
+def test_legacy_summary_waits_for_equity_and_rebuilds_on_logic_upgrade(tmp_path, schema_template):
     """旧 JSON 不伪造金额，启动升级后发布完整新快照。"""
 
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             initial = await snapshot(sessions)
@@ -245,9 +266,9 @@ def test_legacy_summary_waits_for_equity_and_rebuilds_on_logic_upgrade(tmp_path)
 
 
 @pytest.mark.parametrize("state", ["empty", "stale", "failed"])
-def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeypatch, state):
+def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeypatch, state, schema_template):
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             if state != "empty":
                 await queue(sessions)
                 await manager.run_once()
@@ -283,9 +304,9 @@ def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeyp
     asyncio.run(check())
 
 
-def test_snapshot_hits_never_read_history_or_call_wbt_and_survive_restart(tmp_path, monkeypatch):
+def test_snapshot_hits_never_read_history_or_call_wbt_and_survive_restart(tmp_path, monkeypatch, schema_template):
     async def check():
-        async with database(tmp_path) as (engine, sessions, manager):
+        async with database(tmp_path, schema_template) as (engine, sessions, manager):
             assert (await snapshot(sessions))["status"] == "empty"
             await queue(sessions)
             assert await manager.run_once()
@@ -314,9 +335,9 @@ def test_snapshot_hits_never_read_history_or_call_wbt_and_survive_restart(tmp_pa
     asyncio.run(check())
 
 
-def test_refresh_merges_and_inflight_source_change_discards_batch(tmp_path, monkeypatch):
+def test_refresh_merges_and_inflight_source_change_discards_batch(tmp_path, monkeypatch, schema_template):
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             await asyncio.gather(*(queue(sessions, True) for _ in range(8)))
             entered, release = threading.Event(), threading.Event()
             calls = []
@@ -351,9 +372,9 @@ def test_refresh_merges_and_inflight_source_change_discards_batch(tmp_path, monk
     asyncio.run(check())
 
 
-def test_failed_batch_keeps_results_and_limits_retries_then_new_data_recovers(tmp_path, monkeypatch):
+def test_failed_batch_keeps_results_and_limits_retries_then_new_data_recovers(tmp_path, monkeypatch, schema_template):
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             initial = await snapshot(sessions)
@@ -388,9 +409,9 @@ def test_failed_batch_keeps_results_and_limits_retries_then_new_data_recovers(tm
     asyncio.run(check())
 
 
-def test_transactional_invalidation_and_bulk_delete(tmp_path):
+def test_transactional_invalidation_and_bulk_delete(tmp_path, schema_template):
     async def check():
-        async with database(tmp_path) as (_, sessions, manager):
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             initial = await snapshot(sessions)
@@ -412,9 +433,9 @@ def test_transactional_invalidation_and_bulk_delete(tmp_path):
     asyncio.run(check())
 
 
-def test_cost_pages_bind_filter_sort_and_retained_versions(tmp_path):
+def test_cost_pages_bind_filter_sort_and_retained_versions(tmp_path, schema_template):
     async def check():
-        async with database(tmp_path, count=25) as (_, sessions, manager):
+        async with database(tmp_path, schema_template, count=25) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             initial = await snapshot(sessions)
@@ -451,7 +472,7 @@ def test_cost_pages_bind_filter_sort_and_retained_versions(tmp_path):
     asyncio.run(check())
 
 
-def test_cost_cross_day_unknowns_fees_noop_and_interval_boundary(tmp_path):
+def test_cost_cross_day_unknowns_fees_noop_and_interval_boundary(tmp_path, schema_template):
     item = record()
     result = item.raw_result["symbol_results"]["A"]
     result["trades"] = [
@@ -487,7 +508,7 @@ def test_cost_cross_day_unknowns_fees_noop_and_interval_boundary(tmp_path):
     assert previews[2]["timeEstimated"] is True
 
     async def check():
-        async with database(tmp_path, count=0) as (_, sessions, manager):
+        async with database(tmp_path, schema_template, count=0) as (_, sessions, manager):
             async with sessions() as session:
                 session.add(item)
                 session.add(record(2, status="NOOP", symbol_results={}))
@@ -557,11 +578,11 @@ def test_execution_strip_preserves_intraday_failed_and_empty_records():
     assert result["executions"][2]["record"]["is_success"] == 0
 
 
-def test_short_range_execution_history_is_read_from_all_snapshot(tmp_path):
+def test_short_range_execution_history_is_read_from_all_snapshot(tmp_path, schema_template):
     """新快照只保存全量执行列表，旧快照仍可读已保存的范围列表。"""
 
     async def check():
-        async with database(tmp_path, count=120) as (_, sessions, manager):
+        async with database(tmp_path, schema_template, count=120) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             async with sessions() as session:
@@ -614,11 +635,11 @@ def test_failed_execution_preview_exposes_plan_and_confirmed_zero_fills():
     assert payload["attempts"] == [{"symbol": "A", "planned": 3, "filled": 0, "reason": "超过最大下单量"}]
 
 
-def test_migration_roundtrip_and_restart_running_state(tmp_path):
+def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template):
     migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
 
     async def check():
-        async with database(tmp_path) as (engine, sessions, manager):
+        async with database(tmp_path, schema_template, fresh_schema=True) as (engine, sessions, manager):
             async with engine.begin() as conn:
 
                 def roundtrip(connection):
@@ -657,11 +678,11 @@ def test_legacy_execution_without_duration():
     assert payload["durationSec"] is None
 
 
-def test_journal_snapshot_trade_identity_filter_and_aggregation(tmp_path):
+def test_journal_snapshot_trade_identity_filter_and_aggregation(tmp_path, schema_template):
     """Journal drilldown retains the chart scope and original execution identity."""
 
     async def check():
-        async with database(tmp_path, count=2) as (_, sessions, manager):
+        async with database(tmp_path, schema_template, count=2) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             batch = await snapshot(sessions)
@@ -688,12 +709,12 @@ def test_journal_snapshot_trade_identity_filter_and_aggregation(tmp_path):
     asyncio.run(check())
 
 
-def test_version_8_projection_is_rebuilt_with_execution_evidence(tmp_path):
+def test_version_8_projection_is_rebuilt_with_execution_evidence(tmp_path, schema_template):
     """旧投影缺少新结果字段时，重启后从完整记录重建。"""
     from axile.server.db.models.analysis import cost_execution as executions
 
     async def check():
-        async with database(tmp_path, count=1) as (_, sessions, manager):
+        async with database(tmp_path, schema_template, count=1) as (_, sessions, manager):
             await queue(sessions)
             await manager.run_once()
             initial = await snapshot(sessions)

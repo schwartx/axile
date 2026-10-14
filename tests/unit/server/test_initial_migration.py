@@ -7,6 +7,7 @@ from types import ModuleType
 import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 
 _MIGRATIONS_DIR = Path(__file__).parents[3] / "axile" / "server" / "alembic" / "versions"
 
@@ -24,87 +25,18 @@ def _index_names(inspector: sa.Inspector, table_name: str) -> set[str]:
     return {index["name"] for index in inspector.get_indexes(table_name)}
 
 
-def test_migration_history_is_linear() -> None:
-    migration_paths = tuple(sorted(_MIGRATIONS_DIR.glob("[0-9]*.py")))
+def test_migration_history_has_one_root_and_head() -> None:
+    """全部迁移应从唯一 head 连通到唯一根节点，且无断链或循环。"""
+    scripts = ScriptDirectory(str(_MIGRATIONS_DIR.parent))
+    assert len(scripts.get_bases()) == 1
+    heads = scripts.get_heads()
+    assert len(heads) == 1
 
-    assert [path.name for path in migration_paths] == [
-        "0001_initial.py",
-        "0002_trading_calendar.py",
-        "0003_plugin_network.py",
-        "0004_account_asset_snapshot.py",
-        "0005_target_weight_snapshot.py",
-        "0006_drop_trading_calendar.py",
-        "0007_execution_intent.py",
-        "0008_feishu_card_config.py",
-        "0009_ctp_account_control_preset.py",
-        "0010_account_runtime_sync.py",
-        "0011_account_performance.py",
-        "0012_performance_snapshots.py",
-        "0013_legacy_execution_errors.py",
-        "0014_ctp_market_value.py",
-        "0015_tq_market_value.py",
-        "0016_account_copy_source.py",
-        "0017_notification_functions.py",
-        "0018_single_account_notification.py",
-        "0019_default_notification_card_type.py",
-        "0020_account_settings.py",
-        "0021_notification_result.py",
-        "0022_system_notification_state.py",
-        "0023_supplements.py",
-        "0024_account_control_monitor.py",
-        "0025_account_connection_state.py",
-    ]
-    initial = _load_migration(migration_paths[0])
-    calendar = _load_migration(migration_paths[1])
-    plugin_network = _load_migration(migration_paths[2])
-    account_asset_snapshot = _load_migration(migration_paths[3])
-    target_weight_snapshot = _load_migration(migration_paths[4])
-    drop_trading_calendar = _load_migration(migration_paths[5])
-    execution_intent = _load_migration(migration_paths[6])
-    feishu_card_config = _load_migration(migration_paths[7])
-    ctp_account_control_preset = _load_migration(migration_paths[8])
-    account_runtime_sync = _load_migration(migration_paths[9])
-    assert initial.revision == "0001"
-    performance = _load_migration(migration_paths[10])
-    assert performance.revision == "0011"
-    assert performance.down_revision == "0010"
-    snapshots = _load_migration(migration_paths[11])
-    assert snapshots.revision == "0012"
-    assert snapshots.down_revision == "0011"
-    repair = _load_migration(migration_paths[12])
-    assert repair.revision == "0013"
-    assert repair.down_revision == "0012"
-    valuation = _load_migration(migration_paths[13])
-    assert valuation.revision == "0014"
-    assert valuation.down_revision == "0013"
-    tq_valuation = _load_migration(migration_paths[14])
-    assert tq_valuation.revision == "0015"
-    assert tq_valuation.down_revision == "0014"
-    account_copy_source = _load_migration(migration_paths[15])
-    assert account_copy_source.revision == "0016"
-    assert account_copy_source.down_revision == "0015"
-    notification_functions = _load_migration(migration_paths[16])
-    assert notification_functions.revision == "0017"
-    assert notification_functions.down_revision == "0016"
-    assert ctp_account_control_preset.revision == "0009"
-    assert ctp_account_control_preset.down_revision == "0008"
-    assert account_runtime_sync.revision == "0010"
-    assert account_runtime_sync.down_revision == "0009"
-    assert initial.down_revision is None
-    assert calendar.revision == "0002"
-    assert calendar.down_revision == "0001"
-    assert plugin_network.revision == "0003"
-    assert plugin_network.down_revision == "0002"
-    assert account_asset_snapshot.revision == "0004"
-    assert account_asset_snapshot.down_revision == "0003"
-    assert target_weight_snapshot.revision == "0005"
-    assert target_weight_snapshot.down_revision == "0004"
-    assert drop_trading_calendar.revision == "0006"
-    assert drop_trading_calendar.down_revision == "0005"
-    assert execution_intent.revision == "0007"
-    assert execution_intent.down_revision == "0006"
-    assert feishu_card_config.revision == "0008"
-    assert feishu_card_config.down_revision == "0007"
+    revisions = list(scripts.walk_revisions(base="base", head=heads[0]))
+    assert len(revisions) == len({revision.revision for revision in revisions})
+    assert {Path(revision.path) for revision in revisions} == {
+        path for path in _MIGRATIONS_DIR.glob("*.py") if path.name != "__init__.py"
+    }
 
 
 def test_feishu_card_config_migration_adds_nullable_account_column() -> None:

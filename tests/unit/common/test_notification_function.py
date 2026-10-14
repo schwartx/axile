@@ -8,6 +8,14 @@ from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
 
 
+def _invoke(code, context):
+    """执行语义直接使用生产校验器和调用器，进程边界由独立用例覆盖。"""
+    notification_function.validate_notification_function(code)
+    namespace = {}
+    exec(compile(code, "<notification>", "exec"), namespace)
+    notification_function._invoke_notification(namespace["notify"], context)
+
+
 def test_notification_function_runs_with_context() -> None:
     """同步函数可以读取事件快照，且不依赖飞书 webhook。"""
     result = run_notification_function(
@@ -90,8 +98,7 @@ def test_notification_waits_for_awaitable_completion(entry, tmp_path) -> None:
         + "\n    await asyncio.sleep(0)\n    Path(context['path']).write_text('completed')"
     )
     output = tmp_path / "completed.txt"
-    result = run_notification_function(code, {"path": str(output)})
-    assert result.ok is True
+    _invoke(code, {"path": str(output)})
     assert output.read_text() == "completed"
 
 
@@ -110,7 +117,7 @@ def notify(context):
     return Completion(context)
 """
     output = tmp_path / "completed.txt"
-    assert run_notification_function(code, {"path": str(output)}).ok
+    _invoke(code, {"path": str(output)})
     assert output.read_text() == "completed"
 
 
@@ -146,9 +153,8 @@ def test_notification_rejects_generator_entry(code) -> None:
     ],
 )
 def test_notification_rejects_runtime_generators(code) -> None:
-    result = run_notification_function(code, {})
-    assert result.ok is False
-    assert "生成器" in result.error
+    with pytest.raises(TypeError, match="生成器"):
+        _invoke(code, {})
 
 
 def test_notification_allows_nested_generators() -> None:
@@ -165,7 +171,7 @@ def test_notification_allows_nested_generators() -> None:
     assert list(Helper().items()) == [3]
     assert list(helper()) == [4]
 """
-    assert run_notification_function(code, {}).ok is True
+    _invoke(code, {})
 
 
 @pytest.mark.parametrize(
@@ -176,11 +182,19 @@ def test_notification_allows_nested_generators() -> None:
         "async def notify(context):\n    import time\n    time.sleep(60)",
     ],
 )
-def test_notification_timeout_covers_sync_async_and_blocking_async(monkeypatch, code) -> None:
-    monkeypatch.setattr(notification_function, "NOTIFICATION_FUNCTION_TIMEOUT_SECONDS", 2)
-    result = run_notification_function(code, {})
+def test_notification_timeout_covers_sync_async_and_blocking_async(monkeypatch, tmp_path, code) -> None:
+    # 为冷启动导入留出余量，并证明超时发生在用户函数开始执行之后。
+    monkeypatch.setattr(notification_function, "NOTIFICATION_FUNCTION_TIMEOUT_SECONDS", 4)
+    started = tmp_path / "started"
+    code = code.replace(
+        "notify(context):\n",
+        "notify(context):\n    from pathlib import Path\n    Path(context['started']).write_text('started')\n",
+        1,
+    )
+    result = run_notification_function(code, {"started": str(started)})
     assert result.ok is False
     assert "超时" in result.error
+    assert started.read_text() == "started"
 
 
 def test_context_contract_preserves_sync_default() -> None:
@@ -199,7 +213,7 @@ async def work():
 def notify(context):
     assert asyncio.run(work()) == 42
 """
-    assert run_notification_function(code, {}).ok is True
+    _invoke(code, {})
 
 
 def test_system_and_account_keys_are_isolated(monkeypatch):
