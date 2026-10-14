@@ -69,7 +69,12 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
             first.policy.operations["place_order"].account.min_interval_ms = None
             for _ in range(3):
                 first.begin_operation("place_order").record_outcome("submitted")
-            await monitor.refresh()
+            # 采样有 200ms 预算，CI 的首个线程任务可能尚未调度完成。
+            # 等待对应实例的首帧；计数仍单独断言，不能用目标计数作为等待条件。
+            async with asyncio.timeout(3):
+                while monitor.frames.get(1, {}).get("instance_id") != first.instance_id:
+                    await monitor.refresh()
+                    await asyncio.sleep(0)
             assert used(monitor.frames[1]) == 123
             await persistence.flush_account_control_records(executor(first))
             await monitor.refresh()
