@@ -28,6 +28,7 @@ export function AccountHoldingsPage() {
   const accounts = useDomainStore((s) => s.accounts)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
   const item = accounts?.find((a) => a.account_id === accountId) ?? null
+  const accountEvidence = [{ label: '账户', value: `${item?.name ?? ''} (#${accountId})` }]
   const assetTerms = accountAssetTerms(item?.trade_channel)
   const descriptor = useChannelDescriptor(item?.trade_channel)
   const running = useRunning(accountId)
@@ -91,10 +92,13 @@ export function AccountHoldingsPage() {
       <Card className="mt-4 px-6 py-5">
         <div className="mb-3 border-b border-line pb-3">
           <TargetSnapshotControl
+            evidence={accountEvidence}
+            contextKey={accountId}
             snapshot={weights.data}
             loading={weights.loading}
             recalculating={weights.recalculating}
             error={weights.recalculateError}
+            readError={weights.error}
             disabled={isExecutingStatus(running?.status) || portfolioId == null}
             disabledReason={isExecutingStatus(running?.status) ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
             onRecalculate={() => void weights.recalculate()}
@@ -108,7 +112,7 @@ export function AccountHoldingsPage() {
             </div>
             <SkeletonLines rows={6} className="mt-3" />
           </div>
-        ) : snapshots.error || weights.error || comparison.error ? null : !weights.data?.calculated_at ? (
+        ) : (!snapshots.data && snapshots.error) || (!weights.data && weights.error) || (!comparison.data && comparison.error) ? null : !weights.data?.calculated_at ? (
           <div className="text-[15px] text-ink-3">尚无目标权重，点击刷新按钮计算后再查看持仓对照。</div>
         ) : holdingsStale ? (
           <div className="text-[15px] leading-relaxed text-warn">
@@ -129,13 +133,13 @@ export function AccountHoldingsPage() {
             quantityLabel={descriptor?.units.quantity_label ?? ''}
           />
         )}
-        <ErrorNotice
-          title="持仓对照加载失败"
-          error={snapshots.error ?? weights.error}
-          variant={snapshots.stale || weights.data != null ? 'stale' : 'section'}
-          updatedAt={snapshots.updatedAt ?? weights.updatedAt}
-          onRetry={() => Promise.all([snapshots.refresh(), weights.reloadSnapshot()]).then(() => undefined)}
-        />
+        <ErrorNotice evidence={accountEvidence} title="账户详情读取失败" error={account.error} onRetry={account.refresh} contextKey={accountId} />
+        <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={snapshots.error} variant={snapshots.data ? 'stale' : 'section'}
+          updatedAt={snapshots.updatedAt} onRetry={snapshots.refresh} contextKey={accountId} />
+        <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'}
+          updatedAt={weights.updatedAt} onRetry={weights.reloadSnapshot} contextKey={accountId} />
+        <ErrorNotice evidence={accountEvidence} title="调仓计划读取失败" error={comparison.error} variant={comparison.data ? 'stale' : 'section'}
+          updatedAt={comparison.updatedAt} onRetry={comparison.refresh} contextKey={accountId} />
       </Card>
     </section>
   )

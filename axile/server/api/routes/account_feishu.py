@@ -31,6 +31,7 @@ from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.supplement import NotificationEvent
+from axile.server.error_details import exception_details
 from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.repositories import get_recent_execute_records_by_account_id
@@ -66,6 +67,8 @@ class AccountFeishuTestResult(BaseModel):
 
     ok: bool
     message: str
+    error_line: int | None = None
+    traceback: str | None = None
 
 
 class _TestNotificationSource:
@@ -294,7 +297,9 @@ async def test_account_feishu(
     try:
         await asyncio.to_thread(push_feishu_card, card, key)
     except Exception as exc:  # noqa: BLE001 - 统一转为可展示的联通测试结果
-        return AccountFeishuTestResult(ok=False, message=f"推送失败：{str(exc)[:200]}")
+        return AccountFeishuTestResult(
+            ok=False, message=f"推送失败：{exc}", traceback=str(exception_details(exc)["traceback"])
+        )
     return AccountFeishuTestResult(ok=True, message="样例卡片已发送，请在群内确认。")
 
 
@@ -362,7 +367,7 @@ async def test_account_notification_function(
     try:
         context = await _load_notification_preview_context(session, account)
     except ValueError as exc:
-        return AccountFeishuTestResult(ok=False, message=str(exc))
+        return AccountFeishuTestResult(ok=False, message=str(exc), traceback=str(exception_details(exc)["traceback"]))
     await session.close()
     if payload.event_type == "supplement.cancelled":
         context = {
@@ -383,5 +388,8 @@ async def test_account_notification_function(
         }
     result = await asyncio.to_thread(run_notification_function, payload.code, context, feishu_key=key)
     return AccountFeishuTestResult(
-        ok=result.ok, message="已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败"
+        ok=result.ok,
+        message="已使用最近一次执行快照试跑成功" if result.ok else result.error or "运行失败",
+        error_line=getattr(result, "error_line", None),
+        traceback=getattr(result, "traceback", None),
     )

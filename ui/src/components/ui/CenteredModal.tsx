@@ -1,3 +1,4 @@
+import { ModalContentContext } from '@/components/ui/modalContext'
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -49,7 +50,7 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
     return () => { document.removeEventListener('keydown', keydown); previous?.focus({ preventScroll: true }) }
   }, [open])
   const close = () => { if (!closeDisabled) onClose() }
-  return createPortal(<div onClick={(event) => event.stopPropagation()}>
+  return createPortal(<ModalContentContext.Provider value={true}><div onClick={(event) => event.stopPropagation()}>
     <div
       aria-hidden="true"
       className={`fixed inset-0 z-[35] bg-scrim transition-opacity duration-150 motion-reduce:transition-none ${open ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
@@ -76,5 +77,5 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
       <div className="min-h-0 flex-1 overflow-y-auto px-[22px] pb-2">{present && children}</div>
       {present && footer}
     </div>
-  </div>, document.body)
+  </div></ModalContentContext.Provider>, document.body)
 }

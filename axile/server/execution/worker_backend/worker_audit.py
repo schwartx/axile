@@ -299,6 +299,10 @@ def _append_failed_audit(
         reason_code="COMMON.EXECUTION_FAILED",
         seq=0 if executor is None else _event_seq(executor),
         details={
+            "reason_code": error.reason_code,
+            "error_id": error.error_id,
+            "technical_detail": getattr(error, "technical_detail", None),
+            "traceback": getattr(error, "traceback", None),
             "debug": {
                 "error": {
                     "type": error.type,
@@ -306,6 +310,6 @@ def _append_failed_audit(
                     "retryable": error.retryable,
                 },
                 "trigger_source": trigger_source,
-            }
+            },
         },
     )

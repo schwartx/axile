@@ -101,8 +101,9 @@ def test_failure_and_cancellation_release_lock_and_retry_converges(
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
             failed = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
-            # 异常原文只进日志；用户可见的 last_error 用固定人话。
-            assert failed.status == "failed" and failed.last_error == "账户运行态对齐失败，具体原因见服务日志"
+            assert failed.status == "failed"
+            assert "worker timeout" in failed.last_error
+            assert "Traceback" in failed.last_error
             mode = "cancel"
             task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory))
             await asyncio.wait_for(entered.wait(), 5)
@@ -236,7 +237,9 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                 await runtime.enqueue_account_runtime_sync(session, 1, reset_worker=True)
                 account = await session.get(Account, 1)
             sync = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
-            assert (sync.status, sync.last_error, sync.reset_worker) == ("pending", reason, True)
+            assert (sync.status, sync.reset_worker) == ("pending", True)
+            assert reason in sync.last_error
+            assert "Traceback" in sync.last_error
             assert sync.synchronized_at is None
             warnings = [record for record in records if record["level"].name == "WARNING"]
             assert len(warnings) == 1 and warnings[0]["exception"] is None
@@ -247,11 +250,15 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                 sync = await session.scalar(select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == 1))
                 attempts = list((await session.scalars(select(AccountRuntimeSyncAttempt))).all())
             assert sync.status == {"success": "synchronized", "pending": "pending", "failed": "failed"}[mode]
-            assert sync.last_error == {"success": None, "pending": reason, "failed": "CTP 登录校验失败"}[mode]
+            if mode == "success":
+                assert sync.last_error is None
+            else:
+                assert {"pending": reason, "failed": "CTP 登录校验失败"}[mode] in sync.last_error
+                assert "Traceback" in sync.last_error
             assert sync.reset_worker is (mode != "success")
             assert bool(sync.synchronized_at) is (mode == "success")
             assert [attempt.succeeded for attempt in attempts] == [False, mode == "success"]
-            assert attempts[0].error == reason
+            assert reason in attempts[0].error
             assert resets == [True, True]
 
     sink = logger.add(lambda message: records.append(message.record))
@@ -286,8 +293,8 @@ def test_only_explicit_ctp_prepare_error_is_pending(tmp_path, monkeypatch, bound
             )
             sync = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
             assert sync.status == "failed"
-            assert sync.last_error == "账户通道准备未完成"
-            assert "SDK" not in sync.last_error
+            assert "账户通道准备未完成" in sync.last_error
+            assert "SDK" in sync.last_error
 
     asyncio.run(scenario())
 

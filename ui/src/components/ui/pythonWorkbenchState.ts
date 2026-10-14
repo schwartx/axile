@@ -66,14 +66,16 @@ export function usePythonRun<T>({ code, contextKey = '', enabled = true, execute
     setRunning(true)
     try {
       let next: T
+      let failure: unknown = null
       try {
         next = await execute(code)
       } catch (cause) {
+        failure = cause
         next = failed(cause)
       }
       setResult(next)
       // 只在新试跑完成时更新视图身份，普通编辑不重新展开结果面板。
-      setEditorResult(toEditorResult(next))
+      setEditorResult({ ...toEditorResult(next), ...(failure != null ? { error: failure } : {}) })
       setRanInput(input)
       return next
     } finally {

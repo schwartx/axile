@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useEffect, useLayoutEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { ChoiceGroup } from '@/components/ui/ChoiceGroup'
 import { ParameterNumberInput } from '@/components/ui/ParameterNumberInput'
@@ -335,8 +336,7 @@ export function AlgorithmEditor({ slot, channel, value, onChange, allowClear, on
 
   return (
     <div>
-      {catalog.error && <div role="alert" className="mb-3 text-sm text-warn">算法清单加载失败 · <button type="button"
-        disabled={catalog.loading} onClick={() => void algorithmCatalog.load()} className="cursor-pointer underline">重试</button></div>}
+      <ErrorNotice contextKey={`${channel}:${slot}`} title="算法清单加载失败" evidence={[{ label: '渠道', value: channel }, { label: '槽位', value: slot }]} error={catalog.error} onRetry={() => algorithmCatalog.load()} />
       {catalog.data && candidates.length === 0 && <p className="mb-3 text-sm text-ink-3">当前渠道无可选算法</p>}
       {value === null ? (
         <div className="text-sm text-ink-3">未设置 · 使用默认清仓逻辑

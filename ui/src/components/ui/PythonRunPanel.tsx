@@ -3,6 +3,7 @@ import { Check, Circle, TriangleAlert } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { WorkbenchPanel } from '@/components/ui/WorkbenchPanel'
 import {
+  PythonRunResultBody,
   PYTHON_RUN_STYLE,
   pythonRunStatus,
   type PythonValidationState,
@@ -87,26 +88,8 @@ export function PythonRunPanel({
           )
         ) : failed ? (
           <div>
-            <button
-              type="button"
-              className={`block w-full rounded-[6px] border-l-2 border-warn bg-warn/10 px-3 py-2 text-left ${
-                result.errorLine != null ? 'cursor-pointer hover:bg-warn/15' : 'cursor-default'
-              }`}
-              onClick={() => result.errorLine != null && onRevealError?.(result.errorLine)}
-            >
-              <span className="font-mono text-[13px] leading-5 text-warn">
-                {[result.errorType, result.errorMessage].filter(Boolean).join(': ') || '执行出错'}
-              </span>
-              {result.errorLine != null && <span className="ml-2 text-[12px] text-ink-3">第 {result.errorLine} 行</span>}
-            </button>
-            {result.traceback && (
-              <details className="mt-2.5 rounded-[8px] border border-line bg-code-bg px-3.5 py-2.5">
-                <summary className="cursor-pointer select-none text-[13px] text-ink-2">完整 traceback</summary>
-                <pre className="mt-2 overflow-auto whitespace-pre-wrap font-mono text-[12.5px] leading-relaxed text-warn">
-                  {result.traceback}
-                </pre>
-              </details>
-            )}
+            {result.errorLine != null && <button type="button" className="text-[12px] text-accent" onClick={() => onRevealError?.(result.errorLine!)}>定位到第 {result.errorLine} 行</button>}
+            <PythonRunResultBody result={result} stale={stale} />
           </div>
         ) : (
           <p className="text-[13.5px] text-ink-3">

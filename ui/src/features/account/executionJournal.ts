@@ -1,4 +1,5 @@
 import { executionOutcome, executionRecordSummary } from '@/features/account/executionOutcome'
+import type { ExecuteRecord } from '@/types/api'
 import type { AccountActivity } from '@/lib/api/accounts'
 import { buildRecentActivity, recentRowText } from '@/features/account/recent'
 import { dict } from '@/features/account/executionValues'
@@ -10,6 +11,7 @@ export type JournalRange = '7' | '30' | '90' | 'custom'
 export interface JournalTrade extends CostTrade { key: string; executionId: string | null; slippageBps: number | null }
 export interface Quality { value: number; nTrades: number; slippage: number | null; coverage: number; amountComplete: boolean }
 export interface JournalExecution {
+  record?: ExecuteRecord
   key: string; recordId: number | null; time: string; executionId: string | null
   status: string; warning: boolean; description: string; symbols: string[]
   trades: JournalTrade[]; summary: CostSummary; durationSec: number | null

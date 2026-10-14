@@ -20,7 +20,7 @@ export function AccountDetailPage() {
       <ErrorNotice title="账户数据加载失败" error={accounts == null ? error : null} onRetry={refresh} />
       {accounts != null && !item && <p className="text-[15px] text-ink-3">未找到账户 #{accountId}。</p>}
       {item && (
-        <AccountDetail
+        <AccountDetail key={accountId}
           accountId={accountId}
           item={item}
           connectionUnavailable={isConnectionError(error)}

@@ -1,16 +1,20 @@
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { lossClass } from '@/features/history/costs'
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import { useLocation, useParams } from 'react-router'
 import { Link } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
 import { SkeletonLines } from '@/components/ui/Skeleton'
 import { NumberTicker } from '@/components/ui/NumberTicker'
+import { ExecutionErrorEvidence } from '@/features/history/ExecutionErrorEvidence'
+import { readEvidencePages, type EvidencePage } from '@/features/history/executionErrorAdapter'
+import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { SizingEvidence } from '@/features/account/SizingEvidence'
 import { weightText } from '@/features/account/sizingEvidenceModel'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { getExecutionArtifacts, getExecutionEvents, getExecutionStatus } from '@/lib/api/executions'
+import { shortErrorReason } from '@/lib/errorInfo'
 import { currencyOf } from '@/lib/derive'
 import { displayCurrencyUnit, fmtBps, fmtMoney, withCurrency } from '@/lib/format'
 import {
@@ -192,15 +196,7 @@ function SnapshotNote({ m, assetLabel }: { m: ExecutionDetailModel; assetLabel: 
 
 /** 直接显示已有原因，原始文本在证据区回放。 */
 function FailureNote({ f }: { f: FailureReason }) {
-  return (
-    <div className="my-2 rounded bg-warn-soft px-2.5 py-2 text-[14px] text-warn">
-      <p className="whitespace-pre-wrap">{f.human}</p>
-      <details className="mt-1 text-[12.5px] text-ink-3">
-        <summary className="cursor-pointer">原始错误证据</summary>
-        <pre className="mt-1 whitespace-pre-wrap break-all">{f.raw}</pre>
-      </details>
-    </div>
-  )
+  return <div className="my-2 rounded bg-warn-soft px-2.5 py-2 text-[14px] text-warn">{shortErrorReason(f.human)}</div>
 }
 
 /** ② 目标变化段：回答「为什么调」。 */
@@ -400,7 +396,7 @@ function Spine({ m }: { m: ExecutionDetailModel }) {
             {n.time && <span className="num w-20 flex-none text-[12px] text-ink-3">{n.time}</span>}
             {!n.time && <span className="w-20 flex-none" />}
             <span className={`text-[14px] ${n.broken ? 'font-medium text-warn' : 'text-ink-2'}`}>{n.label}</span>
-            {n.detail && <span className="num text-[13px] text-ink-3">{n.detail}</span>}
+            {n.detail && <span className="num text-[13px] text-ink-3">{n.broken ? shortErrorReason(n.detail) : n.detail}</span>}
           </div>
         ))}
       </div>
@@ -484,30 +480,22 @@ function Evidence({
   currency,
   assetLabel,
   positionValueLabel,
+  artifactsComplete,
 }: {
   m: ExecutionDetailModel
   currency: string
   assetLabel: string
   positionValueLabel: string
+  artifactsComplete: boolean
 }) {
   const b = m.bookends
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    void navigator.clipboard.writeText(JSON.stringify(m.artifacts, null, 2)).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    })
-  }
   const hasAccount = b.cashBefore != null || b.equityBefore != null || b.mvBefore != null
   return (
     <div className="mt-5">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-semibold tracking-wide text-ink-3">证据</span>
-        {m.artifacts.length > 0 && (
-          <button type="button" onClick={copy} className="text-[13px] text-accent hover:underline">
-            {copied ? '已复制' : `复制原始附件（${m.artifacts.length}）`}
-          </button>
-        )}
+        {m.artifacts.length > 0 && <ErrorCopyButton text={JSON.stringify(m.artifacts, null, 2)} label={`复制原始附件（${m.artifacts.length}）`} disabled={!artifactsComplete} />}
+
       </div>
       {hasAccount && (
         <div className="num text-[13.5px] text-ink-2">
@@ -556,13 +544,13 @@ export function ExecutionDetailPage() {
     [executionId],
   )
   const eventsFetcher = useCallback(
-    (signal: AbortSignal): Promise<{ data: ExecutionEvent[] }> =>
-      executionId ? getExecutionEvents(executionId, signal) : Promise.resolve({ data: [], count: 0 }),
+    (signal: AbortSignal): Promise<EvidencePage<ExecutionEvent>> =>
+      executionId ? readEvidencePages((skip, limit) => getExecutionEvents(executionId, signal, { skip, limit }), signal) : Promise.resolve({ data: [], count: 0, complete: true, error: null }),
     [executionId],
   )
   const artifactsFetcher = useCallback(
-    (signal: AbortSignal): Promise<{ data: ExecutionArtifact[] }> =>
-      executionId ? getExecutionArtifacts(executionId, signal) : Promise.resolve({ data: [], count: 0 }),
+    (signal: AbortSignal): Promise<EvidencePage<ExecutionArtifact>> =>
+      executionId ? readEvidencePages((skip, limit) => getExecutionArtifacts(executionId, signal, { skip, limit }), signal) : Promise.resolve({ data: [], count: 0, complete: true, error: null }),
     [executionId],
   )
   // 本次执行是否仍在跑（服务端真源，SSE 秒级点亮）：在跑则短轮询让脊柱边跑边长，
@@ -607,8 +595,9 @@ export function ExecutionDetailPage() {
       </div>
       <div className="num mt-2 text-[16px] font-mono text-ink-2">{executionId}</div>
       <div>
-        <ErrorNotice title="执行状态加载失败" error={status.error} onRetry={status.refresh} />
+        <ErrorNotice title="状态待确认：执行状态查询失败" error={status.error} contextKey={executionId} onRetry={status.refresh} />
       </div>
+      <ExecutionErrorEvidence accountId={accountId} executionId={executionId} status={status.data} events={rawEvents} />
       {model && <Header m={model} currency={currency} assetLabel={assetTerms.shortLabel} />}
 
       {/* 运行中：顶部给一条确定态阶段条作一瞥总览；逐事件细节仍在下方脊柱。 */}
@@ -623,8 +612,8 @@ export function ExecutionDetailPage() {
 
       <Card className="mt-4 px-6 py-5">
         {loading && <SkeletonLines rows={5} />}
-        <ErrorNotice title="执行事件加载失败" error={events.error} onRetry={events.refresh} />
-        <ErrorNotice title="执行证据加载失败" error={artifacts.error} onRetry={artifacts.refresh} />
+        <ErrorNotice title="执行事件加载失败" error={events.error ?? events.data?.error} contextKey={executionId} onRetry={events.refresh} />
+        <ErrorNotice title="执行证据加载失败" error={artifacts.error ?? artifacts.data?.error} contextKey={executionId} onRetry={artifacts.refresh} />
         {model && (
           <>
             <TargetChangeView m={model} />
@@ -661,6 +650,7 @@ export function ExecutionDetailPage() {
               currency={currency}
               assetLabel={assetTerms.shortLabel}
               positionValueLabel={positionValueLabel}
+              artifactsComplete={artifacts.data?.complete === true && !artifacts.error && !artifacts.loading && !artifacts.refreshing}
             />
           </>
         )}

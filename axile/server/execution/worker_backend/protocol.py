@@ -40,6 +40,10 @@ class WorkerBackendErrorPayload:
         渠道在错误发生处确定的稳定原因码，不从 message 推断。
     error_id : int | None
         渠道异步响应错误码，与同步请求返回码区分。
+    technical_detail : str | None
+        异常原文；旧 worker 载荷可不提供。
+    traceback : str | None
+        异常发生处的完整调用栈。
     """
 
     type: str
@@ -47,6 +51,8 @@ class WorkerBackendErrorPayload:
     retryable: bool = False
     reason_code: str | None = None
     error_id: int | None = None
+    technical_detail: str | None = None
+    traceback: str | None = None
 
 
 @dataclass(slots=True)

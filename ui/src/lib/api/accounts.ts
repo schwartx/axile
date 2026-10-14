@@ -25,6 +25,8 @@ export type AccountUpdatePayload = Partial<Account> & {
 export interface AccountFeishuTestResult {
   ok: boolean
   message: string
+  error_line?: number | null
+  traceback?: string | null
 }
 
 /** 使用输入或已保存的 Webhook 推送样例执行结果通知卡片。 */
@@ -265,15 +267,17 @@ export function prefetchExecuteRecords(id: number): void {
 /** 账户执行记录（分页，默认最近 100 条）。全量口径（limit=500）结果入缓存。 */
 export function getExecuteRecords(
   id: number,
-  params: { skip?: number; limit?: number } = {},
+  params: { skip?: number; limit?: number; execution_id?: string; record_id?: number } = {},
   signal?: AbortSignal,
 ): Promise<ExecuteRecordList> {
   const q = new URLSearchParams()
   if (params.skip != null) q.set('skip', String(params.skip))
   if (params.limit != null) q.set('limit', String(params.limit))
+  if (params.execution_id != null) q.set('execution_id', params.execution_id)
+  if (params.record_id != null) q.set('record_id', String(params.record_id))
   const qs = q.toString()
   const promise = apiGet<ExecuteRecordList>(`/account/execute_records/${id}${qs ? `?${qs}` : ''}`, signal)
-  if (params.limit === 500 && params.skip == null) {
+  if (params.limit === 500 && params.skip == null && params.execution_id == null && params.record_id == null) {
     promise.then((r) => execRecordsCache.set(id, r)).catch(() => {})
   }
   return promise

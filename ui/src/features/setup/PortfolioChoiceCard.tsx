@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useCallback } from 'react'
 import { Code2 } from 'lucide-react'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -55,7 +56,7 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
         className="absolute right-[18px] top-3.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
         <Code2 size={16} aria-hidden />代码
       </button>
-      {snapshot.error && <button type="button" onClick={() => void snapshot.refresh()} className="absolute bottom-3.5 right-[18px] h-6 rounded px-2 text-[12px] text-warn focus-visible:ring-2 focus-visible:ring-accent">重试读取</button>}
+      <div className="px-[18px]"><ErrorNotice title={`${portfolio.name} 目标持仓读取失败`} error={snapshot.error} evidence={[{ label: '组合 ID', value: String(portfolio.id) }]} variant={snapshot.data ? 'stale' : 'compact'} updatedAt={snapshot.updatedAt} onRetry={snapshot.refresh} contextKey={portfolio.id ?? undefined} /></div>
     </div>
   )
 }

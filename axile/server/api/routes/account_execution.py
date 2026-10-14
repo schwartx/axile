@@ -41,6 +41,7 @@ from axile.server.db.models import (
     TargetWeightSnapshot,
     TargetWeightSnapshotPublic,
 )
+from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.legacy_compat import normalize_execution_event_details, normalize_legacy_result
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
@@ -371,7 +372,7 @@ async def execute(session: SessionDep, account_id: int) -> ExecutionTriggerRespo
         logger.exception(f"执行交易失败: account_id={account_id}, error={exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="执行失败, 详情请看飞书信息或日志",
+            detail=exception_details(exc, "执行请求失败"),
         ) from exc
 
     execution_id = submitted.execution_id
@@ -659,7 +660,7 @@ async def empty_all_positions(
         logger.exception(f"清仓失败: account_id={account_id}, error={exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="执行失败, 详情请看飞书信息或日志",
+            detail=exception_details(exc, "执行请求失败"),
         ) from exc
 
     execution_id = submitted.execution_id

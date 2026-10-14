@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from '@/components/ui/nav'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { SystemAlertPage } from '@/pages/SystemAlertPage'
 import { InitWizard } from '@/features/init/InitWizard'
 import { initStatus, initValuesFromStatus, peekInitValues, type InitValues } from '@/lib/api/init'
@@ -10,29 +10,28 @@ export function SystemConfigPage({ section = 'alert' }: { section?: 'alert' | 'a
 }
 
 function AdvancedSystemConfigPage() {
-  const navigate = useNavigate()
+  const [error, setError] = useState<Error | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const [values, setValues] = useState<InitValues | null>(() => peekInitValues())
 
   useEffect(() => {
     if (values) return
     let alive = true
+    setError(null)
     initStatus()
       .then((s) => {
         if (alive) setValues(initValuesFromStatus(s.values))
       })
-      .catch(() => {
-        // 拉取失败（后端异常）时退回主页，由主应用的错误提示处理。
-        if (alive) navigate('/')
-      })
+      .catch((cause) => { if (alive) setError(cause instanceof Error ? cause : new Error(String(cause))) })
     return () => {
       alive = false
     }
-  }, [values, navigate])
+  }, [values, attempt])
 
   if (!values) {
     return (
       <div className="grid h-full place-items-center bg-bg text-ink-3">
-        <div className="text-[16px] tracking-wide">读取配置中…</div>
+        <div><ErrorNotice title="系统配置读取失败" error={error} onRetry={() => setAttempt(value => value + 1)} />{!error && <p>读取配置中…</p>}</div>
       </div>
     )
   }

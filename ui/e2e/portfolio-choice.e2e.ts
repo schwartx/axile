@@ -62,7 +62,7 @@ test('读取失败可重试，窄屏和长代码均在各自容器内滚动', as
   await page.goto('/e2e/portfolio-choice.html')
   const choice = page.getByRole('button', { name: '选择组合：备选组合', exact: true })
   await expect(choice).toContainText('目标持仓读取失败')
-  await page.getByRole('button', { name: '重试读取', exact: true }).click()
+  await page.getByRole('button', { name: '重试：备选组合 目标持仓读取失败', exact: true }).click()
   await expect(choice).toContainText('尚无目标持仓')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   const card = page.getByRole('button', { name: '选择组合：商品趋势', exact: true })

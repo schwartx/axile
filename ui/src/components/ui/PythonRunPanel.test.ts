@@ -43,7 +43,7 @@ describe('PythonRunPanel', () => {
     expect(html).toContain('1 个问题')
     expect(html).toContain('RuntimeError: boom')
     expect(html).toContain('第 12 行')
-    expect(html).toContain('trace detail')
+    expect(html).toContain('查看错误详情')
     expect(html).toContain('text-warn')
     expect(html).not.toContain('text-bad')
   })

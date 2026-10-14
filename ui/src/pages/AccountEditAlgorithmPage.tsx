@@ -1,3 +1,4 @@
+import { shortErrorReason } from '@/lib/errorInfo'
 /**
  * 账户执行算法子页 /accounts/:id/edit/algorithm。
  *
@@ -24,6 +25,7 @@ import {
   validateAlgorithmRef,
   type AlgorithmRef,
 } from '@/features/setup/algorithms'
+import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
 import {
@@ -198,7 +200,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       writeAccountConfigSummary(accountId, updated, {
         showShortLeverage: descriptor.ui.show_short_leverage,
       })
-      toast(runtimeSyncMessage(updated.runtime_sync))
+      toast(shortErrorReason(runtimeSyncMessage(updated.runtime_sync)))
       void refreshAccounts()
     } catch (e) {
       if (alive.current) {
@@ -234,14 +236,8 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       {title}
       {synopsis}
 
-      {(runtime.error || (runtime.queried && runtime.data?.status !== 'synchronized')) && (
-        <div role="status" className="mb-5 flex flex-wrap items-center gap-3 text-sm text-warn">
-          <span>{runtime.error ? '同步状态暂不可用' : runtime.data?.status === 'failed' ? '运行态同步失败' : '运行态待同步'}</span>
-          {(runtime.error || runtime.data?.last_error) && <span className="break-words">{runtime.error?.message ?? runtime.data?.last_error}</span>}
-          <button type="button" disabled={saving || runtime.loading} onClick={() => void runtime.refresh()} className="underline disabled:opacity-50">刷新状态</button>
-          {!runtime.error && <button type="button" disabled={saving || runtime.loading} onClick={() => void runtime.retry()} className="underline disabled:opacity-50">重试同步</button>}
-        </div>
-      )}
+      <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
+
       <fieldset disabled={saving} className="min-w-0" inert={saving}>
         <Section label="主交易算法">
           <p className="mb-3 text-sm text-ink-3">用于常规定时调仓。</p>

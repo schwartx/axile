@@ -55,7 +55,7 @@ def test_read_does_not_launch_worker(client, service, monkeypatch):
     assert not service.jobs
 
 
-def test_config_errors_never_echo_secret_input(client, monkeypatch):
+def test_config_errors_preserve_original_validation_input(client, monkeypatch):
     response = client.post(
         "/api/v1/channel-validations",
         json={
@@ -64,7 +64,10 @@ def test_config_errors_never_echo_secret_input(client, monkeypatch):
         },
     )
     assert response.status_code == 422
-    assert "private-password" not in response.text
+    assert "private-password" in response.text
+    detail = response.json()["detail"]
+    assert detail["validation_errors"][0]["input"] == "private-password"
+    assert "ValidationError" in detail["traceback"]
     assert "private-auth" not in response.text
 
 

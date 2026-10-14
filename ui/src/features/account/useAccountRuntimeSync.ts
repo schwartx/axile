@@ -17,22 +17,27 @@ export function newerRuntimeSync(previous: AccountRuntimeSync | null, next: Acco
 
 /** 只对 pending 有限轮询；保存与重试使旧查询失效，不触碰算法草稿。 */
 export function useAccountRuntimeSync(accountId: number) {
+  const [owner, setOwner] = useState(accountId)
   const [data, setData] = useState<AccountRuntimeSync | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [loading, setLoading] = useState(false)
   const [queried, setQueried] = useState(false)
   const [deadline, setDeadline] = useState(0)
-  const current = useRef({ generation: 0, controller: null as AbortController | null })
+  const current = useRef({ accountId, generation: 0, controller: null as AbortController | null })
+
+  current.current.accountId = accountId
 
   const invalidate = useCallback(() => {
+    if (current.current.accountId !== accountId) return
     current.current.generation += 1
     current.current.controller?.abort()
     setLoading(false)
     setDeadline(0)
-  }, [])
+  }, [accountId])
 
   const run = useCallback(async (retry = false, restart = false) => {
     const request = current.current
+    if (request.accountId !== accountId) return
     request.controller?.abort()
     const controller = new AbortController()
     request.controller = controller
@@ -42,18 +47,19 @@ export function useAccountRuntimeSync(accountId: number) {
     setError(null)
     try {
       const next = await (retry ? retryAccountRuntimeSync : getAccountRuntimeSync)(accountId, controller.signal)
-      if (generation !== request.generation) return
+      if (generation !== request.generation || request.accountId !== accountId) return
       setData((previous) => newerRuntimeSync(previous, next))
       setQueried(true)
     } catch (cause) {
-      if (generation !== request.generation) return
+      if (generation !== request.generation || request.accountId !== accountId) return
       setError(cause instanceof Error ? cause : new Error(String(cause)))
     } finally {
-      if (generation === request.generation) setLoading(false)
+      if (generation === request.generation && request.accountId === accountId) setLoading(false)
     }
   }, [accountId])
 
   useEffect(() => {
+    setOwner(accountId)
     setData(null)
     setQueried(false)
     void run(false, true)
@@ -62,7 +68,7 @@ export function useAccountRuntimeSync(accountId: number) {
       request.generation += 1
       request.controller?.abort()
     }
-  }, [run])
+  }, [run, accountId])
 
   useEffect(() => {
     if (!queried || loading || error || (data && data.status !== 'pending') || Date.now() >= deadline) return
@@ -73,6 +79,7 @@ export function useAccountRuntimeSync(accountId: number) {
   }, [queried, loading, error, data, deadline, run])
 
   const acceptSaved = useCallback((next: AccountRuntimeSync | null | undefined) => {
+    if (current.current.accountId !== accountId) return
     invalidate()
     setError(null)
     setDeadline(Date.now() + 60_000)
@@ -84,8 +91,9 @@ export function useAccountRuntimeSync(accountId: number) {
       setQueried(false)
       void run(false, true)
     }
-  }, [invalidate, run])
+  }, [invalidate, run, accountId])
 
-  return { data, error, loading, queried, invalidate, acceptSaved,
+  const visible = owner === accountId
+  return { data: visible ? data : null, error: visible ? error : null, loading: visible ? loading : true, queried: visible && queried, invalidate, acceptSaved,
     refresh: () => run(false, true), retry: () => run(true, true) }
 }

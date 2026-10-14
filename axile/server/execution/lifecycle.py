@@ -28,6 +28,7 @@ from axile.server.db.models import (
     now_str,
 )
 from axile.server.db.models.account import AccountContext, AccountSnapshot
+from axile.server.error_details import exception_details
 from axile.server.error_notifications import send_feishu_error
 from axile.server.execution.audit_sink import build_server_execution_audit_sink
 from axile.server.execution.execution_account_control import (
@@ -213,11 +214,11 @@ def _mark_execution_finished(
         record_id=None if record is None else record.id,
         is_success=0 if error is not None else None if record is None else record.is_success,
         # 异常优先；业务失败（如全员 BLOCKED）没有异常，必须从记录里把原因带出来。
-        # 异常原文属于技术证据，只进日志；用户可读说明用固定文案。
-        error="执行失败，具体原因未确认" if error is not None else execution_record_output_error(raw_result),
+        # 任务状态保留具体原因；完整 traceback 另存执行记录。
+        error=str(error) if error is not None else execution_record_output_error(raw_result),
         output_status="FAILED" if error is not None else execution_record_output_status(raw_result),
         **(
-            {"outcome": "error", "outcome_reason": "执行失败，具体原因未确认"}
+            {"outcome": "error", "outcome_reason": str(error)}
             if error is not None
             else execution_record_outcome(raw_result)
         ),
@@ -769,6 +770,11 @@ async def _run_execution_task(
         )
         await mark_intent_finished(execution_id, ExecutionTaskStatus.TERMINATED, finished_at=finished_at)
     except Exception as e:
+        from axile.server.execution.records import append_error_execute_record
+
+        await append_error_execute_record(
+            account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e)
+        )
         finished_at = now_str()
         _mark_execution_finished(
             execution_id,

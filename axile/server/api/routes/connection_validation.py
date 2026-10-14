@@ -8,20 +8,21 @@ from axile.channels import get_channel
 from axile.server.api.deps import SessionDep
 from axile.server.connection_validation import ValidationJob, ValidationRejected, ValidationTable, service
 from axile.server.db.models import Account
+from axile.server.error_details import exception_details
 
 router = APIRouter(prefix="/channel-validations", tags=["channel-validations"])
 account_router = APIRouter(prefix="/account", tags=["channel-validations"])
 
 
 async def _read_config(request: Request) -> dict[str, object]:
-    """解析含凭据请求，不把请求原文带入格式错误响应。"""
+    """解析连接请求，格式错误保留原始异常。"""
     body = await request.body()
     if len(body) > 64 * 1024:
         raise HTTPException(413, "连接配置过大")
     try:
         payload = json.loads(body)
     except ValueError as exc:
-        raise HTTPException(422, "连接配置格式不正确") from exc
+        raise HTTPException(422, exception_details(exc, "连接配置格式不正确")) from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("account_config"), dict):
         raise HTTPException(422, "请填写连接配置")
     return payload
@@ -29,7 +30,7 @@ async def _read_config(request: Request) -> dict[str, object]:
 
 @router.post("", response_model=ValidationJob, status_code=202)
 async def create_validation(request: Request, response: Response) -> ValidationJob:
-    """手动解析含凭据请求，保证任何 422 都不会携带原始 input。"""
+    """手动解析连接请求，校验错误保留全部诊断。"""
     response.headers["Cache-Control"] = "no-store"
     payload = await _read_config(request)
     if not isinstance(payload.get("channel"), str):
@@ -39,7 +40,7 @@ async def create_validation(request: Request, response: Response) -> ValidationJ
         assert isinstance(channel, str) and isinstance(config, dict)
         return service.create(channel, config)
     except ValidationRejected as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exception_details(exc)) from exc
 
 
 @account_router.post("/{account_id}/connection-validation", response_model=ValidationJob, status_code=202)
@@ -62,7 +63,7 @@ async def create_account_validation(
     try:
         return service.create(channel, config)
     except ValidationRejected as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exception_details(exc)) from exc
 
 
 @router.get("/{validation_id}", response_model=ValidationJob)
@@ -72,7 +73,7 @@ async def get_validation(validation_id: str, response: Response) -> ValidationJo
     try:
         return service.get(validation_id)
     except ValidationRejected as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exception_details(exc)) from exc
 
 
 @router.delete("/{validation_id}", response_model=ValidationJob)
@@ -81,7 +82,7 @@ async def cancel_validation(validation_id: str) -> ValidationJob:
     try:
         return await service.cancel(validation_id)
     except ValidationRejected as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exception_details(exc)) from exc
 
 
 @router.get("/{validation_id}/steps/{step_id}/table", response_model=ValidationTable)
@@ -91,4 +92,4 @@ async def get_validation_table(validation_id: str, step_id: str, response: Respo
     try:
         return service.get_table(validation_id, step_id)
     except ValidationRejected as exc:
-        raise HTTPException(exc.status, str(exc)) from exc
+        raise HTTPException(exc.status, exception_details(exc)) from exc

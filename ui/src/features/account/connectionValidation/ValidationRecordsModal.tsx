@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { ApiError } from '@/lib/api/client'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { getValidationTable, type ValidationTable, type ValidationTableSummary } from '@/lib/api/connectionValidation'
 import { selectValidationRows, validationCellText } from '@/features/account/connectionValidation/validationTable'
@@ -21,7 +23,7 @@ export function ValidationRecordsModal({ selection, onClose }: {
   const cache = useRef(new Map<string, ValidationTable>())
   const cacheJob = useRef<string | null>(null)
   const [loaded, setLoaded] = useState<{ key: string; table: ValidationTable } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
   const key = shown ? `${shown.validationId}/${shown.stepId}` : ''
   useEffect(() => {
@@ -37,7 +39,7 @@ export function ValidationRecordsModal({ selection, onClose }: {
       cache.current.set(key, table)
       setLoaded({ key, table })
     }, (failure) => {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : '无法读取查询记录')
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure : new Error(String(failure)))
     })
     return () => controller.abort()
   }, [selection, key, attempt])
@@ -51,7 +53,7 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
   table: ValidationTable | null
   details: ValidationTableSummary | null
   open: boolean
-  error: string | null
+  error: Error | null
   onRetry: () => void
   onClose: () => void
 }) {
@@ -117,8 +119,9 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
         {rows.length === 0 && <p className="sticky left-0 py-12 text-center text-[13px] text-ink-3">{table.rows.length === 0 ? '本次查询无记录' : '没有匹配的记录'}</p>}
       </div>
     </> : <div className="flex min-h-[300px] flex-col items-center justify-center gap-3 text-[13px] text-ink-3" aria-live="polite">
-      <p role={error ? 'alert' : 'status'}>{error ?? '正在读取查询记录…'}</p>
-      {error && <button type="button" onClick={onRetry} className="cursor-pointer text-accent">重新读取</button>}
+      <ErrorNotice title="查询记录读取失败" error={error} embedded contextKey={open ? 'open' : 'closed'} onRetry={error instanceof ApiError && error.status === 404 ? undefined : onRetry} />
+      {error instanceof ApiError && error.status === 404 && <p>验证任务已过期，请关闭后重新验证。</p>}
+      {!error && <p role="status">正在读取查询记录…</p>}
     </div>}
   </CenteredModal>
 }

@@ -97,7 +97,7 @@ export function PortfoliosPage() {
           targetFetches[p.id]?.snapshot ?? null,
           targetFetches[p.id]?.loading ?? true,
           targetFetches[p.id]?.error ?? null,
-          false,
+          !!targetFetches[p.id]?.error,
         ),
   )
   const targetsReady = list.every((p) => p.id == null || (targetFetches[p.id] !== undefined && !targetFetches[p.id].loading))
@@ -166,7 +166,7 @@ export function PortfoliosPage() {
       {list.length > 0 && (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-4">
           {list.map((p, index) => (
-            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} />
+            <PortfolioCard key={p.id} p={p} targetState={targetStates[index]} targetFetch={p.id == null ? undefined : targetFetches[p.id]} followers={followersOf(p.id)} accountsReady={accounts != null} accountsError={accountsError} onDelete={askDelete} />
           ))}
         </div>
       )}
@@ -188,6 +188,7 @@ export function PortfoliosPage() {
 function PortfolioCard({
   p,
   targetState,
+  targetFetch,
   followers,
   accountsReady,
   accountsError,
@@ -195,6 +196,7 @@ function PortfolioCard({
 }: {
   p: PortfolioLite
   targetState: PortfolioTargetState
+  targetFetch?: import('@/features/portfolio/usePortfoliosTargets').PortfolioTargetFetch
   followers: AccountDashboardItem[]
   accountsReady: boolean
   accountsError: Error | null
@@ -243,6 +245,7 @@ function PortfolioCard({
       </div>
 
       <TargetSummary state={targetState} />
+      <div onClick={(event) => event.stopPropagation()}><ErrorNotice title={`${p.name} 目标读取失败`} error={targetFetch?.error} evidence={[{ label: '组合 ID', value: String(p.id) }]} variant={targetFetch?.snapshot ? 'stale' : 'compact'} updatedAt={targetFetch?.updatedAt} onRetry={targetFetch?.refresh} contextKey={p.id ?? undefined} /></div>
 
       <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3 border-t border-line pt-3 text-[13.5px] text-ink-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">

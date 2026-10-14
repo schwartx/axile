@@ -16,6 +16,7 @@ interface AccountActionsProps {
   onExec: () => void
   onClear: () => void
   onTerminate: () => void
+  toggling?: boolean
   onToggleStarted: () => void
   onEdit: () => void
   onCopy: () => void
@@ -142,6 +143,7 @@ export function AccountActions(props: AccountActionsProps) {
       <Tooltip content={toggleTip} delay={ACTION_TIP_MS} arrow>
         <button
           className={`${BTN} border-line text-ink-2 hover:border-ink-3/40 hover:text-ink-1`}
+          disabled={props.toggling}
           onClick={props.onToggleStarted}
           aria-label={props.isStarted ? '暂停自动执行' : '启动自动执行'}
         >

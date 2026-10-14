@@ -71,6 +71,7 @@ def validation_worker(connection: Connection) -> None:
         send(
             {
                 "details": raw,
+                "traceback": "".join(traceback.format_exception(exc)),
                 "result": "failed",
                 "reason_code": code,
                 "message": message,

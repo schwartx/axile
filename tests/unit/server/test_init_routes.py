@@ -119,7 +119,7 @@ def test_system_notification_function_sample_run(client: TestClient, monkeypatch
     assert captured[0]["is_test"] is True
 
 
-def test_validation_error_never_echoes_or_logs_input() -> None:
+def test_validation_error_preserves_complete_input_and_context() -> None:
     sentinel = "unique-validation-secret"
     request = Request({"type": "http", "method": "POST", "path": "/api/v1/init/save", "headers": []})
     exc = RequestValidationError(
@@ -129,6 +129,7 @@ def test_validation_error_never_echoes_or_logs_input() -> None:
                 "loc": ("body", "exe_err_feishu_key"),
                 "msg": "Input should be a valid string",
                 "input": sentinel,
+                "ctx": {"error": ValueError("token=original-error"), "value": float("nan")},
             }
         ]
     )
@@ -139,8 +140,10 @@ def test_validation_error_never_echoes_or_logs_input() -> None:
     finally:
         logger.remove(sink_id)
 
-    assert sentinel not in response.body.decode()
-    assert sentinel not in "\n".join(captured)
+    assert '"value":"nan"' in response.body.decode()
+    assert "token=original-error" in response.body.decode()
+    assert sentinel in response.body.decode()
+    assert sentinel in "\n".join(captured)
 
 
 def test_test_db_success(client: TestClient, tmp_path: Path) -> None:

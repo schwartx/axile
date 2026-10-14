@@ -20,6 +20,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
+from axile.server.error_details import exception_details, json_error_value
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution.dispatch import ExecutionBackendKind, resolve_execution_backend_kind
 from axile.server.execution.execution_records_output import (
@@ -142,9 +143,9 @@ async def _run_rebalance_via_worker_process(request: RebalanceBackendRequest) ->
         request.logger.warning(f"交易被终止 trigger={request.trigger_source}")
         raise
     except Exception as exc:
-        # 异常原文只进日志（opt(exception=...)）；用户可读说明用固定文案。
+        # 摘要说明执行阶段；原文与实际 traceback 单独留存。
         msg = "调仓执行失败，具体原因未确认"
-        await _append_rebalance_error_record(request, msg)
+        await _append_rebalance_error_record(request, msg, exc)
         request.logger.opt(exception=exc).error("{}", msg)
         raise
 
@@ -375,32 +376,34 @@ async def _record_rebalance_inline_failure(
             reason_family=ExecutionReasonFamily.SYSTEM,
             reason_code="COMMON.EXECUTION_FAILED",
             seq=executor.next_audit_seq() if executor is not None else 0,
-            # 人话错误进公共层；异常原文只留日志（logger.opt(exception=...)）。
+            # 阶段说明与技术原文一起进入既有事件。
             details=_failure_details(error, msg, request.trigger_source),
         )
-    await _append_rebalance_error_record(request, msg)
+    await _append_rebalance_error_record(request, msg, error)
     request.logger.opt(exception=error).error("{}", msg)
 
 
 def _failure_details(error: Exception, message: str, trigger_source: str) -> dict[str, object]:
-    """保留渠道结构化分类和恢复时间；诊断原文只进入日志。"""
-    details: dict[str, object] = {"error": message, "debug": {"trigger_source": trigger_source}}
+    """保留渠道结构化分类和恢复时间；诊断原文完整进入事件。"""
+    details: dict[str, object] = {
+        **exception_details(error),
+        "error": message,
+        "debug": {"trigger_source": trigger_source},
+    }
     diagnostics = getattr(error, "diagnostics", None)
     if isinstance(diagnostics, list):
         details["error_type"] = type(error).__name__
-        details["diagnostics"] = [
-            {key: getattr(item, key, None) for key in ("code", "category", "operation", "retry_after")}
-            for item in diagnostics
-        ]
+        details["diagnostics"] = json_error_value(diagnostics)
     return details
 
 
-async def _append_rebalance_error_record(request: RebalanceBackendRequest, msg: str) -> None:
+async def _append_rebalance_error_record(request: RebalanceBackendRequest, msg: str, error: Exception) -> None:
     """为调仓失败路径持久化错误执行记录。"""
     await append_error_execute_record(
         account_id=request.account.id,
         raw_input=request.standard_input_dict,
         msg=msg,
+        raw_result=exception_details(error),
         execution_id=request.execution_id,
     )
 
@@ -598,20 +601,22 @@ async def _record_clear_positions_failure(
         reason_code="COMMON.EXECUTION_FAILED",
         # worker 侧有可能在 executor 尚未完成 prepare 前就失败，此时退回到 seq=0。
         seq=0 if executor is None else executor.next_audit_seq(),
-        # 人话错误进公共层；异常原文只留日志（logger.opt(exception=...)）。
+        # 阶段说明与技术原文一起进入既有事件。
         details=_failure_details(error, msg, request.trigger_source),
     )
-    await _append_clear_positions_error_record(request, msg)
+    await _append_clear_positions_error_record(request, msg, error)
     request.logger.opt(exception=error).error("{}", msg)
 
 
 async def _append_clear_positions_error_record(
     request: ClearPositionsBackendRequest,
     msg: str,
+    error: Exception,
 ) -> None:
     """为清仓失败路径持久化错误执行记录。"""
     await append_error_execute_record(
         account_id=request.account.id,
         msg=msg,
+        raw_result=exception_details(error),
         execution_id=request.execution_id,
     )

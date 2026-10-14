@@ -11,21 +11,21 @@ type TargetSnapshotState = ReturnType<typeof useTargetSnapshot>
  * 排版与试跑结果（WeightResult）同构（摘要行 + WeightBars），来源由面板头部的
  * 生效/试跑分段显式命名；快照特有的加载 / 错误 / 空态在这里收口。
  */
-export function SnapshotResult({ weights }: { weights: TargetSnapshotState }) {
+export function SnapshotResult({ weights, contextKey }: { weights: TargetSnapshotState; contextKey?: string | number }) {
   const summary = targetWeightSummary(weights.data?.weights ?? {})
   const entries = summary.entries.map(({ symbol, weight }) => [symbol, weight] as [string, number])
 
   return (
     <div>
       {!weights.data && weights.loading && <SkeletonLines rows={3} />}
-      <ErrorNotice
+      <ErrorNotice contextKey={contextKey}
         title="目标权重快照加载失败"
         error={weights.error}
         variant={weights.stale ? 'stale' : 'section'}
         updatedAt={weights.updatedAt}
         onRetry={weights.reloadSnapshot}
       />
-      <ErrorNotice
+      <ErrorNotice contextKey={contextKey}
         title="重新计算失败"
         error={weights.recalculateError}
         variant="mutation"

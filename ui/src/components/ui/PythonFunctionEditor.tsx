@@ -1,3 +1,6 @@
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
+import { type PythonChecks } from '@/components/ui/pythonChecks'
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import { python } from '@codemirror/lang-python'
@@ -38,11 +41,13 @@ export interface PythonValidationState {
   errorType?: string | null
   errorMessage?: string | null
   traceback?: string | null
+  error?: unknown
 }
 
 /** 暴露给外部控制的编辑器句柄（如「粘贴」按钮点击后把焦点还给代码区）。 */
 export interface PythonEditorHandle {
   focus: () => void
+  check: () => void
   revealLine: (line: number) => void
   replaceCode: (code: string) => void
 }
@@ -85,17 +90,9 @@ export function PythonRunResultBody({
         (resultContent ?? <p className="text-[14px] text-ink-2">函数执行成功。</p>)
       ) : (
         <>
-          <p className="font-mono text-[13.5px] text-warn">
-            {[result.errorType, result.errorMessage].filter(Boolean).join(': ') || '执行出错'}
-          </p>
-          {result.traceback && (
-            <details className="mt-2.5 rounded-[8px] border border-line bg-code-bg px-4 py-3">
-              <summary className="cursor-pointer select-none text-[13.5px] text-ink-2">完整 traceback</summary>
-              <pre className="mt-2 max-h-[220px] overflow-auto whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-warn">
-                {result.traceback}
-              </pre>
-            </details>
-          )}
+          <ErrorNotice title="Python 试跑失败" error={result.error ?? {
+            message: [result.errorType, result.errorMessage].filter(Boolean).join(': ') || '执行出错', traceback: result.traceback,
+          }} />
         </>
       )}
     </div>
@@ -135,6 +132,7 @@ export function PythonFunctionEditor({
   layout = 'console',
   ref,
   onProblems,
+  onChecks,
   headerTarget,
   statusTarget,
 }: {
@@ -165,6 +163,7 @@ export function PythonFunctionEditor({
   layout?: 'console' | 'workbench'
   ref?: Ref<PythonEditorHandle>
   onProblems?: (problems: PythonProblem[]) => void
+  onChecks?: (checks: PythonChecks) => void
   headerTarget?: HTMLElement | null
   statusTarget?: HTMLElement | null
 }) {
@@ -180,6 +179,9 @@ export function PythonFunctionEditor({
   onChangeRef.current = onChange
   const changeCode = useCallback((value: string) => onChangeRef.current(value), [])
   const [view, setView] = useState<EditorView | null>(null)
+  const [checks, setChecks] = useState<PythonChecks | null>(null)
+  const checksCallback = useRef(onChecks)
+  checksCallback.current = onChecks
   const [languageStatus, setLanguageStatus] = useState<LanguageStatus>('connecting')
   const [languageClient, setLanguageClient] = useState<LSPClient | null>(null)
   const [position, setPosition] = useState({ line: 1, column: 1 })
@@ -216,7 +218,7 @@ export function PythonFunctionEditor({
       if (existing) { resolve(existing); return }
       pendingSourceViews.current.set(uri, [...(pendingSourceViews.current.get(uri) ?? []), resolve])
       setSourceTabs((tabs) => tabs.some((tab) => tab.uri === uri) ? tabs : [...tabs, { uri, code }])
-    }), (next) => setSymbols(next), setLanguageClient)
+    }), (next) => setSymbols(next), setLanguageClient, (next) => { setChecks(next); checksCallback.current?.(next) })
   }, [view, languageSlot, kind])
 
   const closeSource = (uri: string) => {
@@ -271,6 +273,7 @@ export function PythonFunctionEditor({
   useImperativeHandle(
     ref,
     () => ({
+      check: () => { const editor = cmRef.current?.view; if (editor) forceLinting(editor) },
       focus: () => cmRef.current?.view?.focus(),
       revealLine: (lineNo: number) => {
         const view = cmRef.current?.view
@@ -529,6 +532,7 @@ export function PythonFunctionEditor({
     </div>
   )
 
+  const currentChecks = checks?.document === code ? checks : null
   const saveBar = saveAction && (
     <PythonSaveBar action={{
       ...saveAction,
@@ -563,6 +567,7 @@ export function PythonFunctionEditor({
           fill ? 'flex min-h-0 flex-1 flex-col' : ''
         }`}
       >
+        <PythonCheckStatus checks={currentChecks} onRetry={() => { if (view) forceLinting(view) }} />
         {/* 工具条：状态句同槽换字；图标槽恒占 14px，出现/消失不推字。 */}
         <div className={`flex flex-none flex-wrap items-center gap-x-3.5 gap-y-2 border-b px-3.5 py-2.5 ${style.band}`}>
           <span className="flex min-w-[130px] flex-1 items-center gap-1.5 text-[14px] font-[520]">

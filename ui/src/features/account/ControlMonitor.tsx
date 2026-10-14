@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useEffect, useRef, useState } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -27,7 +28,7 @@ function controlValue(rule: ControlRule | undefined): string {
 function ControlDialog({ open, frame, accountId, accountName, selected, draft, onDraftChange, onSave, onClose, model, loading, failed, retry, names }: {
   model: AccountControlPolicyEditorModel | null
   loading: boolean
-  failed: boolean
+  failed: Error | null
   retry: () => void
   names: Record<string, string>
   open: boolean
@@ -76,6 +77,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
       </section>
       <section aria-label="摘要显示设置">
         <div className="flex justify-between"><h3 className="text-sm font-[640]">摘要显示设置</h3><span className="text-xs text-ink-3">{draft.length}/3</span></div>
+        <ErrorNotice title="操作目录加载失败" error={failed} embedded onRetry={retry} contextKey={open ? accountId : undefined} />
         <div ref={rowsRef} className="divide-y divide-line">
           {draft.map((id, index) => {
             const [, key, window] = id.split(':')
@@ -96,7 +98,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
         </div>
         {draft.length < 3 ? <button ref={addRef} type="button" aria-expanded={adding} className="py-2 text-sm text-accent" onClick={() => {
           setAdding(!adding); setOperation(null)
-          requestAnimationFrame(() => adding ? addRef.current?.focus() : searchRef.current?.focus())
+          if (!adding) requestAnimationFrame(() => searchRef.current?.focus())
         }}>{adding ? '收起' : '＋ 添加指标'}</button> : <p className="py-2 text-xs text-ink-3">最多显示三项，移除一项后可添加</p>}
         <div inert={!adding || draft.length >= 3} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${adding && draft.length < 3 ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
@@ -123,7 +125,6 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
           </div>
         </div>
         {loading && <p className="text-xs text-ink-3" role="status">正在读取操作目录…</p>}
-        {failed && <p className="text-xs text-warn" role="status">操作目录加载失败，可添加已有实时操作。<button type="button" onClick={retry} className="ml-2 text-accent">重试</button></p>}
         <p className={`mt-2 text-xs ${draft.length === 0 ? 'text-warn' : 'text-ink-3'}`}>{draft.length === 0 ? '请至少选择一项摘要。' : '选择 1～3 项，保存后显示在账户摘要中。'}偏好仅保存在此浏览器此账户，不修改交易限额。</p>
       </section>
 
@@ -150,15 +151,15 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const [draft, setDraft] = useState(selected)
   const [model, setModel] = useState<AccountControlPolicyEditorModel | null>(null)
   const [loading, setLoading] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const [failed, setFailed] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!open) return
     const controller = new AbortController()
-    setLoading(true); setFailed(false)
+    setLoading(true); setFailed(null)
     getAccountControlPolicy(accountId, undefined, controller.signal).then((value) => {
       if (!controller.signal.aborted) setModel(value)
-    }).catch(() => { if (!controller.signal.aborted) setFailed(true) }).finally(() => {
+    }).catch((error) => { if (!controller.signal.aborted) setFailed(error instanceof Error ? error : new Error(String(error))) }).finally(() => {
       if (!controller.signal.aborted) setLoading(false)
     })
     return () => controller.abort()

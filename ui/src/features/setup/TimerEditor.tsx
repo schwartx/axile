@@ -1,3 +1,4 @@
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 /**
  * 定时任务编辑器（向导「定时」步与账户编辑页共用）。
  *
@@ -126,10 +127,11 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   const tabFade = useRemountFade(v.timerTab)
   const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | null>(null)
   const [previewLoadingMore, setPreviewLoadingMore] = useState(false)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [previewMoreError, setPreviewMoreError] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState<Error | null>(null)
+  const [previewMoreError, setPreviewMoreError] = useState<Error | null>(null)
   const [supplementSummaries, setSupplementSummaries] = useState<Map<number, SupplementPreviewValue>>(new Map())
-  const [supplementPreviewError, setSupplementPreviewError] = useState(false)
+  const [supplementPreviewError, setSupplementPreviewError] = useState<Error | null>(null)
+  const [previewRetry, setPreviewRetry] = useState(0)
   const [supplementPreviewRetry, setSupplementPreviewRetry] = useState(0)
   const supplementCache = useRef({ key: '', values: new Map<number, SupplementPreviewValue>() })
   const [previewWide, setPreviewWide] = useState(false)
@@ -241,7 +243,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     setPreviewMoreError(null)
     setSupplementSummaries(new Map())
     supplementCache.current = { key: '', values: new Map() }
-    setSupplementPreviewError(false)
+    setSupplementPreviewError(null)
 
     if (!tradeChannel || !v.autoOn || rawErr || !cronExpr || !previewKey) {
       previewResultKey.current = null
@@ -274,14 +276,14 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
         .catch((error) => {
           if (controller.signal.aborted || requestId !== previewRequestId.current) return
           previewCascadePending.current = false
-          setPreviewError(error instanceof Error ? error.message : String(error))
+          setPreviewError(error instanceof Error ? error : new Error(String(error)))
         })
     }, 250)
     return () => {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [tradeChannel, v.autoOn, rawErr, cronExpr, layout, previewKey])
+  }, [tradeChannel, v.autoOn, rawErr, cronExpr, layout, previewKey, previewRetry])
 
   // 基础时间线独立于补发配置。仅为已显示的有效基础触发补算摘要，保留旧值直至结果就绪。
   useEffect(() => {
@@ -290,7 +292,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     if (supplementCache.current.key !== key) supplementCache.current = { key, values: new Map() }
     const cache = supplementCache.current
     const bases = schedulePreviewRows(schedulePreview.items).filter((item) => item.action === 'execute' && item.calendar_status !== 'unavailable')
-    setSupplementPreviewError(false)
+    setSupplementPreviewError(null)
     if (v.supN === 0) {
       const values = new Map(bases.map((item) => [Date.parse(item.scheduled_at), { count: 0, configuredCount: 0 }]))
       cache.values = values
@@ -315,8 +317,8 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
             for (const [time, summary] of updates) cache.values.set(time, summary)
             setSupplementSummaries((current) => new Map([...current, ...updates]))
           }
-        } catch {
-          if (!controller.signal.aborted && supplementCache.current === cache) setSupplementPreviewError(true)
+        } catch (error) {
+          if (!controller.signal.aborted && supplementCache.current === cache) setSupplementPreviewError(error instanceof Error ? error : new Error(String(error)))
         }
       })()
     }, 250)
@@ -359,7 +361,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
       })
       .catch((error) => {
         if (controller.signal.aborted || requestId !== previewAppendRequestId.current) return
-        setPreviewMoreError(error instanceof Error ? error.message : String(error))
+        setPreviewMoreError(error instanceof Error ? error : new Error(String(error)))
         setPreviewLoadingMore(false)
         if (previewAppendController.current === controller) previewAppendController.current = null
       })
@@ -566,7 +568,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   ) : customEmpty ? (
     <p className="text-[14px] text-ink-3">输入自定义节奏后显示。</p>
   ) : previewError ? (
-    <p className="border-l-2 border-warn px-3 text-[14px] text-warn">预览暂不可用，仍可保存。{previewError}</p>
+    <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="排程预览读取失败，仍可保存" error={previewError} onRetry={() => setPreviewRetry((value) => value + 1)} />
   ) : expectPreview && !schedulePreview ? (
     <div className="space-y-2" aria-label="正在加载排程预览">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-4 w-full animate-pulse rounded bg-fill motion-reduce:animate-none" />)}</div>
   ) : schedulePreview?.items.length ? (
@@ -590,12 +592,8 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
           />
         )
       })}
-      {supplementPreviewError && (
-        <div className="flex items-center justify-between gap-2 border-l-2 border-warn px-2 text-[13px] text-warn">
-          <span>补发预览未更新</span>
-          <button type="button" className="shrink-0 font-semibold hover:underline" onClick={() => setSupplementPreviewRetry((value) => value + 1)}>重试</button>
-        </div>
-      )}
+      <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }, { label: '补发配置', value: `${v.supN} 次，间隔 ${v.supM} 分钟` }]} title="补发预览未更新" error={supplementPreviewError} contextKey={previewKey}
+        onRetry={() => setSupplementPreviewRetry((value) => value + 1)} />
       {schedulePreview.has_more && ((layout === 'page' && previewWide) || previewRows.length < previewTargetRows) && (
         <div ref={previewSentinelRef} className="pt-1">
           {previewLoadingMore ? (
@@ -605,12 +603,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
               ))}
             </div>
           ) : previewMoreError ? (
-            <div className="flex items-center justify-between gap-2 border-l-2 border-warn px-2 text-[13px] text-warn">
-              <span title={previewMoreError}>未来排程续取失败</span>
-              <button type="button" className="flex-none font-semibold hover:underline" onClick={loadMore}>
-                重试
-              </button>
-            </div>
+            <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="未来排程续取失败" error={previewMoreError} onRetry={loadMore} />
           ) : (
             <div className="h-px" aria-hidden="true" />
           )}

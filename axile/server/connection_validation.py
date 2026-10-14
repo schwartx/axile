@@ -14,10 +14,11 @@ from pydantic import BaseModel, Field, ValidationError
 from axile.channels import get_channel
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.server.connection_validation_worker import validation_worker
+from axile.server.error_details import exception_details
 
 
 class ValidationRejected(ValueError):
-    """带 HTTP 状态的安全拒绝原因。"""
+    """带 HTTP 状态的拒绝原因。"""
 
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
@@ -31,6 +32,7 @@ class ValidationErrorPublic(BaseModel):
     message: str
     error_id: int | None = None
     details: str | None = None
+    traceback: str | None = None
 
 
 class ValidationDetailRow(BaseModel):
@@ -118,8 +120,8 @@ class ValidationService:
         try:
             validated = plugin.account_config_model.model_validate(config)
         except (ValidationError, ValueError) as exc:
-            # 不使用 exc.errors() 默认携带的 input，也不回显自定义校验器的原文。
-            raise ValidationRejected(422, "连接配置不完整或格式不正确，请检查必填项") from exc
+            # 路由沿异常链保留原始校验项与异常原文。
+            raise ValidationRejected(422, str(exc)) from exc
         normalized = validated.model_dump(mode="json")
         self.prune()
         if any(job.status in {"queued", "running"} for job in self.jobs.values()) or any(
@@ -187,9 +189,14 @@ class ValidationService:
                 event.get("diagnostic"),
             )
             if not any(step.status != "pending" for step in job.steps):
-                event = {**event, "message": "连接验证初始化失败，请查看服务日志"}
+                event = {**event, "message": "连接验证初始化失败"}
             self.fail(
-                job, str(event["reason_code"]), str(event["message"]), event.get("error_id"), event.get("details")
+                job,
+                str(event["reason_code"]),
+                str(event["message"]),
+                event.get("error_id"),
+                event.get("details"),
+                event.get("traceback"),
             )
         elif event.get("result") == "succeeded":
             if all(step.status == "passed" for step in job.steps):
@@ -218,9 +225,15 @@ class ValidationService:
         return table
 
     def fail(
-        self, job: ValidationJob, code: str, message: str, error_id: object = None, details: object = None
+        self,
+        job: ValidationJob,
+        code: str,
+        message: str,
+        error_id: object = None,
+        details: object = None,
+        trace: object = None,
     ) -> None:
-        """记录安全错误并将后续阶段标记为未执行。"""
+        """记录原始错误并将后续阶段标记为未执行。"""
         active = next((step for step in job.steps if step.status == "running"), None)
         if code == "CONNECTION.BROKER_REJECTED":
             label = active.label if active is not None else ""
@@ -237,6 +250,7 @@ class ValidationService:
         error = ValidationErrorPublic(
             reason_code=code,
             message=message,
+            traceback=trace if isinstance(trace, str) else None,
             error_id=error_id if isinstance(error_id, int) else None,
             details=details if isinstance(details, str) else None,
         )
@@ -281,9 +295,15 @@ class ValidationService:
                     await asyncio.to_thread(_release_process, process)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - 不记录包含凭据的进程启动异常
+        except Exception as exc:  # noqa: BLE001 - 进程边界保留失败证据
             if job.status in {"queued", "running"}:
-                self.fail(job, "CONNECTION.WORKER_FAILED", "验证进程异常退出，请检查 SDK 和运行环境")
+                self.fail(
+                    job,
+                    "CONNECTION.WORKER_FAILED",
+                    "验证进程初始化失败",
+                    details=str(exc),
+                    trace=exception_details(exc)["traceback"],
+                )
         finally:
             parent.close()
             child.close()

@@ -17,6 +17,7 @@ from axile.server.db.models import (
     AccountAssetSnapshotListPublic,
     AccountAssetSnapshotPublic,
 )
+from axile.server.error_details import exception_details
 from axile.server.execution.registry import (
     clear_account_asset_refresh,
     try_register_account_asset_refresh,
@@ -55,7 +56,7 @@ async def refresh_account_assets(session: SessionDep, account_id: int) -> Accoun
         logger.warning(f"账户资产刷新超时: account_id={account_id}, error={exc}")
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="账户权益查询超时，请稍后重试",
+            detail=exception_details(exc, "账户权益查询超时，请稍后重试"),
         ) from exc
     except HTTPException:
         raise
@@ -64,7 +65,7 @@ async def refresh_account_assets(session: SessionDep, account_id: int) -> Accoun
         logger.exception(f"账户资产刷新失败: account_id={account_id}, error={exc}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="账户权益查询失败，请检查渠道连接",
+            detail=exception_details(exc, "账户权益查询失败"),
         ) from exc
     finally:
         clear_account_asset_refresh(account_id)

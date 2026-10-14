@@ -6,6 +6,7 @@ export interface ConnectionValidationError {
   message: string
   error_id?: number | null
   details?: string | null
+  traceback?: string | null
 }
 export type ValidationCell = string | number | boolean | null
 

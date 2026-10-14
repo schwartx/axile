@@ -208,3 +208,13 @@ def test_system_and_account_keys_are_isolated(monkeypatch):
     code = "import os\ndef notify(context):\n    assert os.environ['AXILE_SYSTEM_FEISHU_KEY'] == context['system']\n    assert os.environ['AXILE_ACCOUNT_FEISHU_KEY'] == context['account']"
     assert run_notification_function(code, {"system": "system", "account": ""}, system_feishu_key="system").ok
     assert run_notification_function(code, {"system": "", "account": "account"}, feishu_key="account").ok
+
+
+def test_notification_error_preserves_long_original_and_child_traceback():
+    raw = "long synthetic error " * 150 + "\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因"
+    result = run_notification_function(f"def notify(context):\n    raise RuntimeError({raw!r})\n", {})
+    assert result.ok is False
+    assert result.error == f"RuntimeError: {raw}"
+    assert result.error_line == 2
+    assert 'File "<notification>", line 2' in result.traceback
+    assert raw in result.traceback

@@ -22,6 +22,7 @@ from axile.server.db.models import (
     ValidateCustomCalcResponse,
 )
 from axile.server.db.models.account import AccountContext
+from axile.server.error_details import exception_details
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import clear_target_refresh, try_register_target_refresh
 from axile.server.portfolio_runner import calculate_sample_portfolio
@@ -116,15 +117,20 @@ async def update_portfolio(session: SessionDep, portfolio_id: int, portfolio: Po
 
 async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> dict[str, float]:
     """执行组合函数并返回未经账户杠杆和精度处理的目标权重."""
-    if account is None:
-        result = await asyncio.to_thread(calculate_sample_portfolio, portfolio.custom_calc_py_code)
-    else:
-        result = await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
+    try:
+        if account is None:
+            result = await asyncio.to_thread(calculate_sample_portfolio, portfolio.custom_calc_py_code)
+        else:
+            result = await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
     if not result.ok or result.target is None:
         error = result.error or ValueError("自定义组合函数执行失败")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"自定义组合函数执行失败, 原因: {error}",
+            detail=exception_details(error, "自定义组合函数执行失败"),
         )
     return result.target
 

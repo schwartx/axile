@@ -7,18 +7,24 @@
 
 const BASE = '/api/v1'
 
-/** API 调用失败时抛出的统一错误，仅保留可安全展示的诊断标识。 */
+/** API 错误保留完整响应；摘要由展示层单独生成。 */
 export class ApiError extends Error {
   status: number
   code: string | null
   requestId: string | null
+  rawText: string | null
+  body: unknown
+  validationIssues: unknown[]
 
-  constructor(status: number, message: string, options: { code?: string | null; requestId?: string | null } = {}) {
+  constructor(status: number, message: string, options: { code?: string | null; requestId?: string | null; rawText?: string | null; body?: unknown; validationIssues?: unknown[] } = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = options.code ?? null
     this.requestId = options.requestId ?? null
+    this.rawText = options.rawText ?? null
+    this.body = options.body ?? null
+    this.validationIssues = options.validationIssues ?? []
   }
 }
 
@@ -29,29 +35,34 @@ type ErrorBody = {
   request_id?: unknown
 }
 
-/** FastAPI 校验错误只取字段路径与消息，刻意丢弃可能含密钥的 input/body。 */
+/** 全部字段消息进入正文，原始校验项另行完整保留。 */
 function validationMessage(detail: unknown): string | null {
   if (!Array.isArray(detail)) return null
-  const issue = detail[0]
-  if (!issue || typeof issue !== 'object') return null
-  const { loc, msg } = issue as { loc?: unknown; msg?: unknown }
-  if (typeof msg !== 'string') return null
-  const path = Array.isArray(loc)
-    ? loc.filter((part) => part !== 'body').map(String).join('.')
-    : ''
-  return path ? `${path}：${msg}` : msg
+  const messages = detail.flatMap((issue) => {
+    if (!issue || typeof issue !== 'object') return []
+    const { loc, msg } = issue as { loc?: unknown; msg?: unknown }
+    if (typeof msg !== 'string') return []
+    const path = Array.isArray(loc) ? (loc[0] === 'body' ? loc.slice(1) : loc).map(String).join('.') : ''
+    return [path ? `${path}：${msg}` : msg]
+  })
+  return messages.length ? messages.join('\n') : null
 }
 
-export function apiErrorFromBody(status: number, statusText: string, body: unknown): ApiError {
+export function apiErrorFromBody(status: number, statusText: string, body: unknown, rawText: string | null = null, requestId: string | null = null): ApiError {
   const payload = body && typeof body === 'object' ? body as ErrorBody : {}
+  const detail = payload.detail && typeof payload.detail === 'object' ? payload.detail as ErrorBody : {}
+  const textMessage = (typeof body === 'string' ? body : rawText) || statusText
   const message = typeof payload.message === 'string'
     ? payload.message
     : typeof payload.detail === 'string'
       ? payload.detail
-      : (validationMessage(payload.detail) ?? statusText) || `HTTP ${status}`
+      : typeof detail.message === 'string' ? detail.message
+        : (validationMessage(payload.detail) ?? textMessage) || `HTTP ${status}`
   return new ApiError(status, message, {
-    code: typeof payload.code === 'string' ? payload.code : null,
-    requestId: typeof payload.request_id === 'string' ? payload.request_id : null,
+    code: typeof payload.code === 'string' ? payload.code : typeof detail.code === 'string' ? detail.code : null,
+    requestId: typeof payload.request_id === 'string' ? payload.request_id : typeof detail.request_id === 'string' ? detail.request_id : requestId,
+    body, rawText,
+    validationIssues: Array.isArray(payload.detail) ? payload.detail : [],
   })
 }
 
@@ -61,13 +72,14 @@ function headers(extra?: HeadersInit): HeadersInit {
 
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
+    const rawText = await res.text()
     let body: unknown = null
     try {
-      body = await res.json()
+      body = JSON.parse(rawText)
     } catch {
-      // 非 JSON 响应沿用 HTTP 状态，不把响应正文直接暴露给 UI。
+      // 非 JSON 正文也属于错误原文。
     }
-    throw apiErrorFromBody(res.status, res.statusText, body)
+    throw apiErrorFromBody(res.status, res.statusText, body, rawText, res.headers.get('x-request-id'))
   }
   if (res.status === 204) return undefined as T
   return (await res.json()) as T

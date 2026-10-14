@@ -857,16 +857,23 @@ async def list_execute_records(
     session: SessionDep,
     account_id: int,
     pagination: HistoryPaginationDep,
+    execution_id: str | None = None,
+    record_id: int | None = None,
 ) -> ExecuteRecordListPublic:
     """获取账户的执行记录."""
     db_account = await _get_account_or_404(session, account_id)
 
-    count_statement = select(func.count()).select_from(ExecuteRecord).where(ExecuteRecord.account_id == db_account.id)
+    filters = [ExecuteRecord.account_id == db_account.id]
+    if execution_id is not None:
+        filters.append(ExecuteRecord.execution_id == execution_id)
+    if record_id is not None:
+        filters.append(ExecuteRecord.id == record_id)
+    count_statement = select(func.count()).select_from(ExecuteRecord).where(*filters)
     count = (await session.execute(count_statement)).scalar_one()
 
     statement = (
         select(ExecuteRecord)
-        .where(ExecuteRecord.account_id == db_account.id)
+        .where(*filters)
         # execute_record 没有独立时间排序键时，按自增 id 倒序近似“最新在前”的时间线。
         .order_by(desc(ExecuteRecord.id))
         .offset(pagination.skip)

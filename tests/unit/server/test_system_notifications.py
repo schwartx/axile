@@ -73,7 +73,7 @@ def test_trial_uses_selected_credentials_and_sample_without_persisting(client, m
 
     def run(code, context, **kwargs):
         captured.append((context, kwargs))
-        return NotificationFunctionResult(False, "boom", 2)
+        return NotificationFunctionResult(False, "boom", 2, "Traceback\n  child.py:2\nboom")
 
     monkeypatch.setattr(init_module, "run_notification_function", run)
     monkeypatch.setattr(
@@ -87,7 +87,12 @@ def test_trial_uses_selected_credentials_and_sample_without_persisting(client, m
             "event_type": event_type,
         },
     )
-    assert response.json() == {"ok": False, "message": "boom", "error_line": 2}
+    assert response.json() == {
+        "ok": False,
+        "message": "boom",
+        "error_line": 2,
+        "traceback": "Traceback\n  child.py:2\nboom",
+    }
     context, kwargs = captured[0]
     assert context["event_type"] == event_type
     assert context["is_test"] is True

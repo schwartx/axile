@@ -18,6 +18,17 @@ export function useTargetSnapshot(
   const reloadSnapshot = snapshot.refresh
   const [recalculating, setRecalculating] = useState(false)
   const [recalculateError, setRecalculateError] = useState<Error | null>(null)
+  const currentKey = useRef(queryKey)
+  currentKey.current = queryKey
+  const operation = useRef({ generation: 0, busy: false })
+  useEffect(() => {
+    const active = operation.current
+    active.generation += 1
+    active.busy = false
+    setRecalculating(false)
+    setRecalculateError(null)
+    return () => { active.generation += 1 }
+  }, [queryKey, enabled])
   const snapshotIdentityRef = useRef(targetSnapshotIdentity(snapshot.data))
 
   useEffect(() => {
@@ -29,19 +40,24 @@ export function useTargetSnapshot(
   }, [snapshot.data])
 
   const recalculate = useCallback(async () => {
-    if (!enabled || recalculating) return
+    const active = operation.current
+    if (!enabled || active.busy) return
+    active.busy = true
+    const generation = ++active.generation
+    const valid = () => generation === active.generation && currentKey.current === queryKey
     setRecalculating(true)
     setRecalculateError(null)
     try {
       await recalculator()
+      if (!valid()) return
       await reloadSnapshot()
-      setRecalculateError(null)
+      if (valid()) setRecalculateError(null)
     } catch (error) {
-      setRecalculateError(error instanceof Error ? error : new Error(String(error)))
+      if (valid()) setRecalculateError(error instanceof Error ? error : new Error(String(error)))
     } finally {
-      setRecalculating(false)
+      if (valid()) { active.busy = false; setRecalculating(false) }
     }
-  }, [enabled, recalculating, recalculator, reloadSnapshot])
+  }, [enabled, queryKey, recalculator, reloadSnapshot])
 
   return {
     ...snapshot,

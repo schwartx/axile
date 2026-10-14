@@ -1,3 +1,4 @@
+import { checkingSource, checkSource, type PythonChecks, type PythonCheckSource } from '@/components/ui/pythonChecks'
 import { Compartment, Text } from '@codemirror/state'
 import { EditorView, ViewPlugin, keymap, showDialog, type ViewUpdate } from '@codemirror/view'
 import { linter, forceLinting, type Diagnostic } from '@codemirror/lint'
@@ -22,6 +23,7 @@ export function connectPython(
   displaySource: (uri: string, code: string) => Promise<EditorView | null>,
   onSymbols?: (symbols: DocumentSymbols | null, doc: Text) => void,
   onClient?: (client: LSPClient | null) => void,
+  onChecks?: (checks: PythonChecks) => void,
 ) {
   let disposed = false
   let socket: WebSocket | null = null
@@ -29,6 +31,93 @@ export function connectPython(
   let timer: ReturnType<typeof setTimeout> | undefined
   let watchdog: ReturnType<typeof setTimeout> | undefined
   let failures = 0
+
+  let analysisGeneration = 0
+  let documentVersion = 0
+  let connectionError = new Error('代码分析器尚未连接')
+  const offset = (doc: Text, position: { line: number; character: number }) => {
+    const line = doc.line(Math.min(Math.max(position.line + 1, 1), doc.lines))
+    return Math.min(line.to, line.from + Math.max(position.character, 0))
+  }
+  const analysis = (active: LSPClient | null, uri: string) => linter(async (editor): Promise<Diagnostic[]> => {
+    const plugin = LSPPlugin.get(editor)
+    const doc = editor.state.doc
+    const generation = ++analysisGeneration
+    const version = documentVersion
+    const initial: PythonChecks = { document: doc.toString(), version, generation, lsp: checkingSource(), contract: checkingSource() }
+    onChecks?.(initial)
+    try {
+      let latest = initial
+      const observe = <T>(source: 'lsp' | 'contract', request: Promise<T>, diagnostics: (value: T) => PythonCheckSource['diagnostics']) => request.then(value => {
+        if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
+          latest = { ...latest, [source]: checkSource({ status: 'fulfilled', value: diagnostics(value) }) }
+          onChecks?.(latest)
+        }
+        return value
+      }, reason => {
+        if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
+          latest = { ...latest, [source]: checkSource({ status: 'rejected', reason }) }
+          onChecks?.(latest)
+        }
+        throw reason
+      })
+      const tyRead = Promise.resolve().then(() => {
+        if (!active?.connected) throw connectionError
+        active.sync()
+        return active.request<object, { items?: ProtocolDiagnostic[] }>('textDocument/diagnostic', { textDocument: { uri } })
+      })
+      const [tyResult, contractResult] = await Promise.allSettled([
+        observe('lsp', tyRead, value => value.items ?? []),
+        observe('contract', checkPythonContract(doc.toString(), kind), value => value.diagnostics),
+      ])
+      if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
+      const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
+      const contractItems = contractResult.status === 'fulfilled' ? contractResult.value.diagnostics : []
+      const codeActions = tyItems.length && active && plugin ? await active.request<object, (CodeAction | Command)[] | null>(
+        'textDocument/codeAction', {
+          textDocument: { uri },
+          range: { start: { line: 0, character: 0 }, end: plugin.toPosition(doc.length) },
+          context: { diagnostics: tyItems, only: ['quickfix'], triggerKind: 1 },
+        },
+      ).catch(() => null) : null
+      if (disposed || editor.state.doc !== doc || generation !== analysisGeneration) return []
+      return [...tyItems, ...contractItems].map((item) => {
+        const isContract = 'source' in item && item.source === '入口契约'
+        const canFix = !editor.state.readOnly && (isContract
+          ? item.severity === 3 && (contractResult.status === 'fulfilled' && contractResult.value.fixes.some((fix) => fix.edits[0]?.range.start.line === item.range.start.line))
+          : (codeActions ?? []).some((action) => actionTargetsDiagnostic(action, item)))
+        return {
+          from: offset(doc, item.range.start),
+          to: offset(doc, item.range.end),
+          severity: item.severity === 1 ? 'error' : item.severity === 2 ? 'warning' : 'info',
+          message: typeof item.message === 'string' ? item.message : item.message.value,
+          source: isContract ? '入口契约' : 'ty',
+          actions: canFix ? [{ name: '快速修复', apply: (target: EditorView, from: number, to: number) => { quickFix(target, kind, from, to) } }] : [],
+        } satisfies Diagnostic
+      })
+    } catch (cause) {
+      if (!disposed && editor.state.doc === doc && generation === analysisGeneration) {
+        const failed = checkSource({ status: 'rejected', reason: cause })
+        onChecks?.({ ...initial, lsp: failed, contract: failed })
+      }
+      return []
+    }
+  }, {
+    delay: 350,
+    // 诊断仍留在问题列表和代码标记中；悬停内容统一由 pythonHover 渲染。
+    tooltipFilter: () => [],
+  })
+  const watcher = ViewPlugin.fromClass(class {
+    update(update: ViewUpdate) {
+      if (!update.docChanged) return
+      documentVersion += 1
+      analysisGeneration += 1
+      queueMicrotask(() => {
+        if (!disposed && view.state.doc === update.state.doc) onChecks?.({ document: update.state.doc.toString(), version: documentVersion, generation: analysisGeneration, lsp: checkingSource(), contract: checkingSource() })
+      })
+    }
+  })
+  view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
 
   const connect = () => {
     if (disposed) return
@@ -93,6 +182,7 @@ export function connectPython(
         clearTimeout(watchdog)
         failures = 0
         view.dispatch({ effects: slot.reconfigure([
+          watcher,
           active.plugin(message.uri, 'python'),
           pythonVisualFeatures(),
           pythonHover(kind),
@@ -100,51 +190,7 @@ export function connectPython(
           ...(onSymbols ? [documentSymbols(onSymbols)] : []),
           keymap.of([...jumpToDefinitionKeymap, ...findReferencesKeymap,
             { key: 'F2', run: renamePythonSymbol }, { key: 'Mod-.', run: (editor) => quickFix(editor, kind) }]),
-          linter(async (editor): Promise<Diagnostic[]> => {
-            const plugin = LSPPlugin.get(editor)
-            if (!plugin || !active.connected) return []
-            const doc = editor.state.doc
-            try {
-              active.sync()
-              const [tyResult, contractResult] = await Promise.allSettled([
-                active.request<object, { items?: ProtocolDiagnostic[] }>(
-                  'textDocument/diagnostic', { textDocument: { uri: message.uri } },
-                ),
-                checkPythonContract(doc.toString(), kind),
-              ])
-              if (editor.state.doc !== doc || !active.connected) return []
-              const tyItems = tyResult.status === 'fulfilled' ? tyResult.value.items ?? [] : []
-              const contractItems = contractResult.status === 'fulfilled' ? contractResult.value.diagnostics : []
-              const codeActions = tyItems.length ? await active.request<object, (CodeAction | Command)[] | null>(
-                'textDocument/codeAction', {
-                  textDocument: { uri: message.uri },
-                  range: { start: { line: 0, character: 0 }, end: plugin.toPosition(doc.length) },
-                  context: { diagnostics: tyItems, only: ['quickfix'], triggerKind: 1 },
-                },
-              ).catch(() => null) : null
-              if (editor.state.doc !== doc || !active.connected) return []
-              return [...tyItems, ...contractItems].map((item) => {
-                const isContract = 'source' in item && item.source === '入口契约'
-                const canFix = !editor.state.readOnly && (isContract
-                  ? item.severity === 3 && (contractResult.status === 'fulfilled' && contractResult.value.fixes.some((fix) => fix.edits[0]?.range.start.line === item.range.start.line))
-                  : (codeActions ?? []).some((action) => actionTargetsDiagnostic(action, item)))
-                return {
-                  from: plugin.fromPosition(item.range.start, doc),
-                  to: plugin.fromPosition(item.range.end, doc),
-                  severity: item.severity === 1 ? 'error' : item.severity === 2 ? 'warning' : 'info',
-                  message: typeof item.message === 'string' ? item.message : item.message.value,
-                  source: isContract ? '入口契约' : 'ty',
-                  actions: canFix ? [{ name: '快速修复', apply: (target: EditorView, from: number, to: number) => { quickFix(target, kind, from, to) } }] : [],
-                } satisfies Diagnostic
-              })
-            } catch {
-              return []
-            }
-          }, {
-            delay: 350,
-            // 诊断仍留在问题列表和代码标记中；悬停内容统一由 pythonHover 渲染。
-            tooltipFilter: () => [],
-          }),
+          analysis(active, message.uri),
         ]) })
         forceLinting(view)
         onClient?.(active)
@@ -152,13 +198,15 @@ export function connectPython(
       }).catch(() => ws.close())
     }
     ws.onerror = () => ws.close()
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      connectionError = new Error(`代码分析器连接关闭：${event.code} ${event.reason}`)
       clearTimeout(watchdog)
+      analysisGeneration += 1
       client?.disconnect()
       client = null
       if (disposed) return
       onClient?.(null)
-      view.dispatch({ effects: slot.reconfigure([]) })
+      view.dispatch({ effects: slot.reconfigure([watcher, analysis(null, '')]) })
       forceLinting(view)
       onStatus('reconnecting')
       timer = setTimeout(connect, Math.min(1000 * 2 ** failures++, 15000))
@@ -167,6 +215,7 @@ export function connectPython(
   connect()
   return () => {
     disposed = true
+    analysisGeneration += 1
     onClient?.(null)
     clearTimeout(timer)
     clearTimeout(watchdog)

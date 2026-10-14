@@ -1,3 +1,5 @@
+import type { ErrorEvidence } from '@/lib/errorInfo'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { RefreshCw } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -9,34 +11,41 @@ export function TargetSnapshotControl({
   loading = false,
   recalculating,
   error,
+  readError = null,
   disabled = false,
   disabledReason,
   contextName,
   variant = 'full',
+  contextKey,
+  evidence = [],
   onRecalculate,
 }: {
   snapshot: TargetWeightSnapshot | null
   loading?: boolean
   recalculating: boolean
   error: Error | null
+  readError?: Error | null
   disabled?: boolean
   disabledReason?: string
   contextName?: string | null
   variant?: 'full' | 'compact'
+  contextKey?: string | number
+  evidence?: ErrorEvidence[]
   onRecalculate: () => void
 }) {
+  const failure = error ?? readError
   const tooltip = disabledReason ?? (recalculating ? '正在重新计算目标权重' : '重新计算当前目标权重')
   const meta = loading && !snapshot
     ? '正在读取目标权重…'
-    : error && snapshot?.calculated_at
+    : failure && snapshot?.calculated_at
       ? `本次计算失败 · ${targetSnapshotText(snapshot, contextName)}`
-      : targetSnapshotText(snapshot, contextName)
+      : readError && !snapshot ? '目标快照读取失败' : targetSnapshotText(snapshot, contextName)
   const compactMeta = loading && !snapshot
     ? '目标读取中'
     : snapshot?.calculated_at
-      ? `目标 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}${error ? ' · 更新失败' : ''}`
-      : error
-        ? '目标计算失败'
+      ? `目标 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}${failure ? ' · 更新失败' : ''}`
+      : failure
+        ? readError ? '目标读取失败' : '目标计算失败'
         : '目标未计算'
 
   const refreshButton = (
@@ -57,28 +66,27 @@ export function TargetSnapshotControl({
 
   if (variant === 'compact') {
     return (
-      <div className="flex min-w-0 items-center gap-0.5">
+      <div className="min-w-0"><div className="flex min-w-0 items-center gap-0.5">
         <Tooltip content={meta}>
-          <span className={`min-w-0 text-[13px] ${error ? 'text-warn' : 'text-ink-3'}`}>
+          <span className={`min-w-0 text-[13px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
             <InkRewrite text={compactMeta} tone="label" />
           </span>
         </Tooltip>
         {refreshButton}
-      </div>
+      </div><ErrorNotice evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant="compact" onRetry={onRecalculate} /></div>
     )
   }
 
   return (
     <div>
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <div title={meta} className={`min-w-0 text-[13.5px] ${error ? 'text-warn' : 'text-ink-3'}`}>
+        <div title={meta} className={`min-w-0 text-[13.5px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
           <InkRewrite text={meta} tone="label" />
         </div>
         {refreshButton}
       </div>
-      {error && !snapshot?.calculated_at && (
-        <p className="mt-1.5 text-[13.5px] text-warn">目标权重计算失败：{error.message}</p>
-      )}
+      <ErrorNotice evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant={snapshot?.calculated_at ? 'stale' : 'section'}
+        updatedAt={snapshot?.calculated_at ? Date.parse(snapshot.calculated_at) : null} onRetry={onRecalculate} />
     </div>
   )
 }

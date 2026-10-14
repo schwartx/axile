@@ -48,13 +48,17 @@ class WorkerBackendExecutionError(RuntimeError):
         reason_code: str | None = None,
         error_id: int | None = None,
         retryable: bool = False,
+        technical_detail: str | None = None,
+        formatted_traceback: str | None = None,
     ) -> None:
-        """保留 IPC 的安全展示原因与机器码，不从异常原文推断业务状态。"""
+        """保留 IPC 原文、traceback 与机器码，不从原文推断业务状态。"""
         super().__init__(message)
         self.execution_error = execution_error
         self.reason_code = reason_code
         self.error_id = error_id
         self.retryable = retryable
+        self.technical_detail = technical_detail
+        self.formatted_traceback = formatted_traceback
 
 
 class WorkerBackendTimeoutError(WorkerBackendExecutionError):
@@ -549,11 +553,17 @@ class WorkerBackendManager:
         extra: dict[str, object] = {}
         if error is not None:
             message = error.message or message
-            extra["worker_error"] = {
+            worker_error = {
                 "type": error.type,
                 "message": error.message,
                 "retryable": error.retryable,
+                "technical_detail": getattr(error, "technical_detail", None),
+                "traceback": getattr(error, "traceback", None),
+                "reason_code": error.reason_code,
+                "error_id": error.error_id,
             }
+
+            extra["worker_error"] = {key: value for key, value in worker_error.items() if value is not None}
 
         return UnifiedStandardOutput(
             account_assets=UnifiedAccountAssets.unavailable(),
@@ -624,6 +634,8 @@ class WorkerBackendManager:
                 reason_code=error.reason_code if error else None,
                 error_id=error.error_id if error else None,
                 retryable=error.retryable if error else False,
+                technical_detail=getattr(error, "technical_detail", None),
+                formatted_traceback=getattr(error, "traceback", None),
             )
         return response.output_payload
 
@@ -648,7 +660,14 @@ class WorkerBackendManager:
         )
         if response.kind != "result" or response.output_payload is None:
             message = response.error.message if response.error is not None else "账户资产查询失败"
-            raise WorkerBackendExecutionError(message)
+            raise WorkerBackendExecutionError(
+                message,
+                reason_code=getattr(response.error, "reason_code", None),
+                error_id=getattr(response.error, "error_id", None),
+                retryable=getattr(response.error, "retryable", False),
+                technical_detail=getattr(response.error, "technical_detail", None),
+                formatted_traceback=getattr(response.error, "traceback", None),
+            )
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
     async def calculate_portfolio(
@@ -678,7 +697,14 @@ class WorkerBackendManager:
             message = response.error.message if response.error is not None else "自定义组合函数执行失败"
             if not self._requires_ctp_session_recovery(response):
                 await self.drop_account(_require_account_id(account))
-            raise WorkerBackendExecutionError(message)
+            raise WorkerBackendExecutionError(
+                message,
+                reason_code=getattr(response.error, "reason_code", None),
+                error_id=getattr(response.error, "error_id", None),
+                retryable=getattr(response.error, "retryable", False),
+                technical_detail=getattr(response.error, "technical_detail", None),
+                formatted_traceback=getattr(response.error, "traceback", None),
+            )
         try:
             result = PortfolioFunctionResult.from_payload(response.output_payload)
         except Exception:

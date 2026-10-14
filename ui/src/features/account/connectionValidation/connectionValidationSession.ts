@@ -49,8 +49,13 @@ export class ConnectionValidationSession {
 
   private fail(error: unknown): void {
     if (this.disposed) return
-    this.onError(error instanceof Error ? error : new Error('无法读取连接验证结果'))
-    this.dispose()
+    this.stopPolling()
+    this.onError(error instanceof Error ? error : new Error(String(error)))
+  }
+
+  async refresh(): Promise<void> {
+    this.stopPolling()
+    await this.poll()
   }
 
   async cancel(): Promise<void> {

@@ -21,6 +21,7 @@ from axile.server.api.main import api_router
 from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import scheduler
 from axile.server.core.single_worker import ensure_single_worker
+from axile.server.error_details import json_error_value
 from axile.server.execution.ctp_channels import register_china_channel_jobs
 from axile.server.execution.dispatcher import recover_intents_on_startup, shutdown_dispatchers
 from axile.server.execution.live import live_hub
@@ -303,15 +304,15 @@ _app = FastAPI(
 _app.include_router(api_router, prefix=API_V1_STR)
 
 
-def _safe_validation_errors(exc: RequestValidationError) -> list[dict[str, object]]:
-    """提取可定位字段、但绝不携带用户输入的 422 错误。"""
-    return [{key: error[key] for key in ("type", "loc", "msg") if key in error} for error in exc.errors()]
+def _validation_errors(exc: RequestValidationError) -> list[dict[str, object]]:
+    """保留全部字段校验信息，包括 input 与 ctx。"""
+    return json_error_value(exc.errors())
 
 
 @_app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """记录不含原始输入的请求校验错误，并返回安全的 422 载荷."""
-    errors = _safe_validation_errors(exc)
+    """返回完整请求校验错误，异常类型值转换为原始字符串."""
+    errors = _validation_errors(exc)
     logger.error(
         "422 Unprocessable Entity\nURL: {}\nErrors: {}",
         request.url,

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from collections.abc import Awaitable
 from dataclasses import dataclass
 
@@ -24,6 +25,7 @@ class NotificationFunctionResult:
     ok: bool
     error: str | None = None
     error_line: int | None = None
+    traceback: str | None = None
 
 
 def validate_notification_function(code: str) -> None:
@@ -82,15 +84,24 @@ def run_notification_function(
         response = json.loads(process.stdout)
         return NotificationFunctionResult(
             ok=bool(response.get("ok")),
-            error=str(response.get("error"))[:1000] if response.get("error") else None,
+            error=str(response.get("error")) if response.get("error") else None,
             error_line=response.get("error_line") if isinstance(response.get("error_line"), int) else None,
+            traceback=response.get("traceback") if isinstance(response.get("traceback"), str) else None,
         )
-    except subprocess.TimeoutExpired:
-        return NotificationFunctionResult(False, f"通知函数执行超时（{NOTIFICATION_FUNCTION_TIMEOUT_SECONDS} 秒）")
+    except subprocess.TimeoutExpired as exc:
+        return NotificationFunctionResult(
+            False,
+            f"通知函数执行超时（{NOTIFICATION_FUNCTION_TIMEOUT_SECONDS} 秒）\n{exc}",
+            traceback="".join(traceback.format_exception(exc)),
+        )
     except (SyntaxError, ValueError) as exc:
-        return NotificationFunctionResult(False, str(exc), getattr(exc, "lineno", None))
+        return NotificationFunctionResult(
+            False, str(exc), getattr(exc, "lineno", None), "".join(traceback.format_exception(exc))
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        return NotificationFunctionResult(False, f"通知函数进程失败: {exc}")
+        return NotificationFunctionResult(
+            False, f"通知函数进程失败: {exc}", traceback="".join(traceback.format_exception(exc))
+        )
 
 
 async def _await_notification(result: Awaitable[object]) -> object:
@@ -120,7 +131,6 @@ def _invoke_notification(function: object, context: dict[str, object]) -> None:
 def _run_child() -> None:
     """从标准输入读取事件，在子进程内执行用户函数。"""
     import contextlib
-    import traceback
 
     try:
         request = json.load(sys.stdin)
@@ -139,7 +149,12 @@ def _run_child() -> None:
             ),
             None,
         )
-        payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "error_line": line}
+        payload = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "error_line": line,
+            "traceback": "".join(traceback.format_exception(exc)),
+        }
     sys.stdout.write(json.dumps(payload, ensure_ascii=False))
 
 

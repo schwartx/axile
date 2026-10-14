@@ -38,14 +38,16 @@ export function getExecutionStatus(
 export function getExecutionEvents(
   executionId: string,
   signal?: AbortSignal,
+  params: { skip?: number; limit?: number } = {},
 ): Promise<ExecutionEventList> {
-  return apiGet<ExecutionEventList>(`/account/executions/${executionId}/events`, signal)
+  return apiGet<ExecutionEventList>(`/account/executions/${executionId}/events?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`, signal)
 }
 
 /** 执行附件（standard_input / target_snapshot / execution_summary …）。 */
 export function getExecutionArtifacts(
   executionId: string,
   signal?: AbortSignal,
+  params: { skip?: number; limit?: number } = {},
 ): Promise<ExecutionArtifactList> {
-  return apiGet<ExecutionArtifactList>(`/account/executions/${executionId}/artifacts`, signal)
+  return apiGet<ExecutionArtifactList>(`/account/executions/${executionId}/artifacts?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`, signal)
 }

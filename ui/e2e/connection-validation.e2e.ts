@@ -70,7 +70,7 @@ test('key-value details and lazy records support filtering sorting pagination an
   await expect(orders.getByRole('button', { name: '查看详情' })).toHaveCount(0)
 })
 
-test('empty snapshots and expired data have distinct states with retry', async ({ page }) => {
+test('expired data requires validation again before empty snapshots are shown', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   let tries = 0
   await page.route('**/steps/query_positions/table', (route) => {
@@ -80,8 +80,11 @@ test('empty snapshots and expired data have distinct states with retry', async (
   })
   await page.locator('[data-validation-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
   const dialog = page.getByRole('dialog', { name: '持仓查询记录' })
-  await expect(dialog.getByRole('alert')).toContainText('已过期')
-  await dialog.getByRole('button', { name: '重新读取' }).click()
+  await expect(dialog).toContainText('验证任务已过期')
+  await expect(dialog.getByRole('button', { name: '重试：查询记录读取失败' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '重新验证', exact: true }).click()
+  await page.locator('[data-validation-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
   await expect(dialog).toContainText('本次查询无记录')
   await expect(dialog.getByRole('button', { name: '下一页' })).toBeDisabled()
   await page.screenshot({ path: '/tmp/axon-validation-mobile.png', fullPage: true })
@@ -122,4 +125,41 @@ test('server outage disables validation and explains how to reconnect', async ({
   await page.getByRole('button', { name: '模拟服务失联' }).click()
   await expect(page.getByRole('button', { name: '重新验证', exact: true })).toBeDisabled()
   await expect(page.getByRole('alert').filter({ hasText: '连接验证暂不可用' })).toContainText('请在顶部重试连接服务器')
+})
+
+test('table query keeps HTTP code request id and full raw error inside its current dialog', async ({ page }) => {
+  const raw = 'synthetic table error '.repeat(100) + '\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因'
+  await page.route('**/steps/query_orders/table', route => route.fulfill({ status: 500, json: { detail: { code: 'TABLE_FAILED', request_id: 'table-97', message: raw, traceback: 'Traceback\n  table.py:123\n' + raw } } }))
+  await page.locator('[data-validation-step="query_orders"]').getByRole('button', { name: '查看详情' }).click()
+  const dialog = page.getByRole('dialog', { name: '订单查询记录' })
+  await dialog.getByRole('button', { name: '查看错误详情' }).click()
+  await expect(dialog).toContainText('TABLE_FAILED')
+  await expect(dialog).toContainText('table-97')
+  await expect(dialog).toContainText('尾部根因')
+  await expect(page.getByRole('dialog')).toHaveCount(1)
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text: string) => { (window as unknown as { copied: string }).copied = text } } }))
+  await dialog.getByRole('button', { name: '复制错误信息' }).click()
+  const content = await page.evaluate(() => (window as unknown as { copied: string }).copied)
+  expect(content).toContain(raw)
+  expect(content).toContain('Traceback\n  table.py:123\n')
+})
+
+test('validation request network failure keeps its job and rereads it without creating another', async ({ page }) => {
+  let creates = 0, reads = 0
+  const running = { ...job, status: 'running', finished_at: null }
+  await page.route('**/api/v1/channel-validations', route => { creates++; return route.fulfill({ json: running }) })
+  await page.route('**/api/v1/channel-validations/test-validation', route => {
+    reads++
+    return reads === 1 ? route.fulfill({ status: 500, json: { detail: { message: '网络读取暂时失败', code: 'VALIDATION_READ_FAILED', request_id: 'read-97' } } }) : route.fulfill({ json: job })
+  })
+  await page.getByRole('button', { name: '重新验证', exact: true }).click()
+  const notice = page.getByRole('status').filter({ hasText: '连接验证请求失败' })
+  await expect(notice).toContainText('网络读取暂时失败')
+  await notice.getByRole('button', { name: '查看错误详情' }).click()
+  await expect(page.getByRole('dialog')).toContainText('read-97')
+  await expect(page.getByRole('dialog')).toContainText('VALIDATION_READ_FAILED')
+  await page.keyboard.press('Escape')
+  await notice.getByRole('button', { name: '重试：连接验证请求失败' }).click()
+  await expect.poll(() => reads).toBe(2)
+  expect(creates).toBe(1)
 })

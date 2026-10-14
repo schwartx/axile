@@ -20,6 +20,7 @@ from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
 from axile.server.db.models import Account, ExecuteRecord, Portfolio
 from axile.server.db.models.account import AccountContext, AccountSnapshot
+from axile.server.error_details import exception_details
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution.execution_algorithms import (
@@ -152,7 +153,7 @@ async def _execute_portfolio_function(
             account_id=account.id,
             msg=msg,
             execution_id=execution_id,
-            raw_result={"technical_detail": str(e)},
+            raw_result=exception_details(e),
         )
         raise ValueError(msg) from e
 

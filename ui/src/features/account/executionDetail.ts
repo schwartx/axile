@@ -1,3 +1,4 @@
+import { catalogEvidence } from '@/features/history/executionErrorAdapter'
 import { executionOutcome, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { recordOrders } from './recordOrders'
@@ -571,6 +572,11 @@ function buildSpine(
       status: isDegradedSnapshotSource(src) ? 'WARNING' : 'INFO',
       broken: isDegradedSnapshotSource(src),
     })
+  }
+  for (const event of events) {
+    const catalog = catalogEvidence(event)
+    if (catalog) nodes.push({ key: `catalog:${event.id ?? event.seq}`, label: catalog.label.split(' · ')[0]!, detail: catalog.value,
+      time: hhmmss(event.ts_local_created), status: event.status, broken: event.event_type === 'instruments_failed' })
   }
   if (target) {
     nodes.push({

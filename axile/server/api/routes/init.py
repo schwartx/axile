@@ -111,6 +111,7 @@ class NotificationFunctionTestResult(TestResult):
     """函数试跑的源码错误位置，与账户通知编辑器使用同一反馈契约。"""
 
     error_line: int | None = None
+    traceback: str | None = None
 
 
 class InitSaveRequest(BaseModel):
@@ -219,7 +220,7 @@ async def test_feishu(payload: FeishuTestRequest) -> TestResult:
     detail = (
         str(result.get("msg") or result.get("StatusMessage") or result) if isinstance(result, dict) else str(result)
     )
-    return TestResult(ok=False, message=f"飞书返回失败：{detail[:200]}")
+    return TestResult(ok=False, message=f"飞书返回失败：{detail}")
 
 
 @router.patch("/execution-alert")
@@ -311,6 +312,7 @@ async def test_system_notification_function(payload: NotificationFunctionTestReq
         ok=result.ok,
         message="样例函数运行成功" if result.ok else result.error or "运行失败",
         error_line=result.error_line,
+        traceback=getattr(result, "traceback", None),
     )
 
 

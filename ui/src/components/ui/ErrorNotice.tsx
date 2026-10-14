@@ -1,6 +1,9 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { ModalContentContext } from '@/components/ui/modalContext'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import { RefreshCw, TriangleAlert } from 'lucide-react'
 
+import { ErrorDetailsModal } from '@/components/ui/ErrorDetailsModal'
+import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { errorInfo, type ErrorEvidence, type ErrorInfo } from '@/lib/errorInfo'
@@ -14,6 +17,8 @@ interface ErrorNoticeProps {
   variant?: ErrorNoticeVariant
   updatedAt?: number | null
   evidence?: ErrorEvidence[]
+  embedded?: boolean
+  contextKey?: string | number
   onRetry?: () => void | Promise<void>
 }
 
@@ -25,20 +30,23 @@ export function ErrorNotice({
   updatedAt = null,
   evidence = [],
   onRetry,
+  embedded = false,
+  contextKey,
 }: ErrorNoticeProps) {
-  const open = error != null
-  const current = useMemo(() => open ? errorInfo(error) : null, [error, open])
+  const inModal = useContext(ModalContentContext)
+  const inlineDetails = embedded || inModal
+  const hasError = error != null
+  const current = useMemo(() => hasError ? errorInfo(error) : null, [error, hasError])
   const [retained, setRetained] = useState<ErrorInfo | null>(current)
-  const [expanded, setExpanded] = useState(false)
-  const evidenceId = useId()
+  const [selection, setSelection] = useState<{ title: string; info: ErrorInfo } | null>(null)
+  const open = hasError || (inlineDetails && selection !== null)
+  useEffect(() => setSelection(null), [contextKey])
 
   useEffect(() => {
     if (current) setRetained(current)
-    else setExpanded(false)
   }, [current, open])
 
   const shown = current ?? retained
-  const allEvidence = [...(shown?.evidence ?? []), ...evidence]
   const compact = variant === 'compact' || variant === 'stale'
   const blocked = variant === 'mutation'
   const label = variant === 'stale' && updatedAt != null
@@ -47,7 +55,7 @@ export function ErrorNotice({
 
   return (
     <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden" inert={!open}>
+      <div className="min-h-0 overflow-hidden" inert={!open} aria-hidden={!open}>
         <div
           className={`${compact ? 'py-1.5 text-[13.5px]' : 'my-2 py-2 text-[14px]'} ${blocked ? 'rounded-[6px] bg-warn-soft px-2.5' : 'border-l-2 border-warn pl-2.5'}`}
           role={variant === 'mutation' ? 'alert' : 'status'}
@@ -72,31 +80,17 @@ export function ErrorNotice({
               </Tooltip>
             )}
           </div>
-          {allEvidence.length > 0 && (
-            <>
-              <button
-                type="button"
-                className="mt-1 cursor-pointer text-[12.5px] text-ink-3 hover:text-ink-2"
-                aria-expanded={expanded}
-                aria-controls={evidenceId}
-                onClick={() => setExpanded((value) => !value)}
-              >
-                {expanded ? '收起证据' : '查看证据'}
-              </button>
-              <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                <div id={evidenceId} className="min-h-0 overflow-hidden" inert={!expanded}>
-                  <dl className="mt-1.5 space-y-1 border-t border-line pt-1.5 text-[12.5px] text-ink-3">
-                    {allEvidence.map((item) => (
-                      <div key={`${item.label}:${item.value}`} className="flex gap-2">
-                        <dt className="flex-none">{item.label}</dt>
-                        <dd className="num min-w-0 break-all">{item.value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </div>
-              </div>
-            </>
-          )}
+          {hasError && <button type="button" className="mt-1 cursor-pointer text-[12.5px] text-ink-3 hover:text-ink-2"
+            onClick={() => setSelection({ title, info: errorInfo(error, [{ label: '操作', value: title }, ...evidence]) })}>
+            查看错误详情
+          </button>}
+          {inlineDetails && selection && <div className="mt-3">
+            <div className="max-h-[40vh] overflow-y-auto"><ErrorDetailsContent info={selection.info} /></div>
+            <ErrorCopyButton text={selection.info.text} />
+            <button type="button" onClick={() => setSelection(null)} className="ml-3 cursor-pointer text-[13px] text-ink-3">收起详情</button>
+          </div>}
+          {!inlineDetails && selection && <ErrorDetailsModal selection={selection} onClose={() => setSelection(null)} />}
+
         </div>
       </div>
     </div>

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+import traceback
 from collections.abc import Callable
 from typing import cast
 
@@ -42,8 +43,7 @@ def _build_error_payload(exc: Exception) -> WorkerBackendErrorPayload:
     WorkerBackendErrorPayload
         结构化错误信息。
     """
-    # 错误响应只保留协议稳定字段；message 会流入执行记录的 error 展示给用户，
-    # 只回放渠道在错误发生处写的人话，异常原文留在 worker 日志与 type 里给排障。
+    # 公开摘要保持渠道语义；原文和 traceback 通过可选字段完整传输。
     explicit = getattr(exc, "execution_error", None)
     if isinstance(explicit, str) and explicit:
         message = explicit
@@ -53,6 +53,8 @@ def _build_error_payload(exc: Exception) -> WorkerBackendErrorPayload:
         message = "worker 执行失败，具体原因未确认"
     return WorkerBackendErrorPayload(
         type=_camel_to_snake(exc.__class__.__name__),
+        technical_detail=str(exc),
+        traceback=getattr(exc, "formatted_traceback", None) or "".join(traceback.format_exception(exc)),
         message=message,
         reason_code=getattr(exc, "reason_code", None),
         error_id=getattr(exc, "error_id", None),

@@ -1,5 +1,7 @@
+import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
+import type { PythonChecks } from '@/components/ui/pythonChecks'
 import { useEffect, useRef, useState, type Ref } from 'react'
-import { PythonFunctionEditor, PythonRunResultBody, type PythonEditorHandle, type PythonProblem, type PythonValidationState } from '@/components/ui/PythonFunctionEditor'
+import { PythonFunctionEditor, PythonRunResultBody, type PythonEditorHandle, type PythonValidationState } from '@/components/ui/PythonFunctionEditor'
 import { PythonRunPanel } from '@/components/ui/PythonRunPanel'
 import { Segmented } from '@/components/ui/Segmented'
 import { CircleX, TriangleAlert } from 'lucide-react'
@@ -36,7 +38,7 @@ export function PythonWorkbenchPane({
   onResizeChange?: (resizing: boolean) => void
 }) {
   const [problemsOpen, setProblemsOpen] = useState(false)
-  const [problems, setProblems] = useState<PythonProblem[]>([])
+  const [checks, setChecks] = useState<PythonChecks | null>(null)
   const [activeTab, setActiveTab] = useState<OutputTab>('problems')
   const [savedSplit] = useState(() => storedSplit(storageKey))
   const [split, setSplit] = useState(savedSplit ?? DEFAULT_SPLIT)
@@ -54,22 +56,28 @@ export function PythonWorkbenchPane({
     }
   }, [result])
 
-  const staticProblems = problems.filter((problem) => problem.source === 'ty' || problem.source === '入口契约')
+  const currentChecks = checks?.document === code ? checks : null
+  const staticProblems = [...(currentChecks?.lsp.diagnostics ?? []), ...(currentChecks?.contract.diagnostics ?? [])].map(item => ({
+    line: item.range.start.line + 1, message: typeof item.message === 'string' ? item.message : item.message.value,
+    severity: item.severity === 1 ? 'error' : 'warning',
+  }))
+  const checkFailed = currentChecks?.lsp.status === 'failed' || currentChecks?.contract.status === 'failed'
+  useEffect(() => { if (checkFailed && result == null) setProblemsOpen(true) }, [checkFailed, result])
   const outputTabs = [
     {
       value: 'problems' as const,
       label: '代码问题',
-      badge: staticProblems.length > 0 ? <span className="rounded-full bg-warn/15 px-1.5 text-[10px] tabular-nums text-warn">{staticProblems.length}</span> : undefined,
+      badge: staticProblems.length > 0 || checkFailed ? <span className="rounded-full bg-warn/15 px-1.5 text-[10px] tabular-nums text-warn">{staticProblems.length || '!'}</span> : undefined,
     },
     { value: 'result' as const, label: '试跑结果' },
   ]
   useEffect(() => {
-    if (staticProblems.length > previousStaticCount.current && !running) {
+    if (staticProblems.length > previousStaticCount.current && !running && result == null) {
       setActiveTab('problems')
       setProblemsOpen(true)
     }
     previousStaticCount.current = staticProblems.length
-  }, [staticProblems.length, running])
+  }, [staticProblems.length, running, result])
 
   const setResizingState = (value: boolean) => {
     setResizing(value)
@@ -119,7 +127,7 @@ export function PythonWorkbenchPane({
           }}
           headerTarget={header}
           statusTarget={statusTarget}
-          onProblems={setProblems}
+          onChecks={setChecks}
           layout="workbench"
           fill
           code={code}
@@ -181,10 +189,11 @@ export function PythonWorkbenchPane({
         title="代码检查"
         hideTitle
         headerExtra={<Segmented size="sm" className="my-auto" value={activeTab} options={outputTabs} onChange={(tab) => { setActiveTab(tab); setProblemsOpen(true) }} />}
-        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <></>}
+        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{checkFailed ? '检查失败' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
         contentOverride={(
           activeTab === 'problems' ? (
             <div className="-mx-3.5 -my-3 divide-y divide-line/60">
+              <PythonCheckStatus checks={currentChecks} onRetry={() => internalEditorRef.current?.check()} />
               {staticProblems.map((problem, index) => (
                 <button key={`${index}-${problem.line}`} type="button" className="flex w-full cursor-pointer items-start gap-2.5 px-3.5 py-2 text-left transition-colors hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent focus-visible:-outline-offset-2 motion-reduce:transition-none" onClick={() => internalEditorRef.current?.revealLine(problem.line)}>
                   {problem.severity === 'error' ? <CircleX size={15} className="mt-0.5 flex-none text-warn" aria-hidden /> : <TriangleAlert size={15} className="mt-0.5 flex-none text-warn" aria-hidden />}
@@ -192,7 +201,7 @@ export function PythonWorkbenchPane({
                   <span className="flex-none whitespace-nowrap text-[11px] leading-5 text-ink-3">第 {problem.line} 行</span>
                 </button>
               ))}
-              {staticProblems.length === 0 && <p className="px-3.5 py-3 text-[13px] text-ink-3">暂无静态诊断。</p>}
+
             </div>
           ) : (
             <div className="space-y-3">

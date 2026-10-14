@@ -83,14 +83,18 @@ def _error_from_exception(exc: BaseException) -> PortfolioFunctionError:
         for frame in traceback.extract_tb(exc.__traceback__):
             if frame.filename == "<portfolio>":
                 line = frame.lineno
-    message = (exc.msg if isinstance(exc, SyntaxError) else str(exc)) or type(exc).__name__
+    message = (
+        getattr(exc, "technical_detail", None)
+        or (exc.msg if isinstance(exc, SyntaxError) else str(exc))
+        or type(exc).__name__
+    )
     return PortfolioFunctionError(
         message,
         error_line=line,
         error_offset=offset,
         error_type=type(exc).__name__,
         error_message=message,
-        formatted_traceback=traceback.format_exc(),
+        formatted_traceback=getattr(exc, "formatted_traceback", None) or "".join(traceback.format_exception(exc)),
     )
 
 

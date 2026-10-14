@@ -6,6 +6,8 @@ import { usePolling } from '@/lib/hooks/usePolling'
 import { getActivitySymbols } from '@/lib/api/accounts'
 import { getPerformanceCosts, type CostPage, type CostQuery } from '@/lib/api/performance'
 import { getExecutionArtifacts, getExecutionEvents } from '@/lib/api/executions'
+import { ExecutionErrorEvidence } from '@/features/history/ExecutionErrorEvidence'
+import { readEvidencePages } from '@/features/history/executionErrorAdapter'
 import { ExecutionEvidence } from '@/features/history/ExecutionEvidence'
 import { quantityUnit } from '@/features/history/executionEvidenceModel'
 import { buildExecutionDetail, type ExecutionDetailModel } from '@/features/account/executionDetail'
@@ -37,22 +39,18 @@ export function Cost({ summary }: { summary: CostSummary }) {
 
 // Immutable snapshot pages and terminal execution evidence survive collapse and detail navigation.
 const tradePages = new Map<string, CostPage<CostTrade>>()
-const evidenceCache = new Map<string, Promise<{ model: ExecutionDetailModel; trades: CostTrade[] }>>()
 function remember<K, V>(cache: Map<K, V>, key: K, value: V) {
   cache.set(key, value)
   if (cache.size > 200) cache.delete(cache.keys().next().value!)
 }
-function readEvidence(row: JournalExecution): Promise<{ model: ExecutionDetailModel; trades: CostTrade[] }> {
+function readEvidence(row: JournalExecution, signal: AbortSignal): Promise<{ model: ExecutionDetailModel; trades: CostTrade[]; eventsError: Error | null; artifactsError: Error | null }> {
   const id = row.executionId!
-  const existing = evidenceCache.get(id)
-  if (existing) return existing
-  const flight = Promise.all([getExecutionEvents(id), getExecutionArtifacts(id)])
+  const flight = Promise.all([readEvidencePages((skip, limit) => getExecutionEvents(id, signal, { skip, limit }), signal), readEvidencePages((skip, limit) => getExecutionArtifacts(id, signal, { skip, limit }), signal)])
     .then(([events, artifacts]) => ({
       model: buildExecutionDetail(events.data, artifacts.data),
+      eventsError: events.error, artifactsError: artifacts.error,
       trades: tradesFromArtifacts(artifacts.data, { id: row.recordId, execution_id: id, created_at: row.time }),
     }))
-    .catch(error => { evidenceCache.delete(id); throw error })
-  remember(evidenceCache, id, flight)
   return flight
 }
 
@@ -95,14 +93,17 @@ function TradeList({ accountId, scope, trades, expansion, update, currency, unit
 }
 
 function ExecutionExpansion({ row, accountId, scope, expansion, update, currency, units, detailLink }: RowProps) {
-  const evidence = usePolling(useCallback(() => readEvidence(row), [row]), {
+  const evidence = usePolling(useCallback((signal: AbortSignal) => readEvidence(row, signal), [row]), {
     queryKey: `journal-evidence:${row.executionId}`, intervalMs: 0, enabled: expansion.open && !!row.executionId,
   })
   const scoped = !!scope && (scope.start != null || !!scope.day)
   return <div className="border-l-2 border-accent px-3 py-2" data-testid="execution-expansion">
     <div className="flex min-h-9 items-center gap-4 text-xs">{detailLink(row.executionId)}{scope && <span className="text-ink-3">完整执行持仓变化</span>}</div>
     {!row.executionId && <p className="py-2 text-xs text-ink-3">历史记录无执行附件</p>}
+    <ExecutionErrorEvidence accountId={accountId} executionId={row.executionId} recordId={row.recordId} record={row.record} enabled={expansion.open} />
     <ErrorNotice title="执行证据读取失败" error={evidence.error} onRetry={evidence.refresh} />
+    <ErrorNotice title="执行事件读取失败" error={evidence.data?.eventsError} onRetry={evidence.refresh} />
+    <ErrorNotice title="执行附件读取失败" error={evidence.data?.artifactsError} onRetry={evidence.refresh} />
     {evidence.loading && <p role="status" className="py-2 text-xs text-ink-3">执行证据读取中</p>}
     {evidence.data && <ExecutionEvidence model={evidence.data.model} currency={currency} units={units} view={expansion.evidenceView ?? 'actions'} onViewChange={evidenceView => update({ ...expansion, evidenceView })} />}
     <TradeList accountId={accountId} scope={scope && row.recordId != null ? { ...scope, record_id: row.recordId } : undefined} trades={scope ? row.trades : evidence.data?.trades ?? []} expansion={expansion} update={update} currency={currency} units={units} scoped={scoped} loading={!scope && evidence.loading} />

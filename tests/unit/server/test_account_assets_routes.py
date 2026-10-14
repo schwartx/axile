@@ -93,7 +93,8 @@ def test_refresh_account_assets_failure_keeps_last_snapshot(monkeypatch: pytest.
         )
 
     assert exc_info.value.status_code == 502
-    assert "secret" not in str(exc_info.value.detail)
+    assert exc_info.value.detail["technical_detail"] == "secret connection detail"
+    assert "secret connection detail" in exc_info.value.detail["traceback"]
     assert session.added == []
     assert session.commits == 0
     assert session.rollbacks == 1
@@ -113,7 +114,8 @@ def test_refresh_account_assets_timeout_returns_gateway_timeout(monkeypatch: pyt
         )
 
     assert exc_info.value.status_code == 504
-    assert "channel timeout detail" not in str(exc_info.value.detail)
+    assert exc_info.value.detail["technical_detail"] == "channel timeout detail"
+    assert "TimeoutError" in exc_info.value.detail["traceback"]
     assert session.added == []
     assert session.commits == 0
     assert session.rollbacks == 1

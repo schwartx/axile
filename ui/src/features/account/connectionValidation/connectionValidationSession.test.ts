@@ -44,17 +44,25 @@ describe('连接验证生命周期', () => {
     expect(updates).toEqual(['running', 'succeeded'])
   })
 
-  test('轮询失败停止并取消，不保留假成功', async () => {
+  test('轮询失败保留任务，重新读取不重复创建验证', async () => {
     let cancels = 0
     const errors: string[] = []
-    const session = new ConnectionValidationSession(() => {}, (error) => errors.push(error.message), {
-      create: async () => job(),
-      get: async () => { throw new Error('网络暂时不可用') },
+    let reads = 0
+    let creates = 0
+    const updates: string[] = []
+    const session = new ConnectionValidationSession(value => updates.push(value.status), (error) => errors.push(error.message), {
+      create: async () => { creates++; return job() },
+      get: async () => { if (++reads === 1) throw new Error('网络暂时不可用'); return job('succeeded') },
       cancel: async () => { cancels++; return job('cancelled') },
     }, 1)
     await session.start('ctp', {})
     await tick()
     expect(errors).toEqual(['网络暂时不可用'])
-    expect(cancels).toBe(1)
+    expect(cancels).toBe(0)
+    await session.refresh()
+    expect(creates).toBe(1)
+    expect(reads).toBe(2)
+    expect(updates).toEqual(['running', 'succeeded'])
+    session.dispose()
   })
 })

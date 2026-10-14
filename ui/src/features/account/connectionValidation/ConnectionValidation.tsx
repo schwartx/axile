@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, LoaderCircle, RadioTower, TriangleAlert } from 'lucide-react'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { ApiError } from '@/lib/api/client'
+import { shortErrorReason } from '@/lib/errorInfo'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { ConnectionValidationErrorModal, type ValidationErrorSelection } from '@/features/account/connectionValidation/ConnectionValidationErrorModal'
 import { ValidationRecordsModal, type ValidationTableSelection } from '@/features/account/connectionValidation/ValidationRecordsModal'
@@ -34,7 +37,7 @@ function ValidationMessage({ message, inset = false, onDetails }: { message?: st
     <div inert={!message} aria-hidden={!message} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${message ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
       <div className="min-h-0 overflow-hidden">
         <p role={message ? 'alert' : undefined} className={`pt-1 text-[12px] leading-relaxed text-warn ${inset ? 'pl-[22px]' : ''}`}>
-          {lastMessage.current}
+          {lastMessage.current ? shortErrorReason(lastMessage.current) : null}
           {onDetails && <button type="button" onClick={onDetails} className="ml-2 inline cursor-pointer whitespace-nowrap text-[12px] text-accent underline-offset-4 hover:underline">查看错误详情</button>}
         </p>
       </div>
@@ -191,11 +194,11 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
           if (step.error) setSelectedError({ stage: step.label, error: step.error })
         }} />)}
       </ol>
-      <ValidationMessage message={shownError?.message ?? (
-        shownJob?.error && !shownJob.steps.some((step) => step.error) ? shownJob.error.message : null
-      )} onDetails={shownError || shownJob?.error ? () => setSelectedError({
-        stage: '连接验证', error: shownJob?.error ?? { reason_code: 'CONNECTION.REQUEST_FAILED', message: shownError!.message },
-      }) : undefined} />
+      <ErrorNotice title="连接验证请求失败" error={shownError} contextKey={`${accountId}:${configVersion}`}
+        onRetry={shownError instanceof ApiError && shownError.status === 404 || !shownJob ? start : () => { setError(null); void session.current?.refresh() }} />
+      {shownError instanceof ApiError && shownError.status === 404 && <p className="text-[12px] text-warn">验证任务已过期，请重新验证。</p>}
+      <ValidationMessage message={shownJob?.error && !shownJob.steps.some((step) => step.error) ? shownJob.error.message : null}
+        onDetails={shownJob?.error ? () => setSelectedError({ stage: '连接验证', error: shownJob.error! }) : undefined} />
       <div>
         <ValidationMessage message={serverUnavailable ? '无法连接 axile 服务，连接验证暂不可用。请在顶部重试连接服务器。' : null} />
         {!descriptor.available && <p className="mt-2 text-[12px] text-warn">当前服务器缺少此渠道依赖，安装后才能验证连接。</p>}

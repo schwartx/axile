@@ -1,3 +1,5 @@
+import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
+import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
 import { executionOutcome } from '@/features/account/executionOutcome'
@@ -91,9 +93,17 @@ export function AccountDetail({
   connectionUnavailable = false,
   onDashboardRefresh,
 }: AccountDetailProps) {
+  const accountEvidence = [{ label: '账户', value: `${item.name} (#${accountId})` }]
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
   const sidebarCompact = useNavigationStore((s) => s.sidebarCompact)
+  const runtime = useAccountRuntimeSync(accountId)
+  const [toggleError, setToggleError] = useState<Error | null>(null)
+  const [assetRefreshError, setAssetRefreshError] = useState<Error | null>(null)
+  const [toggling, setToggling] = useState(false)
+  const togglingRef = useRef(false)
+  const toggleGeneration = useRef(0)
+  useEffect(() => { setToggleError(null); setAssetRefreshError(null); setRefreshingAssets(false); setStartedOverride(null); setToggling(false); togglingRef.current = false; return () => { toggleGeneration.current += 1 } }, [accountId])
   const [timerOpen, setTimerOpen] = useState(false)
   const [refreshingAssets, setRefreshingAssets] = useState(false)
   const [copyOpen, setCopyOpen] = useState(false)
@@ -202,7 +212,7 @@ export function AccountDetail({
     reloadTargetSnapshot,
   ])
   // 当前在途执行 id：优先服务端真源，退回本地 runner（首帧前）。用于「一行可点跳详情」。
-  const runningExecId = live?.executionId ?? runner.executionId
+  const runningExecId = live?.executionId ?? (runner.running ? runner.executionId : null)
 
   const recordList = activity.data?.data.flatMap((item) => item.kind === 'execution' ? [item.record] : []) ?? []
   const latestAssets = assetSnapshots.data?.data[0]?.assets
@@ -250,7 +260,7 @@ export function AccountDetail({
   const idleStatusTextClass = latestOutcome
     ? latestOutcome.warning ? 'text-warn' : 'text-ink-1'
     : gate.gate === 'paused' ? 'text-ink-3' : INTEGRITY_TEXT_CLASS[state.integrity]
-  const statusHeadline = isTerminating
+  const statusHeadline = runner.queryError ? '状态待确认' : isTerminating
     ? `正在终止${runVerb(runKind)}`
     : isExecuting
       ? `正在${runVerb(runKind)}`
@@ -317,17 +327,30 @@ export function AccountDetail({
     )
   }
   const onToggleStarted = async () => {
+    if (togglingRef.current) return
+    togglingRef.current = true
+    setToggling(true)
+    setToggleError(null)
+    runtime.invalidate()
+    const generation = ++toggleGeneration.current
     const next = !isStarted
     setStartedOverride(next)
     try {
-      await updateAccount(accountId, { is_started: next })
-      toast(next ? '已启动自动执行' : '已暂停自动执行')
+      const updated = await updateAccount(accountId, { is_started: next })
+      if (generation !== toggleGeneration.current) return
+      setStartedOverride(updated.is_started)
+      runtime.acceptSaved(updated.runtime_sync)
+      toast(updated.runtime_sync?.status === 'synchronized' ? next ? '已启动自动执行' : '已暂停自动执行' : shortErrorReason(runtimeSyncMessage(updated.runtime_sync)))
       account.refresh()
       nextRun.refresh()
       onDashboardRefresh?.()
     } catch (e) {
+      if (generation !== toggleGeneration.current) return
       setStartedOverride(null)
-      toast(shortErrorReason(e))
+      setToggleError(e instanceof Error ? e : new Error(String(e)))
+      void runtime.refresh()
+    } finally {
+      if (generation === toggleGeneration.current) { togglingRef.current = false; setToggling(false) }
     }
   }
   const onDelete = async () => {
@@ -342,16 +365,19 @@ export function AccountDetail({
   }
   const onRefreshAssets = async () => {
     if (refreshingAssets) return
+    const generation = toggleGeneration.current
     setRefreshingAssets(true)
+    setAssetRefreshError(null)
     try {
       await refreshAccountAssets(accountId)
+      if (generation !== toggleGeneration.current) return
       await Promise.all([refreshAssetSnapshots(), refreshComparison()])
       await onDashboardRefresh?.()
       toast('账户资产已刷新')
     } catch (e) {
-      toast(shortErrorReason(e))
+      if (generation === toggleGeneration.current) setAssetRefreshError(e instanceof Error ? e : new Error(String(e)))
     } finally {
-      setRefreshingAssets(false)
+      if (generation === toggleGeneration.current) setRefreshingAssets(false)
     }
   }
 
@@ -360,6 +386,12 @@ export function AccountDetail({
 
   return (
     <section>
+      <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
+      <ErrorNotice evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
+      <ErrorNotice evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
+      <ErrorNotice evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
+      <ErrorNotice title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
+        evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
       {/* 移动端侧栏默认隐藏，始终保留回链。 */}
       <Link
         to="/"
@@ -417,6 +449,7 @@ export function AccountDetail({
             onExec={() => runner.start('exec')}
             onClear={() => runner.start('clear')}
             onTerminate={terminate}
+            toggling={toggling}
             onToggleStarted={onToggleStarted}
             onEdit={() => navigate(`/accounts/${accountId}/edit`)}
             onCopy={() => setCopyOpen(true)}
@@ -642,10 +675,13 @@ export function AccountDetail({
             <h3 className="mr-auto text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
             <StaleDataStatus updatedAt={comparisonStaleAt} />
             <TargetSnapshotControl
+            evidence={accountEvidence}
+            contextKey={accountId}
               snapshot={weights.data}
               loading={weights.loading}
               recalculating={weights.recalculating}
               error={weights.recalculateError}
+            readError={weights.error}
               disabled={isExecuting || portfolioId == null}
               disabledReason={isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
               variant="compact"
@@ -669,7 +705,7 @@ export function AccountDetail({
                 <HoldingsPreviewTable holdings={null} positionValueLabel={positionValueLabel} />
               </div>
             </SkeletonGroup>
-          ) : comparisonError ? null : !weights.data?.calculated_at ? (
+          ) : (!comparison.data && comparisonError) || (!weights.data && weights.error) || (!assetSnapshots.data && assetSnapshots.error) ? null : !weights.data?.calculated_at ? (
             <div className="border-t border-line py-3 text-[14px] leading-relaxed text-ink-3">
               尚无目标权重，刷新后生成持仓对照
             </div>
@@ -705,7 +741,9 @@ export function AccountDetail({
               </div>
             </div>
           ) : null}
-          <ErrorNotice
+          <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
+          <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />
+          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
             title="持仓与目标对照加载失败"
             error={comparisonError}
             variant={positions.length > 0 || weights.data != null ? 'stale' : 'section'}
@@ -754,7 +792,7 @@ export function AccountDetail({
               </span>
             </span>
           </button>
-          <ErrorNotice
+          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
             title="账户节奏加载失败"
             error={localQueryError(connectionUnavailable, accountFreshness)}
             variant={account.stale ? 'stale' : 'compact'}
@@ -769,7 +807,7 @@ export function AccountDetail({
               nextRunTimes={nextRun.data?.next_execution_times ?? []}
             />
           )}
-          <ErrorNotice
+          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
             title="自动执行计划加载失败"
             error={localQueryError(connectionUnavailable, nextRunFreshness)}
             variant={nextRun.stale ? 'stale' : 'compact'}
@@ -807,7 +845,7 @@ export function AccountDetail({
       <Card className="overflow-hidden">
         {activity.loading && <div className="px-6 py-4 text-[15px] text-ink-2">加载中…</div>}
         <div className="px-6">
-          <ErrorNotice
+          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
             title="近期活动加载失败"
             error={localQueryError(connectionUnavailable, activityFreshness)}
             variant={activity.stale ? 'stale' : 'section'}

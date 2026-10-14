@@ -35,7 +35,7 @@ export function SystemEditNotificationPage() {
     code: draft?.code ?? '', contextKey: JSON.stringify([key, sample, draft?.mode, state.configured]), enabled: !state.saveState.saving && !loading,
     execute: (code) => testSystemNotificationFunction(code, key, sample),
     failed: (cause) => ({ ok: false, message: cause instanceof Error ? cause.message : String(cause) }),
-    toEditorResult: (result) => ({ valid: result.ok, errorMessage: result.ok ? null : result.message, errorLine: result.error_line }),
+    toEditorResult: (result) => ({ valid: result.ok, errorMessage: result.ok ? null : result.message, errorLine: result.error_line, traceback: result.traceback }),
   })
   if (state.loadError) return <ErrorNotice title="系统告警配置读取失败" error={state.loadError} onRetry={() => void state.reload()} />
   if (templateError) return <ErrorNotice title="系统告警模板读取失败" error={templateError} onRetry={() => void loadTemplate()} />

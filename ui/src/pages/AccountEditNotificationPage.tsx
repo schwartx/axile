@@ -59,7 +59,7 @@ export function AccountEditNotificationPage() {
     code: code ?? '', enabled: !saveState.saving,
     execute: (draft) => testAccountNotificationFunction(accountId, draft, undefined, eventType),
     failed: (cause) => ({ ok: false, message: cause instanceof Error ? cause.message : String(cause) }),
-    toEditorResult: (test) => ({ valid: test.ok, errorMessage: test.ok ? null : test.message }),
+    toEditorResult: (test) => ({ valid: test.ok, errorMessage: test.ok ? null : test.message, errorLine: test.error_line, traceback: test.traceback }),
   })
   const { result: test, editorResult: result, stale } = trial
   const busy = trial.running ? 'test' : saveState.saving ? 'save' : null

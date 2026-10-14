@@ -21,6 +21,7 @@ from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSync, AccountRuntimeSyncAttempt
 from axile.server.db.models.base import now_str
 from axile.server.db.models.execution import ExecuteRecord
+from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend.manager import WorkerBackendExecutionError
@@ -152,6 +153,14 @@ async def _finish_attempt(
         return AccountRuntimeSync(**sync.model_dump())
 
 
+def _runtime_error_text(exc: Exception) -> str:
+    """沿用既有文本存储完整原文和 traceback，不改变同步状态分类。"""
+    details = exception_details(exc)
+    summary = getattr(exc, "execution_error", None)
+    parts = [summary, details["technical_detail"], details["traceback"]]
+    return "\n\n".join(dict.fromkeys(str(part) for part in parts if part))
+
+
 async def _prepare_runtime_target(
     target: _RuntimeTarget,
     mode: Literal["startup", "day", "night"] | None,
@@ -170,7 +179,7 @@ async def _prepare_runtime_target(
             exc.reason_code,
             exc.execution_error,
         )
-        return "pending", exc.execution_error or "账户通道暂未就绪"
+        return "pending", _runtime_error_text(exc)
     return "synchronized", None
 
 
@@ -188,9 +197,7 @@ async def _reconcile_locked(
             status, error = await _prepare_runtime_target(target, mode)
         except Exception as exc:  # noqa: BLE001 - 外部状态失败不能回滚账户真源
             status = "failed"
-            error = (
-                exc.execution_error if isinstance(exc, WorkerBackendExecutionError) else None
-            ) or "账户运行态对齐失败，具体原因见服务日志"
+            error = _runtime_error_text(exc)
             logger.exception("账户运行态对齐失败 account_id={} revision={}", account_id, target.revision)
         sync = await _finish_attempt(account_id, target.revision, error, factory, status=status)
         if sync.revision == target.revision:

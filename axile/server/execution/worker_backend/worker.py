@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import traceback
 from multiprocessing.connection import Connection
 from typing import cast
 
@@ -565,6 +566,8 @@ def run_worker_backend_loop(
                     error=WorkerBackendErrorPayload(
                         type=exc.__class__.__name__,
                         message=str(exc) or repr(exc),
+                        technical_detail=str(exc),
+                        traceback="".join(traceback.format_exception(exc)),
                         retryable=False,
                     ),
                 )

@@ -38,6 +38,8 @@ import { useToastStore } from '@/stores/ui'
 import type { ExecutionTrigger } from '@/types/api'
 
 const INSPECTOR_WIDTH_KEY = 'axon.portfolioWorkbench.inspectorWidth'
+interface BatchResult { accountId: number; name: string; trigger: ExecutionTrigger | null; error: Error | null; pending: boolean }
+
 const PANEL_SPLIT_KEY = 'axon.portfolioWorkbench.panelSplit'
 
 function initialPanelSplit() {
@@ -79,7 +81,10 @@ export function PortfolioEditPage() {
   const saveState = usePythonSave()
   const { saving, error: saveError } = saveState
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
-  const [actionError, setActionError] = useState<Error | null>(null)
+  const [batchResults, setBatchResults] = useState<BatchResult[]>([])
+  const batchGeneration = useRef(0)
+  const batchBusy = useRef(new Set<number>())
+  useEffect(() => { setBatchResults([]); batchBusy.current.clear(); return () => { batchGeneration.current += 1 } }, [portfolioId])
   // 「目标」面板默认展开生效 tab：这是组合域的「当前事实」，多数进来是为看它或试跑。
   const [resultOpen, setResultOpen] = useState(true)
   const [targetTab, setTargetTab] = useState<'effective' | 'trial'>('effective')
@@ -140,36 +145,26 @@ export function PortfolioEditPage() {
   // 组合名 + 市场 chip 共享元素：列表卡 ↔ 本页左栏标题槽（匹配过渡的任一端，列表直达工作台）。
   const tDetail = useViewTransitionState(`/portfolios/${portfolioId}/edit`)
 
-  // 通知全部跟随账户立即按最新目标调仓：逐个触发、结果汇总（与在途执行合并 / 失败计数）。
+  const notifyFollower = async (accountId: number, name: string) => {
+    if (batchBusy.current.has(accountId)) return
+    batchBusy.current.add(accountId)
+    const version = batchGeneration.current
+    const write = (next: BatchResult) => setBatchResults(previous => previous.some(item => item.accountId === accountId)
+      ? previous.map(item => item.accountId === accountId ? next : item) : [...previous, next])
+    write({ accountId, name, trigger: null, error: null, pending: true })
+    try {
+      const trigger = await triggerExecute(accountId)
+      if (version === batchGeneration.current) write({ accountId, name, trigger, error: null, pending: false })
+    } catch (cause) {
+      if (version === batchGeneration.current) write({ accountId, name, trigger: null, error: cause instanceof Error ? cause : new Error(String(cause)), pending: false })
+    } finally { if (version === batchGeneration.current) batchBusy.current.delete(accountId) }
+  }
   const runFanout = () => {
-    if (followers.length === 0) return
-    const names = followers.map((follower) => follower.name).join('、')
-    setConfirm({
-      title: '全部跟随账户立即执行',
-      body: `通知跟随本组合的账户（${names}）立即按最新目标调仓。若目标未变，多数会空跑、几乎不增成本。`,
-      okText: '通知执行',
+    if (!followers.length || batchBusy.current.size) return
+    setConfirm({ title: '全部跟随账户立即执行',
+      body: `通知跟随本组合的账户（${followers.map(follower => follower.name).join('、')}）立即按最新目标调仓。`, okText: '通知执行',
       onConfirm: async () => {
-        setActionError(null)
-        const results = await Promise.allSettled(followers.map((follower) => triggerExecute(follower.account_id)))
-        const failed = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-        const coalesced = results.filter(
-          (result): result is PromiseFulfilledResult<ExecutionTrigger> =>
-            result.status === 'fulfilled' && result.value.accepted === 'coalesced',
-        ).length
-        if (failed.length > 0) {
-          const queued = failed.every((result) => String(result.reason).includes('已有调仓'))
-          setActionError(
-            new Error(
-              queued ? '账户正在清仓或无法再排队，请稍后再试' : `${failed.length} 个账户通知失败，请稍后再试`,
-            ),
-          )
-          return
-        }
-        toast(
-          coalesced > 0
-            ? `已通知调仓，${coalesced} 个与等待中的执行合并`
-            : `已通知 ${followers.length} 个账户立即调仓`,
-        )
+        await Promise.all(followers.map(follower => notifyFollower(follower.account_id, follower.name)))
       },
     })
   }
@@ -314,7 +309,7 @@ export function PortfolioEditPage() {
   if (portfolio.error && !pf) {
     return (
       <section>
-        <ErrorNotice title="组合加载失败" error={portfolio.error} onRetry={portfolio.refresh} />
+        <ErrorNotice contextKey={portfolioId} title="组合加载失败" error={portfolio.error} onRetry={portfolio.refresh} />
       </section>
     )
   }
@@ -461,7 +456,7 @@ export function PortfolioEditPage() {
               </div>
             )}
             statusOverride={targetTab === 'effective' ? snapshotStatus : undefined}
-            contentOverride={targetTab === 'effective' ? <SnapshotResult weights={weights} /> : undefined}
+            contentOverride={targetTab === 'effective' ? <SnapshotResult contextKey={portfolioId} weights={weights} /> : undefined}
             resultContent={calc.result?.valid && calc.result.target ? <WeightResult target={calc.result.target} /> : null}
           />
 
@@ -537,7 +532,7 @@ export function PortfolioEditPage() {
                     <button
                       type="button"
                       onClick={runFanout}
-                      disabled={anyFollowerRunning}
+                      disabled={anyFollowerRunning || batchResults.some(result => result.pending)}
                       className="flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-[12px] font-semibold text-ink-2 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
                     >
                       <Zap size={12} aria-hidden />
@@ -547,7 +542,12 @@ export function PortfolioEditPage() {
                 </Tooltip>
               ) : undefined}
           >
-              <ErrorNotice title="触发执行失败" error={actionError} variant="mutation" onRetry={runFanout} />
+              <div aria-label="批量执行受理结果">{batchResults.map(result => <div key={result.accountId} className="mb-3 border-b border-line pb-2 text-[13px]">
+                <div>{result.name} · {result.pending ? '正在提交' : result.trigger ? result.trigger.accepted === 'coalesced' ? '已合并受理' : '已受理' : '受理失败'}</div>
+                {result.trigger && <Link to={`/accounts/${result.accountId}/executions/${result.trigger.execution_id}`} className="break-all text-accent">{result.trigger.execution_id}</Link>}
+                <ErrorNotice title={`${result.name} 执行请求失败`} error={result.error} evidence={[{ label: '账户', value: String(result.accountId) }]}
+                  onRetry={() => notifyFollower(result.accountId, result.name)} contextKey={portfolioId} />
+              </div>)}</div>
               {followers.length > 0 ? (
                 <ul className="flex flex-col">
                   {followers.map((account) => (

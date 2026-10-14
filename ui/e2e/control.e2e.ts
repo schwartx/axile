@@ -72,7 +72,7 @@ test('failed directory remains editable and retries; long lists scroll on narrow
   await expect(dialog.getByRole('button', { name: '添加查单', exact: true })).toBeVisible()
   await page.unroute('**/api/v1/account/1/control/policy')
   await page.route('**/api/v1/account/1/control/policy', (route) => route.fulfill({ json: { operations: Array.from({ length: 25 }, (_, i) => ({ key: `extra_${i}`, display_name: `额外${i}`, category: '查询' })), effective_policy: { operations: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`extra_${i}`, {}])) } } }))
-  await dialog.getByRole('button', { name: '重试', exact: true }).click()
+  await dialog.getByRole('button', { name: '重试：操作目录加载失败', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '添加额外0', exact: true })).toBeVisible()
   const list = dialog.getByRole('button', { name: '添加额外0', exact: true }).locator('../..')
   expect(await list.evaluate((node) => node.scrollHeight > node.clientHeight && node.clientHeight <= 240)).toBe(true)

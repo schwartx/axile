@@ -279,15 +279,15 @@ def test_empty_positions_wraps_worker_failure_with_error_record(
     assert captured_event["execution_id"] == "exec-empty-worker-failed-1"
     assert captured_event["event_type"] == execution_backend.ExecutionEventType.EXECUTION_FAILED
     # 人话错误在公共层；trigger_source 等元数据留在 debug 命名空间。
-    assert captured_event["details"] == {
-        "error": "清仓执行失败，具体原因未确认",
-        "debug": {"trigger_source": "empty_positions"},
-    }
-    assert captured_error_record == {
-        "account_id": 1,
-        "msg": "清仓执行失败，具体原因未确认",
-        "execution_id": "exec-empty-worker-failed-1",
-    }
+    details = captured_event["details"]
+    assert details["error"] == "清仓执行失败，具体原因未确认"
+    assert details["debug"] == {"trigger_source": "empty_positions"}
+    assert details["technical_detail"] == "worker exploded"
+    assert "RuntimeError: worker exploded" in details["traceback"]
+    assert captured_error_record["account_id"] == 1
+    assert captured_error_record["execution_id"] == "exec-empty-worker-failed-1"
+    assert captured_error_record["raw_result"]["technical_detail"] == "worker exploded"
+    assert "RuntimeError: worker exploded" in captured_error_record["raw_result"]["traceback"]
 
 
 def test_empty_positions_uses_custom_algorithm_when_provided(

@@ -1,55 +1,36 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import type { TargetWeightSnapshot } from '@/types/api'
 
-/** 单个组合目标快照的取数状态（页面层一份数据，同时喂卡片与页头摘要）。 */
 export interface PortfolioTargetFetch {
   loading: boolean
   snapshot: TargetWeightSnapshot | null
   error: Error | null
+  updatedAt: number | null
+  refresh: () => Promise<void>
 }
-
-/**
- * 页面层统一拉取所有组合的目标快照。
- *
- * 卡片不再各自为政：同一 fetch 结果派生卡片目标态与页头摘要判词，避免「卡片说有问题、
- * 页头报全部到位」的信息分裂。组合增删时按 id 集合重建请求，卸载即中止。
- */
+/** 每个来源保留完整错误、旧快照与独立重试；旧请求不覆盖新结果。 */
 export function usePortfoliosTargets(portfolioIds: (number | null | undefined)[]): Record<number, PortfolioTargetFetch> {
   const key = portfolioIds.filter((id): id is number => id != null).join(',')
-  const [states, setStates] = useState<Record<number, PortfolioTargetFetch>>({})
-
+  const [states, setStates] = useState<Record<number, Omit<PortfolioTargetFetch, 'refresh'>>>({})
+  const controllers = useRef(new Map<number, AbortController>())
+  const load = useCallback(async (id: number) => {
+    controllers.current.get(id)?.abort()
+    const controller = new AbortController()
+    controllers.current.set(id, controller)
+    setStates(previous => ({ ...previous, [id]: { loading: true, snapshot: previous[id]?.snapshot ?? null, error: null, updatedAt: previous[id]?.updatedAt ?? null } }))
+    try {
+      const snapshot = await getPortfolioTargetSnapshot(id, controller.signal)
+      if (!controller.signal.aborted) setStates(previous => ({ ...previous, [id]: { loading: false, snapshot, error: null, updatedAt: Date.now() } }))
+    } catch (cause) {
+      if (!controller.signal.aborted) setStates(previous => ({ ...previous, [id]: { ...previous[id]!, loading: false, error: cause instanceof Error ? cause : new Error(String(cause)) } }))
+    }
+  }, [])
   useEffect(() => {
-    const ids = key === '' ? [] : key.split(',').map(Number)
-    if (ids.length === 0) {
-      setStates({})
-      return
-    }
-    const controllers = new Map<number, AbortController>()
-    // 先一次性置 loading；保留旧快照避免卡片闪空（与轮询 hook 的「后台刷新保留上次成功值」同语义）。
-    setStates((prev) =>
-      Object.fromEntries(ids.map((id) => [id, { loading: true, snapshot: prev[id]?.snapshot ?? null, error: null }])),
-    )
-    for (const id of ids) {
-      const controller = new AbortController()
-      controllers.set(id, controller)
-      getPortfolioTargetSnapshot(id, controller.signal)
-        .then((snapshot) => {
-          if (controller.signal.aborted) return
-          setStates((prev) => ({ ...prev, [id]: { loading: false, snapshot, error: null } }))
-        })
-        .catch((error: unknown) => {
-          if (controller.signal.aborted) return
-          setStates((prev) => ({
-            ...prev,
-            [id]: { loading: false, snapshot: null, error: error instanceof Error ? error : new Error(String(error)) },
-          }))
-        })
-    }
-    return () => {
-      for (const controller of controllers.values()) controller.abort()
-    }
-  }, [key])
-
-  return states
+    setStates(previous => Object.fromEntries(key.split(',').filter(Boolean).filter(id => previous[Number(id)]).map(id => [id, previous[Number(id)]])))
+    for (const id of key.split(',').filter(Boolean).map(Number)) void load(id)
+    const active = controllers.current
+    return () => { for (const controller of active.values()) controller.abort(); active.clear() }
+  }, [key, load])
+  return Object.fromEntries(Object.entries(states).map(([id, value]) => [id, { ...value, refresh: () => load(Number(id)) }]))
 }
