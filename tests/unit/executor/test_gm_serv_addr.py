@@ -1029,3 +1029,31 @@ def test_gm_account_status_filters_identity_and_only_accepts_logged_in(monkeypat
     assert observations[-1].status == "error"
     gm_strategy.on_account_status(None, {"account_id": "wanted", "status": {"state": 3}})
     assert observations[-1].status == "ok" and observations[-1].error is None
+
+
+@pytest.mark.parametrize(
+    "operation,account_id,recovers",
+    [
+        ("get_cash", "account-id", True),
+        ("get_position", "account-id", True),
+        ("get_orders", "account-id", True),
+        ("current", None, False),
+        ("get_cash", "other-account", False),
+    ],
+)
+def test_account_bridge_access_recovers_only_current_account(monkeypatch, operation, account_id, recovers):
+    from types import SimpleNamespace
+
+    from axile.executor.connection_state import connection_monitor
+
+    executor = _build_executor()
+    executor.account_id = "account-id"
+    executor._gm_config = object()
+    bridge = SimpleNamespace(call=lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(executor, "_ensure_strategy_bridge", lambda **_kwargs: bridge)
+    monitor = connection_monitor(executor)
+    observations = []
+    monitor.bind(observations.append)
+    monitor.failed(RuntimeError("旧连接故障"))
+    executor._call_bridge(SimpleNamespace(operation=operation, account_id=account_id))
+    assert observations[-1].status == ("ok" if recovers else "error")

@@ -549,10 +549,10 @@ test('账户连接标识读取后端三态，连接错误集中展示，业务�
   state = 'ok'
   business = true
   await page.reload()
-  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
   await page.getByRole('button', { name: '刷新账户资产' }).click()
   await expect(page.getByText('资金查询业务拒绝', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
 })
 
 test('目标计算中的连接错误归到账户，脚本错误不改变连接标识', async ({ page }) => {
@@ -575,5 +575,5 @@ test('目标计算中的连接错误归到账户，脚本错误不改变连接�
   await page.reload()
   await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
   await expect(page.getByText('脚本第2行业务错误', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
 })

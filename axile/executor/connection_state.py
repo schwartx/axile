@@ -1,4 +1,4 @@
-"""账户连接生命周期的观察；不根据具体业务请求成败推断连通性。"""
+"""观察连接生命周期与实际账户访问，不根据后续业务处理推断连通性。"""
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ class ConnectionMonitor:
         self._observer = current_connection_observer()
         self._latest: ConnectionObservation | None = None
         self._active = True
+        self._failure_revision = 0
 
     def bind(self, observer: ConnectionObserver) -> None:
         """绑定观察者并回放最新结果，不伪造新的确认时间。"""
@@ -91,8 +92,19 @@ class ConnectionMonitor:
             raise
 
     def succeeded(self) -> None:
-        """渠道明确完成连接或认证时调用。"""
+        """渠道明确完成连接、认证或实际账户访问时调用。"""
         self._publish(ConnectionObservation("ok", clock_now_iso()))
+
+    @contextmanager
+    def accessing(self) -> Iterator[None]:
+        """实际账户访问成功即恢复；失败分类仍由渠道负责，业务转换放在边界外。"""
+        with self._lock:
+            revision = self._failure_revision
+        yield
+        with self._lock:
+            # 查询期间新收到的断线优先，迟到的成功响应不能覆盖它。
+            if revision == self._failure_revision:
+                self.succeeded()
 
     def failed(self, error: BaseException) -> None:
         """连接故障发生处标记归属并固定完整异常链。"""
@@ -115,6 +127,8 @@ class ConnectionMonitor:
     def _publish(self, observation: ConnectionObservation) -> None:
         with self._lock:
             if self._active:
+                if observation.status == "error":
+                    self._failure_revision += 1
                 self._latest = observation
                 self._notify(observation)
 

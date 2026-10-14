@@ -816,6 +816,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._query_lock.release()
 
     def _query(self, name, req, *, symbol=None, timeout=None):
+        with connection_monitor(self).accessing():
+            return self._query_connected(name, req, symbol=symbol, timeout=timeout)
+
+    def _query_connected(self, name, req, *, symbol=None, timeout=None):
         wait_seconds = self._timeout if timeout is None else timeout
         state = self._catalog_query_state
         slot_timeout = None if getattr(state, "active", False) and state.deadline is None else wait_seconds

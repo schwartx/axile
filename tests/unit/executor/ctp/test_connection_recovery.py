@@ -640,3 +640,24 @@ def test_connection_status_reports_login_disconnect_and_ignores_active_close(mon
     count = len(observations)
     broker.market_spi.OnFrontDisconnected(4097)
     assert len(observations) == count
+
+
+def test_native_account_query_recovers_without_new_login_callback(broker):
+    from axile.executor.connection_state import connection_monitor
+
+    executor = broker.start()
+    observations = []
+    monitor = connection_monitor(executor)
+    monitor.bind(observations.append)
+    monitor.failed(RuntimeError("旧连接故障"))
+
+    def respond(_request, rid):
+        broker.trader_spi.OnRspQryTradingAccount(SimpleNamespace(Balance=100), None, rid, True)
+        return 0
+
+    # 原 fixture 专门断言启动期尚未 ready；这里模拟已就绪后的柜台响应。
+    broker.trader.ReqQryTradingAccount.side_effect = respond
+    # 原生账户请求确实完成；后续统一模型转换不是连通性条件。
+    executor._query("ReqQryTradingAccount", SimpleNamespace())
+    assert observations[-1].status == "ok"
+    assert observations[-1].error is None

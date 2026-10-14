@@ -341,3 +341,23 @@ def test_qualified_pending_order_filter_preserves_exchange(executor, monkeypatch
     assert [order.order_id for order in instance.get_pending_orders("SHFE.rb2610")] == ["o1"]
     assert [order.order_id for order in instance.get_pending_orders("DCE.rb2610")] == ["o2"]
     assert getattr(api, "query_count", 0) == 0
+
+
+def test_account_access_recovers_before_conversion_failure(executor, monkeypatch):
+    from axile.executor.connection_state import connection_monitor
+    from axile.executor.tq import tq_execute
+
+    instance, _ = executor
+    monitor = connection_monitor(instance)
+    observations = []
+    monitor.bind(observations.append)
+    monitor.failed(RuntimeError("旧连接故障"))
+
+    def fail_conversion(*_args, **_kwargs):
+        raise ValueError("业务转换失败")
+
+    monkeypatch.setattr(tq_execute, "account_to_unified", fail_conversion)
+    with pytest.raises(ValueError, match="业务转换失败"):
+        instance.get_account_assets()
+    assert observations[-1].status == "ok"
+    assert observations[-1].error is None

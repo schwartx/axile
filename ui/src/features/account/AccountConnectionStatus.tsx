@@ -33,10 +33,12 @@ export function AccountConnectionStatus({ accountId, connection }: { accountId: 
       if (!controller.signal.aborted) setSelection({ title: '账户连接详情读取失败', info: errorInfo(error, [{ label: '账户', value: String(accountId) }]) })
     } finally { if (!controller.signal.aborted) setLoading(false) }
   }
-  return <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
-    <button type="button" aria-label={`账户连通状态：${label}`} title={connection?.message ?? '查看账户连接详情'} disabled={loading} onClick={() => void open()} className={`inline-flex items-center rounded-chip bg-fill px-2.5 py-[3px] text-xs whitespace-nowrap cursor-pointer underline decoration-dashed decoration-current/40 underline-offset-4 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-40 ${status === 'error' ? 'text-warn' : status === 'ok' ? 'text-ink-2' : 'text-ink-3'}`}>
+  return <span className="inline-flex" onClick={(event) => { if (status !== 'ok') event.stopPropagation() }}>
+    {status === 'ok' ? <span role="status" aria-label="账户连通状态：正常" className="inline-flex items-center rounded-chip bg-fill px-2.5 py-[3px] text-xs whitespace-nowrap text-ink-2">
+      <InkRewrite text="连接正常" tone="label" />
+    </span> : <button type="button" aria-label={`账户连通状态：${label}`} title={connection?.message ?? '查看账户连接详情'} disabled={loading} onClick={() => void open()} className={`inline-flex items-center rounded-chip bg-fill px-2.5 py-[3px] text-xs whitespace-nowrap cursor-pointer underline decoration-dashed decoration-current/40 underline-offset-4 hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-40 ${status === 'error' ? 'text-warn' : 'text-ink-3'}`}>
       <InkRewrite text={`连接${label}`} tone="label" />
-    </button>
+    </button>}
     <ErrorDetailsModal selection={selection} onClose={() => setSelection(null)} />
   </span>
 }

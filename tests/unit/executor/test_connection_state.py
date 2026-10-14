@@ -46,3 +46,30 @@ def test_observer_failure_does_not_replace_connection_failure():
     with pytest.raises(ConnectionError, match="原始连接错误"):
         with monitor.connecting():
             raise ConnectionError("原始连接错误")
+
+
+def test_account_access_restores_connection_before_business_processing():
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+    monitor.failed(RuntimeError("旧连接故障"))
+    with monitor.accessing():
+        pass
+    assert observations[-1].status == "ok"
+    assert observations[-1].error is None
+    with pytest.raises(ValueError):
+        with monitor.accessing():
+            raise ValueError("普通业务拒绝")
+    assert observations[-1].status == "ok"
+
+
+def test_late_account_response_cannot_override_new_disconnect():
+    monitor = ConnectionMonitor()
+    observations = []
+    monitor.bind(observations.append)
+    with monitor.accessing():
+        monitor.failed(ConnectionError("查询期间断线"))
+    assert observations[-1].status == "error"
+    with monitor.accessing():
+        pass
+    assert observations[-1].status == "ok"

@@ -401,8 +401,10 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         runtime = self._require_runtime()
 
         def query(api: object) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
-            account = snapshot_entity(getattr(api, "get_account")())
-            native_positions = getattr(api, "get_position")()
+            with connection_monitor(self).accessing():
+                native_account = getattr(api, "get_account")()
+                native_positions = getattr(api, "get_position")()
+            account = snapshot_entity(native_account)
             positions = {
                 str(symbol): snapshot_entity(row)
                 for symbol, row in native_positions.items()

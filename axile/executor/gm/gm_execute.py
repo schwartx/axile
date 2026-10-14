@@ -302,6 +302,17 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")
         bridge = self._ensure_strategy_bridge(timeout=timeout)
+        if request.operation in {
+            "get_cash",
+            "get_position",
+            "get_orders",
+            "get_unfinished_orders",
+            "get_execution_reports",
+            "order_volume",
+            "order_cancel",
+        } and getattr(request, "account_id", None) in {None, self.account_id}:
+            with connection_monitor(self).accessing():
+                return bridge.call(request, timeout=timeout)
         return bridge.call(request, timeout=timeout)
 
     # ==================== 实现 UnifiedCallbackClient 接口 ====================
