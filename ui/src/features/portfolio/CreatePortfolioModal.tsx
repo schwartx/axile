@@ -204,8 +204,8 @@ export function CreatePortfolioModal({
                 }}
               />
               {loading && markets.length === 0 && <p className="mt-2 text-[14px] text-ink-2">加载市场…</p>}
-              <ErrorNotice embedded title="市场目录加载失败" error={markets.length === 0 ? catalogError : null} onRetry={refreshCatalog} />
-              <ErrorNotice embedded title="创建组合失败" error={createError} variant="mutation" onRetry={() => void doCreate()} />
+              <ErrorNotice intent="read" embedded title="市场目录加载失败" error={markets.length === 0 ? catalogError : null} onRetry={refreshCatalog} />
+              <ErrorNotice intent="mutation" embedded title="创建组合失败" error={createError} variant="mutation" onRetry={() => void doCreate()} />
             </div>
             <div className="mt-4 flex justify-end gap-2.5 border-t border-line px-5 py-3.5">
               <button

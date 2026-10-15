@@ -1,3 +1,4 @@
+import { usePolling } from '@/lib/hooks/usePolling'
 import { useEffect, useRef, useState } from 'react'
 import { BackLink } from '@/components/ui/BackLink'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -14,15 +15,11 @@ export function SystemEditNotificationPage() {
   const initialized = useRef(false)
   const state = useSystemAlert()
   const { draft, baseline, loading, set } = state
-  const [defaultCode, setDefaultCode] = useState<string | null>(null)
-  const [templateError, setTemplateError] = useState<Error | null>(null)
+  const template = usePolling(getDefaultSystemNotification, { queryKey: 'system-notification-template', intervalMs: 0 })
+  const defaultCode = template.data
+  const templateError = template.error
+  const loadTemplate = template.refresh
   const [sample, setSample] = useState<SystemNotificationEvent>('execution_error')
-  const loadTemplate = async () => {
-    setTemplateError(null)
-    try { setDefaultCode(await getDefaultSystemNotification()) }
-    catch (cause) { setTemplateError(cause instanceof Error ? cause : new Error(String(cause))) }
-  }
-  useEffect(() => { void loadTemplate() }, [])
   // 模板只是初始草稿；进入工作台不会启用或保存通知。
   useEffect(() => {
     if (!initialized.current && !loading && draft && baseline && defaultCode !== null) {
@@ -37,8 +34,8 @@ export function SystemEditNotificationPage() {
     failed: (cause) => ({ ok: false, message: cause instanceof Error ? cause.message : String(cause) }),
     toEditorResult: (result) => ({ valid: result.ok, errorMessage: result.ok ? null : result.message, errorLine: result.error_line, traceback: result.traceback }),
   })
-  if (state.loadError) return <ErrorNotice title="系统告警配置读取失败" error={state.loadError} onRetry={() => void state.reload()} />
-  if (templateError) return <ErrorNotice title="系统告警模板读取失败" error={templateError} onRetry={() => void loadTemplate()} />
+  if (state.loadError && !draft) return <ErrorNotice intent="read" title="系统告警配置读取失败" error={state.loadError} onRetry={() => void state.reload()} />
+  if (templateError && defaultCode === null) return <ErrorNotice intent="read" title="系统告警模板读取失败" error={templateError} onRetry={() => void loadTemplate()} />
   if (!draft || !baseline || defaultCode === null) return <EditLoading />
   const busy = state.saveState.saving || trial.running
   const changeCode = (code: string) => { state.set({ code }); state.saveState.clearError() }
@@ -46,6 +43,8 @@ export function SystemEditNotificationPage() {
     <NotificationWorkbench
       kind="system_notification" storageKey="axon.systemNotificationWorkbench"
       header={<>
+        <ErrorNotice intent="read" hasData title="系统告警配置读取失败" error={state.loadError} onRetry={state.reload} />
+        <ErrorNotice intent="read" hasData title="系统告警模板读取失败" error={templateError} onRetry={loadTemplate} />
         <div className="flex items-center gap-3">
           <BackLink to="/settings" label="返回系统告警" />
           <h1 className="text-[18px] font-semibold">系统告警函数</h1>

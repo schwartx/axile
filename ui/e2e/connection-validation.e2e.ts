@@ -121,10 +121,10 @@ test('narrow layout aligns the trigger with the section heading and keeps it abo
   await expect(page.getByRole('region', { name: '账户连接验证', exact: true })).toBeVisible()
 })
 
-test('server outage disables validation and explains how to reconnect', async ({ page }) => {
+test('server outage still allows an explicit validation attempt without a duplicate connection warning', async ({ page }) => {
   await page.getByRole('button', { name: '模拟服务失联' }).click()
-  await expect(page.getByRole('button', { name: '重新验证', exact: true })).toBeDisabled()
-  await expect(page.getByRole('alert').filter({ hasText: '连接验证暂不可用' })).toContainText('请在顶部重试连接服务器')
+  await expect(page.getByRole('button', { name: '重新验证', exact: true })).toBeEnabled()
+  await expect(page.getByText('无法连接 axile 服务，连接验证暂不可用。', { exact: false })).toHaveCount(0)
 })
 
 test('table query keeps HTTP code request id and full raw error inside its current dialog', async ({ page }) => {

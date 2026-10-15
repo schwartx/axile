@@ -10,6 +10,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { Segmented } from '@/components/ui/Segmented'
 import { SupplementControls } from '@/features/setup/SupplementControls'
 import { SupplementPreviewSummary, type SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
@@ -133,6 +134,10 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   const [supplementPreviewError, setSupplementPreviewError] = useState<Error | null>(null)
   const [previewRetry, setPreviewRetry] = useState(0)
   const [supplementPreviewRetry, setSupplementPreviewRetry] = useState(0)
+  useReadRecovery(() => {
+    if (previewError || previewMoreError) setPreviewRetry(value => value + 1)
+    if (supplementPreviewError) setSupplementPreviewRetry(value => value + 1)
+  })
   const supplementCache = useRef({ key: '', values: new Map<number, SupplementPreviewValue>() })
   const [previewWide, setPreviewWide] = useState(false)
   const [previewLimit, setPreviewLimit] = useState(PREVIEW_MIN_ITEMS)
@@ -568,7 +573,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
   ) : customEmpty ? (
     <p className="text-[14px] text-ink-3">输入自定义节奏后显示。</p>
   ) : previewError ? (
-    <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="排程预览读取失败，仍可保存" error={previewError} onRetry={() => setPreviewRetry((value) => value + 1)} />
+    <ErrorNotice intent="read" evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="排程预览读取失败，仍可保存" error={previewError} onRetry={() => setPreviewRetry((value) => value + 1)} />
   ) : expectPreview && !schedulePreview ? (
     <div className="space-y-2" aria-label="正在加载排程预览">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-4 w-full animate-pulse rounded bg-fill motion-reduce:animate-none" />)}</div>
   ) : schedulePreview?.items.length ? (
@@ -592,7 +597,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
           />
         )
       })}
-      <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }, { label: '补发配置', value: `${v.supN} 次，间隔 ${v.supM} 分钟` }]} title="补发预览未更新" error={supplementPreviewError} contextKey={previewKey}
+      <ErrorNotice intent="read" evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }, { label: '补发配置', value: `${v.supN} 次，间隔 ${v.supM} 分钟` }]} title="补发预览未更新" error={supplementPreviewError} contextKey={previewKey}
         onRetry={() => setSupplementPreviewRetry((value) => value + 1)} />
       {schedulePreview.has_more && ((layout === 'page' && previewWide) || previewRows.length < previewTargetRows) && (
         <div ref={previewSentinelRef} className="pt-1">
@@ -603,7 +608,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
               ))}
             </div>
           ) : previewMoreError ? (
-            <ErrorNotice evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="未来排程续取失败" error={previewMoreError} onRetry={loadMore} />
+            <ErrorNotice intent="read" evidence={[{ label: '渠道', value: tradeChannel }, { label: 'Cron', value: cronExpr }]} contextKey={previewKey} title="未来排程续取失败" error={previewMoreError} onRetry={loadMore} />
           ) : (
             <div className="h-px" aria-hidden="true" />
           )}

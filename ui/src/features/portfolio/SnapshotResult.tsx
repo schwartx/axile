@@ -18,14 +18,14 @@ export function SnapshotResult({ weights, contextKey }: { weights: TargetSnapsho
   return (
     <div>
       {!weights.data && weights.loading && <SkeletonLines rows={3} />}
-      <ErrorNotice contextKey={contextKey}
+      <ErrorNotice hasData={weights.data != null} intent="read" contextKey={contextKey}
         title="目标权重快照加载失败"
         error={weights.error}
         variant={weights.stale ? 'stale' : 'section'}
         updatedAt={weights.updatedAt}
         onRetry={weights.reloadSnapshot}
       />
-      <ErrorNotice contextKey={contextKey}
+      <ErrorNotice intent="mutation" contextKey={contextKey}
         title="重新计算失败"
         error={weights.recalculateError}
         variant="mutation"

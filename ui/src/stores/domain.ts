@@ -4,6 +4,9 @@ import { reconcilePerformanceVersion } from '@/features/history/performanceCache
 import { getDashboard } from '@/lib/api/accounts'
 import { getPortfolios } from '@/lib/api/portfolios'
 import type { AccountDashboardItem, PortfolioLite } from '@/types/api'
+import { isConnectionError } from '@/lib/errorInfo'
+import { notifyReadRecovery } from '@/lib/readRecovery'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 /**
  * 领域状态 store —— 有界、聚合、被多视图反复看的名词（账户、组合）。
@@ -22,7 +25,7 @@ interface DomainState {
   portfolios: PortfolioLite[] | null
   /** 账户数据最近一次成功刷新的时间戳（ms），供顶栏「数据 N 秒前」。 */
   accountsUpdatedAt: number | null
-  /** 账户数据最近一次刷新的错误；有值即视为「失联」，但保留旧数据降级展示。 */
+  /** 最近一次刷新错误；网络错误表示失联，HTTP 错误保留其业务含义。 */
   accountsError: Error | null
   /** 组合列表最近一次加载错误；保留旧数据，冷拉失败时供页面重试。 */
   portfoliosError: Error | null
@@ -72,6 +75,12 @@ export const useDomainStore = create<DomainState>((set) => ({
   },
 }))
 
+// 只有 dashboard 成功刷新才能确认恢复；其他接口成功、HTTP 错误都不触发恢复。
+useDomainStore.subscribe((state, previous) => {
+  if (isConnectionError(previous.accountsError) && state.accountsError === null
+    && state.accountsUpdatedAt !== previous.accountsUpdatedAt) void notifyReadRecovery()
+})
+
 /**
  * 在应用根挂载一次，驱动共享领域状态的刷新。
  *
@@ -81,6 +90,7 @@ export const useDomainStore = create<DomainState>((set) => ({
 export function useDomainSync(accountIntervalMs = 5000) {
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
   const refreshPortfolios = useDomainStore((s) => s.refreshPortfolios)
+  useReadRecovery(refreshPortfolios)
   useEffect(() => {
     void refreshAccounts()
     void refreshPortfolios()

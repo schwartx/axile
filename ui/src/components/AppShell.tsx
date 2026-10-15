@@ -1,3 +1,4 @@
+import { GlobalErrorContext } from '@/lib/errorPresentation'
 import { useCallback, useRef, useState } from 'react'
 import { Outlet, useMatches } from 'react-router'
 import { AppSidebar } from '@/components/AppSidebar'
@@ -15,7 +16,7 @@ export function AppShell() {
   )
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-bg">
+    <GlobalErrorContext.Provider value={true}><div className="flex h-full flex-col overflow-hidden bg-bg">
       <TopBar navigationTriggerRef={navigationTriggerRef} onOpenNavigation={() => setNavigationOpen(true)} />
       <div className="flex min-h-0 flex-1">
         <AppSidebar
@@ -36,6 +37,6 @@ export function AppShell() {
         </main>
       </div>
       <Toast />
-    </div>
+    </div></GlobalErrorContext.Provider>
   )
 }

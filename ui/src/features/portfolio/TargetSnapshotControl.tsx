@@ -1,6 +1,4 @@
 import type { ErrorEvidence } from '@/lib/errorInfo'
-import { useContext } from 'react'
-import { AccountConnectionContext, isAccountConnectionError } from '@/lib/accountConnection'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { RefreshCw } from 'lucide-react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
@@ -35,21 +33,15 @@ export function TargetSnapshotControl({
   evidence?: ErrorEvidence[]
   onRecalculate: () => void
 }) {
-  const failure = error ?? readError
-  const accountBlocked = useContext(AccountConnectionContext) && isAccountConnectionError(failure)
   const tooltip = disabledReason ?? (recalculating ? '正在重新计算目标权重' : '重新计算当前目标权重')
   const meta = loading && !snapshot
     ? '正在读取目标权重…'
-    : failure && snapshot?.calculated_at
-      ? `本次计算失败 · ${targetSnapshotText(snapshot, contextName)}`
-      : readError && !snapshot ? '目标快照读取失败' : targetSnapshotText(snapshot, contextName)
+    : readError && !snapshot ? '目标暂不可用' : targetSnapshotText(snapshot, contextName)
   const compactMeta = loading && !snapshot
     ? '目标读取中'
     : snapshot?.calculated_at
-      ? `目标 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}${failure ? ' · 更新失败' : ''}`
-      : failure
-        ? readError ? '目标读取失败' : '目标计算失败'
-        : '目标未计算'
+      ? `目标 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}`
+      : readError ? '目标暂不可用' : '目标未计算'
 
   const refreshButton = (
     <Tooltip content={tooltip}>
@@ -71,24 +63,24 @@ export function TargetSnapshotControl({
     return (
       <div className="min-w-0"><div className="flex min-w-0 items-center gap-0.5">
         <Tooltip content={meta}>
-          <span className={`min-w-0 text-[13px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
-            <InkRewrite text={accountBlocked ? '因账户连接异常无法计算' : compactMeta} tone="label" />
+          <span className="min-w-0 text-[13px] text-ink-3">
+            <InkRewrite text={compactMeta} tone="label" />
           </span>
         </Tooltip>
         {refreshButton}
-      </div><ErrorNotice evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant="compact" onRetry={onRecalculate} /></div>
+      </div><ErrorNotice intent="mutation" evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant="compact" onRetry={onRecalculate} /></div>
     )
   }
 
   return (
     <div>
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <div title={meta} className={`min-w-0 text-[13.5px] ${failure ? 'text-warn' : 'text-ink-3'}`}>
-          <InkRewrite text={accountBlocked ? '因账户连接异常无法计算' : meta} tone="label" />
+        <div title={meta} className="min-w-0 text-[13.5px] text-ink-3">
+          <InkRewrite text={meta} tone="label" />
         </div>
         {refreshButton}
       </div>
-      <ErrorNotice evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant={snapshot?.calculated_at ? 'stale' : 'section'}
+      <ErrorNotice intent="mutation" evidence={evidence} contextKey={contextKey} title="目标计算失败" error={error} variant={snapshot?.calculated_at ? 'stale' : 'section'}
         updatedAt={snapshot?.calculated_at ? Date.parse(snapshot.calculated_at) : null} onRetry={onRecalculate} />
     </div>
   )

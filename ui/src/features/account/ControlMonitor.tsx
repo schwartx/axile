@@ -14,6 +14,7 @@ import {
 } from '@/features/account/controlPreferences'
 import { useLiveControl, type ControlFrame, type ControlRule } from '@/stores/liveControl'
 import { useDomainStore } from '@/stores/domain'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 function metricRules(frame: ControlFrame | undefined): ControlRule[] {
   // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
@@ -77,7 +78,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
       </section>
       <section aria-label="摘要显示设置">
         <div className="flex justify-between"><h3 className="text-sm font-[640]">摘要显示设置</h3><span className="text-xs text-ink-3">{draft.length}/3</span></div>
-        <ErrorNotice title="操作目录加载失败" error={failed} embedded onRetry={retry} contextKey={open ? accountId : undefined} />
+        <ErrorNotice intent="read" hasData={model != null} title="操作目录加载失败" error={failed} embedded onRetry={retry} contextKey={open ? accountId : undefined} />
         <div ref={rowsRef} className="divide-y divide-line">
           {draft.map((id, index) => {
             const [, key, window] = id.split(':')
@@ -153,6 +154,7 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
+  useReadRecovery(() => setAttempt(value => value + 1), open)
   useEffect(() => {
     if (!open) return
     const controller = new AbortController()

@@ -151,7 +151,7 @@ function EvidenceExportControl({ target, accountName, initialDates, fromSnapshot
             </div>
           </div>
         </fieldset>
-        <ErrorNotice title="证据导出失败" error={error} contextKey={contextKey} embedded
+        <ErrorNotice intent="mutation" title="证据导出失败" error={error} contextKey={contextKey} embedded
           onRetry={!busy && !dateError ? () => submit() : undefined} />
       </form>
     </CenteredModal>

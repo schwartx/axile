@@ -55,8 +55,8 @@ export function testAccountNotificationFunction(id: number, code: string, feishu
 }
 
 /** 读取与执行链路相同的默认飞书函数源码。 */
-export async function getDefaultAccountNotification(id: number): Promise<string> {
-  const result = await apiGet<{ code: string }>(`/account/${id}/notification/default`)
+export async function getDefaultAccountNotification(id: number, signal?: AbortSignal): Promise<string> {
+  const result = await apiGet<{ code: string }>(`/account/${id}/notification/default`, signal)
   return result.code
 }
 

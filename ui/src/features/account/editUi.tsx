@@ -59,7 +59,7 @@ export function EditError({
 }) {
   return (
     <section>
-      <ErrorNotice title="账户加载失败" error={error} onRetry={onRetry} />
+      <ErrorNotice intent="read" title="账户加载失败" error={error} onRetry={onRetry} />
     </section>
   )
 }
@@ -357,7 +357,7 @@ export function EditSaveBar({
               {saving ? '保存中…' : '保存'}
             </button>
           </div>
-          <ErrorNotice title="保存失败" error={error} variant="mutation" onRetry={onSave} />
+          <ErrorNotice intent="mutation" title="保存失败" error={error} variant="mutation" onRetry={onSave} />
         </div>
       </div>
     </>

@@ -112,7 +112,7 @@ export function AcctChannel() {
         <WizardPage kicker="账户设置 · 1 / 6" title="连接哪个交易所 / 券商？" lead="不同渠道连接方式完全不同——选定后进入对应的连接页。">
           <div className="grid grid-cols-1 gap-3">
             {loading && channels === null && <p className="text-[15px] text-ink-2">加载渠道…</p>}
-            <ErrorNotice title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
+            <ErrorNotice intent="read" title="渠道目录加载失败" error={channels === null ? error : null} onRetry={refresh} />
             {channels?.map((ch) => {
               const available = ch.available
               const isSelected = acct.channel === ch.channel
@@ -478,7 +478,7 @@ export function AcctPortfolio() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker="账户设置 · 3 / 6" title="用哪个组合？" lead="选择账户跟随的组合，可查看目标持仓和策略代码。">
-          <ErrorNotice title="组合列表加载失败" error={error} onRetry={refresh} />
+          <ErrorNotice intent="read" title="组合列表加载失败" error={error} onRetry={refresh} />
           <div className="grid grid-cols-1 gap-3">
             {portfolios == null && !error && <p className="text-[15px] text-ink-2">加载组合…</p>}
             {portfolios?.length === 0 && <p className="text-[15px] text-ink-2">还没有组合，可以先新建一个。</p>}
@@ -820,12 +820,12 @@ export function AcctConfirm() {
             <div className="mt-[18px] max-w-[460px] rounded-[14px] border border-dashed border-line bg-surface p-5">
               {previewState.status === 'idle' && <div className="py-5 text-center text-[15px] text-ink-3">试跑看这套组合此刻会调成什么样</div>}
               {previewState.status === 'loading' && <div aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="mt-3 h-4 w-4/5" /><Skeleton className="mt-3 h-4 w-3/5" /></div>}
-              <ErrorNotice title="试跑失败" error={previewState.status === 'error' ? previewState.message : null} onRetry={preview} />
+              <ErrorNotice intent="mutation" title="试跑失败" error={previewState.status === 'error' ? previewState.message : null} onRetry={preview} />
               {previewState.status === 'success' && previewState.rows.length === 0 && <div className="py-5 text-center text-[15px] text-ink-3">无目标持仓。</div>}
               {previewState.status === 'success' && <WeightBars weights={previewState.rows} />}
             </div>
           </div>
-          <ErrorNotice title="创建账户失败" error={createError} variant="mutation" onRetry={submit} />
+          <ErrorNotice intent="mutation" title="创建账户失败" error={createError} variant="mutation" onRetry={submit} />
         </WizardPage>
       </div>
       <WizardNav prevTo="/setup/acct/timer" nextLabel="创建并开跑" onNext={submit} nextDisabled={acct.portfolioId == null || !acct.name.trim()} />

@@ -5,9 +5,10 @@ import { Link } from '@/components/ui/nav'
 import type { ErrorInfo } from '@/lib/errorInfo'
 import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
+import { useErrorPresentation } from '@/lib/errorPresentation'
 
 export type ConnectionSelection = { accountId: number; requestId: number } & (
-  { kind: 'loading' } | { kind: 'detail'; detail: AccountConnectionDetail } | { kind: 'failure'; info: ErrorInfo }
+  { kind: 'loading' } | { kind: 'detail'; detail: AccountConnectionDetail } | { kind: 'failure'; info: ErrorInfo; error?: unknown }
 )
 
 function TechnicalDetails({ text }: { text: string }) {
@@ -28,9 +29,10 @@ function TechnicalDetails({ text }: { text: string }) {
 
 /** 只展示本次读取快照；渠道提供内容，公共 UI 只解析通用导航意图。 */
 export function AccountConnectionProblemModal({ selection, onClose }: { selection: ConnectionSelection | null; onClose: () => void }) {
+  const failure = useErrorPresentation(selection?.kind === 'failure' ? selection.error ?? new Error(selection.info.message) : null)
   const view = selection?.kind === 'detail' ? connectionProblem(selection.accountId, selection.detail) : null
-  const title = selection?.kind === 'failure' ? '连接详情读取失败' : view?.title ?? '账户连接详情'
-  const copy = selection?.kind === 'failure' ? selection.info.text : view?.copy
+  const title = selection?.kind === 'failure' ? failure.local ? '连接详情读取失败' : '账户连接详情' : view?.title ?? '账户连接详情'
+  const copy = selection?.kind === 'failure' ? failure.local ? selection.info.text : null : view?.copy
   return <CenteredModal open={selection !== null} title={title} onClose={onClose} widthClassName="w-[640px]"
     footer={<div className="flex flex-wrap items-center justify-end gap-3 border-t border-line px-[22px] py-4">
       {copy && <ErrorCopyButton text={copy} label="复制连接详情" />}
@@ -38,7 +40,8 @@ export function AccountConnectionProblemModal({ selection, onClose }: { selectio
     </div>}>
     <div className="min-w-0 space-y-4 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
       {selection?.kind === 'loading' && <p role="status" className="py-4 text-ink-3">正在读取连接详情…</p>}
-      {selection?.kind === 'failure' && <>
+      {selection?.kind === 'failure' && !failure.local && <p role="status" className="text-ink-3">连接详情暂不可用</p>}
+      {selection?.kind === 'failure' && failure.local && <>
         <p>未能读取账户 {selection.accountId} 的连接详情。关闭后再次打开可重新读取。</p>
         <TechnicalDetails key={selection.requestId} text={selection.info.text} />
       </>}

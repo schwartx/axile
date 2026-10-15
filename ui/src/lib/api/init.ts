@@ -136,8 +136,8 @@ export interface SystemNotificationResult {
   ok: boolean | null
   error: string | null
 }
-export function getDefaultSystemNotification(): Promise<string> {
-  return apiGet<{ code: string }>('/init/execution-alert/function/default').then((result) => result.code)
+export function getDefaultSystemNotification(signal?: AbortSignal): Promise<string> {
+  return apiGet<{ code: string }>('/init/execution-alert/function/default', signal).then((result) => result.code)
 }
 export function getSystemNotificationResult(signal?: AbortSignal): Promise<SystemNotificationResult> {
   return apiGet<SystemNotificationResult>('/init/execution-alert/result', signal)

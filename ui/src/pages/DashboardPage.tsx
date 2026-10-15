@@ -20,7 +20,7 @@ export function DashboardPage() {
 
   // 首次加载：无数据时才 loading / 报错；已有数据则一直渲染（失联降级由顶栏体现）。
   if (accounts == null) {
-    if (error) return <ErrorNotice title="账户加载失败" error={error} onRetry={refresh} />
+    if (error) return <ErrorNotice intent="read" title="账户加载失败" error={error} onRetry={refresh} />
     return <FleetSkeleton />
   }
 

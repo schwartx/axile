@@ -141,13 +141,13 @@ export function PortfoliosPage() {
           ))}
         </div>
       )}
-      <ErrorNotice
+      <ErrorNotice intent="read"
         title={portfolios == null ? '组合加载失败' : '组合更新失败'}
-        error={portfoliosError}
+        error={portfoliosError} hasData={portfolios != null}
         variant={portfolios == null ? 'section' : 'stale'}
         onRetry={refreshPortfolios}
       />
-      <ErrorNotice title="删除组合失败" error={deleteError} variant="mutation" />
+      <ErrorNotice intent="mutation" title="删除组合失败" error={deleteError} variant="mutation" />
 
       {portfolios != null && list.length === 0 && (
         <Card className="p-8 text-center">
@@ -245,12 +245,12 @@ function PortfolioCard({
       </div>
 
       <TargetSummary state={targetState} />
-      <div onClick={(event) => event.stopPropagation()}><ErrorNotice title={`${p.name} 目标读取失败`} error={targetFetch?.error} evidence={[{ label: '组合 ID', value: String(p.id) }]} variant={targetFetch?.snapshot ? 'stale' : 'compact'} updatedAt={targetFetch?.updatedAt} onRetry={targetFetch?.refresh} contextKey={p.id ?? undefined} /></div>
+      <div onClick={(event) => event.stopPropagation()}><ErrorNotice intent="read" title={`${p.name} 目标读取失败`} error={targetFetch?.error} hasData={targetFetch?.snapshot != null} evidence={[{ label: '组合 ID', value: String(p.id) }]} variant={targetFetch?.snapshot ? 'stale' : 'compact'} updatedAt={targetFetch?.updatedAt} onRetry={targetFetch?.refresh} contextKey={p.id ?? undefined} /></div>
 
       <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3 border-t border-line pt-3 text-[13.5px] text-ink-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
           {accountsError ? (
-            <span className="text-warn">绑定关系暂不可用</span>
+            <span className="text-ink-3">绑定关系暂不可用</span>
           ) : !accountsReady ? (
             <Skeleton className="h-7 w-36" />
           ) : followers.length > 0 ? (
@@ -289,7 +289,7 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
         : '目标为空仓'
     return (
       <div className="mt-3 flex min-h-[62px] items-center border-t border-line pt-3">
-        <span className={`text-[14px] ${state.kind === 'unavailable' ? 'text-warn' : 'text-ink-3'}`}>{text}</span>
+        <span className="text-[14px] text-ink-3">{text}</span>
       </div>
     )
   }
@@ -329,8 +329,8 @@ function Metric({
 function TargetTimestamp({ state }: { state: PortfolioTargetState }) {
   if (state.kind !== 'ready' && state.kind !== 'empty') return null
   return (
-    <span className={`flex-none text-[12.5px] ${state.stale ? 'text-warn' : ''}`}>
-      目标更新于{formatTargetUpdatedAt(state.calculatedAt)}{state.stale ? ' · 更新失败' : ''}
+    <span className="flex-none text-[12.5px] text-ink-3">
+      目标更新于{formatTargetUpdatedAt(state.calculatedAt)}
     </span>
   )
 }

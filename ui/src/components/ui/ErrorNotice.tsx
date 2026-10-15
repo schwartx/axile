@@ -8,13 +8,16 @@ import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { errorInfo, type ErrorEvidence, type ErrorInfo } from '@/lib/errorInfo'
 import { timeAgo } from '@/lib/format'
-import { AccountConnectionContext, isAccountConnectionError } from '@/lib/accountConnection'
+import { useErrorPresentation, type ErrorIntent } from '@/lib/errorPresentation'
 
 export type ErrorNoticeVariant = 'section' | 'compact' | 'mutation' | 'stale'
 
 interface ErrorNoticeProps {
   title: string
   error: unknown | null
+  intent: ErrorIntent
+  hasData?: boolean
+  accountId?: number
   variant?: ErrorNoticeVariant
   updatedAt?: number | null
   evidence?: ErrorEvidence[]
@@ -27,6 +30,9 @@ interface ErrorNoticeProps {
 export function ErrorNotice({
   title,
   error,
+  intent,
+  hasData = false,
+  accountId,
   variant = 'section',
   updatedAt = null,
   evidence = [],
@@ -36,13 +42,15 @@ export function ErrorNotice({
 }: ErrorNoticeProps) {
   const inModal = useContext(ModalContentContext)
   const inlineDetails = embedded || inModal
-  const accountErrorHandled = useContext(AccountConnectionContext)
-  const hasError = error != null && !(accountErrorHandled && isAccountConnectionError(error))
+  const { disposition } = useErrorPresentation(error, { intent, hasData, accountId })
+  const hasError = disposition === 'local'
+  const neutral = disposition !== 'none' && !hasError
   const current = useMemo(() => hasError ? errorInfo(error) : null, [error, hasError])
   const [retained, setRetained] = useState<ErrorInfo | null>(current)
   const [selection, setSelection] = useState<{ title: string; info: ErrorInfo } | null>(null)
-  const open = hasError || (inlineDetails && selection !== null)
+  const open = hasError || neutral || (inlineDetails && selection !== null)
   useEffect(() => setSelection(null), [contextKey])
+  useEffect(() => { if (neutral) setSelection(null) }, [neutral])
 
   useEffect(() => {
     if (current) setRetained(current)
@@ -51,7 +59,10 @@ export function ErrorNotice({
   const shown = current ?? retained
   const compact = variant === 'compact' || variant === 'stale'
   const blocked = variant === 'mutation'
-  const label = variant === 'stale' && updatedAt != null
+  const label = disposition === 'uncertain' ? '状态待确认'
+    : disposition === 'unavailable' ? '暂不可用'
+    : disposition === 'stale' ? updatedAt == null ? '当前显示上次数据' : `当前显示 ${timeAgo(updatedAt)}的数据`
+    : variant === 'stale' && updatedAt != null
     ? `${title}，当前显示 ${timeAgo(updatedAt)}的数据`
     : title
 
@@ -59,17 +70,17 @@ export function ErrorNotice({
     <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
       <div className="min-h-0 overflow-hidden" inert={!open} aria-hidden={!open}>
         <div
-          className={`${compact ? 'py-1.5 text-[13.5px]' : 'my-2 py-2 text-[14px]'} ${blocked ? 'rounded-[6px] bg-warn-soft px-2.5' : 'border-l-2 border-warn pl-2.5'}`}
-          role={variant === 'mutation' ? 'alert' : 'status'}
-          aria-live={variant === 'mutation' ? 'assertive' : 'polite'}
+          className={neutral ? 'py-1.5 text-[13px] text-ink-3' : `${compact ? 'py-1.5 text-[13.5px]' : 'my-2 py-2 text-[14px]'} ${blocked ? 'rounded-[6px] bg-warn-soft px-2.5' : 'border-l-2 border-warn pl-2.5'}`}
+          role={intent === 'mutation' ? 'alert' : 'status'}
+          aria-live={intent === 'mutation' ? 'assertive' : 'polite'}
         >
           <div className="flex min-w-0 items-start gap-2">
-            <TriangleAlert size={compact ? 14 : 16} className="mt-0.5 flex-none text-warn" aria-hidden />
+            {!neutral && <TriangleAlert size={compact ? 14 : 16} className="mt-0.5 flex-none text-warn" aria-hidden />}
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-warn">{label}</div>
-              {shown && <div className="mt-0.5 text-ink-2"><InkRewrite text={shown.message} tone="label" /></div>}
+              <div className={neutral ? undefined : 'font-medium text-warn'}>{label}</div>
+              {!neutral && shown && <div className="mt-0.5 text-ink-2"><InkRewrite text={shown.message} tone="label" /></div>}
             </div>
-            {onRetry && (
+            {hasError && onRetry && (
               <Tooltip content="重试">
                 <button
                   type="button"

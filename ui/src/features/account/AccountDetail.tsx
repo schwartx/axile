@@ -28,8 +28,7 @@ import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { useExecutionRunner } from '@/features/account/useExecutionRunner'
 import { useTerminateAction } from '@/features/account/useTerminateAction'
 import { buildRecentActivity, recentRowText } from '@/features/account/recent'
-import { StaleDataStatus } from '@/features/account/StaleDataStatus'
-import { connectionStaleAt, localQueryError } from '@/features/account/staleData'
+import { useServiceDisconnected } from '@/lib/errorPresentation'
 import {
   currentHoldingPreview,
   formatHoldingQuantity,
@@ -86,8 +85,6 @@ interface AccountDetailProps {
   accountId: number
   /** 若来自仪表盘可直接传入聚合项，省一次请求；否则组件自取。 */
   item: AccountDashboardItem
-  /** 顶栏已确认网络级失联；详情页据此收起重复的缓存刷新错误。 */
-  connectionUnavailable?: boolean
   /** 仪表盘数据刷新回调（执行/启停后触发）。 */
   onDashboardRefresh?: () => void
 }
@@ -95,9 +92,9 @@ interface AccountDetailProps {
 export function AccountDetail({
   accountId,
   item,
-  connectionUnavailable = false,
   onDashboardRefresh,
 }: AccountDetailProps) {
+  const disconnected = useServiceDisconnected()
   const accountEvidence = [{ label: '账户', value: `${item.name} (#${accountId})` }]
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
@@ -169,19 +166,10 @@ export function AccountDetail({
     { queryKey: `account:${accountId}:rebalance-plan`, intervalMs: 10000 },
   )
 
-  const accountFreshness = { error: account.error, stale: account.stale, updatedAt: account.updatedAt }
-  const activityFreshness = { error: activity.error, stale: activity.stale, updatedAt: activity.updatedAt }
-  const nextRunFreshness = { error: nextRun.error, stale: nextRun.stale, updatedAt: nextRun.updatedAt }
-  const comparisonFreshness = { error: comparison.error, stale: comparison.stale, updatedAt: comparison.updatedAt }
-  const automaticStaleAt = connectionStaleAt(connectionUnavailable, [accountFreshness, nextRunFreshness])
-  const activityStaleAt = connectionStaleAt(connectionUnavailable, [activityFreshness])
-  const comparisonStaleAt = connectionStaleAt(connectionUnavailable, [comparisonFreshness])
-
   const reloadTargetSnapshot = weights.reloadSnapshot
   const refreshComparison = comparison.refresh
   const refreshAccount = account.refresh
   const refreshActivity = activity.refresh
-  const refreshNextRun = nextRun.refresh
   const refreshAssetSnapshots = assetSnapshots.refresh
   // 执行终态时记录与资产快照已落库：立刻重读观测面，避免目标单飞、权益/持仓停在上一帧。
   const refreshObservedState = useCallback(() => {
@@ -200,29 +188,6 @@ export function AccountDetail({
     if (executionJustSettled(previousLiveRef.current, live)) refreshObservedState()
     previousLiveRef.current = live
   }, [live, refreshObservedState])
-  // 顶栏的单次重试恢复连接后，立即同步详情页查询，不再等待各自的轮询间隔。
-  const connectionUnavailableRef = useRef(connectionUnavailable)
-  useEffect(() => {
-    const restored = connectionUnavailableRef.current && !connectionUnavailable
-    connectionUnavailableRef.current = connectionUnavailable
-    if (!restored) return
-    void Promise.all([
-      refreshAccount(),
-      refreshActivity(),
-      refreshNextRun(),
-      refreshAssetSnapshots(),
-      reloadTargetSnapshot(),
-      refreshComparison(),
-    ])
-  }, [
-    connectionUnavailable,
-    refreshAccount,
-    refreshActivity,
-    refreshNextRun,
-    refreshAssetSnapshots,
-    refreshComparison,
-    reloadTargetSnapshot,
-  ])
   // 当前在途执行 id：优先服务端真源，退回本地 runner（首帧前）。用于「一行可点跳详情」。
   const runningExecId = live?.executionId ?? (runner.running ? runner.executionId : null)
 
@@ -423,12 +388,12 @@ export function AccountDetail({
   )
 
   return (
-    <AccountConnectionContext.Provider value={!account.error && connection?.status === 'error'}><section>
+    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && connection?.status === 'error' }}><section>
       <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
-      <ErrorNotice evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
-      <ErrorNotice evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
-      <ErrorNotice evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
-      <ErrorNotice title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
+      <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
+      <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
+      <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
+      <ErrorNotice accountId={accountId} intent="uncertain" title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
         evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
       {/* Hero */}
       <Card className="p-3">
@@ -689,7 +654,6 @@ export function AccountDetail({
         <Card className="px-6 py-4 md:col-span-2">
           <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
             <h3 className="mr-auto text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
-            <StaleDataStatus updatedAt={comparisonStaleAt} />
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
               <CurrentOrdersButton state={currentOrders} />
               <Link
@@ -752,11 +716,11 @@ export function AccountDetail({
           ) : null}
           {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
           <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
-          <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
-          <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />
-          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} hasData={assetSnapshots.data != null} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="目标快照读取失败" error={weights.error} hasData={weights.data != null} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} contextKey={accountId}
             title="持仓与目标对照加载失败"
-            error={comparisonError}
+            error={comparisonError} hasData={comparison.data != null}
             variant={positions.length > 0 || weights.data != null ? 'stale' : 'section'}
             updatedAt={comparison.updatedAt}
             onRetry={() => Promise.all([refreshComparison(), weights.reloadSnapshot()]).then(() => undefined)}
@@ -767,8 +731,7 @@ export function AccountDetail({
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-[14px] font-semibold text-ink-2">自动执行</h3>
             <div className="flex min-w-0 items-center gap-3">
-              <StaleDataStatus updatedAt={automaticStaleAt} />
-              <button
+                <button
                 type="button"
                 disabled={!scheduleKind}
                 title={!scheduleKind ? '渠道能力加载中' : undefined}
@@ -803,9 +766,9 @@ export function AccountDetail({
               </span>
             </span>
           </button>
-          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} contextKey={accountId}
             title="账户节奏加载失败"
-            error={localQueryError(connectionUnavailable, accountFreshness)}
+            error={account.error} hasData={account.data != null}
             variant={account.stale ? 'stale' : 'compact'}
             updatedAt={account.updatedAt}
             onRetry={account.refresh}
@@ -818,9 +781,9 @@ export function AccountDetail({
               nextRunTimes={nextRun.data?.next_execution_times ?? []}
             />
           )}
-          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} contextKey={accountId}
             title="自动执行计划加载失败"
-            error={localQueryError(connectionUnavailable, nextRunFreshness)}
+            error={nextRun.error} hasData={nextRun.data != null}
             variant={nextRun.stale ? 'stale' : 'compact'}
             updatedAt={nextRun.updatedAt}
             onRetry={nextRun.refresh}
@@ -847,7 +810,6 @@ export function AccountDetail({
       <div className="mx-0.5 mt-6 mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
         <span className="text-xs font-semibold tracking-wide text-ink-3">近期活动</span>
         <div className="flex min-w-0 items-center gap-3">
-          <StaleDataStatus updatedAt={activityStaleAt} />
           <Link to={`/accounts/${accountId}/history`} className="text-[13.5px] font-semibold text-accent hover:underline">
             完整实盘绩效 →
           </Link>
@@ -856,9 +818,9 @@ export function AccountDetail({
       <Card className="overflow-hidden">
         {activity.loading && <div className="px-6 py-4 text-[15px] text-ink-2">加载中…</div>}
         <div className="px-6">
-          <ErrorNotice evidence={accountEvidence} contextKey={accountId}
+          <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} contextKey={accountId}
             title="近期活动加载失败"
-            error={localQueryError(connectionUnavailable, activityFreshness)}
+            error={activity.error} hasData={activity.data != null}
             variant={activity.stale ? 'stale' : 'section'}
             updatedAt={activity.updatedAt}
             onRetry={activity.refresh}

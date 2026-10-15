@@ -83,7 +83,7 @@ function TradeList({ accountId, scope, trades, expansion, update, currency, unit
   return <div className="py-3" data-testid="journal-trades">
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-ink-3"><span>{scoped ? '区间内成交' : '逐笔成交'} · {(scope && !poll.data) || pending ? '—' : count} 笔</span>
       <Select ariaLabel="成交方向" value={expansion.side} options={SIDES} onChange={side => update({ ...expansion, side, count: 20, cursors: [undefined] })} /></div>
-    <ErrorNotice title="成交读取失败" error={poll.error} onRetry={poll.refresh} />
+    <ErrorNotice intent="read" title="成交读取失败" hasData={poll.data != null} error={poll.error} onRetry={poll.refresh} />
     {pending && <p role="status" className="py-3 text-xs text-ink-3">成交读取中</p>}
     <TradeTable trades={shown} currency={currency} units={units} detailLink={detailLink} />
     {!pending && !poll.error && count === 0 && <p className="py-3 text-xs text-ink-3">无匹配成交</p>}
@@ -101,9 +101,9 @@ function ExecutionExpansion({ row, accountId, scope, expansion, update, currency
     <div className="flex min-h-9 items-center gap-4 text-xs">{detailLink(row.executionId)}{scope && <span className="text-ink-3">完整执行持仓变化</span>}</div>
     {!row.executionId && <p className="py-2 text-xs text-ink-3">历史记录无执行附件</p>}
     <ExecutionErrorEvidence accountId={accountId} executionId={row.executionId} recordId={row.recordId} record={row.record} enabled={expansion.open} />
-    <ErrorNotice title="执行证据读取失败" error={evidence.error} onRetry={evidence.refresh} />
-    <ErrorNotice title="执行事件读取失败" error={evidence.data?.eventsError} onRetry={evidence.refresh} />
-    <ErrorNotice title="执行附件读取失败" error={evidence.data?.artifactsError} onRetry={evidence.refresh} />
+    <ErrorNotice intent="read" title="执行证据读取失败" hasData={evidence.data != null} error={evidence.error} onRetry={evidence.refresh} />
+    <ErrorNotice intent="read" title="执行事件读取失败" error={evidence.data?.eventsError} onRetry={evidence.refresh} />
+    <ErrorNotice intent="read" title="执行附件读取失败" error={evidence.data?.artifactsError} onRetry={evidence.refresh} />
     {evidence.loading && <p role="status" className="py-2 text-xs text-ink-3">执行证据读取中</p>}
     {evidence.data && <ExecutionEvidence model={evidence.data.model} currency={currency} units={units} view={expansion.evidenceView ?? 'actions'} onViewChange={evidenceView => update({ ...expansion, evidenceView })} />}
     <TradeList accountId={accountId} scope={scope && row.recordId != null ? { ...scope, record_id: row.recordId } : undefined} trades={scope ? row.trades : evidence.data?.trades ?? []} expansion={expansion} update={update} currency={currency} units={units} scoped={scoped} loading={!scope && evidence.loading} />
@@ -137,7 +137,7 @@ export function SymbolGroup({ row, accountId, scope, expansion, update, detailLi
       <span className="col-span-2 break-all font-medium xl:col-span-1">{row.symbol}</span><Field label="成交额"><span className="num">{amount(row.summary.value)}</span></Field><Field label="滑点损耗 BP"><Slip summary={row.summary} /></Field><Field label="滑点成本"><Cost summary={row.summary} /></Field><Field label="成交笔数">{row.summary.count}</Field><Field label="最近成交"><span className="num text-xs text-ink-3">{row.lastTime ? shanghaiLabel(new Date(row.lastTime).toISOString()) : '—'}</span></Field><ChevronDown size={15} className={`text-ink-3 transition-transform motion-reduce:transition-none ${expansion.open ? 'rotate-180' : ''}`} />
     </button>
     <div id={panel} inert={!expansion.open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expansion.open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden"><div className="border-t border-line bg-bg-subtle/50 px-3 xl:px-6">
-      <ErrorNotice title="成交读取失败" error={fills.error} onRetry={fills.refresh} />
+      <ErrorNotice intent="read" title="成交读取失败" hasData={fills.data != null} error={fills.error} onRetry={fills.refresh} />
       <TradeList accountId={accountId} scope={scope ? { ...scope, symbol: row.symbol } : undefined} trades={trades} expansion={expansion} update={update} currency={currency} units={units} detailLink={detailLink} scoped={!!scope && (scope.start != null || !!scope.day)} loading={!scope && fills.loading} />
     </div></div></div>
   </div>

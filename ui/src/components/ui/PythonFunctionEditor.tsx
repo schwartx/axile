@@ -1,4 +1,5 @@
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
 import { type PythonChecks } from '@/components/ui/pythonChecks'
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react'
@@ -91,7 +92,7 @@ export function PythonRunResultBody({
         (resultContent ?? <p className="text-[14px] text-ink-2">函数执行成功。</p>)
       ) : (
         <>
-          <ErrorNotice title="Python 试跑失败" error={result.error ?? {
+          <ErrorNotice intent="mutation" title="Python 试跑失败" error={result.error ?? {
             message: [result.errorType, result.errorMessage].filter(Boolean).join(': ') || '执行出错', traceback: result.traceback,
           }} />
         </>
@@ -191,6 +192,11 @@ export function PythonFunctionEditor({
   const menuRef = useRef<HTMLDivElement>(null)
   const [formatting, setFormatting] = useState(false)
   const [editorMessage, setEditorMessage] = useState('')
+  const [formatError, setFormatError] = useState<Error | null>(null)
+  useReadRecovery(() => {
+    const editor = cmRef.current?.view
+    if (editor) forceLinting(editor)
+  })
   const [sourceTabs, setSourceTabs] = useState<SourceTab[]>([])
   const [activeSource, setActiveSource] = useState<string | null>(null)
   const [sourceSymbols, setSourceSymbols] = useState<Record<string, DocumentSymbols | null>>({})
@@ -258,6 +264,7 @@ export function PythonFunctionEditor({
     formattingRef.current = true
     setFormatting(true)
     setEditorMessage('')
+    setFormatError(null)
     void apiSend<{ code: string }>('POST', '/editor/format', { code: before.toString() })
       .then(({ code: formatted }) => {
         if (cmRef.current?.view !== editor || editor.state.readOnly) return
@@ -267,7 +274,7 @@ export function PythonFunctionEditor({
         }
         if (formatted !== before.toString()) replaceCode(formatted)
       })
-      .catch((error: unknown) => setEditorMessage(error instanceof Error ? error.message : '格式化失败'))
+      .catch((error: unknown) => setFormatError(error instanceof Error ? error : new Error(String(error))))
       .finally(() => { formattingRef.current = false; setFormatting(false) })
   }
 
@@ -468,6 +475,7 @@ export function PythonFunctionEditor({
   const assistance = (
     <>
       {editorMessage && <p role="status" className="flex-none bg-surface px-3 py-2 text-[12px] text-warn">{editorMessage}</p>}
+      <ErrorNotice intent="mutation" title="代码格式化失败" error={formatError} variant="compact" onRetry={() => formatRef.current?.()} />
     </>
   )
   const fileTabs = sourceTabs.length > 0 && (
@@ -552,6 +560,7 @@ export function PythonFunctionEditor({
         {headerTarget ? createPortal(workbenchHeader, headerTarget) : null}
         {popup}
         {editorMessage && <p role="status" className="px-3 text-[12px] text-warn">{editorMessage}</p>}
+        <ErrorNotice intent="mutation" title="代码格式化失败" error={formatError} variant="compact" onRetry={() => formatRef.current?.()} />
         {fileTabs}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{codeBlock}{sourceDocuments}</div>
         {statusTarget && createPortal(sourceTab ? <div className="flex items-center gap-2 text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => editor && gotoLine(editor)}>{(sourcePosition?.line ?? 0) + 1}:{(sourcePosition?.character ?? 0) + 1}</button><span>只读 · Python</span></div> : <div className="flex items-center gap-2 whitespace-nowrap text-[11px] text-ink-3"><button type="button" title="跳转到行" onClick={() => view && gotoLine(view)}><span className="max-[480px]:hidden">行 {position.line}，列 {position.column}</span><span className="hidden max-[480px]:inline">{position.line}:{position.column}</span></button><span role="status" aria-label="代码分析器" aria-description={analyzerDescription} title={analyzerDescription} data-state={languageStatus} className={languageStatus === 'reconnecting' ? 'text-warn' : ''}><InkRewrite text={analyzerLabel} tone="label" /></span></div>, statusTarget)}

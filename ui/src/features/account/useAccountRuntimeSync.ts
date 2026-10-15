@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getAccountRuntimeSync, retryAccountRuntimeSync } from '@/lib/api/accounts'
 import type { AccountRuntimeSync } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export function runtimeSyncMessage(sync: AccountRuntimeSync | null | undefined): string {
   if (sync?.status === 'synchronized') return '算法配置已保存'
@@ -20,6 +21,7 @@ export function useAccountRuntimeSync(accountId: number) {
   const [owner, setOwner] = useState(accountId)
   const [data, setData] = useState<AccountRuntimeSync | null>(null)
   const [error, setError] = useState<Error | null>(null)
+  const [retryError, setRetryError] = useState<Error | null>(null)
   const [loading, setLoading] = useState(false)
   const [queried, setQueried] = useState(false)
   const [deadline, setDeadline] = useState(0)
@@ -44,15 +46,19 @@ export function useAccountRuntimeSync(accountId: number) {
     const generation = ++request.generation
     if (restart) setDeadline(Date.now() + 60_000)
     setLoading(true)
-    setError(null)
+    if (retry) setRetryError(null)
+    else setError(null)
     try {
       const next = await (retry ? retryAccountRuntimeSync : getAccountRuntimeSync)(accountId, controller.signal)
       if (generation !== request.generation || request.accountId !== accountId) return
       setData((previous) => newerRuntimeSync(previous, next))
+      if (retry) setError(null)
       setQueried(true)
     } catch (cause) {
       if (generation !== request.generation || request.accountId !== accountId) return
-      setError(cause instanceof Error ? cause : new Error(String(cause)))
+      const failure = cause instanceof Error ? cause : new Error(String(cause))
+      if (retry) setRetryError(failure)
+      else setError(failure)
     } finally {
       if (generation === request.generation && request.accountId === accountId) setLoading(false)
     }
@@ -61,6 +67,7 @@ export function useAccountRuntimeSync(accountId: number) {
   useEffect(() => {
     setOwner(accountId)
     setData(null)
+    setRetryError(null)
     setQueried(false)
     void run(false, true)
     const request = current.current
@@ -82,6 +89,7 @@ export function useAccountRuntimeSync(accountId: number) {
     if (current.current.accountId !== accountId) return
     invalidate()
     setError(null)
+    setRetryError(null)
     setDeadline(Date.now() + 60_000)
     if (next) {
       setData((previous) => newerRuntimeSync(previous, next))
@@ -93,7 +101,8 @@ export function useAccountRuntimeSync(accountId: number) {
     }
   }, [invalidate, run, accountId])
 
+  useReadRecovery(() => run(false, true))
   const visible = owner === accountId
-  return { data: visible ? data : null, error: visible ? error : null, loading: visible ? loading : true, queried: visible && queried, invalidate, acceptSaved,
+  return { data: visible ? data : null, error: visible ? error : null, retryError: visible ? retryError : null, loading: visible ? loading : true, queried: visible && queried, invalidate, acceptSaved,
     refresh: () => run(false, true), retry: () => run(true, true) }
 }

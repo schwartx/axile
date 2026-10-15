@@ -4,6 +4,7 @@ import { ApiError } from '@/lib/api/client'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { getValidationTable, type ValidationTable, type ValidationTableSummary } from '@/lib/api/connectionValidation'
 import { selectValidationRows, validationCellText } from '@/features/account/connectionValidation/validationTable'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export interface ValidationTableSelection {
   validationId: string
@@ -25,6 +26,7 @@ export function ValidationRecordsModal({ selection, onClose }: {
   const [loaded, setLoaded] = useState<{ key: string; table: ValidationTable } | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
+  useReadRecovery(() => setAttempt(value => value + 1), selection != null)
   const key = shown ? `${shown.validationId}/${shown.stepId}` : ''
   useEffect(() => {
     if (!selection) return
@@ -119,7 +121,7 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
         {rows.length === 0 && <p className="sticky left-0 py-12 text-center text-[13px] text-ink-3">{table.rows.length === 0 ? '本次查询无记录' : '没有匹配的记录'}</p>}
       </div>
     </> : <div className="flex min-h-[300px] flex-col items-center justify-center gap-3 text-[13px] text-ink-3" aria-live="polite">
-      <ErrorNotice title="查询记录读取失败" error={error} embedded contextKey={open ? 'open' : 'closed'} onRetry={error instanceof ApiError && error.status === 404 ? undefined : onRetry} />
+      <ErrorNotice intent="read" title="查询记录读取失败" error={error} embedded contextKey={open ? 'open' : 'closed'} onRetry={error instanceof ApiError && error.status === 404 ? undefined : onRetry} />
       {error instanceof ApiError && error.status === 404 && <p>验证任务已过期，请关闭后重新验证。</p>}
       {!error && <p role="status">正在读取查询记录…</p>}
     </div>}

@@ -30,3 +30,8 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## 错误处理维护
+
+错误归属、全局断连收口和只读恢复约定见 [错误展示与连接恢复](docs/error-handling.md)。
+新增错误入口须声明操作语义；恢复回调只允许读取，不得重放写操作。

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { checkPerformance, performanceEntry, requestPerformanceRefresh, snapshotPending } from './performanceCache'
 import type { PerformanceRange } from '@/lib/api/performance'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export function usePerformanceSnapshot(id: number, range: PerformanceRange) {
+  useReadRecovery(() => checkPerformance(id, range))
   const entry = performanceEntry(id, range)
   const subscribe = useCallback((listener: () => void) => { entry.listeners.add(listener); return () => { entry.listeners.delete(listener) } }, [entry])
   const state = useSyncExternalStore(subscribe, () => entry.state)

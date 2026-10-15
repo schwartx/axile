@@ -53,7 +53,7 @@ export function SettingsSaveBar({
               {saving ? '重启中…' : '保存并重启'}
             </button>
           </div>
-          <ErrorNotice
+          <ErrorNotice intent="mutation"
             title="保存系统配置失败"
             error={error}
             variant="mutation"

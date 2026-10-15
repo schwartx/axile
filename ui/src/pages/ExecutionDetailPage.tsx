@@ -600,7 +600,7 @@ export function ExecutionDetailPage() {
       </div>
       <div className="num mt-2 text-[16px] font-mono text-ink-2">{executionId}</div>
       <div>
-        <ErrorNotice title="状态待确认：执行状态查询失败" error={status.error} contextKey={executionId} onRetry={status.refresh} />
+        <ErrorNotice intent="uncertain" title="状态待确认：执行状态查询失败" error={status.error} contextKey={executionId} onRetry={status.refresh} />
       </div>
       <ExecutionErrorEvidence accountId={accountId} executionId={executionId} status={status.data} events={rawEvents} />
       {model && <Header m={model} currency={currency} assetLabel={assetTerms.shortLabel} />}
@@ -617,8 +617,8 @@ export function ExecutionDetailPage() {
 
       <Card className="mt-4 px-6 py-5">
         {loading && <SkeletonLines rows={5} />}
-        <ErrorNotice title="执行事件加载失败" error={events.error ?? events.data?.error} contextKey={executionId} onRetry={events.refresh} />
-        <ErrorNotice title="执行证据加载失败" error={artifacts.error ?? artifacts.data?.error} contextKey={executionId} onRetry={artifacts.refresh} />
+        <ErrorNotice intent="read" title="执行事件加载失败" error={events.error ?? events.data?.error} contextKey={executionId} onRetry={events.refresh} />
+        <ErrorNotice intent="read" title="执行证据加载失败" error={artifacts.error ?? artifacts.data?.error} contextKey={executionId} onRetry={artifacts.refresh} />
         {model && (
           <>
             <TargetChangeView m={model} />
