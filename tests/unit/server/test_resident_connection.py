@@ -169,6 +169,63 @@ def test_manual_disconnect_stays_disconnected_until_explicit_reconnect(monkeypat
     assert state.disconnected is False
 
 
+@pytest.mark.parametrize("revision", [None, 1])
+def test_reconnect_reconciles_constructor_connected_executor(monkeypatch, revision):
+    _, state, _, closed, observed, _ = harness(monkeypatch)
+    created = []
+
+    def create():
+        executor = Executor()
+        executor.ready = True
+        executor.connection_revision = revision
+        created.append(executor)
+        return executor
+
+    def ensure(**kwargs):
+        return resident.ensure_resident_connection(
+            state, account(), create=create, close=closed.append, initialize=lambda _: None, **kwargs
+        )
+
+    old = ensure()
+    resident.disconnect_resident_executor(state, close=closed.append)
+    assert not state.connected_once
+    assert state.reconciled_revision is None
+    new = ensure(force=True)
+    assert new is not old
+    assert created == [old, new]
+    assert closed == [old]
+    assert new.calls[-2:] == ["assets", "orders"]
+    assert [item.status for item in observed][-2:] == ["recovering", "ok"]
+    assert ensure() is new
+    assert new.calls.count("orders") == 1
+
+
+def test_reconnect_reconciliation_failure_never_keeps_old_ready_state(monkeypatch):
+    _, state, _, closed, observed, ensure = harness(monkeypatch)
+    ensure()
+    resident.disconnect_resident_executor(state, close=closed.append)
+    executor = Executor()
+    executor.ready = True
+
+    def reconcile(_):
+        raise TimeoutError("pending orders unknown")
+
+    with pytest.raises(TimeoutError):
+        resident.ensure_resident_connection(
+            state,
+            account(),
+            create=lambda: executor,
+            close=closed.append,
+            initialize=lambda _: None,
+            reconcile=reconcile,
+            force=True,
+        )
+    assert not state.connected_once
+    assert observed[-1].status == "cooldown"
+    with pytest.raises(resident.AccountConnectionUnavailable):
+        resident.reuse_resident_connection(state, account())
+
+
 def test_concurrent_cold_reads_share_one_initialization(monkeypatch):
     _, state, _, _, _, _ = harness(monkeypatch)
     entered, release = Event(), Event()

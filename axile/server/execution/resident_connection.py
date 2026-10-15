@@ -137,6 +137,9 @@ def resolve_resident_executor(
     _check_attempt(state, allow_recovery=allow_recovery, force=force)
     if force:
         state.disconnected = False
+    # 新实例不能继承旧会话的核对结果，即使渠道在构造时已经连接成功。
+    state.connected_once = False
+    state.reconciled_revision = None
     _observe(state, "recovering" if state.connection_attempted else "connecting")
     try:
         state.executor = create()
@@ -280,6 +283,8 @@ def disconnect_resident_executor(state: ResidentConnectionState, *, close: Calla
                 _failed(state, exc)
                 raise
         state.executor = None
+        state.connected_once = False
+        state.reconciled_revision = None
         state.disconnected = state.connection_attempted = True
         state.connection_error, state.next_connect_at = None, 0
         _observe(state, "disconnected", "账户连接已主动断开")
