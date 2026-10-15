@@ -34,13 +34,14 @@ from axile.channels.schedule_clock import CN_STOCK_WINDOWS, is_within_schedule_w
 from axile.common.gm_symbols import GM_SYMBOL_RESOLVER, normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
-from axile.executor.connection_state import connection_monitor
+from axile.executor.connection_state import connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.gm.common import (
     convert_gm_order_to_unified,
     convert_gm_trade_to_trade_record,
     from_gm_price,
 )
+from axile.executor.gm.connection import report_gm_failure
 from axile.executor.gm.core.api_bridge import (
     CurrentRequest,
     GetCashRequest,
@@ -291,6 +292,9 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         bridge.connection_monitor = connection_monitor(self)
         if not bridge.start(timeout=timeout):
             error = RuntimeError("GM bridge 启动失败")
+            startup_error = getattr(bridge, "_startup_error", None)
+            if isinstance(startup_error, BaseException):
+                preserve_connection_failure(error, startup_error)
             connection_monitor(self).failed(error)
             raise error
         self._strategy_bridge = bridge
@@ -311,7 +315,14 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     error = RuntimeError(
                         f"未获取到指定账户的有效资金信息，请检查账户 ID、登录状态和访问权限（账户 ID：{self.account_id}）"
                     )
-                    connection_monitor(self).failed(error)
+                    report_gm_failure(
+                        connection_monitor(self),
+                        error,
+                        "账户访问异常",
+                        "当前资金查询未取得目标账户的有效资金信息。",
+                        facts={"目标账户": self.account_id, "返回账户": returned_account, "有效资金信息": "未取得"},
+                        steps=("核对账户 ID、登录状态和当前服务的访问权限。",),
+                    )
                     logger.error("{}", error)
                     raise error
                 return cash
@@ -767,6 +778,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
     def _start_gm_desktop_if_not(self, base_dir: str) -> bool:
         """如果掘金桌面端未启动，则启动它."""
+        phase = "读取终端端口配置"
+        gm_port = None
         try:
             base_path = Path(base_dir)
             gm_port = self._get_rpc_port_from_dir(base_path)
@@ -776,6 +789,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                 return False
 
             logger.info("启动掘金桌面端..")
+            phase = "启动终端进程"
             startupinfo = None
             creationflags = 0
             if sys.platform == "win32":
@@ -788,13 +802,35 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                 startupinfo=startupinfo,
             )
 
+            phase = "等待终端端口监听"
             if self._wait_for_port_listen(gm_port, 120):
                 logger.success("掘金桌面端成功启动!")
                 return True
             else:
-                raise ValueError("掘金终端等待超时")
+                error = ValueError("掘金终端等待超时")
+                report_gm_failure(
+                    connection_monitor(self),
+                    error,
+                    "终端启动超时",
+                    "终端启动后，未在等待期限内观察到端口监听。",
+                    facts={"运行模式": "terminal", "失败阶段": phase, "端口": gm_port},
+                    facts_title="终端启动阶段",
+                    steps_title="启动检查",
+                    steps=("检查掘金终端是否完成启动。", "检查终端端口配置及端口占用情况。"),
+                )
+                raise error
 
         except Exception as e:
+            report_gm_failure(
+                connection_monitor(self),
+                e,
+                "终端启动失败",
+                "本机终端初始化过程失败，尚未确认交易账户已登录。",
+                facts={"运行模式": "terminal", "失败阶段": phase, "终端目录": base_dir, "端口": gm_port},
+                facts_title="终端启动阶段",
+                steps_title="启动检查",
+                steps=("检查终端目录、gmserv.json 端口配置和终端程序。", "确认本机允许启动终端并监听配置端口。"),
+            )
             logger.exception(f"启动掘金终端失败: {e}")
             raise
 

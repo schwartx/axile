@@ -27,7 +27,8 @@ from typing import Protocol, TypeAlias
 from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
-from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor
+from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor, preserve_connection_failure
+from axile.executor.gm.connection import report_gm_failure, report_runtime_failure
 from axile.executor.gm.core.api_bridge import GMBridgeRequestPayload, GMSdkRequest, GMSubscribeSymbolsRequest
 from axile.executor.gm.core.bridge_context import (
     GMStartupHistoryEntry,
@@ -67,6 +68,7 @@ def _normalize_startup_error(error: Exception) -> GMBridgeStartupError:
         normalized = GMBridgeStartupError(f"GM bridge 启动失败: {message or error.__class__.__name__}")
         normalized.execution_error = "GM 启动失败，具体原因未确认"
     normalized.error_scope = CONNECTION_ERROR_SCOPE
+    preserve_connection_failure(normalized, error)
     return normalized
 
 
@@ -263,7 +265,17 @@ class GMStrategyBridge:
                 return True
 
         logger.error(f"StrategyBridge 启动超时 ({timeout}秒), {self._build_startup_timeout_summary()}")
-        self.connection_monitor.failed(TimeoutError("GM 策略桥启动超时"))
+        error = TimeoutError("GM 策略桥启动超时")
+        error.technical_detail = self._build_startup_timeout_summary()  # type: ignore[attr-defined]
+        report_gm_failure(
+            self.connection_monitor,
+            error,
+            "连接超时",
+            "GM 策略桥在启动及宽限等待结束后仍未就绪。",
+            facts={"失败阶段": "策略桥启动等待", "启动等待秒数": timeout, "宽限等待秒数": grace_timeout},
+            steps=("检查 GM 服务与目标账户登录情况。", "查看技术详情中的启动阶段记录。"),
+        )
+        self._startup_error = error
         self.stop()
         return False
 
@@ -513,14 +525,21 @@ class GMStrategyBridge:
             self._stats["errors"] += 1
             self._startup_error = e
             if not self._stop_event.is_set():
-                self.connection_monitor.failed(e)
+                report_runtime_failure(self.connection_monitor, e, authentication=isinstance(e, GMAuthenticationError))
             self._update_startup_state("thread_error", error=str(e))
             logger.opt(exception=e).error("策略框架运行出错: {}", e)
         finally:
             self._update_startup_state("thread_exiting")
             self._running = False
             if not self._stop_event.is_set() and self._startup_error is None:
-                self.connection_monitor.failed(RuntimeError("GM 策略运行时意外停止"))
+                report_gm_failure(
+                    self.connection_monitor,
+                    RuntimeError("GM 策略运行时意外停止"),
+                    "交易运行时停止",
+                    "GM 策略线程在未主动停止时退出。",
+                    facts={"退出对象": "策略运行线程", "主动停止": "否"},
+                    steps=("检查 GM 交易服务运行情况。", "处理故障后重新启动账户运行时。"),
+                )
 
     def _execute_strategy(self, strategy_file: str) -> None:
         """执行策略文件."""

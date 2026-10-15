@@ -12,6 +12,7 @@ import { AccountDetail } from '../src/features/account/AccountDetail'
 import { AccountHoldingsPage } from '../src/pages/AccountHoldingsPage'
 import { PortfolioEditPage } from '../src/pages/PortfolioEditPage'
 import { SystemConfigPage } from '../src/pages/SystemConfigPage'
+import { AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
 import { ApiError } from '../src/lib/api/client'
 import { useDomainStore } from '../src/stores/domain'
 import type { AccountDashboardItem } from '../src/types/api'
@@ -79,8 +80,19 @@ function AccountFixture() {
     <AccountDetail accountId={current.account_id} item={current} />
   </>
 }
+function ConnectionFixture() {
+  const [accountId, setAccountId] = useState(7)
+  const [label, setLabel] = useState(new URLSearchParams(location.search).get('label') ?? '测试渠道的新故障文案')
+  return <main className="p-5 text-ink-1">
+    <button type="button" onClick={() => setAccountId(id => id === 7 ? 8 : 7)}>切换连接账户</button>
+    <button type="button" onClick={() => setLabel('后台更新后的标签')}>后台更新标签</button>
+    <div className="mt-5 w-[220px] max-w-full">
+      <AccountConnectionStatus accountId={accountId} connection={{ status: 'error', observed_at: null, message: null, label }} />
+    </div>
+  </main>
+}
 const mode = new URLSearchParams(location.search).get('mode') ?? 'basic'
-const element = mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountFixture /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
+const element = mode === 'connection' ? <ConnectionFixture /> : mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountFixture /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
 const path = mode === 'portfolio' ? '/portfolios/9/edit' : mode === 'holdings' ? '/accounts/7/holdings' : '/accounts/7'
 const pattern = mode === 'portfolio' ? '/portfolios/:id/edit' : mode === 'holdings' ? '/accounts/:id/holdings' : '/accounts/:id'
 const router = createMemoryRouter([{ path: pattern, element }, { path: '*', element: <p>已离开测试上下文</p> }], { initialEntries: [path] })

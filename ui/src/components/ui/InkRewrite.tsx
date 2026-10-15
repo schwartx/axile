@@ -14,6 +14,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { inkRewriteMs, nextInkPair, type InkPair, type InkTone } from '@/components/ui/inkRewriteState'
+import { OverflowText } from '@/components/ui/OverflowText'
 
 /** fluid 槽宽过渡时长/缓动（略短于溶字，让版面先落定、字随后收干）。数值为眼调起点。 */
 const FLUID_W_MS = 440
@@ -47,6 +48,8 @@ interface InkRewriteProps {
    * ``offsetLeft``——两套范式同管一物必抢。二者缺一即抖。
    */
   fluid?: boolean
+  /** 受限的单行槽位通过统一 OverflowText 阅读完整文案。 */
+  overflow?: boolean
 }
 
 /**
@@ -71,6 +74,7 @@ export function InkRewrite({
   className = '',
   textClassName = '',
   fluid = false,
+  overflow = false,
 }: InkRewriteProps) {
   const first = useRef(true)
   const cls = textClassName.trim()
@@ -187,21 +191,21 @@ export function InkRewrite({
     <span className={`ink-rewrite-slot inline-grid max-w-full ${className}`.trim()}>
       {/* 占位定宽高，避免进出双层把行高撑抖 */}
       <span className="invisible col-start-1 row-start-1 truncate whitespace-nowrap" aria-hidden>
-        {pair.cur}
+        {overflow ? <OverflowText text={pair.cur} /> : pair.cur}
       </span>
       {pair.prev != null && (
         <span
           className={`col-start-1 row-start-1 truncate whitespace-nowrap ${outCls} ${pair.prevCls ?? ''}`.trim()}
           aria-hidden
         >
-          {pair.prev}
+          {overflow ? <OverflowText text={pair.prev} /> : pair.prev}
         </span>
       )}
       <span
         key={pair.gen}
         className={`col-start-1 row-start-1 truncate whitespace-nowrap ${inCls} ${pair.curCls}`.trim()}
       >
-        {pair.cur}
+        {overflow ? <OverflowText text={pair.cur} /> : pair.cur}
       </span>
     </span>
   )
