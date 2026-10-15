@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HoldingDetailDialog } from '../src/features/account/HoldingDetailDialog'
+import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
 import { HoldingsPreviewTable } from '../src/features/account/HoldingsPreviewTable'
 import { holdingPreviewRows } from '../src/features/account/holdingDetailModel'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
@@ -24,10 +25,12 @@ export function Fixture() {
     <button type="button" onClick={() => setAccountId(accountId === 1 ? 2 : 1)} className="mb-4">切换账户</button>
     <section className="max-w-[960px] rounded-xl border border-line bg-surface p-6">
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标 · 账户{accountId}</h1>
+      <CurrentOrdersButton state={orders} />
       <HoldingsPreviewTable holdings={assets.loading || target.loading ? null : holdingPreviewRows(positions, latest?.assets.total_asset ?? 0, target.data, !!latest)}
         observed={!!latest} currency="CNY" positionValueLabel="货值"
-        onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }); void orders.refresh() }} />
+        onSelect={(value, keyboardOpened) => { setSelection({ accountId, symbol: value, keyboardOpened }) }} />
     </section>
+    <CurrentOrdersDialog state={orders} accountName={`账户${accountId}`} units={units} />
     <HoldingDetailDialog symbol={symbol} restoreFocus={!!selection?.keyboardOpened} positions={positions} observed={!!latest}
       observedAt={latest?.created_at ?? null} target={target.data} orders={orders} currency="CNY" units={units}
       dataStale={assets.stale || target.stale || !!assets.error || !!target.error} refreshing={assets.refreshing || target.refreshing}

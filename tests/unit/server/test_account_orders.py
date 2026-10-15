@@ -172,6 +172,40 @@ def test_duplicate_cancel_across_concurrent_clients_is_sent_once(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(("status", "filled"), [("已撤销", 1), ("已成交", 3)])
+def test_reused_receipt_keeps_original_identity_when_later_query_confirms_terminal(monkeypatch, status, filled):
+    calls = []
+
+    async def command(_account, payload):
+        calls.append(payload)
+        if payload["command"] == "cancel":
+            return {"state": "submitted", "message": "等待回报", "order": public_order(order())}
+        return {
+            "data": [],
+            "resolved": [public_order(order(status=status, filled_volume=filled))],
+            "sampled_at": "2026-10-15T10:05:00",
+        }
+
+    monkeypatch.setattr(service, "_command", command)
+
+    async def run():
+        account = build_account()
+        first_request = OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+        first = await service.cancel_account_order(account, first_request)
+        reused = await service.cancel_account_order(account, first_request.model_copy(update={"request_id": "r2"}))
+        assert reused.request_id == first.request_id == "r1"
+        snapshot = await service.query_account_orders(account, refresh=True)
+        assert snapshot.complete and snapshot.count == 0 and snapshot.data == []
+        assert len(snapshot.cancellations) == 1
+        terminal = snapshot.cancellations[0]
+        assert terminal.request_id == "r1" and terminal.requested_at == first.requested_at
+        assert terminal.state == "terminal"
+        assert terminal.order is not None and terminal.order.status == status and terminal.order.filled_volume == filled
+
+    asyncio.run(run())
+    assert [call["command"] for call in calls] == ["cancel", "query"]
+
+
 def test_timeout_keeps_unknown_and_does_not_retry(monkeypatch):
     calls = []
 

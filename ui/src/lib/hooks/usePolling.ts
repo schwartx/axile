@@ -8,6 +8,8 @@ export interface PollingOptions {
   intervalMs?: number
   /** 依赖未就绪时关闭查询。 */
   enabled?: boolean
+  /** 仅由 refresh 发起读取，关闭首次加载、定时轮询及连接恢复读取。 */
+  manual?: boolean
 }
 
 /** 轮询状态机。后台刷新保留上一次成功值。 */
@@ -49,12 +51,13 @@ export function pollingView<T>(
   state: StoredPollingState<T>,
   queryKey: string,
   enabled: boolean,
+  manual = false,
 ): PollingView<T> {
   if (!enabled || state.key !== queryKey) {
     return {
       data: null,
       error: null,
-      loading: enabled,
+      loading: enabled && !manual,
       refreshing: false,
       updatedAt: null,
       stale: false,
@@ -78,7 +81,7 @@ export function pollingView<T>(
  */
 export function usePolling<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
-  { queryKey, intervalMs = 5000, enabled = true }: PollingOptions,
+  { queryKey, intervalMs = 5000, enabled = true, manual = false }: PollingOptions,
 ): PollingState<T> {
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher
@@ -156,8 +159,8 @@ export function usePolling<T>(
       return
     }
 
-    void run()
-    const timer = intervalMs > 0
+    if (!manual) void run()
+    const timer = !manual && intervalMs > 0
       ? window.setInterval(() => {
           if (!requestRef.current) void run()
         }, intervalMs)
@@ -168,11 +171,13 @@ export function usePolling<T>(
       if (requestRef.current?.key === queryKey) {
         requestRef.current.controller.abort()
         requestRef.current = null
+        // 切回手动时，被取消的读取不能让刷新入口一直停在忙碌态。
+        setState(previous => previous.key === queryKey ? { ...previous, loading: false, refreshing: false } : previous)
       }
     }
-  }, [enabled, intervalMs, queryKey, run])
+  }, [enabled, intervalMs, manual, queryKey, run])
 
-  useReadRecovery(run, enabled)
-  const view = pollingView(state, queryKey, enabled)
+  useReadRecovery(run, enabled && !manual)
+  const view = pollingView(state, queryKey, enabled, manual)
   return { ...view, refresh: run }
 }

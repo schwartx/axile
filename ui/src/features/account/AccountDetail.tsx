@@ -722,7 +722,7 @@ export function AccountDetail({
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
                 <HoldingsPreviewTable
                   holdings={currentHoldings}
-                  onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }); void currentOrders.refresh() }}
+                  onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
                   observed={!!latestAssets}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
