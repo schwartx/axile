@@ -26,24 +26,6 @@ def _notification_engine() -> Engine:
     return engine
 
 
-def record_notification_success(account_id: int, execution_id: str | None, succeeded_at: str) -> None:
-    """只覆盖为更晚的成功；账户已删除时跳过。"""
-    from axile.server.db.models import Account
-
-    statement = insert(AccountNotificationState).from_select(
-        ["account_id", "last_success_at", "execution_id"],
-        select(col(Account.id), literal(succeeded_at), literal(execution_id)).where(col(Account.id) == account_id),
-    )
-    statement = statement.on_conflict_do_update(
-        index_elements=["account_id"],
-        set_={"last_success_at": succeeded_at, "execution_id": execution_id},
-        where=col(AccountNotificationState.last_success_at).is_(None)
-        | (col(AccountNotificationState.last_success_at) < succeeded_at),
-    )
-    with _notification_engine().begin() as connection:
-        connection.execute(statement)
-
-
 def record_system_notification_result(result: SystemNotificationStatePublic) -> None:
     """保存最近完成的真实告警；试跑由调用方隔离，不进入此函数。"""
     if result.finished_at is None:

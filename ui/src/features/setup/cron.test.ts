@@ -2,7 +2,6 @@ import { describe, it, expect, setSystemTime } from 'bun:test'
 
 import {
   buildCronList,
-  compileCustom,
   compileScheduleRule,
   defaultNightOn,
   defaultTimerEditorState,
@@ -46,40 +45,40 @@ function rule(patch: Partial<ScheduleRule> = {}): ScheduleRule {
   }
 }
 
-describe('compileCustom · continuous', () => {
+describe('compileScheduleRule · continuous', () => {
   it('日线锚定 08:00（无补发）', () => {
-    expect(compileCustom('continuous', 'd1', 'open', 0, 0)).toEqual(['0 8 * * *'])
+    expect(compileScheduleRule('continuous', rule({ freq: 'd1', time: '08:00' }), 0, 0)).toEqual(['0 8 * * *'])
   })
 
   it('m60 走每小时、m120 走 */2、m240 走 */4', () => {
-    expect(compileCustom('continuous', 'm60', 'open', 0, 0)).toEqual(['0 * * * *'])
-    expect(compileCustom('continuous', 'm120', 'open', 0, 0)).toEqual(['0 */2 * * *'])
-    expect(compileCustom('continuous', 'm240', 'open', 0, 0)).toEqual(['0 */4 * * *'])
+    expect(compileScheduleRule('continuous', rule({ freq: 'm60' }), 0, 0)).toEqual(['0 * * * *'])
+    expect(compileScheduleRule('continuous', rule({ freq: 'm120' }), 0, 0)).toEqual(['0 */2 * * *'])
+    expect(compileScheduleRule('continuous', rule({ freq: 'm240' }), 0, 0)).toEqual(['0 */4 * * *'])
   })
 
   it('m15 叠加补发（补 2 次每隔 1 分）铺满每 15 分的 0/1/2 偏移', () => {
-    expect(compileCustom('continuous', 'm15', 'open', 2, 1)).toEqual([
+    expect(compileScheduleRule('continuous', rule({ freq: 'm15' }), 2, 1)).toEqual([
       '0,1,2,15,16,17,30,31,32,45,46,47 * * * *',
     ])
   })
 })
 
-describe('compileCustom · 时段市场按锚点落点', () => {
+describe('compileScheduleRule · 时段市场', () => {
   it('A股日线 open=09:30 / close=14:50', () => {
-    expect(compileCustom('cn_stock', 'd1', 'open', 0, 0)).toEqual(['30 9 * * *'])
-    expect(compileCustom('cn_stock', 'd1', 'close', 0, 0)).toEqual(['50 14 * * *'])
+    expect(compileScheduleRule('cn_stock', rule({ freq: 'd1', time: '09:30' }), 0, 0)).toEqual(['30 9 * * *'])
+    expect(compileScheduleRule('cn_stock', rule({ freq: 'd1', time: '14:50', anchor: 'close' }), 0, 0)).toEqual(['50 14 * * *'])
   })
 
   it('CTP 日线 close=14:55', () => {
-    expect(compileCustom('cn_futures', 'd1', 'close', 0, 0)).toEqual(['55 14 * * *'])
+    expect(compileScheduleRule('cn_futures', rule({ freq: 'd1', time: '14:55', anchor: 'close' }), 0, 0)).toEqual(['55 14 * * *'])
   })
 
   it('m240 与日线同锚点', () => {
-    expect(compileCustom('cn_stock', 'm240', 'close', 0, 0)).toEqual(['50 14 * * *'])
+    expect(compileScheduleRule('cn_stock', rule({ freq: 'm240', anchor: 'close' }), 0, 0)).toEqual(['50 14 * * *'])
   })
 
   it('A股 m120 开盘打一枪，收盘钳到可报单最后一分钟', () => {
-    expect(compileCustom('cn_stock', 'm120', 'open', 0, 0)).toEqual([
+    expect(compileScheduleRule('cn_stock', rule({ freq: 'm120' }), 0, 0)).toEqual([
       '0 13 * * *',
       '29 11 * * *',
       '30 9 * * *',
@@ -168,8 +167,8 @@ describe('resolveCronList · 优先级', () => {
     expect(resolveCronList('continuous', t)).toEqual(['5 9 * * 1-5', '50 14 * * 1-5'])
   })
 
-  it('兼容旧 customOn → compileCustom', () => {
-    const t = intent({ customOn: true, customFreq: 'd1', customAnchor: 'open' })
+  it('高级 tab 使用单条结构化规则', () => {
+    const t = intent({ timerTab: 'advanced', scheduleRules: [rule()] })
     expect(resolveCronList('continuous', t)).toEqual(['0 8 * * *'])
   })
 
@@ -185,11 +184,6 @@ describe('resolveCronList · 优先级', () => {
   it('自定义 tab 内容为空时不回退到高级规则', () => {
     const t = intent({ timerTab: 'custom', scheduleRules: [rule()] })
     expect(resolveCronList('continuous', t)).toEqual([])
-  })
-
-  it('仅 rawCron 无 tab（编辑页）仍走表达式', () => {
-    const t = intent({ rawCron: '0 9 * * *', timerTab: undefined })
-    expect(resolveCronList('continuous', t)).toEqual(['0 9 * * *'])
   })
 })
 

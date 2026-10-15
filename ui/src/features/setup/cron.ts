@@ -232,47 +232,6 @@ export function buildCronList(
   return [...new Set(out)]
 }
 
-/**
- * 自定义节奏（频率 + 锚点）编译为 cron 列表，仍按市场时段落点。
-
- * Parameters
- * ----------
- * market : ScheduleKind
- *     调度类型；``continuous`` 走纯分钟/小时表达式，其余按交易时段编译。
- * freq : CustomFreq
- *     频率档位。
- * anchor : Anchor
- *     日线 / 4 小时线的锚点（开盘或临收），仅在时段市场生效。
- * supN, supM : number
- *     补发次数与间隔（分钟）。
- *
- * Returns
- * -------
- * string[]
- *     一条或多条 crontab 规则。
- */
-export function compileCustom(
-  market: ScheduleKind,
-  freq: CustomFreq,
-  anchor: Anchor,
-  supN: number,
-  supM: number,
-): string[] {
-  return compileScheduleRule(
-    market,
-    {
-      id: '_',
-      freq,
-      time: freq === 'd1' ? (market === 'continuous' ? '08:00' : anchor === 'close' ? SESSION_CLOSE[market as Exclude<ScheduleKind, 'continuous'>] : SESSION_OPEN[market as Exclude<ScheduleKind, 'continuous'>]) : '00:00',
-      days: [],
-      anchor,
-      draft: false,
-    },
-    supN,
-    supM,
-  )
-}
-
 /* ------------------ 高级：结构化时间规则 ------------------ */
 
 /** 定时页 tab。 */
@@ -469,23 +428,16 @@ export interface TimerIntent {
   supN: number
   supM: number
   rawCron: string
-  /** 快捷 | 高级 | 自定义；缺省时若仅有 rawCron 则按表达式（兼容旧调用）。 */
-  timerTab?: TimerTab
+  /** 当前生效的定时模式：快捷 | 高级 | 自定义。 */
+  timerTab: TimerTab
   /** 高级：时间规则列表；长度 ≥2 时 UI 显示右栏组合列表。 */
   scheduleRules?: ScheduleRule[]
   /** 高级右栏当前选中的规则 id。 */
   selectedRuleId?: string
-  /**
-   * @deprecated 兼容旧测试/调用：等价于「高级 + 单条 customFreq 规则」。
-   * resolve 时若未提供 scheduleRules 且 customOn，仍走 compileCustom。
-   */
-  customOn?: boolean
-  customFreq?: CustomFreq
-  customAnchor?: Anchor
 }
 
 /**
- * 按当前 tab 收敛出 cron 列表，并兼容旧 customOn / 无 tab 调用。
+ * 按当前 tab 收敛出 cron 列表。
 
  * Parameters
  * ----------
@@ -509,15 +461,6 @@ export function resolveCronList(market: ScheduleKind, t: TimerIntent, night?: Ni
   }
   if (t.timerTab === 'advanced' && t.scheduleRules?.length) {
     return compileScheduleRules(market, t.scheduleRules, t.supN, t.supM)
-  }
-  if (t.customOn && t.customFreq) {
-    return compileCustom(market, t.customFreq, t.customAnchor ?? 'open', t.supN, t.supM)
-  }
-  if (raw && !t.timerTab) {
-    return raw
-      .split('|')
-      .map((s) => s.trim())
-      .filter(Boolean)
   }
   return buildCronList(market, t.presetIds, t.supN, t.supM, night, Boolean(t.nightOn))
 }

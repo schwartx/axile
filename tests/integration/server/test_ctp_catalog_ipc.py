@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from axile.executor.instrument_catalog import InstrumentCatalog
+from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend import worker as worker_entry
 from axile.server.execution.worker_backend import worker_state
 from axile.server.execution.worker_backend.catalog import CatalogSession
@@ -16,28 +17,40 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerBackendRequest,
     WorkerBackendResponse,
 )
+from tests.unit.server._execution_test_support import build_account
 
 pytestmark = pytest.mark.slow
 
 
 @pytest.mark.parametrize("release_fails", [False, True])
-def test_audit_failure_still_releases_connection_and_preserves_initialization_error(monkeypatch, release_fails):
-    original = BrokenPipeError("end failed")
+def test_initialization_error_survives_catalog_end_and_explicit_cleanup_failures(monkeypatch, release_fails):
+    original = RuntimeError("initialization failed")
     provider = Mock()
-    provider.end.side_effect = original
+    provider.end.side_effect = BrokenPipeError("end failed")
     close = Mock(side_effect=RuntimeError("native close failed") if release_fails else None)
     executor = SimpleNamespace(_verify_connection=lambda: False, set_instrument_catalog_provider=Mock(), close=close)
-    state = worker_state._WorkerBackendState(executor=executor, catalog_provider=provider)
-    monkeypatch.setattr(worker_state, "_resolve_executor", lambda *args, **kwargs: executor)
+    account = build_account().snapshot()
+    state = worker_state._WorkerBackendState(
+        executor=executor,
+        account_id=account.id,
+        config_signature=executor_config_signature(account),
+        catalog_provider=provider,
+    )
     monkeypatch.setattr(worker_state, "_prepare_executor", Mock())
-    monkeypatch.setattr(worker_state, "initialize_executor_instance", Mock())
+    monkeypatch.setattr(worker_state, "initialize_executor_instance", Mock(side_effect=original))
     monkeypatch.setattr(worker_state, "_finalize_executor", Mock(side_effect=RuntimeError("audit flush failed")))
-    with pytest.raises(BrokenPipeError) as caught:
-        worker_state._resolve_prepared_executor(state=state, account=Mock(), execution_id="test", audit_context={})
+    with pytest.raises(RuntimeError) as caught:
+        worker_state._resolve_prepared_executor(state=state, account=account, execution_id="test", audit_context={})
     assert caught.value is original
+    assert state.connection_error is original
+    provider.begin.assert_called_once()
+    provider.end.assert_called_once()
+    close.assert_not_called()
+    with pytest.raises(RuntimeError, match="native close failed" if release_fails else "audit flush failed"):
+        worker_state._close_state_executor(state)
     close.assert_called_once()
     assert state.requires_worker_restart
-    assert state.executor is None
+    assert state.connection_error is original
 
 
 def test_close_without_original_error_reports_audit_failure_after_releasing(monkeypatch):
@@ -75,26 +88,36 @@ def test_worker_loop_reports_restart_separately_and_exits(monkeypatch, reason):
     assert connection.recv.call_count == 1
 
 
-def test_successful_initialization_with_failed_end_discards_executor(monkeypatch):
+def test_catalog_end_failure_retains_executor_until_explicit_disconnect(monkeypatch):
     provider = Mock()
     original = BrokenPipeError("end failed")
     provider.end.side_effect = original
-    executor = Mock()
-    executor._verify_connection.return_value = False
-    state = worker_state._WorkerBackendState(executor=executor, catalog_provider=provider)
-    monkeypatch.setattr(worker_state, "_resolve_executor", lambda *args, **kwargs: executor)
+    executor = SimpleNamespace(_verify_connection=lambda: False, set_instrument_catalog_provider=Mock())
+    account = build_account().snapshot()
+    state = worker_state._WorkerBackendState(
+        executor=executor,
+        account_id=account.id,
+        config_signature=executor_config_signature(account),
+        catalog_provider=provider,
+    )
     monkeypatch.setattr(worker_state, "_prepare_executor", Mock())
     initialize = Mock()
     close = Mock()
     monkeypatch.setattr(worker_state, "initialize_executor_instance", initialize)
     monkeypatch.setattr(worker_state, "_close_executor", close)
     with pytest.raises(BrokenPipeError) as caught:
-        worker_state._resolve_prepared_executor(state=state, account=Mock(), execution_id="test", audit_context={})
+        worker_state._resolve_prepared_executor(state=state, account=account, execution_id="test", audit_context={})
     assert caught.value is original
     initialize.assert_called_once_with(executor)
+    provider.begin.assert_called_once()
     provider.end.assert_called_once()
+    assert state.executor is executor
+    assert state.connection_error is original
+    close.assert_not_called()
+    disconnect_resident_executor(state, close=lambda _executor: worker_state._close_state_executor(state))
     close.assert_called_once_with(executor)
     assert state.executor is None
+    assert state.disconnected
 
 
 def test_initialization_progress_extends_only_current_request():

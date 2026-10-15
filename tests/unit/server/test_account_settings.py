@@ -119,15 +119,15 @@ def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch)
     with Session(engine) as session:
         session.add(Account(**account_data()))
         session.commit()
-    notification_state.record_notification_success(1, "exec-new", "2026-09-30T10:01:00")
-    notification_state.record_notification_success(1, "exec-old", "2026-09-30T10:00:00")
+    notification_state.record_notification_result(1, "exec-new", "2026-09-30T10:01:00", True, None)
+    notification_state.record_notification_result(1, "exec-old", "2026-09-30T10:00:00", True, None)
     with Session(engine) as session:
         account = session.get(Account, 1)
         assert account.notification_state.execution_id == "exec-new"
         assert account.notification_state.last_success_at == "2026-09-30T10:01:00"
         session.delete(account)
         session.commit()
-    notification_state.record_notification_success(1, "exec-deleted", "2026-09-30T10:02:00")
+    notification_state.record_notification_result(1, "exec-deleted", "2026-09-30T10:02:00", True, None)
     with Session(engine) as session:
         assert session.exec(select(AccountNotificationState)).all() == []
         assert session.exec(select(AccountSettings)).all() == []

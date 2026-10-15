@@ -57,9 +57,7 @@ class ExecuteRecord(ExecuteRecordBase, table=True):
       稳定定位记录。
     - ``(account_id, id)``：``get_recent_execute_records_by_account_id`` 等
       「按账户过滤 + 按 id 倒序 + limit」的主力路径，仪表盘每个账户都会走一次。
-    - ``(account_id, created_at)``：``get_execute_records_before`` /
-      ``get_earliest_execute_records_since`` 的自然日基准查询，对 ``created_at``
-      做范围过滤。
+    - ``(account_id, created_at)``：按账户和创建时间范围读取执行记录。
     - ``(account_id, is_success, id)``：``get_latest_success_execute_record_by_account_id``
       按成败过滤后仍取最新一条；把 ``is_success`` 放在 ``id`` 之前，等值列在前、
       排序列在后，才能既走等值定位又免掉额外排序。

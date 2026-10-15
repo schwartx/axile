@@ -31,7 +31,6 @@ from axile.server.execution.resident_connection import (
     ResidentConnectionState,
     ensure_resident_connection,
     executor_config_signature,
-    resolve_resident_executor,
 )
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import WorkerTerminationSignal
@@ -166,45 +165,6 @@ def _config_signature(account: AccountSnapshot) -> str:
         仅由账户配置字段决定的稳定签名。
     """
     return executor_config_signature(account)
-
-
-def _resolve_executor(
-    state: _WorkerBackendState,
-    account: AccountSnapshot,
-    expected_trading_day: str | None = None,
-    *,
-    initialize: bool = True,
-) -> object:
-    """
-    解析当前请求应复用的执行器实例。
-
-    Parameters
-    ----------
-    state : _WorkerBackendState
-        worker 当前缓存状态。
-    account : Account
-        本次请求绑定的账户对象。
-
-    Returns
-    -------
-    object
-        复用或新建后的执行器实例。
-    """
-    with state.resource_lock, connection_observer_scope(state.connection_collector.observe):
-        state.connection_observer = state.connection_collector.observe_session
-        executor = resolve_resident_executor(
-            state,
-            account,
-            create=lambda: create_executor_instance(account, initialize=initialize),
-            close=lambda _executor: _close_state_executor(state),
-        )
-        if expected_trading_day and account.trade_channel == TradeChannel.CTP:
-            trading_day = str(getattr(executor, "_trading_day", "") or "")
-            if trading_day != expected_trading_day:
-                raise RuntimeError(
-                    f"柜台交易日不匹配: expected={expected_trading_day}, actual={trading_day or 'unknown'}"
-                )
-        return executor
 
 
 def _prepare_executor(

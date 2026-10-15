@@ -14,6 +14,7 @@ from axile.executor.ctp.ctp_execute import CTPExecutor, CtpRequestError, CtpSess
 from axile.executor.instrument_catalog import InstrumentCatalog, LocalInstrumentCatalogProvider
 from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.execution.worker_backend import worker_state
 from axile.server.execution.worker_backend.manager import WorkerBackendManager, WorkerBackendTimeoutError
 from tests.unit.server._execution_test_support import build_account
@@ -440,13 +441,23 @@ def test_worker_rebuilds_disconnected_ctp_with_fresh_stages_and_metadata(broker,
         executor=old,
         account_id=account.id,
         config_signature=worker_state._config_signature(account),
+        connection_attempted=True,
+        connected_once=True,
     )
     old._disconnected("交易", 1)
     replacement = ScriptedBroker(monkeypatch, day=day, session=session)
-    factory = Mock(side_effect=lambda _account: replacement.start())
+    factory = Mock(return_value=replacement.executor)
     monkeypatch.setattr(worker_state, "create_executor_instance", factory)
+    monkeypatch.setattr(worker_state, "_prepare_executor", Mock())
+    monkeypatch.setattr(worker_state, "initialize_executor_instance", lambda executor: replacement.start())
+    assets = Mock(return_value=SimpleNamespace(source="real"))
+    orders = Mock(return_value=[])
+    monkeypatch.setattr(replacement.executor, "get_account_assets", assets)
+    monkeypatch.setattr(replacement.executor, "get_pending_orders", orders)
     try:
-        current = worker_state._resolve_executor(state, account, expected_trading_day=day)
+        current = worker_state._resolve_prepared_executor(
+            state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+        )
         assert current is replacement.executor
         assert current._verify_connection()
         assert current._trading_day == day
@@ -454,8 +465,13 @@ def test_worker_rebuilds_disconnected_ctp_with_fresh_stages_and_metadata(broker,
         assert current._instruments is not old._instruments
         assert current._quotes == {}
         assert old._closed
-        assert worker_state._resolve_executor(state, account, expected_trading_day=day) is current
-        factory.assert_called_once()
+        assert (
+            worker_state._resolve_prepared_executor(state=state, account=account, execution_id=None, audit_context={})
+            is current
+        )
+        factory.assert_called_once_with(account, initialize=False)
+        assets.assert_called_once()
+        orders.assert_called_once_with(None)
     finally:
         replacement.executor.close()
 
@@ -588,19 +604,31 @@ def test_worker_retries_authentication_with_a_new_executor_after_not_initialized
     account = build_account(id=1)
     state = worker_state._WorkerBackendState()
     broker.errors["ReqAuthenticate"] = SimpleNamespace(ErrorID=7, ErrorMsg="not initialized")
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda account: broker.start())
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda account, **kwargs: broker.executor)
+    monkeypatch.setattr(worker_state, "_prepare_executor", Mock())
     with pytest.raises(CtpSessionRecoveryRequired):
-        worker_state._resolve_executor(state, account)
-    assert state.executor is None
+        worker_state._resolve_prepared_executor(state=state, account=account, execution_id=None, audit_context={})
+    assert state.executor is broker.executor
     assert broker.executor._closed
+    with pytest.raises(AccountConnectionUnavailable):
+        worker_state._resolve_prepared_executor(state=state, account=account, execution_id=None, audit_context={})
 
     replacement = ScriptedBroker(monkeypatch)
-    monkeypatch.setattr(worker_state, "create_executor_instance", lambda account: replacement.start())
+    factory = Mock(return_value=replacement.executor)
+    monkeypatch.setattr(worker_state, "create_executor_instance", factory)
+    monkeypatch.setattr(replacement.executor, "get_account_assets", Mock(return_value=SimpleNamespace(source="real")))
+    monkeypatch.setattr(replacement.executor, "get_pending_orders", Mock(return_value=[]))
     try:
-        current = worker_state._resolve_executor(state, account)
+        current = worker_state._resolve_prepared_executor(
+            state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+        )
         assert current is replacement.executor
         assert current._verify_connection()
-        assert worker_state._resolve_executor(state, account) is current
+        assert (
+            worker_state._resolve_prepared_executor(state=state, account=account, execution_id=None, audit_context={})
+            is current
+        )
+        factory.assert_called_once_with(account, initialize=False)
     finally:
         replacement.executor.close()
 

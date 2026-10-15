@@ -23,7 +23,6 @@ from axile.server.core.db import SessionLocal
 from axile.server.db.models import (
     ExecutionArtifact,
     ExecutionEvent,
-    new_execution_id,
     now_str,
 )
 from axile.server.execution.live import live_hub
@@ -50,11 +49,6 @@ def _notify_live_hub(
         )
     except Exception as exc:  # noqa: BLE001
         loguru.logger.debug(f"live hub 广播失败（忽略）: {exc}")
-
-
-def create_execution_id() -> str:
-    """返回一个新的全局唯一 execution 标识."""
-    return new_execution_id()
 
 
 _AUDIT_COROUTINE_TIMEOUT_SECONDS = 10.0

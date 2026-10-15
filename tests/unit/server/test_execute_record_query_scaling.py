@@ -18,10 +18,6 @@ from sqlmodel import SQLModel
 
 from axile.server.db.models import ExecuteRecord
 from axile.server.repositories import (
-    get_earliest_execute_records_since,
-    get_earliest_execute_records_since_for_accounts,
-    get_execute_records_before,
-    get_execute_records_before_for_accounts,
     get_recent_execute_records_by_account_id,
     get_recent_execute_records_for_accounts,
 )
@@ -71,27 +67,5 @@ def test_batch_recent_matches_per_account() -> None:
                 expected = await get_recent_execute_records_by_account_id(session, account_id, limit=3)
                 assert [r.id for r in batched[account_id]] == [r.id for r in expected]
                 assert len(batched[account_id]) == 3, "每个账户各自取 limit 条，而非全局 limit 条"
-
-    asyncio.run(scenario())
-
-
-def test_batch_baselines_match_per_account() -> None:
-    """今日基准（昨收/今开）的批量版本必须与逐账户版本一致。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed(session, accounts=2, per_account=6)
-            boundary = "2026-07-04T00:00:00"
-
-            before = await get_execute_records_before_for_accounts(session, [1, 2], boundary, limit=5)
-            since = await get_earliest_execute_records_since_for_accounts(session, [1, 2], boundary, limit=5)
-
-            for account_id in (1, 2):
-                expected_before = await get_execute_records_before(session, account_id, boundary, limit=5)
-                expected_since = await get_earliest_execute_records_since(session, account_id, boundary, limit=5)
-                assert [r.id for r in before.get(account_id, [])] == [r.id for r in expected_before]
-                assert [r.id for r in since.get(account_id, [])] == [r.id for r in expected_since]
-                assert expected_before, "用例应覆盖到非空的昨收基准"
-                assert expected_since, "用例应覆盖到非空的今开基准"
 
     asyncio.run(scenario())

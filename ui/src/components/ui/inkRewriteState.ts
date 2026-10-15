@@ -7,9 +7,6 @@
 export const INK_REWRITE_MS_LABEL = 420
 export const INK_REWRITE_MS_PROSE = 620
 
-/** @deprecated 取 prose 上限，供单测/门禁「仍在交叉淡档」用。 */
-export const INK_REWRITE_MS = INK_REWRITE_MS_PROSE
-
 export type InkTone = 'label' | 'prose'
 
 /** 按笔法取退场清理时长。 */

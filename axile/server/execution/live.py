@@ -69,24 +69,6 @@ _EVICT_DELAY_SEC = 5.0
 _QUEUE_MAXSIZE = 256
 
 
-def phase_of(event_type: ExecutionEventType | str) -> str | None:
-    """
-    把执行事件类型映射到阶段标签.
-
-    Parameters
-    ----------
-    event_type : ExecutionEventType | str
-        执行事件类型（枚举或其字符串值）。
-
-    Returns
-    -------
-    str | None
-        对应阶段标签（``PHASE_ORDER`` 之一）；不推进阶段的事件返回 ``None``。
-    """
-    et = event_type if isinstance(event_type, ExecutionEventType) else ExecutionEventType(event_type)
-    return _PHASE_BY_EVENT.get(et)
-
-
 def _later_phase(current: str, incoming: str | None) -> str:
     """返回两个阶段中更靠后的一个（单调不回退）；``incoming`` 为空时保持 ``current``。"""
     if incoming is None:
