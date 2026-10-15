@@ -45,7 +45,7 @@ describe('品种身份与持仓入口', () => {
     expect(sameHoldingSymbol('SHFE.rb2610', 'DCE.rb2610')).toBe(false)
     expect(sameHoldingSymbol('SSE.000001', 'SZSE.000001')).toBe(false)
     expect(sameHoldingSymbol('SSE.000001', '000001')).toBe(false)
-    expect(sameHoldingSymbol('BTCUSDT', 'ETHUSDT')).toBe(false)
+    expect(sameHoldingSymbol('rb2610', 'ag2612')).toBe(false)
   })
 })
 

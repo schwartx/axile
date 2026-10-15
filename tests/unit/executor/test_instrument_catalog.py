@@ -279,11 +279,12 @@ def test_catalog_and_execution_guards_share_send_interval_but_keep_separate_reco
     from axile.executor.account_control.decorators import run_controlled_call
     from axile.executor.account_control.guard import AccountControlGuard
     from axile.executor.account_control.presets import resolve_account_control_policy
+    from axile.executor.account_control.quota_state import AccountControlQuotaState
     from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
     from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
     clock = _AdvancingClock(datetime(2026, 10, 13, 8, 30))
-    timestamps, lock = {}, threading.RLock()
+    state = AccountControlQuotaState()
     guards = [
         AccountControlGuard(
             account_id=1,
@@ -297,7 +298,7 @@ def test_catalog_and_execution_guards_share_send_interval_but_keep_separate_reco
     ]
     sent = []
     for guard in guards:
-        guard.share_group_timestamps(timestamps, lock)
+        guard.share_quota_state(state)
         run_controlled_call(guard=guard, operation="query_instruments", call=lambda: sent.append(clock.time()))
     assert sent[1] - sent[0] >= 1.5
     for guard in guards:

@@ -8,7 +8,7 @@ import pytest
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server import account_orders as service
 from axile.server.account_orders_runtime import public_order, run_order_command
-from axile.server.db.models.account_order import OrderCancelRequest
+from axile.server.db.models.account_order import OrderCancelReceipt, OrderCancelRequest
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -43,6 +43,57 @@ def test_public_order_has_only_whitelisted_native_identity():
     assert "secret" not in str(result)
     assert "raw_order_data" not in result
     assert result["execution_id"] is None
+
+
+def test_same_order_id_on_different_symbols_keeps_both_live_orders():
+    snapshot = service._merge_snapshot(
+        service._OrdersState(),
+        {"data": [public_order(order(symbol=s)) for s in ("rb2610", "ag2612")], "sampled_at": "2026-10-15T10:05:00"},
+    )
+    assert snapshot.complete and snapshot.count == 2
+    assert {row.symbol for row in snapshot.data} == {"rb2610", "ag2612"}
+
+
+def test_same_order_id_terminal_receipts_resolve_each_symbol_independently():
+    state = service._OrdersState()
+    for index, symbol in enumerate(("rb2610", "ag2612")):
+        state.receipts[str(index)] = OrderCancelReceipt(
+            request_id=str(index),
+            order_id="native-1",
+            symbol=symbol,
+            state="submitted",
+            message="等待回报",
+            requested_at="2026-10-15T10:04:00",
+        )
+    snapshot = service._merge_snapshot(
+        state,
+        {
+            "data": [],
+            "resolved": [public_order(order(symbol=s, status="已撤销")) for s in ("rb2610", "ag2612")],
+            "sampled_at": "2026-10-15T10:05:00",
+        },
+    )
+    assert snapshot.complete and snapshot.count == 0
+    assert all(receipt.state == "terminal" for receipt in snapshot.cancellations)
+    assert all(receipt.order.symbol == receipt.symbol for receipt in snapshot.cancellations)
+
+
+def test_missing_cancellation_does_not_overwrite_same_id_live_order_on_another_symbol():
+    state = service._OrdersState()
+    state.receipts["pending"] = OrderCancelReceipt(
+        request_id="pending",
+        order_id="native-1",
+        symbol="rb2610",
+        state="submitted",
+        message="等待回报",
+        requested_at="2026-10-15T10:04:00",
+        order=public_order(order()),
+    )
+    snapshot = service._merge_snapshot(
+        state, {"data": [public_order(order(symbol="ag2612"))], "sampled_at": "2026-10-15T10:05:00"}
+    )
+    assert not snapshot.complete and snapshot.count is None
+    assert {row.symbol: row.uncertain for row in snapshot.data} == {"rb2610": True, "ag2612": False}
 
 
 def test_query_is_account_wide_and_cancel_requires_exact_symbol_and_identity():

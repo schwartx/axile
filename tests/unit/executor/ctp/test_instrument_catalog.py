@@ -9,6 +9,7 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.guard import AccountControlGuard
+from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
 from axile.executor.ctp.ctp_execute import CTPExecutor
@@ -67,7 +68,7 @@ def test_ctp_occupied_query_lock_has_a_short_wait_limit(monkeypatch):
                 pytest.fail("must not acquire an occupied query slot")
 
 
-def _controlled_executor(monkeypatch, *, respond):
+def _controlled_executor(monkeypatch, *, respond, override=None):
     clock = _AdvancingClock(datetime(2026, 10, 13, 8, 30))
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.clock_monotonic", clock.time)
     monkeypatch.setattr("axile.executor.ctp.ctp_execute.get_default_clock", lambda: clock)
@@ -85,7 +86,7 @@ def _controlled_executor(monkeypatch, *, respond):
             account_id=1,
             execution_id=f"catalog-{len(guards)}",
             channel=TradeChannel.CTP,
-            policy=resolve_account_control_policy("ctp"),
+            policy=resolve_account_control_policy("ctp", override),
             baseline=AccountControlCounterSnapshot(),
             wait_clock=clock,
         )
@@ -103,7 +104,7 @@ def _controlled_executor(monkeypatch, *, respond):
         return 0
 
     executor._catalog_control_factory = control
-    executor._control_group_timestamps["ctp_td_global",] = int(clock.time() * 1000)
+    executor._control_quota_state.group_timestamps["ctp_td_global",] = int(clock.time() * 1000)
     executor._trader_api = SimpleNamespace(ReqQryInstrument=query)
     return executor, clock, guards, sent
 
@@ -154,3 +155,54 @@ def test_ctp_no_response_times_out_after_sending_and_releases_query_slot(monkeyp
     assert executor._query_lock.acquire(blocking=False)
     executor._query_lock.release()
     assert executor._catalog_query_state.active is False
+
+
+def test_catalog_native_query_uses_execution_group_usage_before_sending(monkeypatch):
+    from axile.executor.account_control.exceptions import AccountControlBlockedError
+
+    override = AccountControlOverride.model_validate(
+        {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
+    )
+    executor, clock, guards, sent = _controlled_executor(monkeypatch, respond=True, override=override)
+    execution = AccountControlGuard(
+        account_id=1,
+        execution_id="execution",
+        channel=TradeChannel.CTP,
+        policy=resolve_account_control_policy("ctp", override),
+        baseline=AccountControlCounterSnapshot(),
+        wait_clock=clock,
+    )
+    executor.set_account_control_guard(execution)
+    execution.begin_operation("query_orders").record_outcome("fetched")
+    with pytest.raises(AccountControlBlockedError):
+        executor._query_catalog(["SHFE.rb2701"], None)
+    assert sent == []
+    assert len(guards) == 1
+    assert executor.get_account_control_guard() is execution
+    assert guards[0].flush_records()[0] == []
+    assert execution.flush_records()[1][0].operation == "query_orders"
+
+
+def test_public_order_is_blocked_by_catalog_usage_before_native_submission(monkeypatch):
+    from axile.executor.account_control.exceptions import AccountControlBlockedError
+    from axile.executor.models.unified_order import OrderDirection, OrderType
+
+    override = AccountControlOverride.model_validate(
+        {"groups": {"ctp_td_global": {"per_day": {"limit": 1, "on_trigger": "block"}}}}
+    )
+    executor, clock, _, sent = _controlled_executor(monkeypatch, respond=True, override=override)
+    executor._query_catalog(["SHFE.rb2701"], None)
+    assert len(sent) == 1
+    execution = AccountControlGuard(
+        account_id=1,
+        execution_id="next-execution",
+        channel=TradeChannel.CTP,
+        policy=resolve_account_control_policy("ctp", override),
+        baseline=AccountControlCounterSnapshot(),
+        wait_clock=clock,
+    )
+    executor.set_account_control_guard(execution)
+    executor._trader_api.ReqOrderInsert = Mock(side_effect=AssertionError("quota must block before sending"))
+    with pytest.raises(AccountControlBlockedError):
+        executor.place_order("rb2701", OrderDirection.BUY, OrderType.LIMIT, 1, 3500)
+    executor._trader_api.ReqOrderInsert.assert_not_called()

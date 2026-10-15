@@ -4,12 +4,19 @@ import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
 from axile.executor.account_control.guard import resolve_control_window
-from axile.executor.account_control.models import AccountControlBucketType, AccountControlScopeType
+from axile.executor.account_control.models import (
+    AccountControlBucketType,
+    AccountControlContextKind,
+    AccountControlScopeType,
+    AccountControlSource,
+)
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
@@ -110,6 +117,47 @@ def test_snapshot_cannot_observe_half_completed_sampling_round(monkeypatch):
 
 def executor(guard):
     return SimpleNamespace(get_account_control_guard=lambda: guard, export_account_control_records=guard.flush_records)
+
+
+@pytest.mark.parametrize("kind", [AccountControlContextKind.ACCOUNT_OPERATION, AccountControlContextKind.UNKNOWN])
+def test_catalog_session_does_not_hide_running_execution_or_report_duplicate_execution(monkeypatch, kind):
+    async def scenario():
+        async with database(monkeypatch) as (_, account, monitor):
+            active = await persistence.build_account_control_guard(account, "active-execution")
+            active.begin_operation("place_order").record_outcome("submitted")
+            catalog = await persistence.build_account_control_guard(
+                account,
+                "catalog-" + "a" * 32,
+                register_monitor=False,
+                context_kind=kind,
+                source=AccountControlSource.INSTRUMENT_CATALOG,
+            )
+
+            async def source(account_id):
+                monitor._sources[account_id] = [(providers.snapshot(account_id), clock_now_ms(), False)]
+
+            monkeypatch.setattr(monitor, "_read_source", source)
+
+            def assert_running():
+                frame = monitor.frames[1]
+                assert frame["status"] == "running" and frame["instance_id"] == active.instance_id
+                assert frame["execution_id"] == "active-execution"
+                assert used(frame) == 121
+                assert not frame["stale"] and not frame["incomplete"]
+                assert frame["actual_fingerprint"] is not None
+
+            await monitor.refresh()
+            assert_running()
+            catalog.begin_operation("query_instruments").record_outcome("fetched")
+            await persistence.flush_account_control_records(executor(catalog))
+            await monitor.refresh()
+            assert_running()
+            await persistence.flush_account_control_records(executor(active))
+            await monitor.refresh()
+            assert monitor.frames[1]["status"] == "idle"
+            assert used(monitor.frames[1]) == 121
+
+    asyncio.run(scenario())
 
 
 def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):

@@ -89,6 +89,9 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
             | {"place_order", "cancel_order"}
         )
         symbols = {key[1] for key in guard._symbol_counters} | {key[0] for key in guard.baseline.symbol_counts}
+        if guard._quota_state is not None:
+            operations |= {key[3] for key in guard._quota_state.account_counts}
+            symbols |= {key[1] for key in guard._quota_state.symbol_counts}
         symbols |= {q.symbol for q in guard._wait_queue if q.symbol is not None}
         for operation in sorted(operations):
             op = guard.policy.operations.get(operation)

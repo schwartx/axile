@@ -81,19 +81,22 @@ async def _command(account: AccountContext, payload: dict[str, Any]) -> dict[str
 
 
 def _merge_snapshot(state: _OrdersState, result: dict[str, Any]) -> AccountOrdersPublic:
-    orders = {row.order_id: row for row in map(AccountOrderPublic.model_validate, result["data"])}
-    resolved = {row.order_id: row for row in map(AccountOrderPublic.model_validate, result.get("resolved", []))}
+    orders = {(row.symbol, row.order_id): row for row in map(AccountOrderPublic.model_validate, result["data"])}
+    resolved = {
+        (row.symbol, row.order_id): row for row in map(AccountOrderPublic.model_validate, result.get("resolved", []))
+    }
     failures = {(row["symbol"], row["order_id"]): row["message"] for row in result.get("cancel_failures", [])}
     complete = all(not order.uncertain for order in orders.values())
     for receipt in state.receipts.values():
         if receipt.state in {"terminal", "failed"}:
             continue
-        terminal = resolved.get(receipt.order_id)
-        current = orders.get(receipt.order_id)
-        if terminal is not None and terminal.symbol == receipt.symbol:
+        key = receipt.symbol, receipt.order_id
+        terminal = resolved.get(key)
+        current = orders.get(key)
+        if terminal is not None:
             receipt.state, receipt.order = "terminal", terminal
             receipt.message = f"订单实际状态：{terminal.status}"
-        elif current is not None and current.symbol == receipt.symbol:
+        elif current is not None:
             receipt.order = current
             if (receipt.symbol, receipt.order_id) in failures:
                 receipt.state = "failed"
@@ -103,7 +106,7 @@ def _merge_snapshot(state: _OrdersState, result: dict[str, Any]) -> AccountOrder
             complete = False
             receipt.state, receipt.message = "unknown", "未查询到订单终态，撤单结果待确认"
             if receipt.order is not None:
-                orders[receipt.order_id] = receipt.order.model_copy(update={"uncertain": True})
+                orders[key] = receipt.order.model_copy(update={"uncertain": True})
     return AccountOrdersPublic(
         data=sorted(orders.values(), key=lambda order: (order.create_time or "", order.order_id), reverse=True),
         count=len(orders) if complete else None,

@@ -42,7 +42,7 @@ test('execution page exports running evidence as a sharing ZIP with a truthful c
 
 test('account journal preserves oversized dates and exports complete scope with retained retry options', async ({ page }) => {
   await defaults(page)
-  await visit(page, '/accounts/7/executions?range=custom&from=2026-07-01&to=2026-09-28&symbol=BTC&status=执行失败')
+  await visit(page, '/accounts/7/executions?range=custom&from=2026-07-01&to=2026-09-28&symbol=rb2610&status=执行失败')
   await page.getByRole('button', { name: '按日期导出' }).click()
   const dialog = page.getByRole('dialog', { name: '导出账户证据' })
   await expect(dialog.getByLabel('导出开始日期', { exact: true })).toHaveValue('2026-07-01')

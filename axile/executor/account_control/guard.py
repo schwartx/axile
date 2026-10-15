@@ -10,7 +10,8 @@ Notes
 from __future__ import annotations
 
 from _thread import RLock as RLockType
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import RLock, local
@@ -36,6 +37,12 @@ from axile.executor.account_control.models import (
     AccountControlScopeType,
     AccountControlSource,
     AccountControlTriggerBehavior,
+)
+from axile.executor.account_control.quota_state import (
+    AccountControlQueuedRequest as _QueuedRequest,
+)
+from axile.executor.account_control.quota_state import (
+    AccountControlQuotaState,
 )
 from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
 from axile.executor.account_control.snapshot import (
@@ -220,17 +227,6 @@ class AccountControlResolvedAttempt:
     decision: AccountControlEnforcementDecision
 
 
-@dataclass(frozen=True)
-class _QueuedRequest:
-    """同一 guard 内等待调度的请求。"""
-
-    seq: int
-    priority: int
-    operation: str
-    symbol: str | None
-    entered_at_ms: int
-
-
 def resolve_control_window(
     timezone_name: str,
     *,
@@ -378,6 +374,7 @@ class AccountControlGuard:
         self._wait_poll_interval_ms = max(wait_poll_interval_ms, 1)
         self._termination_checkpoint = termination_checkpoint
         self._state_lock = RLock()
+        self._quota_state: AccountControlQuotaState | None = None
         self._event_seq = 0
         self._queue_seq = 0
         self._wait_queue: list[_QueuedRequest] = []
@@ -410,11 +407,50 @@ class AccountControlGuard:
 
     def share_group_timestamps(self, timestamps: dict[GroupRecentKey, int], lock: RLockType) -> None:
         """同一物理会话的独立任务共用发送间隔，不共用审计事件。"""
-        with lock:
+        with self._state_lock, lock:
+            if self._quota_state is not None:
+                raise ValueError("已共享完整额度状态，不能改为仅共享发送间隔")
             for key, value in self._recent_group_allowed_at.items():
                 timestamps[key] = max(timestamps.get(key, value), value)
             self._recent_group_allowed_at = timestamps
             self._state_lock = lock
+
+    def share_quota_state(self, state: AccountControlQuotaState) -> None:
+        """首个操作前绑定账户额度；计数及调度共享，审计身份和落库增量保持独立。"""
+        if not self._enabled():
+            return
+        with self._state_lock, state.lock:
+            if self._quota_state is state:
+                return
+            if self._quota_state is not None or self._events or self._wait_queue:
+                raise ValueError("账户控制 guard 必须在首个操作前绑定共享额度状态")
+            assert self.account_id is not None
+            state.bind(self.account_id, self.channel)
+            state.merge_baseline(self._baseline_control_date, self.baseline)
+            state.merge_timestamps(
+                self._recent_account_allowed_at, self._recent_symbol_allowed_at, self._recent_group_allowed_at
+            )
+            self._quota_state = state
+            self._wait_queue = state.wait_queue
+            self._monitor_waits = state.monitor_waits
+            self._recent_account_allowed_at = state.account_timestamps
+            self._recent_symbol_allowed_at = state.symbol_timestamps
+            self._recent_group_allowed_at = state.group_timestamps
+
+    @contextmanager
+    def _locked_state(self) -> Iterator[None]:
+        """先锁定 guard 的绑定，再锁定共享总量，首绑与并发采样也遵循同一顺序。"""
+        with self._state_lock:
+            with self._quota_state.lock if self._quota_state is not None else nullcontext():
+                yield
+
+    def _next_queue_seq(self) -> int:
+        """在调度锁内分配序号，独立上下文不能占用相同的队列身份。"""
+        if self._quota_state is not None:
+            self._quota_state.queue_seq += 1
+            return self._quota_state.queue_seq
+        self._queue_seq += 1
+        return self._queue_seq
 
     def begin_operation(
         self,
@@ -450,11 +486,11 @@ class AccountControlGuard:
         assert self.account_id is not None
         assert self.execution_id is not None
         assert self.policy is not None
-        with self._state_lock:
-            self._queue_seq += 1
+        with self._locked_state():
+            queue_seq = self._next_queue_seq()
             operation_policy = self.policy.operations.get(operation, AccountControlOperationPolicy())
             queued = _QueuedRequest(
-                seq=self._queue_seq,
+                seq=queue_seq,
                 priority=operation_policy.priority,
                 operation=operation,
                 symbol=symbol,
@@ -469,7 +505,7 @@ class AccountControlGuard:
         try:
             while True:
                 # 只有 policy 优先级最高且同级最早的请求可以评估并预占额度。
-                with self._state_lock:
+                with self._locked_state():
                     head = min(self._wait_queue, key=lambda item: (item.priority, item.seq))
                     if head != queued:
                         wait_ms = self._wait_poll_interval_ms
@@ -532,7 +568,7 @@ class AccountControlGuard:
                 self._wait_for_quota(wait_ms, symbol)
                 waited_ms += wait_ms
         finally:
-            with self._state_lock:
+            with self._locked_state():
                 self._monitor_waits.pop(queued.seq, None)
                 if queued in self._wait_queue:
                     self._wait_queue.remove(queued)
@@ -543,7 +579,7 @@ class AccountControlGuard:
 
         from axile.executor.account_control.monitor import render_guard_snapshot
 
-        with self._state_lock:
+        with self._locked_state():
             self._monitor_seq += 1
             frozen = copy(self)
             frozen._account_counters = dict(self._account_counters)
@@ -556,6 +592,7 @@ class AccountControlGuard:
             frozen._monitor_waits = dict(self._monitor_waits)
             frozen._events = list(self._events[-100:])
             frozen._quota_warnings = dict(self._quota_warnings)
+            frozen._quota_state = None if self._quota_state is None else self._quota_state.snapshot()
         return render_guard_snapshot(frozen)
 
     def current_waited_ms(self) -> int:
@@ -587,7 +624,7 @@ class AccountControlGuard:
         """
         active = list(getattr(self._thread_state, "active_attempts", []))
         self._thread_state.active_attempts = [index for index in active if index != event_index]
-        with self._state_lock:
+        with self._locked_state():
             event = self._events[event_index]
             # 同步返回可能晚于异步拒绝，不能把已知拒绝覆盖成“已提交”。
             if event.outcome in {"broker_rejected", "broker_sync_rejected"}:
@@ -623,7 +660,7 @@ class AccountControlGuard:
         assert self.account_id is not None
         assert self.execution_id is not None
 
-        with self._state_lock:
+        with self._locked_state():
             counter_deltas = self._build_counter_deltas()
             return counter_deltas, list(self._events)
 
@@ -1191,6 +1228,11 @@ class AccountControlGuard:
                 group_key=scope_key,
             )
 
+        if self._quota_state is not None:
+            if symbol is None:
+                return self._quota_state.account_counts.get((control_date, bucket_type, bucket_start, scope_key), 0)
+            return self._quota_state.symbol_counts.get((control_date, symbol, bucket_type, bucket_start, scope_key), 0)
+
         baseline = 0
         if control_date == self._baseline_control_date:
             baseline = self.baseline.get_count(
@@ -1211,6 +1253,11 @@ class AccountControlGuard:
         bucket_start: str,
         group_key: str,
     ) -> int:
+        if self._quota_state is not None:
+            return sum(
+                self._quota_state.account_counts.get((control_date, bucket_type, bucket_start, operation), 0)
+                for operation in self._get_group_operation_keys(group_key)
+            )
         baseline = 0
         if control_date == self._baseline_control_date:
             for operation_key in self._get_group_operation_keys(group_key):
@@ -1273,6 +1320,8 @@ class AccountControlGuard:
     ) -> None:
         key = (control_date, bucket_type, bucket_start, operation)
         self._account_counters[key] = self._account_counters.get(key, 0) + 1
+        if self._quota_state is not None:
+            self._quota_state.account_counts[key] = self._quota_state.account_counts.get(key, 0) + 1
         attribution = key, controlled_source(self, self.source)
         self._account_counter_sources[attribution] = self._account_counter_sources.get(attribution, 0) + 1
 
@@ -1286,6 +1335,8 @@ class AccountControlGuard:
     ) -> None:
         key = (control_date, symbol, bucket_type, bucket_start, operation)
         self._symbol_counters[key] = self._symbol_counters.get(key, 0) + 1
+        if self._quota_state is not None:
+            self._quota_state.symbol_counts[key] = self._quota_state.symbol_counts.get(key, 0) + 1
         attribution = key, controlled_source(self, self.source)
         self._symbol_counter_sources[attribution] = self._symbol_counter_sources.get(attribution, 0) + 1
 

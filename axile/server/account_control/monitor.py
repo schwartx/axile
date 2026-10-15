@@ -14,7 +14,9 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlmodel import col
 
+from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
+from axile.executor.account_control.models import AccountControlContextKind
 from axile.executor.account_control.monitor import policy_fingerprint
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.algorithms.utils.clock import clock_now_ms
@@ -213,7 +215,14 @@ class AccountControlMonitor:
         assert account.id is not None
         policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
         window = resolve_control_window(policy.timezone)
-        latest = max(sessions, key=lambda s: s.id or 0, default=None)
+        # 目录查询可与交易并行；它的新会话不能接管交易实例或构成重复执行。
+        execution_sessions = [
+            session
+            for session in sessions
+            if control_context_kind(session.context_kind, session.execution_id)
+            != AccountControlContextKind.ACCOUNT_OPERATION
+        ]
+        latest = max(execution_sessions, key=lambda s: s.id or 0, default=None)
         sources = self._sources.get(account.id, [])
         valid = [
             source
@@ -231,7 +240,7 @@ class AccountControlMonitor:
             ]
             await self._update_outcomes(db, account.id, updates)
         incomplete = any(s.status == "incomplete" and _affected(s, window.control_date) for s in sessions)
-        incomplete = incomplete or sum(s.status == "active" for s in sessions) > 1
+        incomplete = incomplete or sum(s.status == "active" for s in execution_sessions) > 1
         if (
             (failed or (live is not None and live["status"] == "incomplete"))
             and latest is not None

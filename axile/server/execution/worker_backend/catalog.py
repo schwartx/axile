@@ -67,6 +67,10 @@ class _CatalogPipe:
     def _receive(self) -> None:
         try:
             while not self._closed.is_set():
+                # close() 不会唤醒其他线程中已进入的 recv()；有界轮询让退出释放
+                # 接收端的系统引用，使对端及时观察 EOF 并转移目录查询来源。
+                if not self.connection.poll(0.1):
+                    continue
                 message = self.connection.recv()
                 if "reply" in message:
                     with self._lock:

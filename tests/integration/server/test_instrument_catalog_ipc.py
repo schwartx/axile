@@ -127,10 +127,18 @@ def test_closing_source_unblocks_query_and_switches_to_next_source(require_specs
     try:
         with ThreadPoolExecutor(1) as pool:
             pending = pool.submit(catalog.ensure, [ROW.key], require_specs=require_specs)
-            assert entered.wait(1)
-            provider.stop()
-            assert provider.failed
-            assert pending.result(2)[ROW.key].tick == 1
+            try:
+                assert entered.wait(1)
+                provider.stop()
+                assert provider.failed
+                provider.thread.join(timeout=0.5)
+                assert not provider.thread.is_alive()
+                assert pending.result(2)[ROW.key].tick == 1
+            finally:
+                # 失败时先释放来源，再等待线程池，避免回归让整个测试进程挂死。
+                release.set()
+                provider.stop()
+                session.stop()
         release.set()
         time.sleep(0.02)
         assert catalog.snapshot()[ROW.key].tick == 1

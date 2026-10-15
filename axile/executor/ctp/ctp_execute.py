@@ -23,6 +23,8 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.exceptions import AccountControlBlockedError
+from axile.executor.account_control.guard import AccountControlGuard
+from axile.executor.account_control.quota_state import AccountControlQuotaState
 from axile.executor.algorithms.utils import clock_now
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.catalog_execution import CatalogExecutionMixin
@@ -199,7 +201,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._init_instrument_catalog()
         self._catalog_query_state = threading.local()
         self._catalog_control_factory = None
-        self._control_group_timestamps = {}
+        self._control_quota_state = AccountControlQuotaState()
         self._validation_catalog: Callable[[], Mapping[str, InstrumentRecord]] | None = None
         self._trader_api = self._market_api = None
         self._trader_spi = self._market_spi = None
@@ -398,12 +400,27 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._control_request_result(rid, "broker_rejected", {"error_id": detail[0], "error_msg": detail[1]})
         self._log_error(info, "撤单")
 
+    @override
+    def get_account_control_guard(self) -> AccountControlGuard | None:
+        """公开操作进入额度检查前即绑定会话总量，覆盖人工操作的局部 guard。"""
+        guard = super().get_account_control_guard()
+        if guard is not None:
+            guard.share_quota_state(self._control_quota_state)
+        return guard
+
+    @override
+    def set_account_control_guard(self, guard: AccountControlGuard | None) -> None:
+        """新执行读取基线后合入会话总量，不重置其他上下文已占用的额度。"""
+        if guard is not None:
+            guard.share_quota_state(self._control_quota_state)
+        super().set_account_control_guard(guard)
+
     def _send_trader_request(self, operation, name, req, *, symbol=None, before_send=None) -> int:
         """经通用账户控制发送一次 TraderApi 请求，不在适配层重试。"""
         guard = getattr(self._catalog_query_state, "guard", None) or self.get_account_control_guard()
-        share = getattr(guard, "share_group_timestamps", None)
+        share = getattr(guard, "share_quota_state", None)
         if callable(share):
-            share(self._control_group_timestamps, self._lock)
+            share(self._control_quota_state)
 
         return run_controlled_call(
             guard=guard,

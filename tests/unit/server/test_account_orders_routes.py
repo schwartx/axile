@@ -1,14 +1,19 @@
 """当前委托 REST 契约，失败保持未知，撤单受理不冒充实际终态。"""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_orders as routes
-from axile.server.db.models.account_order import AccountOrdersPublic, OrderCancelReceipt
+from axile.server.db.models.account_order import AccountOrderPublic, AccountOrdersPublic, OrderCancelReceipt
+from axile.server.db.models.execution import ExecutionEvent
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -76,3 +81,65 @@ def test_timeout_returns_unknown_gateway_error(client, monkeypatch):
 
     monkeypatch.setattr(routes, "query_account_orders", timeout)
     assert client.get("/account/1/orders").status_code == 504
+
+
+def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_path):
+    async def query(_account, **_kwargs):
+        return AccountOrdersPublic(
+            data=[
+                AccountOrderPublic(
+                    order_id="same-id",
+                    symbol=symbol,
+                    direction="BUY",
+                    order_type="LIMIT",
+                    price=3500,
+                    volume=1,
+                    filled_volume=0,
+                    remaining_volume=1,
+                    status="待成交",
+                )
+                for symbol in ("rb2610", "ag2612", "cu2612")
+            ],
+            count=3,
+            sampled_at="2026-10-15T10:00:00",
+        )
+
+    monkeypatch.setattr(routes, "query_account_orders", query)
+
+    async def scenario():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'orders.db'}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with factory() as session:
+                session.add(build_account(portfolio_id=None))
+                # 同号的其他品种更晚，且同品种的旧执行不能覆盖最新关联。
+                for execution, symbol in (("old-rb", "rb2610"), ("new-rb", "rb2610"), ("ag", "ag2612")):
+                    session.add(
+                        ExecutionEvent(
+                            account_id=1,
+                            execution_id=execution,
+                            event_uid=execution,
+                            channel="ctp",
+                            algorithm="SINGLE-MAKER",
+                            event_type=ExecutionEventType.ORDER_SUBMITTED,
+                            status=ExecutionEventStatus.INFO,
+                            reason_family=ExecutionReasonFamily.SYSTEM,
+                            reason_code="TEST.ORDER",
+                            symbol=symbol,
+                            order_id="same-id",
+                        )
+                    )
+                await session.commit()
+            async with factory() as session:
+                result = await routes.current_orders(session, 1, refresh=True)
+                assert {row.symbol: row.execution_id for row in result.data} == {
+                    "rb2610": "new-rb",
+                    "ag2612": "ag",
+                    "cu2612": None,
+                }
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())

@@ -32,6 +32,8 @@ def test_tracked_source_has_no_private_channel_terms() -> None:
         if not path.is_file():
             continue
         text = path.read_bytes().decode("utf-8", errors="ignore").casefold()
+        # 浏览器标准随机标识 API 不属于渠道声明；只豁免这一明确的成员访问。
+        text = re.sub(rf"\b{re.escape(forbidden[1])}(?=\.randomuuid\b)", "", text)
         for term in forbidden:
             if term in text:
                 violations.append(f"{relative}: content")
