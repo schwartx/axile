@@ -20,7 +20,7 @@ test('account summary survives execution completion; order detail and keyboard d
   await expect(dialog.getByText('old-execution', { exact: true })).toBeVisible()
   await expect(dialog.getByText('session_id', { exact: true })).toBeVisible()
   await expect(dialog.getByText('2 手', { exact: true })).toBeVisible()
-  await dialog.locator('#current-order-native-1').evaluate(async element => {
+  await dialog.locator('[id^="current-order-native-1"]').evaluate(async element => {
     await Promise.all(element.getAnimations().map(animation => animation.finished))
   })
   await page.screenshot({ path: testInfo.outputPath('current-orders-dialog.png') })

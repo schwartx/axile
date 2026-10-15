@@ -3,7 +3,7 @@ import { usePolling } from '@/lib/hooks/usePolling'
 import { cancelCurrentOrder, getCurrentOrders, type CancelReceipt, type CurrentOrder } from '@/lib/api/orders'
 import { mergeReceipts } from '@/features/account/currentOrdersModel'
 
-export function useCurrentOrders(accountId: number) {
+export function useCurrentOrders(accountId: number, inspectingHolding = false) {
   const [openFor, setOpenFor] = useState<number | null>(null)
   const [local, setLocal] = useState<{ accountId: number; values: CancelReceipt[] }>({ accountId, values: [] })
   const currentAccount = useRef(accountId)
@@ -16,7 +16,7 @@ export function useCurrentOrders(accountId: number) {
     force.current = false
     return getCurrentOrders(accountId, signal, refresh)
   }, [accountId])
-  const query = usePolling(fetcher, { queryKey: `current-orders:${accountId}`, intervalMs: open ? 3000 : 15000 })
+  const query = usePolling(fetcher, { queryKey: `current-orders:${accountId}`, intervalMs: open || inspectingHolding ? 3000 : 15000 })
   const receipts = mergeReceipts(query.data?.cancellations ?? [], local.accountId === accountId ? local.values : [])
   const read = query.refresh
   const refresh = useCallback(() => { force.current = true; return read() }, [read])

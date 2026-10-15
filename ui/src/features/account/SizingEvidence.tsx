@@ -1,61 +1,30 @@
 import { useId, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { displayCurrencyUnit, fmtMoney } from '@/lib/format'
 import {
   quantityText,
-  sizingNumber,
+  sizingFormulas,
   sizingReasonText,
-  targetQuantityText,
   weightText,
 } from '@/features/account/sizingEvidenceModel'
 import type { TargetSizingRow } from '@/types/api'
-
-function formulaRows(row: TargetSizingRow, quantityLabel: string, currency: string): string[] {
-  const rows: string[] = []
-  const currencyLabel = displayCurrencyUnit(currency)
-  if (row.strategy_weight != null && row.account_weight != null) {
-    const multiplier = row.account_multiplier
-    rows.push(
-      multiplier != null
-        ? `策略 ${weightText(row.strategy_weight)} × 账户乘数 ${sizingNumber(multiplier, 4)} = 账户 ${weightText(row.account_weight)}`
-        : `策略 ${weightText(row.strategy_weight)} → 账户 ${weightText(row.account_weight)}`,
-    )
-  }
-  if (row.equity != null && row.account_weight != null && row.target_notional != null) {
-    rows.push(
-      `权益 ${fmtMoney(row.equity)} × ${sizingNumber(Math.abs(row.account_weight) * 100, 2)}% = 目标名义 ${fmtMoney(row.target_notional)}${currencyLabel ? ` ${currencyLabel}` : ''}`,
-    )
-  }
-  if (row.reference_price != null && row.unit_notional != null) {
-    rows.push(
-      row.unit_multiplier != null && Math.abs(row.unit_multiplier - 1) > 1e-9
-        ? `价格 ${sizingNumber(row.reference_price, 6)} × 合约乘数 ${sizingNumber(row.unit_multiplier)} = 每${quantityLabel || '单位'} ${fmtMoney(row.unit_notional)}${currencyLabel ? ` ${currencyLabel}` : ''}`
-        : `价格 ${sizingNumber(row.reference_price, 6)}${currencyLabel ? ` ${currencyLabel}` : ''}/${quantityLabel || '单位'}`,
-    )
-  }
-  if (row.raw_quantity != null) {
-    rows.push(`未取整目标 ${quantityText(row.raw_quantity, quantityLabel)}`)
-  }
-  if (row.target_quantity != null) {
-    rows.push(`${sizingReasonText(row, quantityLabel)} → 可执行目标 ${targetQuantityText(row.target_quantity, quantityLabel)}`)
-  }
-  return rows
-}
 
 export function SizingEvidence({
   row,
   quantityLabel = '',
   currency = '',
+  defaultExpanded = false,
 }: {
   row: TargetSizingRow
   quantityLabel?: string
   currency?: string
+  defaultExpanded?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultExpanded)
   const detailId = useId()
   const reason = sizingReasonText(row, quantityLabel)
-  const summary = `${weightText(row.account_weight)} → ${targetQuantityText(row.target_quantity, quantityLabel)} · ${reason}`
-  const formulas = formulaRows(row, quantityLabel, currency)
+  const input = row.sizing_mode === 'quantity' ? quantityText(row.account_weight, quantityLabel) : weightText(row.account_weight)
+  const summary = `${input} → ${quantityText(row.target_quantity, quantityLabel)} · ${reason}`
+  const formulas = sizingFormulas(row, quantityLabel, currency)
 
   return (
     <div>

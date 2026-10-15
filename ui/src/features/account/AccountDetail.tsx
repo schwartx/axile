@@ -5,6 +5,9 @@ import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/us
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '@/features/account/CurrentOrders'
 import { useCurrentOrders } from '@/features/account/useCurrentOrders'
+import { HoldingsPreviewTable } from '@/features/account/HoldingsPreviewTable'
+import { HoldingDetailDialog } from '@/features/account/HoldingDetailDialog'
+import { holdingPreviewRows } from '@/features/account/holdingDetailModel'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
 import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
@@ -30,12 +33,7 @@ import { useTerminateAction } from '@/features/account/useTerminateAction'
 import { buildRecentActivity, recentRowText } from '@/features/account/recent'
 import { StaleDataStatus } from '@/features/account/StaleDataStatus'
 import { connectionStaleAt, localQueryError } from '@/features/account/staleData'
-import {
-  currentHoldingPreview,
-  formatHoldingQuantity,
-  rebalanceTurnover,
-  type CurrentHoldingPreview,
-} from '@/features/account/holdingPreview'
+import { rebalanceTurnover } from '@/features/account/holdingPreview'
 import { ScheduleSummary, ScheduleTimeline, ScheduleTimelineSkeleton } from '@/features/account/ScheduleTimeline'
 import {
   INTEGRITY_ICON,
@@ -74,7 +72,7 @@ import { usePolling } from '@/lib/hooks/usePolling'
 import { useTargetSnapshot } from '@/lib/hooks/useTargetSnapshot'
 import { stateVerdict, gateOf, observedTotalAsset, rebalancePlanOfServer, positionsOfAssets, type StatusLevel } from '@/lib/derive'
 import { shortErrorReason } from '@/lib/errorInfo'
-import { displayCurrencyUnit, fmtMoney, withCurrency } from '@/lib/format'
+import { displayCurrencyUnit } from '@/lib/format'
 import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
 import { useToastStore } from '@/stores/ui'
@@ -126,7 +124,9 @@ export function AccountDetail({
   const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
   const nameVt = tDetail || tEdit
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
-  const currentOrders = useCurrentOrders(accountId)
+  const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string } | null>(null)
+  const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
+  const currentOrders = useCurrentOrders(accountId, selectedSymbol != null)
   const channelSchedule = channelDescriptor?.schedule
   const scheduleKind = channelSchedule?.kind
   // 组合名：领域 store 已在应用根加载（PortfolioLite 带 name），取名不增请求；未加载/找不到退回 #id。
@@ -240,8 +240,7 @@ export function AccountDetail({
   const comparisonLoading = comparison.data === null && comparison.loading
   const comparisonError = comparison.error
   const comparisonReady = comparison.data?.off_symbol_count != null
-  const showComparisonPanel = !comparisonLoading && !!weights.data?.calculated_at && comparisonReady
-    && !((!comparison.data && comparisonError) || (!weights.data && weights.error) || (!assetSnapshots.data && assetSnapshots.error))
+  const showComparisonPanel = !comparisonLoading && (!!latestAssets || !!weights.data?.calculated_at)
   // 账户级偏离与逐品种动作均取服务端同一份可执行计划。
   const plan = rebalancePlanOfServer(comparison.data)
   const driftLevel: StatusLevel = plan.off > 0 ? 'warn' : 'ok'
@@ -255,9 +254,9 @@ export function AccountDetail({
       : plan.off === 0
         ? '已调仓到位'
         : `${plan.off} 只待调整`
-  const targetCount = comparison.data?.rows.filter((row) => Math.abs(row.target_weight) > 1e-9).length ?? 0
+  const targetCount = Object.values(weights.data?.account_weights ?? weights.data?.weights ?? {}).filter(weight => Math.abs(weight) > 1e-9).length
   const turnover = rebalanceTurnover(plan)
-  const currentHoldings = currentHoldingPreview(positions, observedTotalAsset(latestAssets, item.total_asset))
+  const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, !!latestAssets)
   const state = stateVerdict({ ...item, is_started: isStarted }, false)
   const gate = gateOf({ ...item, is_started: isStarted })
   // 执行态：服务端 live 优先，runner 仅首帧前乐观。queued ≠ 正在下单。
@@ -711,10 +710,6 @@ export function AccountDetail({
                 <HoldingsPreviewTable holdings={null} positionValueLabel={positionValueLabel} />
               </div>
             </SkeletonGroup>
-          ) : (!comparison.data && comparisonError) || (!weights.data && weights.error) || (!assetSnapshots.data && assetSnapshots.error) ? null : !weights.data?.calculated_at ? (
-            <div className="border-t border-line py-3 text-[14px] leading-relaxed text-ink-3">
-              尚无目标权重，刷新后生成持仓对照
-            </div>
           ) : showComparisonPanel ? (
             <div className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
               <div className="border-t border-line pt-3">
@@ -722,7 +717,7 @@ export function AccountDetail({
                   {driftHeadline}
                 </div>
                 <div className="mt-1.5 text-[14px] text-ink-2">
-                  当前 {!item.asset_observed_at ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {targetCount} 只
+                  当前 {!latestAssets ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
                 </div>
                 <div className="mt-2 flex min-h-8 items-center">
                   {targetSnapshotControl}
@@ -743,6 +738,7 @@ export function AccountDetail({
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
                 <HoldingsPreviewTable
                   holdings={currentHoldings}
+                  onSelect={symbol => { setHoldingSelection({ accountId, symbol }); void currentOrders.refresh() }}
                   observed={!!latestAssets}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
@@ -752,6 +748,14 @@ export function AccountDetail({
           ) : null}
           {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
           <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
+          <HoldingDetailDialog symbol={selectedSymbol}
+            accountName={item.name} positions={positions} observed={!!latestAssets}
+            observedAt={assetSnapshots.data?.data[0]?.created_at ?? null}
+            target={weights.data} orders={currentOrders} currency={item.currency} units={channelDescriptor?.units}
+            refreshing={assetSnapshots.refreshing || weights.refreshing}
+            dataStale={assetSnapshots.stale || !!assetSnapshots.error || weights.stale || !!weights.error}
+            onClose={() => setHoldingSelection(null)}
+            onRefresh={() => Promise.all([refreshAssetSnapshots(), reloadTargetSnapshot(), currentOrders.refresh()]).then(() => undefined)} />
           <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
           <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />
           <ErrorNotice evidence={accountEvidence} contextKey={accountId}
@@ -971,105 +975,6 @@ function RecentAmount({ amount, currency }: { amount: string; currency: string }
       {amount}
       {unit ? <span className="ml-1 font-medium text-ink-3">{unit}</span> : null}
     </span>
-  )
-}
-
-/**
- * 账户详情「持仓 vs 目标」右栏的当前持仓快照。
- *
- * 表头与行共用固定列宽：品种 22%、仓位 25%、持仓/可用 25%、货值 28%。
- * 品种左对齐、数字右对齐；滚动槽前保留间距，长内容在各自列内呈现。
- * 表头 sticky 钉在滚动容器顶。
- */
-const PREVIEW_TH = 'sticky top-0 z-[1] h-8 bg-surface align-middle font-medium'
-const PREVIEW_COL = 'whitespace-nowrap'
-
-function HoldingsPreviewTable({
-  observed = false,
-  holdings,
-  currency = '',
-  positionValueLabel,
-}: {
-  observed?: boolean
-  /** `null` = 对照仍在加载，表结构在、单元格骨架占位。 */
-  holdings: CurrentHoldingPreview[] | null
-  currency?: string
-  positionValueLabel: string
-}) {
-  return (
-    <div
-      tabIndex={0}
-      className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
-    >
-      <table aria-label="当前持仓" className="w-full table-fixed border-separate border-spacing-0">
-        <colgroup>
-          <col className="w-[22%]" />
-          <col className="w-[25%]" />
-          <col className="w-[25%]" />
-          <col className="w-[28%]" />
-        </colgroup>
-        <thead>
-          <tr className="text-[12px] font-medium text-ink-3">
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line pr-1.5 text-left`}>
-              品种
-            </th>
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line px-1.5 text-right`}>
-              仓位
-            </th>
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line px-1.5 text-right`}>
-              持仓/可用
-            </th>
-            <th scope="col" className={`${PREVIEW_TH} border-b border-line pl-1.5 text-right whitespace-nowrap`}>
-              {positionValueLabel}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {holdings == null ? (
-            Array.from({ length: 5 }, (_, index) => (
-              <tr key={index} className="border-t border-line first:border-t-0">
-                <td className={`h-8 ${PREVIEW_COL} pr-1.5`}>
-                  <Skeleton className="h-3 w-12" />
-                </td>
-                <td className={`h-8 ${PREVIEW_COL} px-1.5`}>
-                  <Skeleton className="ml-auto h-3 w-9" />
-                </td>
-                <td className={`h-8 ${PREVIEW_COL} px-1.5`}>
-                  <Skeleton className="ml-auto h-3 w-12" />
-                </td>
-                <td className="h-8 pl-1.5 whitespace-nowrap">
-                  <Skeleton className="ml-auto h-3 w-14" />
-                </td>
-              </tr>
-            ))
-          ) : holdings.length === 0 ? (
-            <tr>
-              <td colSpan={4} className="h-40 text-[14px] text-ink-3">
-                {observed ? '当前空仓' : '持仓尚未查询'}
-              </td>
-            </tr>
-          ) : (
-            holdings.map((holding) => {
-              const dir = holding.direction === 'short' ? '空' : '多'
-              const weight = holding.weight == null ? `${dir}—` : `${dir}${Math.abs(holding.weight).toFixed(1)}%`
-              const volume = formatHoldingQuantity(holding.volume)
-              const availableVolume = formatHoldingQuantity(holding.availableVolume)
-              const value = holding.value == null ? '—' : withCurrency(fmtMoney(holding.value), currency)
-              return (
-                <tr key={holding.key} className="border-t border-line text-[13.5px] first:border-t-0">
-                  <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}><OverflowText text={holding.symbol} className="block" /></td>
-                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}><OverflowText text={weight} className="block" /></td>
-                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}>
-                    <OverflowText text={`${volume}/${availableVolume}`} className="block" />
-                  </td>
-                  <td className="num h-8 pl-1.5 text-right font-medium whitespace-nowrap text-ink-1"><OverflowText text={value} className="block" /></td>
-                </tr>
-              )
-            })
-          )}
-        </tbody>
-      </table>
-    </div>
   )
 }
 

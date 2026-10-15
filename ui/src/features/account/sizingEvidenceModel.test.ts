@@ -6,6 +6,7 @@ import {
   quantityText,
   sizingAvailabilityText,
   sizingReasonText,
+  sizingFormulas,
   targetQuantityText,
   weightText,
 } from './sizingEvidenceModel'
@@ -37,6 +38,20 @@ function row(patch: Partial<TargetSizingRow> = {}): TargetSizingRow {
 }
 
 describe('sizing evidence copy', () => {
+  it('数量输入不套用权益权重公式，保留多空方向', () => {
+    const formulas = sizingFormulas(row({ sizing_mode: 'quantity', raw_quantity: -20, account_weight: -20, target_quantity: -20 }), '手', 'CNY')
+    expect(formulas[0]).toBe('直接数量目标 空20手')
+    expect(formulas.join('\n')).not.toContain('权益')
+    expect(formulas[1]).toContain('可执行目标 空20手')
+  })
+  it('跨币种换算展示冻结汇率，缺输入不补造公式', () => {
+    const formulas = sizingFormulas(row({ reference_price: 100, unit_multiplier: 10, unit_notional: 7500,
+      value_conversion: { price_currency: 'USD', value_currency: 'CNY', rate: 7.5, reference: {} } }), '手', 'CNY')
+    expect(formulas.join('\n')).toContain('价格 100 USD × 合约乘数 10 × 汇率 7.5 = 每手名义 7,500 元')
+    const missing = sizingFormulas(row({ reference_price: null, equity: null }), '手', 'CNY')
+    expect(missing.join('\n')).not.toContain('价格')
+    expect(missing.join('\n')).not.toContain('权益')
+  })
   it('零手仍保留目标方向并直说不足一手', () => {
     const evidence = row()
     expect(weightText(evidence.account_weight)).toBe('空18%')

@@ -1,4 +1,5 @@
 import type { TargetSizingAvailability, TargetSizingRow } from '@/types/api'
+import { displayCurrencyUnit, fmtMoney } from '@/lib/format'
 
 const EPS = 1e-9
 
@@ -69,4 +70,50 @@ export function executableTargetFallbackText(
   if (status === 'unavailable') return row ? sizingReasonText(row, quantityLabel) : '无法换算'
   if (status === 'available') return '无法换算'
   return '待换算'
+}
+
+function currencySuffix(currency: string): string {
+  const label = displayCurrencyUnit(currency)
+  return label ? ` ${label}` : ''
+}
+
+function accountWeightFormula(row: TargetSizingRow): string | null {
+  if (row.strategy_weight == null || row.account_weight == null) return null
+  if (row.account_multiplier == null) return `策略 ${weightText(row.strategy_weight)} → 账户 ${weightText(row.account_weight)}`
+  return `策略 ${weightText(row.strategy_weight)} × 账户乘数 ${sizingNumber(row.account_multiplier, 4)} = 账户 ${weightText(row.account_weight)}`
+}
+
+function targetNotionalFormula(row: TargetSizingRow, currency: string): string | null {
+  if (row.equity == null || row.account_weight == null || row.target_notional == null) return null
+  return `权益 ${fmtMoney(row.equity)} × ${sizingNumber(Math.abs(row.account_weight) * 100, 2)}% = 目标名义 ${fmtMoney(row.target_notional)}${currencySuffix(currency)}`
+}
+
+function unitNotionalFormula(row: TargetSizingRow, unit: string, currency: string): string | null {
+  if (row.reference_price == null || row.unit_notional == null) return null
+  const conversion = row.value_conversion
+  const parts = [`价格 ${sizingNumber(row.reference_price, 6)}${currencySuffix(conversion?.price_currency ?? currency)}`]
+  if (row.unit_multiplier != null && Math.abs(row.unit_multiplier - 1) > EPS) parts.push(`合约乘数 ${sizingNumber(row.unit_multiplier)}`)
+  if (conversion && (conversion.price_currency !== conversion.value_currency || conversion.rate !== 1)) parts.push(`汇率 ${sizingNumber(conversion.rate, 8)}`)
+  return `${parts.join(' × ')} = 每${unit || '单位'}名义 ${fmtMoney(row.unit_notional)}${currencySuffix(currency)}`
+}
+
+function rawQuantityFormula(row: TargetSizingRow, unit: string): string | null {
+  if (row.raw_quantity == null || row.target_notional == null || row.unit_notional == null || row.unit_notional <= 0) return null
+  return `目标名义 ${fmtMoney(row.target_notional)} ÷ 每${unit || '单位'}名义 ${fmtMoney(row.unit_notional)} = ${sizingNumber(row.raw_quantity, 6)}${unit}`
+}
+
+/** 只解释记录中的每一步结果；数量目标不套用权重公式，跨币种单位价值保留汇率。 */
+export function sizingFormulas(row: TargetSizingRow, quantityLabel: string, currency: string): string[] {
+  if (row.sizing_mode === 'quantity') {
+    return [
+      `直接数量目标 ${quantityText(row.raw_quantity ?? row.account_weight, quantityLabel)}`,
+      `${sizingReasonText(row, quantityLabel)} → 可执行目标 ${quantityText(row.target_quantity, quantityLabel)}`,
+    ]
+  }
+  const rows = [accountWeightFormula(row), targetNotionalFormula(row, currency),
+    unitNotionalFormula(row, quantityLabel, currency), rawQuantityFormula(row, quantityLabel)]
+    .filter((value): value is string => value != null)
+  if (row.raw_quantity != null) rows.push(`未取整目标 ${quantityText(row.raw_quantity, quantityLabel)}`)
+  if (row.target_quantity != null) rows.push(`${sizingReasonText(row, quantityLabel)} → 可执行目标 ${quantityText(row.target_quantity, quantityLabel)}`)
+  return rows
 }
