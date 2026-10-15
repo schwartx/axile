@@ -7,7 +7,7 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 
 export function connectionLabel(connection?: AccountConnection): string {
-  const labels = { uninitialized: '未建立会话', unknown: '状态待确认', ready: '会话就绪', unavailable: '暂不可用', connecting: '正在准备', recovering: '正在恢复', disconnected: '已断开' }
+  const labels = { uninitialized: '未连接', unknown: '状态待确认', ready: '已连接', unavailable: '连接异常', connecting: '连接中…', recovering: '恢复中…', disconnected: '已断开' }
   if (connection?.status === 'unavailable') return text(connection.label) || labels.unavailable
   return connection ? labels[connection.status] ?? labels.unknown : labels.uninitialized
 }

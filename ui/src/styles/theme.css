@@ -764,3 +764,25 @@
     translate: 0 0;
   }
 }
+
+/* 同一对链环：连接柔和扣合，断开短促分离；在途只停留，不循环。 */
+.connection-link { --link-gap: 2px; --link-turn: 10deg; }
+.connection-link-start { --link-direction: -1; }
+.connection-link-end { --link-direction: 1; }
+.connection-link g {
+  transform-origin: 12px 12px;
+  transform: translate(calc(var(--link-gap) * var(--link-direction)), calc(var(--link-gap) * var(--link-direction))) rotate(calc(var(--link-turn) * var(--link-direction)));
+  transition: transform 200ms cubic-bezier(.4, 0, .2, 1);
+}
+.connection-link[data-phase='closed'] { --link-gap: 0px; --link-turn: 0deg; }
+.connection-link[data-phase='connecting'] { --link-gap: .7px; --link-turn: 0deg; }
+.connection-link[data-phase='disconnecting'] { --link-gap: 1.4px; --link-turn: 10deg; }
+.connection-link[data-phase='disconnecting'] g { transition-duration: 130ms; }
+.connection-link-join {
+  opacity: 0;
+  transition: opacity 130ms cubic-bezier(.4, 0, .2, 1);
+}
+.connection-link[data-phase='closed'] .connection-link-join { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .connection-link g, .connection-link-join { transition: none; }
+}
