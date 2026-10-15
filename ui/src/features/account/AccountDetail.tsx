@@ -977,12 +977,12 @@ function RecentAmount({ amount, currency }: { amount: string; currency: string }
 /**
  * 账户详情「持仓 vs 目标」右栏的当前持仓快照。
  *
- * 表头与行同一张表，列宽按内容自动算。前三列 ``w-[1%]`` + nowrap 收缩到最宽格；
- * 市值不收缩、右对齐，把右栏剩余宽度吃掉——数字贴栏的右缘，品种和仓位仍然挨着。
+ * 表头与行共用固定列宽：品种 22%、仓位 25%、持仓/可用 25%、货值 28%。
+ * 品种左对齐、数字右对齐；滚动槽前保留间距，长内容在各自列内呈现。
  * 表头 sticky 钉在滚动容器顶。
  */
 const PREVIEW_TH = 'sticky top-0 z-[1] h-8 bg-surface align-middle font-medium'
-const PREVIEW_COL = 'w-[1%] whitespace-nowrap'
+const PREVIEW_COL = 'whitespace-nowrap'
 
 function HoldingsPreviewTable({
   observed = false,
@@ -999,9 +999,15 @@ function HoldingsPreviewTable({
   return (
     <div
       tabIndex={0}
-      className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
+      className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
     >
-      <table aria-label="当前持仓" className="w-full border-separate border-spacing-0">
+      <table aria-label="当前持仓" className="w-full table-fixed border-separate border-spacing-0">
+        <colgroup>
+          <col className="w-[22%]" />
+          <col className="w-[25%]" />
+          <col className="w-[25%]" />
+          <col className="w-[28%]" />
+        </colgroup>
         <thead>
           <tr className="text-[12px] font-medium text-ink-3">
             <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line pr-1.5 text-left`}>
@@ -1051,12 +1057,12 @@ function HoldingsPreviewTable({
               const value = holding.value == null ? '—' : withCurrency(fmtMoney(holding.value), currency)
               return (
                 <tr key={holding.key} className="border-t border-line text-[13.5px] first:border-t-0">
-                  <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}>{holding.symbol}</td>
-                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}>{weight}</td>
+                  <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}><OverflowText text={holding.symbol} className="block" /></td>
+                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}><OverflowText text={weight} className="block" /></td>
                   <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}>
-                    {volume}/{availableVolume}
+                    <OverflowText text={`${volume}/${availableVolume}`} className="block" />
                   </td>
-                  <td className="num h-8 pl-1.5 text-right font-medium whitespace-nowrap text-ink-1">{value}</td>
+                  <td className="num h-8 pl-1.5 text-right font-medium whitespace-nowrap text-ink-1"><OverflowText text={value} className="block" /></td>
                 </tr>
               )
             })
