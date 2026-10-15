@@ -228,7 +228,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         return
     from axile.server.account_control.monitor import monitor, recover_sessions
+    from axile.server.connection_state import recover_connection_sessions
 
+    await recover_connection_sessions()
     await recover_sessions()
     monitor.start()
     _load_configured_algorithm_directories()

@@ -82,7 +82,7 @@ export function AccountHoldingsPage() {
   const holdingsStale = !latestAssets || (positions.length === 0 && holdingsCount > 0)
 
   return (
-    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (account.data?.connection ?? item?.connection)?.status === 'error' }}><section>
+    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (account.data?.connection ?? item?.connection)?.status === 'unavailable' }}><section>
       <div className="flex flex-wrap items-center gap-3">
         <AccountPageTitle
           accountId={accountId}

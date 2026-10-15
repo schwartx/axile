@@ -5,7 +5,7 @@ import type { AccountConnectionDetail } from '../../types/api'
 
 const message = 'CTP 交易前置已断开'
 const raw = 'CTP 交易前置断线: 4097'
-const base: AccountConnectionDetail = { status: 'error', observed_at: null, message, error: {
+const base: AccountConnectionDetail = { status: 'unavailable', observed_at: null, message, error: {
   message, technical_detail: raw, traceback: `axile.executor.ctp.ctp_execute.CtpSessionRecoveryRequired: ${raw}\n`,
   exception_type: 'CtpSessionRecoveryRequired', error_scope: 'account_connection', reason_code: '4097',
 } }
@@ -41,7 +41,7 @@ describe('structured connection evidence', () => {
   test('legacy exception-only text and empty records explain missing frames; recovered results hide all evidence', () => {
     expect(connectionTechnicalDetails({ ...base, error: { traceback: 'SomePluginError: legacy\n' } })!.sections[0]!.label).toBe('异常摘要')
     expect(connectionTechnicalDetails({ ...base, error: null })!.stackNotice).toContain('未包含异常调用帧')
-    for (const status of ['ok', 'unknown'] as const) expect(connectionTechnicalDetails({ ...base, status })).toBeNull()
+    for (const status of ['ready', 'unknown'] as const) expect(connectionTechnicalDetails({ ...base, status })).toBeNull()
   })
   test('multiline exception messages without file frames do not claim to have a traceback', () => {
     const info = connectionTechnicalDetails({ ...base, error: { traceback: 'RuntimeError: first line\nsecond line\n' } })!

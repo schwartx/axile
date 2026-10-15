@@ -118,9 +118,16 @@ def test_idle_commands_keep_typed_sessions_and_reload_shared_counters(database, 
             baseline = await execution_account_control.AccountControlStore(session).load_daily_counters(
                 1, events[-1].control_date
             )
+            # 查询可跨分钟边界；按窗口类型汇总，验证共享计数而非假定三次操作在同一分钟。
+            buckets = {(bucket_type, operation) for bucket_type, _, operation in baseline.account_counts}
             assert all(
-                value == (2 if operation == "query_order" else 1)
-                for (_, _, operation), value in baseline.account_counts.items()
+                sum(
+                    value
+                    for (kind, _, op), value in baseline.account_counts.items()
+                    if (kind, op) == (bucket_type, operation)
+                )
+                == (2 if operation == "query_order" else 1)
+                for bucket_type, operation in buckets
             )
 
     asyncio.run(verify())

@@ -10,6 +10,7 @@ from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account_order import AccountOrdersPublic, OrderCancelReceipt, OrderCancelRequest
 from axile.server.db.models.execution import ExecutionEvent
+from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
 
@@ -21,6 +22,9 @@ async def current_orders(session: SessionDep, account_id: int, refresh: bool = Q
     await session.close()
     try:
         result = await query_account_orders(account, refresh=refresh)
+    except AccountConnectionUnavailable as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(503, detail=exc.execution_error, headers=headers) from exc
     except TimeoutError as exc:
         raise HTTPException(504, detail="当前委托查询超时，状态待确认") from exc
     except Exception as exc:

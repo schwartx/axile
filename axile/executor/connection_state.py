@@ -16,6 +16,7 @@ from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.connection_presentation import PresentationInput, presentation_snapshot
 
 CONNECTION_ERROR_SCOPE = "account_connection"
+type ConnectionStatus = Literal["ok", "error", "connecting", "recovering", "cooldown", "disconnected"]
 
 
 def connection_error_scope(error: BaseException) -> str | None:
@@ -36,17 +37,18 @@ def connection_error_scope(error: BaseException) -> str | None:
 class ConnectionObservation:
     """一条明确的连接结果；正常结果不携带此前错误。"""
 
-    status: Literal["ok", "error"]
+    status: ConnectionStatus
     observed_at: str
     message: str | None = None
     error: dict[str, object] | None = None
     label: str | None = None
     presentation: dict[str, object] | None = None
+    kind: Literal["connection", "access", "session"] = "connection"
 
     def __post_init__(self) -> None:
         """旧位置参数保持原义，正常结果清除故障内容。"""
         label = self.label.strip() if isinstance(self.label, str) else None
-        object.__setattr__(self, "label", (label or None) if self.status == "error" else None)
+        object.__setattr__(self, "label", (label or None) if self.status != "ok" else None)
         object.__setattr__(
             self, "presentation", presentation_snapshot(self.presentation) if self.status == "error" else None
         )
@@ -186,7 +188,7 @@ class ConnectionMonitor:
         with self._lock:
             # 查询期间新收到的断线优先，迟到的成功响应不能覆盖它。
             if revision == self._failure_revision:
-                self.succeeded()
+                self._publish(ConnectionObservation("ok", clock_now_iso(), kind="access"))
 
     def failed(self, error: BaseException, *, label: str | None = None, presentation: PresentationInput = None) -> None:
         """连接故障发生处标记归属并固定完整异常链。"""

@@ -3,14 +3,10 @@
 覆盖逐只对账的到位、欠量、清仓、做空和前仓缺失分支，以及账户级权益与来源标。
 """
 
-import asyncio
-
 import pytest
-from loguru import logger
 
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
-from axile.server.execution.backend import _capture_before_account_snapshot as capture_before_inline
 from axile.server.execution.execution_summaries import build_symbol_reconciliation
 from axile.server.execution.worker_backend.worker import (
     _capture_before_account_snapshot as capture_before_worker,
@@ -420,12 +416,6 @@ def test_account_assets_default_source_is_real() -> None:
     """``UnifiedAccountAssets`` 默认来源标为 real。"""
     assets = UnifiedAccountAssets(available_cash=1.0, total_asset=1.0, market_value=0.0, positions=[])
     assert assets.source == "real"
-
-
-def test_inline_before_capture_degrades_on_error() -> None:
-    """inline 路径：执行前读账户抛错时返回 ``None``（降级不中断执行主线）。"""
-    result = asyncio.run(capture_before_inline(_RaisingExecutor(), logger))  # type: ignore[arg-type]
-    assert result is None
 
 
 def test_worker_before_capture_variants() -> None:

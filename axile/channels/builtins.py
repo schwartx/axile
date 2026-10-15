@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, quantize_cn_futures_quantity
@@ -63,7 +65,8 @@ _CHINA_FUTURES_NIGHT = ChannelNightSchedule(
 
 def _contribution_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
     """将策略权重与组合配置相乘并写入贡献度列."""
-    frame["contribution"] = frame["weight"] * frame["strategy"].map(config)
+    strategies = cast("pd.Series", frame["strategy"])
+    frame["contribution"] = frame["weight"] * strategies.map(config)
     return frame
 
 
@@ -101,7 +104,7 @@ def _create_gm_executor(config: BaseAccountConfig):
 
     if not isinstance(config, GMAccountConfig):
         raise TypeError("GM 渠道需要 GMAccountConfig")
-    return GMExecutor(config)
+    return GMExecutor(config, connect=False)
 
 
 def _create_tq_executor(config: BaseAccountConfig):
@@ -317,6 +320,7 @@ def _gm_plugin() -> ChannelPlugin:
         execution_backend="process",
         required_modules=("gm",),
         install_extra="gm",
+        requires_pre_connect_guard=True,
         max_parallel_symbols=None,
         order_param_model=OrderParamModel.DIRECTIONAL,
     )

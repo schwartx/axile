@@ -92,7 +92,7 @@ function ConnectionFixture() {
     <button type="button" onClick={() => setAccountId(id => id === 7 ? 8 : 7)}>切换连接账户</button>
     <button type="button" onClick={() => setLabel('后台更新后的标签')}>后台更新标签</button>
     <div className="mt-5 w-[220px] max-w-full">
-      <AccountConnectionStatus accountId={accountId} connection={{ status: 'error', observed_at: null, message: null, label }} />
+      <AccountConnectionStatus accountId={accountId} connection={{ status: 'unavailable', observed_at: null, message: null, label }} />
     </div>
   </main>
 }

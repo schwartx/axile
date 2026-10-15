@@ -22,6 +22,11 @@ export function getAccountConnection(id: number, signal?: AbortSignal): Promise<
   return apiGet(`/account/${id}/connection`, signal)
 }
 
+/** 明确操作账户连接；写请求不自动重试。 */
+export function operateAccountConnection(id: number, action: 'reconnect' | 'disconnect'): Promise<AccountConnectionDetail> {
+  return apiSend('POST', `/account/${id}/connection/${action}`)
+}
+
 /** 账户写入载荷；凭证只能从表单写入，绝不会存在于读取模型中。 */
 export type AccountUpdatePayload = Partial<Account> & {
   account_config?: Record<string, unknown>

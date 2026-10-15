@@ -24,6 +24,7 @@ from axile.executor.termination import ExecutionTerminated
 from axile.server.context import Context, PortfolioExecutor
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
@@ -74,7 +75,11 @@ _SYMBOL_FIELDS = (
 def _finalize_with_orders(executor: object | None, state: _WorkerBackendState) -> None:
     """人工操作增量刷盘结束后，再收尾本次交易 guard。"""
     with state.resource_lock:
-        _finalize_executor(executor)
+        try:
+            _finalize_executor(executor if executor is not None else state.executor)
+        except Exception:
+            state.requires_worker_restart = True
+            logger.exception("执行上下文清理失败，保留当前结果并回收 worker")
 
 
 def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -> WorkerBackendResponse:
@@ -90,6 +95,7 @@ def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -
             execution_id=request.execution_id or request.request_id,
             audit_context={"request_id": request.request_id, "trigger_source": "prepare"},
             termination_controller=termination_controller,
+            force_reconnect=bool(request.payload.get("force_reconnect", False)),
         )
         if expected and account.trade_channel.value == "ctp":
             trading_day = str(getattr(executor, "_trading_day", "") or "")
@@ -159,6 +165,7 @@ def _handle_get_account_assets(
             account=account,
             execution_id=request.execution_id or request.request_id,
             audit_context={"request_id": request.request_id, "trigger_source": "account_assets"},
+            allow_recovery=False,
         )
         assets = cast(AbstractExecutor, executor).get_account_assets()
         return WorkerBackendResponse(
@@ -271,7 +278,7 @@ def _handle_execute_trade(
         standard_input = cast(UnifiedStandardInput, normalize(context.standard_input))
         standard_input = cast(UnifiedStandardInput, normalize_connected(standard_input))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
-        audit_input = sanitize_standard_input_for_audit(standard_input)
+        audit_input = {**context.audit_input, **sanitize_standard_input_for_audit(standard_input)}
         before_account_assets = _capture_before_account_snapshot(executor)
         _append_trade_pre_execute_audit(
             account=context.account,
@@ -475,6 +482,15 @@ def _handle_worker_request(
         return _handle_execute_trade(request, state)
     if request.command == "empty_positions":
         return _handle_empty_positions(request, state)
+    if request.command == "disconnect":
+        account = AccountSnapshot.model_validate(request.account_payload)
+        with state.resource_lock:
+            state.account_id, state.config_signature = account.id, executor_config_signature(account)
+            state.connection_observer = state.connection_collector.observe_session
+            disconnect_resident_executor(state, close=_close_executor)
+        return WorkerBackendResponse(
+            request_id=request.request_id, kind="result", output_payload={"disconnected": True}
+        )
     return _handle_shutdown(request, state)
 
 
@@ -498,6 +514,19 @@ def _run_termination_control_loop(connection: Connection, state: _WorkerBackendS
         )
 
 
+def _bind_worker_session(state, binding, request) -> None:
+    """新 worker 继承持久化的主动断开意愿，旧实例不再参与当前状态。"""
+    from axile.server.connection_state import ConnectionCollector
+
+    if state.connection_collector.binding == binding:
+        return
+    state.connection_collector = ConnectionCollector(binding)
+    if binding and binding.manually_disconnected and not state.connection_attempted:
+        account = AccountSnapshot.model_validate(request.account_payload)
+        state.account_id, state.config_signature = account.id, executor_config_signature(account)
+        state.disconnected = state.connection_attempted = True
+
+
 def run_worker_backend_loop(
     connection: Connection,
     account_id: int,
@@ -515,8 +544,10 @@ def run_worker_backend_loop(
     account_id : int
         该 worker 绑定的账户标识。
     """
-    from axile.server.connection_state import ConnectionBinding, ConnectionCollector
+    from axile.server.connection_state import ConnectionBinding
+    from axile.server.core.log_config import setup_logging
 
+    setup_logging()
     state = _WorkerBackendState(account_id=account_id)
     if orders_connection is not None:
         from axile.server.execution.worker_backend.orders import serve_orders
@@ -562,12 +593,12 @@ def run_worker_backend_loop(
                     account_id=int(str(current_request.connection_binding["account_id"])),
                     config_key=str(current_request.connection_binding["config_key"]),
                     instance_id=str(current_request.connection_binding["instance_id"]),
+                    manually_disconnected=bool(current_request.connection_binding.get("manually_disconnected", False)),
                 )
                 if current_request.connection_binding
                 else None
             )
-            if state.connection_collector.binding != binding:
-                state.connection_collector = ConnectionCollector(binding)
+            _bind_worker_session(state, binding, current_request)
             state.request_active = True
             try:
                 response = _handle_worker_request(current_request, state)

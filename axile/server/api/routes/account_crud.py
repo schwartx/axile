@@ -610,6 +610,9 @@ async def delete_account(session: SessionDep, sched: SchedDep, account_id: int) 
         await session.close()
         delete_job(sched, account_id)
         await drop_account_worker(account_id)
+        from axile.server.connection_runtime import forget_session
+
+        forget_session(account_id)
     return Message(message="成功删除账户")
 
 
@@ -787,7 +790,10 @@ async def _update_account(
             validate_notification_function(str(next_notification_code))
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
-        runtime_changed = bool({"account_config", "trade_channel", "is_started"} & data.keys())
+        # 调度开关只改变后续触发；保留登录会话，避免停启或重复保存导致 SDK 重登录。
+        runtime_changed = any(
+            key in data and data[key] != getattr(db_account, key) for key in ("account_config", "trade_channel")
+        )
         from axile.server.execution.supplements import cancel_groups_in_session
 
         changed_schedule = any(
@@ -811,7 +817,7 @@ async def _update_account(
 
         from axile.server.connection_state import reset_connection_for_config
 
-        if "account_config" in data or "trade_channel" in data:
+        if runtime_changed:
             await reset_connection_for_config(session, db_account)
 
         session.add(db_account)

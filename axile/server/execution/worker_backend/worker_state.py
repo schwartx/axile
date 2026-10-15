@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from dataclasses import dataclass, field
 from functools import partial
@@ -28,12 +27,18 @@ from axile.server.execution.execution_account_control import (
     flush_account_control_records,
 )
 from axile.server.execution.factory import create_executor_instance, initialize_executor_instance
+from axile.server.execution.resident_connection import (
+    ResidentConnectionState,
+    ensure_resident_connection,
+    executor_config_signature,
+    resolve_resident_executor,
+)
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import WorkerTerminationSignal
 
 
-@dataclass(slots=True)
-class _WorkerBackendState:
+@dataclass
+class _WorkerBackendState(ResidentConnectionState):
     """保存多进程 worker 内可复用的执行器缓存.
 
     Notes
@@ -42,13 +47,9 @@ class _WorkerBackendState:
     或账户控制 guard。
     """
 
-    executor: object | None = None
     request_active: bool = False
-    resource_lock: threading.RLock = field(default_factory=threading.RLock)
     catalog_provider: RemoteCatalogProvider | None = None
     requires_worker_restart: bool = False
-    account_id: int | None = None
-    config_signature: str | None = None
     connection_collector: ConnectionCollector = field(default_factory=ConnectionCollector)
     termination_lock: threading.Lock = field(default_factory=threading.Lock)
     active_execution_id: str | None = None
@@ -164,7 +165,7 @@ def _config_signature(account: AccountSnapshot) -> str:
     str
         仅由账户配置字段决定的稳定签名。
     """
-    return json.dumps(account.account_config, sort_keys=True, ensure_ascii=False)
+    return executor_config_signature(account)
 
 
 def _resolve_executor(
@@ -189,39 +190,21 @@ def _resolve_executor(
     object
         复用或新建后的执行器实例。
     """
-    signature = _config_signature(account)
-    requires_exact_trading_day = account.trade_channel == TradeChannel.CTP
-    # worker 只在“账户相同且配置签名相同”时复用执行器，避免把旧连接状态带到新配置里。
-    if state.executor is not None and state.account_id == account.id and state.config_signature == signature:
-        verify = getattr(state.executor, "_verify_connection", None)
-        connected = not callable(verify) or bool(verify())
-        trading_day = str(getattr(state.executor, "_trading_day", "") or "")
-        if connected and (
-            not expected_trading_day or not requires_exact_trading_day or trading_day == expected_trading_day
-        ):
-            return state.executor
-
-    if state.executor is not None:
-        _close_state_executor(state)
-    state.executor = None
-    state.account_id = None
-    state.config_signature = None
-    # 只在宿主构造账户执行器时绑定；用户函数自行构造的其他执行器不能污染本账户。
-    with connection_observer_scope(state.connection_collector.observe):
-        state.executor = (
-            create_executor_instance(account) if initialize else create_executor_instance(account, initialize=False)
+    with state.resource_lock, connection_observer_scope(state.connection_collector.observe):
+        state.connection_observer = state.connection_collector.observe_session
+        executor = resolve_resident_executor(
+            state,
+            account,
+            create=lambda: create_executor_instance(account, initialize=initialize),
+            close=lambda _executor: _close_state_executor(state),
         )
-    state.account_id = account.id
-    state.config_signature = signature
-    if expected_trading_day and requires_exact_trading_day:
-        trading_day = str(getattr(state.executor, "_trading_day", "") or "")
-        if trading_day != expected_trading_day:
-            _close_state_executor(state)
-            state.executor = None
-            state.account_id = None
-            state.config_signature = None
-            raise RuntimeError(f"柜台交易日不匹配: expected={expected_trading_day}, actual={trading_day or 'unknown'}")
-    return state.executor
+        if expected_trading_day and account.trade_channel == TradeChannel.CTP:
+            trading_day = str(getattr(executor, "_trading_day", "") or "")
+            if trading_day != expected_trading_day:
+                raise RuntimeError(
+                    f"柜台交易日不匹配: expected={expected_trading_day}, actual={trading_day or 'unknown'}"
+                )
+        return executor
 
 
 def _prepare_executor(
@@ -281,25 +264,8 @@ def _resolve_prepared_executor(
     execution_id: str | None,
     audit_context: dict[str, object],
     termination_controller: ExecutionTerminationController | None = None,
-) -> object:
-    """序列化连接准备与人工委托操作，算法执行仍可并行查询。"""
-    with state.resource_lock:
-        return _resolve_prepared_executor_locked(
-            state=state,
-            account=account,
-            execution_id=execution_id,
-            audit_context=audit_context,
-            termination_controller=termination_controller,
-        )
-
-
-def _resolve_prepared_executor_locked(
-    *,
-    state: _WorkerBackendState,
-    account: AccountSnapshot,
-    execution_id: str | None,
-    audit_context: dict[str, object],
-    termination_controller: ExecutionTerminationController | None = None,
+    allow_recovery: bool = True,
+    force_reconnect: bool = False,
 ) -> object:
     """
     解析并准备本次请求要使用的执行器实例。
@@ -320,7 +286,38 @@ def _resolve_prepared_executor_locked(
     object
         已完成请求级准备的执行器实例。
     """
-    executor = _resolve_executor(state, account, initialize=False)
+
+    def prepare(executor: object) -> None:
+        _configure_executor_resources(state, account, executor)
+        _prepare_executor(
+            executor=executor,
+            account=account,
+            execution_id=execution_id,
+            audit_context=audit_context,
+            termination_controller=termination_controller,
+        )
+
+    def initialize(executor: object) -> None:
+        _initialize_worker_connection(state, executor)
+
+    with connection_observer_scope(state.connection_collector.observe):
+        state.connection_observer = state.connection_collector.observe_session
+        if state.connection_collector.needs_reconciliation:
+            state.connected_once = False
+        return ensure_resident_connection(
+            state,
+            account,
+            create=lambda: create_executor_instance(account, initialize=False),
+            close=lambda _executor: _close_state_executor(state),
+            initialize=initialize,
+            prepare=prepare,
+            allow_recovery=allow_recovery,
+            force=force_reconnect,
+        )
+
+
+def _configure_executor_resources(state: _WorkerBackendState, account: AccountSnapshot, executor: object) -> None:
+    """交易和人工查询共用目录资源；只绑定能力，不启动连接。"""
     if account.trade_channel == TradeChannel.CTP:
         from axile.server.execution.catalog_control import catalog_control_scope
 
@@ -329,42 +326,29 @@ def _resolve_prepared_executor_locked(
         set_instruments = getattr(executor, "set_instrument_catalog_provider", None)
         if callable(set_instruments):
             set_instruments(state.catalog_provider)
-    _prepare_executor(
-        executor=executor,
-        account=account,
-        execution_id=execution_id,
-        audit_context=audit_context,
-        termination_controller=termination_controller,
-    )
-    verify = getattr(executor, "_verify_connection", None)
-    if callable(verify) and not bool(verify()):
-        catalog = state.catalog_provider
-        set_catalog = getattr(executor, "set_instrument_catalog_provider", None)
-        if not callable(set_catalog):
-            catalog = None
-        end_attempted = False
-        try:
-            if catalog is not None:
-                catalog.begin()
-            initialize_executor_instance(cast(AbstractExecutor, executor))
-            if catalog is not None:
-                end_attempted = True
-                catalog.end()
-        except Exception:
-            if catalog is not None and not end_attempted:
-                try:
-                    catalog.end()
-                except Exception as notification_error:
-                    logger.opt(exception=notification_error).warning("初始化结束通知发送失败，保留原始异常")
+    monitor = getattr(executor, "_connection_monitor", None)
+    if monitor is not None:
+        monitor.bind(state.connection_collector.observe)
+
+
+def _initialize_worker_connection(state: _WorkerBackendState, executor: object) -> None:
+    """在已有账户控制上下文中初始化渠道，并保持目录 IPC 的开始/结束配对。"""
+    catalog = state.catalog_provider if callable(getattr(executor, "set_instrument_catalog_provider", None)) else None
+    end_attempted = False
+    try:
+        if catalog is not None:
+            catalog.begin()
+        initialize_executor_instance(cast(AbstractExecutor, executor))
+        if catalog is not None:
+            end_attempted = True
+            catalog.end()
+    except Exception:
+        if catalog is not None and not end_attempted:
             try:
-                _close_state_executor(state)
-            except Exception as cleanup_error:
-                logger.opt(exception=cleanup_error).warning("初始化失败后的执行器清理失败，保留原始异常")
-            state.executor = None
-            state.account_id = None
-            state.config_signature = None
-            raise
-    return executor
+                catalog.end()
+            except Exception as notification_error:
+                logger.opt(exception=notification_error).warning("初始化结束通知发送失败，保留原始异常")
+        raise
 
 
 def _finalize_executor(executor: object | None) -> None:
@@ -384,8 +368,12 @@ def _finalize_executor(executor: object | None) -> None:
     if executor is None:
         return
 
-    # flush 记录必须先于 clear runtime，否则 guard 上累积的事件会被直接丢掉。
-    asyncio.run(flush_account_control_records(executor))
+    # 先刷盘，再逐项解除绑定；刷盘或单个 setter 失败也必须清理其他请求状态。
+    error: Exception | None = None
+    try:
+        asyncio.run(flush_account_control_records(executor))
+    except Exception as exc:
+        error = exc
     request_bindings = (
         ("set_account_control_guard", None),
         ("set_termination_controller", None),
@@ -393,9 +381,17 @@ def _finalize_executor(executor: object | None) -> None:
         ("set_audit_context", {}),
     )
     for setter_name, value in request_bindings:
-        setter = getattr(executor, setter_name, None)
-        if callable(setter):
-            setter(value)
-    clear_execution_runtime = getattr(executor, "clear_execution_runtime", None)
-    if callable(clear_execution_runtime):
-        clear_execution_runtime()
+        try:
+            setter = getattr(executor, setter_name, None)
+            if callable(setter):
+                setter(value)
+        except Exception as exc:
+            error = error or exc
+    try:
+        clear_execution_runtime = getattr(executor, "clear_execution_runtime", None)
+        if callable(clear_execution_runtime):
+            clear_execution_runtime()
+    except Exception as exc:
+        error = error or exc
+    if error is not None:
+        raise error

@@ -1,15 +1,12 @@
 """执行生命周期与后台任务编排."""
 
 import asyncio
-import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import loguru
 
-from axile.channels import get_channel
 from axile.domain.execution import (
-    ExecutionArtifactType,
     ExecutionEventStatus,
     ExecutionEventType,
     ExecutionKind,
@@ -30,18 +27,6 @@ from axile.server.db.models import (
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.error_details import exception_details
 from axile.server.error_notifications import send_feishu_error
-from axile.server.execution.audit_sink import build_server_execution_audit_sink
-from axile.server.execution.execution_account_control import (
-    build_account_control_guard,
-    flush_account_control_records,
-)
-from axile.server.execution.execution_summaries import (
-    build_execution_outcome_details,
-    build_execution_summary_from_symbol_results,
-    build_symbol_reconciliation,
-    count_orders_from_symbol_results,
-)
-from axile.server.execution.factory import create_executor_instance, initialize_executor_instance
 from axile.server.execution.intents import (
     IntentNotRunnable,
     SubmitResult,
@@ -56,7 +41,6 @@ from axile.server.execution.registry import (
     ExecutionTaskState,
     clear_queued_execution,
     clear_running_execution,
-    create_termination_controller,
     execution_record_outcome,
     execution_record_output_error,
     execution_record_output_status,
@@ -64,8 +48,7 @@ from axile.server.execution.registry import (
     get_execution_task_state,
     update_execution_task_state,
 )
-from axile.server.execution.resources import close_executor
-from axile.server.execution_audit import append_execution_artifact, append_execution_event
+from axile.server.execution_audit import append_execution_event
 
 type ExecutionRunner = Callable[[str], Awaitable[ExecuteRecord | None]]
 
@@ -370,204 +353,6 @@ async def _record_terminated_execution(
     except TimeoutError:
         loguru.logger.warning(f"总超时告警发送超时，已放弃 execution_id={execution_id}")
     return record
-
-
-async def prepare_executor_runtime(
-    account: AccountContext,
-    *,
-    execution_id: str | None,
-    audit_context: dict[str, object],
-) -> object:
-    """
-    创建执行器并挂接审计、账户控制与终止控制.
-
-    Parameters
-    ----------
-    account : Account
-        当前执行对应的账户。
-    execution_id : str | None
-        当前 execution 标识；为空时仅挂接基础 runtime。
-    audit_context : dict[str, object]
-        传递给执行器的审计上下文。
-
-    Returns
-    -------
-    object
-        已完成 runtime 初始化的执行器实例。
-    """
-    if "initialize" in inspect.signature(create_executor_instance).parameters:
-        executor = create_executor_instance(account, initialize=False)
-    else:  # 兼容测试替身和旧版外部工厂
-        executor = create_executor_instance(account)
-    try:
-        executor.set_audit_context(audit_context)
-        executor.set_audit_sink(build_server_execution_audit_sink())
-        executor.set_account_control_guard(await build_account_control_guard(account, execution_id))
-
-        if execution_id:
-            execution_state = get_execution_task_state(execution_id)
-            if execution_state is not None and execution_state.cancel_event is not None:
-                executor.set_termination_controller(
-                    create_termination_controller(execution_id, execution_state.cancel_event)
-                )
-
-        plugin = get_channel(account.trade_channel)
-        if plugin.requires_pre_connect_guard and bool(getattr(executor, "_requires_connection_initialization", False)):
-            initialize_executor_instance(executor)
-
-        prepare_execution_runtime = getattr(executor, "prepare_execution_runtime", None)
-        if callable(prepare_execution_runtime):
-            prepare_execution_runtime()
-        return executor
-    except BaseException:
-        await cleanup_executor_runtime(executor)
-        raise
-
-
-async def cleanup_executor_runtime(executor: object | None) -> None:
-    """
-    回收执行器 runtime 并刷入账户控制记录.
-
-    Parameters
-    ----------
-    executor : object | None
-        需要清理的执行器实例；为空时直接返回。
-
-    Returns
-    -------
-    None
-        该函数仅负责资源回收，不返回结果。
-    """
-    if executor is None:
-        return
-
-    try:
-        await flush_account_control_records(executor)
-    except Exception:
-        loguru.logger.exception("一次性执行器账户控制记录刷入失败")
-    finally:
-        try:
-            clear_execution_runtime = getattr(executor, "clear_execution_runtime", None)
-            if callable(clear_execution_runtime):
-                clear_execution_runtime()
-        except Exception:
-            loguru.logger.exception("一次性执行器上下文清理失败")
-        finally:
-            await asyncio.to_thread(close_executor, executor)
-
-
-async def append_execution_result_artifacts(
-    execution_id: str,
-    result: dict[str, object],
-    before_account_assets: dict[str, object] | None = None,
-) -> None:
-    """
-    写入执行后账户快照与执行摘要附件.
-
-    Parameters
-    ----------
-    execution_id : str
-        当前 execution 标识。
-    result : dict[str, object]
-        执行结果的 JSON 化内容（含执行后 ``account_assets`` 与 ``symbol_results``）。
-    before_account_assets : dict[str, object] | None, optional
-        执行前账户快照的 JSON 化内容，用于逐只对账；``None`` 表示读取不可用。
-
-    Returns
-    -------
-    None
-        该函数仅负责附件落库，不返回结果。
-    """
-    await append_execution_artifact(
-        execution_id=execution_id,
-        artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
-        content={
-            "account_assets": result.get("account_assets", {}),
-            "orders_count": count_orders_from_symbol_results(result),
-        },
-    )
-    await append_execution_artifact(
-        execution_id=execution_id,
-        artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-        schema_version=2,
-        content={
-            **build_execution_outcome_details(result),
-            "summary": build_execution_summary_from_symbol_results(result),
-            "success": result.get("success", True),
-            "execution_time": result.get("execution_time"),
-            "reconciliation": build_symbol_reconciliation(result, before_account_assets),
-        },
-    )
-
-
-def build_rebalance_completed_details(
-    *,
-    record: ExecuteRecord,
-    output_success: bool,
-    output_status: str,
-    result: dict[str, object],
-) -> dict[str, object]:
-    """
-    构造调仓完成事件的详情内容.
-
-    Parameters
-    ----------
-    record : ExecuteRecord
-        已持久化的执行记录。
-    output_success : bool
-        执行器返回的成功标记。
-    output_status : str
-        执行器返回的状态值。
-    result : dict[str, object]
-        执行结果的 JSON 化内容。
-
-    Returns
-    -------
-    dict[str, object]
-        可直接写入 execution event 的详情字段。
-    """
-    return {
-        "debug": {
-            "record_id": record.id,
-            "success": output_success,
-            "execution_status": output_status,
-        },
-        "order": {
-            "orders_count": count_orders_from_symbol_results(result),
-        },
-    }
-
-
-def build_clear_positions_completed_details(
-    *,
-    record: ExecuteRecord,
-    output_success: bool,
-    output_status: str,
-) -> dict[str, object]:
-    """
-    构造清仓完成事件的详情内容.
-
-    Parameters
-    ----------
-    record : ExecuteRecord
-        已持久化的执行记录。
-    output_success : bool
-        执行器返回的成功标记。
-    output_status : str
-        执行器返回的状态值。
-
-    Returns
-    -------
-    dict[str, object]
-        可直接写入 execution event 的详情字段。
-    """
-    return {
-        "debug": {
-            "record_id": record.id,
-            "success": output_success,
-            "execution_status": output_status,
-        }
-    }
 
 
 async def mark_inline_execution_succeeded(execution_id: str, record: ExecuteRecord) -> None:

@@ -414,7 +414,11 @@ class GMStrategyBridge:
 
     def is_running(self) -> bool:
         """检查是否正在运行."""
-        return self._running
+        return self._running and self._thread is not None and self._thread.is_alive()
+
+    def is_ready(self) -> bool:
+        """读取交易账户就绪门；不会调用 SDK 或启动恢复。"""
+        return self.is_running() and self._ready_event.is_set() and self._startup_error is None
 
     def get_stats(self) -> dict[str, int]:
         """获取统计信息."""

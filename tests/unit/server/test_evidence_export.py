@@ -54,7 +54,6 @@ from axile.server.evidence.models import (
     ExportBudget,
 )
 from axile.server.evidence.privacy import EvidenceRedactor
-from axile.server.execution import backend as execution_backend
 from axile.server.execution.worker_backend import worker_audit
 
 
@@ -674,22 +673,22 @@ def test_core_read_failure_does_not_return_success_zip(database, monkeypatch):
     assert client.get("/account/executions/exec-1/evidence").status_code == 500
 
 
-def test_thread_backend_freezes_environment_and_metadata_failure_is_nonfatal(monkeypatch):
+def test_worker_freezes_environment_and_metadata_failure_is_nonfatal(monkeypatch):
     calls = []
 
-    async def artifact(**kwargs):
+    def artifact(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", artifact)
-    monkeypatch.setattr(execution_backend, "execution_environment", lambda *args: {"axile_version": "frozen-inline"})
-    asyncio.run(execution_backend._append_environment_snapshot("inline", object(), "ctp", "SINGLE-MAKER"))
-    assert calls[0]["content"]["axile_version"] == "frozen-inline"
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", artifact)
+    monkeypatch.setattr(worker_audit, "execution_environment", lambda *args: {"axile_version": "frozen-worker"})
+    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
+    assert calls[0]["content"]["axile_version"] == "frozen-worker"
 
     def fail(*args):
         raise RuntimeError("metadata unavailable")
 
-    monkeypatch.setattr(execution_backend, "execution_environment", fail)
-    asyncio.run(execution_backend._append_environment_snapshot("inline", object(), "ctp", "SINGLE-MAKER"))
+    monkeypatch.setattr(worker_audit, "execution_environment", fail)
+    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
     assert len(calls) == 1
 
 

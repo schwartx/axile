@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pandas as pd
@@ -106,6 +107,7 @@ def _isolated_registry(monkeypatch: pytest.MonkeyPatch):
 def test_builtin_channels_have_stable_order_and_descriptor_shape() -> None:
     plugins = list_channels()
 
+    assert all(plugin.execution_backend == "process" for plugin in plugins)
     assert [plugin.descriptor.channel for plugin in plugins] == ["ctp", "gm", "tq"]
     assert [plugin.descriptor.schedule.kind for plugin in plugins] == ["cn_futures", "cn_stock", "cn_futures"]
     assert plugins[0].descriptor.schedule.night == plugins[2].descriptor.schedule.night
@@ -134,6 +136,13 @@ def test_builtin_channels_have_stable_order_and_descriptor_shape() -> None:
         "china",
         "china",
     ]
+
+
+def test_plugins_default_to_process_and_reject_removed_thread_backend() -> None:
+    plugin = _plugin()
+    assert ChannelPlugin.__dataclass_fields__["execution_backend"].default == "process"
+    with pytest.raises(ValueError, match="仅支持 process"):
+        replace(plugin, execution_backend="thread")  # type: ignore[arg-type]
 
 
 def test_entry_point_is_loaded_once_and_appended_after_builtins(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -227,6 +227,7 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
         if context.connection_monitor is not None:
             context.connection_monitor.succeeded()
         if context.strategy_initialized:
+            context.account_was_ready = True
             context.ready_event.set()
             _update_startup_phase("ready_signaled", account_state=state)
     elif state in {AccConnectionState.DISCONNECTING, AccConnectionState.DISCONNECTED, AccConnectionState.ERROR}:
@@ -274,6 +275,8 @@ def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
                     steps=("核对账户 ID 与当前连接的 GM 服务是否对应。", "确认当前用户有权访问该交易账户。"),
                 )
             raise error
+        if context.account_was_ready and status.get("state") != AccConnectionState.LOGGEDIN:
+            return False
         _apply_account_startup_status(context, status)
     except Exception as error:
         if context.connection_monitor is not None and getattr(error, "status", None) == 1000:
@@ -386,7 +389,11 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
     if getattr(context, "startup_failed", False):
         return
     status = account.get("status") or {}
-    if getattr(context, "strategy_initialized", False) and not context.ready_event.is_set():
+    if (
+        getattr(context, "strategy_initialized", False)
+        and not context.ready_event.is_set()
+        and not context.account_was_ready
+    ):
         try:
             _apply_account_startup_status(context, status)
         except Exception as error:
@@ -394,8 +401,13 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
         return
     state = status.get("state")
     if state == AccConnectionState.LOGGEDIN:
+        if context.strategy_initialized:
+            context.ready_event.set()
         context.connection_monitor.succeeded()
     elif state in {AccConnectionState.ERROR, AccConnectionState.DISCONNECTED}:
+        if context.ready_event.is_set():
+            context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
+        context.ready_event.clear()
         report_account_status(
             context.connection_monitor, RuntimeError(f"账户连接异常: {status}"), context.account_id, status
         )
@@ -417,6 +429,9 @@ def on_trade_data_connected(_context: Context) -> None:
         return
     _update_startup_phase("trade_connected")
     _emit_runtime_log("info", "交易通道已连接")
+    context = _get_bridge_context()
+    if context is not None and context.account_was_ready:
+        context.account_checked = False
 
 
 def on_trade_data_disconnected(_context: Context) -> None:
@@ -426,6 +441,9 @@ def on_trade_data_disconnected(_context: Context) -> None:
     _emit_runtime_log("warning", "交易通道已断开")
     context = _get_bridge_context()
     if context is not None and context.connection_monitor is not None:
+        if context.ready_event.is_set():
+            context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
+        context.ready_event.clear()
         report_gm_failure(
             context.connection_monitor,
             ConnectionError("交易通道已断开"),

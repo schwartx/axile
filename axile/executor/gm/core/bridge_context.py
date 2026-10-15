@@ -64,6 +64,7 @@ class GMStrategyRuntimeContext:
     account_id: str = ""
     connection_monitor: ConnectionMonitor | None = None
     strategy_initialized: bool = False
+    account_was_ready: bool = False
     account_checked: bool = False
     startup_failed: bool = False
     startup_failure_handler: Callable[[Exception], None] | None = None

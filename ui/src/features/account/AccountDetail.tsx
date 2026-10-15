@@ -394,7 +394,7 @@ export function AccountDetail({
   )
 
   return (
-    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && connection?.status === 'error' }}><section>
+    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (connection?.status === 'unavailable') }}><section>
       <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />

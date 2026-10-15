@@ -19,6 +19,7 @@ WorkerBackendCommand = Literal[
     "calculate_portfolio",
     "execute_trade",
     "empty_positions",
+    "disconnect",
     "shutdown",
 ]
 WorkerBackendResponseKind = Literal["result", "error", "terminated"]
@@ -54,6 +55,9 @@ class WorkerBackendErrorPayload:
     technical_detail: str | None = None
     traceback: str | None = None
     error_scope: str | None = None
+    diagnostics: list[dict[str, object]] = field(default_factory=list)
+    exception_type: str | None = None
+    retry_after: int = 0
 
 
 @dataclass(slots=True)

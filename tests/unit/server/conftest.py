@@ -33,3 +33,12 @@ def _ensure_database_schema() -> Iterator[None]:
 
     asyncio.run(_create())
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_connection_runtime():
+    from axile.server.connection_runtime import clear_sessions
+
+    clear_sessions()
+    yield
+    clear_sessions()

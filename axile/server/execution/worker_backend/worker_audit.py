@@ -316,6 +316,10 @@ def _append_failed_audit(
         reason_code="COMMON.EXECUTION_FAILED",
         seq=0 if executor is None else _event_seq(executor),
         details={
+            "error": error.message,
+            "error_type": error.exception_type or error.type,
+            "diagnostics": error.diagnostics,
+            "retry_after": error.retry_after,
             "reason_code": error.reason_code,
             "error_id": error.error_id,
             "technical_detail": getattr(error, "technical_detail", None),

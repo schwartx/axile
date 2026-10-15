@@ -160,11 +160,25 @@ export interface AccountRuntimeSync {
   synchronized_at: string | null
 }
 
+export interface AccountConnectionFailure {
+  observed_at: string
+  message?: string | null
+  label?: string | null
+  error?: Record<string, unknown> | null
+  presentation?: ConnectionPresentation | null
+}
+
 export interface AccountConnection {
-  status: 'unknown' | 'ok' | 'error'
+  status: 'uninitialized' | 'unknown' | 'ready' | 'unavailable' | 'connecting' | 'recovering' | 'disconnected'
   observed_at: string | null
   message: string | null
   label?: string | null
+  worker_alive?: boolean
+  sampled_at?: string | null
+  last_success_at?: string | null
+  last_failure_at?: string | null
+  manually_disconnected?: boolean
+  retry_after_seconds?: number
 }
 
 export interface ConnectionPresentation {
@@ -175,6 +189,7 @@ export interface ConnectionPresentation {
 }
 
 export interface AccountConnectionDetail extends AccountConnection {
+  last_failure?: AccountConnectionFailure | null
   error: Record<string, unknown> | null
   presentation?: ConnectionPresentation | null
 }

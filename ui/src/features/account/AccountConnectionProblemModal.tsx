@@ -7,6 +7,7 @@ import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
 import { useErrorPresentation } from '@/lib/errorPresentation'
 import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
+import { AccountConnectionActions } from '@/features/account/AccountConnectionActions'
 
 export type ConnectionSelection = { accountId: number; requestId: number } & (
   { kind: 'loading' } | { kind: 'detail'; detail: AccountConnectionDetail } | { kind: 'failure'; info: ErrorInfo; error?: unknown }
@@ -27,7 +28,9 @@ function TechnicalDetails({ children }: { children: ReactNode }) {
 }
 
 /** 只展示本次读取快照；渠道提供内容，公共 UI 只解析通用导航意图。 */
-export function AccountConnectionProblemModal({ selection, onClose }: { selection: ConnectionSelection | null; onClose: () => void }) {
+export function AccountConnectionProblemModal({ selection, onClose, onChanged }: {
+  selection: ConnectionSelection | null; onClose: () => void; onChanged?: (detail: AccountConnectionDetail) => void
+}) {
   const failure = useErrorPresentation(selection?.kind === 'failure' ? selection.error ?? new Error(selection.info.message) : null)
   const view = selection?.kind === 'detail' ? connectionProblem(selection.accountId, selection.detail) : null
   const title = selection?.kind === 'failure' ? failure.local ? '连接详情读取失败' : '账户连接详情' : view?.title ?? '账户连接详情'
@@ -60,7 +63,15 @@ export function AccountConnectionProblemModal({ selection, onClose }: { selectio
         {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.map((action, i) =>
           <Link key={i} to={`/accounts/${selection!.accountId}/edit/connection`} onClick={onClose}
             className="rounded-lg border border-line px-3 py-2 text-accent focus-visible:outline-2 focus-visible:outline-accent">{action.label}</Link>)}</div>}
+        {view.history && <section className="space-y-2 border-t border-line pt-4">
+          <h3 className="font-medium text-ink-2">最近连接失败（历史）</h3>
+          <p className="text-ink-3">这条记录保留用于排查，不代表当前会话仍在故障。</p>
+          <p>{view.history.observed_at.replace('T', ' ')}</p>
+          <p className="whitespace-pre-wrap">{view.history.message}</p>
+          {view.history.technicalInfo && <TechnicalDetails><ConnectionTechnicalContent info={view.history.technicalInfo} /></TechnicalDetails>}
+        </section>}
         {view.technicalInfo && <TechnicalDetails key={selection!.requestId}><ConnectionTechnicalContent info={view.technicalInfo} /></TechnicalDetails>}
+        {selection?.kind === 'detail' && <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail} onChanged={onChanged} />}
       </>}
     </div>
   </CenteredModal>

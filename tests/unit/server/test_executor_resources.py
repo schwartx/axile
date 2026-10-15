@@ -1,4 +1,4 @@
-"""一次性执行器最终关闭、取消及失败清理回归。"""
+"""账户 worker 的请求清理和最终连接释放。"""
 
 import asyncio
 from types import SimpleNamespace
@@ -6,12 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from axile.server import account_assets
-from axile.server.execution import lifecycle
 from axile.server.execution.resources import close_executor
+from axile.server.execution.worker_backend import worker, worker_state
+from axile.server.execution.worker_backend.manager import WorkerBackendTimeoutError
+from tests.unit.server._execution_test_support import build_account
 
 
-@pytest.mark.parametrize("failure", [None, "flush", "clear", "close"])
-def test_cleanup_always_closes_after_flushing_and_clearing(monkeypatch, failure):
+@pytest.mark.parametrize("failure", [None, "flush", "guard", "runtime"])
+def test_worker_finalization_clears_all_request_bindings_and_retains_connection(monkeypatch, failure):
     calls = []
 
     def action(name):
@@ -22,114 +24,78 @@ def test_cleanup_always_closes_after_flushing_and_clearing(monkeypatch, failure)
     async def flush(executor):
         action("flush")
 
-    executor = SimpleNamespace(clear_execution_runtime=lambda: action("clear"), stop=lambda: action("close"))
-    monkeypatch.setattr(lifecycle, "flush_account_control_records", flush)
-    asyncio.run(lifecycle.cleanup_executor_runtime(executor))
-    assert calls == ["flush", "clear", "close"]
+    executor = SimpleNamespace(
+        set_account_control_guard=lambda value: action("guard"),
+        set_termination_controller=lambda value: action("termination"),
+        set_audit_sink=lambda value: action("sink"),
+        set_audit_context=lambda value: action("context"),
+        clear_execution_runtime=lambda: action("runtime"),
+        stop=lambda: pytest.fail("请求收尾不能关闭常驻连接"),
+    )
+    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
+    if failure:
+        with pytest.raises(RuntimeError, match=failure):
+            worker_state._finalize_executor(executor)
+    else:
+        worker_state._finalize_executor(executor)
+    assert calls == ["flush", "guard", "termination", "sink", "context", "runtime"]
 
 
-@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
-def test_final_cleanup_preserves_original_execution_outcome(monkeypatch, outcome):
-    original = asyncio.CancelledError() if outcome == "cancel" else RuntimeError("execution failed")
-    released = []
+def test_failed_request_cleanup_retires_worker_without_masking_result(monkeypatch):
+    state = worker_state._WorkerBackendState(executor=object())
 
-    def stop():
-        released.append(True)
-        raise RuntimeError("cleanup failed")
-
-    async def flush(executor):
+    def fail(executor):
         raise RuntimeError("flush failed")
 
-    monkeypatch.setattr(lifecycle, "flush_account_control_records", flush)
-    executor = SimpleNamespace(stop=stop)
-
-    async def run():
-        try:
-            if outcome != "success":
-                raise original
-            return "result"
-        finally:
-            await lifecycle.cleanup_executor_runtime(executor)
-
-    if outcome == "success":
-        assert asyncio.run(run()) == "result"
-    else:
-        with pytest.raises(type(original)) as caught:
-            asyncio.run(run())
-        assert caught.value is original
-    assert released == [True]
+    monkeypatch.setattr(worker, "_finalize_executor", fail)
+    worker._finalize_with_orders(None, state)
+    assert state.requires_worker_restart
 
 
-@pytest.mark.parametrize("stage", ["guard", "initialize", "runtime", "cancel"])
-def test_prepare_failure_releases_executor_without_masking_cause(monkeypatch, stage):
-    original = asyncio.CancelledError() if stage == "cancel" else RuntimeError(stage)
+def test_worker_closes_transport_when_finalization_fails(monkeypatch):
     calls = []
 
-    def fail():
-        raise original
+    def fail(executor):
+        calls.append("finalize")
+        raise RuntimeError("flush failed")
 
-    async def guard(*args):
-        if stage == "guard":
-            fail()
-        return None
-
-    async def flush(executor):
-        calls.append("flush")
-
-    def close():
-        calls.append("close")
-        raise RuntimeError("close failed")
-
-    executor = SimpleNamespace(
-        set_audit_context=lambda value: None,
-        set_audit_sink=lambda value: None,
-        set_account_control_guard=lambda value: None,
-        stop=close,
-        _requires_connection_initialization=True,
-        prepare_execution_runtime=fail if stage in {"runtime", "cancel"} else lambda: None,
-        clear_execution_runtime=lambda: calls.append("clear"),
-    )
-    monkeypatch.setattr(lifecycle, "create_executor_instance", lambda account, initialize: executor)
-    monkeypatch.setattr(lifecycle, "get_channel", lambda channel: SimpleNamespace(requires_pre_connect_guard=True))
-    monkeypatch.setattr(
-        lifecycle, "initialize_executor_instance", lambda executor: fail() if stage == "initialize" else None
-    )
-    monkeypatch.setattr(lifecycle, "build_server_execution_audit_sink", lambda: None)
-    monkeypatch.setattr(lifecycle, "build_account_control_guard", guard)
-    monkeypatch.setattr(lifecycle, "flush_account_control_records", flush)
-    with pytest.raises(type(original)) as caught:
-        asyncio.run(
-            lifecycle.prepare_executor_runtime(
-                SimpleNamespace(trade_channel="demo"), execution_id=None, audit_context={}
-            )
-        )
-    assert caught.value is original
-    assert calls == ["flush", "clear", "close"]
+    monkeypatch.setattr(worker_state, "_finalize_executor", fail)
+    executor = SimpleNamespace(stop=lambda: calls.append("stop"))
+    with pytest.raises(RuntimeError, match="flush failed"):
+        worker_state._close_executor(executor)
+    assert calls == ["finalize", "stop"]
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_asset_query_releases_transport_and_preserves_result_or_error(monkeypatch, failure):
-    calls = []
+def test_asset_query_uses_worker_without_releasing_session(monkeypatch, failure):
     original = RuntimeError("asset query failed")
+    calls = []
 
-    def query():
-        if failure:
-            raise original
-        return "assets"
+    class Manager:
+        async def get_account_assets(self, account):
+            calls.append(account.id)
+            if failure:
+                raise original
+            return "assets"
 
-    def stop():
-        calls.append("close")
-        raise RuntimeError("close failed")
-
-    executor = SimpleNamespace(get_account_assets=query, stop=stop)
-    monkeypatch.setattr(account_assets, "create_executor_instance", lambda account: executor)
+    monkeypatch.setattr(account_assets, "get_worker_backend_manager", Manager)
     if failure:
         with pytest.raises(RuntimeError) as caught:
-            account_assets._query_inline_account_assets(SimpleNamespace())
+            asyncio.run(account_assets.query_account_assets(build_account(id=7)))
         assert caught.value is original
     else:
-        assert account_assets._query_inline_account_assets(SimpleNamespace()) == "assets"
-    assert calls == ["close"]
+        assert asyncio.run(account_assets.query_account_assets(build_account(id=7))) == "assets"
+    assert calls == [7]
+
+
+def test_asset_timeout_preserves_public_error(monkeypatch):
+    class Manager:
+        async def get_account_assets(self, account):
+            raise WorkerBackendTimeoutError("worker timeout")
+
+    monkeypatch.setattr(account_assets, "get_worker_backend_manager", Manager)
+    with pytest.raises(TimeoutError, match="账户资产查询超时"):
+        asyncio.run(account_assets.query_account_assets(build_account()))
 
 
 def test_close_falls_back_to_close_when_stop_is_unavailable():

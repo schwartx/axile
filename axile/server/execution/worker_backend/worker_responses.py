@@ -17,6 +17,7 @@ from axile.executor.connection_state import connection_error_scope
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models.account import AccountContext
+from axile.server.error_details import json_error_value
 from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
     WorkerBackendRequest,
@@ -61,6 +62,9 @@ def _build_error_payload(exc: Exception) -> WorkerBackendErrorPayload:
         error_id=getattr(exc, "error_id", None),
         retryable=isinstance(exc, TimeoutError) or bool(getattr(exc, "requires_session_recovery", False)),
         error_scope=connection_error_scope(exc),
+        diagnostics=json_error_value(getattr(exc, "diagnostics", []) or []),
+        exception_type=type(exc).__name__,
+        retry_after=getattr(exc, "retry_after", 0),
     )
 
 

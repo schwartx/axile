@@ -9,6 +9,7 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.models.execution_result import ExecutionStatus
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
 from axile.server.execution.worker_backend import manager as worker_manager_module
 from axile.server.execution.worker_backend.manager import (
@@ -260,6 +261,44 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     assert normalized is None
     assert output.success is False
     assert output.extra["worker_error"]["type"] == "ctp_session_recovery_required"
+
+
+def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清仓结束后保留登录会话，供当前委托查询及后续执行复用。"""
+    manager = WorkerBackendManager()
+    account = build_account(id=2, trade_channel=TradeChannel.GM, is_started=False)
+    dropped = []
+
+    async def prepare(*_args, **_kwargs):
+        return {"ready": True}
+
+    async def to_thread(_func, *args):
+        request = args[1]
+        return WorkerBackendResponse(
+            request_id=request.request_id,
+            kind="result",
+            output_payload={
+                "success": True,
+                "status": "SUCCEEDED",
+                "channel_type": "gm",
+                "account_assets": UnifiedAccountAssets.unavailable().model_dump(mode="json"),
+                "symbol_results": {},
+            },
+        )
+
+    async def drop(account_id):
+        dropped.append(account_id)
+
+    monkeypatch.setattr(manager, "prepare_account", prepare)
+    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+    monkeypatch.setattr(manager, "drop_account", drop)
+
+    output = asyncio.run(
+        manager.empty_positions(account=account, empty_kwargs={}, audit_input={}, execution_id="clear")
+    )
+
+    assert output.success
+    assert dropped == []
 
 
 def test_empty_positions_drops_ctp_worker_after_session_recovery(monkeypatch: pytest.MonkeyPatch) -> None:

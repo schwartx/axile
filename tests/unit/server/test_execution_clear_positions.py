@@ -13,10 +13,11 @@ from axile.server.execution import backend as execution_backend
 from axile.server.execution import clear_positions as clear_positions_execution
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import lifecycle as execution_lifecycle
-from axile.server.execution.dispatch import ExecutionBackendKind
+from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
     FakeExecutor,
     FakeWorkerBackendManager,
+    WorkerCommandHarness,
     build_account,
     noop_account_control_guard,
     noop_append_execution_artifact,
@@ -25,22 +26,19 @@ from tests.unit.server._execution_test_support import (
 
 
 @pytest.fixture(autouse=True)
-def _keep_inline_scenarios_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """本文件测试编排；仅显式 GM 场景走独立 worker 测试桩。"""
-    monkeypatch.setattr(
-        execution_backend,
-        "resolve_execution_backend_kind",
-        lambda channel: ExecutionBackendKind.PROCESS if channel == TradeChannel.GM else ExecutionBackendKind.THREAD,
-    )
+def _worker_commands(monkeypatch):
+    """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
+    manager = WorkerCommandHarness()
+    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
 
-    # 本文件直调 __empty_positions，没有对应 intent 记录；promote 走空实现。
-    async def _noop_promote(execution_id: str, account_id: int) -> None:
-        _ = execution_id, account_id
+    async def flush(executor):
+        pass
 
-    monkeypatch.setattr(
-        "axile.server.execution.intents.promote_intent_to_running",
-        _noop_promote,
-    )
+    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
+    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
 
 
 @pytest.fixture(autouse=True)
@@ -76,8 +74,8 @@ def test_empty_positions_uses_default_algorithm_when_not_provided(
         captured["result"] = result
         return SimpleNamespace(id=102, is_success=1), result
 
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", noop_account_control_guard)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account))
@@ -130,8 +128,8 @@ def test_empty_positions_uses_account_level_algorithm_when_present(
             cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", noop_account_control_guard)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account))
@@ -183,9 +181,9 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
         raise AssertionError("GM worker 路径不应在主进程写 execution artifact")
 
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", unexpected_create_executor_instance)
+    monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", unexpected_append_execution_artifact)
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", unexpected_append_execution_artifact)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-gm-worker-empty-1"))
@@ -202,10 +200,10 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
     assert result["memory"]["ts"] == "2026-03-11T21:20:13"
 
 
-def test_empty_positions_routes_ctp_account_to_worker_manager_when_policy_is_process(
+def test_empty_positions_routes_ctp_account_to_worker_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """清仓路径也应按统一策略选择后端，而不是写死 GM。"""
+    """CTP 清仓通过常驻 worker 执行。"""
     account = build_account()
     manager = FakeWorkerBackendManager()
     captured: dict[str, object] = {}
@@ -226,13 +224,8 @@ def test_empty_positions_routes_ctp_account_to_worker_manager_when_policy_is_pro
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("PROCESS 策略下不应走线程执行器")
 
-    monkeypatch.setattr(
-        execution_backend,
-        "resolve_execution_backend_kind",
-        lambda _channel: ExecutionBackendKind.PROCESS,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", unexpected_create_executor_instance)
+    monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-ctp-worker-empty-1"))
@@ -264,11 +257,6 @@ def test_empty_positions_wraps_worker_failure_with_error_record(
         captured_error_record.update(kwargs)
         return SimpleNamespace(id=406, is_success=0)
 
-    monkeypatch.setattr(
-        execution_backend,
-        "resolve_execution_backend_kind",
-        lambda _channel: ExecutionBackendKind.PROCESS,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: FailingWorkerBackendManager())
     monkeypatch.setattr(execution_backend, "append_execution_event", fake_append_execution_event)
     monkeypatch.setattr(execution_backend, "append_error_execute_record", fake_append_error_execute_record)
@@ -316,8 +304,8 @@ def test_empty_positions_uses_custom_algorithm_when_provided(
             cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", noop_account_control_guard)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     asyncio.run(
@@ -365,12 +353,15 @@ def test_empty_positions_binds_account_control_guard(
         captured["execution_id"] = execution_id
         return fake_guard
 
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", fake_build_account_control_guard)
-    monkeypatch.setattr(execution_backend, "append_execution_event", noop_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", noop_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", noop_append_execution_artifact)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", fake_build_account_control_guard)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
+    )
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-bind-1"))
 
@@ -379,7 +370,8 @@ def test_empty_positions_binds_account_control_guard(
         "channel": TradeChannel.CTP,
         "execution_id": "exec-empty-bind-1",
     }
-    assert fake_executor.account_control_guard is fake_guard
+    assert fake_executor.executed_guard is fake_guard
+    assert fake_executor.account_control_guard is None
 
 
 def test_empty_positions_lock_acquired_reuses_tracked_execution(
@@ -441,7 +433,6 @@ def test_empty_positions_captures_before_account_snapshot(
     account = build_account()
     fake_executor = FakeExecutor()
     artifacts: list[dict[str, object]] = []
-    captured: dict[str, object] = {}
 
     async def fake_append_output_record(
         *,
@@ -461,20 +452,15 @@ def test_empty_positions_captures_before_account_snapshot(
         artifacts.append(kwargs)
         return True
 
-    async def capture_result_artifacts(
-        execution_id: str,
-        result: dict[str, object],
-        before_account_assets: dict[str, object] | None = None,
-    ) -> None:
-        _ = execution_id, result
-        captured["before"] = before_account_assets
-
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", noop_account_control_guard)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-    monkeypatch.setattr(execution_backend, "append_execution_event", noop_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", capture_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_result_artifacts", capture_result_artifacts)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(capture_artifact(**kw))
+    )
 
     asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-before-1"))
 
@@ -484,6 +470,6 @@ def test_empty_positions_captures_before_account_snapshot(
     assert content["source"] == "real"
     assert cast("dict[str, object]", content["account_assets"])["total_asset"] == 1000.0
     # 前基线确实穿进对账，source_before 不再恒为 unavailable
-    before = cast("dict[str, object]", captured["before"])
-    assert before["source"] == "real"
-    assert before["total_asset"] == 1000.0
+    summary = next(a["content"] for a in artifacts if a["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY)
+    assert summary["reconciliation"]["account"]["source_before"] == "real"
+    assert summary["reconciliation"]["account"]["equity_before"] == 1000.0

@@ -5,12 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.account_control import providers
+
+if TYPE_CHECKING:
+    from axile.server.connection_state import ConnectionBinding
 
 _remotes: dict[int, RemoteMonitor] = {}
 _lock = Lock()
@@ -47,6 +50,7 @@ class RemoteMonitor:
         self.frame: dict[str, Any] | None = None
         self.sampled_at_ms = 0
         self.failed = False
+        self.connection_binding: ConnectionBinding | None = None
         self.thread = Thread(target=self._run, name=f"flow-monitor-{account_id}", daemon=True)
         with _lock:
             _remotes[account_id] = self
@@ -71,6 +75,10 @@ class RemoteMonitor:
                 self.stop.wait(1)
         except (EOFError, OSError):
             self.failed = True
+            from axile.server.connection_state import end_connection_instance
+
+            if self.process_alive is not None and not self.process_alive():
+                end_connection_instance(self.connection_binding, "执行器已退出，当前会话已结束")
         finally:
             self.connection.close()
 

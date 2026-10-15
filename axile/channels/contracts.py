@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
 
 type ChannelId = str
-type ExecutionBackend = Literal["thread", "process"]
+type ExecutionBackend = Literal["process"]
 type ScheduleKind = Literal["continuous", "cn_stock", "cn_futures"]
 
 
@@ -440,7 +440,7 @@ class ChannelPlugin:
     account_config_model: type[BaseAccountConfig]
     create_executor: ExecutorFactory
     target_transform: TargetTransform
-    execution_backend: ExecutionBackend = "thread"
+    execution_backend: ExecutionBackend = "process"
     required_modules: tuple[str, ...] = ()
     install_extra: str | None = None
     max_parallel_symbols: int | None = 1
@@ -452,6 +452,8 @@ class ChannelPlugin:
 
     def __post_init__(self) -> None:
         """校验插件运行时契约中的基本不变量."""
+        if self.execution_backend != "process":
+            raise ValueError("执行后端仅支持 process")
         if (self.validate_connection is None) != (self.descriptor.connection_validation is None):
             raise ValueError("连接验证描述与验证器必须同时声明")
         if not issubclass(self.account_config_model, BaseAccountConfig):

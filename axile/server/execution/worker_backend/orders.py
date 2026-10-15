@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from multiprocessing.connection import Connection
 from threading import Lock
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
-from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.connection_state import connection_observer_scope
 from axile.server.account_control import providers
 from axile.server.account_orders_runtime import order_control_scope, run_order_command
 from axile.server.db.models.account import AccountSnapshot
-from axile.server.execution.factory import initialize_executor_instance
+from axile.server.execution.resident_connection import (
+    AccountConnectionUnavailable,
+    ensure_resident_connection,
+    reconcile_resident_executor,
+)
 
 
 class OrdersChannel:
@@ -33,7 +37,10 @@ class OrdersChannel:
             self.connection.send({**payload, "request_id": self.pending})
             response = self._receive(timeout)
             if response.get("error"):
-                raise RuntimeError(response["error"])
+                failure = response["error"]
+                if isinstance(failure, dict):
+                    raise AccountConnectionUnavailable(failure["message"], retry_after=failure.get("retry_after", 0))
+                raise RuntimeError(failure)
             return response["result"]
         finally:
             self.lock.release()
@@ -55,7 +62,7 @@ class OrdersChannel:
 
 def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     from axile.server.connection_state import ConnectionBinding, ConnectionCollector
-    from axile.server.execution.worker_backend.worker_state import _config_signature, _resolve_executor
+    from axile.server.execution.worker_backend import worker_state
 
     account = AccountSnapshot.model_validate(payload["account"])
     assert account.id is not None
@@ -63,20 +70,45 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
     with state.resource_lock:
         busy = state.request_active or state.active_execution_id is not None
         if busy:
-            if state.executor is None or state.config_signature != _config_signature(account):
+            if state.executor is None or state.config_signature != worker_state._config_signature(account):
                 raise RuntimeError("账户连接正在准备或配置已变化，请稍后刷新")
         binding = ConnectionBinding(**payload["connection_binding"]) if payload.get("connection_binding") else None
         if binding is not None and state.connection_collector.binding != binding:
             state.connection_collector = ConnectionCollector(binding)
+            if binding.manually_disconnected and not state.connection_attempted:
+                state.account_id, state.config_signature = account.id, worker_state._config_signature(account)
+                state.disconnected = state.connection_attempted = True
+        guard = providers.active_guard(account.id)
+
+        def initialize(executor):
+            with order_control_scope(executor, account, guard):
+                worker_state._initialize_worker_connection(state, executor)
+
+        def reconcile(executor):
+            with order_control_scope(executor, account, guard):
+                reconcile_resident_executor(executor)
+
         if busy:
             executor = state.executor
-        else:
-            executor = _resolve_executor(state, account, initialize=False)
-        guard = providers.active_guard(account.id)
-        with order_control_scope(executor, account, guard, command=payload["command"]):
             verify = getattr(executor, "_verify_connection", None)
-            if getattr(executor, "_requires_connection_initialization", False) or (callable(verify) and not verify()):
-                initialize_executor_instance(cast(AbstractExecutor, executor))
+            if callable(verify) and not verify():
+                raise AccountConnectionUnavailable("账户交易连接不可用；执行期间不重建连接，当前委托状态待确认")
+        else:
+            with connection_observer_scope(state.connection_collector.observe):
+                state.connection_observer = state.connection_collector.observe_session
+                if state.connection_collector.needs_reconciliation:
+                    state.connected_once = False
+                executor = ensure_resident_connection(
+                    state,
+                    account,
+                    create=lambda: worker_state.create_executor_instance(account, initialize=False),
+                    close=lambda _executor: worker_state._close_state_executor(state),
+                    initialize=initialize,
+                    prepare=lambda executor: worker_state._configure_executor_resources(state, account, executor),
+                    reconcile=reconcile,
+                    allow_recovery=False,
+                )
+        with order_control_scope(executor, account, guard, command=payload["command"]):
             return run_order_command(executor, payload)
 
 
@@ -88,6 +120,8 @@ def serve_orders(connection: Connection, state: Any) -> None:
         while (payload := connection.recv()) is not None:
             try:
                 response = {"result": _command(state, payload)}
+            except AccountConnectionUnavailable as exc:
+                response = {"error": {"message": str(exc), "retry_after": exc.retry_after}}
             except Exception:
                 logger.exception("当前委托操作失败 account_id={}", state.account_id)
                 response = {"error": "当前委托操作失败，请刷新核对订单状态"}

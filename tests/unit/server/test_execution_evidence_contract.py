@@ -1,6 +1,5 @@
 """以同一组场景校验算法、汇总、SQLite 回放和前端消费的证据契约。"""
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +17,8 @@ from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.server.db.models import ExecuteRecord, ExecutionArtifact
-from axile.server.execution import lifecycle
 from axile.server.execution.backend import _dump_output_result
+from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from axile.server.performance_analysis import _events
 from axile.server.performance_costs import project_execution
@@ -126,20 +125,24 @@ def build_contract_wire(case, monkeypatch):
     ExecuteRecord.__table__.create(db)
     ExecutionArtifact.__table__.create(db)
 
-    async def persist_artifact(**values):
+    def persist_artifact(**values):
         artifact = ExecutionArtifact(**values)
         with db.begin() as conn:
             conn.execute(ExecutionArtifact.__table__.insert().values(**artifact.model_dump(exclude={"id"})))
 
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(lifecycle, "append_execution_artifact", persist_artifact)
-            asyncio.run(
-                lifecycle.append_execution_result_artifacts(
-                    execution_id="contract",
-                    result=worker_raw,
-                    before_account_assets=_assets(inputs["before"]).model_dump(mode="json"),
-                )
+            patch.setattr(worker_audit, "append_execution_artifact_sync", persist_artifact)
+            patch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
+            worker_audit._append_success_audit(
+                account=SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),
+                execution_id="contract",
+                algorithm_name="contract",
+                output=output,
+                result=worker_raw,
+                executor=object(),
+                include_trade_rule_snapshots=True,
+                before_account_assets=_assets(inputs["before"]).model_dump(mode="json"),
             )
         with db.begin() as conn:
             conn.execute(

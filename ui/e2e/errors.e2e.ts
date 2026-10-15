@@ -8,7 +8,7 @@ const snapshot = { portfolio_id: 9, context_account_id: 7, weights: {}, calculat
 const dashboardItem = { account_id: 7, name: account.name, remark: null, market: 'demo', trade_channel: 'paper', is_started: false,
   portfolio_id: 9, is_scheduled: false, next_run_time: null, total_asset: 100, currency: 'CNY', holdings_count: 0, position_weights: [],
   last_is_success: null, last_exec_at: null, last_output_status: null, off_symbol_count: null,
-  connection: { status: 'ok', observed_at: null, message: null } }
+  connection: { status: 'ready', observed_at: null, message: null } }
 
 async function defaults(page: Page) {
   await page.route('**/api/v1/**', async route => {
@@ -729,43 +729,43 @@ test('a comparison-only failure has its own error and retry without hiding succe
 
 test('账户连接标识读取后端三态，连接错误集中展示，业务错误保留原位置', async ({ page }) => {
   await defaults(page)
-  let state: 'unknown' | 'ok' | 'error' = 'unknown'
+  let state: 'unknown' | 'ready' | 'unavailable' = 'unknown'
   let business = false
-  const connection = () => ({ status: state, observed_at: state === 'unknown' ? null : '2026-10-14T14:47:18', message: state === 'error' ? '更新令牌错误' : null })
+  const connection = () => ({ status: state, observed_at: state === 'unknown' ? null : '2026-10-14T14:47:18', message: state === 'unavailable' ? '更新令牌错误' : null })
   await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, connection: connection() } }))
-  await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...connection(), error: state === 'error' ? { technical_detail: raw('GM1026'), traceback: raw('GM1026') } : null } }))
+  await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...connection(), error: state === 'unavailable' ? { technical_detail: raw('GM1026'), traceback: raw('GM1026') } : null } }))
   await page.route('**/api/v1/account/7/assets/refresh', route => {
     if (business) return route.fulfill({ status: 502, json: { detail: { message: '资金查询业务拒绝' } } })
-    state = 'error'
+    state = 'unavailable'
     return route.fulfill({ status: 502, json: { detail: { message: '更新令牌错误', error_scope: 'account_connection' } } })
   })
   await page.goto('/e2e/errors.html?mode=account')
-  await expect(page.getByRole('button', { name: '账户连通状态：未知' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：待确认' })).toBeVisible()
   await page.getByRole('button', { name: '刷新账户资产' }).click()
-  await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：暂不可用' })).toBeVisible()
   await expect(page.getByRole('alert').filter({ hasText: '账户资产刷新失败' })).toContainText('更新令牌错误')
-  await page.getByRole('button', { name: '账户连通状态：异常' }).click()
-  const modal = page.getByRole('dialog', { name: '账户连接异常' })
+  await page.getByRole('button', { name: '账户连通状态：暂不可用' }).click()
+  const modal = page.getByRole('dialog', { name: '账户会话暂不可用' })
   await expect(modal.getByRole('button', { name: '技术详情' })).toHaveAttribute('aria-expanded', 'false')
   await modal.getByRole('button', { name: '技术详情' }).click()
   await expect(modal).toContainText('尾部根因-GM1026')
   await modal.getByRole('button', { name: '复制连接详情' }).click()
   expect(await copied(page)).toContain('尾部根因-GM1026')
   await modal.getByRole('button', { name: '关闭详情' }).click()
-  state = 'ok'
+  state = 'ready'
   business = true
   await page.reload()
-  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：就绪' })).toBeVisible()
   await page.getByRole('button', { name: '刷新账户资产' }).click()
   await expect(page.getByText('资金查询业务拒绝', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：就绪' })).toBeVisible()
 })
 
 test('主动目标计算保留连接错误反馈，脚本错误不改变连接标识', async ({ page }) => {
   await defaults(page)
   let failed = false
   let business = false
-  await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, connection: { status: failed ? 'error' : 'ok', observed_at: '2026-10-14T14:47:18', message: failed ? '更新令牌错误' : null } } }))
+  await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, connection: { status: failed ? 'unavailable' : 'ready', observed_at: '2026-10-14T14:47:18', message: failed ? '更新令牌错误' : null } } }))
   await page.route('**/api/v1/account/7/target_snapshot/refresh', route => {
     if (business) return route.fulfill({ status: 500, json: { detail: { message: '脚本第2行业务错误' } } })
     failed = true
@@ -773,17 +773,17 @@ test('主动目标计算保留连接错误反馈，脚本错误不改变连接�
   })
   await page.goto('/e2e/errors.html?mode=account')
   await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
-  await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：暂不可用' })).toBeVisible()
   await expect(page.getByRole('alert').filter({ hasText: '目标计算失败' })).toContainText('更新令牌错误')
   failed = false
   business = true
   await page.reload()
   await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
   await expect(page.getByText('脚本第2行业务错误', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('status', { name: '账户连通状态：就绪' })).toBeVisible()
 })
 
-const problem = (name = 'A') => ({ status: 'error', observed_at: '2026-10-14T14:47:18', label: `读取标签-${name}`, message: `原始说明-${name}`,
+const problem = (name = 'A') => ({ status: 'unavailable', observed_at: '2026-10-14T14:47:18', label: `读取标签-${name}`, message: `原始说明-${name}`,
   presentation: { title: `本次连接问题-${name}`, summary: `已确认的说明-${name}`, sections: [{ title: '现场事实', text: '渠道自由说明', fields: [{ label: '查找结果', value: `本次事实-${name}` }] }, { title: '检查顺序', steps: ['核对账户', '检查访问权限'] }], actions: [{ label: '检查连接设置', intent: 'open_connection_settings' }] },
   error: { technical_detail: raw(name), traceback: raw(name) } })
 
@@ -847,7 +847,7 @@ test('connection problem displays channel blocks, freezes one read and copies fu
   let reads = 0, name = 'A'
   await page.route('**/api/v1/account/7/connection', route => { reads++; return route.fulfill({ json: problem(name) }) })
   await page.goto('/e2e/errors.html?mode=connection')
-  const badge = page.getByRole('button', { name: '账户连通状态：异常，测试渠道的新故障文案', exact: true })
+  const badge = page.getByRole('button', { name: '账户连通状态：暂不可用，测试渠道的新故障文案', exact: true })
   await badge.click()
   const dialog = page.getByRole('dialog', { name: '本次连接问题-A' })
   await expect(dialog).toContainText('本次事实-A')
@@ -865,7 +865,7 @@ test('connection problem displays channel blocks, freezes one read and copies fu
   await expect(dialog.getByLabel('完整技术详情')).toContainText('尾部根因-A')
   expect(reads).toBe(1)
   await page.keyboard.press('Escape')
-  const updated = page.getByRole('button', { name: '账户连通状态：异常，后台更新后的标签', exact: true })
+  const updated = page.getByRole('button', { name: '账户连通状态：暂不可用，后台更新后的标签', exact: true })
   await expect(updated).toBeFocused()
   await updated.click()
   await expect(page.getByRole('dialog', { name: '本次连接问题-B' })).toBeVisible()
@@ -876,20 +876,20 @@ test('connection problem displays channel blocks, freezes one read and copies fu
 for (const label of ['', '   ']) test(`blank connection label falls back; missing presentation keeps dedicated problem dialog: ${JSON.stringify(label)}`, async ({ page }) => {
   await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...problem(), label, presentation: null } }))
   await page.goto(`/e2e/errors.html?mode=connection&label=${encodeURIComponent(label)}`)
-  const badge = page.getByRole('button', { name: '账户连通状态：异常', exact: true })
-  await expect(badge).toContainText('连接异常')
+  const badge = page.getByRole('button', { name: '账户连通状态：暂不可用', exact: true })
+  await expect(badge).toContainText('暂不可用')
   await badge.click()
-  const dialog = page.getByRole('dialog', { name: '账户连接异常' })
+  const dialog = page.getByRole('dialog', { name: '账户会话暂不可用' })
   await expect(dialog).toContainText('原始说明-A')
   await expect(dialog.getByRole('button', { name: '技术详情' })).toHaveAttribute('aria-expanded', 'false')
   await expect(dialog.getByRole('link')).toHaveCount(0)
 })
 
-for (const status of ['ok', 'unknown']) test(`connection response ${status} hides obsolete channel suggestions`, async ({ page }) => {
+for (const status of ['ready', 'unknown']) test(`connection response ${status} hides obsolete channel suggestions`, async ({ page }) => {
   await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...problem(), status } }))
   await page.goto('/e2e/errors.html?mode=connection')
   await page.getByRole('button', { name: /账户连通状态/ }).click()
-  const dialog = page.getByRole('dialog', { name: status === 'ok' ? '连接正常' : '连接未知' })
+  const dialog = page.getByRole('dialog', { name: status === 'ready' ? '会话就绪' : '状态待确认' })
   await expect(dialog).toBeVisible()
   await expect(dialog).not.toContainText('检查顺序')
   await expect(dialog).not.toContainText('现场事实')
@@ -957,7 +957,7 @@ test('long custom connection label, narrow dialog, reduced motion and keyboard f
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...problem(), label, presentation: null } }))
   await page.goto(`/e2e/errors.html?mode=connection&label=${encodeURIComponent(label)}`)
-  const badge = page.getByRole('button', { name: `账户连通状态：异常，${label}`, exact: true })
+  const badge = page.getByRole('button', { name: `账户连通状态：暂不可用，${label}`, exact: true })
   await badge.focus()
   await page.keyboard.press('Enter')
   const dialog = page.getByRole('dialog', { name: label, exact: true })
@@ -971,4 +971,105 @@ test('long custom connection label, narrow dialog, reduced motion and keyboard f
   await page.keyboard.press('Escape')
   await expect(badge).toBeFocused()
   await expect(badge.locator('.overflow-text').first()).toHaveAttribute('data-overflow', 'true')
+})
+
+test('resident connection actions are explicit and never trigger trading', async ({ page }) => {
+  await defaults(page)
+  let status = 'unavailable'
+  const writes: string[] = []
+  await page.route('**/api/v1/account/7/connection**', async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'POST') {
+      writes.push(path)
+      status = path.endsWith('/disconnect') ? 'disconnected' : 'ready'
+    }
+    await route.fulfill({ json: { status, observed_at: null, message: status === 'unavailable' ? '令牌获取超时，连接恢复冷却中' : null, error: status === 'unavailable' ? { technical_detail: 'GetEncryptedToken Deadline Exceeded' } : null } })
+  })
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  await expect(page.getByRole('dialog')).toContainText('令牌获取超时')
+  expect(writes).toEqual([])
+  await page.getByRole('button', { name: '重新连接', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '会话就绪' })).toBeVisible()
+  await page.getByRole('button', { name: '断开连接', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '已断开' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '断开连接', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: '关闭详情', exact: true }).click()
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  await expect(page.getByRole('dialog', { name: '已断开' })).toBeVisible()
+  expect(writes).toEqual(['/api/v1/account/7/connection/reconnect', '/api/v1/account/7/connection/disconnect'])
+})
+
+test('failed resident reconnect is not replayed by read recovery', async ({ page }) => {
+  await defaults(page)
+  let writes = 0
+  await page.route('**/api/v1/account/7/connection**', async route => {
+    if (route.request().method() === 'POST') {
+      writes++
+      return route.fulfill({ status: 502, json: { detail: '获取令牌超时，请查看连接详情' } })
+    }
+    return route.fulfill({ json: { status: 'unavailable', observed_at: null, message: '连接失败，冷却中', error: { technical_detail: 'GetEncryptedToken Deadline Exceeded' } } })
+  })
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  await page.getByRole('button', { name: '重新连接', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('连接操作未完成')
+  await page.evaluate(async () => {
+    const modulePath = '/src/lib/readRecovery.ts'
+    const { notifyReadRecovery } = await import(modulePath)
+    await notifyReadRecovery()
+  })
+  expect(writes).toBe(1)
+  await expect(page.getByRole('button', { name: '重新连接', exact: true })).toBeEnabled()
+})
+
+
+test('connection history stays separate from current session after service restart', async ({ page }, testInfo) => {
+  const writes: string[] = []
+  await page.route('**/api/v1/account/7/connection**', route => {
+    if (route.request().method() !== 'GET') writes.push(route.request().method())
+    return route.fulfill({ json: { status: 'uninitialized', worker_alive: false, observed_at: null, message: null, error: null,
+      last_success_at: '2026-10-15T15:59:00', last_failure_at: '2026-10-15T15:58:00',
+      last_failure: { observed_at: '2026-10-15T15:58:00', message: '历史连接超时', error: { technical_detail: 'historical-native-timeout' } } } })
+  })
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog', { name: '未建立会话' })
+  await expect(dialog).toContainText('当前服务尚未建立')
+  await expect(dialog).toContainText('最近访问成功')
+  await expect(dialog).toContainText('最近连接失败（历史）')
+  await expect(dialog).toContainText('不代表当前会话仍在故障')
+  await expect(dialog).not.toContainText('连接正常')
+  await dialog.getByRole('button', { name: '技术详情' }).click()
+  await expect(dialog).toContainText('historical-native-timeout')
+  await dialog.getByRole('button', { name: '复制连接详情' }).click()
+  expect(await copied(page)).toContain('historical-native-timeout')
+  expect(writes).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('connection-history.png') })
+})
+
+test('connection current session follows read-only polling through readiness and worker exit', async ({ page }) => {
+  await page.clock.install()
+  let state = 'connecting'
+  let reads = 0, writes = 0
+  await page.route('**/api/v1/account/7/connection**', route => {
+    if (route.request().method() === 'GET') reads++
+    else writes++
+    return route.fulfill({ json: { status: state, worker_alive: state !== 'disconnected', observed_at: '2026-10-15T16:00:00', message: null, error: null } })
+  })
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  await expect(page.getByRole('dialog', { name: '正在准备' })).toBeVisible()
+  state = 'ready'
+  await page.clock.fastForward(5100)
+  await expect(page.getByRole('dialog', { name: '会话就绪' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '账户连通状态：就绪' })).toBeVisible()
+  state = 'disconnected'
+  await page.clock.fastForward(5100)
+  await expect(page.getByRole('dialog', { name: '已断开' })).toBeVisible()
+  expect(reads).toBeGreaterThanOrEqual(3)
+  expect(writes).toBe(0)
 })

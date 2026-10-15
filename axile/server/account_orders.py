@@ -9,8 +9,6 @@ from typing import Any
 from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
-from axile.server.account_control import providers
-from axile.server.account_orders_runtime import order_control_scope, run_order_command
 from axile.server.connection_state import connection_config_key
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_order import (
@@ -19,9 +17,6 @@ from axile.server.db.models.account_order import (
     OrderCancelReceipt,
     OrderCancelRequest,
 )
-from axile.server.execution.dispatch import ExecutionBackendKind, resolve_execution_backend_kind
-from axile.server.execution.factory import create_executor_instance, initialize_executor_instance
-from axile.server.execution.resources import close_executor
 
 
 @dataclass
@@ -60,24 +55,10 @@ def _state(account: AccountContext) -> _OrdersState:
     return previous[1]
 
 
-def _inline_command(account: AccountContext, payload: dict[str, Any]) -> dict[str, Any]:
-    assert account.id is not None
-    executor = create_executor_instance(account, initialize=False)
-    try:
-        with order_control_scope(executor, account, providers.active_guard(account.id), command=payload["command"]):
-            if getattr(executor, "_requires_connection_initialization", False):
-                initialize_executor_instance(executor)
-            return run_order_command(executor, payload)
-    finally:
-        close_executor(executor)
-
-
 async def _command(account: AccountContext, payload: dict[str, Any]) -> dict[str, Any]:
-    if resolve_execution_backend_kind(account.trade_channel) == ExecutionBackendKind.PROCESS:
-        from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+    from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 
-        return await get_worker_backend_manager().order_command(account, payload)
-    return await asyncio.to_thread(_inline_command, account, payload)
+    return await get_worker_backend_manager().order_command(account, payload)
 
 
 def _merge_snapshot(state: _OrdersState, result: dict[str, Any]) -> AccountOrdersPublic:

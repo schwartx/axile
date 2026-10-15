@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from axile.server.api.routes.account_assets import router as account_assets_router
+from axile.server.api.routes.account_connection import router as account_connection_router
 from axile.server.api.routes.account_control_audit_routes import router as account_control_audit_router
 from axile.server.api.routes.account_control_monitor_routes import router as account_control_monitor_router
 from axile.server.api.routes.account_control_policy_routes import router as account_control_policy_router
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/account", tags=["account"])
 router.include_router(account_control_monitor_router)
 router.include_router(account_evidence_router)
 router.include_router(account_crud_router)
+router.include_router(account_connection_router)
 router.include_router(account_assets_router)
 router.include_router(account_orders_router)
 router.include_router(account_performance_router)

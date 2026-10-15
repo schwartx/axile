@@ -1,5 +1,6 @@
 """服务端 execution 测试的共享伪对象与辅助函数。"""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
 
@@ -78,6 +79,7 @@ class FakeExecutor:
         self.audit_sink = None
         self._audit_seq = 0
         self.account_control_guard = None
+        self.executed_guard = None
         self.cleanup = True
         self.empty_kwargs = {}
         self.execute_input = None
@@ -116,6 +118,7 @@ class FakeExecutor:
     ) -> tuple[UnifiedStandardOutput, dict[str, object] | None]:
         _ = retain_runtime
         self.execute_input = _standard_input
+        self.executed_guard = self.account_control_guard
         self.cleanup = cleanup
         return UnifiedStandardOutput(
             account_assets=UnifiedAccountAssets(
@@ -144,6 +147,7 @@ class FakeExecutor:
         )
 
     def empty_positions(self, cleanup: bool = True, **kwargs: object) -> UnifiedStandardOutput:  # noqa: FBT002
+        self.executed_guard = self.account_control_guard
         self.cleanup = cleanup
         self.empty_kwargs = kwargs
         return UnifiedStandardOutput(
@@ -285,3 +289,52 @@ async def noop_append_execution_event(**_kwargs: object) -> bool:
 async def noop_append_execution_artifact(**_kwargs: object) -> bool:
     """吞掉 execution artifact 写入。"""
     return True
+
+
+class WorkerCommandHarness:
+    """绕过 IPC 运行真实 worker 命令，用于验证命令前后的输入、审计和清理。"""
+
+    def __init__(self):
+        from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+
+        self.state = _WorkerBackendState()
+
+    async def _run(self, command, account, execution_id, payload):
+        from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
+        from axile.server.execution.worker_backend.worker import _handle_worker_request
+
+        request = WorkerBackendRequest(
+            request_id="unit-worker",
+            command=command,
+            account_payload=account.model_dump(mode="json"),
+            execution_id=execution_id,
+            payload=payload,
+        )
+        response = await asyncio.to_thread(_handle_worker_request, request, self.state)
+        assert response.kind == "result", response.error
+        return UnifiedStandardOutput.model_validate(response.output_payload), response.normalized_symbol_fields
+
+    async def execute_trade(self, *, account, execution_id, standard_input_dict, trigger_source, **kwargs):
+        return await self._run(
+            "execute_trade",
+            account,
+            execution_id,
+            {
+                "standard_input": standard_input_dict,
+                "trigger_source": trigger_source,
+                "audit_input": kwargs["audit_input"],
+                "cleanup": kwargs["cleanup"],
+            },
+        )
+
+    async def empty_positions(self, *, account, execution_id, empty_kwargs, audit_input, **kwargs):
+        output, _ = await self._run(
+            "empty_positions",
+            account,
+            execution_id,
+            {
+                "empty_kwargs": empty_kwargs,
+                "audit_input": audit_input,
+            },
+        )
+        return output

@@ -15,7 +15,7 @@ from tests.unit.server._execution_test_support import FakeExecutor, build_accoun
 def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worker 的执行前后附件应与 inline 路径使用同一 v2 证据协议."""
+    """Worker 的执行前后附件应保留完整的 v2 证据协议."""
     account = build_account()
     standard_input = UnifiedStandardInput.from_dict(
         {

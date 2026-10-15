@@ -16,17 +16,18 @@ from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.db.models import Account
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import intents as execution_intents
-from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution import rebalance as rebalance_execution
 from axile.server.execution import registry as execution_registry
-from axile.server.execution.dispatch import ExecutionBackendKind
+from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
     AccountSession,
     FakeExecutor,
     FakeSession,
     FakeWorkerBackendManager,
     WarningLogger,
+    WorkerCommandHarness,
     build_account,
+    noop_account_control_guard,
     noop_append_execution_artifact,
     noop_append_execution_event,
 )
@@ -52,22 +53,19 @@ class _VolumeCalcStub:
 
 
 @pytest.fixture(autouse=True)
-def _keep_inline_scenarios_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """本文件测试编排；仅显式 GM 场景走独立 worker 测试桩。"""
-    monkeypatch.setattr(
-        execution_backend,
-        "resolve_execution_backend_kind",
-        lambda channel: ExecutionBackendKind.PROCESS if channel == TradeChannel.GM else ExecutionBackendKind.THREAD,
-    )
+def _worker_commands(monkeypatch):
+    """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
+    manager = WorkerCommandHarness()
+    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
+    monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
 
-    # 本文件直调执行链路，没有对应 intent 记录；promote 走空实现。
-    async def _noop_promote(execution_id: str, account_id: int) -> None:
-        _ = execution_id, account_id
+    async def flush(executor):
+        pass
 
-    monkeypatch.setattr(
-        "axile.server.execution.intents.promote_intent_to_running",
-        _noop_promote,
-    )
+    monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
+    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
 
 
 @pytest.fixture(autouse=True)
@@ -152,7 +150,7 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: FakeExecutor())
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
@@ -214,7 +212,7 @@ def test_trade_builds_model_before_execute_and_persists_dict(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
@@ -345,10 +343,10 @@ def test_trade_routes_gm_account_to_worker_manager(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", unexpected_create_executor_instance)
+    monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", unexpected_append_execution_artifact)
+    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", unexpected_append_execution_artifact)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(
@@ -371,7 +369,7 @@ def test_trade_routes_gm_account_to_worker_manager(
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
 
 
-def test_trade_routes_ctp_account_to_worker_manager_when_policy_is_process(
+def test_trade_routes_ctp_account_to_worker_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """后端选择应由策略驱动，而不是写死 GM 渠道。"""
@@ -404,13 +402,8 @@ def test_trade_routes_ctp_account_to_worker_manager_when_policy_is_process(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(
-        execution_backend,
-        "resolve_execution_backend_kind",
-        lambda _channel: ExecutionBackendKind.PROCESS,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", unexpected_create_executor_instance)
+    monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(
@@ -636,11 +629,14 @@ def test_trade_passes_execution_id_to_persisted_record(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: FakeExecutor())
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-    monkeypatch.setattr(execution_backend, "append_execution_event", noop_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", noop_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", noop_append_execution_artifact)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
+    )
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -704,10 +700,13 @@ def test_trade_emits_execution_events_and_artifacts(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: FakeExecutor())
-    monkeypatch.setattr(execution_backend, "append_execution_event", fake_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", fake_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", fake_append_execution_artifact)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+    )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(
@@ -828,10 +827,15 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
         fake_executor = _RuntimeAwareExecutor()
         return fake_executor
 
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", fake_create_executor_instance)
-    monkeypatch.setattr(execution_backend, "append_execution_event", fake_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", fake_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", fake_append_execution_artifact)
+    monkeypatch.setattr(
+        worker_state, "create_executor_instance", lambda account, **kwargs: fake_create_executor_instance(account)
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+    )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(
@@ -932,10 +936,13 @@ def test_trade_completion_event_matches_output_status(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: _UnsuccessfulExecutor())
-    monkeypatch.setattr(execution_backend, "append_execution_event", fake_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", fake_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", fake_append_execution_artifact)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: _UnsuccessfulExecutor())
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+    )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     record = asyncio.run(
@@ -957,7 +964,6 @@ def test_trade_completion_event_matches_output_status(
     assert captured_events[-1]["status"] == expected_event_status
     assert captured_events[-1]["details"] == {
         "debug": {
-            "record_id": 301,
             "success": False,
             "execution_status": output_status.value,
         },
@@ -1005,12 +1011,15 @@ def test_trade_binds_account_control_guard(
         "get_latest_success_execute_record_by_account_id",
         fake_get_latest_success_execute_record_by_account_id,
     )
-    monkeypatch.setattr(execution_lifecycle, "create_executor_instance", lambda _account: fake_executor)
+    monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
-    monkeypatch.setattr(execution_lifecycle, "build_account_control_guard", fake_build_account_control_guard)
-    monkeypatch.setattr(execution_backend, "append_execution_event", noop_append_execution_event)
-    monkeypatch.setattr(execution_backend, "append_execution_artifact", noop_append_execution_artifact)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_artifact", noop_append_execution_artifact)
+    monkeypatch.setattr(worker_state, "build_account_control_guard", fake_build_account_control_guard)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
+    )
+    monkeypatch.setattr(
+        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
+    )
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -1025,7 +1034,8 @@ def test_trade_binds_account_control_guard(
         "channel": TradeChannel.CTP,
         "execution_id": "exec-bind-1",
     }
-    assert fake_executor.account_control_guard is fake_guard
+    assert fake_executor.executed_guard is fake_guard
+    assert fake_executor.account_control_guard is None
 
 
 def test_standard_input_accepts_database_trade_channel_string() -> None:

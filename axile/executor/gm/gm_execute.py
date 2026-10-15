@@ -22,6 +22,7 @@ import json
 import math
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -145,7 +146,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     GM 下单链路统一依赖回调事件收敛状态。
     """
 
-    def __init__(self, account_config: GMAccountConfig) -> None:
+    def __init__(self, account_config: GMAccountConfig, *, connect: bool = True) -> None:
         """初始化GM执行器."""
         self.account_id: str | None = None
         self.just_started = False
@@ -154,6 +155,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._callback_dispatcher = GMCallbackDispatcher()
         self._strategy_bridge: GMStrategyBridge | None = None
         self._callback_monitoring = False
+        self._connection_lock = threading.RLock()
 
         # 保存配置用于启动回调
         self._gm_config: GMAccountConfig | None = None
@@ -161,11 +163,12 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         # 订阅的行情标的列表
         self._subscribe_symbols: list[str] = []
 
-        super().__init__(TradeChannel.GM, account_config)
-
-        # GM 下单依赖回调收敛状态，创建阶段必须确认 bridge 可用；失败直接交给
-        # worker/API 生命周期落成 FAILED，不能吞掉后在执行阶段重复等待。
-        self._ensure_strategy_bridge()
+        super().__init__(TradeChannel.GM)
+        self.account_config = account_config
+        self._gm_config = account_config
+        self.account_id = account_config.account_id
+        if connect:
+            self._initialize_connection(account_config)
         self._register_execution_query_runtime_callback_observers()
 
     def _normalize_symbol(self, symbol: str) -> str:
@@ -195,16 +198,19 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             with connection_monitor(self).connecting():
                 self.just_started = self._start_gm_desktop_if_not(terminal_path)
 
-        logger.success(f"账户 {self.account_id} 初始化完成，GM runtime 将通过 bridge 懒启动")
+        self._ensure_strategy_bridge()
+        logger.success(f"账户 {self.account_id} GM runtime 初始化完成")
 
     def _verify_connection(self) -> bool:
-        """验证连接是否有效."""
-        try:
-            self._ensure_strategy_bridge(timeout=30.0)
-            return True
-        except Exception as e:
-            logger.opt(exception=e).error("验证连接失败: {}", e)
-            return False
+        """只读取运行时和交易账户就绪状态，不登录、不订阅、不重建连接。"""
+        bridge = self._strategy_bridge
+        return bridge is not None and bridge.is_running() and bridge.is_ready()
+
+    @property
+    def connection_revision(self) -> int:
+        """原生断线次数供宿主识别自动恢复，恢复后重新核对资产和挂单。"""
+        bridge = self._strategy_bridge
+        return bridge.get_stats().get("connection_revision", 0) if bridge is not None else 0
 
     def _check_trading_time(self) -> bool:
         """检查当前是否处于 A 股可报单窗且自然日开市。"""
@@ -291,6 +297,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         symbols : list[str] | None, optional
             需要订阅行情的标的列表。
         """
+        if not self._verify_connection():
+            raise ConnectionError("GM 交易连接尚未就绪，请先准备账户连接")
         self.start_callback_monitoring(subscribe_symbols=symbols)
 
     def _ensure_strategy_bridge(
@@ -299,7 +307,12 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         timeout: float = 30.0,
         subscribe_symbols: list[str] | None = None,
     ) -> GMStrategyBridge:
-        """确保当前执行器的 bridge runtime 已启动."""
+        """显式启动 bridge；账户宿主负责限制恢复频率与核对交易状态。"""
+        with self._connection_lock:
+            return self._start_strategy_bridge(timeout=timeout, subscribe_symbols=subscribe_symbols)
+
+    def _start_strategy_bridge(self, *, timeout: float, subscribe_symbols: list[str] | None) -> GMStrategyBridge:
+        """在连接锁内复用或启动一个 bridge。"""
         self._subscribe_symbols = [self._normalize_symbol(symbol) for symbol in self._subscribe_symbols]
         all_symbols = list(
             dict.fromkeys(
@@ -310,6 +323,8 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         gm_symbols = [GM_SYMBOL_RESOLVER.to_gm(symbol) for symbol in all_symbols]
 
         if self._strategy_bridge and self._strategy_bridge.is_running():
+            if not self._strategy_bridge.is_ready():
+                raise ConnectionError("GM 交易账户尚未就绪，请通过账户连接入口恢复")
             if all_symbols:
                 self._strategy_bridge.request_symbols(gm_symbols)
             self._callback_monitoring = True
@@ -317,6 +332,9 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
         if not self._gm_config:
             raise ValueError("账户配置未初始化")
+
+        if self._strategy_bridge is not None:
+            self._strategy_bridge.stop()
 
         if all_symbols:
             logger.info(f"将订阅以下标的的行情: {all_symbols}")
@@ -329,6 +347,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             subscribe_symbols=gm_symbols,
         )
         bridge.connection_monitor = connection_monitor(self)
+        self._strategy_bridge = bridge
         if not bridge.start(timeout=timeout):
             error = RuntimeError("GM bridge 启动失败")
             startup_error = getattr(bridge, "_startup_error", None)
@@ -344,7 +363,9 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         """统一通过当前执行器持有的 bridge 调用 GM SDK."""
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")
-        bridge = self._ensure_strategy_bridge(timeout=timeout)
+        bridge = self._strategy_bridge
+        if bridge is None or not self._verify_connection():
+            raise ConnectionError("GM 交易连接不可用，请通过账户连接入口恢复；本次请求未提交")
         # GM 对无效账户也可能返回空列表；空持仓/订单不能证明账户有效。
         if request.operation == "get_cash" and getattr(request, "account_id", None) in {None, self.account_id}:
             with connection_monitor(self).accessing():

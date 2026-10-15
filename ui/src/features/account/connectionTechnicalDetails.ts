@@ -56,7 +56,7 @@ function evidenceEntries(error: Record<string, unknown>, seen: Set<string>) {
 
 /** 只对阅读内容去重；完整复制仍使用接口原始快照。旧记录中的异常摘要不冒充调用栈。 */
 export function connectionTechnicalDetails(detail: AccountConnectionDetail): ConnectionTechnicalInfo | null {
-  if (detail.status !== 'error') return null
+  if (detail.status !== 'unavailable') return null
   const error = detail.error ?? {}
   const message = detail.message || (typeof error.message === 'string' ? error.message : '')
   const stacks = stackSections(error, message)

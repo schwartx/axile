@@ -53,6 +53,9 @@ class WorkerBackendExecutionError(RuntimeError):
         technical_detail: str | None = None,
         formatted_traceback: str | None = None,
         error_scope: str | None = None,
+        diagnostics: list[dict[str, object]] | None = None,
+        exception_type: str | None = None,
+        retry_after: int = 0,
     ) -> None:
         """保留 IPC 原文、traceback 与机器码，不从原文推断业务状态。"""
         super().__init__(message)
@@ -63,6 +66,27 @@ class WorkerBackendExecutionError(RuntimeError):
         self.technical_detail = technical_detail
         self.formatted_traceback = formatted_traceback
         self.error_scope = error_scope
+        self.diagnostics = diagnostics or []
+        self.exception_type = exception_type
+        self.retry_after = retry_after
+
+    @classmethod
+    def from_payload(cls, error: WorkerBackendErrorPayload | None, fallback: str) -> WorkerBackendExecutionError:
+        """把远端错误证据还原为主进程异常，保持渠道诊断和冷却信息。"""
+        message = error.message if error is not None else fallback
+        return cls(
+            message,
+            execution_error=message,
+            reason_code=getattr(error, "reason_code", None),
+            error_id=getattr(error, "error_id", None),
+            retryable=getattr(error, "retryable", False),
+            technical_detail=getattr(error, "technical_detail", None),
+            formatted_traceback=getattr(error, "traceback", None),
+            error_scope=getattr(error, "error_scope", None),
+            diagnostics=getattr(error, "diagnostics", None),
+            exception_type=getattr(error, "exception_type", None),
+            retry_after=getattr(error, "retry_after", 0),
+        )
 
 
 class WorkerBackendTimeoutError(WorkerBackendExecutionError):
@@ -156,28 +180,9 @@ class WorkerBackendManager:
 
     Notes
     -----
-    **常驻设计（有意为之，勿轻易加空闲回收/数量上限）**：
-
-    渠道插件可声明 ``PROCESS`` backend（见 ``dispatch.py``），用于承载进程绑定、
-    全局上下文隔离或多线程不安全的 SDK。每个此类账户首次执行时 spawn 一个常驻
-    worker，把登录会话**焐热**并在后续执行间复用；这正是插件选择 PROCESS 而非
-    THREAD 的目的。因此「成功执行后不回收」是期望行为，不是疏漏。
-
-    ``_workers`` 以 ``account_id`` 为 key，上界 = 进程存活期内执行过的**不同
-    PROCESS 账户数**（有限稳定集合），并非无界增长。worker 仅在通信失败/超时
-    （:meth:`_force_drop_worker`）、健康检查失败时替换、或 :meth:`shutdown_all`
-    时释放；**刻意没有空闲 TTL 回收，也没有容量上限**。
-
-    该取舍绑定当前运营规模：并发活跃 PROCESS 账户 1~3、执行节奏最短 15 分钟。此时
-    常驻进程上界≈3（噪声级内存），而 15 分钟节奏下会话被高频复用，任何空闲
-    回收都会用重登录延迟/频控风险换取几乎为零的内存收益，属净亏。
-
-    **重新评估的阈值**（满足任一再引入「惰性 TTL 回收 + LRU 软上限」）：
-    并发活跃 PROCESS 账户 ≳ 20；或出现账户 churn（频繁建号→跑一次→弃用，导致
-    ``account_id`` 只出现一次、进程再不被复用）。届时回收逻辑必须对
-    ``request_lock`` 做非阻塞抢占并跳过在途 worker，**绝不回收正在执行的
-    进程**。更精确的做法是在账户删除/换渠道的清理钩子里事件驱动地调用
-    :meth:`_force_drop_worker`，优于定时扫空闲。
+    各渠道共用每账户独立的常驻进程。首次连接后持续复用，调度暂停不会
+    关闭会话；配置变更、主动断开、通信故障和服务退出负责显式回收。
+    当前会话状态由存活实例与监控快照提供，数据库仅保存历史和连接意愿。
     """
 
     def __init__(
@@ -315,6 +320,9 @@ class WorkerBackendManager:
             handle.catalog.close()
 
     def _dispose_handle(self, handle: _WorkerBackendHandle, *, lock_timeout: float = -1) -> None:
+        from axile.server.connection_state import end_connection_instance
+
+        end_connection_instance(getattr(handle, "connection_binding", None), "账户执行器已关闭，会话已结束")
         try:
             if not handle.connection.closed and handle.process.is_alive():
                 self._send_shutdown(handle, lock_timeout=lock_timeout)
@@ -407,6 +415,9 @@ class WorkerBackendManager:
         worker。终止走 :meth:`_terminate_process`，不依赖 ``request_lock``，
         可在调用方仍持有该锁时安全执行。
         """
+        from axile.server.connection_state import end_connection_instance
+
+        end_connection_instance(getattr(handle, "connection_binding", None), "账户执行器已回收，会话已结束")
         with self._lock:
             handle.retired = True
             if self._workers.get(account_id) is handle:
@@ -449,6 +460,12 @@ class WorkerBackendManager:
         binding = getattr(handle, "connection_binding", None)
         if binding is None or binding.config_key != key:
             handle.connection_binding = begin_connection_instance(account)
+            if handle.connection_binding is not None:
+                from axile.server.connection_runtime import register_session
+
+                register_session(handle.connection_binding, lambda: not handle.retired and handle.process.is_alive())
+                if handle.monitor is not None:
+                    handle.monitor.connection_binding = handle.connection_binding
         request.connection_binding = (
             asdict(handle.connection_binding) if handle.connection_binding is not None else None
         )
@@ -537,6 +554,14 @@ class WorkerBackendManager:
         # 兜底清理必须在释放 request_lock 之后进行：_force_drop_worker /
         # _terminate_process 都不再获取该锁，避免与当前线程二次死锁。
         if failure is not None:
+            from axile.server.connection_state import end_connection_instance
+
+            message = (
+                "账户请求超时，执行器已回收"
+                if isinstance(failure, WorkerBackendTimeoutError)
+                else "账户执行器通信失败，会话已结束"
+            )
+            end_connection_instance(getattr(handle, "connection_binding", None), message, failure)
             if isinstance(failure, WorkerBackendTimeoutError):
                 self._force_drop_worker(account_id, handle)
                 raise failure
@@ -597,6 +622,9 @@ class WorkerBackendManager:
                 "traceback": getattr(error, "traceback", None),
                 "reason_code": error.reason_code,
                 "error_id": error.error_id,
+                "diagnostics": error.diagnostics or None,
+                "exception_type": error.exception_type,
+                "retry_after": error.retry_after or None,
             }
 
             extra["worker_error"] = {key: value for key, value in worker_error.items() if value is not None}
@@ -645,6 +673,7 @@ class WorkerBackendManager:
         *,
         execution_id: str | None = None,
         termination_controller: ExecutionTerminationController | None = None,
+        force_reconnect: bool = False,
     ) -> dict[str, object]:
         """创建或复用账户 Worker 中的长连接执行器。"""
         request = WorkerBackendRequest(
@@ -652,7 +681,7 @@ class WorkerBackendManager:
             command="prepare",
             account_payload=account.model_dump(mode="json"),
             execution_id=execution_id,
-            payload={"expected_trading_day": expected_trading_day or ""},
+            payload={"expected_trading_day": expected_trading_day or "", "force_reconnect": force_reconnect},
         )
         response = await asyncio.to_thread(
             self._request_blocking,
@@ -662,23 +691,27 @@ class WorkerBackendManager:
             termination_controller,
         )
         if response.kind != "result" or response.output_payload is None:
-            message = response.error.message if response.error is not None else "账户通道准备失败"
-            error = response.error
-            raise WorkerBackendExecutionError(
-                message,
-                execution_error=message,
-                reason_code=error.reason_code if error else None,
-                error_id=error.error_id if error else None,
-                retryable=error.retryable if error else False,
-                technical_detail=getattr(error, "technical_detail", None),
-                formatted_traceback=getattr(error, "traceback", None),
-                error_scope=getattr(error, "error_scope", None),
-            )
+            raise WorkerBackendExecutionError.from_payload(response.error, "账户通道准备失败")
         return response.output_payload
 
     async def drop_account(self, account_id: int) -> None:
         """关闭并移除指定账户的常驻 Worker。"""
         await asyncio.to_thread(self._drop_account_blocking, account_id)
+
+    async def disconnect_account(self, account: AccountContext) -> None:
+        """断开 SDK 会话并保留主动断开标记，阻止页面轮询再次登录。"""
+        request = WorkerBackendRequest(
+            request_id=uuid4().hex,
+            command="disconnect",
+            account_payload=account.model_dump(mode="json"),
+            execution_id=None,
+            payload={},
+        )
+        response = await asyncio.to_thread(
+            self._request_blocking, _require_account_id(account), request, max(15.0, self._shutdown_recv_timeout)
+        )
+        if response.kind != "result":
+            raise WorkerBackendExecutionError.from_payload(response.error, "账户连接断开失败")
 
     async def order_command(self, account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
         """通过独立通路查询或撤销委托，不占用调仓命令锁。"""
@@ -697,9 +730,25 @@ class WorkerBackendManager:
             payload={},
         )
         self._bind_connection_request(handle, request)
-        return handle.orders.request(
-            {**payload, "account": request.account_payload, "connection_binding": request.connection_binding}
-        )
+        try:
+            return handle.orders.request(
+                {**payload, "account": request.account_payload, "connection_binding": request.connection_binding}
+            )
+        except TimeoutError as exc:
+            from axile.server.connection_runtime import current_session
+            from axile.server.connection_state import connection_config_key, end_connection_instance
+            from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
+
+            current = current_session(
+                _require_account_id(account), connection_config_key(account.trade_channel, account.account_config)
+            )
+            if current.status in {"uninitialized", "connecting", "recovering"} and not (
+                get_running_execution_id(_require_account_id(account))
+                or get_queued_execution_id(_require_account_id(account))
+            ):
+                end_connection_instance(handle.connection_binding, "账户连接准备超时，执行器已回收", exc)
+                self._force_drop_worker(_require_account_id(account), handle)
+            raise
 
     async def get_account_assets(self, account: AccountContext) -> UnifiedAccountAssets:
         """通过账户常驻 worker 查询最新资产快照."""
@@ -714,19 +763,10 @@ class WorkerBackendManager:
             self._request_blocking,
             _require_account_id(account),
             request,
-            _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS,
+            _DEFAULT_PREPARE_RECV_TIMEOUT_SECONDS + _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS,
         )
         if response.kind != "result" or response.output_payload is None:
-            message = response.error.message if response.error is not None else "账户资产查询失败"
-            raise WorkerBackendExecutionError(
-                message,
-                reason_code=getattr(response.error, "reason_code", None),
-                error_id=getattr(response.error, "error_id", None),
-                retryable=getattr(response.error, "retryable", False),
-                technical_detail=getattr(response.error, "technical_detail", None),
-                formatted_traceback=getattr(response.error, "traceback", None),
-                error_scope=getattr(response.error, "error_scope", None),
-            )
+            raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
     async def calculate_portfolio(
@@ -753,18 +793,9 @@ class WorkerBackendManager:
             termination_controller,
         )
         if response.kind != "result" or response.output_payload is None:
-            message = response.error.message if response.error is not None else "自定义组合函数执行失败"
             if not self._requires_ctp_session_recovery(response):
                 await self.drop_account(_require_account_id(account))
-            raise WorkerBackendExecutionError(
-                message,
-                reason_code=getattr(response.error, "reason_code", None),
-                error_id=getattr(response.error, "error_id", None),
-                retryable=getattr(response.error, "retryable", False),
-                technical_detail=getattr(response.error, "technical_detail", None),
-                formatted_traceback=getattr(response.error, "traceback", None),
-                error_scope=getattr(response.error, "error_scope", None),
-            )
+            raise WorkerBackendExecutionError.from_payload(response.error, "自定义组合函数执行失败")
         try:
             result = PortfolioFunctionResult.from_payload(response.output_payload)
         except Exception:
@@ -897,10 +928,8 @@ class WorkerBackendManager:
             ),
             termination_controller,
         )
-        result = self._handle_response(response)
-        if not account.is_started and not self._requires_ctp_session_recovery(response):
-            await self.drop_account(_require_account_id(account))
-        return result
+        # 清仓结束只收尾本次 execution；当前委托查询仍需复用账户登录会话。
+        return self._handle_response(response)
 
     def shutdown_all(self) -> None:
         """显式关闭所有多进程 worker。."""

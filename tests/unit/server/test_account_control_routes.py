@@ -585,6 +585,43 @@ def test_update_same_channel_preserves_omitted_credentials(monkeypatch: pytest.M
     assert session.account.account_config["password"] == "test"
 
 
+@pytest.mark.parametrize(
+    ("patch", "reset_expected"),
+    [
+        ({"is_started": False}, False),
+        ({"is_started": True}, False),
+        ({"algorithm": {"method": "SINGLE-MAKER", "params": {"price_strategy": "PASSIVE"}}}, False),
+        ({"trade_channel": "gm"}, False),
+        ({"account_config": {"serv_addr": "127.0.0.1:7001"}}, False),
+        ({"account_config": {"serv_addr": "127.0.0.1:7002"}}, True),
+        ({"account_config": {"token": "new-token"}}, True),
+    ],
+)
+def test_update_gm_keeps_session_until_connection_changes(monkeypatch, patch, reset_expected) -> None:
+    """调度开关和重复保存不能销毁可复用的 GM 登录会话。"""
+    account = _build_account(trade_channel=TradeChannel.GM)
+    account.account_config = {
+        "connection_mode": "service",
+        "account_id": "test-account",
+        "token": "test-token",
+        "serv_addr": "127.0.0.1:7001",
+    }
+    requested_resets = []
+
+    async def enqueue(_session, _account_id, *, reset_worker):
+        requested_resets.append(reset_worker)
+
+    monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", enqueue)
+    monkeypatch.setattr(account_crud_routes, "reconcile_account_runtime", _synchronized_runtime_sync)
+    session = _RouteSession(account)
+
+    response = TestClient(_build_app(session)).patch("/account/1", json=patch)
+
+    assert response.status_code == 200, response.text
+    assert requested_resets == [reset_expected]
+    assert response.json()["is_started"] == patch.get("is_started", True)
+
+
 def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """有历史的账户复制后，新账户的执行、资产和收益独立开始。"""
 
