@@ -53,7 +53,7 @@ export function SystemEditNotificationPage() {
       </>}
       controls={<div className="mt-4 space-y-4">
         <SystemAlertFields compact draft={draft} configured={state.configured} onChange={(patch) => { state.set(patch); state.saveState.clearError() }} disabled={busy} />
-        <div><p className="mb-2 text-[13px] text-ink-2">试跑样例</p><Segmented size="sm" value={sample} options={[{ value: 'execution_error', label: '执行异常', disabled: busy }, { value: 'execution_timeout', label: '执行超时', disabled: busy }]} onChange={setSample} /></div>
+        <div><p className="mb-2 text-[13px] text-ink-2">试跑样例</p><Segmented size="sm" value={sample} options={[{ value: 'execution_error', label: '执行异常', disabled: busy }, { value: 'execution_timeout', label: '执行超时', disabled: busy }, { value: 'account_control.warning', label: '额度预警', disabled: busy }]} onChange={setSample} /></div>
         <p className="text-[12px] text-ink-3">试跑当前函数草稿，不保存配置；默认模式下保存的函数仅留存备用。要启用函数，请选择自定义。</p>
       </div>}
       runDisabled={loading} code={draft.code} onChange={changeCode} defaultCode={defaultCode} onReset={() => changeCode(defaultCode)}

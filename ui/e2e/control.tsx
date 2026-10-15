@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router'
+import { BrowserRouter, createMemoryRouter, RouterProvider } from 'react-router'
+import { AccountEditControlPage } from '../src/pages/AccountEditControlPage'
 import { AccountControlSummary } from '../src/features/account/ControlMonitor'
 import { ControlRecentRecords, ControlWaitingSection } from '../src/features/account/ControlActivity'
 import { ControlScopeUsage, ControlUsageNotice } from '../src/features/account/ControlUsage'
@@ -25,4 +26,7 @@ export function Fixture() {
     <button type="button" onClick={() => { const store = useLiveControl.getState(); store.disconnect(); useLiveControl.setState({ disconnectedAt: Date.now() - 5001 }); store.expire(Date.now()) }}>模拟断连</button>
   </main>
 }
-createRoot(document.getElementById('root')!).render(<BrowserRouter><Fixture /></BrowserRouter>)
+const editor = new URLSearchParams(location.search).has('warning-editor')
+createRoot(document.getElementById('root')!).render(editor
+  ? <RouterProvider router={createMemoryRouter([{ path: '/accounts/:id/edit/control', element: <main className="p-5"><AccountEditControlPage /></main> }], { initialEntries: ['/accounts/1/edit/control'] })} />
+  : <BrowserRouter><Fixture /></BrowserRouter>)

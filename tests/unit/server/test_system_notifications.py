@@ -2,6 +2,9 @@
 
 import asyncio
 import importlib.util
+import io
+import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import axile.common.config as cfg
+from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION_CODE
 from axile.common.notification_function import NotificationFunctionResult
 from axile.server import error_notifications
 from axile.server.api.routes import init as init_module
@@ -62,6 +66,57 @@ def test_trial_reports_real_source_error(client):
     assert response.json()["ok"] is False
     assert response.json()["error_line"] == 2
     assert "source error" in response.json()["message"]
+
+
+def test_quota_trial_exposes_warning_data_without_error_or_persisting_result(client, monkeypatch):
+    results = []
+    monkeypatch.setattr(error_notifications, "record_system_notification_result", results.append)
+    response = client.post(
+        "/api/v1/init/execution-alert/function/test",
+        json={
+            "event_type": "account_control.warning",
+            "code": "def notify(context):\n    assert context['event_type'] == 'account_control.warning'\n    assert context['error'] is None\n    assert context['quota']['used'] == 400\n    assert context['quota']['remaining'] == 100\n    assert context['is_test'] is True\n",
+        },
+    )
+    assert response.json()["ok"] is True
+    assert results == []
+
+
+def test_default_function_template_formats_quota_card_without_exception(monkeypatch):
+    requests = []
+
+    def urlopen(request, **_kwargs):
+        requests.append(json.loads(request.data))
+        return io.BytesIO(b'{"code": 0}')
+
+    monkeypatch.setenv("AXILE_SYSTEM_FEISHU_KEY", "test-only-key")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    namespace = {}
+    exec(DEFAULT_SYSTEM_NOTIFICATION_CODE, namespace)
+    namespace["notify"](
+        {
+            "event_type": "account_control.warning",
+            "account": {"id": 1, "name": "额度测试"},
+            "occurred_at": "2026-10-15T09:30:00+08:00",
+            "execution_id": "exec",
+            "error": None,
+            "is_test": False,
+            "quota": {
+                "operation": "cancel_order",
+                "used": 320,
+                "limit": 400,
+                "remaining": 80,
+                "warning_percent": 80,
+                "threshold_count": 320,
+                "control_date": "2026-10-15",
+                "timezone": "Asia/Shanghai",
+            },
+        }
+    )
+    card = requests[0]["card"]
+    assert card["header"]["title"]["content"] == "账户额度预警"
+    assert "撤单" in card["elements"][0]["content"]
+    assert "320 / 400" in card["elements"][0]["content"]
 
 
 def test_default_trial_can_use_saved_key(client, monkeypatch):

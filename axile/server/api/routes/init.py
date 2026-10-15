@@ -11,6 +11,7 @@ import asyncio
 import os
 import signal
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
@@ -30,7 +31,7 @@ from axile.common.config import (
 from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION_CODE
 from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
-from axile.executor.algorithms.utils.clock import get_default_clock
+from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.error_notifications import build_system_notification_context, build_test_card
 from axile.server.execution.notification_state import get_system_notification_result
@@ -79,7 +80,7 @@ class NotificationFunctionTestRequest(BaseModel):
 
     code: str
     key: str | None = None
-    event_type: Literal["execution_error", "execution_timeout"] = "execution_error"
+    event_type: Literal["execution_error", "execution_timeout", "account_control.warning"] = "execution_error"
 
 
 class ExecutionAlertUpdateRequest(BaseModel):
@@ -306,6 +307,19 @@ async def test_system_notification_function(payload: NotificationFunctionTestReq
     error = RuntimeError("样例执行超时" if payload.event_type == "execution_timeout" else "样例执行异常")
     context = build_system_notification_context(error, None, event_type=payload.event_type, is_test=True)
     context["account"] = {"id": 0, "name": "样例账户"}
+    if payload.event_type == "account_control.warning":
+        context["error"] = None
+        context["quota"] = {
+            "operation": "place_order",
+            "control_date": clock_now(tz=ZoneInfo("Asia/Shanghai")).date().isoformat(),
+            "timezone": "Asia/Shanghai",
+            "used": 400,
+            "limit": 500,
+            "warning_percent": 80,
+            "threshold_count": 400,
+            "remaining": 100,
+            "source": "axile_local_allowed",
+        }
     key = settings.exe_err_feishu_key if payload.key is None else payload.key
     result = await asyncio.to_thread(run_notification_function, payload.code, context, system_feishu_key=key)
     return NotificationFunctionTestResult(

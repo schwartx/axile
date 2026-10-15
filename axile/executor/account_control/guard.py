@@ -39,6 +39,7 @@ from axile.executor.account_control.snapshot import (
     AccountControlCounterSnapshot,
     AccountControlRecentAllowedSnapshot,
 )
+from axile.executor.account_control.warnings import AccountControlQuotaWarning
 from axile.executor.algorithms.utils.clock import Clock, clock_now, get_default_clock
 
 type AccountCounterKey = tuple[str, AccountControlBucketType, str, str]
@@ -60,7 +61,7 @@ def _business_metadata(metadata: Mapping[str, object] | None) -> dict[str, objec
     return {
         key: value
         for key, value in _normalize_metadata(metadata).items()
-        if key not in {"account_control_hit", "account_control_wait_hits"}
+        if key not in {"account_control_hit", "account_control_wait_hits", "quota_warning"}
     }
 
 
@@ -375,6 +376,7 @@ class AccountControlGuard:
         self._wait_queue: list[_QueuedRequest] = []
         self._thread_state = local()
         self._events: list[AccountControlEventWrite] = []
+        self._quota_warnings: dict[str, AccountControlQuotaWarning] = {}
         self._account_counters: dict[AccountCounterKey, int] = {}
         self._symbol_counters: dict[SymbolCounterKey, int] = {}
         self._group_counters: dict[GroupCounterKey, int] = {}
@@ -543,6 +545,7 @@ class AccountControlGuard:
             frozen._wait_queue = list(self._wait_queue)
             frozen._monitor_waits = dict(self._monitor_waits)
             frozen._events = list(self._events[-100:])
+            frozen._quota_warnings = dict(self._quota_warnings)
         return render_guard_snapshot(frozen)
 
     def current_waited_ms(self) -> int:
@@ -676,7 +679,8 @@ class AccountControlGuard:
             operation=operation,
             symbol=symbol,
             metadata=_merge_metadata(
-                metadata, {} if decision.details is None else {"account_control_hit": decision.details.to_metadata()}
+                self._quota_warning_metadata(operation, resolved_attempt.context, metadata),
+                {} if decision.details is None else {"account_control_hit": decision.details.to_metadata()},
             ),
             control_date=resolved_attempt.context.window.control_date,
             decision=AccountControlDecision.BLOCKED,
@@ -713,7 +717,7 @@ class AccountControlGuard:
         event_index = self._append_operation_event(
             operation=operation,
             symbol=symbol,
-            metadata=metadata,
+            metadata=self._quota_warning_metadata(operation, resolved_attempt.context, metadata),
             control_date=resolved_attempt.context.window.control_date,
             decision=AccountControlDecision.ALLOWED,
             counted=True,
@@ -724,6 +728,50 @@ class AccountControlGuard:
         active.append(event_index)
         self._thread_state.active_attempts = active
         return AccountControlAttempt(self, event_index)
+
+    def _quota_warning_metadata(
+        self,
+        operation: str,
+        context: AccountControlEvaluationContext,
+        metadata: Mapping[str, object] | None,
+    ) -> Mapping[str, object] | None:
+        """在计数提交后冻结预警；不依赖轮询时刻或异步柜台结果。"""
+        if self.policy is None or operation not in {"place_order", "cancel_order"}:
+            return metadata
+        policy = self.policy.operations.get(operation)
+        if policy is None or policy.daily_warning_percent is None:
+            return metadata
+        rule = policy.account.per_day
+        if rule is None or rule.limit == 0:
+            return metadata
+        used = self._get_count(
+            control_date=context.window.control_date,
+            bucket_type=AccountControlBucketType.DAY,
+            bucket_start=context.window.day_bucket_start,
+            scope_key=operation,
+            symbol=None,
+            is_group=False,
+        )
+        threshold = (rule.limit * policy.daily_warning_percent + 99) // 100
+        key = f"{context.window.control_date}:{operation}"
+        if used < threshold or key in self._quota_warnings:
+            return metadata
+        assert self.account_id is not None and self.execution_id is not None
+        warning = AccountControlQuotaWarning(
+            account_id=self.account_id,
+            execution_id=self.execution_id,
+            operation="place_order" if operation == "place_order" else "cancel_order",
+            control_date=context.window.control_date,
+            timezone=self.policy.timezone,
+            occurred_at_ms=context.occurred_at_ms,
+            used=used,
+            limit=rule.limit,
+            warning_percent=policy.daily_warning_percent,
+            threshold_count=threshold,
+            remaining=max(0, rule.limit - used),
+        )
+        self._quota_warnings[key] = warning
+        return _merge_metadata(metadata, {"quota_warning": warning.model_dump(mode="json")})
 
     def _should_track_symbol_scope(self, *, operation: str, symbol: str | None) -> bool:
         if symbol is None:

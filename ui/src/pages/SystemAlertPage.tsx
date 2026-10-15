@@ -26,7 +26,7 @@ export function SystemAlertPage() {
     <section>
       <ErrorNotice intent="read" hasData title="系统告警配置读取失败" error={state.loadError} onRetry={state.reload} />
       <h1 className="text-[22px] font-semibold text-ink-1">系统告警</h1>
-      <p className="mt-2 text-[14px] text-ink-2">账户执行异常或总超时时发送。保存后立即生效。</p>
+      <p className="mt-2 text-[14px] text-ink-2">账户执行异常、总超时或达到已配置的额度预警线时发送。通知配置保存后立即生效。</p>
       <p className="mt-2 text-[13px] text-ink-3"><InkRewrite text={systemAlertLabel(baseline, state.configured)} tone="label" />{state.dirty ? ' · 当前草稿未保存' : ''}</p>
       <Section label="通知配置">
         <div className="md:col-span-2">

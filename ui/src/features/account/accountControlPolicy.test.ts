@@ -10,6 +10,21 @@ import {
 import type { AccountControlOverride, AccountControlPolicy } from '@/types/api'
 
 describe('normalizedAccountControlOverride', () => {
+  it('仅预警比例的覆盖可以保存，关闭时只移除预警、不丢失额度规则', () => {
+    expect(normalizedOperationOverride({ daily_warning_percent: 80 })).toEqual({ daily_warning_percent: 80 })
+    expect(normalizedOperationOverride({ daily_warning_percent: null, account: { per_day: { limit: 500 } } })).toEqual({ account: { per_day: { limit: 500 } } })
+    expect(countAccountControlOverrides({ operations: { place_order: { daily_warning_percent: 80 } }, groups: {} })).toBe(1)
+  })
+
+  it('取消日额度限制时保留预警比例，恢复限额后继续使用', () => {
+    const override: AccountControlOverride = { operations: { place_order: { daily_warning_percent: 90, account: { per_day: { unlimited: true } } } }, groups: {} }
+    const base: AccountControlPolicy = { timezone: 'Asia/Shanghai', operations: { place_order: { priority: 100, account: { per_day: { limit: 500, on_trigger: 'block' } } } }, groups: {} }
+    const resolved = resolveAccountControlPolicy(base, override).operations.place_order
+    expect(resolved.daily_warning_percent).toBe(90)
+    expect(resolved.account.per_day).toBeNull()
+    expect(normalizedAccountControlOverride(override)?.operations.place_order.daily_warning_percent).toBe(90)
+  })
+
   it('保留仅含 priority=0 的覆盖并移除服务端填充的 null', () => {
     const value: AccountControlOverride = {
       timezone: null,

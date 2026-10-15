@@ -24,6 +24,7 @@ from axile.executor.account_control.snapshot import (
     AccountControlCounterSnapshot,
     AccountControlRecentAllowedSnapshot,
 )
+from axile.server.account_control.warnings import enqueue_recorded_warnings
 from axile.server.db.models import AccountControlCounterDelta, AccountControlEvent
 
 
@@ -181,3 +182,4 @@ class AccountControlStore:
         except Exception:
             await self.session.rollback()
             raise
+        await enqueue_recorded_warnings(self.session, events)

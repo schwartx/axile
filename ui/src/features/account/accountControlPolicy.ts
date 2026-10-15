@@ -38,9 +38,10 @@ export function normalizedOperationOverride(
   if (!value) return null
   const account = normalizedScope(value.account)
   const symbol = normalizedScope(value.symbol)
-  if (value.priority == null && !account && !symbol) return null
+  if (value.priority == null && value.daily_warning_percent == null && !account && !symbol) return null
   return {
     ...(value.priority != null ? { priority: value.priority } : {}),
+    ...(value.daily_warning_percent != null ? { daily_warning_percent: value.daily_warning_percent } : {}),
     ...(account ? { account } : {}),
     ...(symbol ? { symbol } : {}),
   }
@@ -91,6 +92,7 @@ function countScopeOverrides(value: AccountControlScopeOverride | null | undefin
 export function countOperationOverrides(value: AccountControlOperationOverride | null | undefined): number {
   if (!value) return 0
   return (value.priority != null ? 1 : 0)
+    + (value.daily_warning_percent != null ? 1 : 0)
     + countScopeOverrides(value.account)
     + countScopeOverrides(value.symbol)
 }
@@ -142,6 +144,7 @@ export function resolveAccountControlPolicy(
     const current = operations[key] ?? { priority: 100, account: {} }
     operations[key] = {
       priority: operationOverride.priority ?? current.priority,
+      daily_warning_percent: operationOverride.daily_warning_percent ?? null,
       account: resolveAccountControlScope(current.account, operationOverride.account),
       symbol: current.symbol || operationOverride.symbol
         ? resolveAccountControlScope(current.symbol, operationOverride.symbol)

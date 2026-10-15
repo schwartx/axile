@@ -389,6 +389,7 @@ def _merge_operation_policy(
         return _copy_operation_policy(base_operation)
     return AccountControlOperationPolicy(
         priority=base_operation.priority if override_operation.priority is None else override_operation.priority,
+        daily_warning_percent=override_operation.daily_warning_percent,
         account=_merge_scope_policy(base_operation.account, override_operation.account),
         symbol=(
             None

@@ -1,7 +1,7 @@
 /** 账户流控结构化编辑页。界面只展示中文业务语义，内部键仅用于数据索引。 */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FocusEvent as ReactFocusEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FocusEvent as ReactFocusEvent, ReactNode } from 'react'
 import { useParams } from 'react-router'
 import { Pencil } from 'lucide-react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -27,6 +27,9 @@ import {
   sameAccountControlOverride,
 } from '@/features/account/accountControlPolicy'
 import { ControlRecentRecords, ControlWaitingSection } from '@/features/account/ControlActivity'
+import { ControlWarningField } from '@/features/account/ControlWarningField'
+import { quotaWarningPercentError } from '@/features/account/quotaWarning'
+import { Link } from '@/components/ui/nav'
 import { ControlScopeUsage, ControlSymbolUsage, ControlUsageNotice } from '@/features/account/ControlUsage'
 import { useLiveControl, type ControlFrame } from '@/stores/liveControl'
 import { AccountPageTitle } from '@/features/account/pageHead'
@@ -401,11 +404,13 @@ function ControlScopeEditor({
   preset,
   custom,
   onChange,
+  dailyWarning,
 }: {
   label: string
   preset: AccountControlScope | null | undefined
   custom: AccountControlScopeOverride | null | undefined
   onChange: (next: AccountControlScopeOverride | null) => void
+  dailyWarning?: ReactNode
 }) {
   const setRule = (key: RuleKey, rule: AccountControlRuleOverride | null) => {
     const next = { ...(custom ?? {}), [key]: rule }
@@ -417,7 +422,10 @@ function ControlScopeEditor({
       <h3 className="text-[14px] font-semibold text-ink-1">{label}</h3>
       <div className="mt-1">
         {RULES.map(({ key }) => (
-          <ControlRuleField key={key} ruleKey={key} preset={preset?.[key]} custom={custom?.[key]} onChange={(rule) => setRule(key, rule)} />
+          <Fragment key={key}>
+            <ControlRuleField ruleKey={key} preset={preset?.[key]} custom={custom?.[key]} onChange={(rule) => setRule(key, rule)} />
+            {key === 'per_day' && dailyWarning}
+          </Fragment>
         ))}
       </div>
     </div>
@@ -433,6 +441,8 @@ function ControlOperationRow({
   open,
   onToggle,
   onChange,
+  onWarningInvalidChange,
+  warningEditVersion,
 }: {
   monitorFrame: ControlFrame | undefined
   meta: AccountControlOperationMeta
@@ -442,8 +452,11 @@ function ControlOperationRow({
   open: boolean
   onToggle: () => void
   onChange: (next: AccountControlOperationOverride | null) => void
+  onWarningInvalidChange: (operation: string, invalid: boolean) => void
+  warningEditVersion: number
 }) {
   const customCount = countOperationOverrides(custom)
+  const reportWarningInvalid = useCallback((invalid: boolean) => onWarningInvalidChange(meta.key, invalid), [meta.key, onWarningInvalidChange])
   const setScope = (key: ScopeKey, scope: AccountControlScopeOverride | null) => {
     const next = { ...(custom ?? {}), [key]: scope }
     if (!scope) delete next[key]
@@ -470,6 +483,7 @@ function ControlOperationRow({
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
             <span className="mr-2 text-ink-3">账户合计</span>{scopeSummary(effective.account)}
+            {effective.daily_warning_percent != null && <span> · {effective.account.per_day && effective.account.per_day.limit > 0 ? `${effective.daily_warning_percent}% 预警` : '预警暂停'}</span>}
             <ControlScopeUsage frame={monitorFrame} operation={meta.key} />
           </span>
           <span className={`min-w-0 flex-1 basis-40 text-[13px] ${zoneText}`}>
@@ -487,7 +501,17 @@ function ControlOperationRow({
           <div className="border-t border-line px-4 pb-3">
             <ControlPriorityField preset={preset.priority} custom={custom?.priority} onChange={setPriority} />
             <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
-              <ControlScopeEditor label="账户合计" preset={preset.account} custom={custom?.account} onChange={(scope) => setScope('account', scope)} />
+              <ControlScopeEditor label="账户合计" preset={preset.account} custom={custom?.account} onChange={(scope) => setScope('account', scope)} dailyWarning={['place_order', 'cancel_order'].includes(meta.key) ? <ControlWarningField
+                key={warningEditVersion}
+                operationName={meta.display_name}
+                limit={effective.account.per_day?.limit}
+                value={effective.daily_warning_percent ?? null}
+                onInvalidChange={reportWarningInvalid}
+                onChange={(percent) => {
+                  const next = { ...(custom ?? {}), daily_warning_percent: percent }
+                  onChange(normalizedOperationOverride(next))
+                }}
+              /> : undefined} />
               <div>
                 <ControlScopeEditor label="每个品种" preset={preset.symbol} custom={custom?.symbol} onChange={(scope) => setScope('symbol', scope)} />
                 <ControlSymbolUsage frame={monitorFrame} operation={meta.key} expanded />
@@ -520,6 +544,9 @@ export function AccountEditControlPage() {
   const [previewing, setPreviewing] = useState(false)
   const [previewNote, setPreviewNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const [invalidWarnings, setInvalidWarnings] = useState<Record<string, boolean>>({})
+  const [warningEditVersion, setWarningEditVersion] = useState(0)
+  const reportWarningInvalid = useCallback((operation: string, invalid: boolean) => setInvalidWarnings((previous) => previous[operation] === invalid ? previous : { ...previous, [operation]: invalid }), [])
   const [policyError, setPolicyError] = useState<Error | null>(null)
   const [previewError, setPreviewError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
@@ -586,6 +613,7 @@ export function AccountEditControlPage() {
   const dirty = dirtyPreset || dirtyOverride
   const errors = Object.values(override.operations ?? {}).flatMap((operation) => [
     priorityError(operation.priority),
+    quotaWarningPercentError(operation.daily_warning_percent),
     ...[operation.account, operation.symbol].flatMap((scope) =>
       RULES.map(({ key }) => ruleError(key, scope?.[key])).filter(Boolean),
     ),
@@ -653,6 +681,8 @@ export function AccountEditControlPage() {
       open={openKey === meta.key}
       onToggle={() => setOpenKey((value) => value === meta.key ? null : meta.key)}
       onChange={(next) => setOperation(meta.key, next)}
+      onWarningInvalidChange={reportWarningInvalid}
+      warningEditVersion={warningEditVersion}
     />
   )
 
@@ -663,6 +693,7 @@ export function AccountEditControlPage() {
 
   const save = async () => {
     if (errors.length) return toast(`流控设置有误：${errors[0]}`)
+    if (Object.values(invalidWarnings).some(Boolean)) return toast('请先修正额度预警比例')
     setSaving(true)
     setSaveError(null)
     try {
@@ -715,6 +746,7 @@ export function AccountEditControlPage() {
 
       <ControlWaitingSection frame={monitorFrame} operationNames={operationNames} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
+      <p className="mt-3 text-xs leading-5 text-ink-3">额度预警沿用系统告警的发送方式，同一账户、操作和统计日只提醒一次。<Link to="/settings/notification" className="ml-1 text-accent">查看系统告警配置 →</Link></p>
 
       {other.length > 0 && (
         <div className="mt-4">
@@ -760,7 +792,7 @@ export function AccountEditControlPage() {
       )}
 
       <ControlRecentRecords frame={monitorFrame} operationNames={operationNames} />
-      <EditSaveBar changes={changes} blocked={Boolean(errors.length || previewing)} onCancel={cancelEdit} onSave={() => void save()} saving={saving} error={saveError} />
+      <EditSaveBar changes={changes} blocked={Boolean(errors.length || previewing || Object.values(invalidWarnings).some(Boolean))} onCancel={() => { cancelEdit(); setWarningEditVersion((version) => version + 1) }} onSave={() => void save()} saving={saving} error={saveError} />
     </section>
   )
 }

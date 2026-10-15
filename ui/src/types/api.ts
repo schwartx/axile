@@ -308,12 +308,14 @@ export interface AccountControlScopeOverride {
 
 export interface AccountControlOperationPolicy {
   priority: number
+  daily_warning_percent?: number | null
   account: AccountControlScope
   symbol?: AccountControlScope | null
 }
 
 export interface AccountControlOperationOverride {
   priority?: number | null
+  daily_warning_percent?: number | null
   account?: AccountControlScopeOverride | null
   symbol?: AccountControlScopeOverride | null
 }

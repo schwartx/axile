@@ -15,7 +15,9 @@ import loguru
 
 from axile.common.config import settings
 from axile.common.feishu import push_feishu_card
+from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
+from axile.common.quota_warning_card import build_quota_warning_card
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
@@ -188,12 +190,31 @@ async def send_feishu_error(
         return
     context = build_system_notification_context(error, account, event_type=event_type, execution_id=execution_id)
     result = await _send_system_notification(mode, context, error, account, feishu_key)
+    await _record_system_result(context, mode, result)
+
+
+async def send_system_notification(context: dict[str, object]) -> NotificationFunctionResult:
+    """复用系统告警配置发送额度预警；默认缺少凭据时如实记录失败。"""
+    mode = settings.system_execution_notification_mode
+    key = settings.exe_err_feishu_key or ""
+    result = (
+        NotificationFunctionResult(False, "未配置系统飞书 Webhook，额度预警未发送")
+        if mode == "default" and not key
+        else await _send_system_notification(mode, context, None, None, key)
+    )
+    await _record_system_result(context, mode, result)
+    return result
+
+
+async def _record_system_result(context: dict, mode: str, result: NotificationFunctionResult) -> None:
+    """系统告警共用发送摘要，保存失败不改变原发送结果。"""
+    account = context.get("account") or {}
     state = SystemNotificationStatePublic(
         finished_at=clock_now().isoformat(),
         mode=mode,
-        event_type=event_type,
-        execution_id=execution_id,
-        account_id=account.id if account else None,
+        event_type=context["event_type"],
+        execution_id=context.get("execution_id"),
+        account_id=account.get("id"),
         ok=result.ok,
         error=result.error,
     )
@@ -202,7 +223,7 @@ async def send_feishu_error(
     except Exception as exc:
         # 摘要写入失败不能反过来改变交易或发送结果。
         loguru.logger.warning("保存系统告警结果失败: {}", exc)
-    loguru.logger.info("系统执行通知完成 execution_id={} mode={} ok={}", execution_id, mode, result.ok)
+    loguru.logger.info("系统执行通知完成 execution_id={} mode={} ok={}", state.execution_id, mode, result.ok)
 
 
 def build_system_notification_context(
@@ -232,7 +253,7 @@ def build_system_notification_context(
 async def _send_system_notification(
     mode: str,
     context: dict[str, object],
-    error: Exception,
+    error: Exception | None,
     account: AccountContext | None,
     feishu_key: str,
 ) -> NotificationFunctionResult:
@@ -248,9 +269,13 @@ async def _send_system_notification(
             if not result.ok:
                 loguru.logger.error(f"自定义系统执行通知失败: {result.error}")
             return result
-        error_msg = f"{error}\n\n堆栈跟踪:\n{''.join(traceback.format_exception(error))}"
-        external_ip = await get_external_ip()
-        card = build_error_card(error_msg, account.name if account else None, external_ip)
+        if context["event_type"] == ACCOUNT_CONTROL_WARNING_EVENT:
+            card = build_quota_warning_card(context)
+        else:
+            assert error is not None
+            error_msg = f"{error}\n\n堆栈跟踪:\n{''.join(traceback.format_exception(error))}"
+            external_ip = await get_external_ip()
+            card = build_error_card(error_msg, account.name if account else None, external_ip)
         await asyncio.to_thread(push_feishu_card, card, feishu_key)
         return NotificationFunctionResult(True)
     except Exception as exc:

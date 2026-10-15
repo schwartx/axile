@@ -61,6 +61,20 @@ def test_policy_route_previews_ctp_without_mutating_account(monkeypatch: pytest.
     assert account.account_control_preset == "default"
 
 
+def test_policy_route_roundtrips_daily_warning_without_losing_existing_quota(monkeypatch):
+    account = _account()
+    account.account_control_override.operations["place_order"].daily_warning_percent = 80
+
+    async def get_account(_session, _account_id):
+        return account
+
+    monkeypatch.setattr(account_control_policy_routes, "_get_account_or_404", get_account)
+    result = asyncio.run(account_control_policy_routes.get_account_control_policy(object(), 1, None))
+    assert result.override.operations["place_order"].daily_warning_percent == 80
+    assert result.effective_policy.operations["place_order"].daily_warning_percent == 80
+    assert result.effective_policy.operations["place_order"].account.per_day.limit == 12
+
+
 def test_policy_route_rejects_incompatible_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_get_account(_session: object, _account_id: int) -> SimpleNamespace:
         return _account(channel=TradeChannel("plugin-channel"))

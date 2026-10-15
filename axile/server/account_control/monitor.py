@@ -22,6 +22,7 @@ from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import AccountControlMonitorPublic
 from axile.server.account_control.store import AccountControlStore
+from axile.server.account_control.warnings import enqueue_quota_warnings, wake_pending_quota_warnings
 from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_control import AccountControlEvent
@@ -61,6 +62,7 @@ class AccountControlMonitor:
         self._outcomes: dict[str, str] = {}
         self._history: dict[int, tuple[object, AccountControlGuard, list[dict[str, Any]]]] = {}
         self._refresh_lock = asyncio.Lock()
+        self._queued_warnings: dict[tuple[str, str], None] = {}
 
     def start(self) -> None:
         """启动进程唯一采样任务。"""
@@ -140,6 +142,7 @@ class AccountControlMonitor:
                 frame = AccountControlMonitorPublic.model_validate(
                     await self._account_frame(db, account, related)
                 ).model_dump(mode="json")
+                await self._enqueue_warnings(db, account, related)
                 previous = self.frames.get(account.id)
                 if self._content(previous) != self._content(frame):
                     changed.append(frame)
@@ -147,9 +150,38 @@ class AccountControlMonitor:
             removed = [key for key in self.frames if key not in present]
             for key in removed:
                 self._history.pop(key, None)
+            await wake_pending_quota_warnings(db)
         # 整轮采样完成后同步提交，快照不会读到跨版本的半轮账户数据。
         self.frames = frames
         self._publish(changed, removed)
+
+    async def _enqueue_warnings(self, db: Any, account: Account, sessions: list[AccountControlSession]) -> None:
+        """采样冻结的触发事实，不从页面用量或当前保存配置推测预警。"""
+        from axile.executor.account_control.warnings import AccountControlQuotaWarning
+
+        assert account.id is not None
+        pending = {}
+        known_instances = {session.instance_id for session in sessions}
+        for frame, _, _ in self._sources.get(account.id, []):
+            if frame is None or frame.get("instance_id") not in known_instances:
+                continue
+            for raw in frame.get("quota_warnings", []):
+                warning = AccountControlQuotaWarning.model_validate(raw)
+                key = warning.event_id, frame["instance_id"]
+                if key not in self._queued_warnings:
+                    pending[key] = raw
+        if not pending:
+            return
+        try:
+            await enqueue_quota_warnings(db, account, pending.values())
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("运行中额度预警入队失败，等待下次采样")
+        else:
+            self._queued_warnings.update(dict.fromkeys(pending))
+            while len(self._queued_warnings) > 2048:
+                self._queued_warnings.pop(next(iter(self._queued_warnings)))
 
     @staticmethod
     def _content(frame: dict[str, Any] | None) -> object:

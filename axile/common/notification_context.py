@@ -2,6 +2,8 @@
 
 from typing import Literal, NotRequired, TypedDict
 
+ACCOUNT_CONTROL_WARNING_EVENT = "account_control.warning"
+
 
 class SupplementNotificationItem(TypedDict):
     """一次基础或补发触发在通知中的身份与结束状态。"""
@@ -87,13 +89,28 @@ class SystemNotificationAccount(TypedDict):
     name: str
 
 
+class SystemNotificationQuota(TypedDict):
+    """账户每日额度的本地放行用量，不能作为柜台受理或成交次数。"""
+
+    operation: Literal["place_order", "cancel_order"]
+    control_date: str
+    timezone: str
+    used: int
+    limit: int
+    warning_percent: int
+    threshold_count: int
+    remaining: int
+    source: Literal["axile_local_allowed"]
+
+
 class SystemNotificationContext(TypedDict):
-    """系统执行错误交给 ``notify`` 的上下文。"""
+    """系统执行错误或额度预警交给 ``notify`` 的上下文。"""
 
     event_id: str
     event_type: str
     execution_id: str | None
     occurred_at: str
     account: SystemNotificationAccount | None
-    error: SystemNotificationError
+    error: SystemNotificationError | None
+    quota: NotRequired[SystemNotificationQuota]
     is_test: bool

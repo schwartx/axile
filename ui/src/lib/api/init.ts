@@ -125,7 +125,7 @@ export function initSavePayload(values: InitValues, isEdit: boolean) {
   }
 }
 
-export type SystemNotificationEvent = 'execution_error' | 'execution_timeout'
+export type SystemNotificationEvent = 'execution_error' | 'execution_timeout' | 'account_control.warning'
 export interface SystemNotificationTestResult extends TestResult { error_line?: number | null; traceback?: string | null }
 export interface SystemNotificationResult {
   finished_at: string | null

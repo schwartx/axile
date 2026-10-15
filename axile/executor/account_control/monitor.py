@@ -151,4 +151,5 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
         "waiting": queue,
         "waiting_total": len(guard._wait_queue),
         "records": [event.model_dump(mode="json") for event in reversed(guard._events)],
+        "quota_warnings": [warning.model_dump(mode="json") for warning in guard._quota_warnings.values()],
     }

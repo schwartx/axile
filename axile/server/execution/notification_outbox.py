@@ -6,11 +6,13 @@ import loguru
 from sqlmodel import col, select
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
+from axile.common.notification_context import ACCOUNT_CONTROL_WARNING_EVENT
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import Account
 from axile.server.db.models.supplement import NotificationEvent
+from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution.notification_state import record_notification_result
 
 _tasks: dict[int, asyncio.Task[None]] = {}
@@ -51,7 +53,11 @@ async def _dispatch(account_id: int) -> None:
                     "account": event.context.get("account", {"id": account.id, "name": account.name}),
                 }
             result = None
-            if code:
+            if event.event_type == ACCOUNT_CONTROL_WARNING_EVENT:
+                from axile.server.error_notifications import send_system_notification
+
+                result = await send_system_notification(context)
+            elif code:
                 result = (
                     NotificationFunctionResult(False, "未配置飞书 Webhook，无法发送通知")
                     if code == DEFAULT_ACCOUNT_NOTIFICATION_CODE and not key
@@ -66,7 +72,7 @@ async def _dispatch(account_id: int) -> None:
                 current.error = None if result is None else result.error
                 session.add(current)
                 await session.commit()
-            if result is not None:
+            if result is not None and event.event_type != ACCOUNT_CONTROL_WARNING_EVENT:
                 execution = context.get("execution") or {}
                 await asyncio.to_thread(
                     record_notification_result,
@@ -89,6 +95,7 @@ async def _dispatch(account_id: int) -> None:
 
 async def recover_notifications() -> None:
     """恢复未开始事件；调用结果不明的事件永久标记 unknown。"""
+    system_results = []
     async with SessionLocal() as session:
         rows = list(
             (
@@ -104,6 +111,18 @@ async def recover_notifications() -> None:
                 event.error = "服务重启，通知调用结果未知"
                 event.finished_at = clock_now().isoformat()
                 session.add(event)
+                if event.event_type == ACCOUNT_CONTROL_WARNING_EVENT:
+                    system_results.append(
+                        SystemNotificationStatePublic(
+                            finished_at=event.finished_at,
+                            event_type=event.event_type,
+                            execution_id=event.context.get("execution_id"),
+                            account_id=event.account_id,
+                            ok=None,
+                            error=event.error,
+                        )
+                    )
+                    continue
                 from axile.server.db.models.account_notification import AccountNotificationState
 
                 state = await session.get(AccountNotificationState, event.account_id)
@@ -119,5 +138,13 @@ async def recover_notifications() -> None:
             else:
                 accounts.add(event.account_id)
         await session.commit()
+    if system_results:
+        from axile.server.execution.notification_state import record_system_notification_result
+
+        for result in system_results:
+            try:
+                await asyncio.to_thread(record_system_notification_result, result)
+            except Exception:
+                loguru.logger.exception("恢复系统告警摘要失败，通知事件已保留为未知")
     for account_id in accounts:
         wake_notifications(account_id)

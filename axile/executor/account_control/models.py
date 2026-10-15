@@ -132,6 +132,8 @@ def _validate_operation_metadata(
 ) -> None:
     for operation_key, operation_policy in operations.items():
         _validate_registered_operation_key(operation_key)
+        if operation_policy.daily_warning_percent is not None and operation_key not in {"place_order", "cancel_order"}:
+            raise ValueError("每日额度预警仅支持账户报单和撤单")
 
 
 class AccountControlRuleOverride(_AccountControlBaseModel):
@@ -239,6 +241,9 @@ class AccountControlOperationOverride(_AccountControlBaseModel):
 
     Attributes
     ----------
+    daily_warning_percent : int | None
+        账户报单或撤单的每日额度预警比例，范围 1–99；为空时关闭。
+        暂停日额度限制时保留该设置，恢复限额后继续使用。
     account : AccountControlScopeOverride | None
         账户级覆盖配置。
     symbol : AccountControlScopeOverride | None
@@ -246,6 +251,7 @@ class AccountControlOperationOverride(_AccountControlBaseModel):
     """
 
     priority: StrictInt | None = None
+    daily_warning_percent: StrictInt | None = Field(default=None, ge=1, le=99)
     account: AccountControlScopeOverride | None = None
     symbol: AccountControlScopeOverride | None = None
 
@@ -256,6 +262,9 @@ class AccountControlOperationPolicy(_AccountControlBaseModel):
 
     Attributes
     ----------
+    daily_warning_percent : int | None
+        账户级每日额度预警比例，独立于排队和阻断行为。
+        无限额或限额为 0 时预警不生效。
     account : AccountControlScopePolicy
         账户级规则。
     symbol : AccountControlScopePolicy | None
@@ -263,6 +272,7 @@ class AccountControlOperationPolicy(_AccountControlBaseModel):
     """
 
     priority: StrictInt = 100
+    daily_warning_percent: StrictInt | None = Field(default=None, ge=1, le=99)
     account: AccountControlScopePolicy = Field(default_factory=AccountControlScopePolicy)
     symbol: AccountControlScopePolicy | None = None
 
