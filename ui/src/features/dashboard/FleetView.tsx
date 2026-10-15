@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { Copy, Plus } from 'lucide-react'
+import { ArrowUpRight, Copy, Plus } from 'lucide-react'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
@@ -8,6 +8,7 @@ import { Link, useNavigate } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
 import { NumberTicker } from '@/components/ui/NumberTicker'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { ExposureBar } from '@/components/viz/ExposureBar'
 import { INTEGRITY_ICON, INTEGRITY_TEXT_CLASS, INTEGRITY_ORDER, channelLabel } from '@/features/dashboard/display'
@@ -73,7 +74,6 @@ function FleetCard({
           <span className="rounded-chip bg-fill px-2 py-0.5 text-[12px] text-ink-3">{gate.label}</span>
         )}
         <AccountConnectionStatus accountId={item.account_id} />
-        <span className="text-xs text-ink-3">{portfolioName ?? (item.portfolio_id ? `组合 #${item.portfolio_id}` : '未绑定组合')}</span>
         {live ? (
           <span className="ml-auto inline-flex items-center gap-1.5 text-[14.5px] font-semibold text-accent">
             {isExecutingStatus(live.status)
@@ -93,6 +93,17 @@ function FleetCard({
         >
           <Copy size={13} aria-hidden />复制
         </button>
+      </div>
+
+      <div className="mt-2 flex min-w-0 items-center gap-2 text-[13px]">
+        <span className="shrink-0 text-ink-3">组合 ·</span>
+        {item.portfolio_id != null ? (
+          <Link to={`/portfolios/${item.portfolio_id}/edit`} onClick={event => event.stopPropagation()}
+            className="inline-flex min-w-0 items-center gap-1 text-ink-2 underline decoration-line underline-offset-4 hover:text-accent hover:decoration-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+            <OverflowText text={portfolioName ?? `组合 #${item.portfolio_id}`} className="min-w-0" />
+            <ArrowUpRight size={13} className="shrink-0" aria-hidden />
+          </Link>
+        ) : <span className="text-ink-2">未绑定组合</span>}
       </div>
 
       <div className="mt-3 flex items-end justify-between gap-3">
