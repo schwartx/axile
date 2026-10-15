@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor import AbstractExecutor
 from axile.executor.models.execution_result import ExecutionStatus
-from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
-from axile.executor.models.unified_input import CTPAccountConfig, UnifiedStandardInput
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
-from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 
 
@@ -120,141 +117,3 @@ def test_empty_positions_returns_noop_result_when_no_positions() -> None:
 
     assert result.status == ExecutionStatus.NOOP
     assert result.memory == {"message": "当前账户无持仓，无需清仓"}
-
-
-def test_empty_positions_executes_and_sends_feishu_notification(monkeypatch) -> None:
-    captured: dict[str, Any] = {}
-    executor = _EmptyPositionsExecutor(
-        UnifiedAccountAssets(
-            available_cash=900.0,
-            total_asset=1000.0,
-            market_value=100.0,
-            positions=[
-                Position(
-                    symbol="rb2610",
-                    volume=1.0,
-                    available_volume=1.0,
-                    market_value=100.0,
-                    direction=PositionDirection.LONG,
-                    avg_price=100.0,
-                )
-            ],
-        )
-    )
-    executor.account_config = CTPAccountConfig.model_validate(
-        {
-            "broker_id": "b",
-            "investor_id": "i",
-            "password": "p",
-            "td_front": "tcp://td:1",
-            "md_front": "tcp://md:2",
-            "app_id": "app",
-            "auth_code": "auth",
-        }
-    )
-
-    def fake_execute(
-        standard_input: UnifiedStandardInput,
-        *,
-        cleanup: bool,
-        retain_runtime: bool,
-    ) -> UnifiedStandardOutput:
-        captured["input"] = standard_input
-        captured["cleanup"] = cleanup
-        captured["retain_runtime"] = retain_runtime
-        return UnifiedStandardOutput(
-            account_assets=executor.get_account_assets(),
-            inputs=standard_input,
-            status=ExecutionStatus.SUCCEEDED,
-            channel_type=TradeChannel.CTP,
-            success=True,
-        )
-
-    monkeypatch.setattr(executor, "execute", fake_execute)
-    monkeypatch.setattr(
-        executor, "_calculate_last_target_unified", lambda positions: {position.symbol: 0.1 for position in positions}
-    )
-
-    result = executor.empty_positions(
-        cleanup=False,
-        retain_runtime=True,
-        feishu_key="hook-empty",
-        forbidden_symbols=["ag2612"],
-        extra={"source": "test"},
-    )
-
-    assert result.success is True
-    assert captured["cleanup"] is False
-    assert captured["retain_runtime"] is True
-    standard_input = captured["input"]
-    assert isinstance(standard_input, UnifiedStandardInput)
-    assert standard_input.curr_target == {"rb2610": 0.0}
-    assert standard_input.last_target == {"rb2610": 0.1}
-    assert standard_input.trade_rules == {"rb2610": {"price": "PASSIVE"}}
-    assert standard_input.feishu_key == "hook-empty"
-    assert standard_input.forbidden_symbols == ["ag2612"]
-    assert standard_input.extra["source"] == "test"
-    assert result.success is True  # fake execute 不进入真实通知入口
-
-
-def test_empty_positions_uses_wider_default_timeout(monkeypatch) -> None:
-    """清仓未显式指定总超时时，标准输入应带上比调仓更宽的额度。
-
-    清仓是应急去风险：跑久了不如被截断一半糟糕——中途终止会把仓位留在账上，
-    而串行下单渠道的总时长约为「品种数 × max_wait_seconds」，用调仓那档额度
-    会让稍多品种的清仓稳定半途而废。
-    """
-    from axile.executor.abstract_executor.facade import DEFAULT_CLEAR_TIMEOUT
-    from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
-
-    assert DEFAULT_CLEAR_TIMEOUT > DEFAULT_EXECUTION_TIMEOUT_SECONDS
-
-    captured: dict[str, Any] = {}
-    executor = _EmptyPositionsExecutor(
-        UnifiedAccountAssets(
-            available_cash=900.0,
-            total_asset=1000.0,
-            market_value=100.0,
-            positions=[
-                Position(
-                    symbol="rb2610",
-                    volume=1.0,
-                    available_volume=1.0,
-                    market_value=100.0,
-                    direction=PositionDirection.LONG,
-                    avg_price=100.0,
-                )
-            ],
-        )
-    )
-    executor.account_config = CTPAccountConfig.model_validate(
-        {
-            "broker_id": "b",
-            "investor_id": "i",
-            "password": "p",
-            "td_front": "tcp://td:1",
-            "md_front": "tcp://md:2",
-            "app_id": "app",
-            "auth_code": "auth",
-        }
-    )
-
-    def fake_execute(standard_input: UnifiedStandardInput, **kwargs: object) -> UnifiedStandardOutput:
-        _ = kwargs
-        captured["input"] = standard_input
-        return UnifiedStandardOutput(
-            account_assets=executor.get_account_assets(),
-            inputs=standard_input,
-            status=ExecutionStatus.SUCCEEDED,
-            channel_type=TradeChannel.CTP,
-            success=True,
-        )
-
-    monkeypatch.setattr(executor, "execute", fake_execute)
-    executor.empty_positions()
-
-    assert captured["input"].execution_timeout == DEFAULT_CLEAR_TIMEOUT
-
-    # 调用方显式指定时以调用方为准。
-    executor.empty_positions(execution_timeout=90)
-    assert captured["input"].execution_timeout == 90

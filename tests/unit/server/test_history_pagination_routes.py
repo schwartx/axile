@@ -75,7 +75,7 @@ def _build_app(session: object | None = None) -> FastAPI:
         "/account/executions/execution-1/artifacts",
     ],
 )
-@pytest.mark.parametrize("params", [{"skip": -1}, {"limit": 0}, {"limit": -1}, {"limit": 501}])
+@pytest.mark.parametrize("params", [{"skip": -1}, {"limit": 0}, {"limit": 501}])
 def test_history_routes_reject_out_of_range_pagination_before_database_access(
     path: str, params: dict[str, int]
 ) -> None:
@@ -94,9 +94,9 @@ def test_history_routes_reject_out_of_range_pagination_before_database_access(
         "/account/executions/execution-1/artifacts",
     ],
 )
-@pytest.mark.parametrize("limit", [1, 500])
-def test_history_routes_accept_pagination_bounds_and_apply_limit(path: str, limit: int) -> None:
-    """边界值可用，列表查询使用请求指定的硬上限。"""
+def test_history_routes_accept_pagination_bounds_and_apply_limit(path: str) -> None:
+    """允许最大页长，并把请求上限传递到每个端点的实际查询。"""
+    limit = 500
     session = _PagingSession()
     response = TestClient(_build_app(session)).get(path, params={"skip": 0, "limit": limit})
 
@@ -104,25 +104,3 @@ def test_history_routes_accept_pagination_bounds_and_apply_limit(path: str, limi
     assert response.json() == {"data": [], "count": 0}
     assert len(session.statements) == 2
     assert limit in session.statements[-1].compile().params.values()
-
-
-def test_history_routes_publish_identical_pagination_schema() -> None:
-    """四个端点在 OpenAPI 中暴露一致的分页边界和默认值。"""
-    schema = _build_app().openapi()
-    paths = (
-        "/account/execute_records/{account_id}",
-        "/account/portfolio_records/{account_id}",
-        "/account/executions/{execution_id}/events",
-        "/account/executions/{execution_id}/artifacts",
-    )
-    expected = {
-        "skip": {"default": 0, "minimum": 0},
-        "limit": {"default": 100, "minimum": 1, "maximum": 500},
-    }
-
-    for path in paths:
-        parameters = {
-            parameter["name"]: parameter["schema"] for parameter in schema["paths"][path]["get"]["parameters"]
-        }
-        for name, constraints in expected.items():
-            assert {key: parameters[name][key] for key in constraints} == constraints

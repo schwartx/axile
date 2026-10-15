@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
-import { Link } from '@/components/ui/nav'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { usePythonDraft, usePythonRun, usePythonSave } from '@/components/ui/pythonWorkbenchState'
 import { NotificationWorkbench } from '@/features/notification/NotificationWorkbench'
@@ -93,8 +92,7 @@ export function AccountEditNotificationPage() {
       kind="account_notification"
       storageKey={STORAGE_KEY}
       header={<>
-        <Link to={`/accounts/${accountId}/edit`} className="mb-3 inline-block text-[13px] text-accent hover:underline">返回基本信息</Link>
-        <div className="flex flex-wrap items-baseline gap-2"><AccountPageTitle accountId={accountId} page="执行通知函数" name={acc.name} channel={acc.trade_channel} market={acc.market} /></div>
+        <div className="flex flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行通知函数" name={acc.name} channel={acc.trade_channel} market={acc.market} /></div>
         <label className="mt-2 block text-[13px] text-ink-3">试跑事件 <select value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)} disabled={trial.running}><option value="execution.finished">执行完成</option><option value="supplement.cancelled">补发取消</option></select></label>
         <p className="mt-2 text-[13px] text-ink-3">{savedNotificationStatus}{code !== savedCode ? ' · 当前草稿未保存' : ''}</p>
       </>}

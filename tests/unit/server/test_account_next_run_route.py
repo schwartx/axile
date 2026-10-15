@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
-from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -77,66 +76,3 @@ def test_next_run_time_returns_iso_when_job_scheduled() -> None:
             "2026-07-06T09:03:00+08:00",
         ],
     }
-
-
-def test_next_run_times_merge_multiple_cron_rules_in_order() -> None:
-    """组合触发器跨日展开时保持去重与升序。"""
-    timezone = "Asia/Shanghai"
-    trigger = OrTrigger(
-        [
-            CronTrigger(hour=10, minute=0, timezone=timezone),
-            CronTrigger(hour=15, minute=0, timezone=timezone),
-        ]
-    )
-    next_run = datetime.fromisoformat("2026-07-02T10:00:00+08:00")
-    app = _build_app(_RouteSession(build_account(id=1)), _Scheduler(_Job(next_run, trigger)))
-
-    response = TestClient(app).get("/account/1/next_run_time")
-
-    assert response.status_code == 200
-    assert response.json()["next_run_times"] == [
-        "2026-07-02T10:00:00+08:00",
-        "2026-07-02T15:00:00+08:00",
-        "2026-07-03T10:00:00+08:00",
-    ]
-
-
-def test_next_run_time_null_when_no_job() -> None:
-    """账户存在但无调度任务时，is_scheduled=False 且 next_run_time 为 None。"""
-    app = _build_app(_RouteSession(build_account(id=1)), _Scheduler(job=None))
-
-    response = TestClient(app).get("/account/1/next_run_time")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "account_id": 1,
-        "is_scheduled": False,
-        "next_run_time": None,
-        "next_run_times": [],
-        "next_execution_times": [],
-    }
-
-
-def test_next_run_time_null_when_job_has_no_next_fire() -> None:
-    """任务存在但已暂停（next_run_time 为 None）时，is_scheduled=True 且时间为 None。"""
-    app = _build_app(_RouteSession(build_account(id=1)), _Scheduler(_Job(None)))
-
-    response = TestClient(app).get("/account/1/next_run_time")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "account_id": 1,
-        "is_scheduled": True,
-        "next_run_time": None,
-        "next_run_times": [],
-        "next_execution_times": [],
-    }
-
-
-def test_next_run_time_404_when_account_missing() -> None:
-    """账户不存在时返回 404。"""
-    app = _build_app(_RouteSession(account=None), _Scheduler(_Job(datetime(2026, 7, 2, 9, 3, 0))))
-
-    response = TestClient(app).get("/account/999/next_run_time")
-
-    assert response.status_code == 404

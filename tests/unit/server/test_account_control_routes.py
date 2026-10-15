@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +12,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
-from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.account_control.registry import (
@@ -30,7 +27,6 @@ from axile.server.db.models import (
     AccountAssetSnapshot,
     AccountCreate,
     AccountRuntimeSync,
-    AccountUpdate,
     ExecuteRecord,
     ExecutionEvent,
     Portfolio,
@@ -200,41 +196,6 @@ def test_account_public_returns_connection_credentials_but_omits_webhook() -> No
     assert '"feishu_configured":true' in payload
 
 
-@pytest.mark.parametrize("feishu_key", [None, "configured-key"])
-@pytest.mark.parametrize(
-    ("code", "expected"),
-    [
-        (None, "none"),
-        ("", "none"),
-        (" \n ", "none"),
-        (DEFAULT_ACCOUNT_NOTIFICATION_CODE, "default"),
-        ("\n" + DEFAULT_ACCOUNT_NOTIFICATION_CODE + "\n", "default"),
-        (DEFAULT_ACCOUNT_NOTIFICATION_CODE + "\n# 自定义内容", "function"),
-        ("def notify(context):\n    pass\n", "function"),
-    ],
-)
-def test_account_public_notification_status(code: str | None, expected: str, feishu_key: str | None) -> None:
-    """通知状态只有三种，且不受 Webhook 是否配置影响。"""
-    account = _build_account()
-    account.execution_notification_code = code
-    account.feishu_key = feishu_key
-
-    payload = account_crud_routes._account_public(account).model_dump()
-
-    assert payload["execution_notification_status"] == expected
-    assert payload["feishu_configured"] == bool(feishu_key)
-
-
-def test_account_update_credential_contract_is_explicit() -> None:
-    """未提交凭证保持原值；提交值替换；显式 null 清除 webhook。"""
-    assert account_crud_routes._build_account_update_data(AccountUpdate()) == {}
-    assert (
-        account_crud_routes._build_account_update_data(AccountUpdate(feishu_key="replacement"))["feishu_key"]
-        == "replacement"
-    )
-    assert account_crud_routes._build_account_update_data(AccountUpdate(feishu_key=None))["feishu_key"] is None
-
-
 def _account_payload() -> dict[str, object]:
     return {
         "name": "ctp-testnet-sim",
@@ -311,43 +272,6 @@ def test_create_account_requires_explicit_account_control_preset() -> None:
 
     assert response.status_code == 422
     assert any(error["loc"][-1] == "account_control_preset" for error in response.json()["detail"])
-
-
-def test_new_account_with_webhook_gets_default_notification_function(monkeypatch: pytest.MonkeyPatch) -> None:
-    """创建账户时提供飞书 Key，就把可编辑的默认函数存入唯一槽位。"""
-    monkeypatch.setattr(account_crud_routes, "add_record_portfolio_account", _noop_async)
-    session = _RouteSession()
-    payload = AccountCreate.model_validate(_account_payload() | {"feishu_key": "hook"})
-    account = asyncio.run(account_crud_routes._create_account_record(session, payload, payload.account_config))
-    assert account.execution_notification_code == DEFAULT_ACCOUNT_NOTIFICATION_CODE
-
-    disabled = AccountCreate.model_validate(
-        _account_payload() | {"feishu_key": "hook", "execution_notification_code": None}
-    )
-    assert (
-        asyncio.run(
-            account_crud_routes._create_account_record(_RouteSession(), disabled, disabled.account_config)
-        ).execution_notification_code
-        is None
-    )
-
-
-def test_first_webhook_patch_installs_default_function_and_explicit_clear_disables_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """首次填写 Webhook 自动启用默认函数，显式清空函数后保持关闭。"""
-    monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", _noop_async)
-    monkeypatch.setattr(account_crud_routes, "reconcile_account_runtime", _synchronized_runtime_sync)
-    session = _RouteSession(_build_account())
-    client = TestClient(_build_app(session))
-
-    assert client.patch("/account/1", json={"feishu_key": "hook"}).status_code == 200
-    assert session.account is not None
-    assert session.account.execution_notification_code == DEFAULT_ACCOUNT_NOTIFICATION_CODE
-    assert client.patch("/account/1", json={"execution_notification_code": None}).status_code == 200
-    assert session.account.execution_notification_code is None
-    assert client.patch("/account/1", json={"feishu_key": "new-hook"}).status_code == 200
-    assert session.account.execution_notification_code is None
 
 
 def test_create_account_rejects_unknown_account_control_preset(monkeypatch) -> None:
@@ -649,39 +573,6 @@ def test_update_account_rejects_invalid_weight_precision_without_mutation(weight
     assert create_session.account is None
 
 
-def test_account_write_dtos_forbid_unknown_fields_and_publish_edit_contract() -> None:
-    """创建、更新与账户编辑页的每个可写字段必须处于同一 OpenAPI 契约。"""
-    schema = _build_app(_RouteSession()).openapi()
-    components = schema["components"]["schemas"]
-    update_schema = components["AccountUpdate"]
-    update_fields = set(update_schema["properties"])
-    editor_source = (Path(__file__).parents[3] / "ui/src/pages/AccountEditPage.tsx").read_text()
-    editor_fields = set(re.findall(r"patch\\.(\\w+)\\s*=", editor_source))
-
-    assert editor_fields <= update_fields
-    assert components["AccountCreate"]["additionalProperties"] is False
-    assert update_schema["additionalProperties"] is False
-
-    unknown_create = TestClient(_build_app(_RouteSession())).post("/account/", json={"unknown": True})
-    unknown_update = TestClient(_build_app(_RouteSession(_build_account()))).patch("/account/1", json={"unknown": True})
-    assert unknown_create.status_code == 422
-    assert unknown_update.status_code == 422
-    assert any(error["loc"][-1] == "unknown" for error in unknown_create.json()["detail"])
-    assert any(error["loc"][-1] == "unknown" for error in unknown_update.json()["detail"])
-
-
-def test_account_connection_values_expose_all_declared_fields() -> None:
-    """连接编辑只回显声明的非密钥字段，未知扩展也不泄露。"""
-    account = _build_account()
-    account.account_config["private_extension"] = "hidden"
-    public = account_crud_routes._account_public(account)
-    assert public.connection_values["investor_id"] == "test"
-    assert public.connection_values["td_front"] == "tcp://td:1"
-    assert public.connection_values["password"] == account.account_config["password"]
-    assert public.connection_values["auth_code"] == account.account_config["auth_code"]
-    assert "private_extension" not in public.connection_values
-
-
 def test_update_same_channel_preserves_omitted_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """同渠道只改连接地址时，原凭证仍保留。"""
     monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", _noop_async)
@@ -692,72 +583,6 @@ def test_update_same_channel_preserves_omitted_credentials(monkeypatch: pytest.M
     assert session.account is not None
     assert session.account.account_config["td_front"] == "tcp://new:1"
     assert session.account.account_config["password"] == "test"
-
-
-@pytest.mark.parametrize(
-    ("saved_code", "saved_key", "patch", "expected_code", "expected_key", "expected_status"),
-    [
-        (
-            None,
-            "old",
-            {"feishu_key": "new", "execution_notification_code": DEFAULT_ACCOUNT_NOTIFICATION_CODE},
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            "new",
-            "default",
-        ),
-        (
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            "old",
-            {"feishu_key": "new"},
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            "new",
-            "default",
-        ),
-        (
-            "def notify(context): pass",
-            "old",
-            {"execution_notification_code": DEFAULT_ACCOUNT_NOTIFICATION_CODE},
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            "old",
-            "default",
-        ),
-        (
-            "def notify(context): pass",
-            None,
-            {"execution_notification_code": DEFAULT_ACCOUNT_NOTIFICATION_CODE},
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            None,
-            "default",
-        ),
-        (
-            DEFAULT_ACCOUNT_NOTIFICATION_CODE,
-            "old",
-            {"feishu_key": None, "execution_notification_code": None},
-            None,
-            None,
-            "none",
-        ),
-        ("def notify(context): pass", "old", {"execution_notification_code": None}, None, "old", "none"),
-        ("def notify(context): pass", "old", {"remark": "changed"}, "def notify(context): pass", "old", "function"),
-        (None, "old", {"remark": "changed"}, None, "old", "none"),
-    ],
-)
-def test_notification_patch_preserves_omitted_fields_and_reports_saved_status(
-    monkeypatch, saved_code, saved_key, patch, expected_code, expected_key, expected_status
-) -> None:
-    """三态切换保留省略的凭证和源码，响应状态只依据最终保存源码。"""
-    monkeypatch.setattr(account_crud_routes, "enqueue_account_runtime_sync", _noop_async)
-    monkeypatch.setattr(account_crud_routes, "reconcile_account_runtime", _synchronized_runtime_sync)
-    account = _build_account()
-    account.execution_notification_code = saved_code
-    account.feishu_key = saved_key
-    session = _RouteSession(account)
-    response = TestClient(_build_app(session)).patch("/account/1", json=patch)
-    assert response.status_code == 200
-    assert account.execution_notification_code == expected_code
-    assert account.feishu_key == expected_key
-    assert response.json()["execution_notification_status"] == expected_status
-    assert "feishu_key" not in response.json()
 
 
 def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch) -> None:

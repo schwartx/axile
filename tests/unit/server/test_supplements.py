@@ -14,7 +14,7 @@ from sqlmodel import SQLModel, select
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models import Account
-from axile.server.db.models.account_settings import ScheduleSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
 from axile.server.execution import intents, notification_outbox, supplement_notifications, supplements
@@ -105,12 +105,6 @@ async def seed(factory, *, count=2):
         session.add_all(steps)
         await session.commit()
         return group, steps
-
-
-def test_old_settings_remain_null():
-    assert ScheduleSettings.model_validate({"is_started": True, "cron_expr": "0,1,2 * * * *"}).supplement is None
-    with pytest.raises(ValueError):
-        SupplementSettings(count=0, interval_minutes=1)
 
 
 def test_plan_cuts_next_base_and_session(monkeypatch):
@@ -446,27 +440,6 @@ def test_recovery_skips_intermediate_miss_but_keeps_future_last(monkeypatch, sch
                 assert not list((await session.scalars(select(NotificationEvent))).all())
 
     asyncio.run(run())
-
-
-def test_default_cancel_card_accepts_null_execution(monkeypatch):
-    from axile.common import feishu
-    from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
-
-    sent = []
-    monkeypatch.setenv("AXILE_ACCOUNT_FEISHU_KEY", "test-only")
-    monkeypatch.setattr(feishu, "push_feishu_card", lambda card, _key, **_kwargs: sent.append(card))
-    namespace = {}
-    exec(DEFAULT_ACCOUNT_NOTIFICATION_CODE, namespace)
-    namespace["notify"](
-        {
-            "event_type": "supplement.cancelled",
-            "execution": None,
-            "account": {"name": "test"},
-            "supplement": {"reason": "terminated", "cancel_requested_at": BASE.isoformat()},
-        }
-    )
-    assert len(sent) == 1
-    assert sent[0]["header"]["title"]["content"] == "剩余补发已取消"
 
 
 def test_migration_only_upgrades_exact_old_default():

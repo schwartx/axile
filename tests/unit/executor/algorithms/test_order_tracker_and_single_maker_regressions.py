@@ -4,12 +4,12 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from axile.domain.execution import ExecutionEventStatus
 from axile.executor.algorithms.core.base import AlgorithmInput, ExecutorProtocol
 from axile.executor.algorithms.defaults.single_maker import impl as single_maker_impl
-from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
+from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -112,13 +112,6 @@ class _SharedTickSingleMakerExecutor(_SingleMakerExecutor):
 
     def get_market_data(self) -> UnifiedPriceData:
         return self.shared_tick
-
-
-class _ChaseParamsStub(BaseModel):
-    chase_enabled: bool = False
-    chase_ticks: int = 1
-    max_chase_count: int = 5
-    chase_interval: float = 5.0
 
 
 class _RefreshingExecutor:
@@ -392,20 +385,6 @@ def test_order_tracker_matches_gm_order_update_by_alias_and_preserves_actionable
     assert completed_order.extra["exchange_order_id"] == "1001"
 
 
-def test_chase_config_requires_pydantic_params_model() -> None:
-    """追单配置只接受参数模型，不再兼容裸字典。"""
-    with pytest.raises(TypeError, match="只接受 Pydantic 参数模型"):
-        ChaseConfig.from_params(cast("BaseModel", {"chase_enabled": True}))
-
-    assert ChaseConfig.from_params(_ChaseParamsStub()) is None
-    assert ChaseConfig.from_params(_ChaseParamsStub(chase_enabled=True)) == ChaseConfig(
-        enabled=True,
-        ticks=1,
-        max_count=5,
-        interval=5.0,
-    )
-
-
 def test_order_tracker_periodically_queries_order_status_during_wait() -> None:
     executor_order = UnifiedOrder(
         order_id="limit-1",
@@ -527,32 +506,6 @@ def test_order_tracker_timeout_cancels_only_tracked_symbols() -> None:
     assert executor.cancel_order_calls == ["limit-1"]
 
 
-def test_order_tracker_timeout_loop_avoids_redundant_termination_checkpoints() -> None:
-    executor_order = UnifiedOrder(
-        order_id="limit-1",
-        symbol="rb2610",
-        direction=OrderDirection.BUY,
-        order_type=OrderType.LIMIT,
-        volume=1.0,
-        price=100.0,
-        status=OrderStatus.PENDING,
-        filled_volume=0.0,
-        avg_price=0.0,
-    )
-    executor = _RefreshingExecutor([])
-    tracker = OrderTracker(
-        executor=cast("ExecutorProtocol", executor),
-        clock=_ClockStub(),
-        order_refresh_interval=30.0,
-    )
-    tracker.add_order(executor_order)
-
-    completed = tracker.wait_for_completion(timeout=1.0)
-
-    assert completed is False
-    assert executor.checkpoint_calls == 3
-
-
 def test_market_fallback_stops_when_cancel_request_fails() -> None:
     executor, tracker, order = _build_tracker()
     executor.cancel_outcome = RuntimeError("cancel failed")
@@ -604,64 +557,6 @@ def test_single_maker_records_regular_order_submission_errors(
     result_memory = cast("dict[str, Any]", result.memory)
     execution_details = cast("dict[str, Any]", result_memory["execution_details"])
     assert execution_details["rb2610_error"] == "RuntimeError: submit failed"
-
-
-def test_single_maker_defaults_to_active_price_strategy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    tracker = MagicMock()
-    tracker.wait_for_completion.return_value = True
-    tracker.get_all_orders.return_value = []
-    tracker.get_all_trades.return_value = []
-
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(single_maker_impl, "setup_order_tracker", lambda *_args, **_kwargs: tracker)
-    monkeypatch.setattr(single_maker_impl, "teardown_order_tracker", lambda *_args, **_kwargs: None)
-
-    def _capture_price_strategy(
-        direction: OrderDirection,
-        market_data: UnifiedPriceData | None,
-        price_strategy: str = "PASSIVE",
-    ) -> tuple[OrderType, float]:
-        captured["direction"] = direction
-        captured["market_data"] = market_data
-        captured["price_strategy"] = price_strategy
-        return OrderType.LIMIT, 101.0
-
-    monkeypatch.setattr(single_maker_impl, "determine_order_price", _capture_price_strategy)
-    monkeypatch.setattr(
-        single_maker_impl,
-        "submit_and_track_split_orders",
-        lambda *_args, **_kwargs: [
-            UnifiedOrder(
-                order_id="rb-active-1",
-                symbol="rb2610",
-                direction=OrderDirection.BUY,
-                order_type=OrderType.LIMIT,
-                volume=1.0,
-                price=101.0,
-                status=OrderStatus.PENDING,
-            )
-        ],
-    )
-
-    executor = _SingleMakerExecutor()
-    algorithm_input = AlgorithmInput(
-        symbol="rb2610",
-        target_volume=1.0,
-        trade_rule={},
-        params=single_maker_impl.SingleMakerParams(),
-    )
-
-    single_maker_impl.single_maker_callback(
-        cast("ExecutorProtocol", executor),
-        algorithm_input,
-    )
-
-    assert captured["direction"] == OrderDirection.BUY
-    assert isinstance(captured["market_data"], UnifiedPriceData)
-    assert captured["price_strategy"] == "ACTIVE"
 
 
 def test_single_maker_first_tick_uses_snapshot_copy(

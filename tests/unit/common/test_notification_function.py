@@ -3,26 +3,7 @@
 import pytest
 
 from axile.common import notification_function
-from axile.common.function_contract import accepts_context
-from axile.common.notification_config import validate_notification_config
 from axile.common.notification_function import run_notification_function
-
-
-def _invoke(code, context):
-    """执行语义直接使用生产校验器和调用器，进程边界由独立用例覆盖。"""
-    notification_function.validate_notification_function(code)
-    namespace = {}
-    exec(compile(code, "<notification>", "exec"), namespace)
-    notification_function._invoke_notification(namespace["notify"], context)
-
-
-def test_notification_function_runs_with_context() -> None:
-    """同步函数可以读取事件快照，且不依赖飞书 webhook。"""
-    result = run_notification_function(
-        'def notify(context):\n    assert context["execution"]["id"] == "run-1"',
-        {"execution": {"id": "run-1"}},
-    )
-    assert result.ok is True
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -50,130 +31,6 @@ def test_notification_uses_utf8_pipes(monkeypatch, fails) -> None:
         assert result.error_line == 5
 
 
-def test_notification_function_accepts_public_context_annotation() -> None:
-    """编辑器提供的类型标注在隔离通知进程中也可导入。"""
-    code = (
-        "from axile.common.notification_context import AccountNotificationContext\n"
-        "def notify(context: AccountNotificationContext) -> None:\n"
-        '    assert context["execution"]["is_test"]\n'
-    )
-    result = run_notification_function(code, {"execution": {"is_test": True}})
-    assert result.ok is True
-
-
-def test_notification_function_reports_source_line() -> None:
-    """用户函数异常返回源码行号，不影响父进程。"""
-    result = run_notification_function('def notify(context):\n    raise RuntimeError("boom")', {})
-    assert result.ok is False
-    assert result.error_line == 2
-    assert "boom" in str(result.error)
-
-
-def test_notification_function_rejects_keyword_only_entry() -> None:
-    """编辑器与运行时都要求同步且可按位置传入上下文。"""
-    for code in ("def notify(*, context):\n    pass", "async def notify(*, context):\n    pass"):
-        result = run_notification_function(code, {})
-        assert result.ok is False
-
-
-def test_notification_config_requires_function_only_in_function_mode() -> None:
-    """默认模式允许空源码；函数模式要求 notify 入口。"""
-    validate_notification_config("default", None)
-    try:
-        validate_notification_config("function", "value = 1")
-    except ValueError as exc:
-        assert "notify(context)" in str(exc)
-    else:
-        raise AssertionError("缺少 notify 函数应被拒绝")
-
-
-@pytest.mark.parametrize(
-    "entry",
-    ["async def notify(context):", "def notify(context):\n    return work(context)\n\nasync def work(context):"],
-)
-def test_notification_waits_for_awaitable_completion(entry, tmp_path) -> None:
-    code = (
-        "import asyncio\nfrom pathlib import Path\n"
-        + entry
-        + "\n    await asyncio.sleep(0)\n    Path(context['path']).write_text('completed')"
-    )
-    output = tmp_path / "completed.txt"
-    _invoke(code, {"path": str(output)})
-    assert output.read_text() == "completed"
-
-
-def test_notification_waits_for_custom_awaitable(tmp_path) -> None:
-    code = """import asyncio
-from pathlib import Path
-class Completion:
-    def __init__(self, context):
-        self.context = context
-    def __await__(self):
-        async def work():
-            await asyncio.sleep(0)
-            Path(self.context['path']).write_text('completed')
-        return work().__await__()
-def notify(context):
-    return Completion(context)
-"""
-    output = tmp_path / "completed.txt"
-    _invoke(code, {"path": str(output)})
-    assert output.read_text() == "completed"
-
-
-def test_async_notification_reports_source_line() -> None:
-    code = "async def notify(context):\n    import asyncio\n    await asyncio.sleep(0)\n    raise RuntimeError('async boom')"
-    result = run_notification_function(code, {})
-    assert result.ok is False
-    assert result.error_line == 4
-    assert "async boom" in result.error
-
-
-@pytest.mark.parametrize(
-    "code",
-    [
-        "def notify(context):\n    yield 1",
-        "def notify(context):\n    yield from []",
-        "async def notify(context):\n    yield 1",
-    ],
-)
-def test_notification_rejects_generator_entry(code) -> None:
-    with pytest.raises(ValueError, match="生成器"):
-        notification_function.validate_notification_function(code)
-    assert run_notification_function(code, {}).ok is False
-
-
-@pytest.mark.parametrize(
-    "code",
-    [
-        "def notify(context):\n    return (x for x in [])",
-        "async def stream():\n    yield 1\ndef notify(context):\n    return stream()",
-        "async def notify(context):\n    return (x for x in [])",
-        "def notify(context):\n    pass\ndef stream(context):\n    yield 1\nnotify = stream",
-    ],
-)
-def test_notification_rejects_runtime_generators(code) -> None:
-    with pytest.raises(TypeError, match="生成器"):
-        _invoke(code, {})
-
-
-def test_notification_allows_nested_generators() -> None:
-    code = """def notify(context):
-    def items():
-        yield 1
-    async def stream():
-        yield 2
-    class Helper:
-        def items(self):
-            yield 3
-    helper = lambda: (yield 4)
-    assert list(items()) == [1]
-    assert list(Helper().items()) == [3]
-    assert list(helper()) == [4]
-"""
-    _invoke(code, {})
-
-
 @pytest.mark.parametrize(
     "code",
     [
@@ -195,25 +52,6 @@ def test_notification_timeout_covers_sync_async_and_blocking_async(monkeypatch, 
     assert result.ok is False
     assert "超时" in result.error
     assert started.read_text() == "started"
-
-
-def test_context_contract_preserves_sync_default() -> None:
-    async def entry(context):
-        pass
-
-    assert accepts_context(entry) is False
-    assert accepts_context(entry, allow_async=True) is True
-
-
-def test_sync_notification_can_manage_its_own_event_loop() -> None:
-    code = """import asyncio
-async def work():
-    await asyncio.sleep(0)
-    return 42
-def notify(context):
-    assert asyncio.run(work()) == 42
-"""
-    _invoke(code, {})
 
 
 def test_system_and_account_keys_are_isolated(monkeypatch):

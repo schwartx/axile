@@ -44,7 +44,7 @@ export function AccountEditTimerPage() {
   const cachedAccount = accounts?.find((item) => item.account_id === accountId) ?? null
   const descriptor = useChannelDescriptor(acc?.trade_channel)
   const title = (
-    <div className="flex flex-wrap items-baseline gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <AccountPageTitle
         accountId={accountId}
         page="定时任务"

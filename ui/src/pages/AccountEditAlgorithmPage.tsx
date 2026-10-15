@@ -81,7 +81,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     }
   }, [acc, descriptor, accountId])
   const title = (
-    <div className="flex flex-wrap items-baseline gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <AccountPageTitle
         accountId={accountId}
         page="执行算法"

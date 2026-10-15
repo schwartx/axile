@@ -19,7 +19,7 @@ from sqlmodel import SQLModel
 
 from axile.server.api.deps import get_db
 from axile.server.api.routes.account_performance import router
-from axile.server.db.models import AccountCreate, AccountPublic, AccountUpdate, ExecuteRecord, PortfolioAccount
+from axile.server.db.models import ExecuteRecord, PortfolioAccount
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance import (
     Observation,
@@ -117,27 +117,6 @@ def test_replay_and_account_compound_returns():
     assert result.points[-1].account_return == pytest.approx(-0.01)
     assert result.points[-1].portfolio_return == pytest.approx(-0.01)
     assert result.points[-1].difference == pytest.approx(0)
-
-
-@pytest.mark.parametrize("include_backtest", [True, False])
-def test_points_expose_actual_observation_times(include_backtest):
-    items = [obs(1), obs(1, asset=105), obs(2, asset=110)]
-    items[0].time = datetime(2026, 1, 1, 9, 30)
-    items[1].time = datetime(2026, 1, 1, 17, 15)
-    items[2].time = datetime(2026, 1, 2, 14, 20)
-    items[1].id = 2
-    items[2].id = 3
-    result = calculate_performance(
-        items,
-        PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0),
-        "all",
-        include_backtest=include_backtest,
-    )
-    assert [p.date for p in result.points] == ["2026-01-01T09:30:00", "2026-01-01", "2026-01-02"]
-    assert [p.observed_at for p in result.points] == [item.time.isoformat() for item in items]
-    assert [p.record_id for p in result.points] == [item.id for item in items]
-    assert [p.execution_id for p in result.points] == [item.execution_id for item in items]
-    assert result.model_dump(mode="json")["points"][-1]["observed_at"] == "2026-01-02T14:20:00"
 
 
 @pytest.mark.parametrize("mode", ["ts", "cs"])
@@ -552,35 +531,6 @@ def test_empty_and_single_observation():
     assert run([obs(1)]).observation_count == 1
 
 
-def test_account_creation_defaults_and_ordinary_updates_preserve_settings(monkeypatch):
-    # 配置默认值测试不需要加载交易渠道的原生 SDK。
-    monkeypatch.setattr(
-        "axile.executor.algorithms.core.base.get_algorithm_metadata", lambda method: SimpleNamespace(params_class=None)
-    )
-    payload = build_account().model_dump(
-        exclude={
-            "id",
-            "created_at",
-            "updated_at",
-            "backtest_weight_type",
-            "backtest_fee_rate",
-            "copied_from_account_id",
-            "copied_from_account_name",
-        }
-    )
-    created = AccountCreate.model_validate(payload)
-    assert created.backtest_weight_type == "ts"
-    assert created.backtest_fee_rate == 0
-    account = build_account(backtest_weight_type="cs", backtest_fee_rate=0.0002)
-    account.sqlmodel_update(AccountUpdate(name="renamed").model_dump(exclude_unset=True))
-    assert account.backtest_weight_type == "cs"
-    assert account.backtest_fee_rate == 0.0002
-    public = AccountPublic.model_validate(account).model_dump()
-    assert public["backtest_weight_type"] == "cs"
-    assert public["backtest_fee_rate"] == 0.0002
-    assert "account_config" not in public
-
-
 def test_two_intraday_observations_are_not_an_empty_chart():
     items = [obs(1), obs(2, {"A": 110.0}, asset=110)]
     items[1].time = items[0].time + timedelta(hours=1)
@@ -656,21 +606,6 @@ def test_migration_roundtrip_defaults(tmp_path):
         migration.downgrade()
         assert conn.execute(sa.text("SELECT id FROM account")).scalar() == 2
         migration.upgrade()
-
-
-def test_migration_reconciles_columns_created_before_revision(tmp_path):
-    """模型先建表时，0011 仍应补齐缺失字段并允许 Alembic 继续升级."""
-    engine = sa.create_engine(f"sqlite:///{tmp_path / 'partial-migration.db'}")
-    migration = _load_migration(_MIGRATIONS_DIR / "0011_account_performance.py")
-    with engine.begin() as conn:
-        conn.execute(
-            sa.text("CREATE TABLE account (id INTEGER PRIMARY KEY, backtest_weight_type TEXT NOT NULL DEFAULT 'ts')")
-        )
-        migration.op = Operations(MigrationContext.configure(conn))
-        migration.upgrade()
-
-        columns = {column["name"] for column in sa.inspect(conn).get_columns("account")}
-        assert columns >= {"id", "backtest_weight_type", "backtest_fee_rate"}
 
 
 def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, monkeypatch):

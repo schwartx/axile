@@ -552,7 +552,7 @@ export function AccountEditControlPage() {
   const acc = account.data
   const cachedAccount = accounts?.find((item) => item.account_id === accountId) ?? null
   const title = (
-    <div className="flex flex-wrap items-baseline gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <AccountPageTitle
         accountId={accountId}
         page="执行流控"

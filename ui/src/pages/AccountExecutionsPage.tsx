@@ -121,7 +121,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const expired = poll.error instanceof ApiError && poll.error.status === 410
   const scopedQuery = scope ? { ...scope, symbol_search: keyword.trim() || undefined } : undefined
   return <section className="min-w-0 [&_button]:min-h-9 [&_button]:min-w-9">
-    <div className="mb-5 flex items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
+    <div className="mb-5 flex items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
       <button type="button" aria-label="刷新执行记录" title="刷新执行记录" disabled={poll.loading || poll.refreshing || !!parsed.error || expired} onClick={() => void poll.refresh()} className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-fill disabled:opacity-40"><RefreshCw size={16} className={poll.refreshing ? 'animate-spin motion-reduce:animate-none' : ''} /></button></div>
     {(scope || parsed.error) && <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-3" data-testid="journal-source">
       <Link to={`/accounts/${accountId}/history`} className="inline-flex min-h-9 items-center text-accent">返回实盘绩效</Link>
