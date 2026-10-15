@@ -93,7 +93,7 @@ export function HoldingsPreviewTable({
                   event.currentTarget.querySelector('button')?.focus()
                   onSelect(holding.symbol)
                 } : undefined}
-                  className={`border-t border-line text-[13.5px] first:border-t-0 ${onSelect ? 'cursor-pointer hover:bg-fill focus-within:bg-fill' : ''}`}>
+                  className={`border-t border-line text-[13.5px] first:border-t-0 ${onSelect ? 'cursor-pointer hover:bg-fill has-[:focus-visible]:bg-fill' : ''}`}>
                   <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}>{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${holding.symbol} 持仓与目标`}
                     onClick={event => { event.stopPropagation(); onSelect(holding.symbol) }}
                     className="block min-h-8 w-full cursor-pointer text-left focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">

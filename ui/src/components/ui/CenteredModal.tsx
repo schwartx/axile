@@ -3,13 +3,15 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from 'react-dom'
 
 /** 居中弹窗共用外壳：遮罩、开关过渡、标题、关闭图标与焦点管理。 */
-export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, widthClassName = 'w-[480px]', footer, children }: {
+export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = 'always', widthClassName = 'w-[480px]', footer, children }: {
   open: boolean
   title: string
   subtitle?: ReactNode
   ariaLabel?: string
   onClose: () => void
   closeDisabled?: boolean
+  /** keyboard 模式只在键盘关闭后恢复入口焦点，避免鼠标操作留下持久焦点高亮。 */
+  restoreFocus?: 'always' | 'keyboard'
   widthClassName?: string
   footer?: ReactNode
   children: ReactNode
@@ -27,6 +29,9 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement as HTMLElement | null
+    let keyboardNavigation = previous?.matches(':focus-visible') ?? false
+    const markKeyboard = () => { keyboardNavigation = true }
+    const markPointer = () => { keyboardNavigation = false }
     panelRef.current?.focus({ preventScroll: true })
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
@@ -47,8 +52,15 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
       else if (!event.shiftKey && (outside || document.activeElement === last)) { event.preventDefault(); first.focus() }
     }
     document.addEventListener('keydown', keydown)
-    return () => { document.removeEventListener('keydown', keydown); previous?.focus({ preventScroll: true }) }
-  }, [open])
+    document.addEventListener('keydown', markKeyboard, true)
+    document.addEventListener('pointerdown', markPointer, true)
+    return () => {
+      document.removeEventListener('keydown', keydown)
+      document.removeEventListener('keydown', markKeyboard, true)
+      document.removeEventListener('pointerdown', markPointer, true)
+      if (restoreFocus === 'always' || keyboardNavigation) previous?.focus({ preventScroll: true })
+    }
+  }, [open, restoreFocus])
   const close = () => { if (!closeDisabled) onClose() }
   return createPortal(<ModalContentContext.Provider value={true}><div onClick={(event) => event.stopPropagation()}>
     <div

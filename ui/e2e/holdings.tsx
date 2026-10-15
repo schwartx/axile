@@ -28,7 +28,7 @@ export function Fixture() {
         observed={!!latest} currency="CNY" positionValueLabel="货值"
         onSelect={value => { setSelection({ accountId, symbol: value }); void orders.refresh() }} />
     </section>
-    <HoldingDetailDialog symbol={symbol} accountName={`示例账户${accountId}`} positions={positions} observed={!!latest}
+    <HoldingDetailDialog symbol={symbol} positions={positions} observed={!!latest}
       observedAt={latest?.created_at ?? null} target={target.data} orders={orders} currency="CNY" units={units}
       dataStale={assets.stale || target.stale || !!assets.error || !!target.error} refreshing={assets.refreshing || target.refreshing}
       onClose={() => setSelection(null)} onRefresh={refresh} />
