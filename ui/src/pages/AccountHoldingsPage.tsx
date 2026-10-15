@@ -81,7 +81,7 @@ export function AccountHoldingsPage() {
 
   return (
     <AccountConnectionContext.Provider value={!account.error && account.data?.connection?.status === 'error'}><section>
-      <div className="flex flex-wrap items-baseline gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <AccountPageTitle
           accountId={accountId}
           page="持仓明细"

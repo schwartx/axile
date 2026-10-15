@@ -263,7 +263,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
   /** 标题 + 警告条 + 当前配置摘要：加载与就绪两态共用的页面 chrome（同位同节点）。 */
   const pageChrome = (
     <>
-      <div className="flex flex-wrap items-baseline gap-3">{titleName}</div>
+      <div className="flex flex-wrap items-center gap-3">{titleName}</div>
       <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">
         修改不会立即下单，从下次调仓开始生效。
       </div>

@@ -168,7 +168,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
 
   return <section className="min-w-0 [&_button]:min-h-9">
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <AccountPageTitle
           accountId={accountId}
           page="实盘绩效"
