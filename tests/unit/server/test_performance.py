@@ -1,4 +1,4 @@
-"""使用真实 WBT 验证收益、缺口与回测设置持久化."""
+"""验证独立权益回放、缺口与回测设置持久化."""
 
 import asyncio
 import time
@@ -110,7 +110,7 @@ def test_close_before_uses_last_day_end_before_observation():
     assert close_before([], "2026-01-01") is None
 
 
-def test_real_wbt_and_account_compound_returns():
+def test_replay_and_account_compound_returns():
     result = run([obs(1), obs(2, {"A": 110.0}, asset=110), obs(3, {"A": 99.0}, asset=99)])
     assert result.points[0].account_return == 0
     assert result.points[-2].account_return == pytest.approx(0.1)
@@ -154,7 +154,7 @@ def test_exit_row_accounts_for_last_holding_return_and_fee():
     assert built.skips.count == 0
     assert built.frame.iloc[-1]["weight"] == 0
     assert run(items).points[-1].portfolio_return == pytest.approx(0.1)
-    assert run(items, fee=0.001).points[-1].portfolio_return == pytest.approx(0.099)
+    assert run(items, fee=0.001).points[-1].portfolio_return == pytest.approx(0.0989)
 
 
 def test_missing_exit_price_skips_but_portfolio_holds_and_recovers():
@@ -307,14 +307,14 @@ def test_missing_asset_is_null_not_zero_and_later_cumulative_recovers():
     assert result.points[-1].account_daily_return is None
 
 
-def test_intraday_observations_all_reach_wbt():
+def test_intraday_returns_use_equity_instead_of_summing_bar_returns():
     items = [obs(1), obs(2, {"A": 110.0}, asset=110), obs(3, {"A": 121.0}, asset=121)]
     for i, item in enumerate(items):
         item.time = datetime(2026, 1, 1, 9 + i)
     result = run(items)
     assert result.points[-1].account_return == pytest.approx(0.21)
-    # WBT 原生日内收益为各 BAR 收益之和，适配层不重写引擎口径。
-    assert result.points[-1].portfolio_daily_return == pytest.approx(0.2)
+    # 日内 100→110→121 必须与账户权益一样得到 21%，而不是相加得到 20%。
+    assert result.points[-1].portfolio_daily_return == pytest.approx(0.21)
 
 
 @pytest.mark.parametrize("layout", ["nested", "dict", "list"])
@@ -345,7 +345,14 @@ def test_tick_formats_and_failed_records(layout):
 
 
 def sized(status="SIZED", mode="weight", qty=1.0, notional=237015.0, equity=102335.888, reason="COMMON.SIZING.EXACT"):
-    row = {"sizing_mode": mode, "status": status, "reason_code": reason, "account_weight": 1.05, "equity": equity}
+    row = {
+        "sizing_mode": mode,
+        "status": status,
+        "reason_code": reason,
+        "account_weight": 1.05,
+        "equity": equity,
+        "reference_price": 100.0,
+    }
     if qty is not None:
         row["target_quantity"] = qty
     if notional is not None:

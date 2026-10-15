@@ -1,7 +1,6 @@
 """Single-worker, durable performance queue and atomic snapshot publication."""
 
 import asyncio
-from importlib.metadata import version
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -19,10 +18,10 @@ from axile.server.db.models.performance import PerformanceBinding, PerformanceSe
 from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.performance import calculate_performance, local_time, observation
 from axile.server.performance_costs import SHANGHAI, daily_costs, project_execution, summarize, timestamp
+from axile.server.performance_replay import ENGINE_VERSION
 
-# PARTIAL 只描述执行未全部完成；重建旧缓存中的「未到位」事件文案。
-LOGIC_VERSION = "16"
-ENGINE_VERSION = version("wbt")
+# 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
+LOGIC_VERSION = "17"
 RETRY_DELAYS = (5, 30, 120)
 
 

@@ -22,6 +22,7 @@ from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.performance_analysis import (
+    LOGIC_VERSION,
     AnalysisManager,
     compute_batch,
     enqueue,
@@ -32,6 +33,56 @@ from axile.server.performance_costs import daily_costs, execution_list_payload, 
 from axile.server.performance_details import CostQuery, read_costs
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+
+
+def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema_template):
+    """旧日内相加结果在重启后失效，三个区间和卡片都发布新账本结果。"""
+
+    async def check():
+        async with database(tmp_path, schema_template, count=0) as (_, sessions, manager):
+            async with sessions() as session:
+                for i, price in enumerate([100, 110, 121]):
+                    session.add(
+                        ExecuteRecord(
+                            account_id=2,
+                            execution_id=f"intraday-{i}",
+                            created_at=f"2026-01-01T{9 + i:02d}:00:00",
+                            raw_input={"curr_target": {"A": 1}},
+                            raw_result={
+                                "account_assets": {"total_asset": price},
+                                "first_ticks": {"A": {"last_price": price}},
+                            },
+                            is_success=1,
+                        )
+                    )
+                await session.commit()
+            await queue(sessions)
+            await manager.run_once()
+            original = await snapshot(sessions)
+            async with sessions() as session:
+                ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
+                for value in ranges.values():
+                    value["performance"]["points"][-1]["portfolio_return"] = 0.2
+                await session.execute(snapshots.update().values(logic_version="16", ranges=ranges))
+                await session.execute(states.update().values(logic_version="16"))
+                await session.commit()
+            assert (await snapshot(sessions))["status"] == "pending"
+            await manager.start()
+            await manager.stop()
+            await manager.run_once()
+            async with sessions() as session:
+                for range_key in ("all", "30", "90"):
+                    rebuilt = await read_snapshot(session, 2, range_key)
+                    assert rebuilt["status"] == "ready"
+                    assert rebuilt["snapshot_id"] != original["snapshot_id"]
+                    assert rebuilt["logic_version"] == LOGIC_VERSION
+                    assert rebuilt["engine_version"] == "equity-ledger-1"
+                    assert rebuilt["result"]["points"][-1]["portfolio_return"] == pytest.approx(0.21)
+                summary = (await read_performance_summaries(session, [2]))[2]
+                assert summary.snapshot_id == rebuilt["snapshot_id"]
+                assert summary.points[-1].portfolio_return == pytest.approx(0.21)
+
+    asyncio.run(check())
 
 
 def test_execution_projection_keeps_counts_without_large_symbol_evidence():
