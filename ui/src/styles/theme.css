@@ -765,8 +765,34 @@
   }
 }
 
-/* 同一对链环：连接柔和扣合，断开短促分离；在途只停留，不循环。 */
-.connection-link { --link-gap: 2px; --link-turn: 10deg; }
+/* 连接有淡底、断开为空心；异常独立使用琥珀，不与主动断开混淆。 */
+.connection-toggle {
+  color: var(--color-ink-2);
+  border-color: var(--color-border-strong);
+  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease;
+}
+.connection-toggle[data-tone='ready'],
+.connection-toggle[data-tone='busy'] {
+  color: var(--color-ink-1);
+  background: var(--color-accent-soft);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.connection-toggle[data-tone='ready'] .connection-link,
+.connection-toggle[data-tone='busy'] .connection-link { color: var(--color-accent); }
+.connection-toggle[data-tone='ready']:hover {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface));
+}
+.connection-toggle[data-tone='warning'] {
+  color: var(--color-warn);
+  background: var(--color-warn-soft);
+  border-color: color-mix(in srgb, var(--color-warn) 45%, transparent);
+}
+.connection-toggle[data-tone='busy'] .connection-link { animation: connection-working 1.2s ease-in-out infinite; }
+@keyframes connection-working { 50% { opacity: .45; } }
+
+/* 同一对链环：连接柔和扣合，断开短促分离。 */
+.connection-link { --link-gap: 3px; --link-turn: 14deg; }
 .connection-link-start { --link-direction: -1; }
 .connection-link-end { --link-direction: 1; }
 .connection-link g {
@@ -784,5 +810,7 @@
 }
 .connection-link[data-phase='closed'] .connection-link-join { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
+  .connection-toggle { transition: none; }
+  .connection-toggle[data-tone='busy'] .connection-link { animation: none; }
   .connection-link g, .connection-link-join { transition: none; }
 }
