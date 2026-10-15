@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from '@/components/ui/nav'
 import { copyAccount } from '@/lib/api/accounts'
-import { shortErrorReason } from '@/lib/errorInfo'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useDomainStore } from '@/stores/domain'
 
 interface CopyAccountDialogProps {
@@ -20,7 +20,7 @@ export function CopyAccountDialog({ accountId, name, isStarted, isBusy, open, on
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
   const [copyName, setCopyName] = useState('')
   const [copying, setCopying] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
   const submitting = useRef(false)
 
   useEffect(() => {
@@ -41,7 +41,7 @@ export function CopyAccountDialog({ accountId, name, isStarted, isBusy, open, on
       onClose()
       navigate(`/accounts/${created.id}`)
     } catch (cause) {
-      setError(shortErrorReason(cause))
+      setError(cause instanceof Error ? cause : new Error(String(cause)))
     } finally {
       submitting.current = false
       setCopying(false)
@@ -59,7 +59,7 @@ export function CopyAccountDialog({ accountId, name, isStarted, isBusy, open, on
         <input id={`copy-account-name-${accountId}`} className="mt-1 w-full rounded-lg border border-line bg-surface px-3 py-2 text-ink-1" value={copyName} onChange={(event) => setCopyName(event.target.value)} />
         {isStarted && <p className="mt-3 text-sm text-warn">请先暂停旧账户的自动调度。</p>}
         {isBusy && <p className="mt-3 text-sm text-warn">请等待当前执行及排队任务结束。</p>}
-        {error && <p className="mt-3 text-sm text-warn" role="alert">{error}</p>}
+        <ErrorNotice intent="mutation" title="复制账户失败" error={error} embedded onRetry={submit} contextKey={accountId} />
         <div className="mt-5 flex justify-end gap-3">
           <button type="button" className="rounded-lg px-3 py-2 text-ink-2 hover:bg-fill" disabled={copying} onClick={onClose}>取消</button>
           <button type="button" className="rounded-lg bg-ink-1 px-3 py-2 text-surface disabled:opacity-40" disabled={copying || isStarted || isBusy || !copyName.trim()} onClick={() => void submit()}>{copying ? '复制中…' : '创建暂停账户'}</button>

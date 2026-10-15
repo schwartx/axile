@@ -29,7 +29,7 @@ export function shortErrorReason(error: unknown, maxLength = 160): string {
   const value = error && typeof error === 'object' && 'message' in error ? error.message : error
   const raw = error instanceof Error ? error.message : typeof value === 'string' ? value : errorValueText(value ?? '')
   const normalized = raw.replace(/\s+/g, ' ').trim()
-  const message = normalized === 'Failed to fetch'
+  const message = isConnectionError(error)
     ? '无法连接 axile 服务'
     : normalized || '未知错误'
   return message.length <= maxLength ? message : `${message.slice(0, maxLength - 1)}…`

@@ -190,15 +190,15 @@ function AccountHistory({ accountId }: { accountId: number }) {
       {difference != null && difference < 0 && <p className="mt-1 text-xs text-warn">账户收益高于回测，待核对差异</p>}
       {data && data.observation_count > 0 && (data.calendar.status === 'partial' || data.calendar.status === 'unavailable') && <p role="status" className="mt-1 text-xs text-warn">部分日期交易日历不可用，休市标记可能不完整</p>}
       {!parsed && !editingFee && <p role="alert" className="mt-2 text-xs text-warn">费率须大于等于 0 且小于 10000 BP</p>}
-      <ErrorNotice title="参数保存失败" error={saveError} />
-      <ErrorNotice title="账户设置读取失败" error={account.error} onRetry={account.refresh} />
+      <ErrorNotice intent="mutation" title="参数保存失败" error={saveError} />
+      <ErrorNotice intent="read" title="账户设置读取失败" error={account.error} hasData={account.data != null} onRetry={account.refresh} />
     </div>
     {pendingSettings && <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-1 py-1 text-xs text-ink-3" data-testid="performance-status">
       {pendingSettings && <span className="text-warn">新费率 {Number(((settings?.backtest_fee_rate ?? 0) * 10000).toFixed(8))} BP 待计算</span>}
     </div>}
-    <ErrorNotice title={data ? '更新失败，保留上次结果' : '绩效读取失败'} error={calculationError} variant="compact" onRetry={performance.refresh} />
+    <ErrorNotice intent="read" title={data ? '更新失败，保留上次结果' : '绩效读取失败'} error={calculationError} hasData={data != null} variant="compact" onRetry={performance.refresh} />
     {selectionNotice && <p role="status" className="py-1 text-xs text-ink-3">数据已更新，原选区已失效，请重新选择。</p>}
-    <ErrorNotice title="区间成本读取失败" error={intervalCosts.error} variant="compact" onRetry={intervalCosts.refresh} />
+    <ErrorNotice intent="read" title="区间成本读取失败" error={intervalCosts.error} hasData={intervalCosts.data != null} variant="compact" onRetry={intervalCosts.refresh} />
     {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !snapshot && !calculationError} failed={!!calculationError} />}
     {data && <div className="pb-4">
       <PerformanceChart key={range} accountId={accountId} snapshotId={snapshot?.snapshot_id} viewKey={`${accountId}:${range}`} data={data} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />

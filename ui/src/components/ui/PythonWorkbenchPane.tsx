@@ -1,5 +1,6 @@
 import { PythonCheckStatus } from '@/components/ui/PythonCheckStatus'
 import type { PythonChecks } from '@/components/ui/pythonChecks'
+import { useErrorPresentation } from '@/lib/errorPresentation'
 import { useEffect, useRef, useState, type Ref } from 'react'
 import { PythonFunctionEditor, PythonRunResultBody, type PythonEditorHandle, type PythonValidationState } from '@/components/ui/PythonFunctionEditor'
 import { PythonRunPanel } from '@/components/ui/PythonRunPanel'
@@ -61,8 +62,14 @@ export function PythonWorkbenchPane({
     line: item.range.start.line + 1, message: typeof item.message === 'string' ? item.message : item.message.value,
     severity: item.severity === 1 ? 'error' : 'warning',
   }))
-  const checkFailed = currentChecks?.lsp.status === 'failed' || currentChecks?.contract.status === 'failed'
-  const quickFixFailed = !!currentChecks?.quickFixError
+  const lspFailure = useErrorPresentation(currentChecks?.lsp.error)
+  const contractFailure = useErrorPresentation(currentChecks?.contract.error)
+  const checkFailed = (currentChecks?.lsp.status === 'failed' && lspFailure.local)
+    || (currentChecks?.contract.status === 'failed' && contractFailure.local)
+  const checkUnavailable = (currentChecks?.lsp.status === 'failed' && !lspFailure.local)
+    || (currentChecks?.contract.status === 'failed' && !contractFailure.local)
+  const quickFixFailure = useErrorPresentation(currentChecks?.quickFixError)
+  const quickFixFailed = !!currentChecks?.quickFixError && quickFixFailure.local
   useEffect(() => { if ((checkFailed || quickFixFailed) && result == null) setProblemsOpen(true) }, [checkFailed, quickFixFailed, result])
   const outputTabs = [
     {
@@ -190,7 +197,7 @@ export function PythonWorkbenchPane({
         title="代码检查"
         hideTitle
         headerExtra={<Segmented size="sm" className="my-auto" value={activeTab} options={outputTabs} onChange={(tab) => { setActiveTab(tab); setProblemsOpen(true) }} />}
-        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{checkFailed ? '检查失败' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
+        statusOverride={activeTab === 'result' ? <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{running ? '试跑中…' : stale ? '上次试跑结果' : result ? (result.valid ? '试跑通过' : '试跑失败') : '尚未试跑'}</span> : <span className="ml-auto self-center px-3 text-[12px] text-ink-3">{checkFailed ? '检查失败' : checkUnavailable ? '检查暂不可用' : quickFixFailed ? '快速修复暂不可用' : currentChecks?.lsp.status === 'succeeded' && currentChecks?.contract.status === 'succeeded' ? '检查完成' : '检查中…'}</span>}
         contentOverride={(
           activeTab === 'problems' ? (
             <div className="-mx-3.5 -my-3 divide-y divide-line/60">

@@ -22,7 +22,7 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
   const summary = state.kind === 'ready' ? state.summary : null
   const holdings = state.kind === 'empty' ? '目标为空仓'
     : state.kind === 'loading' ? '加载目标持仓…'
-    : state.kind === 'unavailable' ? '目标持仓读取失败'
+    : state.kind === 'unavailable' ? '目标持仓暂不可用'
     : '尚无目标持仓'
 
   return (
@@ -47,7 +47,7 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
         </span>
         <span className="mt-2 flex h-6 min-w-0 items-center gap-4">
           {summary && <span className="flex-none text-[12px] text-ink-3 md:hidden">{summary.activeCount} 个品种</span>}
-          {summary ? <TargetChips entries={summary.entries} compact /> : <span className={`min-w-0 flex-1 text-[13px] ${state.kind === 'unavailable' ? 'text-warn' : 'text-ink-3'}`}><OverflowText text={holdings} /></span>}
+          {summary ? <TargetChips entries={summary.entries} compact /> : <span className="min-w-0 flex-1 text-[13px] text-ink-3"><OverflowText text={holdings} /></span>}
           {calculated && <time dateTime={state.calculatedAt} title={`最近成功计算：${state.calculatedAt}`} className="hidden flex-none text-[12px] text-ink-3 sm:block">{formatTargetUpdatedAt(state.calculatedAt)}</time>}
           {snapshot.error && <span aria-hidden className="w-16 flex-none" />}
         </span>
@@ -56,7 +56,7 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
         className="absolute right-[18px] top-3.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-2 hover:bg-fill hover:text-ink-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
         <Code2 size={16} aria-hidden />代码
       </button>
-      <div className="px-[18px]"><ErrorNotice title={`${portfolio.name} 目标持仓读取失败`} error={snapshot.error} evidence={[{ label: '组合 ID', value: String(portfolio.id) }]} variant={snapshot.data ? 'stale' : 'compact'} updatedAt={snapshot.updatedAt} onRetry={snapshot.refresh} contextKey={portfolio.id ?? undefined} /></div>
+      <div className="px-[18px]"><ErrorNotice hasData={snapshot.data != null} intent="read" title={`${portfolio.name} 目标持仓读取失败`} error={snapshot.error} evidence={[{ label: '组合 ID', value: String(portfolio.id) }]} variant={snapshot.data ? 'stale' : 'compact'} updatedAt={snapshot.updatedAt} onRetry={snapshot.refresh} contextKey={portfolio.id ?? undefined} /></div>
     </div>
   )
 }

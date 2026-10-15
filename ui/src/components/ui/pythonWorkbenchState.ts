@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { PythonValidationState } from '@/components/ui/PythonFunctionEditor'
 
 /** 草稿和已保存基线分开：异步保存只确认提交时的版本。 */
@@ -25,6 +25,7 @@ export function createPythonOperationGate() {
 export function usePythonSave() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const clearError = useCallback(() => setError(null), [])
   const gate = useRef(createPythonOperationGate()).current
   const save = async (allowed: boolean, operation: () => Promise<void>): Promise<void> => {
     await gate(allowed, async () => {
@@ -39,7 +40,7 @@ export function usePythonSave() {
       }
     })
   }
-  return { saving, error, clearError: () => setError(null), save }
+  return { saving, error, clearError, save }
 }
 
 export function pythonRunIsStale(result: unknown, ranInput: string | null, input: string) {

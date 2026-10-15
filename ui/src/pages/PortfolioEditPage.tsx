@@ -65,7 +65,6 @@ export function PortfolioEditPage() {
     intervalMs: 0,
   })
   const accounts = useDomainStore((state) => state.accounts)
-  const accountsError = useDomainStore((state) => state.accountsError)
   const refreshPortfolios = useDomainStore((state) => state.refreshPortfolios)
   const portfolios = useDomainStore((state) => state.portfolios)
   const pf = portfolio.data
@@ -175,9 +174,7 @@ export function PortfolioEditPage() {
     accounts?.find((account) => account.account_id === weights.data?.context_account_id)?.name
     ?? (weights.data?.context_account_id != null ? `#${weights.data.context_account_id}` : null)
   const snapshotStatusText = weights.data?.calculated_at
-    ? weights.error
-      ? '目标更新失败'
-      : `目标更新于 ${weights.data.calculated_at.slice(11, 16)}`
+    ? `目标更新于 ${weights.data.calculated_at.slice(11, 16)}`
     : weights.error
       ? '目标不可用'
       : weights.loading
@@ -188,7 +185,7 @@ export function PortfolioEditPage() {
     <span className="ml-auto flex items-center gap-1 px-3.5 text-[12.5px]">
       <span
         title={targetSnapshotText(weights.data, snapshotContextName)}
-        className={weights.error ? 'text-warn' : 'text-ink-3'}
+        className="text-ink-3"
       >
         <InkRewrite text={snapshotStatusText} tone="label" />
       </span>
@@ -221,7 +218,7 @@ export function PortfolioEditPage() {
   const currentSyntaxError =
     !calc.stale && calc.editorResult?.valid === false && calc.editorResult.errorType === 'SyntaxError'
   const blocked =
-    !name.trim() || !code.trim() || accounts == null || Boolean(accountsError) || currentSyntaxError
+    !name.trim() || !code.trim() || currentSyntaxError
 
   // 左列 split：从上顶（控制区底）量指针位置，panelSplit 是返回值占可用高度的份额；
   // 与右列的从底量法互成镜像。
@@ -264,7 +261,7 @@ export function PortfolioEditPage() {
 
   // 保存后留在原地：toast 确认、基线更新为已保存态，迭代循环不跳出工作台。
   const publish = async (validated = false) => {
-    const saveBlocked = !name.trim() || !code.trim() || accounts == null || Boolean(accountsError)
+    const saveBlocked = !name.trim() || !code.trim()
     if (saveBlocked || (!validated && currentSyntaxError) || saving || !dirty) return
     await saveState.save(true, async () => {
       await updatePortfolio(portfolioId, { name: name.trim(), custom_calc_py_code: code })
@@ -311,7 +308,7 @@ export function PortfolioEditPage() {
   if (portfolio.error && !pf) {
     return (
       <section>
-        <ErrorNotice contextKey={portfolioId} title="组合加载失败" error={portfolio.error} onRetry={portfolio.refresh} />
+        <ErrorNotice intent="read" contextKey={portfolioId} title="组合加载失败" error={portfolio.error} onRetry={portfolio.refresh} />
       </section>
     )
   }
@@ -322,7 +319,7 @@ export function PortfolioEditPage() {
       storageKey={INSPECTOR_WIDTH_KEY}
       resizingPanels={resizingPanels}
       saveAction={{ dirty, saving, error: saveError, blocked, onSave: () => void publish(), onRestore: restore,
-        blockedReason: accountsError ? '绑定关系不可用' : currentSyntaxError ? '有语法错误' : !name.trim() || !code.trim() ? '内容不完整' : undefined,
+        blockedReason: currentSyntaxError ? '有语法错误' : !name.trim() || !code.trim() ? '内容不完整' : undefined,
         title: followers.length > 0 ? `保存（⌘/Ctrl+S）· ${followers.length} 个账户将在下次调仓使用新函数` : '保存（⌘/Ctrl+S）',
       }}
       status={<div ref={setEditorStatus} className="mr-2 flex-none" />}
@@ -417,7 +414,7 @@ export function PortfolioEditPage() {
                   type="button"
                   className="inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-[6px] border-0 bg-ink-1 px-3 py-1.5 text-[14px] font-[550] text-surface disabled:cursor-default disabled:opacity-45"
                   onClick={() => void runAndPublish()}
-                  disabled={!calc.canRun || saving || !name.trim() || accounts == null || Boolean(accountsError)}
+                  disabled={!calc.canRun || saving || !name.trim()}
                 >
                   <Play size={14} />
                   <InkRewrite

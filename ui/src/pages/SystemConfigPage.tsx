@@ -1,3 +1,4 @@
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { useEffect, useState } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { SystemAlertPage } from '@/pages/SystemAlertPage'
@@ -12,26 +13,29 @@ export function SystemConfigPage({ section = 'alert' }: { section?: 'alert' | 'a
 function AdvancedSystemConfigPage() {
   const [error, setError] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
+  useReadRecovery(() => setAttempt(value => value + 1))
   const [values, setValues] = useState<InitValues | null>(() => peekInitValues())
 
   useEffect(() => {
     if (values) return
     let alive = true
     setError(null)
-    initStatus()
+    const controller = new AbortController()
+    initStatus(controller.signal)
       .then((s) => {
         if (alive) setValues(initValuesFromStatus(s.values))
       })
       .catch((cause) => { if (alive) setError(cause instanceof Error ? cause : new Error(String(cause))) })
     return () => {
       alive = false
+      controller.abort()
     }
   }, [values, attempt])
 
   if (!values) {
     return (
       <div className="grid h-full place-items-center bg-bg text-ink-3">
-        <div><ErrorNotice title="系统配置读取失败" error={error} onRetry={() => setAttempt(value => value + 1)} />{!error && <p>读取配置中…</p>}</div>
+        <div><ErrorNotice intent="read" title="系统配置读取失败" error={error} onRetry={() => setAttempt(value => value + 1)} />{!error && <p>读取配置中…</p>}</div>
       </div>
     )
   }

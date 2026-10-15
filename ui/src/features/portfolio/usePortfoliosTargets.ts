@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import type { TargetWeightSnapshot } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export interface PortfolioTargetFetch {
   loading: boolean
@@ -32,5 +33,6 @@ export function usePortfoliosTargets(portfolioIds: (number | null | undefined)[]
     const active = controllers.current
     return () => { for (const controller of active.values()) controller.abort(); active.clear() }
   }, [key, load])
+  useReadRecovery(() => Promise.all([...new Set(key.split(',').filter(Boolean).map(Number))].map(load)))
   return Object.fromEntries(Object.entries(states).map(([id, value]) => [id, { ...value, refresh: () => load(Number(id)) }]))
 }

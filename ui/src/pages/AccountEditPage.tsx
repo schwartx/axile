@@ -409,7 +409,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
               </>}
             </div>
           </Row>
-          <ErrorNotice title="默认模板读取失败" error={templateError} variant="compact" onRetry={() => void resetNotification()} />
+          <ErrorNotice intent="mutation" title="默认模板读取失败" error={templateError} variant="compact" onRetry={() => void resetNotification()} />
           <div inert={notificationStatus === 'function'} className={`md:col-span-2 grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${notificationStatus === 'function' ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             <Row label="Webhook" hint={d.clearFeishu ? '保存后关闭' : (feishuKey || acc.feishu_configured ? '已配置' : '未配置')} top span>
@@ -595,7 +595,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
             ]}
           />
           {portfolios == null && !portfoliosError && <Skeleton className="mt-2 h-3 w-40" />}
-          <ErrorNotice title="组合关系加载失败" error={portfoliosError} variant="compact" onRetry={refreshPortfolios} />
+          <ErrorNotice intent="read" title="组合关系加载失败" error={portfoliosError} variant="compact" onRetry={refreshPortfolios} />
         </Row>
         <Row label="空仓写记录" hint="审计留痕">
           <Toggle on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />

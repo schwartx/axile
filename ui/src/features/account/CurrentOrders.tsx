@@ -8,11 +8,13 @@ import type { CancelReceipt, CurrentOrder } from '@/lib/api/orders'
 import { canCancelOrder, orderDirection, orderOffset, orderState, orderSummary } from '@/features/account/currentOrdersModel'
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import type { ChannelCapability } from '@/types/api'
+import { useErrorPresentation } from '@/lib/errorPresentation'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
+  const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
-    className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${state.query.error || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
-    <InkRewrite text={state.query.loading ? '当前委托 · 查询中' : orderSummary(state.query.data, state.query.stale || !!state.query.error || state.query.refreshing || state.query.data?.complete === false)} tone="label" />
+    className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${failure.local || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
+    <InkRewrite text={state.query.loading ? '当前委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
   </button>
 }
 
@@ -73,6 +75,7 @@ export function CurrentOrdersContent({ state, units, symbolFilter }: {
   symbolFilter?: (symbol: string) => boolean
 }) {
   const data = state.query.data
+  const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   const rows = data?.data.filter(order => !symbolFilter || symbolFilter(order.symbol)) ?? []
   const receiptOf = (order: CurrentOrder) => state.receipts.find(r => r.order_id === order.order_id && r.symbol === order.symbol)
   const feedback = state.receipts.filter(r => (!symbolFilter || symbolFilter(r.symbol)) && (r.state === 'terminal' || r.state === 'failed' || r.state === 'unknown')).slice(-5)
@@ -82,9 +85,9 @@ export function CurrentOrdersContent({ state, units, symbolFilter }: {
       <button type="button" aria-label="刷新当前委托" disabled={state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
         className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />刷新</button>
     </div>
-    <ErrorNotice title="当前委托查询失败，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
+    <ErrorNotice intent="uncertain" title="当前委托查询失败，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
     {data?.complete === false && <p role="status" className="mb-3 text-[13px] text-warn">部分订单终态尚未确认，保留最后已知数量。</p>}
-    {state.query.stale && <p role="status" className="mb-3 text-[13px] text-warn">当前显示最后一次查询结果，请刷新核对。</p>}
+    {state.query.stale && <p role="status" className={`mb-3 text-[13px] ${failure.local ? 'text-warn' : 'text-ink-3'}`}>当前显示最后一次查询结果，请刷新核对。</p>}
     {state.query.loading && <p role="status" className="py-6 text-sm text-ink-3">当前委托查询中…</p>}
     {data && rows.length === 0 && data.complete && !state.query.stale && <p className="py-8 text-center text-sm text-ink-3">{symbolFilter ? '该品种当前无在途委托' : '当前无未完成委托'}</p>}
     {rows.length > 0 && <div className="overflow-x-auto"><div className="min-w-[650px]">

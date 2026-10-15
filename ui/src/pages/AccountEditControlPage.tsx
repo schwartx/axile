@@ -5,6 +5,7 @@ import type { FocusEvent as ReactFocusEvent } from 'react'
 import { useParams } from 'react-router'
 import { Pencil } from 'lucide-react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { Segmented } from '@/components/ui/Segmented'
 import { Select } from '@/components/ui/Select'
 import { StepperNumberInput } from '@/components/ui/StepperNumberInput'
@@ -523,17 +524,31 @@ export function AccountEditControlPage() {
   const [previewError, setPreviewError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
 
-  const loadPolicy = useCallback(() => {
+  const policyRequest = useRef<AbortController | null>(null)
+  useEffect(() => {
+    setModel(null)
+    setPresetKey('')
+    setOverride({ operations: {}, groups: {} })
+    return () => policyRequest.current?.abort()
+  }, [accountId])
+  const loadPolicy = useCallback((preserveDraft = false) => {
     if (!account.data) return
+    policyRequest.current?.abort()
+    const controller = new AbortController()
+    policyRequest.current = controller
     setPolicyError(null)
-    getAccountControlPolicy(accountId)
+    getAccountControlPolicy(accountId, undefined, controller.signal)
       .then((value) => {
+        if (controller.signal.aborted) return
         setModel(value)
-        setPresetKey(value.preset_key)
-        setOverride(cloneOverride(value.override))
+        if (!preserveDraft) {
+          setPresetKey(value.preset_key)
+          setOverride(cloneOverride(value.override))
+        }
       })
-      .catch((error) => setPolicyError(error instanceof Error ? error : new Error(String(error))))
+      .catch((error) => { if (!controller.signal.aborted) setPolicyError(error instanceof Error ? error : new Error(String(error))) })
   }, [account.data, accountId])
+  useReadRecovery(() => loadPolicy(model != null))
 
   useEffect(() => {
     if (!model) loadPolicy()
@@ -696,7 +711,7 @@ export function AccountEditControlPage() {
           {previewNote && <p className="mt-2 text-[13px] text-ink-2">{previewNote}</p>}
         </div>
       </Section>
-      <ErrorNotice title="预设方案预览失败" error={previewError} variant="mutation" />
+      <ErrorNotice intent="mutation" title="预设方案预览失败" error={previewError} variant="mutation" />
 
       <ControlWaitingSection frame={monitorFrame} operationNames={operationNames} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>

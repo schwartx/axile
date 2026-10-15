@@ -3,6 +3,7 @@ import { getExecutionStatus, triggerEmptyPositions, triggerExecute } from '@/lib
 import { describeRunOutcome, type RunKind } from '@/features/account/runOutcome'
 import { useToastStore } from '@/stores/ui'
 import type { ExecutionStatus } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'TERMINATED'])
 export type { RunKind }
@@ -74,5 +75,6 @@ export function useExecutionRunner(accountId: number, onSettled?: () => void) {
     }
   }, [accountId, toast])
 
+  useReadRecovery(() => setAttempt(value => value + 1), state.running && state.executionId != null && state.queryError != null)
   return { ...state, start, resumeQuery: () => setAttempt(value => value + 1) }
 }

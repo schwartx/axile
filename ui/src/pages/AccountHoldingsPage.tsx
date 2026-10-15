@@ -1,3 +1,4 @@
+import { useServiceDisconnected } from '@/lib/errorPresentation'
 import { useCallback, useEffect, useRef } from 'react'
 import { useParams } from 'react-router'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
@@ -27,6 +28,7 @@ import { executionJustSettled, useRunning } from '@/stores/liveExec'
 export function AccountHoldingsPage() {
   const { id } = useParams()
   const accountId = Number(id)
+  const disconnected = useServiceDisconnected()
   const accounts = useDomainStore((s) => s.accounts)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
   const item = accounts?.find((a) => a.account_id === accountId) ?? null
@@ -80,7 +82,7 @@ export function AccountHoldingsPage() {
   const holdingsStale = !latestAssets || (positions.length === 0 && holdingsCount > 0)
 
   return (
-    <AccountConnectionContext.Provider value={!account.error && account.data?.connection?.status === 'error'}><section>
+    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (account.data?.connection ?? item?.connection)?.status === 'error' }}><section>
       <div className="flex flex-wrap items-center gap-3">
         <AccountPageTitle
           accountId={accountId}
@@ -136,12 +138,12 @@ export function AccountHoldingsPage() {
             quantityLabel={descriptor?.units.quantity_label ?? ''}
           />
         )}
-        <ErrorNotice evidence={accountEvidence} title="账户详情读取失败" error={account.error} onRetry={account.refresh} contextKey={accountId} />
-        <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={snapshots.error} variant={snapshots.data ? 'stale' : 'section'}
+        <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="账户详情读取失败" error={account.error} hasData={account.data != null} onRetry={account.refresh} contextKey={accountId} />
+        <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="资产快照读取失败" error={snapshots.error} hasData={snapshots.data != null} variant={snapshots.data ? 'stale' : 'section'}
           updatedAt={snapshots.updatedAt} onRetry={snapshots.refresh} contextKey={accountId} />
-        <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'}
+        <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="目标快照读取失败" error={weights.error} hasData={weights.data != null} variant={weights.data ? 'stale' : 'section'}
           updatedAt={weights.updatedAt} onRetry={weights.reloadSnapshot} contextKey={accountId} />
-        <ErrorNotice evidence={accountEvidence} title="调仓计划读取失败" error={comparison.error} variant={comparison.data ? 'stale' : 'section'}
+        <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="调仓计划读取失败" error={comparison.error} hasData={comparison.data != null} variant={comparison.data ? 'stale' : 'section'}
           updatedAt={comparison.updatedAt} onRetry={comparison.refresh} contextKey={accountId} />
       </Card>
     </section></AccountConnectionContext.Provider>

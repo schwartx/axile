@@ -432,7 +432,7 @@ export function InitWizard({
                   />
                   {feishuTest && feishuTest !== 'busy' && <p className={`mt-3 text-[13px] ${feishuTest.ok ? 'text-ink-2' : 'text-warn'}`} role="status">{feishuTest.message}</p>}
                   {isEdit && draft.system_execution_notification_mode === 'default' && <button type="button" className="mt-4 cursor-pointer rounded-[9px] bg-ink-1 px-5 py-2 text-surface disabled:opacity-45" onClick={onSave} disabled={!alertDirty || saving || functionTrial.running || feishuTest === 'busy'}>{saving ? '保存中…' : '保存'}</button>}
-                  <ErrorNotice title="保存执行告警失败" error={saveError} variant="mutation" onRetry={doSave} />
+                  <ErrorNotice intent="mutation" title="保存执行告警失败" error={saveError} variant="mutation" onRetry={doSave} />
                 </div>
               </WizardPage>
             )}
@@ -705,7 +705,7 @@ export function InitWizard({
           {!isEdit && (
             <>
               <div className="border-t border-line bg-surface px-5 sm:px-12">
-                <ErrorNotice
+                <ErrorNotice intent="mutation"
                   title="保存系统配置失败"
                   error={saveError}
                   variant="mutation"

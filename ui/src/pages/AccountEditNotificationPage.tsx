@@ -28,7 +28,19 @@ export function AccountEditNotificationPage() {
   const draftState = usePythonDraft<string | null>(null)
   const { draft: code, setDraft: setCode, baseline: savedCode, setBaseline: setSavedCode } = draftState
   const saveState = usePythonSave()
-  const [defaultCode, setDefaultCode] = useState<string | null>(null)
+  const clearSaveError = saveState.clearError
+  useEffect(() => {
+    setCode(null)
+    setSavedCode(null)
+    clearSaveError()
+  }, [accountId, setCode, setSavedCode, clearSaveError])
+  const template = usePolling(useCallback((signal: AbortSignal) => getDefaultAccountNotification(accountId, signal), [accountId]), {
+    queryKey: `account:${accountId}:notification-template`, intervalMs: 0,
+  })
+  const defaultCode = template.data
+  const templateError = template.error
+  const templateLoading = template.loading || template.refreshing
+  const loadTemplate = template.refresh
 
   useEffect(() => {
     if (account.data && defaultCode !== null && code === null) {
@@ -37,21 +49,6 @@ export function AccountEditNotificationPage() {
       setSavedCode(initial.savedCode)
     }
   }, [account.data, code, defaultCode, setCode, setSavedCode])
-
-  const [templateError, setTemplateError] = useState<Error | null>(null)
-  const [templateLoading, setTemplateLoading] = useState(false)
-  const loadTemplate = useCallback(async () => {
-    setTemplateLoading(true)
-    setTemplateError(null)
-    try {
-      setDefaultCode(await getDefaultAccountNotification(accountId))
-    } catch (cause) {
-      setTemplateError(cause instanceof Error ? cause : new Error(String(cause)))
-    } finally {
-      setTemplateLoading(false)
-    }
-  }, [accountId])
-  useEffect(() => { void loadTemplate() }, [loadTemplate])
 
   const [eventType, setEventType] = useState<'execution.finished' | 'supplement.cancelled'>('execution.finished')
   const trial = usePythonRun<AccountFeishuTestResult>({
@@ -65,7 +62,7 @@ export function AccountEditNotificationPage() {
   const error = saveState.error
 
   if (account.error && !account.data) return <EditError error={account.error} onRetry={account.refresh} />
-  if (templateError && code === null) return <section><ErrorNotice title="默认模板读取失败" error={templateError} onRetry={() => void loadTemplate()} /></section>
+  if (templateError && code === null) return <section><ErrorNotice intent="read" title="默认模板读取失败" error={templateError} onRetry={() => void loadTemplate()} /></section>
   if (!account.data || code === null) return <EditLoading />
 
   const acc = account.data

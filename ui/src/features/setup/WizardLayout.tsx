@@ -1,3 +1,5 @@
+import { GlobalErrorContext } from '@/lib/errorPresentation'
+import { ServiceConnectionStatus } from '@/components/ServiceConnectionStatus'
 import { Outlet, useLocation } from 'react-router'
 import { Link } from '@/components/ui/nav'
 import { Toast } from '@/components/Toast'
@@ -45,12 +47,13 @@ export function WizardLayout() {
   const { flow, index } = flowOf(pathname)
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex h-14 flex-none items-center gap-3.5 border-b border-line bg-surface px-4 sm:px-6">
+    <GlobalErrorContext.Provider value={true}><div className="flex h-screen flex-col">
+      <header className="flex min-h-14 flex-wrap flex-none items-center gap-3.5 border-b border-line bg-surface px-4 sm:px-6">
         <Link to="/" aria-label="axile 首页" className="text-ink-1">
           <BrandWordmark size={16.5} />
         </Link>
         <span className="text-[15px] text-ink-2">{flow === 'acct' ? '· 账户设置' : ''}</span>
+        <ServiceConnectionStatus />
         <span className="ml-auto" />
         <ThemeToggle />
         <Link to="/" className="rounded-[9px] border border-line px-3.5 py-1.5 text-[14px] text-ink-2">
@@ -65,6 +68,6 @@ export function WizardLayout() {
         </div>
       </div>
       <Toast />
-    </div>
+    </div></GlobalErrorContext.Provider>
   )
 }

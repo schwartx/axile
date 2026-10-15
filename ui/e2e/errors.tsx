@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { PythonWorkbenchPane } from '../src/components/ui/PythonWorkbenchPane'
@@ -14,7 +14,12 @@ import { PortfolioEditPage } from '../src/pages/PortfolioEditPage'
 import { SystemConfigPage } from '../src/pages/SystemConfigPage'
 import { AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
 import { ApiError } from '../src/lib/api/client'
-import { useDomainStore } from '../src/stores/domain'
+import { useDomainStore, useDomainSync } from '../src/stores/domain'
+import { useChannelCatalogSync } from '../src/stores/channels'
+import { ServiceConnectionStatus } from '../src/components/ServiceConnectionStatus'
+import { GlobalErrorContext } from '../src/lib/errorPresentation'
+import { notifyReadRecovery } from '../src/lib/readRecovery'
+import { AccountDetailPage } from '../src/pages/AccountDetailPage'
 import type { AccountDashboardItem } from '../src/types/api'
 import '../src/styles/theme.css'
 
@@ -32,7 +37,7 @@ export function Basic() {
   return <main className="min-h-dvh bg-bg p-5 text-ink-1">
     <button type="button" onClick={() => setError(failure('B'))}>后台更新为 B</button>
     <button type="button" onClick={() => setContext('B')}>切换上下文</button>
-    <ErrorNotice title="合成操作失败" error={error} contextKey={context} onRetry={() => setError(failure('重试'))} />
+    <ErrorNotice intent="read" title="合成操作失败" error={error} contextKey={context} onRetry={() => setError(failure('重试'))} />
     <button type="button" onClick={() => setOld(value => !value)}>切换首次计算</button>
     {(['full', 'compact'] as const).map(variant => <section key={variant} aria-label={variant} className="my-4">
       <TargetSnapshotControl snapshot={old ? { weights: {}, calculated_at: '2026-10-14T10:00:00' } : null} recalculating={false} error={error} variant={variant} onRecalculate={() => setError(failure('重算'))} />
@@ -43,7 +48,7 @@ function Embedded() {
   const [error, setError] = useState<Error | null>(failure('A'))
   return <CenteredModal open title="已有业务弹窗" onClose={() => {}}>
     <button type="button" onClick={() => setError(null)}>后台查询恢复成功</button>
-    <ErrorNotice title="弹窗内读取失败" error={error} />
+    <ErrorNotice intent="read" title="弹窗内读取失败" error={error} />
   </CenteredModal>
 }
 export function Evidence() {
@@ -59,8 +64,8 @@ export function Runner() {
   const runner = useExecutionRunner(7)
   return <main className="p-5"><button type="button" disabled={runner.running} onClick={() => void runner.start('exec')}>立即执行</button>
     <output data-testid="runner">{JSON.stringify({ running: runner.running, executionId: runner.executionId, status: runner.lastStatus?.status })}</output>
-    <ErrorNotice title="状态待确认" error={runner.queryError} onRetry={runner.resumeQuery} evidence={[{ label: 'execution_id', value: runner.executionId ?? '' }]} />
-    <ErrorNotice title="执行请求失败" error={runner.triggerError} />
+    <ErrorNotice intent="uncertain" title="状态待确认" error={runner.queryError} onRetry={runner.resumeQuery} evidence={[{ label: 'execution_id', value: runner.executionId ?? '' }]} />
+    <ErrorNotice intent="mutation" title="执行请求失败" error={runner.triggerError} />
   </main>
 }
 export function PythonFixture() {
@@ -91,8 +96,19 @@ function ConnectionFixture() {
     </div>
   </main>
 }
+/** 使用生产连接状态、领域轮询及恢复订阅，合成接口故障由测试路由控制。 */
+function GlobalFixture({ children }: { children: ReactNode }) {
+  useDomainSync(60_000)
+  useChannelCatalogSync()
+  return <GlobalErrorContext.Provider value={true}>
+    <header className="flex items-center gap-3 p-4"><ServiceConnectionStatus /></header>
+    <button type="button" onClick={() => { void useDomainStore.getState().refreshAccounts(); void notifyReadRecovery() }}>刷新页面读取</button>
+    <main className="p-4">{children}</main>
+  </GlobalErrorContext.Provider>
+}
 const mode = new URLSearchParams(location.search).get('mode') ?? 'basic'
-const element = mode === 'connection' ? <ConnectionFixture /> : mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountFixture /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
+const content = mode === 'outage' ? <AccountDetailPage /> : mode === 'connection' ? <ConnectionFixture /> : mode === 'embedded' ? <Embedded /> : mode === 'python' ? <PythonFixture /> : mode === 'evidence' ? <Evidence /> : mode === 'runner' ? <Runner /> : mode === 'account' ? <AccountFixture /> : mode === 'holdings' ? <AccountHoldingsPage /> : mode === 'portfolio' ? <PortfolioEditPage /> : mode === 'system' ? <SystemConfigPage section="advanced" /> : <Basic />
+const element = mode === 'outage' || new URLSearchParams(location.search).has('global') ? <GlobalFixture>{content}</GlobalFixture> : content
 const path = mode === 'portfolio' ? '/portfolios/9/edit' : mode === 'holdings' ? '/accounts/7/holdings' : '/accounts/7'
 const pattern = mode === 'portfolio' ? '/portfolios/:id/edit' : mode === 'holdings' ? '/accounts/:id/holdings' : '/accounts/:id'
 const router = createMemoryRouter([{ path: pattern, element }, { path: '*', element: <p>已离开测试上下文</p> }], { initialEntries: [path] })

@@ -13,6 +13,7 @@ import {
 import { algoLabel, validateAlgorithmParams, type AlgorithmRef } from '@/features/setup/algorithms'
 import { algorithmCatalog, availableAlgorithms } from '@/features/setup/algorithmCatalog'
 import type { AlgorithmInfo, AlgorithmSlot, TradeChannel } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 /** 换 method 时参数区交叉淡半程（总约 140+140ms）。 */
 const PARAMS_FADE_MS = 140
@@ -315,6 +316,7 @@ export interface AlgorithmEditorProps {
 }
 
 export function AlgorithmEditor({ slot, channel, value, onChange, allowClear, onValidationError, nameVtName }: AlgorithmEditorProps) {
+  useReadRecovery(() => algorithmCatalog.load())
   const catalog = useSyncExternalStore(algorithmCatalog.subscribe, algorithmCatalog.getSnapshot, algorithmCatalog.getSnapshot)
   useEffect(() => {
     const state = algorithmCatalog.getSnapshot()
@@ -336,7 +338,7 @@ export function AlgorithmEditor({ slot, channel, value, onChange, allowClear, on
 
   return (
     <div>
-      <ErrorNotice contextKey={`${channel}:${slot}`} title="算法清单加载失败" evidence={[{ label: '渠道', value: channel }, { label: '槽位', value: slot }]} error={catalog.error} onRetry={() => algorithmCatalog.load()} />
+      <ErrorNotice intent="read" hasData={catalog.data != null} contextKey={`${channel}:${slot}`} title="算法清单加载失败" evidence={[{ label: '渠道', value: channel }, { label: '槽位', value: slot }]} error={catalog.error} onRetry={() => algorithmCatalog.load()} />
       {catalog.data && candidates.length === 0 && <p className="mb-3 text-sm text-ink-3">当前渠道无可选算法</p>}
       {value === null ? (
         <div className="text-sm text-ink-3">未设置 · 使用默认清仓逻辑

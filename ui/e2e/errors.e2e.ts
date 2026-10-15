@@ -5,12 +5,19 @@ const record = (id = 'A') => ({ id: 1, account_id: 7, execution_id: id, raw_inpu
 const sync = (status = 'synchronized', revision = 1, last_error: string | null = null) => ({ status, revision, last_error, attempts: 1, last_attempt_at: null, synchronized_at: null })
 const account = { id: 7, name: '合成账户 A', market: 'demo', trade_channel: 'paper', is_started: false, cron_expr: '', portfolio_id: 9, algorithm: { method: 'SINGLE-MAKER', params: {} }, empty_positions_algorithm: null, account_config: {}, forbidden_symbols: [], risk_symbols: [], trade_rules: [], long_leverage: 1, short_leverage: 1, weight_precision: .001 }
 const snapshot = { portfolio_id: 9, context_account_id: 7, weights: {}, calculated_at: '2026-10-14T10:00:00', sizing: null }
+const dashboardItem = { account_id: 7, name: account.name, remark: null, market: 'demo', trade_channel: 'paper', is_started: false,
+  portfolio_id: 9, is_scheduled: false, next_run_time: null, total_asset: 100, currency: 'CNY', holdings_count: 0, position_weights: [],
+  last_is_success: null, last_exec_at: null, last_output_status: null, off_symbol_count: null,
+  connection: { status: 'ok', observed_at: null, message: null } }
 
 async function defaults(page: Page) {
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/v1/editor/')) return route.fallback()
-    const json = path.endsWith('/runtime-sync') ? sync() : /\/account\/7$/.test(path) ? account
+    const json = path.endsWith('/account/dashboard') ? { data: [dashboardItem] }
+      : path.endsWith('/capabilities/channels') ? []
+      : path.endsWith('/orders') ? { data: [], count: 0, complete: true, sampled_at: '2026-10-14T10:00:00', cancellations: [] }
+      : path.endsWith('/runtime-sync') ? sync() : /\/account\/7$/.test(path) ? account
       : path.endsWith('/target_snapshot') ? snapshot : path.endsWith('/rebalance_plan') ? { rows: [], off_symbol_count: 0 }
       : path.endsWith('/asset_snapshots') ? { data: [{ assets: { total_asset: 100, available_cash: 100, market_value: 0, positions: [] }, created_at: '2026-10-14T10:00:00' }], count: 1 }
       : path.endsWith('/portfolio/9') ? { id: 9, name: '合成组合', market: 'demo', custom_calc_py_code: 'def calculate_portfolio(context):\n    return {}\n', description: '' }
@@ -46,6 +53,132 @@ async function quickFixLsp(page: Page, diagnostic: boolean, fail: () => boolean)
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', error => { throw error })
   await clipboard(page)
+})
+
+test('all first-read network failures share one global notice and recover without writes', async ({ page }) => {
+  await defaults(page)
+  let offline = true
+  const reads: Record<string, number> = {}
+  let writes = 0
+  await page.route('**/api/v1/**', route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() !== 'GET') writes++
+    reads[path] = (reads[path] ?? 0) + 1
+    return offline ? route.abort() : route.fallback()
+  })
+  await page.goto('/e2e/errors.html?mode=outage')
+  await expect(page.getByRole('button', { name: '查看服务连接错误详情' })).toContainText('与服务器失联')
+  await expect(page.getByText('无法连接 axile 服务', { exact: false })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: '查看错误详情', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /^重试：/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '重试同步', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '重新计算当前目标权重', exact: true })).toBeEnabled()
+  await expect(page.getByText('暂不可用', { exact: true }).filter({ visible: true }).first()).toBeVisible()
+  const previous = { ...reads }
+  offline = false
+  await page.getByRole('button', { name: '重试连接服务器' }).click()
+  await expect(page.getByRole('banner')).toContainText('服务正常')
+  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  for (const source of ['runtime-sync', 'asset_snapshots', 'target_snapshot', 'next_run_time', 'rebalance_plan']) {
+    const path = `/api/v1/account/7/${source}`
+    await expect.poll(() => reads[path]).toBe((previous[path] ?? 0) + 1)
+  }
+  for (const path of ['/api/v1/capabilities/channels', '/api/v1/portfolio/']) {
+    await expect.poll(() => reads[path]).toBe((previous[path] ?? 0) + 1)
+  }
+  await expect(page.getByText('暂不可用', { exact: true })).toHaveCount(0)
+  expect(writes).toBe(0)
+})
+
+test('cached values remain visible during outage; active operations retain their own failure', async ({ page }) => {
+  await defaults(page)
+  let offline = false, patches = 0
+  await page.route('**/api/v1/**', route => {
+    if (route.request().method() === 'PATCH') patches++
+    return offline ? route.abort() : route.fallback()
+  })
+  await page.goto('/e2e/errors.html?mode=outage')
+  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeVisible()
+  offline = true
+  await page.getByRole('button', { name: '刷新页面读取' }).click()
+  await expect(page.getByRole('banner')).toContainText('与服务器失联')
+  await expect(page.getByRole('button', { name: '账户连通状态：未知' })).toContainText('连接状态待更新')
+  await expect(page.getByText(/当前显示 .*的数据/).filter({ visible: true }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeVisible()
+  const start = page.getByRole('button', { name: '启动自动执行', exact: true })
+  await expect(start).toBeEnabled()
+  await start.click()
+  await expect(page.getByRole('alert').filter({ hasText: '自动执行配置保存失败' })).toContainText('无法连接 axile 服务')
+  expect(patches).toBe(1)
+  offline = false
+  await page.getByRole('button', { name: '重试连接服务器' }).click()
+  await expect(page.getByRole('banner')).toContainText('服务正常')
+  await expect(start).toBeEnabled()
+  expect(patches).toBe(1)
+})
+
+test('HTTP errors keep endpoint meaning and independent retry', async ({ page }) => {
+  await defaults(page)
+  await page.route('**/api/v1/account/dashboard', route => route.fulfill({ status: 500, json: { detail: '账户汇总失败' } }))
+  await page.route('**/api/v1/account/7/target_snapshot', route => route.fulfill({ status: 422, json: { detail: '目标参数无效' } }))
+  await page.goto('/e2e/errors.html?mode=outage')
+  await expect(page.getByRole('banner')).toContainText('账户数据刷新失败')
+  await expect(page.getByRole('banner')).not.toContainText('与服务器失联')
+  const target = page.getByRole('status').filter({ hasText: '目标快照读取失败' })
+  await expect(target).toContainText('目标参数无效')
+  await expect(target.getByRole('button', { name: '重试：目标快照读取失败' })).toBeVisible()
+})
+
+test('reconnect resumes the accepted execution id without triggering again', async ({ page }) => {
+  await defaults(page)
+  let offline = false, triggers = 0, reads = 0
+  await page.route('**/api/v1/**', route => offline ? route.abort() : route.fallback())
+  await page.route('**/api/v1/account/execute/7', route => {
+    triggers++
+    return route.fulfill({ json: { execution_id: 'same-execution' } })
+  })
+  await page.route('**/api/v1/account/executions/same-execution', route => {
+    if (offline) return route.abort()
+    reads++
+    if (reads === 2) { offline = true; return route.abort() }
+    return route.fulfill({ json: { execution_id: 'same-execution', status: reads === 1 ? 'RUNNING' : 'SUCCEEDED', output_status: 'SUCCEEDED' } })
+  })
+  await page.goto('/e2e/errors.html?mode=runner&global')
+  await page.getByRole('button', { name: '立即执行', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: '状态待确认' })).toBeVisible()
+  await page.getByRole('button', { name: '刷新页面读取' }).click()
+  await expect(page.getByRole('banner')).toContainText('与服务器失联')
+  await expect(page.getByTestId('runner')).toContainText('same-execution')
+  await expect(page.getByRole('button', { name: '立即执行', exact: true })).toBeDisabled()
+  offline = false
+  await page.getByRole('button', { name: '重试连接服务器' }).click()
+  await expect(page.getByRole('button', { name: '立即执行', exact: true })).toBeEnabled()
+  expect(triggers).toBe(1)
+})
+
+test('reconnect preserves an unsaved portfolio draft and never recomputes it', async ({ page }) => {
+  await defaults(page)
+  let offline = false, writes = 0
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/v1/editor/')) return route.fallback()
+    if (route.request().method() !== 'GET') writes++
+    return offline ? route.abort() : route.fallback()
+  })
+  await page.goto('/e2e/errors.html?mode=portfolio&global')
+  const name = page.getByRole('textbox', { name: '组合名称' })
+  await name.fill('仍未保存的组合草稿')
+  offline = true
+  await page.getByRole('button', { name: '刷新页面读取' }).click()
+  await expect(page.getByRole('banner')).toContainText('与服务器失联')
+  await expect(name).toHaveText('仍未保存的组合草稿')
+  offline = false
+  await page.getByRole('button', { name: '重试连接服务器' }).click()
+  await expect(page.getByRole('banner')).toContainText('服务正常')
+  await expect(name).toHaveText('仍未保存的组合草稿')
+  expect(writes).toBe(0)
 })
 
 test('full error and copy freeze A while the page receives B; Escape restores focus', async ({ page }) => {
@@ -269,7 +402,7 @@ for (const failed of [false, true]) test(`asset refresh settles independently of
   release()
   const refresh = page.getByRole('button', { name: '刷新账户资产', exact: true })
   await expect(refresh).toBeEnabled()
-  const notice = page.getByRole('status').filter({ hasText: '账户资产刷新失败' })
+  const notice = page.getByRole('alert').filter({ hasText: '账户资产刷新失败' })
   if (failed) {
     await expect(notice).toContainText('资产刷新开始')
     await notice.getByRole('button', { name: '重试：账户资产刷新失败' }).click()
@@ -539,7 +672,7 @@ test('账户连接标识读取后端三态，连接错误集中展示，业务�
   await expect(page.getByRole('button', { name: '账户连通状态：未知' })).toBeVisible()
   await page.getByRole('button', { name: '刷新账户资产' }).click()
   await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: '账户资产刷新失败' })).toHaveCount(0)
+  await expect(page.getByRole('alert').filter({ hasText: '账户资产刷新失败' })).toContainText('更新令牌错误')
   await page.getByRole('button', { name: '账户连通状态：异常' }).click()
   const modal = page.getByRole('dialog', { name: '账户连接异常' })
   await expect(modal.getByRole('button', { name: '技术详情' })).toHaveAttribute('aria-expanded', 'false')
@@ -557,7 +690,7 @@ test('账户连接标识读取后端三态，连接错误集中展示，业务�
   await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
 })
 
-test('目标计算中的连接错误归到账户，脚本错误不改变连接标识', async ({ page }) => {
+test('主动目标计算保留连接错误反馈，脚本错误不改变连接标识', async ({ page }) => {
   await defaults(page)
   let failed = false
   let business = false
@@ -570,8 +703,7 @@ test('目标计算中的连接错误归到账户，脚本错误不改变连接�
   await page.goto('/e2e/errors.html?mode=account')
   await page.getByRole('button', { name: '重新计算当前目标权重', exact: true }).click()
   await expect(page.getByRole('button', { name: '账户连通状态：异常' })).toBeVisible()
-  await expect(page.getByText('因账户连接异常无法计算', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: '更新令牌错误' })).toHaveCount(0)
+  await expect(page.getByRole('alert').filter({ hasText: '目标计算失败' })).toContainText('更新令牌错误')
   failed = false
   business = true
   await page.reload()

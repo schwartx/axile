@@ -149,7 +149,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
     </div></div></div>
     {parsed.error && <p role="alert" className="py-4 text-sm text-warn">{parsed.error.message}</p>}
     {!scope && !window && <p role="alert" className="py-4 text-sm text-warn">请选择有效的起止日期，结束日期不能早于开始日期。</p>}
-    {expired ? <p role="alert" className="py-4 text-sm text-warn">绩效快照已失效，请返回实盘绩效刷新后重新选择区间。</p> : <ErrorNotice title="执行记录加载失败" error={poll.error} variant={poll.data ? 'stale' : 'section'} updatedAt={poll.updatedAt} onRetry={poll.refresh} />}
+    {expired ? <p role="alert" className="py-4 text-sm text-warn">绩效快照已失效，请返回实盘绩效刷新后重新选择区间。</p> : <ErrorNotice hasData={poll.data != null} intent="read" title="执行记录加载失败" error={poll.error} variant={poll.data ? 'stale' : 'section'} updatedAt={poll.updatedAt} onRetry={poll.refresh} />}
     {poll.loading && <div aria-busy="true" aria-label="正在加载执行记录">{Array.from({ length: 7 }, (_, i) => <div key={i} className="flex min-h-20 items-center gap-6 border-b border-line"><Skeleton className="h-3 w-28" /><Skeleton className="h-3 w-1/3" /></div>)}</div>}
     {poll.data && !expired && <div key={view} className={fade ? 'panel-fade-in' : ''}>
       <div data-testid="journal-summary" className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 py-3 text-xs text-ink-3">

@@ -5,6 +5,8 @@ import { directoryBreadcrumbs } from '@/components/ui/directoryPath'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { getDirectories } from '@/lib/api/system'
 import type { DirectoryListing } from '@/types/api'
+import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export function DirectoryPicker({
   open,
@@ -24,9 +26,11 @@ export function DirectoryPicker({
   const [listing, setListing] = useState<DirectoryListing | null>(null)
   const [location, setLocation] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Error | null>(null)
+  const requestedPath = useRef<string | undefined>(undefined)
 
-  const load = useCallback(async (path?: string): Promise<boolean> => {
+  const load = useCallback(async (path?: string, preserveLocation = false): Promise<boolean> => {
+    requestedPath.current = path
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
@@ -36,16 +40,17 @@ export function DirectoryPicker({
       const next = await getDirectories(path, controller.signal)
       if (controller.signal.aborted) return false
       setListing(next)
-      setLocation(next.path ?? '')
+      if (!preserveLocation) setLocation(next.path ?? '')
     } catch (caught) {
       if (controller.signal.aborted) return false
-      setError(caught instanceof Error ? caught.message : '无法读取目录')
+      setError(caught instanceof Error ? caught : new Error(String(caught)))
       return false
     } finally {
       if (!controller.signal.aborted) setLoading(false)
     }
     return true
   }, [])
+  useReadRecovery(async () => { await load(requestedPath.current, true) }, open)
 
   useEffect(() => {
     if (!open) return
@@ -53,16 +58,18 @@ export function DirectoryPicker({
     setListing(null)
     setError(null)
     const initial = initialPath?.trim()
+    let active = true
     void (async () => {
       if (!initial) {
         await load()
         return
       }
       if (await load(initial)) return
-      await load()
+      if (active) await load()
     })()
     requestAnimationFrame(() => locationRef.current?.focus())
     return () => {
+      active = false
       controllerRef.current?.abort()
       triggerRef.current?.focus({ preventScroll: true })
     }
@@ -144,10 +151,10 @@ export function DirectoryPicker({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2 sm:px-3" aria-busy={loading}>
-          {error && <div className="px-3 py-4 text-[14px] text-warn">{error}</div>}
+          <ErrorNotice intent="read" title="目录读取失败" error={error} hasData={listing != null} embedded onRetry={async () => { await load(requestedPath.current) }} />
           {!error && loading && !listing && <div className="px-3 py-4 text-[14px] text-ink-3">正在读取目录…</div>}
-          {!error && listing?.entries.length === 0 && <div className="px-3 py-4 text-[14px] text-ink-3">此目录没有子文件夹</div>}
-          {!error && listing?.entries.map((entry) => (
+          {listing?.entries.length === 0 && <div className="px-3 py-4 text-[14px] text-ink-3">此目录没有子文件夹</div>}
+          {listing?.entries.map((entry) => (
             <button key={entry.path} type="button" className="flex h-11 w-full cursor-pointer items-center gap-3 rounded-[8px] px-3 text-left hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent" onClick={() => void load(entry.path)}>
               {listing.path === null ? <HardDrive size={17} className="text-ink-2" /> : <Folder size={17} className="text-ink-2" />}
               <OverflowText className="min-w-0 flex-1 text-[15px]" text={entry.name} />

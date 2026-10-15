@@ -316,7 +316,7 @@ function TimerQuickModalReady({
           </Link>
         </div>
       </div>
-      <ErrorNotice embedded title="保存定时任务失败" error={saveError} variant="mutation" onRetry={save} />
+      <ErrorNotice intent="mutation" embedded title="保存定时任务失败" error={saveError} variant="mutation" onRetry={save} />
     </CenteredModal>
   )
 }

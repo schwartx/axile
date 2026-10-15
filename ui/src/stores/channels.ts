@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 import { getChannelCapabilities } from '@/lib/api/system'
 import type { ChannelCapability, TradeChannel } from '@/types/api'
@@ -61,6 +62,7 @@ export function getChannelForMarket(market: string | null | undefined): TradeCha
 export function useChannelCatalogSync(): void {
   const channels = useChannelCatalogStore((state) => state.channels)
   const refresh = useChannelCatalogStore((state) => state.refresh)
+  useReadRecovery(refresh)
   useEffect(() => {
     if (channels === null) void refresh()
   }, [channels, refresh])

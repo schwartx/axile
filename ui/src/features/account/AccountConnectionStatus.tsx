@@ -1,3 +1,5 @@
+import { useServiceDisconnected } from '@/lib/errorPresentation'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { AccountConnectionProblemModal, type ConnectionSelection } from '@/features/account/AccountConnectionProblemModal'
@@ -8,6 +10,7 @@ import type { AccountConnection } from '@/types/api'
 
 /** 标识只消费后端事实；打开后冻结结果，关闭/切换账户撤销在途请求。 */
 export function AccountConnectionStatus({ accountId, connection }: { accountId: number; connection?: AccountConnection }) {
+  const disconnected = useServiceDisconnected()
   const [selection, setSelection] = useState<ConnectionSelection | null>(null)
   const request = useRef<AbortController | null>(null)
   const sequence = useRef(0)
@@ -24,8 +27,8 @@ export function AccountConnectionStatus({ accountId, connection }: { accountId: 
     request.current = null
     setSelection(null)
   }
-  const status = connection?.status ?? 'unknown'
-  const label = connectionLabel(connection)
+  const status = disconnected ? 'unknown' : connection?.status ?? 'unknown'
+  const label = disconnected ? '连接状态待更新' : connectionLabel(connection)
   const stateName = { unknown: '未知', ok: '正常', error: '异常' }[status]
   const accessible = `账户连通状态：${stateName}${status === 'error' && connection?.label?.trim() ? `，${label}` : ''}`
   const open = async () => {
@@ -39,9 +42,10 @@ export function AccountConnectionStatus({ accountId, connection }: { accountId: 
       const detail = await getAccountConnection(accountId, controller.signal)
       if (active()) setSelection({ kind: 'detail', accountId, requestId, detail })
     } catch (error) {
-      if (active()) setSelection({ kind: 'failure', accountId, requestId, info: errorInfo(error, [{ label: '账户', value: String(accountId) }]) })
+      if (active()) setSelection({ kind: 'failure', accountId, requestId, error, info: errorInfo(error, [{ label: '账户', value: String(accountId) }]) })
     }
   }
+  useReadRecovery(open, selection?.kind === 'failure')
   const chipClass = 'inline-flex min-w-0 max-w-full items-center rounded-chip bg-fill px-2.5 py-[3px] text-xs whitespace-nowrap'
   return <span className="inline-flex min-w-0 max-w-full" onClick={event => { if (status !== 'ok') event.stopPropagation() }}>
     {status === 'ok' ? <span role="status" aria-label={accessible} className={`${chipClass} text-ink-2`}>

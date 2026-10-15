@@ -7,6 +7,7 @@ import { getExecuteRecords } from '@/lib/api/accounts'
 import { getExecutionArtifacts, getExecutionEvents, getExecutionStatus } from '@/lib/api/executions'
 import { buildExecutionErrorInfo, readEvidencePages, catalogEvidence, type EvidencePage } from '@/features/history/executionErrorAdapter'
 import type { ExecuteRecord, ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 interface Context { accountId: number; executionId?: string | null; recordId?: number | null; record?: ExecuteRecord | null; status?: ExecutionStatus | null }
 type Source = 'record' | 'events' | 'artifacts' | 'status'
@@ -85,6 +86,10 @@ export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEven
     for (const source of sources) void load(source, context, generation.current)
   }
   const failures = snapshot ? Object.entries(snapshot.errors).filter((entry): entry is [Source, Error] => !!entry[1]) : []
+  // 已读取证据保持冻结；恢复时仅补齐此前失败的来源。
+  useReadRecovery(() => {
+    if (snapshot) return Promise.all(failures.map(([source]) => load(source, snapshot.context, generation.current)))
+  }, snapshot != null)
   const busy = !!snapshot?.pending.length
   const info = snapshot ? buildExecutionErrorInfo({ ...snapshot.context, record: snapshot.record, status: snapshot.status,
     events: snapshot.events?.data, artifacts: snapshot.artifacts?.data,
@@ -101,7 +106,7 @@ export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEven
         <button type="button" onClick={close} className="cursor-pointer rounded-lg bg-ink-1 px-4 py-2 text-[13px] text-surface">关闭详情</button>
       </div>}>
       {busy && <p role="status" className="mb-3 text-[13px] text-ink-3">正在读取全部证据，完成后可复制全部。</p>}
-      {failures.map(([source, error]) => <ErrorNotice key={source} embedded title={`${names[source]}读取失败`} error={error} onRetry={() => load(source, snapshot.context, generation.current)} />)}
+      {failures.map(([source, error]) => <ErrorNotice intent="read" key={source} embedded title={`${names[source]}读取失败`} error={error} onRetry={() => load(source, snapshot.context, generation.current)} />)}
       <ErrorDetailsContent info={info} />
     </CenteredModal>}
   </div>

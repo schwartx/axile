@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export interface PollingOptions {
   /** 查询身份。身份变化时旧数据立即失效，避免跨实体闪现。 */
@@ -110,9 +111,9 @@ export function usePolling<T>(
       return {
         key: queryKey,
         data,
-        error: null,
-        loading: data === null,
-        refreshing: data !== null,
+        error: sameKey ? previous.error : null,
+        loading: data === null && (!sameKey || previous.error === null),
+        refreshing: data !== null || (sameKey && previous.error !== null),
         updatedAt: sameKey ? previous.updatedAt : null,
       }
     })
@@ -171,6 +172,7 @@ export function usePolling<T>(
     }
   }, [enabled, intervalMs, queryKey, run])
 
+  useReadRecovery(run, enabled)
   const view = pollingView(state, queryKey, enabled)
   return { ...view, refresh: run }
 }

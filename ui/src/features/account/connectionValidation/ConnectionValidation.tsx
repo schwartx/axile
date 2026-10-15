@@ -9,9 +9,9 @@ import { ValidationRecordsModal, type ValidationTableSelection } from '@/feature
 import { ValidationStepDetailsModal } from '@/features/account/connectionValidation/ValidationStepDetailsModal'
 import { ConnectionValidationSession } from '@/features/account/connectionValidation/connectionValidationSession'
 import { connectionValidationApi, connectionValidationApiForAccount, validationRunning, isValidationTable, type ConnectionValidationJob, type ValidationStepStatus, type ValidationKeyValueDetails } from '@/lib/api/connectionValidation'
-import { useDomainStore } from '@/stores/domain'
-import { isConnectionError } from '@/lib/errorInfo'
 import type { ChannelCapability } from '@/types/api'
+import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
+import { useErrorPresentation } from '@/lib/errorPresentation'
 
 const stepLabels: Record<ValidationStepStatus, string> = {
   pending: '待检查', running: '检查中', passed: '已通过', failed: '失败', skipped: '未执行',
@@ -101,7 +101,6 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   config: Record<string, unknown>
   accountId?: number
 }) {
-  const serverUnavailable = useDomainStore((state) => isConnectionError(state.accountsError))
   const [job, setJob] = useState<ConnectionValidationJob | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [starting, setStarting] = useState(false)
@@ -115,6 +114,13 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   const latestVersion = useRef(configVersion)
   latestVersion.current = configVersion
   const [resultVersion, setResultVersion] = useState(configVersion)
+  const requestFailure = useErrorPresentation(error, { intent: job ? 'uncertain' : 'mutation' })
+  useReadRecovery(() => {
+    if (resultVersion === configVersion && job && error) {
+      setError(null)
+      return session.current?.refresh()
+    }
+  })
 
   useEffect(() => {
     session.current?.dispose()
@@ -136,7 +142,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
   const shownJob = current ? job : null
   const shownError = current ? error : null
   const busy = current && (starting || (!error && !!job && validationRunning(job)))
-  const enabled = descriptor.available && !serverUnavailable
+  const enabled = descriptor.available
   const steps: ConnectionValidationJob["steps"] = shownJob?.steps ?? declaration.steps.map((step) => ({ ...step, status: 'pending' as const, error: null }))
 
   const start = () => {
@@ -177,7 +183,7 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
             <RadioTower size={16} className="shrink-0" aria-hidden="true" />连接验证
           </h2>
           <div aria-live="polite" className="mt-1 min-h-[18px] text-[12px]">
-            <InkRewrite tone="prose" text={shownError ? '验证未完成' : summary(shownJob, current && starting)} textClassName={shownError || shownJob?.status === 'failed' ? 'text-warn' : 'text-ink-3'} />
+            <InkRewrite tone="prose" text={shownError ? '验证未完成' : summary(shownJob, current && starting)} textClassName={(shownError && requestFailure.local) || shownJob?.status === 'failed' ? 'text-warn' : 'text-ink-3'} />
           </div>
         </div>
         <button type="button" onClick={start} disabled={!enabled || busy} className="relative flex h-[34px] w-[100px] shrink-0 cursor-pointer items-center justify-center rounded-lg bg-ink-1 px-2 text-[13px] font-[550] text-surface transition-opacity duration-200 motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-45">
@@ -194,13 +200,12 @@ export function ConnectionValidation({ descriptor, config, accountId }: {
           if (step.error) setSelectedError({ stage: step.label, error: step.error })
         }} />)}
       </ol>
-      <ErrorNotice title="连接验证请求失败" error={shownError} contextKey={`${accountId}:${configVersion}`}
+      <ErrorNotice intent={shownJob ? "uncertain" : "mutation"} title="连接验证请求失败" error={shownError} contextKey={`${accountId}:${configVersion}`}
         onRetry={shownError instanceof ApiError && shownError.status === 404 || !shownJob ? start : () => { setError(null); void session.current?.refresh() }} />
       {shownError instanceof ApiError && shownError.status === 404 && <p className="text-[12px] text-warn">验证任务已过期，请重新验证。</p>}
       <ValidationMessage message={shownJob?.error && !shownJob.steps.some((step) => step.error) ? shownJob.error.message : null}
         onDetails={shownJob?.error ? () => setSelectedError({ stage: '连接验证', error: shownJob.error! }) : undefined} />
       <div>
-        <ValidationMessage message={serverUnavailable ? '无法连接 axile 服务，连接验证暂不可用。请在顶部重试连接服务器。' : null} />
         {!descriptor.available && <p className="mt-2 text-[12px] text-warn">当前服务器缺少此渠道依赖，安装后才能验证连接。</p>}
         <div inert={!shownJob?.finished_at && !(busy && shownJob)} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${shownJob?.finished_at || (busy && shownJob) ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">

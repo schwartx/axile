@@ -17,7 +17,7 @@ export function BatchExecutionResults({ portfolioId, results, onRetry }: {
     {results.map(result => <div key={result.accountId} className="mb-3 border-b border-line pb-2 text-[13px]">
       <div>{result.name} · {batchResultStatus(result)}</div>
       {result.trigger && <Link to={`/accounts/${result.accountId}/executions/${result.trigger.execution_id}`} className="break-all text-accent">{result.trigger.execution_id}</Link>}
-      <ErrorNotice title={`${result.name} 执行请求失败`} error={result.error} evidence={[{ label: '账户', value: String(result.accountId) }]}
+      <ErrorNotice intent="mutation" title={`${result.name} 执行请求失败`} error={result.error} evidence={[{ label: '账户', value: String(result.accountId) }]}
         onRetry={() => onRetry(result.accountId, result.name)} contextKey={portfolioId} />
     </div>)}
     <ErrorDetailsModal selection={selection ? { title: '批量执行受理结果', info: selection.info } : null}
