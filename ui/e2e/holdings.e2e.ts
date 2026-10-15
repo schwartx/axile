@@ -26,7 +26,7 @@ async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean 
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ json: orders }))
 }
 
-test('click a row; explain frozen sizing and only this symbol; Escape restores focus', async ({ page }, testInfo) => {
+test('click a row; explain frozen sizing and only this symbol; Escape clears pointer focus', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   const writes: string[] = []
   page.on('request', request => { if (request.method() !== 'GET') writes.push(request.url()) })
@@ -71,7 +71,7 @@ test('click a row; explain frozen sizing and only this symbol; Escape restores f
   await expect(dialog.getByText('最小交易数量', { exact: true })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
-  await expect(table.getByRole('button', { name: '查看 c2611 持仓与目标' })).toBeFocused()
+  await expect(table.getByRole('button', { name: '查看 c2611 持仓与目标' })).not.toBeFocused()
 })
 
 test('pointer dismissal leaves no persistent row highlight; keyboard dismissal restores visible focus', async ({ page }) => {
@@ -80,6 +80,15 @@ test('pointer dismissal leaves no persistent row highlight; keyboard dismissal r
   const entry = page.getByRole('button', { name: '查看 c2611 持仓与目标' })
   const row = entry.locator('xpath=ancestor::tr')
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
+  await entry.click()
+  await expect(page.locator('main')).toHaveAttribute('data-keyboard-opened', 'false')
+  console.log('focus-debug', await page.evaluate(() => ({ active: document.activeElement?.outerHTML.slice(0, 300), panels: [...document.querySelectorAll('[role=dialog]')].map(panel => ({ contains: panel.contains(document.activeElement), inert: (panel as HTMLElement).inert, visibility: getComputedStyle(panel).visibility })) })))
+  await page.keyboard.press('Escape')
+  await page.mouse.move(5, 5)
+  await expect(dialog).toBeHidden()
+  await expect(entry).not.toBeFocused()
+  await expect(entry).toHaveCSS('outline-style', 'none')
+  await expect(row).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await entry.click()
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   await page.mouse.move(5, 5)

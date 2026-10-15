@@ -26,7 +26,7 @@ export function HoldingsPreviewTable({
   holdings: HoldingPreviewRow[] | null
   currency?: string
   positionValueLabel: string
-  onSelect?: (symbol: string) => void
+  onSelect?: (symbol: string, keyboardOpened: boolean) => void
 }) {
   return (
     <div
@@ -89,13 +89,10 @@ export function HoldingsPreviewTable({
               const availableVolume = formatHoldingQuantity(holding.availableVolume)
               const value = holding.value == null ? '—' : withCurrency(fmtMoney(holding.value), currency)
               return (
-                <tr key={holding.key} onClick={onSelect ? event => {
-                  event.currentTarget.querySelector('button')?.focus()
-                  onSelect(holding.symbol)
-                } : undefined}
+                <tr key={holding.key} onClick={onSelect ? () => onSelect(holding.symbol, false) : undefined}
                   className={`border-t border-line text-[13.5px] first:border-t-0 ${onSelect ? 'cursor-pointer hover:bg-fill has-[:focus-visible]:bg-fill' : ''}`}>
                   <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}>{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${holding.symbol} 持仓与目标`}
-                    onClick={event => { event.stopPropagation(); onSelect(holding.symbol) }}
+                    onClick={event => { event.stopPropagation(); onSelect(holding.symbol, event.detail === 0) }}
                     className="block min-h-8 w-full cursor-pointer text-left focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
                     <OverflowText text={holding.symbol} className="block" />
                   </button> : <OverflowText text={holding.symbol} className="block" />}</td>
