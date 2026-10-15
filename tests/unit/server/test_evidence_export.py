@@ -7,6 +7,7 @@ import csv
 import hashlib
 import io
 import json
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -771,3 +772,124 @@ def test_trades_without_stable_identity_are_not_silently_deduplicated(database):
     archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
     assert len(_csv(archive, "executions/exec-1/trades.csv")) == 2
     assert _manifest(archive)["executions"][0]["trades"] == 2
+
+
+@pytest.mark.parametrize("profile", ["shareable", "internal"])
+@pytest.mark.parametrize("nested_symbol", [True, False], ids=["explicit-symbol", "inherited-symbol"])
+@pytest.mark.parametrize("selection", ["execution", "date"])
+def test_mixed_result_exports_each_order_and_trade_once(database, profile, nested_symbol, selection):
+    record = _record()
+    group = record.raw_result["symbol_results"]["rb2610"]
+    for field in ("orders", "trades"):
+        record.raw_result[field] = deepcopy(group[field])
+        if not nested_symbol:
+            group[field][0].pop("symbol")
+    _seed(database, _intent(), record)
+    url = "/account/executions/exec-1/evidence" if selection == "execution" else "/account/1/evidence"
+    archive = _zip(
+        _client(database).get(url, params={"profile": profile, "start_date": "2026-10-15", "end_date": "2026-10-15"})
+    )
+    manifest = _manifest(archive)
+    report = manifest["executions"][0]
+    assert report["orders"] == report["trades"] == 1
+    assert report["order_snapshots"] == report["trade_snapshots"] == 1
+    assert report["record_variants"] == {"orders": [], "trades": []}
+    assert report["known_pending_order_ids"] == ["20261015-1-2-3"]
+    for field in ("orders", "trades"):
+        path = f"executions/exec-1/{field}.csv"
+        rows = _csv(archive, path)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "rb2610"
+        assert rows[0]["source_path"] == f"record.json#/raw_result/symbol_results/rb2610/{field}/0"
+        assert next(entry for entry in manifest["files"] if entry["path"] == path)["rows"] == 1
+        assert _csv(archive, "executions.csv")[0][field] == "1"
+    raw = json.loads(archive.read("executions/exec-1/record.json"))["raw_result"]
+    assert len(raw["orders"]) == len(raw["trades"]) == 1
+    assert ("symbol" in raw["symbol_results"]["rb2610"]["trades"][0]) is nested_symbol
+
+
+def test_mixed_result_keeps_records_only_present_at_top_level(database):
+    record = _record()
+    group = record.raw_result["symbol_results"]["rb2610"]
+    record.raw_result["orders"] = [
+        deepcopy(group["orders"][0]),
+        {**deepcopy(group["orders"][0]), "symbol": "hc2610", "order_id": "order-2"},
+    ]
+    record.raw_result["trades"] = [
+        deepcopy(group["trades"][0]),
+        {**deepcopy(group["trades"][0]), "symbol": "hc2610", "order_id": "order-2", "trade_id": "trade-2"},
+    ]
+    _seed(database, _intent(), record)
+    archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
+    report = _manifest(archive)["executions"][0]
+    assert report["orders"] == report["trades"] == 2
+    for field in ("orders", "trades"):
+        rows = _csv(archive, f"executions/exec-1/{field}.csv")
+        assert [row["symbol"] for row in rows] == ["rb2610", "hc2610"]
+        assert rows[1]["source_path"] == f"record.json#/raw_result/{field}/1"
+
+
+def test_mixed_result_retains_different_snapshots_without_counting_new_records(database):
+    record = _record()
+    group = record.raw_result["symbol_results"]["rb2610"]
+    record.raw_result["orders"] = [{**deepcopy(group["orders"][0]), "filled_volume": 2, "status": "全部成交"}]
+    record.raw_result["trades"] = [{**deepcopy(group["trades"][0]), "trade_price": 3501}]
+    _seed(database, _intent(), record)
+    archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
+    report = _manifest(archive)["executions"][0]
+    assert report["orders"] == report["trades"] == 1
+    assert report["order_snapshots"] == report["trade_snapshots"] == 2
+    for field, identity in (("orders", "order_id"), ("trades", "trade_id")):
+        rows = _csv(archive, f"executions/exec-1/{field}.csv")
+        assert len(rows) == 2
+        assert rows[0][identity] == rows[1][identity]
+        assert len({row["source_path"] for row in rows}) == 2
+        variants = report["record_variants"][field]
+        assert len(variants) == 1
+        assert variants[0][identity] == rows[0][identity]
+        assert variants[0]["snapshots"] == 2
+    assert "不同快照" in archive.read("executions/exec-1/summary.md").decode()
+
+
+@pytest.mark.parametrize("result_source", ["record", "artifact"])
+def test_flat_result_inherits_contract_from_result_context(database, result_source):
+    record = _record()
+    result = record.raw_result
+    group = result.pop("symbol_results")["rb2610"]
+    result["symbol"] = "rb2610"
+    for field in ("orders", "trades"):
+        result[field] = group[field]
+        result[field][0].pop("symbol")
+    rows = (
+        [record]
+        if result_source == "record"
+        else [
+            ExecutionArtifact(
+                execution_id="exec-1", artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY, content=result
+            )
+        ]
+    )
+    _seed(database, _intent(), *rows)
+    archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
+    report = _manifest(archive)["executions"][0]
+    assert report["orders"] == report["trades"] == 1
+    for field in ("orders", "trades"):
+        exported = _csv(archive, f"executions/exec-1/{field}.csv")
+        assert len(exported) == 1
+        assert exported[0]["symbol"] == "rb2610"
+        assert exported[0]["source_path"].startswith("record.json#" if result_source == "record" else "artifacts.json#")
+
+
+def test_mixed_result_without_stable_identity_keeps_every_snapshot(database):
+    record = _record()
+    group = record.raw_result["symbol_results"]["rb2610"]
+    for field, identity in (("orders", "order_id"), ("trades", "trade_id")):
+        group[field][0].pop(identity)
+        record.raw_result[field] = deepcopy(group[field])
+    _seed(database, _intent(), record)
+    archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
+    report = _manifest(archive)["executions"][0]
+    assert report["orders"] == report["trades"] == 2
+    assert report["unidentified_order_snapshots"] == report["unidentified_trade_snapshots"] == 2
+    assert len(_csv(archive, "executions/exec-1/orders.csv")) == 2
+    assert len(_csv(archive, "executions/exec-1/trades.csv")) == 2

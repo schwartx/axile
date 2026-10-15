@@ -21,6 +21,7 @@ interface HoldingDetailProps {
   units?: ChannelCapability['units']
   dataStale?: boolean
   refreshing?: boolean
+  restoreFocus?: boolean
   onClose: () => void
   onRefresh: () => Promise<void>
 }
@@ -215,7 +216,7 @@ export function HoldingDetailDialog(props: HoldingDetailProps) {
   const unit = props.units?.quantity_label ?? ''
   const book = holdingBook(props.positions, code, props.observed)
   const goal = holdingTarget(props.target, code)
-  return <CenteredModal open={symbol != null} title={`${code} · 持仓与目标`} onClose={onClose} restoreFocus="keyboard" widthClassName="w-[1200px]"
+  return <CenteredModal open={symbol != null} title={`${code} · 持仓与目标`} onClose={onClose} restoreFocus={props.restoreFocus} widthClassName="w-[1200px]"
     footer={<div className="border-t border-line"><CalculationMetadata target={props.target} observedAt={props.observedAt} /></div>}>
     <div className="mb-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-line pb-3">
       <HoldingSummary props={props} book={book} goal={goal} unit={unit} />

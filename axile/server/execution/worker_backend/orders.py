@@ -73,7 +73,7 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
         else:
             executor = _resolve_executor(state, account, initialize=False)
         guard = providers.active_guard(account.id)
-        with order_control_scope(executor, account, guard):
+        with order_control_scope(executor, account, guard, command=payload["command"]):
             verify = getattr(executor, "_verify_connection", None)
             if getattr(executor, "_requires_connection_initialization", False) or (callable(verify) and not verify()):
                 initialize_executor_instance(cast(AbstractExecutor, executor))

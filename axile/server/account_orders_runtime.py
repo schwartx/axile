@@ -15,6 +15,7 @@ from sqlmodel import col
 
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.guard import AccountControlGuard
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.account_control.scope import account_control_scope
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.models.unified_order import UnifiedOrder
@@ -82,7 +83,7 @@ async def _flush_borrowed_guard(guard: Any) -> None:
 
 
 @contextmanager
-def order_control_scope(executor: Any, account: AccountContext, active_guard: Any = None):
+def order_control_scope(executor: Any, account: AccountContext, active_guard: Any = None, *, command: str = "query"):
     """运行中共用额度；空闲时建立独立审计上下文，始终保持交易 runtime 绑定。"""
     assert account.id is not None
     borrowed_lock = providers.operation_lock(active_guard) if active_guard is not None else None
@@ -92,8 +93,15 @@ def order_control_scope(executor: Any, account: AccountContext, active_guard: An
             borrowed_lock.release()
             borrowed_lock, active_guard = None, None
     owned = active_guard is None
+    source = AccountControlSource.MANUAL_CANCEL if command == "cancel" else AccountControlSource.ORDER_QUERY
     guard = active_guard or asyncio.run(
-        build_account_control_guard(account, f"orders-{uuid4().hex}", register_monitor=False)
+        build_account_control_guard(
+            account,
+            f"orders-{uuid4().hex}",
+            register_monitor=False,
+            context_kind=AccountControlContextKind.ACCOUNT_OPERATION,
+            source=source,
+        )
     )
     deadline = clock_monotonic() + 20
     if owned:
@@ -104,7 +112,7 @@ def order_control_scope(executor: Any, account: AccountContext, active_guard: An
 
         guard.set_termination_checkpoint(checkpoint)
     try:
-        with account_control_scope(executor, guard):
+        with account_control_scope(executor, guard, source=source):
             yield
     finally:
         if owned:

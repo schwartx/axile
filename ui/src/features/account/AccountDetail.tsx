@@ -121,7 +121,7 @@ export function AccountDetail({
   const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
   const nameVt = tDetail || tEdit
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
-  const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string } | null>(null)
+  const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
   const currentOrders = useCurrentOrders(accountId, selectedSymbol != null)
   const channelSchedule = channelDescriptor?.schedule
@@ -233,6 +233,13 @@ export function AccountDetail({
   const isActivelyExecuting = live?.status === 'running'
   const isQueued = isBusy && !isExecuting
   const runKind = live?.kind ?? (runner.kind === 'clear' ? 'clear' : 'rebalance')
+  const pausedWhileExecuting = !isStarted && isActivelyExecuting && !isTerminating
+  const activeExecutionName = runKind === 'clear_positions' || runKind === 'clear' ? '清仓' : '调仓'
+  const pauseExecutionNotice = toggling
+    ? `正在暂停自动执行，本次${activeExecutionName}仍在执行，仍可能下单和成交。`
+    : runtime.data?.status === 'synchronized'
+      ? `自动执行已暂停，本次${activeExecutionName}仍会继续，仍可能下单和成交。`
+      : `暂停设置已保存，本次${activeExecutionName}仍在执行，仍可能下单和成交。`
   const latestRecord = recordList[0]
   const latestOutcome = latestRecord ? executionOutcome(latestRecord) : null
   const idleStatusTextClass = latestOutcome
@@ -606,6 +613,19 @@ export function AccountDetail({
 
         </div>
 
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-hidden={!pausedWhileExecuting}
+          inert={!pausedWhileExecuting}
+          className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${pausedWhileExecuting ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <p className="mt-1.5 text-[13px] leading-6 text-ink-2">{pauseExecutionNotice}</p>
+          </div>
+        </div>
+
         {/*
          * 配置带：hero 最后一层（名称 → 状态 → 资产 → 配置），label 领值的「· 外分组」
          * 形态——每项是独立 inline 单元，折行只发生在项间，算法参数句内部的「·」不再
@@ -702,7 +722,7 @@ export function AccountDetail({
               <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
                 <HoldingsPreviewTable
                   holdings={currentHoldings}
-                  onSelect={symbol => { setHoldingSelection({ accountId, symbol }); void currentOrders.refresh() }}
+                  onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
                   observed={!!latestAssets}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
@@ -712,7 +732,7 @@ export function AccountDetail({
           ) : null}
           {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
           <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
-          <HoldingDetailDialog symbol={selectedSymbol}
+          <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
             positions={positions} observed={!!latestAssets}
             observedAt={assetSnapshots.data?.data[0]?.created_at ?? null}
             target={weights.data} orders={currentOrders} currency={item.currency} units={channelDescriptor?.units}

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
+import { notifyReadRecovery } from '../src/lib/readRecovery'
 import '../src/styles/theme.css'
 
 export function Fixture() {
@@ -9,6 +10,7 @@ export function Fixture() {
   const [running, setRunning] = useState(true)
   return <main className="min-h-screen bg-bg p-6 text-ink-1">
     <button onClick={() => setRunning(!running)} className="mb-4">{running ? '结束执行' : '开始执行'}</button>
+    <button type="button" onClick={() => void notifyReadRecovery()} className="ml-4">恢复页面读取</button>
     <section className="rounded-xl border border-line bg-surface p-6">
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标</h1>
       <p className="text-xl font-semibold">{running ? '正在调仓' : '已调仓到位'}</p>

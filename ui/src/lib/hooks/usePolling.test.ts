@@ -55,4 +55,15 @@ describe('pollingView', () => {
       stale: false,
     })
   })
+
+  it('手动查询在首次读取或切换实体前保持未读取状态', () => {
+    expect(pollingView(ready, 'account:2', true, true)).toEqual({
+      data: null,
+      error: null,
+      loading: false,
+      refreshing: false,
+      updatedAt: null,
+      stale: false,
+    })
+  })
 })

@@ -31,6 +31,14 @@ async function clipboard(page: Page) {
 }
 async function copied(page: Page) { return page.evaluate(() => (window as unknown as { copied: string }).copied) }
 
+async function setLiveExecution(page: Page, status: string, kind = 'rebalance') {
+  await page.evaluate(async ({ status, kind }) => {
+    const modulePath = '/src/stores/liveExec.ts'
+    const { useLiveExecStore } = await import(modulePath)
+    useLiveExecStore.getState().applyEvent({ account_id: 7, execution_id: 'pause-feedback', kind, phase: 'executing', status })
+  }, { status, kind })
+}
+
 /** 合成 LSP 只让快速修复失败，诊断仍成功返回。 */
 async function quickFixLsp(page: Page, diagnostic: boolean, fail: () => boolean) {
   await page.routeWebSocket('**/api/v1/editor/lsp', socket => {
@@ -333,6 +341,69 @@ for (const failure of ['404', '500', 'network']) test(`execution query ${failure
   await expect(page.getByRole('button', { name: '立即执行', exact: true })).toBeEnabled()
   expect(triggers).toBe(1)
   expect(reads).toBe(3)
+})
+
+test('pausing an active execution explains continued trading after save and retracts on resume or completion', async ({ page }) => {
+  await defaults(page)
+  await page.setViewportSize({ width: 375, height: 812 })
+  let started = false, pauseRequests = 0
+  let release!: () => void
+  const pauseSaved = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/v1/account/7', async route => {
+    if (route.request().method() === 'PATCH') {
+      const next = route.request().postDataJSON().is_started
+      if (!next) { pauseRequests++; await pauseSaved }
+      started = next
+      return route.fulfill({ json: { ...account, is_started: started, runtime_sync: sync() } })
+    }
+    return route.fulfill({ json: { ...account, is_started: started } })
+  })
+  await page.goto('/e2e/errors.html?mode=account')
+  const notice = page.getByRole('status').filter({ hasText: '自动执行已暂停，本次调仓仍会继续，仍可能下单和成交。' })
+  await expect(notice).toHaveCount(0)
+  await page.getByRole('button', { name: '启动自动执行', exact: true }).click()
+  await expect(page.getByRole('button', { name: '暂停自动执行', exact: true })).toBeEnabled()
+  await setLiveExecution(page, 'running')
+  await expect(notice).toHaveCount(0)
+  await page.getByRole('button', { name: '暂停自动执行', exact: true }).click()
+  await expect.poll(() => pauseRequests).toBe(1)
+  await expect(notice).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: '正在暂停自动执行，本次调仓仍在执行，仍可能下单和成交。' })).toBeVisible()
+  release()
+  await expect(notice).toBeVisible()
+  await expect(page.getByRole('button', { name: '终止执行', exact: true })).toBeVisible()
+  const status = page.getByRole('link', { name: /正在执行/ })
+  await expect(status).toBeVisible()
+  expect((await notice.boundingBox())!.y).toBeGreaterThan((await status.boundingBox())!.y)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.getByRole('button', { name: '启动自动执行', exact: true }).click()
+  await expect(notice).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '暂停自动执行', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: '暂停自动执行', exact: true }).click()
+  await expect(notice).toBeVisible()
+  await setLiveExecution(page, 'done')
+  await expect(notice).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '启动自动执行', exact: true })).toBeVisible()
+})
+
+test('pause feedback distinguishes pending sync and clearing, and hides while queued or terminating', async ({ page }) => {
+  await defaults(page)
+  await page.route('**/api/v1/account/7/runtime-sync', route => route.fulfill({ json: sync('pending', 2) }))
+  await page.route('**/api/v1/account/7/terminate', route => route.fulfill({ status: 202, json: {
+    message: '已受理终止请求', account_id: 7, execution_id: 'pause-feedback', status: 'TERMINATING',
+  } }))
+  await page.goto('/e2e/errors.html?mode=account')
+  await setLiveExecution(page, 'queued')
+  const notice = page.getByRole('status').filter({ hasText: /本次(?:调仓|清仓)仍/ })
+  await expect(notice).toHaveCount(0)
+  await setLiveExecution(page, 'running', 'clear_positions')
+  await expect(notice).toHaveText('暂停设置已保存，本次清仓仍在执行，仍可能下单和成交。')
+  await expect(notice).toBeVisible()
+  await page.getByRole('button', { name: '终止执行', exact: true }).click()
+  await expect(notice).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '终止中', exact: true })).toBeVisible()
+  await setLiveExecution(page, 'terminating', 'clear_positions')
+  await expect(notice).toHaveCount(0)
 })
 
 test('account PATCH pending keeps saved switch, ignores older revision, and separates GET from retry', async ({ page }) => {

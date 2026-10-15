@@ -6,8 +6,9 @@ from typing import Any
 
 from sqlalchemy import desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import SQLModel, select
+from sqlmodel import Field, SQLModel, col, select
 
+from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.models import AccountControlDecision
 from axile.server.db.models import AccountControlEvent
 
@@ -29,6 +30,8 @@ class AccountControlAuditExecutionRow(SQLModel):
     """账户日 execution 聚合行."""
 
     execution_id: str
+    context_kind: str = "unknown"
+    sources: list[str] = Field(default_factory=list)
     event_count: int
     first_event_at: str
     last_event_at: str
@@ -70,7 +73,7 @@ async def query_account_control_audit_summary(
             AccountControlEvent.operation,
             AccountControlEvent.decision,
             AccountControlEvent.outcome,
-            func.count(AccountControlEvent.id).label("count"),
+            func.count(col(AccountControlEvent.id)).label("count"),
         )
         .where(
             AccountControlEvent.account_id == account_id,
@@ -126,7 +129,7 @@ async def query_account_control_audit_executions(
 
     first_event_at = func.min(AccountControlEvent.created_at).label("first_event_at")
     last_event_at = func.max(AccountControlEvent.created_at).label("last_event_at")
-    event_count = func.count(AccountControlEvent.id).label("event_count")
+    event_count = func.count(col(AccountControlEvent.id)).label("event_count")
     stmt = (
         select(
             AccountControlEvent.execution_id,
@@ -141,10 +144,13 @@ async def query_account_control_audit_executions(
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
+    descriptions = await _context_descriptions(session, conditions, [row[0] for row in rows])
     return AccountControlAuditExecutionPage(
         data=[
             AccountControlAuditExecutionRow(
                 execution_id=execution_id,
+                context_kind=descriptions[execution_id][0],
+                sources=descriptions[execution_id][1],
                 event_count=count,
                 first_event_at=first_at,
                 last_event_at=last_at,
@@ -153,6 +159,26 @@ async def query_account_control_audit_executions(
         ],
         count=total,
     )
+
+
+async def _context_descriptions(
+    session: AsyncSession, conditions: tuple[Any, ...], ids: list[str]
+) -> dict[str, tuple[str, list[str]]]:
+    """只读取本页上下文的类型及来源，保持原有分页数量和排序。"""
+    if not ids:
+        return {}
+    statement = (
+        select(AccountControlEvent.execution_id, AccountControlEvent.context_kind, AccountControlEvent.source)
+        .where(*conditions, col(AccountControlEvent.execution_id).in_(ids))
+        .distinct()
+    )
+    values = (await session.execute(statement)).all()
+    kinds: dict[str, set[str]] = {key: set() for key in ids}
+    sources: dict[str, set[str]] = {key: set() for key in ids}
+    for key, kind, source in values:
+        kinds[key].add(control_context_kind(kind, key).value)
+        sources[key].add(source)
+    return {key: (next(iter(kinds[key])) if len(kinds[key]) == 1 else "unknown", sorted(sources[key])) for key in ids}
 
 
 async def query_account_control_execution_events(
@@ -181,9 +207,9 @@ async def query_account_control_execution_events(
     stmt = (
         select(AccountControlEvent)
         .where(*conditions)
-        .order_by(AccountControlEvent.seq, AccountControlEvent.id)
+        .order_by(col(AccountControlEvent.seq), col(AccountControlEvent.id))
         .offset(skip)
         .limit(limit)
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return AccountControlAuditEventPage(data=rows, count=total)
+    return AccountControlAuditEventPage(data=list(rows), count=total)

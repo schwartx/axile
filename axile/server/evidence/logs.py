@@ -39,7 +39,7 @@ def collect_logs(
         if len(files) > budget.limits.log_files:
             report["issues"].append("log_file_limit")
             break
-    ids = set(snapshot.executions)
+    ids = {item.execution_id for item in snapshot.iter_contexts() if item.execution_id is not None}
     for path in sorted(files[: budget.limits.log_files]):
         try:
             with path.open("rb") as stream:

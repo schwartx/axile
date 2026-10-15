@@ -66,7 +66,7 @@ _FREE_TEXT_KEYS = {
 }
 _SAFE_KEYS = set(
     """
-id execution_id account_id key execution_kind kind trigger_source status output_status outcome
+id execution_id account_id key execution_kind kind context_kind trigger_source status output_status outcome
 created_at started_at finished_at cancel_requested_at cancel_reason terminate_mode is_success
 event_uid event_type channel algorithm schema_version reason_family reason_code symbol intent_id
 order_id client_order_id ts_local_created ts_exchange ts_persisted seq details decision result

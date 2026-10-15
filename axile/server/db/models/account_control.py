@@ -14,8 +14,10 @@ from sqlmodel import Field, SQLModel
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import (
     AccountControlBucketType,
+    AccountControlContextKind,
     AccountControlDecision,
     AccountControlScopeType,
+    AccountControlSource,
 )
 from axile.server.db.models.base import now_ms, now_str
 
@@ -27,6 +29,13 @@ class AccountControlCounterDeltaBase(SQLModel):
         sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), nullable=False),
     )
     execution_id: str = Field(sa_column=Column(Text, nullable=False))
+    context_kind: str = Field(
+        default=AccountControlContextKind.UNKNOWN.value,
+        sa_column=Column(Text, nullable=False, server_default="unknown"),
+    )
+    source: str = Field(
+        default=AccountControlSource.UNKNOWN.value, sa_column=Column(Text, nullable=False, server_default="unknown")
+    )
     control_date: str = Field(sa_column=Column(Text, nullable=False))
     bucket_type: AccountControlBucketType = Field(
         sa_column=Column(SAEnum(AccountControlBucketType, name="accountcontrolbuckettype"), nullable=False)
@@ -62,6 +71,13 @@ class AccountControlEventBase(SQLModel):
     )
     control_date: str = Field(sa_column=Column(Text, nullable=False))
     execution_id: str = Field(sa_column=Column(Text, nullable=False))
+    context_kind: str = Field(
+        default=AccountControlContextKind.UNKNOWN.value,
+        sa_column=Column(Text, nullable=False, server_default="unknown"),
+    )
+    source: str = Field(
+        default=AccountControlSource.UNKNOWN.value, sa_column=Column(Text, nullable=False, server_default="unknown")
+    )
     seq: int = Field(sa_column=Column(Integer, nullable=False), ge=0)
     channel: TradeChannel = Field(sa_column=Column(Text, nullable=False))
     operation: str = Field(sa_column=Column(Text, nullable=False))
@@ -127,9 +143,11 @@ class AccountControlAuditSummaryPublic(SQLModel):
 
 
 class AccountControlAuditExecutionPublic(SQLModel):
-    """账户控制 execution 聚合公开模型."""
+    """控制上下文聚合，保留 execution_id 字段名以兼容已有客户端。"""
 
     execution_id: str
+    context_kind: str = "unknown"
+    sources: List[str] = Field(default_factory=list)
     event_count: int
     first_event_at: str
     last_event_at: str
@@ -149,6 +167,8 @@ class AccountControlEventPublic(BaseModel):
     account_id: int
     control_date: str
     execution_id: str
+    context_kind: str = AccountControlContextKind.UNKNOWN.value
+    source: str = AccountControlSource.UNKNOWN.value
     seq: int
     channel: TradeChannel
     operation: str

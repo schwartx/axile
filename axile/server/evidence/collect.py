@@ -11,6 +11,8 @@ from sqlalchemy import LargeBinary, and_, cast, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from axile.executor.account_control.context import control_context_kind, legacy_operation_source
+from axile.executor.account_control.models import AccountControlContextKind
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
 from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
@@ -87,18 +89,46 @@ def _coarse(window: EvidenceWindow, column: Any) -> Any:
 
 
 def _select_execution(
-    snapshot: EvidenceSnapshot, key: str, execution_id: str | None, reason: str, budget: ExportBudget
+    snapshot: EvidenceSnapshot,
+    key: str,
+    execution_id: str | None,
+    reason: str,
+    budget: ExportBudget,
+    *,
+    context_kind: str = "execution",
+    source: str = "unknown",
 ) -> None:
-    """合并多种发现来源，且保留没有 execution_id 的旧记录。"""
-    if key not in snapshot.executions:
-        if len(snapshot.executions) >= budget.limits.executions:
+    """账户操作独立收集，未知历史材料仍保留在执行集合中。"""
+    kind = control_context_kind(context_kind, key)
+    operations = kind == AccountControlContextKind.ACCOUNT_OPERATION and key not in snapshot.executions
+    selected = snapshot.account_operations if operations else snapshot.executions
+    if key not in selected:
+        if not operations and len(snapshot.executions) >= budget.limits.executions:
             raise EvidenceError("执行数量超过导出上限，请缩小日期范围", code="EVIDENCE_TOO_MANY_EXECUTIONS", status=413)
-        snapshot.executions[key] = ExecutionEvidence(key=key, execution_id=execution_id)
-    elif snapshot.executions[key].execution_id != execution_id:
+        selected[key] = snapshot.account_operations.pop(key, None) or ExecutionEvidence(
+            key=key, execution_id=execution_id
+        )
+        selected[key].context_kind = kind.value
+    elif selected[key].execution_id != execution_id:
         raise EvidenceError("历史记录与执行标识冲突", code="EVIDENCE_IDENTIFIER_CONFLICT", status=409)
-    reasons = snapshot.executions[key].selection_reasons
+    if not operations and kind == AccountControlContextKind.EXECUTION:
+        selected[key].context_kind = kind.value
+    reasons = selected[key].selection_reasons
     if reason not in reasons:
         reasons.append(reason)
+    if source not in selected[key].sources:
+        selected[key].sources.append(source)
+
+
+def _select_control(snapshot: EvidenceSnapshot, row: Any, reason: str, budget: ExportBudget) -> None:
+    """按持久化类型发现上下文，历史来源只识别完整的系统生成 ID。"""
+    source = row.source
+    if source == "unknown" and row.context_kind == "unknown":
+        legacy = legacy_operation_source(row.execution_id)
+        source = legacy.value if legacy is not None else source
+    _select_execution(
+        snapshot, row.execution_id, row.execution_id, reason, budget, context_kind=row.context_kind, source=source
+    )
 
 
 async def _discover_intents(session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget) -> None:
@@ -152,7 +182,7 @@ async def _discover(session: AsyncSession, snapshot: EvidenceSnapshot, budget: E
         AccountControlEvent.occurred_at_ms < int(window.end.timestamp() * 1000),
     ]
     async for row in _pages(session, AccountControlEvent, conditions, budget):
-        _select_execution(snapshot, row.execution_id, row.execution_id, "control_event_in_window", budget)
+        _select_control(snapshot, row, "control_event_in_window", budget)
     await _discover_control_context(session, snapshot, budget)
 
 
@@ -169,7 +199,7 @@ async def _discover_control_context(session: AsyncSession, snapshot: EvidenceSna
         ),
     ]
     async for row in _pages(session, AccountControlSession, conditions, budget):
-        _select_execution(snapshot, row.execution_id, row.execution_id, "control_session_overlaps_window", budget)
+        _select_control(snapshot, row, "control_session_overlaps_window", budget)
     conditions = [
         AccountControlCounterDelta.account_id == snapshot.account["id"],
         _coarse(window, AccountControlCounterDelta.bucket_start),
@@ -180,9 +210,7 @@ async def _discover_control_context(session: AsyncSession, snapshot: EvidenceSna
         duration = timedelta(days=1) if bucket == "day" else timedelta(minutes=1)
         if start is None or (start < window.end and start + duration > window.start):
             # 计数桶不含逐笔操作时间，也不冻结时区，不能冒充窗口内逐笔事实。
-            _select_execution(
-                snapshot, row.execution_id, row.execution_id, "counter_bucket_context_time_assumed", budget
-            )
+            _select_control(snapshot, row, "counter_bucket_context_time_assumed", budget)
 
 
 async def _owner(session: AsyncSession, execution_id: str) -> int:
@@ -201,10 +229,23 @@ async def _owner(session: AsyncSession, execution_id: str) -> int:
 
 
 async def _load_sources(session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget) -> None:
-    """一次发现集合对应的完整上下文，按账户再次约束所有有归属字段的表。"""
-    ids = [item.execution_id for item in snapshot.executions.values() if item.execution_id]
-    if not ids:
-        return
+    """分批读取两类上下文，避免大量查询 ID 超过数据库参数数量限制。"""
+    contexts = {item.execution_id: item for item in snapshot.iter_contexts() if item.execution_id}
+    ids = list(contexts)
+    for start in range(0, len(ids), PAGE_SIZE):
+        batch = ids[start : start + PAGE_SIZE]
+        await _load_context_batch(session, snapshot, contexts, batch, budget)
+    _classify_loaded_contexts(snapshot, budget)
+
+
+async def _load_context_batch(
+    session: AsyncSession,
+    snapshot: EvidenceSnapshot,
+    contexts: dict[str, ExecutionEvidence],
+    ids: list[str],
+    budget: ExportBudget,
+) -> None:
+    """所有权冲突检查覆盖账户操作，附件也不能借操作上下文跨账户读取。"""
     # 附件本身没有 account_id；在读取附件前必须排除跨账户 execution_id 冲突。
     for model in _OWNED_MODELS:
         owners = await session.execute(
@@ -223,13 +264,43 @@ async def _load_sources(session: AsyncSession, snapshot: EvidenceSnapshot, budge
             data = row.model_dump(mode="json", warnings=False)
             if model is AccountControlEvent:
                 data["metadata"] = data.pop("metadata_", {})
-            item = snapshot.executions[row.execution_id]
+            item = contexts[row.execution_id]
             if field_name in {"intent", "record"}:
                 setattr(item, field_name, data)
             else:
                 getattr(item, field_name).append(data)
             count += 1
-        snapshot.source_counts[str(model.__tablename__)] = count
+        name = str(model.__tablename__)
+        snapshot.source_counts[name] = snapshot.source_counts.get(name, 0) + count
+
+
+def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) -> None:
+    """真实业务材料优先于保留前缀，单次按 ID 导出也采用相同分类。"""
+    for item in list(snapshot.iter_contexts()):
+        business = item.intent is not None or item.record is not None or bool(item.events or item.artifacts)
+        rows = [*item.controls, *item.counters, *item.sessions]
+        kinds = {control_context_kind(row.get("context_kind", "unknown"), item.key) for row in rows}
+        operation = not business and kinds == {AccountControlContextKind.ACCOUNT_OPERATION}
+        if business:
+            item.context_kind = "execution"
+        elif operation:
+            item.context_kind = "account_operation"
+        elif kinds == {AccountControlContextKind.EXECUTION}:
+            item.context_kind = "execution"
+        else:
+            item.context_kind = "unknown"
+        for row in rows:
+            source = row.get("source", "unknown")
+            if source not in item.sources:
+                item.sources.append(source)
+        if operation:
+            snapshot.executions.pop(item.key, None)
+            snapshot.account_operations[item.key] = item
+        elif item.key in snapshot.account_operations:
+            snapshot.account_operations.pop(item.key)
+            snapshot.executions[item.key] = item
+    if len(snapshot.executions) > budget.limits.executions:
+        raise EvidenceError("执行数量超过导出上限，请缩小日期范围", code="EVIDENCE_TOO_MANY_EXECUTIONS", status=413)
 
 
 async def collect_evidence(

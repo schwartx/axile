@@ -71,6 +71,8 @@ def test_account_control_tables_use_explicit_columns_and_unique_uids() -> None:
     assert delta_columns == {
         "account_id",
         "execution_id",
+        "context_kind",
+        "source",
         "control_date",
         "bucket_type",
         "bucket_start",
@@ -85,6 +87,8 @@ def test_account_control_tables_use_explicit_columns_and_unique_uids() -> None:
         "account_id",
         "control_date",
         "execution_id",
+        "context_kind",
+        "source",
         "control_date",
         "seq",
         "channel",

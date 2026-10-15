@@ -3,15 +3,15 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from 'react-dom'
 
 /** 居中弹窗共用外壳：遮罩、开关过渡、标题、关闭图标与焦点管理。 */
-export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = 'always', widthClassName = 'w-[480px]', footer, children }: {
+export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = true, widthClassName = 'w-[480px]', footer, children }: {
   open: boolean
   title: string
   subtitle?: ReactNode
   ariaLabel?: string
   onClose: () => void
   closeDisabled?: boolean
-  /** keyboard 模式只在键盘关闭后恢复入口焦点，避免鼠标操作留下持久焦点高亮。 */
-  restoreFocus?: 'always' | 'keyboard'
+  /** 调用方按打开方式决定是否恢复入口焦点，不由关闭时的按键推断。 */
+  restoreFocus?: boolean
   widthClassName?: string
   footer?: ReactNode
   children: ReactNode
@@ -29,10 +29,17 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement as HTMLElement | null
-    let keyboardNavigation = previous?.matches(':focus-visible') ?? false
-    const markKeyboard = () => { keyboardNavigation = true }
-    const markPointer = () => { keyboardNavigation = false }
-    panelRef.current?.focus({ preventScroll: true })
+    const panel = panelRef.current
+    const focusInside = () => {
+      if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true })
+    }
+    focusInside()
+    // visibility 过渡的首帧可能拒绝 focus；下一帧补入，但不打断已进入弹窗的操作。
+    const focusFrame = window.requestAnimationFrame(focusInside)
+    const afterTransition = (event: TransitionEvent) => {
+      if (event.target === panel) focusInside()
+    }
+    panel?.addEventListener('transitionend', afterTransition)
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (event.key === 'Escape') {
@@ -52,13 +59,12 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
       else if (!event.shiftKey && (outside || document.activeElement === last)) { event.preventDefault(); first.focus() }
     }
     document.addEventListener('keydown', keydown)
-    document.addEventListener('keydown', markKeyboard, true)
-    document.addEventListener('pointerdown', markPointer, true)
     return () => {
+      window.cancelAnimationFrame(focusFrame)
+      panel?.removeEventListener('transitionend', afterTransition)
       document.removeEventListener('keydown', keydown)
-      document.removeEventListener('keydown', markKeyboard, true)
-      document.removeEventListener('pointerdown', markPointer, true)
-      if (restoreFocus === 'always' || keyboardNavigation) previous?.focus({ preventScroll: true })
+      if (restoreFocus) previous?.focus({ preventScroll: true })
+      else previous?.blur()
     }
   }, [open, restoreFocus])
   const close = () => { if (!closeDisabled) onClose() }

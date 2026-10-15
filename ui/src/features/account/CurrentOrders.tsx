@@ -4,8 +4,9 @@ import { CenteredModal } from '@/components/ui/CenteredModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { Segmented } from '@/components/ui/Segmented'
 import type { CancelReceipt, CurrentOrder } from '@/lib/api/orders'
-import { canCancelOrder, orderDirection, orderOffset, orderState, orderSummary } from '@/features/account/currentOrdersModel'
+import { canCancelOrder, currentOrderKey, orderDirection, orderOffset, orderState, orderSummary } from '@/features/account/currentOrdersModel'
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import type { ChannelCapability } from '@/types/api'
 import { useErrorPresentation } from '@/lib/errorPresentation'
@@ -14,7 +15,7 @@ export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
     className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${failure.local || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
-    <InkRewrite text={state.query.loading ? '当前委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
+    <InkRewrite text={state.fetchMode === 'manual' ? '查看在途委托' : state.query.loading ? '在途委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
   </button>
 }
 
@@ -22,7 +23,8 @@ function orderQueryUncertain(state: OrdersState): boolean {
   return state.query.stale || !!state.query.error || state.query.refreshing || state.query.data?.complete === false
 }
 
-function OrderRow({ order, receipt, state, quantityLabel, compact }: { order: CurrentOrder; receipt?: CancelReceipt; state: OrdersState; quantityLabel: string; compact?: boolean }) {
+function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact }: { order: CurrentOrder; receipt?: CancelReceipt; state: OrdersState; quantityLabel: string; compact?: boolean }) {
+  const order = receipt?.state === 'terminal' && receipt.order ? receipt.order : snapshotOrder
   const [expanded, setExpanded] = useState(false)
   const instanceId = useId()
   const panel = `current-order-${encodeURIComponent(order.order_id)}${instanceId}`
@@ -56,13 +58,13 @@ function OrderRow({ order, receipt, state, quantityLabel, compact }: { order: Cu
 
 function ordersSnapshotLabel(state: OrdersState, filtered: boolean, rows: number): string {
   const data = state.query.data
-  if (!data) return state.query.loading ? '正在查询账户未完成委托' : '委托状态待确认'
+  if (!data) return state.query.loading ? '正在拉取在途委托' : state.query.error ? '委托状态待确认' : '尚未拉取委托'
   const count = !data.complete ? '未知' : filtered ? rows : data.count ?? '未知'
   return `${count} 笔 · ${data.sampled_at.replace('T', ' ')} 更新`
 }
 
 export function CurrentOrdersDialog({ state, accountName, units }: { state: OrdersState; accountName: string; units?: ChannelCapability['units'] }) {
-  return <CenteredModal open={state.open} title="当前委托" subtitle={accountName} onClose={state.close} widthClassName="w-[820px]"
+  return <CenteredModal open={state.open} title="在途委托" subtitle={accountName} onClose={state.close} widthClassName="w-[820px]"
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
     <CurrentOrdersContent state={state} units={units} />
   </CenteredModal>
@@ -77,7 +79,7 @@ function OrdersTable({ rows, state, units, compact }: { rows: CurrentOrder[]; st
   const receiptOf = (order: CurrentOrder) => state.receipts.find(r => r.order_id === order.order_id && r.symbol === order.symbol)
   return <div className="overflow-x-auto"><div className={compact ? 'min-w-[408px]' : 'min-w-[650px]'}>
     <div className={`${orderColumns(compact)} py-2 text-[12px] text-ink-3`}><span>合约</span><span>{compact ? '买卖/开平' : '买卖 / 开平'}</span><span>委托价</span><span>委托 / 已成</span><span>状态</span><span>操作</span></div>
-    {rows.map(order => <OrderRow key={order.order_id} order={order} receipt={receiptOf(order)} state={state} quantityLabel={units?.quantity_label ?? ''} compact={compact} />)}
+    {rows.map(order => <OrderRow key={currentOrderKey(order)} order={order} receipt={receiptOf(order)} state={state} quantityLabel={units?.quantity_label ?? ''} compact={compact} />)}
   </div></div>
 }
 
@@ -85,10 +87,10 @@ function OrdersQueryStatus({ state }: { state: OrdersState }) {
   const data = state.query.data
   const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <>
-    <ErrorNotice intent="uncertain" title="当前委托查询失败，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
+    <ErrorNotice intent="uncertain" title="在途委托查询失败，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
     {data?.complete === false && <p role="status" className="mb-3 text-[13px] text-warn">部分订单终态尚未确认，保留最后已知数量。</p>}
     {state.query.stale && <p role="status" className={`mb-3 text-[13px] ${failure.local ? 'text-warn' : 'text-ink-3'}`}>当前显示最后一次查询结果，请刷新核对。</p>}
-    {state.query.loading && <p role="status" className="py-6 text-sm text-ink-3">当前委托查询中…</p>}
+    {state.query.loading && <p role="status" className="py-6 text-sm text-ink-3">在途委托查询中…</p>}
   </>
 }
 
@@ -102,11 +104,17 @@ export function CurrentOrdersContent({ state, units, symbolFilter, compact = fal
   const data = state.query.data
   const rows = data?.data.filter(order => !symbolFilter || symbolFilter(order.symbol)) ?? []
   const feedback = state.receipts.filter(r => (!symbolFilter || symbolFilter(r.symbol)) && (r.state === 'terminal' || r.state === 'failed' || r.state === 'unknown')).slice(-5)
+  const firstRead = !data && !state.query.error
   return <>
-    <div className="mb-3 flex items-center justify-between gap-3 text-[12.5px] text-ink-3">
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div role="group" aria-label="委托拉取方式"><Segmented size="sm" value={state.fetchMode}
+        options={[{ value: 'manual', label: '手动拉取' }, { value: 'automatic', label: '自动拉取' }]} onChange={state.setFetchMode} /></div>
+      <span className="text-[12px] text-ink-3"><InkRewrite text={state.fetchMode === 'automatic' ? '查看时每 3 秒更新，平时每 15 秒' : '点击查看或刷新时更新'} tone="label" /></span>
+    </div>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[12.5px] text-ink-3">
       <span>{ordersSnapshotLabel(state, !!symbolFilter, rows.length)}</span>
-      <button type="button" aria-label="刷新当前委托" disabled={state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
-        className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />刷新</button>
+      <button type="button" aria-label={firstRead ? '查看在途委托' : '刷新在途委托'} disabled={state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
+        className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{firstRead ? '查看在途委托' : '刷新'}</button>
     </div>
     <OrdersQueryStatus state={state} />
     {data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无未完成委托'}</p>}
