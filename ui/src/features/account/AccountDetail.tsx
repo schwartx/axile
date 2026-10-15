@@ -701,7 +701,7 @@ export function AccountDetail({
             </div>
           </div>
           {comparisonLoading ? (
-            <SkeletonGroup label="正在加载持仓与目标对照" className="grid min-h-40 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+            <SkeletonGroup label="正在加载持仓与目标对照" className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
               <div className="space-y-3 border-t border-line pt-3">
                 <Skeleton className="h-7 w-32" />
                 <Skeleton className="h-4 w-44" />
@@ -716,7 +716,7 @@ export function AccountDetail({
               尚无目标权重，刷新后生成持仓对照
             </div>
           ) : showComparisonPanel ? (
-            <div className="grid min-h-40 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+            <div className="grid min-h-48 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
               <div className="border-t border-line pt-3">
                 <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
                   {driftHeadline}
@@ -999,7 +999,7 @@ function HoldingsPreviewTable({
   return (
     <div
       tabIndex={0}
-      className="quiet-scrollbar h-40 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
+      className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
     >
       <table aria-label="当前持仓" className="w-full border-separate border-spacing-0">
         <thead>
@@ -1020,7 +1020,7 @@ function HoldingsPreviewTable({
         </thead>
         <tbody>
           {holdings == null ? (
-            Array.from({ length: 4 }, (_, index) => (
+            Array.from({ length: 5 }, (_, index) => (
               <tr key={index} className="border-t border-line first:border-t-0">
                 <td className={`h-8 ${PREVIEW_COL} pr-1.5`}>
                   <Skeleton className="h-3 w-12" />
@@ -1038,7 +1038,7 @@ function HoldingsPreviewTable({
             ))
           ) : holdings.length === 0 ? (
             <tr>
-              <td colSpan={4} className="h-32 text-[14px] text-ink-3">
+              <td colSpan={4} className="h-40 text-[14px] text-ink-3">
                 {observed ? '当前空仓' : '持仓尚未查询'}
               </td>
             </tr>
@@ -1139,14 +1139,14 @@ export function AccountDetailSkeleton() {
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="min-h-[190px] px-6 py-4 md:col-span-2">
           <Skeleton className="h-4 w-24" />
-          <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+          <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.618fr)]">
             <div className="space-y-3 border-t border-line pt-3">
               <Skeleton className="h-7 w-32" />
               <Skeleton className="h-4 w-44" />
               <Skeleton className="h-2 w-full" />
             </div>
-            <div className="space-y-3 border-t border-line pt-3 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5">
-              {Array.from({ length: 3 }, (_, index) => <Skeleton key={index} className="h-10 w-full" />)}
+            <div className="min-w-0 border-t border-line lg:border-t-0 lg:border-l lg:pl-5">
+              <HoldingsPreviewTable holdings={null} positionValueLabel="货值" />
             </div>
           </div>
         </Card>
