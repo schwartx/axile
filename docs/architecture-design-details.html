@@ -113,7 +113,7 @@
       <div class="meta">
         <span class="chip">系统架构文档</span>
         <span class="chip">Python 3.12+ / uv / Bun</span>
-        <span class="chip">OpenCTP / GM / TQSDK / QMT</span>
+        <span class="chip">OpenCTP / GM / TQSDK</span>
         <span class="chip">单回环安全模型</span>
       </div>
 
@@ -233,7 +233,7 @@
               Channel Adapters (渠道适配层)
             </text>
             <text class="sub-text" x="300" y="44" text-anchor="middle" dominant-baseline="central" style="fill:#8fbc8f;">
-              OpenCTP / 天勤 TqSdk / 掘金 GM / 迅投 QMT
+              OpenCTP / 天勤 TqSdk / 掘金 GM
             </text>
           </g>
         </svg>
@@ -284,7 +284,6 @@
         <li><strong>OpenCTP / CTP 渠道</strong>：支持国内全品类期货衍生品。针对国内特有的平今/平昨规则（如上期所与能源中心必须显式指定平今仓 <code>THOST_FTDC_OF_CloseToday</code>），执行引擎内置上期所与其它交易所的自动开平分流。</li>
         <li><strong>天勤 TqSdk 渠道</strong>：支持实盘、快期模拟与本地模拟。代码层统一使用 CTP 风格代码（如 <code>rb2610</code>），适配器边界自动转为 <code>SHFE.rb2610</code>。</li>
         <li><strong>掘金 GM 渠道</strong>：支持股票与跨市场品种，具备完备的动态盘口订阅。</li>
-        <li><strong>迅投 QMT 渠道</strong>：支持原生 XtQuant 客户端对接。</li>
       </ul>
 
       <h2 id="valuation">5. 持仓估值与市值容错（Valuation & Fallback）</h2>

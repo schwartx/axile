@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/python-3.12%2B-blue?logo=python" alt="Python Version">
   <img src="https://img.shields.io/badge/packager-uv-blueviolet" alt="uv">
   <img src="https://img.shields.io/badge/frontend-Bun%20%7C%20React%2019-ff69b4" alt="Bun & React">
-  <img src="https://img.shields.io/badge/channels-CTP%20%7C%20TQ%20%7C%20GM%20%7C%20QMT-success" alt="Channels">
+  <img src="https://img.shields.io/badge/channels-CTP%20%7C%20TQ%20%7C%20GM-success" alt="Channels">
   <img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License">
 </p>
 
@@ -26,7 +26,7 @@
 
 * ❌ **持仓未知导致误平仓**：柜台断线、超时或查持仓失败时，部分系统误将持仓当成 0 处理，触发致命的反向开仓或错误平仓。
 * ❌ **权重与手数换算繁琐**：目标权重（如各品种分配 10%）如何根据账户实时动态权益、保证金率、合约乘数及最小跳价安全换算为可执行真实手数？
-* ❌ **各交易柜台规则割裂**：CTP 烦琐的平今/平昨区分（上期所平今必须使用 `CloseToday`）、天勤合约代码转换、掘金/迅投 API 差异，导致执行算法无法复用。
+* ❌ **各交易柜台规则割裂**：CTP 烦琐的平今/平昨区分（上期所平今必须使用 `CloseToday`）、天勤合约代码转换、掘金 API 差异，导致执行算法无法复用。
 * ❌ **盘后或茶歇净值击穿**：非交易时段无盘口推送，导致账户持仓市值被归零，引发风控误报警或回测净值曲线断崖。
 
 **Axile** 正是为彻底解决上述落地摩擦而生。它充当投研算法与底层柜台之间坚固的**执行防火墙与调度操作系统**。
@@ -48,7 +48,6 @@ Axile 遵循**单回环安全模型（Local Loopback Only）**与**只读证据�
 | **OpenCTP / CTP** | C++ 原生封装 / IPC | 国内商品期货与股指期权，支持平今平昨自动分流 | `uv sync --extra ctp` |
 | **TqSdk (天勤)** | 天勤官方 SDK | 期货实盘、快期模拟与内存级本地沙箱 | `uv sync --extra tqsdk` |
 | **GoldMiner (掘金)** | GM SDK | A股、ETF 及多品种跨市场策略执行（支持 Linux/Win） | `uv sync --extra gm` |
-| **XtQuant (迅投 QMT)** | XtQuant 客户端组件 | 券商极速柜台接入，支持股票与两融 | 独立集成 |
 
 CTP 依赖 `openctp-ctp==6.7.11.*`，当前锁定 `6.7.11.0`。该版本提供 Linux x86_64 和 Windows 安装包，暂未提供 macOS 安装包。
 
