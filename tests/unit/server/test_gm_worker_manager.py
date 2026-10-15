@@ -381,6 +381,7 @@ def test_empty_positions_keeps_replacement_after_ctp_session_recovery(monkeypatc
 
 def test_session_recovery_rebuilds_worker_only_for_the_next_request(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     stale = _FakeHandle()
     replacement = _FakeHandle()
@@ -482,6 +483,7 @@ def test_manager_maps_structured_error_to_failed_output() -> None:
 
 def test_calculate_portfolio_keeps_replacement_after_ctp_session_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
 
@@ -587,6 +589,7 @@ def test_execution_activity_does_not_reenable_paused_catalog_source():
 
 def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
 
@@ -614,6 +617,7 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
 
 def test_calculate_portfolio_drops_worker_after_worker_error(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
 
@@ -641,6 +645,7 @@ def test_calculate_portfolio_drops_worker_after_worker_error(monkeypatch: pytest
 
 def test_calculate_portfolio_drops_worker_after_invalid_result(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
 

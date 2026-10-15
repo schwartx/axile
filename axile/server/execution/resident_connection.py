@@ -153,6 +153,29 @@ def _connected(executor: object) -> bool:
     return not callable(verify) or bool(verify())
 
 
+def reuse_resident_connection(state: ResidentConnectionState, account: AccountContext) -> object:
+    """查询只复用已核对的当前会话，不构造执行器、不登录或恢复连接。"""
+    with state.resource_lock:
+        if (
+            state.account_id != account.id
+            or state.config_signature != executor_config_signature(account)
+            or state.executor is None
+            or not state.connected_once
+            or state.disconnected
+            or state.connection_error is not None
+        ):
+            raise _unavailable(state) from state.connection_error
+        try:
+            connected = _connected(state.executor)
+        except Exception as exc:
+            _failed(state, exc)
+            raise _unavailable(state) from exc
+        if not connected:
+            _failed(state, ConnectionError("账户交易连接已断开"))
+            raise _unavailable(state) from state.connection_error
+        return state.executor
+
+
 def reconcile_resident_executor(executor: object) -> None:
     """就绪前核对资金和未完成订单；只查询，不恢复或重放任何交易任务。"""
     assets = getattr(executor, "get_account_assets", None)
@@ -177,7 +200,7 @@ def ensure_resident_connection(
     allow_recovery: bool = False,
     force: bool = False,
 ) -> object:
-    """在账户锁内建立一次连接；读请求仅允许首次连接，断线恢复必须显式授权。"""
+    """由连接操作或交易准备建立会话；普通查询使用 reuse_resident_connection。"""
     observed_attempt = state.attempt_revision
     with state.resource_lock:
         # 同时抵达的显式重连共用前一次结果；等待锁不构成再次绕过冷却的授权。

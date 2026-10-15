@@ -3,8 +3,10 @@ import { usePolling } from '@/lib/hooks/usePolling'
 import { cancelCurrentOrder, getCurrentOrders, type CancelReceipt, type CurrentOrder } from '@/lib/api/orders'
 import { currentOrderKey, mergeReceipts, reconcileLocalReceipts, updateLocalReceipt } from '@/features/account/currentOrdersModel'
 import { readOrderFetchMode, writeOrderFetchMode, type OrderFetchMode } from '@/features/account/currentOrdersPreferences'
+import { useAccountConnection } from '@/stores/liveConnection'
 
 export function useCurrentOrders(accountId: number, inspectingHolding = false) {
+  const connectionReady = useAccountConnection(accountId).status === 'ready'
   const [openFor, setOpenFor] = useState<number | null>(null)
   const [preference, setPreference] = useState(() => ({ accountId, mode: readOrderFetchMode(accountId) }))
   const [local, setLocal] = useState<{ accountId: number; values: CancelReceipt[] }>({ accountId, values: [] })
@@ -26,8 +28,13 @@ export function useCurrentOrders(accountId: number, inspectingHolding = false) {
     force.current = false
     return getCurrentOrders(accountId, signal, refresh)
   }, [accountId])
-  const query = usePolling(fetcher, { queryKey: `current-orders:${accountId}`,
+  const polling = usePolling(fetcher, { queryKey: `current-orders:${accountId}`, enabled: connectionReady,
     intervalMs: fetchMode === 'manual' ? 0 : viewing ? 3000 : 15000, manual: fetchMode === 'manual' })
+  const last = useRef<{ accountId: number; data: typeof polling.data; updatedAt: number | null } | null>(null)
+  if (polling.data) last.current = { accountId, data: polling.data, updatedAt: polling.updatedAt }
+  const retained = last.current?.accountId === accountId ? last.current : null
+  const query = connectionReady ? polling : { ...polling, data: retained?.data ?? null,
+    updatedAt: retained?.updatedAt ?? null, stale: retained?.data != null }
   const snapshot = query.data
   useEffect(() => {
     if (!snapshot?.cancellations.length) return
@@ -40,11 +47,14 @@ export function useCurrentOrders(accountId: number, inspectingHolding = false) {
   const receipts = mergeReceipts(snapshot?.cancellations ?? [], local.accountId === accountId ? local.values : [])
   const read = query.refresh
   const refresh = useCallback(() => { force.current = true; return read() }, [read])
+  useEffect(() => {
+    if (connectionReady && viewing && fetchMode === 'manual') void refresh()
+  }, [connectionReady, viewing, fetchMode, refresh])
   const show = () => {
     setOpenFor(accountId)
-    if (fetchMode === 'manual') void refresh()
   }
   const cancel = async (order: CurrentOrder) => {
+    if (!connectionReady) return
     const key = `${accountId}:${currentOrderKey(order)}`
     if (pending.current.has(key)) return
     pending.current.add(key)
@@ -66,7 +76,7 @@ export function useCurrentOrders(accountId: number, inspectingHolding = false) {
       if (currentAccount.current === accountId && currentView.current) void refresh()
     }
   }
-  return { query, open, show, close: () => setOpenFor(null), refresh, cancel, receipts, fetchMode, setFetchMode }
+  return { accountId, connectionReady, query, open, show, close: () => setOpenFor(null), refresh, cancel, receipts, fetchMode, setFetchMode }
 }
 
 export type OrdersState = ReturnType<typeof useCurrentOrders>

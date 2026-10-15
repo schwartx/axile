@@ -1,56 +1,49 @@
 import { useId, useState, type ReactNode } from 'react'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
+import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
 import { Link } from '@/components/ui/nav'
-import type { ErrorInfo } from '@/lib/errorInfo'
 import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
-import { useErrorPresentation } from '@/lib/errorPresentation'
 import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
 import { AccountConnectionActions } from '@/features/account/AccountConnectionActions'
 
-export type ConnectionSelection = { accountId: number; requestId: number } & (
-  { kind: 'loading' } | { kind: 'detail'; detail: AccountConnectionDetail } | { kind: 'failure'; info: ErrorInfo; error?: unknown }
-)
+export type ConnectionSelection = { accountId: number; requestId: number; detail: AccountConnectionDetail }
 
-function TechnicalDetails({ children }: { children: ReactNode }) {
+function TechnicalDetails({ children, label = '技术详情', preview }: { children: ReactNode; label?: string; preview?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const id = useId()
-  return <section className="min-w-0 border-t border-line py-4">
+  return <section className="min-w-0 border-t border-line py-3">
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}
-      className="cursor-pointer text-[13px] text-ink-2 focus-visible:outline-2 focus-visible:outline-accent">
-      <span aria-hidden="true">{open ? '▾' : '▸'}</span> 技术详情
+      className="flex w-full cursor-pointer items-baseline gap-2 text-left text-[13px] text-ink-2 focus-visible:outline-2 focus-visible:outline-accent">
+      <span aria-hidden="true">{open ? '▾' : '▸'}</span> <span className="shrink-0">{label}</span>{preview}
     </button>
     <div id={id} inert={!open} aria-hidden={!open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'visible grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden"><div role="region" aria-label="完整技术详情" className="mt-3">{children}</div></div>
+      <div className="min-h-0 overflow-hidden"><div role="region" aria-label={label === '技术详情' ? '完整技术详情' : label} className="mt-3">{children}</div></div>
     </div>
   </section>
 }
 
-/** 只展示本次读取快照；渠道提供内容，公共 UI 只解析通用导航意图。 */
-export function AccountConnectionProblemModal({ selection, onClose, onChanged }: {
-  selection: ConnectionSelection | null; onClose: () => void; onChanged?: (detail: AccountConnectionDetail) => void
+/** 展示共享实时状态；渠道提供内容，公共 UI 只解析通用导航意图。 */
+export function AccountConnectionProblemModal({ selection, onClose }: {
+  selection: ConnectionSelection | null; onClose: () => void
 }) {
-  const failure = useErrorPresentation(selection?.kind === 'failure' ? selection.error ?? new Error(selection.info.message) : null)
-  const view = selection?.kind === 'detail' ? connectionProblem(selection.accountId, selection.detail) : null
-  const title = selection?.kind === 'failure' ? failure.local ? '连接详情读取失败' : '账户连接详情' : view?.title ?? '账户连接详情'
-  const copy = selection?.kind === 'failure' ? failure.local ? selection.info.text : null : view?.copy
+  const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
+  const title = view?.title ?? '账户连接详情'
+  const copy = view?.copy
+  const footerActions = <>
+    {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
+    <button type="button" aria-label="关闭详情" onClick={onClose} className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2">关闭</button>
+  </>
   return <CenteredModal open={selection !== null} title={title} onClose={onClose} widthClassName="w-[640px]"
-    footer={<div className="flex flex-wrap items-center justify-end gap-3 border-t border-line px-[22px] py-4">
-      {copy && <ErrorCopyButton text={copy} label="复制连接详情" />}
-      <button type="button" onClick={onClose} className="cursor-pointer rounded-lg bg-ink-1 px-4 py-2 text-[13px] text-surface">关闭详情</button>
-    </div>}>
+    footer={selection
+      ? <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail}>{footerActions}</AccountConnectionActions>
+      : <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-[22px] py-3">{footerActions}</div>}>
     <div className="min-w-0 space-y-4 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
-      {selection?.kind === 'loading' && <p role="status" className="py-4 text-ink-3">正在读取连接详情…</p>}
-      {selection?.kind === 'failure' && !failure.local && <p role="status" className="text-ink-3">连接详情暂不可用</p>}
-      {selection?.kind === 'failure' && failure.local && <>
-        <p>未能读取账户 {selection.accountId} 的连接详情。关闭后再次打开可重新读取。</p>
-        <TechnicalDetails key={selection.requestId}><ErrorDetailsContent info={selection.info} /></TechnicalDetails>
-      </>}
       {view && <>
-        <p className="whitespace-pre-wrap text-[15px]">{view.summary}</p>
-        <dl className="flex flex-wrap gap-x-6 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label}>
-          <dt className="text-[12px] text-ink-3">{field.label}</dt><dd>{field.value}</dd>
+        <p className="whitespace-pre-wrap text-[14px] text-ink-2">{view.summary}</p>
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label} className="contents">
+          <dt className="text-[12px] text-ink-3">{field.label}</dt><dd className="min-w-0 tabular-nums">{field.value}</dd>
         </div>)}</dl>
         {view.sections.map((section, i) => <section key={i} className="space-y-2 border-t border-line pt-4">
           {section.title && <h3 className="font-medium text-ink-2">{section.title}</h3>}
@@ -63,15 +56,14 @@ export function AccountConnectionProblemModal({ selection, onClose, onChanged }:
         {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.map((action, i) =>
           <Link key={i} to={`/accounts/${selection!.accountId}/edit/connection`} onClick={onClose}
             className="rounded-lg border border-line px-3 py-2 text-accent focus-visible:outline-2 focus-visible:outline-accent">{action.label}</Link>)}</div>}
-        {view.history && <section className="space-y-2 border-t border-line pt-4">
-          <h3 className="font-medium text-ink-2">最近连接失败（历史）</h3>
+        {view.history && <TechnicalDetails label="历史连接失败" preview={<><OverflowText className="min-w-0 flex-1 text-ink-3" text={view.history.message ?? ''} /><time className="ml-auto shrink-0 text-[12px] tabular-nums text-ink-3">{view.history.observed_at.replace('T', ' ').slice(5, 16)}</time></>}>
+          <p className="mb-2 text-ink-2">{view.history.observed_at.replace('T', ' ').replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1')}</p>
           <p className="text-ink-3">这条记录保留用于排查，不代表当前会话仍在故障。</p>
-          <p>{view.history.observed_at.replace('T', ' ')}</p>
           <p className="whitespace-pre-wrap">{view.history.message}</p>
-          {view.history.technicalInfo && <TechnicalDetails><ConnectionTechnicalContent info={view.history.technicalInfo} /></TechnicalDetails>}
-        </section>}
+         {view.history.technicalInfo && <TechnicalDetails><ConnectionTechnicalContent info={view.history.technicalInfo} /></TechnicalDetails>}
+        </TechnicalDetails>}
         {view.technicalInfo && <TechnicalDetails key={selection!.requestId}><ConnectionTechnicalContent info={view.technicalInfo} /></TechnicalDetails>}
-        {selection?.kind === 'detail' && <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail} onChanged={onChanged} />}
+        <p className="pb-2 text-[12px] text-ink-3">连接后会核对资产和委托，交易任务需另行执行。</p>
       </>}
     </div>
   </CenteredModal>

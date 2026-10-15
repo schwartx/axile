@@ -166,6 +166,7 @@ def _handle_get_account_assets(
             execution_id=request.execution_id or request.request_id,
             audit_context={"request_id": request.request_id, "trigger_source": "account_assets"},
             allow_recovery=False,
+            allow_connect=False,
         )
         assets = cast(AbstractExecutor, executor).get_account_assets()
         return WorkerBackendResponse(
@@ -208,6 +209,7 @@ def _handle_calculate_portfolio(
                 "channel": str(account.trade_channel),
                 "trigger_source": "portfolio_calculation",
             },
+            allow_connect=request.execution_id is not None,
         )
         code = str(request.payload.get("code", ""))
         watchdog = threading.Thread(

@@ -3,7 +3,11 @@ import { createRoot } from 'react-dom/client'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { notifyReadRecovery } from '../src/lib/readRecovery'
+import { useLiveConnection } from '../src/stores/liveConnection'
 import '../src/styles/theme.css'
+
+useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
+  data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })
 
 export function Fixture() {
   const state = useCurrentOrders(1)

@@ -1,3 +1,5 @@
+import { useAccountConnection } from '@/stores/liveConnection'
+import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
@@ -376,7 +378,12 @@ export function AccountDetail({
 
   // 兼容尚未重启、dashboard 暂未携带 remark 的开发服务；详情到位后仍能展示已保存备注。
   const remark = account.data?.remark ?? item.remark
-  const connection = account.data?.connection ?? item.connection
+  const connection = useAccountConnection(accountId)
+  const connectedAssets = useConnectedAssets(accountId, () => {
+    void refreshAssetSnapshots()
+    void refreshComparison()
+    void account.refresh()
+  })
   const targetSnapshotControl = (
     <TargetSnapshotControl
       evidence={accountEvidence}
@@ -386,8 +393,8 @@ export function AccountDetail({
       recalculating={weights.recalculating}
       error={weights.recalculateError}
       readError={weights.error}
-      disabled={isExecuting || portfolioId == null}
-      disabledReason={isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
+      disabled={connection.status !== 'ready' || isExecuting || portfolioId == null}
+      disabledReason={connection.status !== 'ready' ? '连接账户后可重新计算' : isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
       variant="compact"
       onRecalculate={() => weights.recalculate().then(() => Promise.all([refreshComparison(), account.refresh()]))}
     />
@@ -398,6 +405,7 @@ export function AccountDetail({
       <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
+      <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="连接后的资产更新未完成" error={connectedAssets.error} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="uncertain" title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
         evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
@@ -418,7 +426,7 @@ export function AccountDetail({
               {channelLabel(item.trade_channel, item.market)}
             </Chip>
             {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
-            <AccountConnectionStatus accountId={accountId} connection={connection} />
+            <AccountConnectionStatus accountId={accountId} />
           </div>
           {remark && (
             <OverflowText
@@ -463,14 +471,14 @@ export function AccountDetail({
               </div>
               <div className="mt-1 flex items-center gap-1.5 text-xs text-ink-3">
                 <span>{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</span>
-            <Tooltip content="刷新账户资产">
+            <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
               <span className="inline-flex">
                 <button
                   type="button"
                   onClick={onRefreshAssets}
-                  disabled={refreshingAssets}
+                  disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
                   aria-label={refreshingAssets ? '正在查询账户资产' : '刷新账户资产'}
-                  title="刷新账户资产"
+                  title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
                   className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <RefreshCw

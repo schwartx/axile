@@ -96,14 +96,14 @@ export function ErrorDetailsContent({ info }: { info: ErrorInfo }) {
   </div>
 }
 
-export function ErrorCopyButton({ text, label = '复制错误信息', disabled = false }: { text: string; label?: string; disabled?: boolean }) {
+export function ErrorCopyButton({ text, label = '复制错误信息', disabled = false, variant = 'outline' }: { text: string; label?: string; disabled?: boolean; variant?: 'outline' | 'text' }) {
   const [state, setState] = useState<{ text: string; label: string } | null>(null)
   const copy = async () => {
     try { await navigator.clipboard.writeText(text); setState({ text, label: '已复制' }) }
     catch { setState({ text, label: '复制失败，请选中文字复制' }) }
   }
   return <button type="button" disabled={disabled} onClick={() => void copy()}
-    className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2 disabled:cursor-default disabled:opacity-40">
+    className={`cursor-pointer rounded-lg px-3 py-2 text-[13px] text-ink-2 disabled:cursor-default disabled:opacity-40 ${variant === 'outline' ? 'border border-line' : 'hover:text-ink-1'}`}>
     <InkRewrite text={state?.text === text ? state.label : label} />
   </button>
 }

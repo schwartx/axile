@@ -22,6 +22,7 @@ from axile.server.execution.registry import (
     clear_account_asset_refresh,
     try_register_account_asset_refresh,
 )
+from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
 
@@ -51,6 +52,14 @@ async def refresh_account_assets(session: SessionDep, account_id: int) -> Accoun
         await session.commit()
         await session.refresh(snapshot)
         return AccountAssetSnapshotPublic.model_validate(snapshot)
+    except AccountConnectionUnavailable as exc:
+        await session.rollback()
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": exc.execution_error, "error_scope": exc.error_scope},
+            headers=headers,
+        ) from exc
     except TimeoutError as exc:
         await session.rollback()
         logger.warning(f"账户资产刷新超时: account_id={account_id}, error={exc}")

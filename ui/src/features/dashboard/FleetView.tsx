@@ -72,7 +72,7 @@ function FleetCard({
         {gate.gate === 'paused' && (
           <span className="rounded-chip bg-fill px-2 py-0.5 text-[12px] text-ink-3">{gate.label}</span>
         )}
-        <AccountConnectionStatus accountId={item.account_id} connection={item.connection} />
+        <AccountConnectionStatus accountId={item.account_id} />
         <span className="text-xs text-ink-3">{portfolioName ?? (item.portfolio_id ? `组合 #${item.portfolio_id}` : '未绑定组合')}</span>
         {live ? (
           <span className="ml-auto inline-flex items-center gap-1.5 text-[14.5px] font-semibold text-accent">

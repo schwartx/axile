@@ -151,6 +151,9 @@ def record_connection_observation(
                 .values(sequence=sequence, **values)
             )
             session.commit()
+            from axile.server.connection_events import connection_hub
+
+            connection_hub.changed(binding.account_id)
     except Exception:
         logger.exception("账户连接状态保存失败，不覆盖原始操作错误")
 
@@ -325,6 +328,9 @@ def end_connection_instance(
                 .values(**values)
             )
             session.commit()
+            from axile.server.connection_events import connection_hub
+
+            connection_hub.changed(binding.account_id)
     except Exception:
         logger.exception("账户会话结束状态保存失败 account_id={}", binding.account_id)
 

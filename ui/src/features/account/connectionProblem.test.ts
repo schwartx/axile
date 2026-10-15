@@ -64,3 +64,13 @@ test('uninitialized session can show a prior successful access without claiming 
   expect(view.summary).toContain('当前服务尚未建立')
   expect(view.facts).toContainEqual({ label: '最近访问成功', value: 'yesterday' })
 })
+
+test('display hides redundant facts and rounds times while copy preserves evidence', () => {
+  const stamp = '2026-10-15T16:49:37.823783'
+  const view = connectionProblem(8, { status: 'uninitialized', observed_at: null, message: null, error: null, last_success_at: stamp, last_failure_at: stamp })
+  expect(view.facts.map(field => field.label)).toEqual(['执行器', '最近访问成功'])
+  expect(view.facts[1].value).toBe('2026-10-15 16:49:37')
+  expect(view.copy).toContain('账户：8')
+  expect(view.copy).toContain('最近访问成功：2026-10-15 16:49:37.823783')
+  expect(view.copy).toContain('最近连接失败：2026-10-15 16:49:37.823783')
+})

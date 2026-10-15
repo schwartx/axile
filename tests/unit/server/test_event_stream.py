@@ -25,6 +25,10 @@ def sources(monkeypatch, *, sampled=True):
         monitor._publish([], [])
     monkeypatch.setattr(event_stream, "live_hub", hub)
     monkeypatch.setattr(event_stream, "monitor", monitor)
+    from axile.server.connection_events import ConnectionEventHub
+
+    monkeypatch.setattr(event_stream, "connection_hub", ConnectionEventHub())
+    monkeypatch.setattr(event_stream, "connection_frames", AsyncMock(return_value=[]))
     return hub, monitor
 
 
@@ -263,3 +267,24 @@ def test_only_unified_stream_is_registered():
     assert "/api/v1/account/executions/stream" not in paths
     assert "/api/v1/account/control/stream" not in paths
     assert [route.path for route in router.routes] == ["/events/stream"]
+
+
+def test_default_stream_includes_connection_snapshot_without_periodic_reads(monkeypatch):
+    async def scenario():
+        sources(monkeypatch)
+        async with aclosing(event_stream.merge_events()) as events:
+            initial = [await next_event(events) for _ in range(3)]
+            assert {event.name for event in initial} == {
+                "execution.snapshot",
+                "control.snapshot",
+                "connection.snapshot",
+            }
+            assert event_stream.connection_frames.await_count == 1
+            event_stream.connection_hub.changed(7)
+            update = await next_event(events)
+            assert update.name == "connection.update"
+            assert update.data["removed"] == [7]
+            assert event_stream.connection_frames.await_count == 2
+        assert not event_stream.connection_hub._subscribers
+
+    asyncio.run(scenario())

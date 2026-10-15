@@ -31,6 +31,7 @@ from axile.server.execution.resident_connection import (
     ResidentConnectionState,
     ensure_resident_connection,
     executor_config_signature,
+    reuse_resident_connection,
 )
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import WorkerTerminationSignal
@@ -226,6 +227,7 @@ def _resolve_prepared_executor(
     termination_controller: ExecutionTerminationController | None = None,
     allow_recovery: bool = True,
     force_reconnect: bool = False,
+    allow_connect: bool = True,
 ) -> object:
     """
     解析并准备本次请求要使用的执行器实例。
@@ -264,6 +266,11 @@ def _resolve_prepared_executor(
         state.connection_observer = state.connection_collector.observe_session
         if state.connection_collector.needs_reconciliation:
             state.connected_once = False
+        if not allow_connect:
+            with state.resource_lock:
+                executor = reuse_resident_connection(state, account)
+                prepare(executor)
+                return executor
         return ensure_resident_connection(
             state,
             account,

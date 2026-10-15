@@ -734,7 +734,7 @@ class WorkerBackendManager:
         return await asyncio.to_thread(self._order_command_blocking, account, payload)
 
     def _order_command_blocking(self, account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
-        """委托通路沿用当前配置的连接观察身份，冷查询登录也能回报连接状态。"""
+        """委托通路只复用当前配置下已经就绪的会话。"""
         self._check_read_session(account)
         timeout = self._query_timeout(account)
         handle = self._get_or_create_worker(_require_account_id(account))
@@ -783,23 +783,19 @@ class WorkerBackendManager:
 
     @staticmethod
     def _check_read_session(account: AccountContext) -> None:
-        """已经结束的实例不能被页面读取隐式重建，主进程保留跨 worker 的恢复限制。"""
+        """查询必须复用已就绪会话，首次登录也只能由明确操作触发。"""
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
         current = WorkerBackendManager._current_session(account)
-        if not current.worker_alive and current.status in {"unavailable", "disconnected"}:
+        if not current.worker_alive or current.status != "ready":
             raise AccountConnectionUnavailable(
-                "账户会话已结束，请显式重新连接；当前委托状态待确认", retry_after=current.retry_after_seconds
+                "账户尚未连接或会话未就绪，请先连接账户", retry_after=current.retry_after_seconds
             )
 
     @staticmethod
     def _query_timeout(account: AccountContext) -> float:
-        """首次读取留出独立的连接准备预算，已就绪会话沿用普通查询预算。"""
-        return _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS + (
-            0
-            if WorkerBackendManager._current_session(account).status == "ready"
-            else _DEFAULT_PREPARE_RECV_TIMEOUT_SECONDS
-        )
+        """查询不再包含登录准备预算。"""
+        return _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS
 
     async def get_account_assets(self, account: AccountContext) -> UnifiedAccountAssets:
         """通过账户常驻 worker 查询最新资产快照."""
@@ -829,6 +825,8 @@ class WorkerBackendManager:
         execution_id: str | None = None,
     ) -> PortfolioFunctionResult:
         """通过账户常驻 worker 执行自定义组合函数，失败后丢弃 worker."""
+        if execution_id is None:
+            self._check_read_session(account)
         termination_controller = self._termination_controller(execution_id)
         request = WorkerBackendRequest(
             request_id=uuid4().hex,

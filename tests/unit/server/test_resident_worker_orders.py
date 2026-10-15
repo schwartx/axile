@@ -38,8 +38,15 @@ def setup_worker(monkeypatch):
     return account, state, payload, created, initialized, closed, commands
 
 
-def test_cold_order_queries_use_one_resident_executor(monkeypatch):
-    _, state, payload, created, initialized, closed, commands = setup_worker(monkeypatch)
+def test_cold_order_queries_wait_for_explicit_connection(monkeypatch):
+    account, state, payload, created, initialized, closed, commands = setup_worker(monkeypatch)
+    for _ in range(3):
+        with pytest.raises(AccountConnectionUnavailable):
+            orders._command(state, payload)
+    assert not created and not initialized and not commands
+    worker_state._resolve_prepared_executor(
+        state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+    )
     for _ in range(3):
         assert orders._command(state, payload) == {"data": []}
     assert len(created) == len(initialized) == 1
@@ -49,6 +56,9 @@ def test_cold_order_queries_use_one_resident_executor(monkeypatch):
 
 def test_broken_order_session_only_recovers_through_prepare(monkeypatch):
     account, state, payload, created, initialized, closed, commands = setup_worker(monkeypatch)
+    worker_state._resolve_prepared_executor(
+        state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+    )
     orders._command(state, payload)
     created[0].ready = False
     for _ in range(3):
@@ -66,7 +76,10 @@ def test_broken_order_session_only_recovers_through_prepare(monkeypatch):
 
 
 def test_broken_session_is_never_replaced_while_execution_is_active(monkeypatch):
-    _, state, payload, created, initialized, closed, commands = setup_worker(monkeypatch)
+    account, state, payload, created, initialized, closed, commands = setup_worker(monkeypatch)
+    worker_state._resolve_prepared_executor(
+        state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+    )
     orders._command(state, payload)
     state.request_active = True
     created[0].ready = False
@@ -78,7 +91,7 @@ def test_broken_session_is_never_replaced_while_execution_is_active(monkeypatch)
 
 
 def test_initial_failure_is_not_replayed_by_polling(monkeypatch):
-    _, state, payload, created, initialized, _, commands = setup_worker(monkeypatch)
+    account, state, payload, created, initialized, _, commands = setup_worker(monkeypatch)
 
     def fail(state, executor):
         initialized.append(executor)
@@ -86,7 +99,9 @@ def test_initial_failure_is_not_replayed_by_polling(monkeypatch):
 
     monkeypatch.setattr(worker_state, "_initialize_worker_connection", fail)
     with pytest.raises(TimeoutError):
-        orders._command(state, payload)
+        worker_state._resolve_prepared_executor(
+            state=state, account=account, execution_id=None, audit_context={}, force_reconnect=True
+        )
     for _ in range(3):
         with pytest.raises(AccountConnectionUnavailable):
             orders._command(state, payload)

@@ -244,3 +244,25 @@ def test_explicit_reconnect_releases_manual_intent_even_when_new_constructor_fai
     with pytest.raises(TimeoutError):
         retry(allow_recovery=True)
     assert len(attempts) == 2
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_read_only_reuse_never_constructs_a_cold_executor(started):
+    state = resident.ResidentConnectionState()
+    with pytest.raises(resident.AccountConnectionUnavailable):
+        resident.reuse_resident_connection(state, account(is_started=started))
+    assert state.executor is None
+    assert not state.connection_attempted
+
+
+def test_read_only_reuse_keeps_session_and_never_recovers_disconnect(monkeypatch):
+    _, state, created, closed, _, ensure = harness(monkeypatch)
+    executor = ensure(force=True)
+    before = executor.calls.count("initialize")
+    assert resident.reuse_resident_connection(state, account()) is executor
+    executor.ready = False
+    for _ in range(3):
+        with pytest.raises(resident.AccountConnectionUnavailable):
+            resident.reuse_resident_connection(state, account())
+    assert executor.calls.count("initialize") == before
+    assert len(created) == 1 and not closed

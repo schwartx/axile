@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useDomainStore } from '@/stores/domain'
 import { useLiveExecStore, type RunFrame } from '@/stores/liveExec'
 import { useLiveControl, type ControlEnvelope } from '@/stores/liveControl'
+import { useLiveConnection, type ConnectionEnvelope } from '@/stores/liveConnection'
 
 export const BUSINESS_STREAM_PATH = '/api/v1/events/stream'
 
@@ -36,6 +37,7 @@ export function startBusinessStream({
   const disconnect = () => {
     useLiveExecStore.getState().disconnect()
     useLiveControl.getState().disconnect()
+    useLiveConnection.getState().disconnect()
   }
   const close = () => {
     const previous = stream
@@ -50,15 +52,18 @@ export function startBusinessStream({
     if (stream) return
     useLiveExecStore.getState().beginReconnect()
     useLiveControl.getState().beginReconnect()
+    useLiveConnection.getState().disconnect()
     const current = open(BUSINESS_STREAM_PATH)
     stream = current
     let executionCursor: StreamCursor | null = null
     let executionReady = false
     let controlReady = false
+    let connectionReady = false
 
-    const fail = (topic: 'execution' | 'control', message: string) => {
+    const fail = (topic: 'execution' | 'control' | 'connection', message: string) => {
       if (topic === 'execution') { executionReady = false; useLiveExecStore.getState().disconnect(message) }
-      else { controlReady = false; useLiveControl.getState().disconnect(undefined, message) }
+      else if (topic === 'control') { controlReady = false; useLiveControl.getState().disconnect(undefined, message) }
+      else { connectionReady = false; useLiveConnection.getState().disconnect() }
     }
     const listen = <T,>(name: string, receive: (data: T) => void) => {
       current.addEventListener(name, (event) => {
@@ -67,7 +72,7 @@ export function startBusinessStream({
         catch (error) {
           // 无法应用的帧可能已造成缺口，重开连接取得全量；旧连接从此失效。
           disconnect()
-          fail(name.startsWith('execution.') ? 'execution' : 'control', error instanceof Error ? error.message : String(error))
+          fail(name.startsWith('execution.') ? 'execution' : name.startsWith('connection.') ? 'connection' : 'control', error instanceof Error ? error.message : String(error))
           close()
           cancelRetry = later(sync)
         }
@@ -96,12 +101,27 @@ export function startBusinessStream({
     }
     listen<ControlEnvelope>('control.snapshot', (message) => control(message, true))
     listen<ControlEnvelope>('control.update', (message) => control(message, false))
-    for (const topic of ['execution', 'control'] as const) {
+    const connection = (message: ConnectionEnvelope, snapshot: boolean) => {
+      cursor(message)
+      if (!Array.isArray(message.data) || message.kind !== (snapshot ? 'snapshot' : 'update')) throw new Error('连接状态帧无效')
+      for (const frame of message.data) {
+        if (!Number.isSafeInteger(frame.account_id) || !frame.connection
+          || !['uninitialized', 'unknown', 'ready', 'unavailable', 'connecting', 'recovering', 'disconnected'].includes(frame.connection.status)) {
+          throw new Error('连接状态缺少有效账户或会话状态')
+        }
+      }
+      if (!snapshot && !connectionReady) return
+      useLiveConnection.getState().apply(message)
+      connectionReady = useLiveConnection.getState().connected
+    }
+    listen<ConnectionEnvelope>('connection.snapshot', (message) => connection(message, true))
+    listen<ConnectionEnvelope>('connection.update', (message) => connection(message, false))
+    for (const topic of ['execution', 'control', 'connection'] as const) {
       listen<{ message: string }>(`${topic}.error`, (message) => fail(topic, message.message))
     }
     current.onerror = () => {
       if (disposed || stream !== current) return
-      executionReady = controlReady = false
+      executionReady = controlReady = connectionReady = false
       disconnect()
       // EventSource 自动重连；open 不表示业务已就绪，等待各域自己的快照。
     }

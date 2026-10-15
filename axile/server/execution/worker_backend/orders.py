@@ -13,8 +13,7 @@ from axile.server.account_orders_runtime import order_control_scope, run_order_c
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.resident_connection import (
     AccountConnectionUnavailable,
-    ensure_resident_connection,
-    reconcile_resident_executor,
+    reuse_resident_connection,
 )
 
 
@@ -80,14 +79,6 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
                 state.disconnected = state.connection_attempted = True
         guard = providers.active_guard(account.id)
 
-        def initialize(executor):
-            with order_control_scope(executor, account, guard):
-                worker_state._initialize_worker_connection(state, executor)
-
-        def reconcile(executor):
-            with order_control_scope(executor, account, guard):
-                reconcile_resident_executor(executor)
-
         if busy:
             executor = state.executor
             verify = getattr(executor, "_verify_connection", None)
@@ -98,16 +89,8 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
                 state.connection_observer = state.connection_collector.observe_session
                 if state.connection_collector.needs_reconciliation:
                     state.connected_once = False
-                executor = ensure_resident_connection(
-                    state,
-                    account,
-                    create=lambda: worker_state.create_executor_instance(account, initialize=False),
-                    close=lambda _executor: worker_state._close_state_executor(state),
-                    initialize=initialize,
-                    prepare=lambda executor: worker_state._configure_executor_resources(state, account, executor),
-                    reconcile=reconcile,
-                    allow_recovery=False,
-                )
+                executor = reuse_resident_connection(state, account)
+                worker_state._configure_executor_resources(state, account, executor)
         with order_control_scope(executor, account, guard, command=payload["command"]):
             return run_order_command(executor, payload)
 

@@ -10,17 +10,19 @@ import { canCancelOrder, currentOrderKey, orderDirection, orderOffset, orderStat
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import type { ChannelCapability } from '@/types/api'
 import { useErrorPresentation } from '@/lib/errorPresentation'
+import { AccountConnectButton } from '@/features/account/AccountConnectButton'
+import { useConnectionOperation } from '@/stores/connectionOperations'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
     className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${failure.local || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
-    <InkRewrite text={state.fetchMode === 'manual' ? '查看在途委托' : state.query.loading ? '在途委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
+    <InkRewrite text={!state.connectionReady ? '在途委托 · 连接后获取' : state.fetchMode === 'manual' ? '查看在途委托' : state.query.loading ? '在途委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
   </button>
 }
 
 function orderQueryUncertain(state: OrdersState): boolean {
-  return state.query.stale || !!state.query.error || state.query.refreshing || state.query.data?.complete === false
+  return !state.connectionReady || state.query.stale || !!state.query.error || state.query.refreshing || state.query.data?.complete === false
 }
 
 function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact }: { order: CurrentOrder; receipt?: CancelReceipt; state: OrdersState; quantityLabel: string; compact?: boolean }) {
@@ -85,9 +87,18 @@ function OrdersTable({ rows, state, units, compact }: { rows: CurrentOrder[]; st
 
 function OrdersQueryStatus({ state }: { state: OrdersState }) {
   const data = state.query.data
+  const operation = useConnectionOperation(state.accountId)
   const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <>
+    <div inert={state.connectionReady} aria-hidden={state.connectionReady}
+      className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${state.connectionReady ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]'}`}>
+      <div className="min-h-0 overflow-hidden"><div className="mb-3 flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
+        <span>{data ? '当前显示上次委托数据，连接后更新。' : '连接账户后获取在途委托。'}</span>
+        <AccountConnectButton accountId={state.accountId} />
+      </div></div>
+    </div>
     <ErrorNotice intent="uncertain" title="在途委托查询失败，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
+    <ErrorNotice intent="mutation" title="连接操作未完成" error={operation.error} embedded />
     {data?.complete === false && <p role="status" className="mb-3 text-[13px] text-warn">部分订单终态尚未确认，保留最后已知数量。</p>}
     {state.query.stale && <p role="status" className={`mb-3 text-[13px] ${failure.local ? 'text-warn' : 'text-ink-3'}`}>当前显示最后一次查询结果，请刷新核对。</p>}
     {state.query.loading && <p role="status" className="py-6 text-sm text-ink-3">在途委托查询中…</p>}
@@ -113,11 +124,11 @@ export function CurrentOrdersContent({ state, units, symbolFilter, compact = fal
     </div>
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[12.5px] text-ink-3">
       <span>{ordersSnapshotLabel(state, !!symbolFilter, rows.length)}</span>
-      <button type="button" aria-label={firstRead ? '查看在途委托' : '刷新在途委托'} disabled={state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
+      <button type="button" aria-label={firstRead ? '查看在途委托' : '刷新在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
         className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{firstRead ? '查看在途委托' : '刷新'}</button>
     </div>
     <OrdersQueryStatus state={state} />
-    {data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无未完成委托'}</p>}
+    {state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无未完成委托'}</p>}
     {rows.length > 0 && <OrdersTable rows={rows} state={state} units={units} compact={compact} />}
     {feedback.length > 0 && <div className="mt-3 border-t border-line py-3 text-[12.5px]"><p className="mb-1 text-ink-3">最近撤单结果</p>{feedback.map(r => <p key={r.request_id} className={`py-1 ${r.state === 'terminal' ? 'text-ink-2' : 'text-warn'}`}>{r.symbol} · {r.message}{r.order && r.state === 'terminal' ? ` · 已成 ${r.order.filled_volume} / ${r.order.volume}` : ''}</p>)}</div>}
     {!compact && <p className="py-3 text-[12px] text-ink-3">撤单只处理这笔委托的未成交部分。算法运行期间可能继续提交新委托。</p>}

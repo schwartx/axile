@@ -1,3 +1,5 @@
+import { useAccountConnection } from '@/stores/liveConnection'
+import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { useServiceDisconnected } from '@/lib/errorPresentation'
 import { useCallback, useEffect, useRef } from 'react'
 import { useParams } from 'react-router'
@@ -28,6 +30,7 @@ import { executionJustSettled, useRunning } from '@/stores/liveExec'
 export function AccountHoldingsPage() {
   const { id } = useParams()
   const accountId = Number(id)
+  const connection = useAccountConnection(accountId)
   const disconnected = useServiceDisconnected()
   const accounts = useDomainStore((s) => s.accounts)
   const refreshAccounts = useDomainStore((s) => s.refreshAccounts)
@@ -64,6 +67,11 @@ export function AccountHoldingsPage() {
   const refreshSnapshots = snapshots.refresh
   const reloadTargetSnapshot = weights.reloadSnapshot
   const refreshComparison = comparison.refresh
+  const connectedAssets = useConnectedAssets(accountId, () => {
+    void refreshSnapshots()
+    void refreshComparison()
+    void account.refresh()
+  })
   useEffect(() => {
     if (executionJustSettled(previousLiveRef.current, running)) {
       void refreshSnapshots()
@@ -82,7 +90,7 @@ export function AccountHoldingsPage() {
   const holdingsStale = !latestAssets || (positions.length === 0 && holdingsCount > 0)
 
   return (
-    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (account.data?.connection ?? item?.connection)?.status === 'unavailable' }}><section>
+    <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && connection.status === 'unavailable' }}><section>
       <div className="flex flex-wrap items-center gap-3">
         <AccountPageTitle
           accountId={accountId}
@@ -91,7 +99,7 @@ export function AccountHoldingsPage() {
           channel={tradeChannel}
           market={item?.market ?? account.data?.market}
         />
-        <AccountConnectionStatus accountId={accountId} connection={account.data?.connection ?? item?.connection} />
+        <AccountConnectionStatus accountId={accountId} />
       </div>
 
       <Card className="mt-4 px-6 py-5">
@@ -104,8 +112,8 @@ export function AccountHoldingsPage() {
             recalculating={weights.recalculating}
             error={weights.recalculateError}
             readError={weights.error}
-            disabled={isExecutingStatus(running?.status) || portfolioId == null}
-            disabledReason={isExecutingStatus(running?.status) ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
+            disabled={connection.status !== 'ready' || isExecutingStatus(running?.status) || portfolioId == null}
+            disabledReason={connection.status !== 'ready' ? '连接账户后可重新计算' : isExecutingStatus(running?.status) ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
             onRecalculate={() => void weights.recalculate().then(() => account.refresh())}
           />
         </div>
@@ -139,6 +147,7 @@ export function AccountHoldingsPage() {
           />
         )}
         <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="账户详情读取失败" error={account.error} hasData={account.data != null} onRetry={account.refresh} contextKey={accountId} />
+        <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="连接后的资产更新未完成" error={connectedAssets.error} contextKey={accountId} />
         <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="资产快照读取失败" error={snapshots.error} hasData={snapshots.data != null} variant={snapshots.data ? 'stale' : 'section'}
           updatedAt={snapshots.updatedAt} onRetry={snapshots.refresh} contextKey={accountId} />
         <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="目标快照读取失败" error={weights.error} hasData={weights.data != null} variant={weights.data ? 'stale' : 'section'}

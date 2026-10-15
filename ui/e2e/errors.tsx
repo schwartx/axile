@@ -12,6 +12,7 @@ import { AccountDetail } from '../src/features/account/AccountDetail'
 import { AccountHoldingsPage } from '../src/pages/AccountHoldingsPage'
 import { PortfolioEditPage } from '../src/pages/PortfolioEditPage'
 import { SystemConfigPage } from '../src/pages/SystemConfigPage'
+import { useLiveConnection } from '../src/stores/liveConnection'
 import { AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
 import { ApiError } from '../src/lib/api/client'
 import { useDomainStore, useDomainSync } from '../src/stores/domain'
@@ -20,7 +21,7 @@ import { ServiceConnectionStatus } from '../src/components/ServiceConnectionStat
 import { GlobalErrorContext } from '../src/lib/errorPresentation'
 import { notifyReadRecovery } from '../src/lib/readRecovery'
 import { AccountDetailPage } from '../src/pages/AccountDetailPage'
-import type { AccountDashboardItem } from '../src/types/api'
+import type { AccountConnectionDetail, AccountDashboardItem } from '../src/types/api'
 import '../src/styles/theme.css'
 
 const raw = (name: string) => `${name}开始\n${'synthetic error '.repeat(100)}\nTraceback\n  script.py:123\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因-${name}`
@@ -29,6 +30,11 @@ const item: AccountDashboardItem = { account_id: 7, name: '合成账户 A', rema
   portfolio_id: 9, is_scheduled: false, next_run_time: null, total_asset: 100, currency: 'CNY', holdings_count: 0, position_weights: [],
   last_is_success: null, last_exec_at: null, last_output_status: null, off_symbol_count: null }
 useDomainStore.setState({ accounts: [item, { ...item, account_id: 8, name: '合成账户 B' }], portfolios: [{ id: 9, name: '合成组合', market: 'demo', description: '', custom_calc_py_code: 'def calculate_portfolio(context):\n    return {}\n' }] })
+
+// 连接 UI 使用合成的 SSE 快照，不再为打开弹窗发起 REST 查询。
+const initialConnection = (window as unknown as { initialConnection?: AccountConnectionDetail }).initialConnection
+if (initialConnection) useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
+  data: [7, 8].map(account_id => ({ account_id, connection: initialConnection })) })
 
 export function Basic() {
   const [error, setError] = useState<Error>(failure('A'))
@@ -87,12 +93,16 @@ function AccountFixture() {
 }
 function ConnectionFixture() {
   const [accountId, setAccountId] = useState(7)
-  const [label, setLabel] = useState(new URLSearchParams(location.search).get('label') ?? '测试渠道的新故障文案')
   return <main className="p-5 text-ink-1">
     <button type="button" onClick={() => setAccountId(id => id === 7 ? 8 : 7)}>切换连接账户</button>
-    <button type="button" onClick={() => setLabel('后台更新后的标签')}>后台更新标签</button>
+    <button type="button" onClick={() => {
+      const state = useLiveConnection.getState()
+      const current = state.frames[accountId]
+      if (current) state.apply({ stream_id: state.streamId!, version: state.version + 1, kind: 'update',
+        data: [{ account_id: accountId, connection: { ...current, label: '后台更新后的标签' } }] })
+    }}>后台更新标签</button>
     <div className="mt-5 w-[220px] max-w-full">
-      <AccountConnectionStatus accountId={accountId} connection={{ status: 'unavailable', observed_at: null, message: null, label }} />
+      <AccountConnectionStatus accountId={accountId} />
     </div>
   </main>
 }

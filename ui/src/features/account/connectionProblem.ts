@@ -38,18 +38,18 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   const label = connectionLabel(detail)
   const title = failed ? presentation.title || text(detail.label) || '账户会话暂不可用' : label
   const summaries = {
-    ready: '当前执行器正在驻留，账户会话已准备并完成核对。最近一次账户访问时间见下方；单次请求成功不保证后续请求一定成功。',
+    ready: '账户会话已准备并完成核对。最近一次访问成功不保证后续请求一定成功。',
     disconnected: detail.manually_disconnected ? '账户会话已主动断开。查询和计划执行不会自动登录，需要显式重新连接。' : '账户会话已结束，可重新建立连接。',
     connecting: '账户正在准备会话，完成后会核对资产和未完成委托。',
     recovering: '账户正在恢复会话，完成核对后才会重新标记为就绪。',
     unknown: '当前会话状态待确认；上次成功的访问记录不能证明当前通道可用。',
-    uninitialized: '当前服务尚未建立该账户会话。查询或显式连接可以按需建立会话。',
+    uninitialized: '当前服务尚未建立该账户会话，可按需连接。',
     unavailable: '账户会话暂不可用，具体原因见下方。',
   }
   const summary = failed ? presentation.summary || detail.message || summaries.unavailable : summaries[detail.status] ?? summaries.unknown
   const at = (value?: string | null) => value?.replace('T', ' ') ?? '尚无记录'
   const facts = [
-    { label: '执行器', value: detail.worker_alive ? '正在驻留' : '未驻留' },
+    { label: '执行器', value: detail.worker_alive == null ? '待确认' : detail.worker_alive ? '正在驻留' : '未驻留' },
     { label: '状态更新', value: at(detail.observed_at) },
     { label: '最近访问成功', value: at(detail.last_success_at) },
     { label: '最近连接失败', value: at(detail.last_failure_at) },
@@ -68,5 +68,7 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   const copy = [title, summary, `账户：${accountId}`, `当前会话：${label}`, ...facts.map(field => `${field.label}：${field.value}`), ...sections.flatMap(section => [section.title, section.text,
     ...(section.fields ?? []).map(field => `${field.label}：${field.value}`), ...(section.steps ?? []).map((step, i) => `${i + 1}. ${step}`)]),
   ...actions.map(action => action.label), technical, history ? `最近连接失败（历史）\n${at(history.observed_at)}\n${history.message ?? ""}\n${errorValueText(history.error ?? {})}\n${errorValueText(history.presentation ?? {})}` : ""].filter(Boolean).join('\n\n')
-  return { title, summary, facts, sections, actions, technical, history, technicalInfo: connectionTechnicalDetails(detail), copy }
+  const displayFacts = facts.filter(field => field.label !== '最近连接失败' && !(field.label === '状态更新' && !detail.observed_at))
+    .map(field => ({ ...field, value: field.value.replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1') }))
+  return { title, summary, facts: displayFacts, sections, actions, technical, history, technicalInfo: connectionTechnicalDetails(detail), copy }
 }

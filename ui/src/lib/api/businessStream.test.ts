@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { useLiveConnection } from '@/stores/liveConnection'
 import { BUSINESS_STREAM_PATH, startBusinessStream } from './businessStream'
 import { useLiveExecStore, type RunFrame } from '@/stores/liveExec'
 import { useLiveControl, type ControlEnvelope } from '@/stores/liveControl'
@@ -36,6 +37,7 @@ beforeEach(() => {
   visibility = new Visibility(); opened = []; paths = []; recurring = new Set(); deferred = new Set()
   useLiveExecStore.setState({ running: new Map(), connected: false, error: null })
   useLiveControl.setState({ frames: {}, streamId: null, version: -1, connected: false, error: null, lastReceivedAt: null, disconnectedAt: null })
+  useLiveConnection.setState({ frames: {}, streamId: null, version: -1, connected: false })
   start()
 })
 afterEach(() => { stop?.(); stop = undefined })
@@ -158,4 +160,49 @@ test('mount cleanup and remount keep one active connection and expiry timer', ()
   expect(useLiveControl.getState().connected).toBe(false)
   opened[1].send('control.snapshot', control())
   expect(useLiveControl.getState().connected).toBe(true)
+})
+
+test('connection domain waits for its snapshot and never uses recurring reconciliation', () => {
+  const frame = { account_id: 7, connection: { status: 'ready', observed_at: 'now', message: null, error: null } }
+  opened[0].send('connection.update', { stream_id: 'conn', version: 2, kind: 'update', data: [frame] })
+  expect(useLiveConnection.getState().connected).toBe(false)
+  opened[0].send('connection.snapshot', { stream_id: 'conn', version: 1, kind: 'snapshot', data: [frame] })
+  expect(useLiveConnection.getState().frames[7].status).toBe('ready')
+  opened[0].send('connection.update', { stream_id: 'conn', version: 2, kind: 'update', data: [{ ...frame, connection: { ...frame.connection, status: 'unavailable' } }] })
+  opened[0].send('connection.update', { stream_id: 'conn', version: 1, kind: 'update', data: [frame] })
+  for (let i = 0; i < 60; i++) for (const callback of recurring) callback()
+  expect(useLiveConnection.getState().frames[7].status).toBe('unavailable')
+  expect(useLiveConnection.getState().version).toBe(2)
+  expect(opened.length).toBe(1)
+})
+
+test('connection loss clears readiness and equal-version reconnect snapshot restores it', () => {
+  const message = { stream_id: 'conn', version: 3, kind: 'snapshot', data: [{ account_id: 7,
+    connection: { status: 'ready', observed_at: 'now', message: null, error: null } }] }
+  opened[0].send('connection.snapshot', message)
+  opened[0].onerror?.()
+  expect(useLiveConnection.getState().connected).toBe(false)
+  opened[0].send('connection.update', { ...message, version: 4, kind: 'update' })
+  expect(useLiveConnection.getState().connected).toBe(false)
+  expect(useLiveConnection.getState().version).toBe(3)
+  opened[0].send('connection.snapshot', message)
+  expect(useLiveConnection.getState().connected).toBe(true)
+  opened[0].send('connection.update', { ...message, version: 4, kind: 'update', data: [], removed: [7] })
+  expect(useLiveConnection.getState().frames[7]).toBeUndefined()
+})
+
+test('connection errors stay isolated and malformed states require a fresh stream', () => {
+  opened[0].send('execution.snapshot', snapshot())
+  opened[0].send('control.snapshot', control())
+  opened[0].send('connection.snapshot', { stream_id: 'conn', version: 1, kind: 'snapshot', data: [] })
+  opened[0].send('connection.error', { message: 'connection snapshot unavailable' })
+  expect(useLiveExecStore.getState().connected).toBe(true)
+  expect(useLiveControl.getState().connected).toBe(true)
+  expect(useLiveConnection.getState().connected).toBe(false)
+  opened[0].send('connection.snapshot', { stream_id: 'restarted', version: 0, kind: 'snapshot', data: [] })
+  expect(useLiveConnection.getState().connected).toBe(true)
+  opened[0].send('connection.update', { stream_id: 'restarted', version: 1, kind: 'update', data: [{ account_id: 7, connection: { status: 'invalid' } }] })
+  expect(opened[0].closed).toBe(true)
+  expect(useLiveConnection.getState().connected).toBe(false)
+  expect(deferred.size).toBe(1)
 })

@@ -27,6 +27,7 @@ def test_orders_channel_works_while_business_request_lock_is_held(monkeypatch):
     busy = Lock()
     busy.acquire()
     manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     monkeypatch.setattr(manager, "_get_or_create_worker", lambda _: SimpleNamespace(orders=channel, request_lock=busy))
 
     def bind(_handle, request):
@@ -104,11 +105,34 @@ def test_order_timeout_retires_only_idle_worker(monkeypatch, activity):
         manager.close()
 
 
-@pytest.mark.parametrize("status,budget", [("uninitialized", 90), ("connecting", 90), ("ready", 30)])
-def test_query_timeout_budget_distinguishes_cold_preparation(monkeypatch, status, budget):
+@pytest.mark.parametrize("status,budget", [("uninitialized", 30), ("connecting", 30), ("ready", 30)])
+def test_query_timeout_never_includes_connection_preparation(monkeypatch, status, budget):
     from axile.server.db.models.account_connection import AccountConnectionPublic
 
     monkeypatch.setattr(
         WorkerBackendManager, "_current_session", staticmethod(lambda _: AccountConnectionPublic(status=status))
     )
     assert WorkerBackendManager._query_timeout(build_account()) == budget
+
+
+@pytest.mark.parametrize(
+    "status", ["uninitialized", "disconnected", "unavailable", "unknown", "connecting", "recovering"]
+)
+def test_read_guard_rejects_every_non_ready_state_before_worker_creation(monkeypatch, status):
+    from unittest.mock import Mock
+
+    from axile.server.db.models.account_connection import AccountConnectionPublic
+    from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+    manager = WorkerBackendManager()
+    spawn = Mock(side_effect=AssertionError("查询不能启动 worker"))
+    monkeypatch.setattr(manager, "_get_or_create_worker", spawn)
+    monkeypatch.setattr(
+        WorkerBackendManager,
+        "_current_session",
+        staticmethod(lambda _: AccountConnectionPublic(status=status, worker_alive=True)),
+    )
+    with pytest.raises(AccountConnectionUnavailable, match="先连接账户"):
+        manager._order_command_blocking(build_account(is_started=False), {"command": "query"})
+    spawn.assert_not_called()
+    manager.close()

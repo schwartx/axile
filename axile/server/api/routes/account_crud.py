@@ -357,6 +357,9 @@ async def create_account(
         )
         await session.commit()
         await session.refresh(db_account)
+        from axile.server.connection_events import connection_hub
+
+        connection_hub.changed(cast("int", db_account.id))
     except ValueError as exc:
         await session.rollback()
         logger.exception(f"创建账户失败: {exc}")
@@ -419,6 +422,9 @@ async def copy_account(
             await enqueue_account_runtime_sync(session, cast("int", copied.id), reset_worker=False)
             await session.commit()
             await session.refresh(copied)
+            from axile.server.connection_events import connection_hub
+
+            connection_hub.changed(cast("int", copied.id))
         except (ValueError, ValidationError) as exc:
             await session.rollback()
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -824,6 +830,10 @@ async def _update_account(
         await enqueue_account_runtime_sync(session, account_id, reset_worker=runtime_changed)
         await session.commit()
         await session.refresh(db_account)
+        if runtime_changed:
+            from axile.server.connection_events import connection_hub
+
+            connection_hub.changed(account_id)
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

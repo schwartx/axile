@@ -7,9 +7,13 @@ import { holdingPreviewRows } from '../src/features/account/holdingDetailModel'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { getAccountAssetSnapshots, getAccountTargetSnapshot } from '../src/lib/api/accounts'
 import { usePolling } from '../src/lib/hooks/usePolling'
+import { useLiveConnection } from '../src/stores/liveConnection'
 import '../src/styles/theme.css'
 
 const units = { quantity_kind: 'contract', quantity_label: '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' } as const
+
+useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
+  data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })
 
 export function Fixture() {
   const [accountId, setAccountId] = useState(1)

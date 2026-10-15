@@ -43,6 +43,10 @@ def register_session(binding, alive: Callable[[], bool]) -> None:
     """新实例接管当前状态，历史记录不能代替新实例的就绪报告。"""
     with _lock:
         _sessions[binding.account_id] = _LiveSession(binding.config_key, binding.instance_id, alive)
+    from axile.server.connection_events import connection_hub
+
+    connection_hub.changed(binding.account_id)
+    connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
 
 
 def observe_session(binding, sequence: int, observation: ConnectionObservation | None) -> None:
@@ -56,6 +60,8 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
             or session.config_key != binding.config_key
         ):
             return
+        recovered = clock_monotonic() - session.sampled > _STALE_SECONDS
+        changed = sequence > session.sequence
         session.sampled, session.sampled_at = clock_monotonic(), clock_now_iso()
         if sequence > session.sequence:
             session.sequence = sequence
@@ -66,6 +72,22 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
                     float(seconds) if isinstance(seconds, (int, float)) else 0
                 )
             session.observation = observation
+    from axile.server.connection_events import connection_hub
+
+    connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
+    if recovered or changed:
+        connection_hub.changed(binding.account_id)
+
+
+def session_deadlines() -> dict[int, float]:
+    """为新订阅恢复一次性过期通知，不安排周期采样。"""
+    with _lock:
+        now = clock_monotonic()
+        return {
+            account_id: max(0, session.sampled + _STALE_SECONDS + 0.01 - now)
+            for account_id, session in _sessions.items()
+            if not session.ended
+        }
 
 
 def end_session(binding, message: str, *, failed: bool = False) -> bool:
@@ -78,19 +100,28 @@ def end_session(binding, message: str, *, failed: bool = False) -> bool:
         if failed:
             session.retry_deadline = clock_monotonic() + 30
         session.observation = ConnectionObservation("error" if failed else "disconnected", clock_now_iso(), message)
-        return True
+    from axile.server.connection_events import connection_hub
+
+    connection_hub.changed(binding.account_id)
+    return True
 
 
 def clear_sessions() -> None:
     """服务启动时重置进程内会话，旧数据库观察只作为历史。"""
     with _lock:
         _sessions.clear()
+    from axile.server.connection_events import connection_hub
+
+    connection_hub.changed()
 
 
 def forget_session(account_id: int) -> None:
     """账户删除后清除本地状态，避免数据库复用 ID 时继承旧会话。"""
     with _lock:
         _sessions.pop(account_id, None)
+    from axile.server.connection_events import connection_hub
+
+    connection_hub.changed(account_id)
 
 
 def current_session(account_id: int, config_key: str) -> AccountConnectionPublic:
