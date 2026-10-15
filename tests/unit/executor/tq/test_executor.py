@@ -34,6 +34,24 @@ def test_injected_catalog_registers_existing_tq_connection_once(executor, monkey
     assert provider.ensure(["SHFE.rb2610"])["SHFE.rb2610"].multiplier is None
 
 
+def test_reconcile_terminal_order_requires_matching_actual_terminal(executor):
+    instance, api = executor
+    assert instance.reconcile_terminal_order("rb2610", "o1") is None
+    api.order.update(status="FINISHED", volume_left=1)
+    actual = instance.reconcile_terminal_order("rb2610", "o1")
+    assert actual is not None and actual.status == "已撤销" and actual.filled_volume == 1
+    assert instance.reconcile_terminal_order("rb2610", "missing") is None
+    assert instance.reconcile_terminal_order("ag2612", "o1") is None
+
+
+def test_unknown_native_order_is_retained_and_never_confirmed_as_canceled(executor):
+    instance, api = executor
+    api.order.update(status="UNKNOWN", volume_left=1)
+    orders = instance.get_pending_orders(None)
+    assert len(orders) == 1 and orders[0].status == "状态未知"
+    assert instance.reconcile_terminal_order("rb2610", "o1") is None
+
+
 class FakeApi(CatalogApiMixin):
     def __init__(self) -> None:
         self.quote = {

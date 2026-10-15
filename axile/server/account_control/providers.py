@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import deque
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from loguru import logger
 
@@ -14,6 +15,7 @@ _lock = RLock()
 _guards: dict[int, AccountControlGuard] = {}
 _final: dict[int, dict[str, Any]] = {}
 _updates: dict[int, deque[dict[str, Any]]] = {}
+_operation_locks: WeakKeyDictionary[AccountControlGuard, Lock] = WeakKeyDictionary()
 
 
 def register(guard: AccountControlGuard) -> None:
@@ -73,3 +75,15 @@ def account_ids() -> list[int]:
     """列出本进程已有监控来源，不创建运行时。"""
     with _lock:
         return list(_guards.keys() | _final.keys())
+
+
+def active_guard(account_id: int) -> AccountControlGuard | None:
+    """供同账户人工委托操作共用正在运行的额度，不创建第二份基线。"""
+    with _lock:
+        return _guards.get(account_id)
+
+
+def operation_lock(guard: AccountControlGuard) -> Lock:
+    """人工操作与最终刷盘共用锁，避免收尾后才产生未计入的报撤次数。"""
+    with _lock:
+        return _operation_locks.setdefault(guard, Lock())

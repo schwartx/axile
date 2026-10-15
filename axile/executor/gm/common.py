@@ -191,6 +191,8 @@ def convert_gm_order_to_unified(order: dict[str, Any]) -> UnifiedOrder:
         price=float(order.get("price", 0)),
         channel_type=TradeChannel.GM,
         status=convert_gm_status_to_string(order.get("status", 0)),
+        filled_volume=float(order.get("filled_volume") or 0),
+        avg_price=float(order.get("filled_vwap") or 0),
         create_time=create_time,
         update_time=create_time,
         raw_order_data=order,

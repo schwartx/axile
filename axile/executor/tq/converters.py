@@ -94,6 +94,8 @@ def _order_status(row: object) -> str:
     filled = max(0.0, volume - left)
     if status == "ALIVE":
         return OrderStatus.PARTIALLY_FILLED if filled else OrderStatus.PENDING
+    if status != "FINISHED":
+        return OrderStatus.UNKNOWN
     if left <= 0 and volume > 0:
         return OrderStatus.FILLED
     message = str(_value(row, "last_msg", "") or "")

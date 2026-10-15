@@ -43,6 +43,8 @@ class _WorkerBackendState:
     """
 
     executor: object | None = None
+    request_active: bool = False
+    resource_lock: threading.RLock = field(default_factory=threading.RLock)
     catalog_provider: RemoteCatalogProvider | None = None
     requires_worker_restart: bool = False
     account_id: int | None = None
@@ -273,6 +275,25 @@ def _prepare_executor(
 
 
 def _resolve_prepared_executor(
+    *,
+    state: _WorkerBackendState,
+    account: AccountSnapshot,
+    execution_id: str | None,
+    audit_context: dict[str, object],
+    termination_controller: ExecutionTerminationController | None = None,
+) -> object:
+    """序列化连接准备与人工委托操作，算法执行仍可并行查询。"""
+    with state.resource_lock:
+        return _resolve_prepared_executor_locked(
+            state=state,
+            account=account,
+            execution_id=execution_id,
+            audit_context=audit_context,
+            termination_controller=termination_controller,
+        )
+
+
+def _resolve_prepared_executor_locked(
     *,
     state: _WorkerBackendState,
     account: AccountSnapshot,

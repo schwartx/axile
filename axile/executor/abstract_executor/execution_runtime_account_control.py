@@ -9,6 +9,7 @@ from axile.executor.account_control.models import (
     AccountControlCounterDeltaWrite,
     AccountControlEventWrite,
 )
+from axile.executor.account_control.scope import scoped_guard
 
 if TYPE_CHECKING:
     from axile.executor.account_control.guard import AccountControlGuard
@@ -34,6 +35,9 @@ class AbstractExecutorExecutionAccountControlFacadeMixin:
             当前执行绑定的账户控制 guard；不存在时返回 ``None``。
         """
         executor = _executor(self)
+        local = scoped_guard(executor)
+        if local is not None:
+            return local
         runtime = executor.get_active_execution_runtime()
         if runtime is not None:
             return runtime.account_control_guard

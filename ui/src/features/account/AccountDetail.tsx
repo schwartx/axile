@@ -3,6 +3,8 @@ import { AccountConnectionStatus } from '@/features/account/AccountConnectionSta
 import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
+import { CurrentOrdersButton, CurrentOrdersDialog } from '@/features/account/CurrentOrders'
+import { useCurrentOrders } from '@/features/account/useCurrentOrders'
 import { NotificationIndicator } from '@/features/account/NotificationIndicator'
 import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
@@ -124,6 +126,7 @@ export function AccountDetail({
   const tEdit = useViewTransitionState(`/accounts/${accountId}/edit`)
   const nameVt = tDetail || tEdit
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
+  const currentOrders = useCurrentOrders(accountId)
   const channelSchedule = channelDescriptor?.schedule
   const scheduleKind = channelSchedule?.kind
   // 组合名：领域 store 已在应用根加载（PortfolioLite 带 name），取名不增请求；未加载/找不到退回 #id。
@@ -237,6 +240,8 @@ export function AccountDetail({
   const comparisonLoading = comparison.data === null && comparison.loading
   const comparisonError = comparison.error
   const comparisonReady = comparison.data?.off_symbol_count != null
+  const showComparisonPanel = !comparisonLoading && !!weights.data?.calculated_at && comparisonReady
+    && !((!comparison.data && comparisonError) || (!weights.data && weights.error) || (!assetSnapshots.data && assetSnapshots.error))
   // 账户级偏离与逐品种动作均取服务端同一份可执行计划。
   const plan = rebalancePlanOfServer(comparison.data)
   const driftLevel: StatusLevel = plan.off > 0 ? 'warn' : 'ok'
@@ -728,7 +733,7 @@ export function AccountDetail({
             <div className="border-t border-line py-3 text-[14px] leading-relaxed text-ink-3">
               尚无目标权重，刷新后生成持仓对照
             </div>
-          ) : comparisonReady ? (
+          ) : showComparisonPanel ? (
             <div className="grid min-h-40 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
               <div className="border-t border-line pt-3">
                 <div className={`text-[23px] font-[640] ${STATUS_TEXT_CLASS[driftLevel]}`}>
@@ -737,6 +742,7 @@ export function AccountDetail({
                 <div className="mt-1.5 text-[14px] text-ink-2">
                   当前 {!item.asset_observed_at ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {targetCount} 只
                 </div>
+                <CurrentOrdersButton state={currentOrders} />
                 {plan.off > 0 && (
                   <>
                     <div className="mt-1 text-[14px] text-ink-2">
@@ -760,6 +766,8 @@ export function AccountDetail({
               </div>
             </div>
           ) : null}
+          {!showComparisonPanel && <CurrentOrdersButton state={currentOrders} />}
+          <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
           <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
           <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />
           <ErrorNotice evidence={accountEvidence} contextKey={accountId}

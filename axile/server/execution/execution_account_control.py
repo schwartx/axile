@@ -1,5 +1,6 @@
 """执行编排使用的账户控制辅助函数."""
 
+import asyncio
 from typing import cast
 
 from loguru import logger
@@ -88,6 +89,22 @@ async def build_account_control_guard(
 
 
 async def flush_account_control_records(executor: object) -> None:
+    """等待同 guard 的人工操作结束后，持久化最终计数并关闭控制会话。"""
+    getter = getattr(executor, "get_account_control_guard", None)
+    guard = cast(AccountControlGuard | None, getter() if callable(getter) else None)
+    if guard is None:
+        await _flush_account_control_records(executor)
+        return
+    lock = providers.operation_lock(guard)
+    if not lock.acquire(blocking=False):
+        await asyncio.to_thread(lock.acquire)
+    try:
+        await _flush_account_control_records(executor)
+    finally:
+        lock.release()
+
+
+async def _flush_account_control_records(executor: object) -> None:
     """
     将执行器当前累积的账户控制记录刷入 SQLite.
 

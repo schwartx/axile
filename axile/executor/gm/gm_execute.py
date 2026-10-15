@@ -713,6 +713,17 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             available_long_volume += _gm_available_volume(pos_dict)
         return available_long_volume
 
+    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+        """按完整订单身份核实实际终态，不以挂单列表缺失代替撤单回报。"""
+        return next(
+            (
+                order
+                for order in self._query_order_records()
+                if order.order_id == order_id and order.symbol == symbol and order.is_completed()
+            ),
+            None,
+        )
+
     def _get_pending_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
         """获取未完成订单."""
         if symbol is not None:

@@ -526,13 +526,23 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         return [
             order
             for order in orders
-            if order.is_active()
+            if not order.is_completed()
             and (
                 symbol is None
                 or order.symbol == symbol
                 or normalize_catalog_symbol(str(order.extra["tq_symbol"])) == symbol
             )
         ]
+
+    def reconcile_terminal_order(self, symbol: str, order_id: str) -> UnifiedOrder | None:
+        """读取 SDK 订单真实终态；缺失订单保持未知。"""
+        runtime = self._require_runtime()
+        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
+        for row in rows:
+            order = order_to_unified(row, runtime.resolver)
+            if order.order_id == order_id and order.symbol == symbol and order.is_completed():
+                return order
+        return None
 
     @override
     def _query_trades_impl(self, symbol: str, order_id: str) -> list[TradeRecord]:

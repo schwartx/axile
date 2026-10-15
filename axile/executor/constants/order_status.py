@@ -55,6 +55,7 @@ class OrderStatus:
     PENDING = "待成交"  # 新订单，等待成交
     SUBMITTED = "已报"  # 已报送（部分渠道使用）
     PARTIALLY_FILLED = "部分成交"  # 部分成交
+    UNKNOWN = "状态未知"  # 缺失或未知原生状态，不能推断为终态
 
     # 完成状态
     FILLED = "已成交"  # 全部成交

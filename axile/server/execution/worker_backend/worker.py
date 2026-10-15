@@ -71,6 +71,12 @@ _SYMBOL_FIELDS = (
 )
 
 
+def _finalize_with_orders(executor: object | None, state: _WorkerBackendState) -> None:
+    """人工操作增量刷盘结束后，再收尾本次交易 guard。"""
+    with state.resource_lock:
+        _finalize_executor(executor)
+
+
 def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -> WorkerBackendResponse:
     """创建或复用账户执行器，并返回通道准备结果。"""
     account = AccountSnapshot.model_validate(request.account_payload)
@@ -109,7 +115,7 @@ def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -
             error=error,
         )
     finally:
-        _finalize_executor(executor)
+        _finalize_with_orders(executor, state)
         _clear_worker_termination(state, request.execution_id)
 
 
@@ -169,7 +175,7 @@ def _handle_get_account_assets(
             error=_build_error_payload(exc),
         )
     finally:
-        _finalize_executor(executor)
+        _finalize_with_orders(executor, state)
 
 
 def _handle_calculate_portfolio(
@@ -220,7 +226,7 @@ def _handle_calculate_portfolio(
         )
     finally:
         calculation_finished.set()
-        _finalize_executor(executor)
+        _finalize_with_orders(executor, state)
 
 
 def _terminate_stuck_portfolio_calculation(finished: threading.Event, timeout: float) -> None:
@@ -322,7 +328,7 @@ def _handle_execute_trade(
             normalized_symbol_fields=normalized_symbol_fields,
         )
     finally:
-        _finalize_executor(executor)
+        _finalize_with_orders(executor, state)
         _clear_worker_termination(state, request.execution_id)
 
 
@@ -405,7 +411,7 @@ def _handle_empty_positions(
             append_failed_audit=_append_failed_audit,
         )
     finally:
-        _finalize_executor(executor)
+        _finalize_with_orders(executor, state)
         _clear_worker_termination(state, request.execution_id)
 
 
@@ -428,11 +434,12 @@ def _handle_shutdown(
         关闭确认响应。
     """
     reason = str(request.payload.get("reason", "manager_shutdown"))
-    if state.executor is not None:
-        _close_state_executor(state)
-        state.executor = None
-        state.account_id = None
-        state.config_signature = None
+    with state.resource_lock:
+        if state.executor is not None:
+            _close_state_executor(state)
+            state.executor = None
+            state.account_id = None
+            state.config_signature = None
     return WorkerBackendResponse(
         request_id=request.request_id,
         kind="result",
@@ -497,6 +504,7 @@ def run_worker_backend_loop(
     control_connection: Connection,
     catalog_connection: Connection | None = None,
     monitor_connection: Connection | None = None,
+    orders_connection: Connection | None = None,
 ) -> None:
     """运行多进程 worker 的阻塞请求循环.
 
@@ -510,6 +518,12 @@ def run_worker_backend_loop(
     from axile.server.connection_state import ConnectionBinding, ConnectionCollector
 
     state = _WorkerBackendState(account_id=account_id)
+    if orders_connection is not None:
+        from axile.server.execution.worker_backend.orders import serve_orders
+
+        threading.Thread(
+            target=serve_orders, args=(orders_connection, state), daemon=True, name=f"axile-worker-orders-{account_id}"
+        ).start()
     if monitor_connection is not None:
         from axile.server.account_control.ipc import serve
 
@@ -554,7 +568,11 @@ def run_worker_backend_loop(
             )
             if state.connection_collector.binding != binding:
                 state.connection_collector = ConnectionCollector(binding)
-            response = _handle_worker_request(current_request, state)
+            state.request_active = True
+            try:
+                response = _handle_worker_request(current_request, state)
+            finally:
+                state.request_active = False
             response.connection_snapshot = state.connection_collector.snapshot()
             response.requires_worker_restart = (
                 response.requires_worker_restart
@@ -597,7 +615,8 @@ def run_worker_backend_loop(
             )
     finally:
         try:
-            _close_executor(state.executor)
+            with state.resource_lock:
+                _close_executor(state.executor)
         except BaseException as close_exc:  # noqa: BLE001 - 清理异常也必须可见
             logger.opt(exception=close_exc).error(
                 "执行器清理失败 | account_id={}",

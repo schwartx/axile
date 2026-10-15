@@ -1,0 +1,79 @@
+"""独立委托管道在业务阻塞、响应超时后的回归。"""
+
+import asyncio
+from multiprocessing import Pipe
+from threading import Event, Lock, Thread
+from types import SimpleNamespace
+
+import pytest
+
+from axile.server.execution.worker_backend.manager import WorkerBackendManager
+from axile.server.execution.worker_backend.orders import OrdersChannel
+from tests.unit.server._execution_test_support import build_account
+
+
+def test_orders_channel_works_while_business_request_lock_is_held(monkeypatch):
+    parent, child = Pipe()
+    channel = OrdersChannel(parent)
+    commands = []
+
+    def respond():
+        request = child.recv()
+        commands.append(request)
+        child.send({"request_id": request["request_id"], "result": {"data": []}})
+
+    thread = Thread(target=respond)
+    thread.start()
+    busy = Lock()
+    busy.acquire()
+    manager = WorkerBackendManager()
+    monkeypatch.setattr(manager, "_get_or_create_worker", lambda _: SimpleNamespace(orders=channel, request_lock=busy))
+
+    def bind(_handle, request):
+        request.connection_binding = {"account_id": 1, "config_key": "current-config", "instance_id": "current-worker"}
+
+    monkeypatch.setattr(manager, "_bind_connection_request", bind)
+    try:
+        response = asyncio.run(manager.order_command(build_account(), {"command": "query"}))
+        assert response == {"data": []}
+        assert busy.locked()
+        assert len(commands) == 1
+        assert commands[0]["connection_binding"]["instance_id"] == "current-worker"
+    finally:
+        busy.release()
+        channel.close()
+        child.close()
+        thread.join(timeout=1)
+
+
+def test_channel_timeout_drains_old_response_before_next_request_without_replaying_cancel():
+    parent, child = Pipe()
+    channel = OrdersChannel(parent)
+    received = Event()
+    release = Event()
+    commands = []
+
+    def respond():
+        old = child.recv()
+        commands.append(old["command"])
+        received.set()
+        release.wait(2)
+        child.send({"request_id": old["request_id"], "result": {"state": "submitted"}})
+        new = child.recv()
+        commands.append(new["command"])
+        child.send({"request_id": new["request_id"], "result": {"data": []}})
+
+    thread = Thread(target=respond)
+    thread.start()
+    try:
+        with pytest.raises(TimeoutError):
+            channel.request({"command": "cancel"}, timeout=0.01)
+        assert received.wait(1)
+        release.set()
+        assert channel.request({"command": "query"}, timeout=1) == {"data": []}
+        assert commands == ["cancel", "query"]
+    finally:
+        release.set()
+        channel.close()
+        child.close()
+        thread.join(timeout=2)

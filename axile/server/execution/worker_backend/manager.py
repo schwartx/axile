@@ -24,6 +24,7 @@ from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.execution.worker_backend.catalog import CatalogSession
+from axile.server.execution.worker_backend.orders import OrdersChannel
 from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
     WorkerBackendRequest,
@@ -146,6 +147,7 @@ class _WorkerBackendHandle:
     retired: bool = False
     catalog: CatalogSession | None = None
     monitor: RemoteMonitor | None = None
+    orders: OrdersChannel | None = None
     connection_binding: ConnectionBinding | None = None
 
 
@@ -210,9 +212,10 @@ class WorkerBackendManager:
         child_control_conn, parent_control_conn = self._ctx.Pipe(duplex=False)
         parent_catalog, child_catalog = self._ctx.Pipe(duplex=True)
         parent_monitor, child_monitor = self._ctx.Pipe(duplex=True)
+        parent_orders, child_orders = self._ctx.Pipe(duplex=True)
         process = self._ctx.Process(
             target=run_worker_backend_loop,
-            args=(child_conn, account_id, child_control_conn, child_catalog, child_monitor),
+            args=(child_conn, account_id, child_control_conn, child_catalog, child_monitor, child_orders),
             name=f"axile-execution-worker-{account_id}",
             daemon=True,
         )
@@ -221,6 +224,7 @@ class WorkerBackendManager:
         child_control_conn.close()
         child_catalog.close()
         child_monitor.close()
+        child_orders.close()
         catalog = CatalogSession(cast("Connection", parent_catalog), self.instrument_catalog, enabled=False)
         channel, enabled, last_execution = self._catalog_accounts.get(account_id, ("", False, ""))
         catalog.configure(channel=channel, enabled=enabled, last_execution=last_execution)
@@ -231,6 +235,7 @@ class WorkerBackendManager:
             control_connection=cast("Connection", parent_control_conn),
             catalog=catalog,
             monitor=RemoteMonitor(cast("Connection", parent_monitor), account_id, process.is_alive),
+            orders=OrdersChannel(cast("Connection", parent_orders)),
         )
 
     def configure_catalog_account(self, account: AccountContext, *, last_execution: str = "") -> None:
@@ -303,6 +308,9 @@ class WorkerBackendManager:
                 handle.process.join(timeout=2.0)
         if handle.monitor is not None:
             handle.monitor.close()
+        orders = getattr(handle, "orders", None)
+        if orders is not None:
+            orders.close()
         if handle.catalog is not None:
             handle.catalog.close()
 
@@ -331,6 +339,9 @@ class WorkerBackendManager:
             handle.process.join(timeout=2.0)
         if handle.monitor is not None:
             handle.monitor.close()
+        orders = getattr(handle, "orders", None)
+        if orders is not None:
+            orders.close()
         if handle.catalog is not None:
             handle.catalog.close()
 
@@ -668,6 +679,27 @@ class WorkerBackendManager:
     async def drop_account(self, account_id: int) -> None:
         """关闭并移除指定账户的常驻 Worker。"""
         await asyncio.to_thread(self._drop_account_blocking, account_id)
+
+    async def order_command(self, account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
+        """通过独立通路查询或撤销委托，不占用调仓命令锁。"""
+        return await asyncio.to_thread(self._order_command_blocking, account, payload)
+
+    def _order_command_blocking(self, account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
+        """委托通路沿用当前配置的连接观察身份，冷查询登录也能回报连接状态。"""
+        handle = self._get_or_create_worker(_require_account_id(account))
+        if handle.orders is None:
+            raise WorkerBackendExecutionError("当前委托通路不可用")
+        request = WorkerBackendRequest(
+            request_id=uuid4().hex,
+            command="prepare",
+            account_payload=account.model_dump(mode="json"),
+            execution_id=None,
+            payload={},
+        )
+        self._bind_connection_request(handle, request)
+        return handle.orders.request(
+            {**payload, "account": request.account_payload, "connection_binding": request.connection_binding}
+        )
 
     async def get_account_assets(self, account: AccountContext) -> UnifiedAccountAssets:
         """通过账户常驻 worker 查询最新资产快照."""
