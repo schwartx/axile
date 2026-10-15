@@ -55,6 +55,7 @@ class ExecutionArtifactType(str, Enum):
     TRADE_RULES_SNAPSHOT = "trade_rules_snapshot"
     MARKET_SNAPSHOT = "market_snapshot"
     EXECUTION_SUMMARY = "execution_summary"
+    ENVIRONMENT_SNAPSHOT = "environment_snapshot"
 
 
 class ExecutionTaskStatus(str, Enum):

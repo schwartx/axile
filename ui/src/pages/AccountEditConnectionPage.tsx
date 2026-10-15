@@ -38,7 +38,7 @@ export function AccountEditConnectionPage() {
   // 首帧用仪表盘缓存名/渠道，加载态也渲染真实标题：新侧快照缺名会让账户名
   // 原地淡出再随数据闪现，读起来像「位移一下又回来」。
   const title = (
-    <div className="flex flex-wrap items-baseline gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <AccountPageTitle
         accountId={accountId}
         page="连接设置"

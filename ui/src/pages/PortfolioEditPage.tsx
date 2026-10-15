@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useViewTransitionState } from 'react-router'
 import { Pencil, Play, RefreshCw, Zap } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
+import { BackLink } from '@/components/ui/BackLink'
 import { Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -339,6 +340,7 @@ export function PortfolioEditPage() {
             className="flex min-h-0 w-full flex-col overflow-y-auto border-line bg-surface px-3 py-2.5 md:border-r"
           >
           <div className="group/name flex flex-none items-center gap-2">
+            <BackLink to="/portfolios" label="返回所有组合" />
             <div
               className="min-w-0 flex-1 cursor-text border-b border-line/70 py-0.5 transition-colors duration-200 hover:border-ink-3 focus-within:border-accent"
               onClick={() => nameEditorRef.current?.focus()}

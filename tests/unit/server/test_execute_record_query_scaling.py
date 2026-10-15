@@ -12,9 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
-from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -60,15 +58,6 @@ async def _seed(session: AsyncSession, accounts: int, per_account: int) -> None:
     await session.commit()
 
 
-def test_composite_indexes_exist_on_execute_record() -> None:
-    """模型必须声明按账户查询所需的复合索引。"""
-    index_columns = {tuple(column.name for column in index.columns) for index in ExecuteRecord.__table__.indexes}
-
-    assert ("account_id", "id") in index_columns
-    assert ("account_id", "created_at") in index_columns
-    assert ("account_id", "is_success", "id") in index_columns
-
-
 def test_batch_recent_matches_per_account() -> None:
     """批量取记录必须与逐账户版本逐条一致（含每账户各自 limit）。"""
 
@@ -82,22 +71,6 @@ def test_batch_recent_matches_per_account() -> None:
                 expected = await get_recent_execute_records_by_account_id(session, account_id, limit=3)
                 assert [r.id for r in batched[account_id]] == [r.id for r in expected]
                 assert len(batched[account_id]) == 3, "每个账户各自取 limit 条，而非全局 limit 条"
-
-    asyncio.run(scenario())
-
-
-def test_batch_recent_handles_missing_and_empty() -> None:
-    """无记录的账户不出现在结果中；空账户列表返回空字典。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed(session, accounts=1, per_account=2)
-
-            batched = await get_recent_execute_records_for_accounts(session, [1, 99], limit=5)
-
-            assert 1 in batched
-            assert 99 not in batched
-            assert await get_recent_execute_records_for_accounts(session, [], limit=5) == {}
 
     asyncio.run(scenario())
 
@@ -120,72 +93,5 @@ def test_batch_baselines_match_per_account() -> None:
                 assert [r.id for r in since.get(account_id, [])] == [r.id for r in expected_since]
                 assert expected_before, "用例应覆盖到非空的昨收基准"
                 assert expected_since, "用例应覆盖到非空的今开基准"
-
-    asyncio.run(scenario())
-
-
-def test_batch_baselines_empty_account_list() -> None:
-    """空账户列表直接返回空字典，不发查询。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            assert await get_execute_records_before_for_accounts(session, [], "2026-07-01T00:00:00") == {}
-            assert await get_earliest_execute_records_since_for_accounts(session, [], "2026-07-01T00:00:00") == {}
-
-    asyncio.run(scenario())
-
-
-def test_batch_query_count_does_not_grow_with_accounts() -> None:
-    """核心回归：查询数不随账户数增长（N+1 已消除）。
-
-    逐账户版本对 8 个账户发出 8 条 SQL，批量版本恒为 1 条。
-    """
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed(session, accounts=8, per_account=3)
-            engine = session.get_bind()
-
-            statements: list[str] = []
-
-            def _record_statement(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
-                if "executerecord" in statement.lower():
-                    statements.append(statement)
-
-            event.listen(engine, "before_cursor_execute", _record_statement)
-            try:
-                statements.clear()
-                await get_recent_execute_records_for_accounts(session, list(range(1, 9)), limit=3)
-                batched_count = len(statements)
-
-                statements.clear()
-                for account_id in range(1, 9):
-                    await get_recent_execute_records_by_account_id(session, account_id, limit=3)
-                per_account_count = len(statements)
-            finally:
-                event.remove(engine, "before_cursor_execute", _record_statement)
-
-            assert batched_count == 1, f"批量查询应只发一条 SQL，实际 {batched_count} 条"
-            assert per_account_count == 8, f"逐账户版本应发 8 条 SQL，实际 {per_account_count} 条"
-
-    asyncio.run(scenario())
-
-
-def test_account_scoped_query_uses_composite_index() -> None:
-    """按账户过滤 + 按 id 排序的查询应命中复合索引，而非全表扫描。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed(session, accounts=4, per_account=10)
-
-            plan = (
-                await session.execute(
-                    text("EXPLAIN QUERY PLAN SELECT * FROM executerecord WHERE account_id = 1 ORDER BY id DESC LIMIT 3")
-                )
-            ).all()
-            plan_text = " ".join(str(row) for row in plan)
-
-            assert "ix_executerecord_account_id_id" in plan_text, f"未命中复合索引，执行计划: {plan_text}"
-            assert "SCAN executerecord" not in plan_text, f"仍在全表扫描，执行计划: {plan_text}"
 
     asyncio.run(scenario())

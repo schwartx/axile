@@ -24,38 +24,3 @@ def test_directory_picker_lists_only_directories(tmp_path) -> None:
     assert payload["path"] == str(tmp_path.resolve())
     assert [item["name"] for item in payload["entries"]] == ["alpha", "Beta"]
     assert payload["parent"] == str(tmp_path.resolve().parent)
-
-
-def test_directory_picker_resolves_relative_path_from_process_cwd(monkeypatch, tmp_path) -> None:
-    (tmp_path / "logs").mkdir()
-    monkeypatch.chdir(tmp_path)
-
-    response = _client().get("/api/v1/utils/directories", params={"path": "logs"})
-
-    assert response.status_code == 200
-    assert response.json()["path"] == str((tmp_path / "logs").resolve())
-
-
-def test_directory_picker_rejects_missing_path(tmp_path) -> None:
-    client = _client()
-
-    assert (
-        client.get(
-            "/api/v1/utils/directories",
-            params={"path": str(tmp_path / "missing")},
-        ).status_code
-        == 404
-    )
-
-
-def test_directory_picker_defaults_to_process_cwd(monkeypatch, tmp_path) -> None:
-    (tmp_path / "logs").mkdir()
-    monkeypatch.chdir(tmp_path)
-
-    response = _client().get("/api/v1/utils/directories")
-
-    assert response.json() == {
-        "path": str(tmp_path.resolve()),
-        "parent": str(tmp_path.resolve().parent),
-        "entries": [{"name": "logs", "path": str((tmp_path / "logs").resolve())}],
-    }

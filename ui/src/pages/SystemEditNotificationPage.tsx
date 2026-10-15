@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from '@/components/ui/nav'
+import { BackLink } from '@/components/ui/BackLink'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Segmented } from '@/components/ui/Segmented'
 import { usePythonRun } from '@/components/ui/pythonWorkbenchState'
@@ -46,8 +46,10 @@ export function SystemEditNotificationPage() {
     <NotificationWorkbench
       kind="system_notification" storageKey="axon.systemNotificationWorkbench"
       header={<>
-        <Link to="/settings" className="mb-3 inline-block text-[13px] text-accent hover:underline">返回系统告警</Link>
-        <h1 className="text-[18px] font-semibold">系统告警函数</h1>
+        <div className="flex items-center gap-3">
+          <BackLink to="/settings" label="返回系统告警" />
+          <h1 className="text-[18px] font-semibold">系统告警函数</h1>
+        </div>
         <p className="mt-2 text-[13px] text-ink-3">{systemAlertLabel(baseline, state.configured)}{state.dirty ? ' · 当前草稿未保存' : ''}</p>
       </>}
       controls={<div className="mt-4 space-y-4">

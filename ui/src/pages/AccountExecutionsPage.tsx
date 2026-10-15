@@ -6,7 +6,10 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Segmented } from '@/components/ui/Segmented'
 import { Select } from '@/components/ui/Select'
+import { DatePicker } from '@/components/ui/DatePicker'
 import { AccountPageTitle } from '@/features/account/pageHead'
+import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
+import { evidenceDatesFromSnapshot, evidenceDatesFromWindow } from '@/features/account/evidenceExport'
 import { journalWindow, type JournalRange } from '@/features/account/executionJournal'
 import { ExecutionGroup, SymbolGroup, EXEC_COLS, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
 import { parseJournalScope, scopeLabel, SNAPSHOT_PARAMS, loadSnapshotJournal, loadLiveJournal, filterLiveExecutions, compareJournal, journalTotals, activityWindowQuery } from '@/features/account/journalSource'
@@ -49,6 +52,8 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const window = journalWindow(range, from, to)
   const start = window?.start ?? 0, end = window?.end ?? 0
   const liveWindow = !scope && window ? activityWindowQuery(window) : undefined
+  const exportDates = scope ? evidenceDatesFromSnapshot(scope)
+    : range === 'custom' ? { from, to } : evidenceDatesFromWindow(window)
   const poll = usePolling(useCallback((signal: AbortSignal) => scope
     ? loadSnapshotJournal(accountId, scope, view, keyword, signal)
     : loadLiveJournal(accountId, { start, end }, signal, view), [accountId, scope, view, keyword, start, end]), {
@@ -121,8 +126,11 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const expired = poll.error instanceof ApiError && poll.error.status === 410
   const scopedQuery = scope ? { ...scope, symbol_search: keyword.trim() || undefined } : undefined
   return <section className="min-w-0 [&_button]:min-h-9 [&_button]:min-w-9">
-    <div className="mb-5 flex items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
-      <button type="button" aria-label="刷新执行记录" title="刷新执行记录" disabled={poll.loading || poll.refreshing || !!parsed.error || expired} onClick={() => void poll.refresh()} className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-fill disabled:opacity-40"><RefreshCw size={16} className={poll.refreshing ? 'animate-spin motion-reduce:animate-none' : ''} /></button></div>
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <EvidenceExportButton target={{ kind: 'account', accountId }} accountName={item?.name} initialDates={exportDates} fromSnapshot={!!scope} />
+        <button type="button" aria-label="刷新执行记录" title="刷新执行记录" disabled={poll.loading || poll.refreshing || !!parsed.error || expired} onClick={() => void poll.refresh()} className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-fill disabled:opacity-40"><RefreshCw size={16} className={poll.refreshing ? 'animate-spin motion-reduce:animate-none' : ''} /></button>
+      </div></div>
     {(scope || parsed.error) && <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-3" data-testid="journal-source">
       <Link to={`/accounts/${accountId}/history`} className="inline-flex min-h-9 items-center text-accent">返回实盘绩效</Link>
       {scope && <><span>来自实盘绩效 · {scopeLabel(scope)}</span>{poll.data?.dataUntil && <span>快照数据截止 {shanghaiLabel(poll.data.dataUntil)}</span>}</>}
@@ -136,8 +144,8 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
       <Select ariaLabel="排序" value={sort} options={SORTS} onChange={value => update('sort', value)} />
     </div>
     <div inert={!!scope || range !== 'custom'} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${!scope && range === 'custom' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden"><div className="flex flex-wrap items-center gap-3 py-3">
-      <label className="flex min-w-0 items-center gap-2 text-xs text-ink-3">开始<input aria-label="开始日期" type="date" value={from} max={to} onChange={e => update('from', e.target.value)} className={INPUT} /></label>
-      <label className="flex min-w-0 items-center gap-2 text-xs text-ink-3">结束<input aria-label="结束日期" type="date" value={to} min={from} onChange={e => update('to', e.target.value)} className={INPUT} /></label>
+      <div className="flex min-w-0 items-center gap-2 text-xs text-ink-3">开始<DatePicker ariaLabel="开始日期" value={from} max={to} onChange={value => update('from', value)} className="w-44" /></div>
+      <div className="flex min-w-0 items-center gap-2 text-xs text-ink-3">结束<DatePicker ariaLabel="结束日期" value={to} min={from} onChange={value => update('to', value)} className="w-44" /></div>
     </div></div></div>
     {parsed.error && <p role="alert" className="py-4 text-sm text-warn">{parsed.error.message}</p>}
     {!scope && !window && <p role="alert" className="py-4 text-sm text-warn">请选择有效的起止日期，结束日期不能早于开始日期。</p>}

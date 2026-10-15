@@ -18,6 +18,7 @@ from axile.domain.execution import (
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.db.models.account import AccountContext
+from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_records_output import resolve_completion_event_status
 from axile.server.execution.execution_summaries import (
     build_execution_outcome_details,
@@ -77,6 +78,20 @@ def _append_before_snapshot_artifact_sync(
     )
 
 
+def _append_environment(execution_id: str, executor: object, channel: str, algorithm: str) -> None:
+    """在真实执行前保存环境；元数据采集失败不阻断交易。"""
+    from loguru import logger
+
+    try:
+        append_execution_artifact_sync(
+            execution_id=execution_id,
+            artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
+            content=execution_environment(executor, channel, algorithm),
+        )
+    except Exception:
+        logger.exception("执行环境快照采集失败")
+
+
 def _append_trade_pre_execute_audit(
     *,
     account: AccountContext,
@@ -96,6 +111,7 @@ def _append_trade_pre_execute_audit(
     if not execution_id:
         return
 
+    _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
     append_execution_event_sync(
         execution_id=execution_id,
         account_id=cast(int, account.id),
@@ -178,6 +194,7 @@ def _append_empty_positions_pre_execute_audit(
     if not execution_id:
         return
 
+    _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
     append_execution_event_sync(
         execution_id=execution_id,
         account_id=cast(int, account.id),

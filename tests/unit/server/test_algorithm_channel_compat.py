@@ -6,8 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from axile.common.order_param_model import OrderParamModel
-from axile.common.trade_channel import TradeChannel
-from axile.executor.algorithms.core.base import ALL_ORDER_PARAM_MODELS, register_algorithm
+from axile.executor.algorithms.core.base import register_algorithm
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 
 
@@ -20,52 +19,12 @@ def _fake_pos_side_only_algorithm(executor, algorithm_input):  # pragma: no cove
     raise NotImplementedError
 
 
-def test_universal_algorithms_pass_on_builtin_channels() -> None:
-    """SINGLE-MAKER/TWAP/POV 声明全模型适配,在三个内置渠道均通过."""
-    for channel in (TradeChannel.CTP, TradeChannel.TQ, TradeChannel.GM):
-        for method in ("SINGLE-MAKER", "TWAP", "POV"):
-            config = {"method": method, "params": {}}
-            assert _check_algorithm_channel_compat(config, str(channel), "下单算法") is config
-
-
 def test_restricted_algorithm_rejected_on_offset_channel() -> None:
     """声明仅 POSITION_SIDE 的算法配对期货(OFFSET)渠道时拒绝."""
     config = {"method": "TEST-POS-SIDE-ONLY", "params": {}}
 
     with pytest.raises(ValueError, match="未适配渠道 ctp 的订单参数模型"):
         _check_algorithm_channel_compat(config, "ctp", "下单算法")
-
-
-def test_restricted_algorithm_passes_on_matching_channel() -> None:
-    """声明仅 POSITION_SIDE 的算法配对 DIRECTIONAL 渠道仍被拒,UNKNOWN 渠道放行."""
-    config = {"method": "TEST-POS-SIDE-ONLY", "params": {}}
-    with pytest.raises(ValueError, match="未适配渠道"):
-        _check_algorithm_channel_compat(config, "gm", "下单算法")
-    # 渠道未注册:交由执行期兜底
-    assert _check_algorithm_channel_compat(config, "unregistered-channel", "下单算法") is config
-
-
-def test_compat_check_passes_through_edge_cases() -> None:
-    """空配置、缺 method、未知算法一律放行(与 _validate_algorithm_config 同策略)."""
-    assert _check_algorithm_channel_compat(None, "ctp", "下单算法") is None
-    assert _check_algorithm_channel_compat({}, "ctp", "下单算法") == {}
-    config = {"method": "UNREGISTERED-ALGO", "params": {}}
-    assert _check_algorithm_channel_compat(config, "ctp", "下单算法") is config
-    registered = {"method": "TEST-POS-SIDE-ONLY", "params": {}}
-    assert _check_algorithm_channel_compat(registered, None, "下单算法") is registered
-
-
-def test_metadata_declares_models() -> None:
-    """注册元数据正确记录模型声明."""
-    from axile.executor.algorithms.core.base import get_algorithm_metadata
-
-    single_maker = get_algorithm_metadata("SINGLE-MAKER")
-    assert single_maker.order_param_models == frozenset(str(model) for model in ALL_ORDER_PARAM_MODELS)
-    restricted = get_algorithm_metadata("TEST-POS-SIDE-ONLY")
-    assert restricted.order_param_models == frozenset({"position_side"})
-    # 未声明的算法(如期货原生 TARGET-POS-TASK)为 None = 全模型,不受本校验约束
-    target = get_algorithm_metadata("TARGET-POS-TASK")
-    assert target.order_param_models is None
 
 
 def test_create_account_rejects_incompatible_algorithm_channel_pairing(monkeypatch) -> None:

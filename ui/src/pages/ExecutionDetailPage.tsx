@@ -2,7 +2,6 @@ import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { lossClass } from '@/features/history/costs'
 import { useCallback } from 'react'
 import { useLocation, useParams } from 'react-router'
-import { Link } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
 import { SkeletonLines } from '@/components/ui/Skeleton'
 import { NumberTicker } from '@/components/ui/NumberTicker'
@@ -29,6 +28,7 @@ import {
 import { buildSymbolActionStream, type ActionLine } from '@/features/account/actionStream'
 import { executionRecordView } from '@/features/account/executionOutcome'
 import { AccountPageTitle } from '@/features/account/pageHead'
+import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
 import type { FailureReason } from '@/features/account/failureReason'
 import { PhaseBar } from '@/features/dashboard/PhaseBar'
 import { accountAssetTerms, positionValueLabelOf } from '@/features/dashboard/display'
@@ -581,17 +581,22 @@ export function ExecutionDetailPage() {
 
   return (
     <section>
-      <Link to={fromPerformance ? performancePath : journalReturn} className="mb-3 inline-block text-[13px] text-accent hover:underline">{fromPerformance ? '返回实盘绩效' : '返回执行记录'}</Link>
-      <div className="flex flex-wrap items-baseline gap-3">
-        {/* 执行详情路径含动态段、无法纳入账户名 FLIP 门控（flip=false），结构仍与全域统一。 */}
-        <AccountPageTitle
-          accountId={accountId}
-          page="执行详情"
-          name={item?.name}
-          channel={item?.trade_channel}
-          market={item?.market}
-          flip={false}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          {/* 执行详情路径含动态段、无法纳入账户名 FLIP 门控（flip=false），结构仍与全域统一。 */}
+          <AccountPageTitle
+            accountId={accountId}
+            page="执行详情"
+            name={item?.name}
+            channel={item?.trade_channel}
+            market={item?.market}
+            flip={false}
+            back={{ to: fromPerformance ? performancePath : journalReturn, label: fromPerformance ? '返回实盘绩效' : '返回执行记录' }}
+          />
+        </div>
+        {executionId && <EvidenceExportButton target={{ kind: 'execution', accountId, executionId }} accountName={item?.name}
+          isRunning={isLive || ['QUEUED', 'RUNNING', 'TERMINATING'].includes(status.data?.status ?? '')}
+          disabled={status.data != null && status.data.account_id !== accountId} />}
       </div>
       <div className="num mt-2 text-[16px] font-mono text-ink-2">{executionId}</div>
       <div>

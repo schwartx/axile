@@ -70,7 +70,7 @@ function headers(extra?: HeadersInit): HeadersInit {
   return { 'Content-Type': 'application/json', ...(extra as Record<string, string>) }
 }
 
-async function parse<T>(res: Response): Promise<T> {
+async function checkResponse(res: Response): Promise<void> {
   if (!res.ok) {
     const rawText = await res.text()
     let body: unknown = null
@@ -81,8 +81,21 @@ async function parse<T>(res: Response): Promise<T> {
     }
     throw apiErrorFromBody(res.status, res.statusText, body, rawText, res.headers.get('x-request-id'))
   }
+}
+
+async function parse<T>(res: Response): Promise<T> {
+  await checkResponse(res)
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
+}
+
+/** 读取二进制响应，失败时沿用 JSON 接口的错误解析；取消覆盖响应体读取。 */
+export async function apiGetBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch(BASE + path, { signal })
+  await checkResponse(res)
+  const blob = await res.blob()
+  signal?.throwIfAborted()
+  return blob
 }
 
 /** 发起 GET 请求。`signal` 用于配合轮询取消。 */

@@ -10,10 +10,11 @@ import { executionOutcome } from '@/features/account/executionOutcome'
 import { formatRecentExecution } from '@/lib/scheduleTime'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { useViewTransitionState } from 'react-router'
-import { ArrowLeft, ArrowLeftRight, RefreshCw } from 'lucide-react'
+import { ArrowLeftRight, RefreshCw } from 'lucide-react'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
+import { BackLink } from '@/components/ui/BackLink'
 import { DriftBar } from '@/components/viz/DriftBar'
 import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { InkRewrite } from '@/components/ui/InkRewrite'
@@ -76,7 +77,7 @@ import { shortErrorReason } from '@/lib/errorInfo'
 import { displayCurrencyUnit, fmtMoney, withCurrency } from '@/lib/format'
 import { describeCron } from '@/features/setup/cron'
 import { TimerQuickModal } from '@/features/setup/TimerQuickModal'
-import { useNavigationStore, useToastStore } from '@/stores/ui'
+import { useToastStore } from '@/stores/ui'
 import { useChannelDescriptor } from '@/stores/channels'
 import type { AccountDashboardItem } from '@/types/api'
 import { TargetSnapshotControl } from '@/features/portfolio/TargetSnapshotControl'
@@ -100,7 +101,6 @@ export function AccountDetail({
   const accountEvidence = [{ label: '账户', value: `${item.name} (#${accountId})` }]
   const navigate = useNavigate()
   const toast = useToastStore((s) => s.toast)
-  const sidebarCompact = useNavigationStore((s) => s.sidebarCompact)
   const runtime = useAccountRuntimeSync(accountId)
   const [toggleError, setToggleError] = useState<Error | null>(null)
   const [assetRefreshError, setAssetRefreshError] = useState<Error | null>(null)
@@ -415,34 +415,11 @@ export function AccountDetail({
       <ErrorNotice evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
       <ErrorNotice title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
         evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
-      {/* 移动端侧栏默认隐藏，始终保留回链。 */}
-      <Link
-        to="/"
-        className="mb-3 inline-flex items-center gap-1 text-[14px] text-ink-3 transition-colors duration-150 hover:text-ink-1 motion-reduce:transition-none md:hidden"
-      >
-        <ArrowLeft size={14} aria-hidden />所有账户
-      </Link>
-      {/* 桌面端侧栏已提供同一入口；紧凑时收起重复回链，把纵向空间还给账户内容。 */}
-      <div
-        aria-hidden={sidebarCompact ? true : undefined}
-        inert={sidebarCompact}
-        className={`hidden transition-[grid-template-rows] duration-200 motion-reduce:transition-none md:grid ${
-          sidebarCompact ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]'
-        }`}
-      >
-        <div className="min-h-0 overflow-hidden">
-          <Link
-            to="/"
-            className="mb-3 inline-flex items-center gap-1 text-[14px] text-ink-3 transition-colors duration-150 hover:text-ink-1 motion-reduce:transition-none"
-          >
-            <ArrowLeft size={14} aria-hidden />所有账户
-          </Link>
-        </div>
-      </div>
       {/* Hero */}
       <Card className="p-3">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex flex-none items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <BackLink to="/" label="返回所有账户" />
             {/* 与舰队卡 / 组合行 / 编辑页标题名配对做共享元素 FLIP（平移 + 微缩）。 */}
             <span
               className="text-[17px] font-[620]"
@@ -1133,8 +1110,11 @@ function HeroConfigItem({
 export function AccountDetailSkeleton() {
   return (
     <SkeletonGroup label="正在加载账户详情">
-      <Card className="p-6">
-        <Skeleton className="h-5 w-40" />
+      <Card className="p-3">
+        <div className="flex items-center gap-3">
+          <BackLink to="/" label="返回所有账户" />
+          <Skeleton className="h-5 w-40" />
+        </div>
         <Skeleton className="mt-[18px] h-8 w-52" />
         <Skeleton className="mt-2 h-4 w-44" />
         <div className="mt-6 border-t border-line pt-4">

@@ -23,6 +23,7 @@ from axile.server.db.models.account import AccountContext
 from axile.server.error_details import exception_details, json_error_value
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution.dispatch import ExecutionBackendKind, resolve_execution_backend_kind
+from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_records_output import (
     append_execute_record_from_output,
     resolve_completion_event_status,
@@ -257,6 +258,7 @@ async def _append_rebalance_start_audit(
 
     execution_id = request.execution_id
     algorithm = request.account.algorithm.get("method", "SINGLE-MAKER")
+    await _append_environment_snapshot(execution_id, executor, request.account.trade_channel.value, algorithm)
     await append_execution_event(
         execution_id=execution_id,
         account_id=cast("int", request.account.id),
@@ -528,6 +530,12 @@ async def _append_clear_positions_start_audit(
     before_account_assets: dict[str, object] | None,
 ) -> None:
     """写入清仓开始前的 execution_started 事件与执行前账户快照。"""
+    await _append_environment_snapshot(
+        request.execution_id,
+        executor,
+        request.account.trade_channel.value,
+        str(request.resolved_algorithm.get("method", "SINGLE-MAKER")),
+    )
     await append_execution_event(
         execution_id=request.execution_id,
         account_id=cast("int", request.account.id),
@@ -541,6 +549,19 @@ async def _append_clear_positions_start_audit(
         details={"debug": {"trigger_source": request.trigger_source, "execution_kind": "clear_positions"}},
     )
     await _append_before_snapshot_artifact(request.execution_id, before_account_assets)
+
+
+async def _append_environment_snapshot(execution_id: str, executor: object, channel: str, algorithm: str) -> None:
+    """在线程后端执行前保存环境，元数据错误不改变原交易行为。"""
+    try:
+        content = await asyncio.to_thread(execution_environment, executor, channel, algorithm)
+        await append_execution_artifact(
+            execution_id=execution_id,
+            artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
+            content=content,
+        )
+    except Exception:
+        loguru.logger.exception("执行环境快照采集失败")
 
 
 async def _persist_clear_positions_completion(

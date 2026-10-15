@@ -4,6 +4,7 @@
 定义执行器内部通用的账户资产快照结构与单品种持仓结构。
 """
 
+import math
 from enum import Enum
 from typing import Any, cast
 
@@ -195,13 +196,38 @@ class UnifiedAccountAssets(BaseModel):
         Returns
         -------
         bool
-            当 ``total_asset`` 约等于可用资金与持仓市值之和时返回 ``True``。
+            GM 股票现金账户使用同一资金快照的可用资金、挂单冻结资金与账户市值对账；
+            字段不完整时返回 ``False``。其他渠道保留可用资金加持仓市值的校验。
+            本方法仅提供诊断，不重算或覆盖原生权益。
         """
+        if self.extra.get("channel_type") == TradeChannel.GM:
+            return self._validate_gm_cash_balance()
         if self.market_value is None:
             return False
         calculated_total = self.available_cash + self.market_value
         tolerance = 0.01  # 允许0.01的误差
         return abs(self.total_asset - calculated_total) <= tolerance
+
+    def _validate_gm_cash_balance(self) -> bool:
+        """使用同一次 GM 股票资金查询的字段诊断余额关系。"""
+        cash = self.extra.get("gm_cash")
+        if self.extra.get("total_asset_source") != "gm.cash.nav" or not isinstance(cash, dict):
+            return False
+        values: list[float] = []
+        for field in ("nav", "available", "order_frozen", "market_value"):
+            value = cash.get(field)
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                return False
+            number = float(value)
+            if not math.isfinite(number):
+                return False
+            values.append(number)
+        nav, available, frozen, market_value = values
+        return (
+            abs(self.total_asset - nav) <= 0.01
+            and abs(self.available_cash - available) <= 0.01
+            and abs(nav - (available + frozen + market_value)) <= 0.01
+        )
 
     def update_curr_target(
         self,

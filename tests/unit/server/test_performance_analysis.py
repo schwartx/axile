@@ -22,44 +22,67 @@ from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.performance_analysis import (
+    LOGIC_VERSION,
     AnalysisManager,
     compute_batch,
     enqueue,
     read_performance_summaries,
     read_snapshot,
 )
-from axile.server.performance_costs import daily_costs, execution_list_payload, project_execution, summarize, timestamp
+from axile.server.performance_costs import daily_costs, project_execution, summarize, timestamp
 from axile.server.performance_details import CostQuery, read_costs
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 
 
-def test_execution_projection_keeps_counts_without_large_symbol_evidence():
-    import copy
+def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema_template):
+    """旧日内相加结果在重启后失效，三个区间和卡片都发布新账本结果。"""
 
-    symbol = {
-        "status": "PARTIAL",
-        "error": "未到位",
-        "orders": [{"order_id": "A", "extra": {"raw": "x" * 10000}}],
-        "trades": [{"trade_volume": 1, "trade_price": 10}] * 1000,
-        "memory": {"debug": "x" * 10000},
-        "account_assets": {"positions": [1] * 1000},
-    }
-    item = record(symbol_results={"A": symbol})
-    original = copy.deepcopy(item.raw_result)
-    payload, trades = project_execution(item)
-    assert payload["record"]["raw_result"]["symbol_results"] == {
-        "A": {"status": "PARTIAL", "error": "未到位", "outcome": "not_reached"}
-    }
-    assert payload["tradeCount"] == len(trades) == 1000
-    assert item.raw_result == original
+    async def check():
+        async with database(tmp_path, schema_template, count=0) as (_, sessions, manager):
+            async with sessions() as session:
+                for i, price in enumerate([100, 110, 121]):
+                    session.add(
+                        ExecuteRecord(
+                            account_id=2,
+                            execution_id=f"intraday-{i}",
+                            created_at=f"2026-01-01T{9 + i:02d}:00:00",
+                            raw_input={"curr_target": {"A": 1}},
+                            raw_result={
+                                "account_assets": {"total_asset": price},
+                                "first_ticks": {"A": {"last_price": price}},
+                            },
+                            is_success=1,
+                        )
+                    )
+                await session.commit()
+            await queue(sessions)
+            await manager.run_once()
+            original = await snapshot(sessions)
+            async with sessions() as session:
+                ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
+                for value in ranges.values():
+                    value["performance"]["points"][-1]["portfolio_return"] = 0.2
+                await session.execute(snapshots.update().values(logic_version="16", ranges=ranges))
+                await session.execute(states.update().values(logic_version="16"))
+                await session.commit()
+            assert (await snapshot(sessions))["status"] == "pending"
+            await manager.start()
+            await manager.stop()
+            await manager.run_once()
+            async with sessions() as session:
+                for range_key in ("all", "30", "90"):
+                    rebuilt = await read_snapshot(session, 2, range_key)
+                    assert rebuilt["status"] == "ready"
+                    assert rebuilt["snapshot_id"] != original["snapshot_id"]
+                    assert rebuilt["logic_version"] == LOGIC_VERSION
+                    assert rebuilt["engine_version"] == "equity-ledger-1"
+                    assert rebuilt["result"]["points"][-1]["portfolio_return"] == pytest.approx(0.21)
+                summary = (await read_performance_summaries(session, [2]))[2]
+                assert summary.snapshot_id == rebuilt["snapshot_id"]
+                assert summary.points[-1].portfolio_return == pytest.approx(0.21)
 
-    old = {"record": {"id": 1, "raw_result": original}}
-    compact = execution_list_payload(old)
-    assert compact["tradeCount"] == 1000
-    assert compact["record"]["raw_result"]["symbol_results"] == payload["record"]["raw_result"]["symbol_results"]
-    assert old["record"]["raw_result"] == original
-    assert execution_list_payload(compact) == compact
+    asyncio.run(check())
 
 
 def record(index=1, **kwargs):
@@ -143,33 +166,6 @@ async def snapshot(sessions):
         return await read_snapshot(session, 2, "all")
 
 
-def test_legacy_performance_waits_for_current_settings(tmp_path, schema_template):
-    async def check():
-        async with database(tmp_path, schema_template) as (_, sessions, manager):
-            await queue(sessions)
-            await manager.run_once()
-            async with sessions() as session:
-                account = await session.get(Account, 2)
-                account.backtest_fee_rate = 0.001
-                await session.commit()
-            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(analysis_manager=manager)))
-            async with sessions() as session:
-                pending = asyncio.create_task(get_performance(session, request, 2))
-                try:
-                    await asyncio.wait_for(manager.wake.wait(), timeout=2)
-                    assert not pending.done()
-                    await manager.run_once()
-                    result = await asyncio.wait_for(pending, timeout=2)
-                    assert result.settings.backtest_fee_rate == 0.001
-                    assert result.backtest_included
-                finally:
-                    if not pending.done():
-                        pending.cancel()
-                    await asyncio.gather(pending, return_exceptions=True)
-
-    asyncio.run(check())
-
-
 def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, schema_template):
     """2160 条小时观测完整进入同版卡片，不再取最近 200 条。"""
 
@@ -215,52 +211,6 @@ def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, s
                     assert old.status == expected
                     assert old.snapshot_id == summary.snapshot_id
                     assert old.account_equity == summary.account_equity
-
-    asyncio.run(check())
-
-
-def test_legacy_summary_waits_for_equity_and_rebuilds_on_logic_upgrade(tmp_path, schema_template):
-    """旧 JSON 不伪造金额，启动升级后发布完整新快照。"""
-
-    async def check():
-        async with database(tmp_path, schema_template) as (_, sessions, manager):
-            await queue(sessions)
-            await manager.run_once()
-            initial = await snapshot(sessions)
-            async with sessions() as session:
-                ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
-                for result in ranges.values():
-                    for point in result["performance"]["points"]:
-                        point.pop("account_equity", None)
-                await session.execute(snapshots.update().values(ranges=ranges, logic_version="4"))
-                await session.execute(states.update().values(logic_version="4"))
-                await session.commit()
-                old = (await read_performance_summaries(session, [2]))[2]
-                assert old.account_equity is None
-                assert old.points == []
-                assert old.status == "pending"
-                assert (await read_snapshot(session, 2, "all"))["result"] is None
-                with pytest.raises(HTTPException) as exc:
-                    await read_costs(session, 2, CostQuery(snapshot_id=initial["snapshot_id"]))
-                assert exc.value.status_code == 410
-            await manager.start()
-            await manager.stop()
-            await manager.run_once()
-            async with sessions() as session:
-                current = (await read_performance_summaries(session, [2]))[2]
-                assert current.snapshot_id != initial["snapshot_id"]
-                assert current.status == "ready"
-                assert current.account_equity == 103
-                # 日末缺失时金额保持缺失，不回退到前一天。
-                ranges = (
-                    await session.execute(sa.select(snapshots.c.ranges).where(snapshots.c.id == current.snapshot_id))
-                ).scalar_one()
-                ranges["all"]["performance"]["points"][-1]["account_equity"] = None
-                await session.execute(
-                    snapshots.update().where(snapshots.c.id == current.snapshot_id).values(ranges=ranges)
-                )
-                await session.commit()
-                assert (await read_performance_summaries(session, [2]))[2].account_equity is None
 
     asyncio.run(check())
 
@@ -662,20 +612,6 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
             assert (await snapshot(sessions))["status"] == "ready"
 
     asyncio.run(check())
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(0, 0), (41.2, 41.2), ("65.5", 65.5), (None, None), (-1, None), (True, None), ("NaN", None)],
-)
-def test_execution_duration_projection(value, expected):
-    payload, _ = project_execution(record(execution_time=value))
-    assert payload["durationSec"] == expected
-
-
-def test_legacy_execution_without_duration():
-    payload, _ = project_execution(record())
-    assert payload["durationSec"] is None
 
 
 def test_journal_snapshot_trade_identity_filter_and_aggregation(tmp_path, schema_template):

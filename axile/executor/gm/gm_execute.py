@@ -59,7 +59,7 @@ from axile.executor.gm.core.api_bridge import (
 )
 from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
 from axile.executor.gm.core.strategy_bridge import GMStrategyBridge
-from axile.executor.models.execution_result import TargetSizingDecision
+from axile.executor.models.execution_result import TargetSizingDecision, TargetSizingStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import (
     OrderUpdateCallback,
@@ -88,6 +88,45 @@ def _gm_available_volume(position: dict[str, Any]) -> float:
     """读取 GM 当前真实可平数量，并兼容不含 ``available_now`` 的旧 SDK."""
     raw_available = position["available_now"] if "available_now" in position else position.get("available", 0)
     return max(float(raw_available or 0), 0.0)
+
+
+def _gm_cash_number(cash: dict[str, Any], field: str) -> float:
+    """读取必需的有限资金数值，错误中只包含字段名和原因。"""
+    value = cash.get(field)
+    if value is None:
+        raise ValueError(f"GM 资金字段 {field} 缺失")
+    if isinstance(value, bool):
+        raise ValueError(f"GM 资金字段 {field} 不能为布尔值")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"GM 资金字段 {field} 不是有效数值") from None
+    if not math.isfinite(number):
+        raise ValueError(f"GM 资金字段 {field} 必须为有限数值")
+    return number
+
+
+def _gm_cash_snapshot(raw_cash: Any) -> tuple[float, float, dict[str, Any]]:
+    """解析股票现金账户权益，仅保留必要的资金诊断字段。"""
+    if raw_cash is None:
+        raise ValueError("GM 资金快照缺失，无法读取 nav / available")
+    try:
+        cash = dict(raw_cash)
+    except (TypeError, ValueError):
+        raise ValueError("GM 资金快照格式非法，无法读取 nav / available") from None
+    nav = _gm_cash_number(cash, "nav")
+    available = _gm_cash_number(cash, "available")
+    diagnostics: dict[str, Any] = {"nav": nav, "available": available}
+    for field in ("order_frozen", "balance", "market_value"):
+        try:
+            diagnostics[field] = _gm_cash_number(cash, field)
+        except ValueError:
+            # 可选对账字段未知时不伪造零值，也不覆盖有效原生权益。
+            diagnostics[field] = None
+    for field in ("updated_at", "update_time"):
+        if field in cash:
+            diagnostics[field] = cash[field]
+    return nav, available, diagnostics
 
 
 # ==================== GM 执行器 ====================
@@ -394,9 +433,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         logger.info(f"准备查询资金: account_id={self.account_id}")
         raw_cash = self._call_bridge(GetCashRequest(account_id=self.account_id), timeout=10.0)
         logger.info(f"资金查询完成: account_id={self.account_id}, has_cash={bool(raw_cash)}")
-        cash: dict[str, Any] = (
-            cast("dict[str, Any]", dict(raw_cash)) if raw_cash else {}  # pyright: ignore[reportUnknownArgumentType]
-        )
+        total_asset, available_cash, cash_diagnostics = _gm_cash_snapshot(raw_cash)
 
         unified_positions: list[Position] = []
         for pos in positions:  # pyright: ignore[reportUnknownVariableType]
@@ -418,9 +455,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             )
             unified_positions.append(position)
 
-        market_value = sum(p.market_value for p in unified_positions)
-        available_cash = float(cash.get("available", 0.0))  # pyright: ignore
-        total_asset = available_cash + market_value
+        market_value = sum(cast(float, p.market_value) for p in unified_positions)
 
         logger.info(
             f"账户资产构建完成: account_id={self.account_id}, "
@@ -433,7 +468,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             market_value=market_value,
             positions=unified_positions,
             currency="CNY",
-            extra={"channel_type": TradeChannel.GM},
+            extra={
+                "channel_type": TradeChannel.GM,
+                "total_asset_source": "gm.cash.nav",
+                "gm_cash": cash_diagnostics,
+            },
         )
 
     def get_market_data(self, symbols: list[str]) -> dict[str, UnifiedPriceData]:
@@ -1006,6 +1045,15 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     ) -> TargetSizingDecision:
         """按股票整手规则生成目标股数及换算证据."""
         total_asset = account_assets.total_asset
+        if total_asset < 0 and weight != 0:
+            return TargetSizingDecision(
+                symbol=symbol or "",
+                status=TargetSizingStatus.UNAVAILABLE,
+                reason_code="GM.SIZING.NEGATIVE_EQUITY",
+                account_weight=weight,
+                equity=total_asset,
+                reference_price=price,
+            )
         raw_lot_size = trade_rule.get("一手数量", 100)
         lot_size = float(raw_lot_size) if isinstance(raw_lot_size, int | float) else 100.0
         raw_quantity = total_asset * weight / price
