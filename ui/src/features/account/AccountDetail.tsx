@@ -406,6 +406,21 @@ export function AccountDetail({
   // 兼容尚未重启、dashboard 暂未携带 remark 的开发服务；详情到位后仍能展示已保存备注。
   const remark = account.data?.remark ?? item.remark
   const connection = account.data?.connection ?? item.connection
+  const targetSnapshotControl = (
+    <TargetSnapshotControl
+      evidence={accountEvidence}
+      contextKey={accountId}
+      snapshot={weights.data}
+      loading={weights.loading}
+      recalculating={weights.recalculating}
+      error={weights.recalculateError}
+      readError={weights.error}
+      disabled={isExecuting || portfolioId == null}
+      disabledReason={isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
+      variant="compact"
+      onRecalculate={() => weights.recalculate().then(() => Promise.all([refreshComparison(), account.refresh()]))}
+    />
+  )
 
   return (
     <AccountConnectionContext.Provider value={!account.error && connection?.status === 'error'}><section>
@@ -675,25 +690,15 @@ export function AccountDetail({
           <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
             <h3 className="mr-auto text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
             <StaleDataStatus updatedAt={comparisonStaleAt} />
-            <TargetSnapshotControl
-            evidence={accountEvidence}
-            contextKey={accountId}
-              snapshot={weights.data}
-              loading={weights.loading}
-              recalculating={weights.recalculating}
-              error={weights.recalculateError}
-            readError={weights.error}
-              disabled={isExecuting || portfolioId == null}
-              disabledReason={isExecuting ? '账户正在执行，结束后可重新计算' : portfolioId == null ? '账户未绑定组合' : undefined}
-              variant="compact"
-              onRecalculate={() => weights.recalculate().then(() => Promise.all([refreshComparison(), account.refresh()]))}
-            />
-            <Link
-              to={`/accounts/${accountId}/holdings`}
-              className="flex-none text-[13.5px] font-semibold text-accent hover:underline"
-            >
-              持仓明细 →
-            </Link>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+              <CurrentOrdersButton state={currentOrders} />
+              <Link
+                to={`/accounts/${accountId}/holdings`}
+                className="flex-none text-[13.5px] font-semibold text-accent hover:underline"
+              >
+                持仓明细 →
+              </Link>
+            </div>
           </div>
           {comparisonLoading ? (
             <SkeletonGroup label="正在加载持仓与目标对照" className="grid min-h-40 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
@@ -719,7 +724,9 @@ export function AccountDetail({
                 <div className="mt-1.5 text-[14px] text-ink-2">
                   当前 {!item.asset_observed_at ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {targetCount} 只
                 </div>
-                <CurrentOrdersButton state={currentOrders} />
+                <div className="mt-2 flex min-h-8 items-center">
+                  {targetSnapshotControl}
+                </div>
                 {plan.off > 0 && (
                   <>
                     <div className="mt-1 text-[14px] text-ink-2">
@@ -743,7 +750,7 @@ export function AccountDetail({
               </div>
             </div>
           ) : null}
-          {!showComparisonPanel && <CurrentOrdersButton state={currentOrders} />}
+          {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
           <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
           <ErrorNotice evidence={accountEvidence} title="资产快照读取失败" error={assetSnapshots.error} variant={assetSnapshots.data ? 'stale' : 'section'} updatedAt={assetSnapshots.updatedAt} onRetry={refreshAssetSnapshots} contextKey={accountId} />
           <ErrorNotice evidence={accountEvidence} title="目标快照读取失败" error={weights.error} variant={weights.data ? 'stale' : 'section'} updatedAt={weights.updatedAt} onRetry={reloadTargetSnapshot} contextKey={accountId} />

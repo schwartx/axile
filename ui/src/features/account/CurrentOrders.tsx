@@ -11,9 +11,8 @@ import type { ChannelCapability } from '@/types/api'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
-    className={`mt-3 flex min-h-8 cursor-pointer items-center gap-2 text-[13.5px] hover:underline ${state.query.error || state.query.data?.complete === false ? 'text-warn' : 'text-accent'}`}>
-    <InkRewrite text={state.query.loading ? '当前委托 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
-    <span aria-hidden>›</span>
+    className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${state.query.error || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
+    <InkRewrite text={state.query.loading ? '当前委托 · 查询中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
   </button>
 }
 

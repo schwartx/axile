@@ -8,7 +8,7 @@ const snapshot = { data: [order], count: 1, complete: true, sampled_at: '2026-10
 test('account summary survives execution completion; order detail and keyboard dismissal', async ({ page }, testInfo) => {
   await page.route('**/api/v1/account/1/orders**', route => route.fulfill({ json: snapshot }))
   await page.goto('/e2e/orders.html')
-  const entry = page.getByRole('button', { name: /当前委托 1 笔/ })
+  const entry = page.getByRole('button', { name: /当前委托 · 1/ })
   await expect(entry).toBeVisible()
   await page.getByRole('button', { name: '结束执行' }).click()
   await expect(entry).toBeVisible()
@@ -46,7 +46,7 @@ test('one cancel request waits for actual terminal and preserves partial fill ev
       count: mode === 'terminal' ? 0 : 1, cancellations: mode === 'active' ? [] : [receipt()] } })
   })
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: /当前委托 1 笔/ }).click()
+  await page.getByRole('button', { name: /当前委托 · 1/ }).click()
   const dialog = page.getByRole('dialog', { name: '当前委托' })
   const cancel = dialog.getByRole('button', { name: '撤单 rb2610 native-1' })
   await cancel.click()
@@ -65,7 +65,7 @@ test('query failure retains rows and disables cancel; narrow dialog stays on scr
   await page.route('**/api/v1/account/1/orders**', route => route.fulfill(failed ? { status: 502, json: { detail: '柜台查询不可用' } } : { json: snapshot }))
   await page.setViewportSize({ width: 375, height: 812 })
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: /当前委托 1 笔/ }).click()
+  await page.getByRole('button', { name: /当前委托 · 1/ }).click()
   const dialog = page.getByRole('dialog', { name: '当前委托' })
   failed = true
   await dialog.getByRole('button', { name: '刷新当前委托' }).click()
@@ -81,7 +81,7 @@ test('first query failure is unknown; recovery to empty is explicit', async ({ p
   let failed = true
   await page.route('**/api/v1/account/1/orders**', route => route.fulfill(failed ? { status: 502, json: { detail: '不可用' } } : { json: { ...snapshot, data: [], count: 0 } }))
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: /当前委托 待确认/ }).click()
+  await page.getByRole('button', { name: /当前委托 · 待确认/ }).click()
   const dialog = page.getByRole('dialog', { name: '当前委托' })
   await expect(dialog.getByText('当前无未完成委托')).toHaveCount(0)
   failed = false

@@ -8,10 +8,10 @@ const snapshot: CurrentOrdersSnapshot = { data: [order], count: 1, complete: tru
 const receipt: CancelReceipt = { request_id: 'r1', order_id: 'o1', symbol: 'rb2610', state: 'submitted', message: '等待回报', requested_at: '2026-10-15T10:01:00', order }
 
 test('summary distinguishes zero orders from unknown and stale data', () => {
-  expect(orderSummary(null, false)).toBe('当前委托 待确认')
-  expect(orderSummary({ ...snapshot, data: [], count: 0 }, false)).toBe('当前委托 0 笔')
-  expect(orderSummary({ ...snapshot, complete: false, count: null }, false)).toBe('当前委托 待确认')
-  expect(orderSummary(snapshot, true)).toBe('当前委托 待确认')
+  expect(orderSummary(null, false)).toBe('当前委托 · 待确认')
+  expect(orderSummary({ ...snapshot, data: [], count: 0 }, false)).toBe('当前委托 · 0')
+  expect(orderSummary({ ...snapshot, complete: false, count: null }, false)).toBe('当前委托 · 待确认')
+  expect(orderSummary(snapshot, true)).toBe('当前委托 · 待确认')
 })
 
 test('submitted cancel keeps pending state and disables duplicate operations', () => {

@@ -9,8 +9,8 @@ export function orderDirection(direction: string): string {
 }
 
 export function orderSummary(snapshot: CurrentOrdersSnapshot | null, stale: boolean): string {
-  if (!snapshot || !snapshot.complete || snapshot.count == null || stale) return '当前委托 待确认'
-  return `当前委托 ${snapshot.count} 笔`
+  if (!snapshot || !snapshot.complete || snapshot.count == null || stale) return '当前委托 · 待确认'
+  return `当前委托 · ${snapshot.count}`
 }
 
 export function mergeReceipts(server: CancelReceipt[], local: CancelReceipt[]): CancelReceipt[] {
