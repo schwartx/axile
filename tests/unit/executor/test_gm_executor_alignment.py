@@ -6,14 +6,20 @@ import sys
 from datetime import date, datetime
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.execution_engine import ExecutionEngine, _PlannedSymbolAlgorithm
+from axile.executor.feishu_notifications import build_execute_results_feishu_card
+from axile.executor.models.execution_result import ExecutionStatus, TargetSizingStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
+from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
+from axile.executor.models.unified_output import UnifiedStandardOutput
 
 
 def _install_gm_stubs() -> None:
@@ -322,12 +328,189 @@ def test_get_account_assets_prefers_current_available_volume(monkeypatch: Any) -
             }
         ],
     )
-    monkeypatch.setattr(gm_api_bridge_module, "get_cash", lambda **_kwargs: {"available": 98_000})
+    monkeypatch.setattr(gm_api_bridge_module, "get_cash", lambda **_kwargs: {"available": 98_000, "nav": 99_003.5})
 
     assets = executor.get_account_assets()
 
     assert assets.positions[0].volume == 900
     assert assets.positions[0].available_volume == 0
+
+
+def _gm_equity_executor(monkeypatch: pytest.MonkeyPatch, cash: object, *, with_position: bool = True) -> GMExecutor:
+    executor = _build_executor()
+    positions = (
+        [{"symbol": "SHSE.600000", "side": 1, "volume": 6000, "available": 6000, "market_value": 60_000}]
+        if with_position
+        else []
+    )
+    monkeypatch.setattr(gm_api_bridge_module, "get_position", lambda **_kwargs: positions)
+    monkeypatch.setattr(gm_api_bridge_module, "get_cash", lambda **_kwargs: cash)
+    return executor
+
+
+@pytest.mark.parametrize(
+    ("available", "frozen"),
+    [(40_000, 0), (30_000, 10_000), (35_000, 5000), (40_000, 0)],
+    ids=["before-freeze", "frozen", "partially-unfrozen", "fully-unfrozen"],
+)
+def test_pending_buy_freeze_does_not_change_gm_equity_or_reduction_plan(monkeypatch, available, frozen):
+    cash = {
+        "nav": 100_000,
+        "available": available,
+        "order_frozen": frozen,
+        "balance": 40_000,
+        "market_value": 60_000,
+        "updated_at": "2026-10-05 10:00:00",
+        "account_id": "private-account",
+        "token": "private-token",
+    }
+    executor = _gm_equity_executor(monkeypatch, cash)
+    assets = executor.get_account_assets()
+    assert assets.total_asset == 100_000
+    assert assets.available_cash == available
+    assert assets.market_value == 60_000
+    assert assets.extra["total_asset_source"] == "gm.cash.nav"
+    assert assets.extra["gm_cash"] == {key: value for key, value in cash.items() if key not in {"account_id", "token"}}
+    assert assets.validate_balance() is True
+    sizing = executor._calculate_generic_sizing(0.5, 10, assets, {"一手数量": 100}, symbol="600000.SH")
+    assert (sizing.equity, sizing.target_notional, sizing.raw_quantity, sizing.target_quantity) == (
+        100_000,
+        50_000,
+        5000,
+        5000,
+    )
+    plan = _PlannedSymbolAlgorithm(
+        symbol="600000.SH",
+        algorithm_name="SINGLE-MAKER",
+        params=None,
+        trade_rule={},
+        audit_context=None,
+        current_volume=executor.get_current_volume("600000.SH", assets),
+        final_target_volume=sizing.target_quantity,
+        sizing=sizing,
+    )
+    phase = ExecutionEngine(executor, runtime=Mock())._classify_symbol_dispatch_phases(plan)
+    assert phase.phase_one_target_volume == 5000
+    assert plan.current_volume - phase.phase_one_target_volume == 1000
+    assert phase.run_phase_two is False
+
+
+def test_gm_nav_remains_authoritative_when_position_and_cash_queries_differ(monkeypatch):
+    executor = _gm_equity_executor(
+        monkeypatch,
+        {
+            "nav": "101000",
+            "available": "30000",
+            "balance": 40_000,
+            "order_frozen": 10_000,
+            "market_value": 61_000,
+        },
+    )
+    assets = executor.get_account_assets()
+    assert assets.total_asset == 101_000
+    assert assets.market_value == 60_000  # 持仓是另一时点的查询；对账使用资金快照市值。
+    assert assets.validate_balance() is True
+
+
+@pytest.mark.parametrize("field", ["order_frozen", "balance", "market_value"])
+@pytest.mark.parametrize("invalid", [None, True, "invalid", float("nan"), float("inf")])
+def test_gm_invalid_optional_cash_fields_remain_unknown_without_discarding_nav(monkeypatch, field, invalid):
+    executor = _gm_equity_executor(monkeypatch, {"nav": 100_000, "available": 30_000, field: invalid})
+    assets = executor.get_account_assets()
+    assert assets.total_asset == 100_000
+    assert assets.extra["gm_cash"][field] is None
+    assert assets.validate_balance() is False
+
+
+@pytest.mark.parametrize(("nav", "available", "frozen"), [(100_000, 100_000, 0), (100_000, 0, 100_000), (0, 0, 0)])
+def test_gm_cash_only_fully_frozen_and_zero_accounts(monkeypatch, nav, available, frozen):
+    executor = _gm_equity_executor(
+        monkeypatch,
+        {
+            "nav": nav,
+            "available": available,
+            "order_frozen": frozen,
+            "market_value": 0,
+        },
+        with_position=False,
+    )
+    assets = executor.get_account_assets()
+    assert (assets.total_asset, assets.available_cash, assets.positions) == (nav, available, [])
+    assert assets.source == "real"
+    assert assets.validate_balance() is True
+    sizing = executor._calculate_generic_sizing(0.5, 10, assets, {})
+    assert sizing.target_quantity == nav * 0.5 / 10
+
+
+@pytest.mark.parametrize("cash", [None, {}, [], "invalid", {"available": 0}, {"nav": 0}])
+def test_gm_missing_cash_snapshot_or_required_field_is_an_error(monkeypatch, cash):
+    executor = _gm_equity_executor(monkeypatch, cash)
+    with pytest.raises(ValueError, match="GM 资金.*(nav|available)"):
+        executor.get_account_assets()
+
+
+@pytest.mark.parametrize("field", ["nav", "available"])
+@pytest.mark.parametrize(
+    "invalid", [None, True, False, "private-invalid-value", [], float("nan"), float("inf"), -float("inf")]
+)
+def test_gm_invalid_required_cash_fields_fail_without_leaking_values(monkeypatch, field, invalid):
+    cash = {"nav": 100_000, "available": 30_000, field: invalid}
+    executor = _gm_equity_executor(monkeypatch, cash)
+    with pytest.raises(ValueError, match=f"GM 资金字段 {field}") as error:
+        executor.get_account_assets()
+    assert "private-invalid-value" not in str(error.value)
+
+
+@pytest.mark.parametrize("cash", [None, {"nav": float("nan"), "available": 0}, {"nav": 100_000}])
+def test_gm_bad_cash_stops_initial_planning_and_final_read_is_unavailable(monkeypatch, cash):
+    executor = _gm_equity_executor(monkeypatch, cash)
+    executor.logger = Mock()
+    engine = ExecutionEngine(executor, runtime=Mock())
+    monkeypatch.setattr(engine, "_build_effective_curr_target", Mock())
+    with pytest.raises(ValueError, match="GM 资金"):
+        engine._build_symbol_planning_context(UnifiedStandardInput.model_construct())
+    engine._build_effective_curr_target.assert_not_called()
+    assets, error = engine._read_result_assets()
+    assert assets.source == "unavailable"
+    assert error is not None
+    source = Mock()
+    source._get_account_mark.return_value = "test-account"
+    output = UnifiedStandardOutput(account_assets=assets, status=ExecutionStatus.FAILED, channel_type=TradeChannel.GM)
+    variables = build_execute_results_feishu_card(source, output)["data"]["template_variable"]
+    assert variables["total_assets"] == "未获取"
+    assert variables["available_cash"] == "未获取"
+
+
+@pytest.mark.parametrize("weight", [0.5, -0.5, 0])
+def test_gm_negative_nav_is_preserved_without_reversing_nonzero_targets(monkeypatch, weight):
+    executor = _gm_equity_executor(monkeypatch, {"nav": -1000, "available": 0}, with_position=False)
+    assets = executor.get_account_assets()
+    assert assets.total_asset == -1000
+    sizing = executor._calculate_generic_sizing(weight, 10, assets, {}, symbol="600000.SH")
+    assert sizing.equity == -1000
+    if weight == 0:
+        assert sizing.target_quantity == 0
+    else:
+        assert sizing.status == TargetSizingStatus.UNAVAILABLE
+        assert sizing.reason_code == "GM.SIZING.NEGATIVE_EQUITY"
+        assert sizing.target_quantity is None
+
+
+def test_gm_frozen_cash_notification_uses_native_equity(monkeypatch):
+    executor = _gm_equity_executor(monkeypatch, {"nav": 100_000, "available": 30_000})
+    assets = executor.get_account_assets()
+    assert assets.extra["gm_cash"]["order_frozen"] is None
+    assert assets.validate_balance() is False
+    source = Mock()
+    source._get_account_mark.return_value = "test-account"
+    output = UnifiedStandardOutput(account_assets=assets, status=ExecutionStatus.NOOP, channel_type=TradeChannel.GM)
+    variables = build_execute_results_feishu_card(source, output)["data"]["template_variable"]
+    assert (variables["total_assets"], variables["available_cash"], variables["market_value"]) == (
+        "100000.00",
+        "30000.00",
+        "60000.00",
+    )
+    assert variables["positions"][0]["rate"] == "60.00%"
 
 
 def test_place_order_fails_fast_when_sell_close_exceeds_available_long(monkeypatch: Any) -> None:
