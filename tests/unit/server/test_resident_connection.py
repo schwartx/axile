@@ -220,3 +220,27 @@ def test_reconciliation_failure_does_not_advertise_ready(monkeypatch):
     # SDK 线程已存活也不能绕过对账失败，下一次读取不能当作连接恢复成功。
     with pytest.raises(resident.AccountConnectionUnavailable):
         ensure(reconcile=reconcile)
+
+
+def test_explicit_reconnect_releases_manual_intent_even_when_new_constructor_fails(monkeypatch):
+    now, state, _, closed, _, ensure = harness(monkeypatch)
+    ensure()
+    resident.disconnect_resident_executor(state, close=closed.append)
+    attempts = []
+
+    def fail():
+        attempts.append(True)
+        raise TimeoutError("constructor timeout")
+
+    def retry(**kwargs):
+        return resident.ensure_resident_connection(
+            state, account(), create=fail, close=lambda _: None, initialize=lambda _: None, **kwargs
+        )
+
+    with pytest.raises(TimeoutError):
+        retry(force=True, allow_recovery=True)
+    assert not state.disconnected
+    now[0] = 30
+    with pytest.raises(TimeoutError):
+        retry(allow_recovery=True)
+    assert len(attempts) == 2

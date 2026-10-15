@@ -58,19 +58,26 @@ def _observe(state: ResidentConnectionState, status: ConnectionStatus, message: 
     logger.bind(account_id=state.account_id).info("账户会话状态更新 status={}", status)
     if state.connection_observer is not None:
         labels = {
-            "connecting": "正在连接",
-            "recovering": "正在恢复连接",
-            "cooldown": "连接恢复冷却中",
+            "connecting": "正在准备",
+            "recovering": "正在恢复",
+            "cooldown": "暂不可用",
             "disconnected": "已断开连接",
         }
         evidence = None
+        source = getattr(state.connection_error, "_connection_observation", None)
+        presentation = source.presentation if isinstance(source, ConnectionObservation) else None
+        label = source.label if isinstance(source, ConnectionObservation) and source.label else labels.get(status)
         if status == "cooldown" and state.connection_error is not None:
-            evidence = {
-                "technical_detail": str(state.connection_error),
-                "traceback": "".join(traceback.format_exception(state.connection_error)),
-                "retry_after_seconds": max(0, math.ceil(state.next_connect_at - clock_monotonic())),
-            }
-        state.connection_observer(ConnectionObservation(status, clock_now_iso(), message, evidence, labels.get(status)))
+            evidence = dict(source.error or {}) if isinstance(source, ConnectionObservation) else {}
+            trace = "".join(traceback.format_exception(state.connection_error))
+            evidence.setdefault("technical_detail", str(state.connection_error))
+            evidence.setdefault("traceback", trace)
+            if trace != evidence["traceback"]:
+                evidence["propagation_traceback"] = trace
+            evidence["retry_after_seconds"] = max(0, math.ceil(state.next_connect_at - clock_monotonic()))
+        state.connection_observer(
+            ConnectionObservation(status, clock_now_iso(), message, evidence, label, presentation)
+        )
 
 
 def _unavailable(state: ResidentConnectionState) -> AccountConnectionUnavailable:
@@ -128,6 +135,8 @@ def resolve_resident_executor(
     if state.executor is not None:
         return state.executor
     _check_attempt(state, allow_recovery=allow_recovery, force=force)
+    if force:
+        state.disconnected = False
     _observe(state, "recovering" if state.connection_attempted else "connecting")
     try:
         state.executor = create()
@@ -202,7 +211,8 @@ def ensure_resident_connection(
         if state.connected_once and state.connection_error is None:
             _failed(state, ConnectionError("账户交易连接已断开"))
         _check_attempt(state, allow_recovery=allow_recovery, force=force)
-        _observe(state, "recovering" if state.connection_attempted else "connecting")
+        if had_executor:
+            _observe(state, "recovering" if state.connection_attempted else "connecting")
         try:
             state.connected_once = False
             if state.connection_attempted and had_executor:

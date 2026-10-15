@@ -23,6 +23,7 @@ from axile.executor.termination import ExecutionTerminated, ExecutionTermination
 from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
 from axile.server.db.models.account import AccountContext, AccountSnapshot
+from axile.server.db.models.account_connection import AccountConnectionPublic
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.orders import OrdersChannel
 from axile.server.execution.worker_backend.protocol import (
@@ -684,6 +685,13 @@ class WorkerBackendManager:
         force_reconnect: bool = False,
     ) -> dict[str, object]:
         """创建或复用账户 Worker 中的长连接执行器。"""
+        current = self._current_session(account)
+        if not force_reconnect and not current.worker_alive and current.retry_after_seconds:
+            from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+            raise AccountConnectionUnavailable(
+                "账户连接恢复冷却中，请稍后重试", retry_after=current.retry_after_seconds
+            )
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="prepare",
@@ -727,6 +735,8 @@ class WorkerBackendManager:
 
     def _order_command_blocking(self, account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
         """委托通路沿用当前配置的连接观察身份，冷查询登录也能回报连接状态。"""
+        self._check_read_session(account)
+        timeout = self._query_timeout(account)
         handle = self._get_or_create_worker(_require_account_id(account))
         if handle.orders is None:
             raise WorkerBackendExecutionError("当前委托通路不可用")
@@ -740,26 +750,60 @@ class WorkerBackendManager:
         self._bind_connection_request(handle, request)
         try:
             return handle.orders.request(
-                {**payload, "account": request.account_payload, "connection_binding": request.connection_binding}
+                {**payload, "account": request.account_payload, "connection_binding": request.connection_binding},
+                timeout=timeout,
             )
         except TimeoutError as exc:
-            from axile.server.connection_runtime import current_session
-            from axile.server.connection_state import connection_config_key, end_connection_instance
-            from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
-
-            current = current_session(
-                _require_account_id(account), connection_config_key(account.trade_channel, account.account_config)
-            )
-            if current.status in {"uninitialized", "connecting", "recovering"} and not (
-                get_running_execution_id(_require_account_id(account))
-                or get_queued_execution_id(_require_account_id(account))
-            ):
-                end_connection_instance(handle.connection_binding, "账户连接准备超时，执行器已回收", exc)
-                self._force_drop_worker(_require_account_id(account), handle)
+            self._retire_idle_order_timeout(handle, exc)
             raise
+
+    def _retire_idle_order_timeout(self, handle: _WorkerBackendHandle, error: TimeoutError) -> None:
+        """回收空闲且超时的通路；与交易命令互斥，绝不回收正在执行的账户。"""
+        from axile.server.connection_state import end_connection_instance
+        from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
+
+        if not handle.request_lock.acquire(blocking=False):
+            return
+        try:
+            if get_running_execution_id(handle.account_id) or get_queued_execution_id(handle.account_id):
+                return
+            end_connection_instance(handle.connection_binding, "账户委托请求超时，空闲执行器已回收", error)
+            self._force_drop_worker(handle.account_id, handle)
+        finally:
+            handle.request_lock.release()
+
+    @staticmethod
+    def _current_session(account: AccountContext) -> AccountConnectionPublic:
+        from axile.server.connection_runtime import current_session
+        from axile.server.connection_state import connection_config_key
+
+        return current_session(
+            _require_account_id(account), connection_config_key(account.trade_channel, account.account_config)
+        )
+
+    @staticmethod
+    def _check_read_session(account: AccountContext) -> None:
+        """已经结束的实例不能被页面读取隐式重建，主进程保留跨 worker 的恢复限制。"""
+        from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+        current = WorkerBackendManager._current_session(account)
+        if not current.worker_alive and current.status in {"unavailable", "disconnected"}:
+            raise AccountConnectionUnavailable(
+                "账户会话已结束，请显式重新连接；当前委托状态待确认", retry_after=current.retry_after_seconds
+            )
+
+    @staticmethod
+    def _query_timeout(account: AccountContext) -> float:
+        """首次读取留出独立的连接准备预算，已就绪会话沿用普通查询预算。"""
+        return _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS + (
+            0
+            if WorkerBackendManager._current_session(account).status == "ready"
+            else _DEFAULT_PREPARE_RECV_TIMEOUT_SECONDS
+        )
 
     async def get_account_assets(self, account: AccountContext) -> UnifiedAccountAssets:
         """通过账户常驻 worker 查询最新资产快照."""
+        self._check_read_session(account)
         request = WorkerBackendRequest(
             request_id=uuid4().hex,
             command="get_account_assets",
@@ -771,7 +815,7 @@ class WorkerBackendManager:
             self._request_blocking,
             _require_account_id(account),
             request,
-            _DEFAULT_PREPARE_RECV_TIMEOUT_SECONDS + _ACCOUNT_ASSET_RECV_TIMEOUT_SECONDS,
+            self._query_timeout(account),
         )
         if response.kind != "result" or response.output_payload is None:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")

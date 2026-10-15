@@ -50,7 +50,9 @@ class ConnectionObservation:
         label = self.label.strip() if isinstance(self.label, str) else None
         object.__setattr__(self, "label", (label or None) if self.status != "ok" else None)
         object.__setattr__(
-            self, "presentation", presentation_snapshot(self.presentation) if self.status == "error" else None
+            self,
+            "presentation",
+            presentation_snapshot(self.presentation) if self.status in {"error", "cooldown"} else None,
         )
         if self.status == "ok":
             object.__setattr__(self, "message", None)

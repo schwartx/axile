@@ -365,12 +365,15 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     with Session(engine) as db:
         detail = service.public_connection(db.get(Account, 1), detail=True)
         assert detail.status == "unavailable" and not detail.worker_alive
+        assert detail.retry_after_seconds > 0
         assert detail.last_failure.error["technical_detail"] == "original timeout"
         assert db.get(AccountConnectionState, 1).instance_id == ""
     newer = service.begin_connection_instance(account)
     runtime.register_session(newer, lambda: True)
     service.end_connection_instance(binding, "late old worker exit")
     assert runtime.current_session(1, newer.config_key).status == "uninitialized"
+    with Session(engine) as db:
+        assert db.get(AccountConnectionState, 1).instance_id == newer.instance_id
 
 
 def test_active_business_failure_does_not_change_connection(database):
@@ -489,6 +492,10 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
         await manager.disconnect_account(snapshot)
         assert status().status == "disconnected" and status().manually_disconnected
         await manager.drop_account(1)
+        # 模拟服务重启：新的 worker 仍须继承数据库中保存的主动断开意愿。
+        from axile.server.connection_runtime import clear_sessions
+
+        clear_sessions()
         with pytest.raises(WorkerBackendExecutionError, match="主动断开"):
             await manager.get_account_assets(snapshot)
         assert manager._workers[1].process.pid != first
@@ -535,3 +542,115 @@ def test_monitor_failure_with_live_process_becomes_unknown_without_ending_sdk(da
     assert runtime.current_session(1, binding.config_key).status == "ready"
     runtime.forget_session(1)
     assert runtime.current_session(1, binding.config_key).status == "uninitialized"
+
+
+def test_concurrent_first_requests_share_one_worker_observation_identity(database, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    from axile.server.execution.worker_backend.manager import WorkerBackendManager
+    from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
+
+    _, account = database
+    original = service.begin_connection_instance
+    calls = []
+
+    def begin(snapshot):
+        calls.append(snapshot.id)
+        return original(snapshot)
+
+    monkeypatch.setattr(service, "begin_connection_instance", begin)
+    handle = SimpleNamespace(
+        connection_binding=None, monitor=None, retired=False, process=SimpleNamespace(is_alive=lambda: True)
+    )
+    barrier = threading.Barrier(2)
+
+    def bind(index):
+        request = WorkerBackendRequest(str(index), "prepare", account.snapshot().model_dump(mode="json"), None, {})
+        barrier.wait(timeout=2)
+        WorkerBackendManager._bind_connection_request(handle, request)
+        return request.connection_binding
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        bindings = list(pool.map(bind, [1, 2]))
+    assert bindings[0] == bindings[1]
+    assert calls == [1]
+
+
+def test_host_cooldown_keeps_channel_presentation_and_original_evidence(database):
+    from axile.server import connection_runtime as runtime
+    from axile.server.execution import resident_connection as resident
+
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    runtime.register_session(binding, lambda: True)
+    collector = service.ConnectionCollector(binding)
+    original = TimeoutError("native timeout")
+    content = {"title": "渠道明确的故障", "sections": [{"fields": [{"label": "原因", "value": "访问超时"}]}]}
+    with connection_observer_scope(collector.observe):
+        monitor = ConnectionMonitor()
+    monitor.failed(original, label="渠道原始标签", presentation=content)
+    from axile.executor.connection_state import preserve_connection_failure
+
+    wrapped = RuntimeError("host wrapper")
+    preserve_connection_failure(wrapped, original)
+    state = resident.ResidentConnectionState(account_id=1, connection_observer=collector.observe_session)
+    resident._failed(state, wrapped)
+    service.consume_connection_snapshot(collector.snapshot())
+    with Session(engine) as db:
+        detail = service.public_connection(db.get(Account, 1), detail=True)
+        assert detail.status == "unavailable"
+        assert detail.label == "渠道原始标签"
+        assert detail.presentation.title == "渠道明确的故障"
+        assert detail.last_failure.presentation.title == "渠道明确的故障"
+        assert detail.error["technical_detail"] == "native timeout"
+        assert "reporting_stack" in detail.error
+        assert "host wrapper" in detail.error["propagation_traceback"]
+        assert detail.retry_after_seconds > 0
+
+
+def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(database, monkeypatch):
+    import asyncio
+
+    from axile.server import connection_runtime as runtime
+    from axile.server.execution.resident_connection import AccountConnectionUnavailable
+    from axile.server.execution.worker_backend.manager import WorkerBackendManager
+    from axile.server.execution.worker_backend.protocol import WorkerBackendResponse
+
+    _, account = database
+    now = [0.0]
+    monkeypatch.setattr(runtime, "clock_monotonic", lambda: now[0])
+    binding = service.begin_connection_instance(account)
+    runtime.register_session(binding, lambda: True)
+    service.end_connection_instance(binding, "worker timeout", TimeoutError("native timeout"))
+    manager = WorkerBackendManager()
+    requests = []
+
+    def request(*args):
+        requests.append(args[1].command)
+        return WorkerBackendResponse(request_id=args[1].request_id, kind="result", output_payload={"prepared": True})
+
+    monkeypatch.setattr(manager, "_request_blocking", request)
+
+    async def run():
+        for _ in range(2):
+            with pytest.raises(AccountConnectionUnavailable, match="显式重新连接"):
+                await manager.get_account_assets(account)
+            with pytest.raises(AccountConnectionUnavailable, match="显式重新连接"):
+                await manager.order_command(account, {"command": "query"})
+        with pytest.raises(AccountConnectionUnavailable, match="冷却") as error:
+            await manager.prepare_account(account)
+        assert error.value.retry_after == 30
+        assert requests == [] and not manager._workers
+        await manager.prepare_account(account, force_reconnect=True)
+        now[0] = 31
+        # 自动执行准备在冷却后允许恢复；页面读取仍不能隐式恢复旧会话。
+        with pytest.raises(AccountConnectionUnavailable):
+            await manager.get_account_assets(account)
+        await manager.prepare_account(account)
+        assert requests == ["prepare", "prepare"]
+
+    try:
+        asyncio.run(run())
+    finally:
+        manager.close()

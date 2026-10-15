@@ -77,3 +77,38 @@ def test_channel_timeout_drains_old_response_before_next_request_without_replayi
         channel.close()
         child.close()
         thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("activity", ["idle", "request", "running", "queued"])
+def test_order_timeout_retires_only_idle_worker(monkeypatch, activity):
+    from axile.server import connection_state
+    from axile.server.execution import registry
+
+    manager = WorkerBackendManager()
+    handle = SimpleNamespace(account_id=1, request_lock=Lock(), connection_binding=None)
+    ended, retired = [], []
+    monkeypatch.setattr(connection_state, "end_connection_instance", lambda *args: ended.append(args))
+    monkeypatch.setattr(manager, "_force_drop_worker", lambda *args: retired.append(args))
+    monkeypatch.setattr(registry, "get_running_execution_id", lambda _: "active" if activity == "running" else None)
+    monkeypatch.setattr(registry, "get_queued_execution_id", lambda _: "queued" if activity == "queued" else None)
+    if activity == "request":
+        handle.request_lock.acquire()
+    try:
+        manager._retire_idle_order_timeout(handle, TimeoutError("result unknown"))
+        assert bool(retired) == (activity == "idle")
+        assert bool(ended) == (activity == "idle")
+        assert handle.request_lock.locked() == (activity == "request")
+    finally:
+        if handle.request_lock.locked():
+            handle.request_lock.release()
+        manager.close()
+
+
+@pytest.mark.parametrize("status,budget", [("uninitialized", 90), ("connecting", 90), ("ready", 30)])
+def test_query_timeout_budget_distinguishes_cold_preparation(monkeypatch, status, budget):
+    from axile.server.db.models.account_connection import AccountConnectionPublic
+
+    monkeypatch.setattr(
+        WorkerBackendManager, "_current_session", staticmethod(lambda _: AccountConnectionPublic(status=status))
+    )
+    assert WorkerBackendManager._query_timeout(build_account()) == budget

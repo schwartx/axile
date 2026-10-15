@@ -41,7 +41,7 @@ def publish(hub, account_id=1, event="execution_started", execution_id="run"):
 def test_multiplexes_independent_snapshots_and_updates_without_per_connection_sampling(monkeypatch):
     async def scenario():
         hub, monitor = sources(monkeypatch)
-        async with aclosing(event_stream.merge_events()) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"))) as events:
             initial = {event.name: event.data for event in [await next_event(events), await next_event(events)]}
             assert initial["execution.snapshot"]["data"] == []
             assert initial["control.snapshot"]["data"][0]["account_id"] == 1
@@ -65,7 +65,7 @@ def test_slow_or_failed_initial_control_sample_does_not_block_execution_and_reco
     async def scenario():
         hub, monitor = sources(monkeypatch, sampled=False)
         monkeypatch.setattr(event_stream, "_CONTROL_TIMEOUT_SECONDS", 0.05)
-        async with aclosing(event_stream.merge_events()) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"))) as events:
             assert (await next_event(events)).name == "execution.snapshot"
             publish(hub)
             assert (await next_event(events)).name == "execution.event"
@@ -83,7 +83,7 @@ def test_control_silence_keeps_execution_running_and_recovery_starts_with_snapsh
     async def scenario():
         hub, monitor = sources(monkeypatch)
         monkeypatch.setattr(event_stream, "_CONTROL_TIMEOUT_SECONDS", 0.05)
-        async with aclosing(event_stream.merge_events()) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"))) as events:
             await next_event(events)
             await next_event(events)
             assert (await next_event(events)).name == "control.error"
@@ -186,7 +186,7 @@ def test_one_domain_exception_is_reported_without_closing_other_domain(monkeypat
     async def scenario():
         hub, _ = sources(monkeypatch)
         monkeypatch.setattr(event_stream, "control_events", fail)
-        async with aclosing(event_stream.merge_events()) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"))) as events:
             received = [await next_event(events), await next_event(events)]
             assert {event.name for event in received} == {"execution.snapshot", "control.error"}
             error = next(event for event in received if event.name == "control.error")
@@ -202,7 +202,7 @@ def test_heartbeat_and_empty_snapshots(monkeypatch):
     async def scenario():
         _, monitor = sources(monkeypatch)
         monitor.frames = {}
-        async with aclosing(event_stream.merge_events(heartbeat_seconds=0.01)) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"), heartbeat_seconds=0.01)) as events:
             snapshots = [await next_event(events), await next_event(events)]
             assert all(event.data["data"] == [] for event in snapshots)
             assert await asyncio.wait_for(anext(events), 1) is None
@@ -215,7 +215,7 @@ def test_closing_slow_connection_cleans_up_blocked_forwarders_and_all_subscripti
     async def scenario():
         hub, monitor = sources(monkeypatch)
         monkeypatch.setattr(event_stream, "_QUEUE_SIZE", 1)
-        async with aclosing(event_stream.merge_events()) as events:
+        async with aclosing(event_stream.merge_events(("execution", "control"))) as events:
             await next_event(events)
             await next_event(events)
             for index in range(100):

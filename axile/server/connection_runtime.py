@@ -49,7 +49,12 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
     """心跳只刷新采样时间，不能伪造新的渠道访问成功时间。"""
     with _lock:
         session = _sessions.get(binding.account_id)
-        if session is None or session.ended or session.instance_id != binding.instance_id or session.config_key != binding.config_key:
+        if (
+            session is None
+            or session.ended
+            or session.instance_id != binding.instance_id
+            or session.config_key != binding.config_key
+        ):
             return
         session.sampled, session.sampled_at = clock_monotonic(), clock_now_iso()
         if sequence > session.sequence:
@@ -70,6 +75,8 @@ def end_session(binding, message: str, *, failed: bool = False) -> bool:
         if session is None or session.instance_id != binding.instance_id or session.ended:
             return False
         session.ended = True
+        if failed:
+            session.retry_deadline = clock_monotonic() + 30
         session.observation = ConnectionObservation("error" if failed else "disconnected", clock_now_iso(), message)
         return True
 
@@ -114,6 +121,6 @@ def current_session(account_id: int, config_key: str) -> AccountConnectionPublic
             sampled_at=session.sampled_at,
             label=observation.label if observation and status == "unavailable" else None,
             retry_after_seconds=max(0, math.ceil(session.retry_deadline - clock_monotonic()))
-            if status == "unavailable" and alive
+            if status == "unavailable"
             else 0,
         )

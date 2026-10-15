@@ -39,7 +39,7 @@ class AccountConnectionPublic(SQLModel):
 
 
 class AccountConnectionDetail(AccountConnectionPublic):
-    """最新异常的完整详情；正常或未知时为空。"""
+    """当前故障详情及独立的历史故障；恢复后仍保留历史。"""
 
     error: dict[str, object] | None = None
     presentation: ConnectionPresentation | None = None
@@ -53,7 +53,7 @@ class AccountConnectionDetail(AccountConnectionPublic):
 
 
 class AccountConnectionState(SQLModel, table=True):
-    """配置签名、实例和序号用于拒绝旧观察，不构成历史记录。"""
+    """保存最近访问和故障；配置签名、实例和序号用于拒绝旧观察。"""
 
     __tablename__: ClassVar[str] = "account_connection_state"
     account_id: int = Field(sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), primary_key=True))
