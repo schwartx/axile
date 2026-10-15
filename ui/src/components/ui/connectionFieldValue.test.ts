@@ -62,11 +62,11 @@ describe('connectionValueError', () => {
   })
 
   it('按 GM 约束只接受裸主机端口', () => {
-    const base = { kind: 'endpoint' as const, label: '终端 RPC 地址', placeholder: '192.168.1.20:7001', constraints: gmEndpoint }
+    const base = { kind: 'endpoint' as const, label: '终端 RPC 地址', placeholder: '127.0.0.1:7001', constraints: gmEndpoint }
     expect(connectionValueError(context({ ...base, value: '127.0.0.1:7001' }))).toBeNull()
     expect(connectionValueError(context({ ...base, value: '[2001:db8::1]:7001' }))).toBeNull()
-    expect(connectionValueError(context({ ...base, value: '123213' }))).toBe('请填写终端 RPC 地址，例如 192.168.1.20:7001')
-    expect(connectionValueError(context({ ...base, value: 'tcp://host:7001' }))).toBe('请填写终端 RPC 地址，例如 192.168.1.20:7001')
+    expect(connectionValueError(context({ ...base, value: '123213' }))).toBe('请填写终端 RPC 地址，例如 127.0.0.1:7001')
+    expect(connectionValueError(context({ ...base, value: 'tcp://host:7001' }))).toBe('请填写终端 RPC 地址，例如 127.0.0.1:7001')
     expect(connectionValueError(context({ ...base, value: '999.1.1.1:7001' }))).toBe('主机地址格式不正确')
   })
 

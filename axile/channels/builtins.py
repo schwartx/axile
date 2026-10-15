@@ -295,7 +295,7 @@ def _gm_plugin() -> ChannelPlugin:
                         label="终端 RPC 地址",
                         kind="endpoint",
                         width="full",
-                        placeholder="192.168.1.20:7001",
+                        placeholder="127.0.0.1:7001",
                         help=(
                             r"先启动掘金终端。地址取自安装目录下 resources\app\gmserv.json 的 "
                             "default.hostAddr 和 default.rpcPort；异机连接需填写 Axile 可访问的 IP，"
