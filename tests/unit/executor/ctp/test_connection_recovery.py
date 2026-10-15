@@ -675,6 +675,8 @@ def test_disconnect_presentation_preserves_native_reason_through_invalidation(br
     assert observation.label == f"{kind}前置断开"
     assert "4097" in str(observation.presentation)
     assert "已失效" in str(observation.presentation)
+    assert observation.error["reason_code"] == "4097"
+    assert "_disconnected" in observation.error["reporting_stack"]
     with pytest.raises(CtpSessionRecoveryRequired) as raised:
         executor._require_active_connection()
     connection_monitor(executor).failed(raised.value)

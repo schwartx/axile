@@ -88,6 +88,41 @@ def _with_propagation_traceback(observation: ConnectionObservation, error: BaseE
     return replace(observation, error={**details, "propagation_traceback": trace})
 
 
+def _has_exception_frames(error: BaseException) -> bool:
+    """检查实际参与格式化的异常链，避免把异常摘要当成调用栈。"""
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if error.__traceback__ is not None:
+            return True
+        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if cause is None:
+            break
+        error = cause
+    return False
+
+
+def _failure_evidence(error: BaseException, message: str, raw: str) -> dict[str, object]:
+    """保存原始证据；未抛出的回调异常另存上报现场，不伪造异常栈。"""
+    formatted = getattr(error, "formatted_traceback", None)
+    details: dict[str, object] = {
+        "message": message,
+        "technical_detail": raw,
+        "traceback": formatted or "".join(traceback.format_exception(error)),
+        "exception_type": type(error).__name__,
+        "error_scope": CONNECTION_ERROR_SCOPE,
+    }
+    if not formatted and not _has_exception_frames(error):
+        details["traceback_unavailable_reason"] = "该异常在首次上报时尚未抛出，没有异常调用栈。"
+        # 去掉本函数和 failed 的内部帧，末帧定位到渠道实际的上报处。
+        details["reporting_stack"] = "".join(traceback.format_stack()[:-2])
+    for key in ("reason_code", "error_id", "status", "status_code", "return_code", "broker_message"):
+        value = getattr(error, key, None)
+        if isinstance(value, (str, int)):
+            details[key] = value
+    return details
+
+
 ConnectionObserver = Callable[[ConnectionObservation], None]
 _observer: ContextVar[ConnectionObserver | None] = ContextVar("account_connection_observer", default=None)
 
@@ -165,17 +200,7 @@ class ConnectionMonitor:
             return
         raw = str(getattr(error, "technical_detail", None) or error)
         message = str(getattr(error, "execution_error", None) or raw or type(error).__name__)
-        details: dict[str, object] = {
-            "message": message,
-            "technical_detail": raw,
-            "traceback": getattr(error, "formatted_traceback", None) or "".join(traceback.format_exception(error)),
-            "exception_type": type(error).__name__,
-            "error_scope": CONNECTION_ERROR_SCOPE,
-        }
-        for key in ("reason_code", "error_id", "status", "status_code", "return_code", "broker_message"):
-            value = getattr(error, key, None)
-            if isinstance(value, (str, int)):
-                details[key] = value
+        details = _failure_evidence(error, message, raw)
         observation = ConnectionObservation(
             "error", clock_now_iso(), message, details, label, presentation_snapshot(presentation)
         )

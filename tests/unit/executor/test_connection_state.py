@@ -23,6 +23,56 @@ def test_latest_connection_result_replays_without_old_error():
     assert len(replayed) == 1
 
 
+def test_callback_failure_records_reporting_stack_separately_from_exception_summary():
+    observations = []
+    monitor = ConnectionMonitor()
+    monitor.bind(observations.append)
+    error = RuntimeError("原生回调断开")
+    monitor.failed(error)
+    details = observations[-1].error
+    assert error.__traceback__ is None
+    assert details["traceback"] == "RuntimeError: 原生回调断开\n"
+    assert "尚未抛出" in details["traceback_unavailable_reason"]
+    assert "test_callback_failure_records_reporting_stack" in details["reporting_stack"]
+    assert "_failure_evidence" not in details["reporting_stack"]
+    first_stack = details["reporting_stack"]
+    with pytest.raises(RuntimeError):
+        with monitor.connecting():
+            raise error
+    assert observations[-1].error["reporting_stack"] == first_stack
+    assert "test_callback_failure_records_reporting_stack" in observations[-1].error["propagation_traceback"]
+
+
+def test_raised_failure_preserves_exception_chain_without_substituting_reporting_stack():
+    observations = []
+    monitor = ConnectionMonitor()
+    monitor.bind(observations.append)
+    try:
+        try:
+            raise OSError("SDK 根因")
+        except OSError as cause:
+            raise ConnectionError("渠道包装") from cause
+    except ConnectionError as error:
+        monitor.failed(error)
+    details = observations[-1].error
+    assert "SDK 根因" in details["traceback"]
+    assert "渠道包装" in details["traceback"]
+    assert "test_raised_failure" in details["traceback"]
+    assert "reporting_stack" not in details
+    assert "traceback_unavailable_reason" not in details
+
+
+def test_remote_formatted_traceback_is_preserved_verbatim():
+    observations = []
+    monitor = ConnectionMonitor()
+    monitor.bind(observations.append)
+    error = RuntimeError("远程错误")
+    error.formatted_traceback = 'Traceback (most recent call last):\n  File "remote.py", line 42\nRuntimeError: 原因\n'
+    monitor.failed(error)
+    assert observations[-1].error["traceback"] == error.formatted_traceback
+    assert "reporting_stack" not in observations[-1].error
+
+
 def test_only_connection_boundary_marks_errors_and_wrapping_keeps_scope():
     monitor = ConnectionMonitor()
     business = ValueError("资金查询业务拒绝")

@@ -716,6 +716,62 @@ const problem = (name = 'A') => ({ status: 'error', observed_at: '2026-10-14T14:
   presentation: { title: `本次连接问题-${name}`, summary: `已确认的说明-${name}`, sections: [{ title: '现场事实', text: '渠道自由说明', fields: [{ label: '查找结果', value: `本次事实-${name}` }] }, { title: '检查顺序', steps: ['核对账户', '检查访问权限'] }], actions: [{ label: '检查连接设置', intent: 'open_connection_settings' }] },
   error: { technical_detail: raw(name), traceback: raw(name) } })
 
+for (const width of [1100, 375]) test(`connection technical evidence separates callback stack and metadata at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 850 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const message = 'CTP 交易前置已断开'
+  const technical = 'CTP 交易前置断线: 4097'
+  const stack = '  File "spi.py", line 25, in OnFrontDisconnected\n    self.owner._disconnected("交易", reason)\n  File "ctp_execute.py", line 803, in _disconnected\n    connection_monitor(self).failed(error)\n'
+  const traceback = `axile.executor.ctp.ctp_execute.CtpSessionRecoveryRequired: ${technical}\n`
+  await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...problem(), message,
+    error: { message, technical_detail: technical, traceback, exception_type: 'CtpSessionRecoveryRequired',
+      error_scope: 'account_connection', reason_code: '4097', reporting_stack: stack,
+      traceback_unavailable_reason: '该异常在首次上报时尚未抛出，没有异常调用栈。', extra: { source: 'callback' } } } }))
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog')
+  const content = dialog.getByRole('region', { name: '完整技术详情' })
+  await expect(content).not.toBeVisible()
+  await dialog.getByRole('button', { name: '技术详情', exact: true }).click()
+  await expect(content.getByText(message, { exact: true })).toHaveCount(1)
+  await expect(content.getByText('异常类型', { exact: true })).toBeVisible()
+  await expect(content.getByText('4097', { exact: true })).toBeVisible()
+  await expect(content.getByText('账户连接', { exact: true })).toBeVisible()
+  await expect(content.getByText('该异常在首次上报时尚未抛出，没有异常调用栈。')).toBeVisible()
+  await expect(content.getByRole('heading', { name: '原始异常栈' })).toHaveCount(0)
+  const code = content.getByLabel('上报现场栈', { exact: true })
+  expect(await code.textContent()).toBe(stack)
+  await content.getByRole('button', { name: '复制上报现场栈' }).click()
+  expect(await copied(page)).toBe(stack)
+  await expect(content.getByLabel('extra')).toContainText('callback')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await expect(dialog.getByRole('button', { name: '关闭详情' })).toBeInViewport()
+  await page.screenshot({ path: testInfo.outputPath(`connection-technical-${width}.png`) })
+  await dialog.getByRole('button', { name: '技术详情', exact: true }).click()
+  await expect(content).not.toBeVisible()
+  await dialog.getByRole('button', { name: '复制连接详情' }).click()
+  const full = await copied(page)
+  expect(full).toContain(stack)
+  expect(full).toContain(traceback)
+  expect(full).toContain('"source": "callback"')
+})
+
+test('connection original and propagated tracebacks retain indentation, causes and tail evidence', async ({ page }) => {
+  const original = 'Traceback (most recent call last):\n  File "sdk.py", line 42, in connect\n    raise OSError("SDK root")\nOSError: SDK root\n'
+  const propagated = `${original}\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File "worker.py", line 12, in run\n    raise RuntimeError("wrapper") from error\nRuntimeError: wrapper-tail\n`
+  await page.route('**/api/v1/account/7/connection', route => route.fulfill({ json: { ...problem(), error: {
+    technical_detail: original, traceback: original, propagation_traceback: propagated } } }))
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: '技术详情', exact: true }).click()
+  expect(await dialog.getByLabel('原始异常栈', { exact: true }).textContent()).toBe(original)
+  expect(await dialog.getByLabel('异常传播栈', { exact: true }).textContent()).toBe(propagated)
+  await expect(dialog).not.toContainText('未包含异常调用帧')
+  await dialog.getByRole('button', { name: '复制异常传播栈' }).click()
+  expect(await copied(page)).toBe(propagated)
+})
+
 test('connection problem displays channel blocks, freezes one read and copies full folded evidence', async ({ page }) => {
   let reads = 0, name = 'A'
   await page.route('**/api/v1/account/7/connection', route => { reads++; return route.fulfill({ json: problem(name) }) })

@@ -770,7 +770,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._market_connected = False
             self._connection_error = f"CTP {kind}前置已断开"
             self._invalidate_connection(
-                f"CTP {kind}前置断线: {reason}",
+                CtpSessionRecoveryRequired(
+                    f"CTP {kind}前置断线: {reason}",
+                    execution_error=self._connection_error,
+                    reason_code=str(reason),
+                ),
                 connection_failure=True,
                 label=f"{kind}前置断开",
                 presentation=lambda: self._session_problem(

@@ -1,28 +1,27 @@
-import { useId, useState } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
+import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
 import { Link } from '@/components/ui/nav'
 import type { ErrorInfo } from '@/lib/errorInfo'
 import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
 import { useErrorPresentation } from '@/lib/errorPresentation'
+import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
 
 export type ConnectionSelection = { accountId: number; requestId: number } & (
   { kind: 'loading' } | { kind: 'detail'; detail: AccountConnectionDetail } | { kind: 'failure'; info: ErrorInfo; error?: unknown }
 )
 
-function TechnicalDetails({ text }: { text: string }) {
+function TechnicalDetails({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const id = useId()
-  if (!text) return null
   return <section className="min-w-0 border-t border-line py-4">
     <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen(value => !value)}
       className="cursor-pointer text-[13px] text-ink-2 focus-visible:outline-2 focus-visible:outline-accent">
       <span aria-hidden="true">{open ? '▾' : '▸'}</span> 技术详情
     </button>
     <div id={id} inert={!open} aria-hidden={!open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${open ? 'visible grid-rows-[1fr]' : 'invisible grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden"><pre tabIndex={0} aria-label="完整技术详情"
-        className="mt-3 max-w-full overflow-x-auto whitespace-pre font-mono text-[12px] leading-relaxed focus-visible:outline-2 focus-visible:outline-accent">{text}</pre></div>
+      <div className="min-h-0 overflow-hidden"><div role="region" aria-label="完整技术详情" className="mt-3">{children}</div></div>
     </div>
   </section>
 }
@@ -43,7 +42,7 @@ export function AccountConnectionProblemModal({ selection, onClose }: { selectio
       {selection?.kind === 'failure' && !failure.local && <p role="status" className="text-ink-3">连接详情暂不可用</p>}
       {selection?.kind === 'failure' && failure.local && <>
         <p>未能读取账户 {selection.accountId} 的连接详情。关闭后再次打开可重新读取。</p>
-        <TechnicalDetails key={selection.requestId} text={selection.info.text} />
+        <TechnicalDetails key={selection.requestId}><ErrorDetailsContent info={selection.info} /></TechnicalDetails>
       </>}
       {view && <>
         <p className="whitespace-pre-wrap text-[15px]">{view.summary}</p>
@@ -61,7 +60,7 @@ export function AccountConnectionProblemModal({ selection, onClose }: { selectio
         {!!view.actions.length && <div className="flex flex-wrap gap-3">{view.actions.map((action, i) =>
           <Link key={i} to={`/accounts/${selection!.accountId}/edit/connection`} onClick={onClose}
             className="rounded-lg border border-line px-3 py-2 text-accent focus-visible:outline-2 focus-visible:outline-accent">{action.label}</Link>)}</div>}
-        <TechnicalDetails key={selection!.requestId} text={view.technical} />
+        {view.technicalInfo && <TechnicalDetails key={selection!.requestId}><ConnectionTechnicalContent info={view.technicalInfo} /></TechnicalDetails>}
       </>}
     </div>
   </CenteredModal>

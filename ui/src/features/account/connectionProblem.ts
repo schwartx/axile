@@ -1,5 +1,6 @@
 import type { AccountConnection, AccountConnectionDetail, ConnectionPresentation } from '@/types/api'
 import { errorValueText } from '@/lib/errorInfo'
+import { connectionTechnicalDetails } from '@/features/account/connectionTechnicalDetails'
 
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -47,5 +48,5 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   const copy = [title, summary, ...facts.map(field => `${field.label}：${field.value}`), ...sections.flatMap(section => [section.title, section.text,
     ...(section.fields ?? []).map(field => `${field.label}：${field.value}`), ...(section.steps ?? []).map((step, i) => `${i + 1}. ${step}`)]),
   ...actions.map(action => action.label), technical].filter(Boolean).join('\n\n')
-  return { title, summary, facts, sections, actions, technical, copy }
+  return { title, summary, facts, sections, actions, technical, technicalInfo: connectionTechnicalDetails(detail), copy }
 }
