@@ -187,3 +187,46 @@ def test_table_snapshot_is_lazy_and_survives_later_failure(client, service, monk
     service.expires[job.validation_id] = 0
     assert client.get(f"/api/v1/channel-validations/{job.validation_id}/steps/query_orders/table").status_code == 404
     assert job.validation_id not in service.tables
+
+
+@pytest.mark.parametrize(
+    "draft, expected_password",
+    [
+        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, None),
+        ({"investor_id": "draft-account"}, CONFIG["password"]),
+        ({"password": "new-password", "investor_id": "draft-account"}, "new-password"),
+    ],
+)
+def test_existing_account_uses_draft_and_saved_secrets_without_saving(
+    client, service, monkeypatch, draft, expected_password
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from axile.server.api.deps import get_db
+
+    stored = SimpleNamespace(trade_channel="ctp", account_config=CONFIG.copy())
+    session = SimpleNamespace(get=AsyncMock(return_value=stored), commit=AsyncMock())
+
+    async def db():
+        yield session
+
+    client.app.dependency_overrides[get_db] = db
+    spawn = Mock()
+    monkeypatch.setattr(service, "_start", spawn)
+    response = client.post("/api/v1/account/42/connection-validation", json={"account_config": draft})
+    if expected_password is None:
+        assert response.status_code == 422
+        spawn.assert_not_called()
+        assert stored.account_config == CONFIG
+        session.commit.assert_not_called()
+        return
+    assert response.status_code == 202
+    config = spawn.call_args.args[1]
+    assert config["password"] == expected_password
+    assert config["auth_code"] == CONFIG["auth_code"]
+    assert config["investor_id"] == "draft-account"
+    assert stored.account_config == CONFIG
+    session.commit.assert_not_called()
+    assert "private-password" not in response.text
+    assert "new-password" not in response.text
