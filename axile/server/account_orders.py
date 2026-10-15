@@ -64,7 +64,7 @@ def _inline_command(account: AccountContext, payload: dict[str, Any]) -> dict[st
     assert account.id is not None
     executor = create_executor_instance(account, initialize=False)
     try:
-        with order_control_scope(executor, account, providers.active_guard(account.id)):
+        with order_control_scope(executor, account, providers.active_guard(account.id), command=payload["command"]):
             if getattr(executor, "_requires_connection_initialization", False):
                 initialize_executor_instance(executor)
             return run_order_command(executor, payload)

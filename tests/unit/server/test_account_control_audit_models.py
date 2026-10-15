@@ -35,6 +35,8 @@ def test_account_control_event_schema_supports_audit_drill_down_queries() -> Non
         "account_id",
         "control_date",
         "execution_id",
+        "context_kind",
+        "source",
         "seq",
         "channel",
         "operation",
@@ -51,6 +53,8 @@ def test_account_control_event_schema_supports_audit_drill_down_queries() -> Non
     assert delta_columns == {
         "account_id",
         "execution_id",
+        "context_kind",
+        "source",
         "control_date",
         "bucket_type",
         "bucket_start",

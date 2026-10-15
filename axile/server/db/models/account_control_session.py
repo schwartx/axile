@@ -2,7 +2,7 @@
 
 from typing import ClassVar
 
-from sqlalchemy import Column, ForeignKey, Integer
+from sqlalchemy import Column, ForeignKey, Integer, Text
 from sqlmodel import Field, SQLModel
 
 
@@ -16,6 +16,8 @@ class AccountControlSession(SQLModel, table=True):
         sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), nullable=False, index=True)
     )
     execution_id: str
+    context_kind: str = Field(default="unknown", sa_column=Column(Text, nullable=False, server_default="unknown"))
+    source: str = Field(default="unknown", sa_column=Column(Text, nullable=False, server_default="unknown"))
     timezone: str
     started_at_ms: int
     finished_at_ms: int | None = None

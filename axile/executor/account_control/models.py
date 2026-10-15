@@ -31,6 +31,25 @@ class _AccountControlBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AccountControlContextKind(str, Enum):
+    """区分交易执行与独立账户操作，未知历史上下文不推测归属。"""
+
+    EXECUTION = "execution"
+    ACCOUNT_OPERATION = "account_operation"
+    UNKNOWN = "unknown"
+
+
+class AccountControlSource(str, Enum):
+    """记录受控调用的发起来源，独立于共享额度的运行时。"""
+
+    ALGORITHM = "algorithm"
+    ORDER_QUERY = "order_query"
+    MANUAL_CANCEL = "manual_cancel"
+    CURRENT_ORDERS = "current_orders"
+    INSTRUMENT_CATALOG = "instrument_catalog"
+    UNKNOWN = "unknown"
+
+
 class AccountControlBucketType(str, Enum):
     """
     定义计数器使用的时间桶类型.
@@ -434,7 +453,11 @@ class AccountControlCounterDeltaWrite(_AccountControlBaseModel):
     account_id : StrictInt
         账户 ID。
     execution_id : StrictStr
-        执行会话 ID。
+        控制上下文 ID，沿用历史字段名。
+    context_kind : AccountControlContextKind
+        所属上下文类型。
+    source : AccountControlSource
+        本条计数增量的调用来源。
     control_date : StrictStr
         控制日期。
     bucket_type : AccountControlBucketType
@@ -455,6 +478,8 @@ class AccountControlCounterDeltaWrite(_AccountControlBaseModel):
 
     account_id: StrictInt = Field(ge=1)
     execution_id: StrictStr
+    context_kind: AccountControlContextKind = AccountControlContextKind.UNKNOWN
+    source: AccountControlSource = AccountControlSource.UNKNOWN
     control_date: StrictStr
     bucket_type: AccountControlBucketType
     bucket_start: StrictStr
@@ -484,7 +509,11 @@ class AccountControlEventWrite(_AccountControlBaseModel):
     control_date : StrictStr
         控制日期。
     execution_id : StrictStr
-        执行会话 ID。
+        控制上下文 ID，沿用历史字段名。
+    context_kind : AccountControlContextKind
+        所属上下文类型。
+    source : AccountControlSource
+        本次调用的发起来源。
     seq : StrictInt
         当前执行内的事件顺序号。
     channel : TradeChannel
@@ -512,6 +541,8 @@ class AccountControlEventWrite(_AccountControlBaseModel):
     account_id: StrictInt = Field(ge=1)
     control_date: StrictStr
     execution_id: StrictStr
+    context_kind: AccountControlContextKind = AccountControlContextKind.UNKNOWN
+    source: AccountControlSource = AccountControlSource.UNKNOWN
     seq: StrictInt = Field(ge=0)
     channel: TradeChannel
     operation: StrictStr

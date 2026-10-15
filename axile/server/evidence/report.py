@@ -13,6 +13,7 @@ from typing import Any
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
 from axile.server.evidence.models import EvidenceSnapshot, ExecutionEvidence
+from axile.server.evidence.records import normalize_result_records
 from axile.server.execution.legacy_compat import normalize_legacy_result
 
 _TASK_LABELS = {
@@ -71,7 +72,7 @@ def result_payload(item: ExecutionEvidence) -> tuple[dict[str, Any], str]:
             return as_dict(normalize_legacy_result(raw)), "record.json#/raw_result"
     for artifact in item.artifacts:
         if artifact["artifact_type"] == "execution_summary":
-            return as_dict(normalize_legacy_result(artifact["content"])), f"artifacts.json#id={artifact['id']}"
+            return as_dict(normalize_legacy_result(artifact["content"])), f"artifacts.json#id={artifact['id']}/content"
     return {}, "unavailable"
 
 
@@ -87,44 +88,6 @@ def reconciliation(item: ExecutionEvidence, result: dict[str, Any]) -> tuple[dic
     if isinstance(result.get("reconciliation"), dict):
         return result["reconciliation"], "record.json#/raw_result/reconciliation"
     return {}, "unavailable"
-
-
-def order_trade_rows(item: ExecutionEvidence, result: dict[str, Any], source: str) -> tuple[list[dict], list[dict]]:
-    """原生订单与成交分别导出，保持未知状态和稳定原生关联。"""
-    orders: list[dict] = []
-    trades: list[dict] = []
-    symbols = as_dict(result.get("symbol_results"))
-    groups = [(symbol, as_dict(value)) for symbol, value in symbols.items()]
-    if isinstance(result.get("orders"), list) or isinstance(result.get("trades"), list):
-        groups.append(("", result))
-    seen_orders: set[str] = set()
-    seen_trades: set[str] = set()
-    for symbol, data in groups:
-        _append_rows(orders, seen_orders, data.get("orders"), symbol, source, "order_id")
-        _append_rows(trades, seen_trades, data.get("trades"), symbol, source, "trade_id")
-    return orders, trades
-
-
-def _append_rows(target: list[dict], seen: set[str], values: Any, symbol: str, source: str, identity: str) -> None:
-    if not isinstance(values, list):
-        return
-    for index, raw in enumerate(values):
-        if not isinstance(raw, dict):
-            continue
-        # 仅去重有稳定身份的相同快照。缺失身份时，不能猜测两笔相同成交是重复回报。
-        key = json.dumps([symbol, raw], ensure_ascii=False, sort_keys=True)
-        if raw.get(identity) and key in seen:
-            continue
-        if raw.get(identity):
-            seen.add(key)
-        target.append(
-            {
-                **raw,
-                "symbol": raw.get("symbol") or symbol,
-                "source_path": source,
-                "source_record_id": raw.get(identity) or index,
-            }
-        )
 
 
 def _coverage(item: ExecutionEvidence, task_status: str) -> dict[str, Any]:
@@ -206,7 +169,8 @@ def execution_report(item: ExecutionEvidence) -> tuple[dict[str, Any], list[dict
     """将任务、业务结论、持仓核对和证据覆盖情况分开输出。"""
     result, source = result_payload(item)
     recon, recon_source = reconciliation(item, result)
-    orders, trades = order_trade_rows(item, result, source)
+    order_records, trade_records = normalize_result_records(result, source)
+    orders, trades = order_records.rows, trade_records.rows
     task_status = (item.intent or {}).get("status") or result.get("task_status") or "UNKNOWN"
     raw_rows = recon.get("symbols")
     rows = raw_rows if isinstance(raw_rows, list) else []
@@ -220,6 +184,8 @@ def execution_report(item: ExecutionEvidence) -> tuple[dict[str, Any], list[dict
     report = {
         "key": item.key,
         "execution_id": item.execution_id,
+        "context_kind": item.context_kind,
+        "sources": item.sources,
         "task_status": task_status,
         "output_status": result.get("status"),
         "business_outcome": result.get("outcome") or "unknown",
@@ -228,8 +194,13 @@ def execution_report(item: ExecutionEvidence) -> tuple[dict[str, Any], list[dict
         "selection_reasons": item.selection_reasons,
         "created_at": (item.intent or item.record or {}).get("created_at"),
         "finished_at": (item.intent or {}).get("finished_at"),
-        "orders": len(orders),
-        "trades": len(trades),
+        "orders": order_records.count,
+        "trades": trade_records.count,
+        "order_snapshots": len(orders),
+        "trade_snapshots": len(trades),
+        "unidentified_order_snapshots": order_records.unidentified,
+        "unidentified_trade_snapshots": trade_records.unidentified,
+        "record_variants": {"orders": order_records.variants, "trades": trade_records.variants},
         "known_pending_order_ids": known_pending,
         "unknown_order_status_ids": unknown_orders,
         "order_scope": "orders_observed_in_this_execution; not_all_current_account_orders",
@@ -272,7 +243,7 @@ def execution_markdown(report: dict[str, Any], rows: list[dict]) -> str:
         "",
         f"任务：{markdown_cell(state)}；业务结论：{markdown_cell(outcome)}。",
         f"已记录订单 {report['orders']} 笔，成交记录 {report['trades']} 笔。",
-        f"已知仍活跃订单：{markdown_cell(report['known_pending_order_ids'])}；状态未知订单：{markdown_cell(report['unknown_order_status_ids'])}。",
+        f"曾观察到的活跃订单：{markdown_cell(report['known_pending_order_ids'])}；状态未知订单：{markdown_cell(report['unknown_order_status_ids'])}。",
         "以上订单范围限本次执行，不代表导出时账户全部挂单。",
         f"账户持仓来源：{markdown_cell(report['account_snapshot_sources'])}；账户快照退化时，对账中的单合约持仓可能来自执行内较早确认的回报。",
         "",
@@ -287,6 +258,22 @@ def execution_markdown(report: dict[str, Any], rows: list[dict]) -> str:
     )
     if not rows:
         lines.append("\n没有可用的逐合约持仓对账，不能从任务成功推断成交或到位。")
+    if report["record_variants"]["orders"] or report["record_variants"]["trades"]:
+        lines.extend(
+            [
+                "",
+                f"同一原生身份存在不同快照：订单快照 {report['order_snapshots']} 行，成交快照 {report['trade_snapshots']} 行。",
+                "笔数按原生身份统计；不同快照和各自来源保留在 CSV，差异索引见 manifest.json 的 record_variants。",
+            ]
+        )
+    if report["unidentified_order_snapshots"] or report["unidentified_trade_snapshots"]:
+        lines.extend(
+            [
+                "",
+                f"身份不足的订单快照 {report['unidentified_order_snapshots']} 行、成交快照 {report['unidentified_trade_snapshots']} 行，",
+                "每行分别计数；缺少合约或稳定编号时不能确认是否为同一笔记录。",
+            ]
+        )
     if report["problems"]:
         lines.extend(["", "| 合约 | 原因码 | 同步返回码 | 异步错误码 | 阶段 | 依据 |", "|---|---|---|---|---|---|"])
         lines.extend(
@@ -317,7 +304,7 @@ def execution_markdown(report: dict[str, Any], rows: list[dict]) -> str:
 def control_summary(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
     """按事件事实汇总，外层撤单与原生撤单分别列示，绝不相加。"""
     counts: Counter = Counter()
-    for item in snapshot.executions.values():
+    for item in snapshot.iter_contexts():
         for row in item.controls:
             if snapshot.window is not None and not snapshot.window.contains_ms(row["occurred_at_ms"]):
                 continue
@@ -335,6 +322,29 @@ def control_summary(snapshot: EvidenceSnapshot) -> list[dict[str, Any]]:
     ]
 
 
+def account_operation_report(item: ExecutionEvidence) -> dict[str, Any]:
+    """账户操作只报告控制事实，不套用成交结论和执行附件覆盖规则。"""
+    issues = []
+    if any(row.get("status") != "closed" for row in item.sessions):
+        issues.append("control_session_not_cleanly_finished")
+    if "counter_bucket_context_time_assumed" in item.selection_reasons:
+        issues.append("control_counter_activity_time_unknown")
+    return {
+        "context_id": item.key,
+        "context_kind": item.context_kind,
+        "sources": item.sources,
+        "selection_reasons": item.selection_reasons,
+        "events": len(item.controls),
+        "counter_rows": len(item.counters),
+        "sessions": len(item.sessions),
+        "coverage": {
+            "read_complete": True,
+            "issues": issues,
+            "audit_delivery": "best_effort",
+        },
+    }
+
+
 def index_markdown(snapshot: EvidenceSnapshot, reports: list[dict[str, Any]], account_name: str) -> str:
     """总摘要将每日统计范围和整次执行上下文的区别写清。"""
     scope = snapshot.window.describe() if snapshot.window else {"basis": "explicit_execution"}
@@ -344,6 +354,7 @@ def index_markdown(snapshot: EvidenceSnapshot, reports: list[dict[str, Any]], ac
         f"账户：{markdown_cell(account_name)}。",
         f"数据库快照：{snapshot.snapshot_at}；选择范围：{markdown_cell(scope)}。",
         "各执行目录保留整次执行上下文；日期统计只计算窗口内的控制事件。",
+        f"交易执行及未知历史执行上下文 {len(snapshot.executions)} 个；独立账户操作上下文 {len(snapshot.account_operations)} 个。",
         "",
         "| 执行 | 任务 | 业务结论 | 订单 | 成交 | 材料 |",
         "|---|---|---|---:|---:|---|",
@@ -358,6 +369,7 @@ def index_markdown(snapshot: EvidenceSnapshot, reports: list[dict[str, Any]], ac
         [
             "",
             "控制统计：control-summary.csv 按 control_date、操作、决策、结果和 counted 分组。",
+            "控制统计覆盖交易执行和独立账户操作；账户操作见 account-operations/contexts.jsonl 及该目录内审计文件，不占交易执行数量限额。",
             "这是本地控制事件口径；放行不等于柜台接受，报单不等于成交。",
             "cancel_order 和 cancel_order_ctp 独立列示；日/分钟/合约计数增量不重复累计。",
             "counter-deltas.jsonl 保留原始窗口和作用域，供逐项对照。",

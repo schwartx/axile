@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -144,6 +145,8 @@ class ExecutionEvidence:
     controls: list[dict[str, Any]] = field(default_factory=list)
     counters: list[dict[str, Any]] = field(default_factory=list)
     sessions: list[dict[str, Any]] = field(default_factory=list)
+    context_kind: str = "unknown"
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -155,3 +158,9 @@ class EvidenceSnapshot:
     window: EvidenceWindow | None = None
     snapshot_at: str = field(default_factory=lambda: clock_now(tz=UTC).isoformat())
     source_counts: dict[str, int] = field(default_factory=dict)
+    account_operations: dict[str, ExecutionEvidence] = field(default_factory=dict)
+
+    def iter_contexts(self) -> Iterator[ExecutionEvidence]:
+        """遍历两类材料，控制统计与关联日志均不能遗漏账户操作。"""
+        yield from self.executions.values()
+        yield from self.account_operations.values()

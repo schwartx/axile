@@ -21,10 +21,12 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.context import controlled_source
 from axile.executor.account_control.diagnostics import AccountControlHit, operation_label
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.models import (
     AccountControlBucketType,
+    AccountControlContextKind,
     AccountControlCounterDeltaWrite,
     AccountControlDecision,
     AccountControlEventWrite,
@@ -32,6 +34,7 @@ from axile.executor.account_control.models import (
     AccountControlPolicy,
     AccountControlScopePolicy,
     AccountControlScopeType,
+    AccountControlSource,
     AccountControlTriggerBehavior,
 )
 from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
@@ -353,6 +356,8 @@ class AccountControlGuard:
         sleep: Callable[[float], None] | None = None,
         wait_poll_interval_ms: int = 100,
         termination_checkpoint: Callable[[str | None], None] | None = None,
+        context_kind: AccountControlContextKind = AccountControlContextKind.EXECUTION,
+        source: AccountControlSource = AccountControlSource.ALGORITHM,
     ) -> None:
         self.instance_id = uuid4().hex
         self.monitor_incomplete = False
@@ -361,6 +366,8 @@ class AccountControlGuard:
         self._monitor_waits: dict[int, dict[str, object]] = {}
         self.account_id = account_id
         self.execution_id = execution_id
+        self.context_kind = context_kind
+        self.source = source
         self.channel = channel
         self.policy = policy
         self.baseline = baseline
@@ -377,6 +384,9 @@ class AccountControlGuard:
         self._events: list[AccountControlEventWrite] = []
         self._account_counters: dict[AccountCounterKey, int] = {}
         self._symbol_counters: dict[SymbolCounterKey, int] = {}
+        # 额度继续按操作合并；刷盘时按调用来源拆分，二者总量必须一致。
+        self._account_counter_sources: dict[tuple[AccountCounterKey, AccountControlSource], int] = {}
+        self._symbol_counter_sources: dict[tuple[SymbolCounterKey, AccountControlSource], int] = {}
         self._group_counters: dict[GroupCounterKey, int] = {}
         snapshot = AccountControlRecentAllowedSnapshot() if recent_allowed_snapshot is None else recent_allowed_snapshot
         self._recent_account_allowed_at: dict[RecentAccountKey, int] = dict(snapshot.account_timestamps)
@@ -797,6 +807,8 @@ class AccountControlGuard:
                 control_date=control_date,
                 execution_id=self.execution_id,
                 seq=seq,
+                context_kind=self.context_kind,
+                source=controlled_source(self, self.source),
                 channel=self.channel,
                 operation=operation,
                 symbol=symbol,
@@ -820,13 +832,15 @@ class AccountControlGuard:
         assert self.account_id is not None
         assert self.execution_id is not None
         counter_deltas: list[AccountControlCounterDeltaWrite] = []
-        for key in sorted(self._account_counters, key=lambda item: (item[0], item[1].value, item[2], item[3])):
+        for key, source in sorted(self._account_counter_sources):
             control_date, bucket_type, bucket_start, operation = key
-            delta_count = self._account_counters[key]
+            delta_count = self._account_counter_sources[key, source]
             counter_deltas.append(
                 AccountControlCounterDeltaWrite(
                     account_id=self.account_id,
                     execution_id=self.execution_id,
+                    context_kind=self.context_kind,
+                    source=source,
                     control_date=control_date,
                     bucket_type=bucket_type,
                     bucket_start=bucket_start,
@@ -836,7 +850,7 @@ class AccountControlGuard:
                     delta_count=delta_count,
                     delta_uid=(
                         f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
-                        f"{AccountControlScopeType.ACCOUNT.value}:-:{operation}"
+                        f"{AccountControlScopeType.ACCOUNT.value}:-:{operation}:{source.value}"
                     ),
                 )
             )
@@ -846,16 +860,15 @@ class AccountControlGuard:
         assert self.account_id is not None
         assert self.execution_id is not None
         counter_deltas: list[AccountControlCounterDeltaWrite] = []
-        for key in sorted(
-            self._symbol_counters,
-            key=lambda item: (item[0], item[1], item[2].value, item[3], item[4]),
-        ):
+        for key, source in sorted(self._symbol_counter_sources):
             control_date, symbol, bucket_type, bucket_start, operation = key
-            delta_count = self._symbol_counters[key]
+            delta_count = self._symbol_counter_sources[key, source]
             counter_deltas.append(
                 AccountControlCounterDeltaWrite(
                     account_id=self.account_id,
                     execution_id=self.execution_id,
+                    context_kind=self.context_kind,
+                    source=source,
                     control_date=control_date,
                     bucket_type=bucket_type,
                     bucket_start=bucket_start,
@@ -865,7 +878,7 @@ class AccountControlGuard:
                     delta_count=delta_count,
                     delta_uid=(
                         f"{self.execution_id}:{self.instance_id}:{control_date}:{bucket_type.value}:{bucket_start}:"
-                        f"{AccountControlScopeType.SYMBOL.value}:{symbol}:{operation}"
+                        f"{AccountControlScopeType.SYMBOL.value}:{symbol}:{operation}:{source.value}"
                     ),
                 )
             )
@@ -1212,6 +1225,8 @@ class AccountControlGuard:
     ) -> None:
         key = (control_date, bucket_type, bucket_start, operation)
         self._account_counters[key] = self._account_counters.get(key, 0) + 1
+        attribution = key, controlled_source(self, self.source)
+        self._account_counter_sources[attribution] = self._account_counter_sources.get(attribution, 0) + 1
 
     def _increment_symbol_counter(
         self,
@@ -1223,6 +1238,8 @@ class AccountControlGuard:
     ) -> None:
         key = (control_date, symbol, bucket_type, bucket_start, operation)
         self._symbol_counters[key] = self._symbol_counters.get(key, 0) + 1
+        attribution = key, controlled_source(self, self.source)
+        self._symbol_counter_sources[attribution] = self._symbol_counter_sources.get(attribution, 0) + 1
 
     def _increment_group_counter(
         self,

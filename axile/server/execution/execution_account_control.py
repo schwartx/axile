@@ -8,7 +8,12 @@ from sqlalchemy import update
 from sqlmodel import col
 
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
-from axile.executor.account_control.models import AccountControlCounterDeltaWrite, AccountControlEventWrite
+from axile.executor.account_control.models import (
+    AccountControlContextKind,
+    AccountControlCounterDeltaWrite,
+    AccountControlEventWrite,
+    AccountControlSource,
+)
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import (
     AccountControlCounterSnapshot,
@@ -27,6 +32,8 @@ async def build_account_control_guard(
     execution_id: str | None,
     *,
     register_monitor: bool = True,
+    context_kind: AccountControlContextKind = AccountControlContextKind.EXECUTION,
+    source: AccountControlSource = AccountControlSource.ALGORITHM,
 ) -> AccountControlGuard:
     """
     构造本次 execution 使用的账户控制防护层.
@@ -36,7 +43,13 @@ async def build_account_control_guard(
     account : Account
         当前执行所属账户。
     execution_id : str | None
-        当前 execution 标识。
+        当前控制上下文标识；独立账户操作沿用兼容字段。
+    register_monitor : bool, optional
+        是否注册为账户当前交易控制实例。
+    context_kind : AccountControlContextKind, optional
+        交易执行或独立账户操作。
+    source : AccountControlSource, optional
+        此 guard 的默认调用来源，人工操作可在局部上下文中覆盖。
 
     Returns
     -------
@@ -48,6 +61,8 @@ async def build_account_control_guard(
         return AccountControlGuard(
             account_id=account.id,
             execution_id=execution_id,
+            context_kind=context_kind,
+            source=source,
             channel=account.trade_channel,
             policy=policy,
             baseline=AccountControlCounterSnapshot(),
@@ -62,6 +77,8 @@ async def build_account_control_guard(
     guard = AccountControlGuard(
         account_id=account.id,
         execution_id=execution_id,
+        context_kind=context_kind,
+        source=source,
         channel=account.trade_channel,
         policy=policy,
         baseline=baseline,
@@ -75,6 +92,8 @@ async def build_account_control_guard(
                     instance_id=guard.instance_id,
                     account_id=account.id,
                     execution_id=execution_id,
+                    context_kind=context_kind.value,
+                    source=source.value,
                     timezone=policy.timezone,
                     started_at_ms=clock_now_ms(),
                 )

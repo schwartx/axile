@@ -4,7 +4,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from axile.executor.account_control.context import control_source_scope
 from axile.executor.account_control.guard import AccountControlGuard
+from axile.executor.account_control.models import AccountControlSource
 
 _scope: ContextVar[tuple[object, AccountControlGuard] | None] = ContextVar("account_control_scope", default=None)
 
@@ -16,10 +18,13 @@ def scoped_guard(owner: object) -> AccountControlGuard | None:
 
 
 @contextmanager
-def account_control_scope(owner: object, guard: AccountControlGuard) -> Iterator[None]:
+def account_control_scope(
+    owner: object, guard: AccountControlGuard, *, source: AccountControlSource | None = None
+) -> Iterator[None]:
     """临时覆盖公开操作和渠道原生操作共同读取的 guard。"""
     token = _scope.set((owner, guard))
     try:
-        yield
+        with control_source_scope(guard, source):
+            yield
     finally:
         _scope.reset(token)

@@ -25,6 +25,8 @@ def _build_account_control_event_public(row: object) -> AccountControlEventPubli
         account_id=getattr(row, "account_id"),
         control_date=getattr(row, "control_date"),
         execution_id=getattr(row, "execution_id"),
+        context_kind=getattr(row, "context_kind", "unknown"),
+        source=getattr(row, "source", "unknown"),
         seq=getattr(row, "seq"),
         channel=getattr(row, "channel"),
         operation=getattr(row, "operation"),
@@ -70,7 +72,7 @@ async def account_control_audit_executions(
     skip: int = Query(0, ge=0),
     limit: int = Query(account_control_audit.EXECUTION_LIST_DEFAULT_LIMIT, ge=1, le=500),
 ) -> AccountControlAuditExecutionListPublic:
-    """查询账户在指定 control_date 下的 execution 聚合列表."""
+    """查询指定日期的控制上下文，类型及来源区分交易执行与账户操作。"""
     await _get_account_or_404(session, account_id)
 
     try:

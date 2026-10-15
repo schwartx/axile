@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +21,7 @@ from axile.server.evidence.models import (
 )
 from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.evidence.report import (
+    account_operation_report,
     control_summary,
     csv_bytes,
     execution_markdown,
@@ -69,9 +71,19 @@ class _Writer:
         """以固定编码写出 JSON。"""
         self.write(path, _json(value), source=source, rows=len(value) if isinstance(value, list) else None)
 
-    def jsonl(self, path: str, values: list[dict], *, source: str) -> None:
-        """JSONL 不省略空文件，便于区分没有记录和采集失败。"""
-        self.write(path, b"".join(_json(value) for value in values), source=source, rows=len(values))
+    def jsonl(self, path: str, values: Iterable[dict], *, source: str) -> None:
+        """逐行检查预算并压缩，避免大量账户操作先拼成无界的大字节串。"""
+        checksum = hashlib.sha256()
+        rows, size = 0, 0
+        with self.archive.open(path, "w") as stream:
+            for value in values:
+                data = _json(value)
+                self.budget.check(size=len(data))
+                stream.write(data)
+                checksum.update(data)
+                rows += 1
+                size += len(data)
+        self.files.append({"path": path, "bytes": size, "sha256": checksum.hexdigest(), "source": source, "rows": rows})
 
 
 def _json(value: Any) -> bytes:
@@ -84,15 +96,39 @@ def _json(value: Any) -> bytes:
 
 def _clean_item(item: ExecutionEvidence, redactor: EvidenceRedactor) -> ExecutionEvidence:
     """先脱敏事实，再从同一材料派生所有表格和摘要。"""
+    group = "account_operations" if item.context_kind == "account_operation" else "executions"
     return ExecutionEvidence(
         key=item.key,
         execution_id=item.execution_id,
         selection_reasons=item.selection_reasons,
+        context_kind=item.context_kind,
+        sources=redactor.clean(item.sources, f"$contexts.{folder(item.key)}.sources"),
         **{
-            field: redactor.clean(getattr(item, field), f"executions.{folder(item.key)}.{field}")
+            field: redactor.clean(getattr(item, field), f"{group}.{folder(item.key)}.{field}")
             for field in ("intent", "record", "events", "artifacts", "controls", "counters", "sessions")
         },
     )
+
+
+def _write_account_operations(writer: _Writer, snapshot: EvidenceSnapshot) -> dict[str, Any]:
+    """独立账户操作集中归档，不为每次轮询生成一整套执行目录。"""
+    prefix = "account-operations"
+    writer.jsonl(
+        f"{prefix}/contexts.jsonl",
+        (account_operation_report(item) for item in snapshot.account_operations.values()),
+        source="derived_from_persisted_account_control",
+    )
+    for filename, field, source in (
+        ("control-events", "controls", "account_control_event"),
+        ("counter-deltas", "counters", "account_control_counter_delta"),
+        ("control-sessions", "sessions", "account_control_session"),
+    ):
+        writer.jsonl(
+            f"{prefix}/{filename}.jsonl",
+            (row for item in snapshot.account_operations.values() for row in getattr(item, field)),
+            source=source,
+        )
+    return {"count": len(snapshot.account_operations), "index": f"{prefix}/contexts.jsonl"}
 
 
 def _write_execution(writer: _Writer, item: ExecutionEvidence) -> dict[str, Any]:
@@ -196,6 +232,7 @@ def _build(
     cleaned = EvidenceSnapshot(
         account=account,
         executions={key: _clean_item(item, redactor) for key, item in snapshot.executions.items()},
+        account_operations={key: _clean_item(item, redactor) for key, item in snapshot.account_operations.items()},
         window=snapshot.window,
         snapshot_at=snapshot.snapshot_at,
         source_counts=snapshot.source_counts,
@@ -203,6 +240,7 @@ def _build(
     with ZipFile(path, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
         writer = _Writer(archive, budget)
         reports = [_write_execution(writer, item) for item in cleaned.executions.values()]
+        account_operations = _write_account_operations(writer, cleaned)
         writer.write(
             "summary.md",
             index_markdown(cleaned, reports, redactor._text(account_name, "$account")).encode(),
@@ -215,6 +253,8 @@ def _build(
                 [
                     "execution_id",
                     "key",
+                    "context_kind",
+                    "sources",
                     "task_status",
                     "output_status",
                     "business_outcome",
@@ -239,7 +279,7 @@ def _build(
         if log_report and log_report["requested"]:
             writer.jsonl("logs.jsonl", redactor.clean(logs, "$logs"), source="application_log; independent_capture")
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "export_id": uuid4().hex,
             "exporter": {"axile_version": package_version("axile")},
             "account": account,
@@ -252,6 +292,7 @@ def _build(
             },
             "logs": log_report or {"requested": False, "coverage": "not_requested"},
             "executions": reports,
+            "account_operations": account_operations,
             "redaction": redactor.describe(),
             "files": writer.files,
             "limitations": [
