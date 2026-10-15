@@ -147,7 +147,7 @@ for (const lateResponse of ['lost', 'submitted']) {
   })
 }
 
-test('terminal POST evidence overrides an uncertain row when the follow-up query fails', async ({ page }) => {
+test('terminal POST evidence overrides a stale row when the follow-up query fails', async ({ page }) => {
   let cancelled = false
   await page.route('**/api/v1/account/1/orders**', async route => {
     if (route.request().method() === 'POST') {
