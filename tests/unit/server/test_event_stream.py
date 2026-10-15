@@ -288,3 +288,24 @@ def test_default_stream_includes_connection_snapshot_without_periodic_reads(monk
         assert not event_stream.connection_hub._subscribers
 
     asyncio.run(scenario())
+
+
+def test_orders_snapshot_updates_and_cleanup_do_not_trigger_channel_sampling(monkeypatch):
+    async def scenario():
+        from axile.server.connection_events import ConnectionEventHub
+
+        hub = ConnectionEventHub()
+        frames = [{"account_id": 1, "snapshot": {"data": [], "complete": True, "count": 0}}]
+        reader = AsyncMock(side_effect=lambda *_: list(frames))
+        monkeypatch.setattr(event_stream, "orders_hub", hub)
+        monkeypatch.setattr(event_stream, "orders_frames", reader)
+        async with aclosing(event_stream.merge_events(("orders",))) as events:
+            assert (await next_event(events)).name == "orders.snapshot"
+            frames[0]["snapshot"]["complete"] = False
+            hub.changed(1)
+            update = await next_event(events)
+            assert update.name == "orders.update"
+            assert update.data["data"][0]["snapshot"]["complete"] is False
+        assert not hub._subscribers
+
+    asyncio.run(scenario())

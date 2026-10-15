@@ -532,25 +532,25 @@ def test_add_order_registers_ws_ack_probe() -> None:
     assert executor.ack_probes == ["ws-1"]
 
 
-def test_query_interval_speeds_up_when_channel_degraded() -> None:
-    """WS 降级 / 失联时收敛到快频，REST 对账接管保正确性。"""
+def test_query_interval_keeps_explicit_setting_without_forced_rest_takeover() -> None:
+    """无常驻状态的外部执行器保留显式间隔，通道异常不强制提频。"""
     executor = _WsChannelExecutor()
-    tracker = OrderTracker(executor=executor, order_refresh_interval=30.0, degraded_query_interval=3.0)
+    tracker = OrderTracker(executor=executor, order_refresh_interval=30.0)
 
     executor.health = OrderChannelHealth.DEGRADED
-    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 3.0
+    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 30.0
 
     executor.health = OrderChannelHealth.DOWN
-    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 3.0
+    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 30.0
 
 
-def test_query_interval_takeover_even_when_base_disabled() -> None:
+def test_disabled_query_is_not_reenabled_by_channel_failure() -> None:
     """定时查询被配置为禁用时，通道失联仍启用快频接管；健康时保持禁用。"""
     executor = _WsChannelExecutor()
-    tracker = OrderTracker(executor=executor, order_refresh_interval=0.0, degraded_query_interval=2.0)
+    tracker = OrderTracker(executor=executor, order_refresh_interval=0.0)
 
     executor.health = OrderChannelHealth.DOWN
-    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 2.0
+    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == float("inf")
 
     executor.health = OrderChannelHealth.HEALTHY
     assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == float("inf")
@@ -963,3 +963,12 @@ def test_rest_refresh_rejects_old_or_future_snapshot(timestamp):
     assert tracker._usable_price("SHSE.600000") is None
     assert quote.timestamp == timestamp
     assert tracker._usable_price("SHSE.600000") is None
+
+
+def test_resident_account_does_not_poll_even_if_legacy_interval_is_configured():
+    from axile.executor.account_orders import AccountOrderBook
+
+    executor = _WsChannelExecutor()
+    executor.account_orders = AccountOrderBook()
+    tracker = OrderTracker(executor=executor, order_refresh_interval=30)
+    assert tracker._current_query_interval(600, 1) == float("inf")

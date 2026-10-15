@@ -290,7 +290,7 @@ def test_query_preserves_partial_fill_until_actual_terminal_after_execution(monk
 
     async def run():
         account = build_account()
-        assert (await service.query_account_orders(account)).count == 1
+        assert (await service.query_account_orders(account, refresh=True)).count == 1
         await service.cancel_account_order(
             account, OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
         )
@@ -323,7 +323,7 @@ def test_configuration_change_does_not_leak_old_orders_or_cancel_receipts(monkey
         )
         account.account_config = {**account.account_config, "investor_id": "different"}
         response = await service.query_account_orders(account)
-        assert response.count == 0 and response.cancellations == []
+        assert response.count is None and not response.complete and response.cancellations == []
 
     asyncio.run(run())
 
@@ -343,7 +343,7 @@ def test_queries_coalesce_and_failures_do_not_replace_last_snapshot(monkeypatch)
     async def run():
         nonlocal fail
         account = build_account()
-        results = await asyncio.gather(*(service.query_account_orders(account) for _ in range(3)))
+        results = await asyncio.gather(*(service.query_account_orders(account, refresh=True) for _ in range(3)))
         assert all(result.count == 1 for result in results)
         fail = True
         with pytest.raises(RuntimeError):
@@ -352,3 +352,123 @@ def test_queries_coalesce_and_failures_do_not_replace_last_snapshot(monkeypatch)
 
     asyncio.run(run())
     assert len(calls) == 2
+
+
+def test_terminal_verification_reads_only_tracked_order_even_when_book_is_incomplete():
+    from axile.executor.account_orders import AccountOrderBook
+
+    book = AccountOrderBook()
+    book.apply(order())
+    calls = []
+    executor = SimpleNamespace(
+        account_orders=book,
+        get_pending_orders=lambda *_: pytest.fail("单笔核实不能查询全账户"),
+        get_account_control_guard=lambda: None,
+        reconcile_terminal_order=lambda *key: calls.append(key) or order(status="已撤销"),
+    )
+    result = run_order_command(executor, {"command": "verify", "tracked": [("rb2610", "native-1")]})
+    assert calls == [("rb2610", "native-1")]
+    assert result["resolved"][0]["status"] == "已撤销"
+    assert not result["complete"]  # 单笔终态不能补足缺失的账户基线。
+
+
+def test_fill_callback_during_cancel_validation_prevents_native_cancel():
+    from axile.executor.account_orders import AccountOrderBook
+
+    book = AccountOrderBook()
+    book.apply(order())
+
+    def query(_symbol):
+        book.apply(order(status="已成交", filled_volume=3))
+        return [order()]
+
+    executor = SimpleNamespace(
+        account_orders=book,
+        get_pending_orders=query,
+        get_account_control_guard=lambda: None,
+        reconcile_terminal_order=lambda *_: order(status="已成交", filled_volume=3),
+        cancel_order=lambda *_: pytest.fail("查询期间已确认成交，不能发送撤单"),
+    )
+    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})
+    assert result["state"] == "terminal" and result["order"]["filled_volume"] == 3
+
+
+def test_requested_terminal_is_returned_even_after_recent_terminal_window_moves_on():
+    from axile.executor.account_orders import AccountOrderBook
+
+    book = AccountOrderBook()
+    book.replace([], 0)
+    for index in range(513):
+        book.apply(order(order_id=str(index), status="已撤销"))
+    executor = SimpleNamespace(
+        account_orders=book,
+        get_account_control_guard=lambda: None,
+        reconcile_terminal_order=lambda *_: order(order_id="0", status="已撤销"),
+    )
+    result = run_order_command(executor, {"command": "verify", "tracked": [("rb2610", "0")]})
+    assert any(row["order_id"] == "0" for row in result["resolved"])
+
+
+def test_one_shot_cancel_verification_keeps_unknown_without_resending(monkeypatch):
+    calls = []
+
+    async def command(_account, payload):
+        calls.append(payload)
+        return {"data": [public_order(order())], "sampled_at": "2026-10-15T10:05:00"}
+
+    async def elapsed(_seconds):
+        pass
+
+    monkeypatch.setattr(service, "_command", command)
+    monkeypatch.setattr(service.asyncio, "sleep", elapsed)
+
+    async def run():
+        account = build_account()
+        state = service._state(account)
+        state.receipts["r1"] = OrderCancelReceipt(
+            request_id="r1",
+            order_id="native-1",
+            symbol="rb2610",
+            state="submitted",
+            message="等待回报",
+            requested_at="2026-10-15T10:04:00",
+            order=public_order(order()),
+        )
+        await service._verify_cancel(account, state, "r1")
+        assert state.receipts["r1"].state == "unknown"
+        assert state.receipts["r1"].order.remaining_volume == 2
+
+    asyncio.run(run())
+    assert calls == [{"command": "verify", "tracked": [("rb2610", "native-1")]}]
+
+
+def test_sse_reads_do_not_wait_for_cancel_and_terminal_callback_wins_late_submission(monkeypatch):
+    from axile.server import orders_live
+
+    async def run():
+        account = build_account()
+        started, release = asyncio.Event(), asyncio.Event()
+        current = {"data": [public_order(order())], "sampled_at": "2026-10-15T10:05:00"}
+        monkeypatch.setattr(orders_live, "read_orders_snapshot", lambda _: current)
+        monkeypatch.setattr(service, "_link_executions", lambda *args: asyncio.sleep(0))
+
+        async def command(_account, _payload):
+            started.set()
+            await release.wait()
+            return {"state": "submitted", "message": "等待回报", "order": public_order(order())}
+
+        monkeypatch.setattr(service, "_command", command)
+        await service.query_account_orders(account)
+        cancel = asyncio.create_task(
+            service.cancel_account_order(
+                account, OrderCancelRequest(request_id="r1", symbol="rb2610", order_id="native-1")
+            )
+        )
+        await started.wait()
+        current = {"data": [], "resolved": [public_order(order(status="已撤销"))], "sampled_at": "2026-10-15T10:06:00"}
+        snapshot = await asyncio.wait_for(service.query_account_orders(account), 0.2)
+        assert snapshot.cancellations[0].state == "terminal"
+        release.set()
+        assert (await cancel).state == "terminal"
+
+    asyncio.run(run())

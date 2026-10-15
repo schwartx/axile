@@ -73,6 +73,8 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError("账户连接正在准备或配置已变化，请稍后刷新")
         binding = ConnectionBinding(**payload["connection_binding"]) if payload.get("connection_binding") else None
         if binding is not None and state.connection_collector.binding != binding:
+            if state.connection_collector.binding is not None:
+                raise AccountConnectionUnavailable("账户会话已变化，请核对当前连接；未执行委托操作")
             state.connection_collector = ConnectionCollector(binding)
             if binding.manually_disconnected and not state.connection_attempted:
                 state.account_id, state.config_signature = account.id, worker_state._config_signature(account)
@@ -92,7 +94,17 @@ def _command(state: Any, payload: dict[str, Any]) -> dict[str, Any]:
                 executor = reuse_resident_connection(state, account)
                 worker_state._configure_executor_resources(state, account, executor)
         with order_control_scope(executor, account, guard, command=payload["command"]):
-            return run_order_command(executor, payload)
+            result = run_order_command(executor, payload)
+        from axile.server.execution.worker_backend.order_monitor import sample_orders
+
+        # 独立命令可能超时丢弃响应，不能推进一秒监控通路的采样水位。
+        snapshot = sample_orders(state, force=True)
+        if snapshot is not None:
+            result["orders_snapshot"] = snapshot
+            result["instance_id"] = snapshot["snapshot"]["instance_id"]
+            result["generation"] = snapshot["snapshot"]["generation"]
+            result["worker_instance_id"] = snapshot["binding"]["instance_id"]
+        return result
 
 
 def serve_orders(connection: Connection, state: Any) -> None:

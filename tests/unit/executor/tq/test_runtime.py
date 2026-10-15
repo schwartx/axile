@@ -81,6 +81,45 @@ def test_runtime_owns_api_and_queries_catalog_only_on_demand() -> None:
     assert api is not None and api.closed is True
 
 
+def test_reconnect_requires_all_connections_and_replaces_complete_order_snapshot():
+    api = FakeApi()
+    api._data = {"notify": {}}
+    rows = {"old": {"order_id": "old", "status": "ALIVE"}}
+    api.get_order = lambda: rows
+    runtime = TQRuntime(lambda: api)
+    events = []
+    runtime.add_listener(lambda kind, payload: events.append((kind, payload)))
+
+    def pump(notifications, orders):
+        def update(owner):
+            api._data["notify"].update(notifications)
+            rows.clear()
+            rows.update(orders)
+            runtime._pump_changes(owner)
+
+        runtime.call(update)
+
+    try:
+        pump(
+            {"md-down": {"code": 2019112911, "conn_id": "md"}, "td-down": {"code": 2019112911, "conn_id": "td"}},
+            rows.copy(),
+        )
+        assert not runtime.synchronized and runtime.connection_revision == 2
+        pump({"md-back": {"code": 2019112902, "conn_id": "md"}}, rows.copy())
+        assert not runtime.synchronized
+        assert not any(kind == "orders.reset" for kind, _ in events)
+        pump({"td-back": {"code": 2019112902, "conn_id": "td"}}, {"new": {"order_id": "new", "status": "ALIVE"}})
+        assert runtime.synchronized
+        assert [payload for kind, payload in events if kind == "orders.reset"][-1] == {
+            "rows": [{"order_id": "new", "status": "ALIVE"}]
+        }
+        # SDK 跨交易日移除记录时，同样同步完整集合而不捏造撤单终态。
+        pump({}, {})
+        assert [payload for kind, payload in events if kind == "orders.reset"][-1] == {"rows": []}
+    finally:
+        runtime.close()
+
+
 def test_full_catalog_only_queries_codes_and_does_not_fetch_specs():
     api = FakeApi()
     api.options = ["DCE.m2701-C-3000"]

@@ -131,3 +131,39 @@ def test_idle_commands_keep_typed_sessions_and_reload_shared_counters(database, 
             )
 
     asyncio.run(verify())
+
+
+def test_late_idle_cancel_rejection_uses_existing_monitor_without_query_or_guard_takeover(database, monkeypatch):
+    from axile.server.account_control.monitor import AccountControlMonitor
+
+    monkeypatch.setattr(execution_account_control, "SessionLocal", database)
+    account, executor = _account().snapshot(), SimpleNamespace()
+    resident = AccountControlGuard(
+        account_id=1,
+        execution_id="resident",
+        channel="ctp",
+        policy=None,
+        baseline=AccountControlCounterSnapshot(),
+    )
+    providers.register(resident)
+    providers.finish(resident, committed=True)
+    with account_orders_runtime.order_control_scope(executor, account, command="cancel"):
+        manual = scoped_guard(executor)
+        assert manual is not None
+        attempt = manual.begin_operation("cancel_order", symbol="rb2610")
+        attempt.record_outcome("submitted")
+    assert providers.active_guard(1) is None
+    # 原作用域已经结束；柜台拒绝沿现有纯内存结果回填进入一秒 IPC。
+    attempt.record_outcome("broker_rejected", metadata={"error_msg": "柜台拒绝撤单"})
+    frame = providers.snapshot(1)
+    assert frame["instance_id"] == resident.instance_id
+    updates = [row for row in frame["outcome_updates"] if f":{manual.instance_id}:" in row["event_uid"]]
+    assert updates[-1]["outcome"] == "broker_rejected"
+
+    async def verify():
+        async with database() as session:
+            await AccountControlMonitor()._update_outcomes(session, 1, updates)
+            events = list((await session.execute(select(AccountControlEvent))).scalars())
+            assert len(events) == 1 and events[0].outcome == "broker_rejected"
+
+    asyncio.run(verify())

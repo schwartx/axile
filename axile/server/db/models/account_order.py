@@ -51,4 +51,7 @@ class AccountOrdersPublic(SQLModel):
     count: int | None
     sampled_at: str
     complete: bool = True
+    instance_id: str | None = None
+    version: int = 0
+    error: str | None = None
     cancellations: list[OrderCancelReceipt] = Field(default_factory=list)

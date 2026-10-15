@@ -520,13 +520,14 @@ def _bind_worker_session(state, binding, request) -> None:
     """新 worker 继承持久化的主动断开意愿，旧实例不再参与当前状态。"""
     from axile.server.connection_state import ConnectionCollector
 
-    if state.connection_collector.binding == binding:
-        return
-    state.connection_collector = ConnectionCollector(binding)
-    if binding and binding.manually_disconnected and not state.connection_attempted:
-        account = AccountSnapshot.model_validate(request.account_payload)
-        state.account_id, state.config_signature = account.id, executor_config_signature(account)
-        state.disconnected = state.connection_attempted = True
+    with state.resource_lock:
+        if state.connection_collector.binding == binding:
+            return
+        state.connection_collector = ConnectionCollector(binding)
+        if binding and binding.manually_disconnected and not state.connection_attempted:
+            account = AccountSnapshot.model_validate(request.account_payload)
+            state.account_id, state.config_signature = account.id, executor_config_signature(account)
+            state.disconnected = state.connection_attempted = True
 
 
 def run_worker_backend_loop(
@@ -559,10 +560,16 @@ def run_worker_backend_loop(
         ).start()
     if monitor_connection is not None:
         from axile.server.account_control.ipc import serve
+        from axile.server.execution.worker_backend.order_monitor import sample_orders
 
         threading.Thread(
             target=serve,
-            args=(monitor_connection, account_id, lambda: state.connection_collector.snapshot()),
+            args=(
+                monitor_connection,
+                account_id,
+                lambda: state.connection_collector.snapshot(),
+                lambda: sample_orders(state),
+            ),
             daemon=True,
             name=f"axile-worker-monitor-{account_id}",
         ).start()
@@ -600,9 +607,9 @@ def run_worker_backend_loop(
                 if current_request.connection_binding
                 else None
             )
-            _bind_worker_session(state, binding, current_request)
             state.request_active = True
             try:
+                _bind_worker_session(state, binding, current_request)
                 response = _handle_worker_request(current_request, state)
             finally:
                 state.request_active = False

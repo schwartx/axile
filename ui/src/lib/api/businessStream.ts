@@ -3,6 +3,7 @@ import { useDomainStore } from '@/stores/domain'
 import { useLiveExecStore, type RunFrame } from '@/stores/liveExec'
 import { useLiveControl, type ControlEnvelope } from '@/stores/liveControl'
 import { useLiveConnection, type ConnectionEnvelope } from '@/stores/liveConnection'
+import { useLiveOrders, type OrdersEnvelope } from '@/stores/liveOrders'
 
 export const BUSINESS_STREAM_PATH = '/api/v1/events/stream'
 
@@ -38,6 +39,7 @@ export function startBusinessStream({
     useLiveExecStore.getState().disconnect()
     useLiveControl.getState().disconnect()
     useLiveConnection.getState().disconnect()
+    useLiveOrders.getState().disconnect()
   }
   const close = () => {
     const previous = stream
@@ -53,16 +55,19 @@ export function startBusinessStream({
     useLiveExecStore.getState().beginReconnect()
     useLiveControl.getState().beginReconnect()
     useLiveConnection.getState().disconnect()
+    useLiveOrders.getState().disconnect()
     const current = open(BUSINESS_STREAM_PATH)
     stream = current
     let executionCursor: StreamCursor | null = null
     let executionReady = false
     let controlReady = false
     let connectionReady = false
+    let ordersReady = false
 
-    const fail = (topic: 'execution' | 'control' | 'connection', message: string) => {
+    const fail = (topic: 'execution' | 'control' | 'connection' | 'orders', message: string) => {
       if (topic === 'execution') { executionReady = false; useLiveExecStore.getState().disconnect(message) }
       else if (topic === 'control') { controlReady = false; useLiveControl.getState().disconnect(undefined, message) }
+      else if (topic === 'orders') { ordersReady = false; useLiveOrders.getState().disconnect() }
       else { connectionReady = false; useLiveConnection.getState().disconnect() }
     }
     const listen = <T,>(name: string, receive: (data: T) => void) => {
@@ -72,7 +77,7 @@ export function startBusinessStream({
         catch (error) {
           // 无法应用的帧可能已造成缺口，重开连接取得全量；旧连接从此失效。
           disconnect()
-          fail(name.startsWith('execution.') ? 'execution' : name.startsWith('connection.') ? 'connection' : 'control', error instanceof Error ? error.message : String(error))
+          fail(name.startsWith('execution.') ? 'execution' : name.startsWith('connection.') ? 'connection' : name.startsWith('orders.') ? 'orders' : 'control', error instanceof Error ? error.message : String(error))
           close()
           cancelRetry = later(sync)
         }
@@ -116,12 +121,25 @@ export function startBusinessStream({
     }
     listen<ConnectionEnvelope>('connection.snapshot', (message) => connection(message, true))
     listen<ConnectionEnvelope>('connection.update', (message) => connection(message, false))
-    for (const topic of ['execution', 'control', 'connection'] as const) {
+    const orders = (message: OrdersEnvelope, snapshot: boolean) => {
+      cursor(message)
+      if (!Array.isArray(message.data) || message.kind !== (snapshot ? 'snapshot' : 'update')) throw new Error('委托快照无效')
+      for (const frame of message.data) {
+        if (!Number.isSafeInteger(frame.account_id) || !frame.snapshot || !Array.isArray(frame.snapshot.data)
+          || typeof frame.snapshot.complete !== 'boolean') throw new Error('账户委托数据无效')
+      }
+      if (!snapshot && !ordersReady) return
+      useLiveOrders.getState().apply(message)
+      ordersReady = useLiveOrders.getState().connected
+    }
+    listen<OrdersEnvelope>('orders.snapshot', message => orders(message, true))
+    listen<OrdersEnvelope>('orders.update', message => orders(message, false))
+    for (const topic of ['execution', 'control', 'connection', 'orders'] as const) {
       listen<{ message: string }>(`${topic}.error`, (message) => fail(topic, message.message))
     }
     current.onerror = () => {
       if (disposed || stream !== current) return
-      executionReady = controlReady = connectionReady = false
+      executionReady = controlReady = connectionReady = ordersReady = false
       disconnect()
       // EventSource 自动重连；open 不表示业务已就绪，等待各域自己的快照。
     }

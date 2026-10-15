@@ -90,7 +90,9 @@ class AbstractExecutorExecutionAuditFacadeMixin:
         metadata : OrderAuditMetadata
             需要与订单关联的审计元数据。
         """
-        _executor(self).require_execution_runtime().register_order_audit_metadata(order_id, metadata)
+        executor = _executor(self)
+        executor.account_orders.remember_metadata(order_id, metadata)
+        executor.require_execution_runtime().register_order_audit_metadata(order_id, metadata)
 
     def get_order_audit_metadata(self, order_id: str) -> OrderAuditMetadata:
         """
@@ -106,7 +108,7 @@ class AbstractExecutorExecutionAuditFacadeMixin:
         OrderAuditMetadata
             与订单关联的审计元数据字典。
         """
-        return _executor(self).require_execution_runtime().get_order_audit_metadata(order_id)
+        return _executor(self).account_orders.metadata(order_id)
 
     def emit_audit_event(
         self,
@@ -181,7 +183,7 @@ class AbstractExecutorExecutionAuditFacadeMixin:
         execution_id = context.get("execution_id")
         account_id = _coerce_int(context.get("account_id"))
         algorithm = context.get("algorithm")
-        if not execution_id or account_id is None or not algorithm:
+        if not execution_id or account_id is None or not algorithm or executor._runtime_bindings.audit_sink is None:
             return False
         return executor.require_execution_runtime().emit_audit_event(
             event_type=event_type,

@@ -749,10 +749,14 @@ class WorkerBackendManager:
         )
         self._bind_connection_request(handle, request)
         try:
-            return handle.orders.request(
+            result = handle.orders.request(
                 {**payload, "account": request.account_payload, "connection_binding": request.connection_binding},
                 timeout=timeout,
             )
+            from axile.server.orders_live import consume_orders_snapshot
+
+            consume_orders_snapshot(result.pop("orders_snapshot", None))
+            return result
         except TimeoutError as exc:
             self._retire_idle_order_timeout(handle, exc)
             raise

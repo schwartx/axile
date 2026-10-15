@@ -49,6 +49,9 @@ class AbstractExecutorExecutionRuntimeHostMixin:
         executor.channel_type = channel_type
         executor.logger = logger
         executor.account_config = account_config
+        from axile.executor.account_orders import AccountOrderBook
+
+        executor.account_orders = AccountOrderBook()
         executor._runtime_bindings = ExecutionRuntimeBindings()
         executor._active_execution_runtime = None
         executor._execution_query_runtime_bridge = ExecutionQueryRuntimeBridge(executor)

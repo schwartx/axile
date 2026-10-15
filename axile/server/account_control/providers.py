@@ -18,8 +18,8 @@ _updates: dict[int, deque[dict[str, Any]]] = {}
 _operation_locks: WeakKeyDictionary[AccountControlGuard, Lock] = WeakKeyDictionary()
 
 
-def register(guard: AccountControlGuard) -> None:
-    """绑定新实例，旧实例的收尾不能撤销此绑定。"""
+def observe_outcomes(guard: AccountControlGuard) -> None:
+    """只接收迟到的操作结果，不接管当前交易 guard 或计数来源。"""
     if guard.account_id is None:
         return
 
@@ -34,6 +34,13 @@ def register(guard: AccountControlGuard) -> None:
                 final["records"] = [data if row["event_uid"] == data["event_uid"] else row for row in final["records"]]
 
     guard.monitor_outcome_sink = outcome
+
+
+def register(guard: AccountControlGuard) -> None:
+    """绑定新实例，旧实例的收尾不能撤销此绑定。"""
+    if guard.account_id is None:
+        return
+    observe_outcomes(guard)
     with _lock:
         _guards[guard.account_id] = guard
         _final.pop(guard.account_id, None)

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
 from axile.executor.abstract_executor.execution import AbstractExecutorExecutionMixin
 from axile.executor.abstract_executor.facade import AbstractExecutorFacadeMixin
+from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback
 from axile.executor.models.unified_input import AccountConfig
@@ -59,6 +60,7 @@ class AbstractExecutor(
     # 读代码时可以把它理解为：本类定义渠道契约，mixin 提供统一骨架。
     # 这些宿主字段由 `AbstractExecutorExecutionMixin.__init__()` 初始化，保留在主类上仅用于
     # 静态类型表达，避免 mixin 访问它们时退化成“未知属性”。
+    account_orders: AccountOrderBook
     channel_type: TradeChannel
     logger: Logger
     account_config: AccountConfig | None

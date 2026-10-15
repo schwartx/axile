@@ -183,12 +183,22 @@ def reconcile_resident_executor(executor: object) -> None:
     """就绪前核对资金和未完成订单；只查询，不恢复或重放任何交易任务。"""
     assets = getattr(executor, "get_account_assets", None)
     orders = getattr(executor, "get_pending_orders", None)
+    recovery = getattr(executor, "_recovery_snapshot", None)
     if callable(assets):
-        snapshot = assets()
+        snapshot = recovery["assets"] if isinstance(recovery, dict) and recovery.get("assets") is not None else assets()
         if getattr(snapshot, "source", None) in {"unavailable", "degraded"}:
             raise ConnectionError("账户连接恢复后尚未取得有效资产快照")
-    if callable(orders):
+    book = getattr(executor, "account_orders", None)
+    if callable(orders) and (book is None or not book.snapshot()["complete"]):
         orders(None)
+    if book is not None:
+        from axile.server.account_orders_runtime import terminal_order
+
+        for order in book.snapshot()["data"]:
+            if not order.is_active():
+                terminal = terminal_order(executor, order.symbol, order.order_id)
+                if terminal is not None:
+                    book.apply(terminal)
 
 
 def ensure_resident_connection(

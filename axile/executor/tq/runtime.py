@@ -132,6 +132,10 @@ class TQRuntime:
         self._quote_condition = threading.Condition()
         self._logger = logging.getLogger(__name__)
         self._listeners: list[Callable[[str, dict[str, object]], None]] = []
+        self.synchronized = True
+        self.connection_revision = 0
+        self._notifications: set[str] = set()
+        self._disconnected_connections: set[str] = set()
         self._orders: dict[str, dict[str, object]] = {}
         self._trades: dict[str, dict[str, object]] = {}
         self._thread = threading.Thread(target=self._run, name="axile-tqsdk-runtime", daemon=True)
@@ -359,7 +363,34 @@ class TQRuntime:
             except Exception:
                 continue
 
+    def _connection_changes(self, api: object) -> bool:
+        """SDK 恢复通知在完整截面交付后到达；断线期间撤销就绪状态。"""
+        data = getattr(api, "_data", {})
+        notifications = data.get("notify", {}) if isinstance(data, Mapping) else {}
+        reset = False
+        current_ids = {str(key) for key in notifications if not str(key).startswith("_")}
+        for key, row in notifications.items():
+            if str(key) not in current_ids or str(key) in self._notifications:
+                continue
+            code, connection_id = row.get("code"), str(row.get("conn_id", row.get("url", "default")))
+            if code in {2019112911, 2019112910}:
+                if connection_id not in self._disconnected_connections:
+                    self.connection_revision += 1
+                    self._disconnected_connections.add(connection_id)
+                    self.synchronized = False
+                    self._connection.failed(ConnectionError("天勤连接已断开，等待交易数据补齐"))
+                    self._emit("connection", {"ready": False})
+            elif code in {2019112901, 2019112902}:
+                self._disconnected_connections.discard(connection_id)
+                if not self._disconnected_connections:
+                    self.synchronized = True
+                    reset = reset or code == 2019112902
+                    self._connection.succeeded()
+        self._notifications = current_ids
+        return reset
+
     def _pump_changes(self, api: object) -> None:
+        reset = self._connection_changes(api)
         is_changing = getattr(api, "is_changing", lambda _entity: False)
         with self._quote_condition:
             subscriptions = tuple(self._subscriptions.values())
@@ -380,6 +411,8 @@ class TQRuntime:
             for key, value in current.items():
                 if previous.get(key) != value:
                     self._emit(kind, value)
+            if kind == "order" and self.synchronized and (reset or previous.keys() - current.keys()):
+                self._emit("orders.reset", {"rows": list(current.values())})
             previous.clear()
             previous.update(current)
 

@@ -125,7 +125,7 @@ export function AccountDetail({
   const channelDescriptor = useChannelDescriptor(item.trade_channel)
   const [holdingSelection, setHoldingSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const selectedSymbol = holdingSelection?.accountId === accountId ? holdingSelection.symbol : null
-  const currentOrders = useCurrentOrders(accountId, selectedSymbol != null)
+  const currentOrders = useCurrentOrders(accountId)
   const channelSchedule = channelDescriptor?.schedule
   const scheduleKind = channelSchedule?.kind
   // 组合名：领域 store 已在应用根加载（PortfolioLite 带 name），取名不增请求；未加载/找不到退回 #id。

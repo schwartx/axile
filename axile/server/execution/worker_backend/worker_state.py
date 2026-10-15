@@ -19,7 +19,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
 from axile.executor.connection_state import connection_observer_scope
 from axile.executor.termination import ExecutionTerminationController
-from axile.server.connection_state import ConnectionCollector
+from axile.server.connection_state import ConnectionBinding, ConnectionCollector
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.audit_sink import build_server_execution_audit_sink
 from axile.server.execution.execution_account_control import (
@@ -57,6 +57,14 @@ class _WorkerBackendState(ResidentConnectionState):
     termination_reason: str | None = None
     termination_mode: str | None = None
     pending_terminations: dict[str, WorkerTerminationSignal] = field(default_factory=dict)
+    orders_recovery_enabled: bool = False
+    orders_account: AccountSnapshot | None = None
+    orders_retry_at: float = 0
+    orders_recovery_thread: threading.Thread | None = None
+    orders_last_sample: tuple | None = None
+    orders_binding: ConnectionBinding | None = None
+    orders_executor: object | None = None
+    orders_generation: int = 0
 
 
 def _request_worker_termination(state: _WorkerBackendState, signal: WorkerTerminationSignal) -> None:
@@ -262,6 +270,10 @@ def _resolve_prepared_executor(
     def initialize(executor: object) -> None:
         _initialize_worker_connection(state, executor)
 
+    if state.orders_account is None or _config_signature(state.orders_account) != _config_signature(account):
+        state.orders_recovery_enabled = False
+        state.orders_account = account
+        state.orders_retry_at = 0
     with connection_observer_scope(state.connection_collector.observe):
         state.connection_observer = state.connection_collector.observe_session
         if state.connection_collector.needs_reconciliation:
@@ -271,7 +283,7 @@ def _resolve_prepared_executor(
                 executor = reuse_resident_connection(state, account)
                 prepare(executor)
                 return executor
-        return ensure_resident_connection(
+        executor = ensure_resident_connection(
             state,
             account,
             create=lambda: create_executor_instance(account, initialize=False),
@@ -281,6 +293,13 @@ def _resolve_prepared_executor(
             allow_recovery=allow_recovery,
             force=force_reconnect,
         )
+        state.orders_recovery_enabled = True
+        state.orders_account = account
+        state.orders_binding = state.connection_collector.binding
+        if state.orders_executor is not executor:
+            state.orders_generation += 1
+            state.orders_executor = executor
+        return executor
 
 
 def _configure_executor_resources(state: _WorkerBackendState, account: AccountSnapshot, executor: object) -> None:
@@ -295,7 +314,15 @@ def _configure_executor_resources(state: _WorkerBackendState, account: AccountSn
             set_instruments(state.catalog_provider)
     monitor = getattr(executor, "_connection_monitor", None)
     if monitor is not None:
-        monitor.bind(state.connection_collector.observe)
+        collector = state.connection_collector
+
+        def observe(observation):
+            collector.observe(observation)
+            book = getattr(executor, "account_orders", None)
+            if observation.status == "error" and book is not None:
+                book.invalidate("账户连接异常，委托状态待确认")
+
+        monitor.bind(observe)
 
 
 def _initialize_worker_connection(state: _WorkerBackendState, executor: object) -> None:

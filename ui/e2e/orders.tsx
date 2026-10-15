@@ -2,19 +2,17 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
-import { notifyReadRecovery } from '../src/lib/readRecovery'
-import { useLiveConnection } from '../src/stores/liveConnection'
+import { useBusinessSync } from '../src/lib/api/businessStream'
 import '../src/styles/theme.css'
 
-useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
-  data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })
-
 export function Fixture() {
+  useBusinessSync()
   const state = useCurrentOrders(1)
   const [running, setRunning] = useState(true)
   return <main className="min-h-screen bg-bg p-6 text-ink-1">
     <button onClick={() => setRunning(!running)} className="mb-4">{running ? '结束执行' : '开始执行'}</button>
-    <button type="button" onClick={() => void notifyReadRecovery()} className="ml-4">恢复页面读取</button>
+    {(['partial', 'disconnect', 'recover'] as const).map((action, index) => <button key={action} type="button" className="ml-4"
+      onClick={() => void fetch(`/api/v1/test/orders/${action}`, { method: 'POST' })}>{['模拟部分成交', '模拟渠道断线', '模拟恢复补齐'][index]}</button>)}
     <section className="rounded-xl border border-line bg-surface p-6">
       <h1 className="mb-4 text-sm text-ink-2">持仓 vs 目标</h1>
       <p className="text-xl font-semibold">{running ? '正在调仓' : '已调仓到位'}</p>

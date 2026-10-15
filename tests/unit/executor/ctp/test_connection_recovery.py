@@ -470,8 +470,8 @@ def test_worker_rebuilds_disconnected_ctp_with_fresh_stages_and_metadata(broker,
             is current
         )
         factory.assert_called_once_with(account, initialize=False)
-        assets.assert_called_once()
-        orders.assert_called_once_with(None)
+        assets.assert_not_called()
+        orders.assert_not_called()
     finally:
         replacement.executor.close()
 

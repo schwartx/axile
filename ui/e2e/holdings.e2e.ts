@@ -18,7 +18,9 @@ const order = { order_id: 'c-1', symbol: 'c2611', direction: 'SELL', offset: 'OP
 const foreignOrder = { ...order, symbol: 'ag2612', order_id: 'other-1', native_identity: {} }
 const orders = { data: [order, foreignOrder], count: 2, complete: true, sampled_at: at, cancellations: [] }
 
-async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean } = {}) {
+async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean; emptyOrders?: boolean } = {}) {
+  await page.addInitScript(snapshot => { Object.assign(window, { holdingsOrders: snapshot }) },
+    options.emptyOrders ? { ...orders, data: [], count: 0 } : orders)
   await page.route('**/api/v1/account/*/asset_snapshots*', route => route.fulfill({ json: options.unsynced
     ? { ...assets, data: [{ ...assets.data[0], created_at: '2026-10-15T14:47:00' }] } : assets }))
   await page.route('**/api/v1/account/*/target_snapshot', route => route.fulfill({ json: options.legacy
@@ -52,9 +54,6 @@ test('click a row; explain frozen sizing and only this symbol; Escape clears poi
   const summary = await dialog.locator('dt').filter({ hasText: /^当前持仓$/ }).locator('..').boundingBox()
   expect(summary!.height).toBeLessThan(35)
   await expect(dialog.getByText('目标持仓', { exact: true }).locator('..').locator('dd')).toContainText('空20手')
-  await expect(dialog.getByText('尚未拉取委托')).toBeVisible()
-  await expect(dialog.getByText('在途全部成交后', { exact: true })).toHaveCount(0)
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
   await expect(dialog.getByText('在途全部成交后', { exact: true }).locator('..').locator('dd')).toContainText('空 19手')
   await expect(dialog.getByText('预计仍差', { exact: true }).locator('..').locator('dd')).toContainText('卖开 1手')
   await expect(dialog.getByText('策略 空30% × 账户乘数 2 = 账户 空60%')).toBeVisible()
@@ -124,7 +123,6 @@ test('target-only entry supports keyboard, legacy target never invents quantitie
   const dialog = page.getByRole('dialog', { name: 'm2701 · 持仓与目标' })
   await expect(dialog.getByText('当时未记录换算依据', { exact: false })).toBeVisible()
   await expect(dialog.getByText('目标持仓', { exact: true }).locator('..').locator('dd')).toContainText('当时未记')
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
   await expect(dialog.getByText('该品种当前无在途委托')).toBeVisible()
   const box = await dialog.boundingBox()
   expect(box?.x).toBeGreaterThanOrEqual(0)
@@ -136,15 +134,14 @@ test('unsynchronized sampling and failed order refresh retain evidence but disab
   await page.goto('/e2e/holdings.html')
   await page.getByRole('button', { name: '查看 c2611 持仓与目标' }).click()
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
   await expect(dialog.getByText(/持仓与委托采样时间不同/)).toHaveCount(0)
   await dialog.getByRole('button', { name: '在途全部成交后待确认原因' }).focus()
   await expect(page.getByRole('tooltip')).toContainText('持仓与委托采样时间不同')
   await expect(dialog.getByText('在途全部成交后', { exact: true }).locator('..').locator('dd')).toContainText('待确认')
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ status: 502, json: { detail: '柜台查询失败' } }))
-  await dialog.getByRole('button', { name: '刷新在途委托' }).click()
+  await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect(dialog.getByRole('button', { name: '撤单 c2611 c-1' })).toBeDisabled()
-  await expect(dialog.getByText('当前显示最后一次查询结果，请刷新核对。')).toBeVisible()
+  await expect(dialog.getByText('当前显示最后已知委托，等待同步或手动核对。')).toBeVisible()
   await expect(dialog.getByText('目标持仓', { exact: true }).locator('..').locator('dd')).toContainText('空20手')
 })
 
@@ -167,13 +164,12 @@ test('single cancel shares confirmed terminal receipts and preserves fills in th
   await page.goto('/e2e/holdings.html')
   await page.getByRole('button', { name: '查看 c2611 持仓与目标' }).click()
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
   const cancel = dialog.getByRole('button', { name: '撤单 c2611 c-1' })
   await cancel.click()
   await expect(cancel).toBeDisabled()
   await expect(dialog.getByText('撤单确认中', { exact: true }).filter({ visible: true })).toBeVisible()
   terminal = true
-  await dialog.getByRole('button', { name: '刷新在途委托' }).click()
+  await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect(dialog.getByText('该品种当前无在途委托')).toBeVisible()
   await expect(dialog.getByText(/已成 1 \/ 2/)).toBeVisible()
   expect(posts).toBe(1)
@@ -206,7 +202,7 @@ test('production account card keeps target entries when comparison is unavailabl
 
 
 test('landscape detail retains both nonzero directions and moves prediction out when there are no orders', async ({ page }) => {
-  await mock(page)
+  await mock(page, { emptyOrders: true })
   await page.route('**/api/v1/account/*/asset_snapshots*', route => route.fulfill({ json: { ...assets,
     data: [{ ...assets.data[0], assets: { ...assets.data[0].assets,
       positions: [...assets.data[0].assets.positions, { symbol: 'c2611', direction: '多头', volume: 3,
@@ -218,13 +214,12 @@ test('landscape detail retains both nonzero directions and moves prediction out 
   await page.getByRole('button', { name: '查看 c2611 持仓与目标' }).first().click()
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
   await expect(dialog.getByRole('region', { name: '当前持仓分项' }).getByRole('row')).toHaveCount(3)
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
   await expect(dialog.getByText('该品种当前无在途委托')).toBeVisible()
   await expect(dialog.getByText('在途全部成交后', { exact: true })).toHaveCount(0)
   await expect(dialog.getByText('待调', { exact: true }).locator('..').locator('dd')).toContainText('卖平 3手')
 })
 
-test('holding orders start unread, share the account mode, and isolate account preferences', async ({ page }) => {
+test('holding and account dialogs share the stream snapshot without polling and isolate accounts', async ({ page }) => {
   await page.clock.install()
   await mock(page)
   const reads: number[] = []
@@ -235,38 +230,32 @@ test('holding orders start unread, share the account mode, and isolate account p
   await page.goto('/e2e/holdings.html')
   await page.getByRole('button', { name: '查看 c2611 持仓与目标' }).click()
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
-  await expect(dialog.getByText('尚未拉取委托')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '展开委托 c-1' })).toBeVisible()
   await page.clock.runFor(16000)
   expect(reads).toEqual([])
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
-  await expect(dialog.getByRole('button', { name: '展开委托 c-1' })).toBeVisible()
+  await dialog.getByRole('button', { name: '核对在途委托' }).click()
+  await expect.poll(() => reads.length).toBe(1)
   expect(reads).toEqual([1])
   await page.clock.runFor(10000)
   expect(reads).toEqual([1])
-  await dialog.getByRole('button', { name: '自动拉取' }).click()
-  await expect.poll(() => reads.length).toBe(2)
-  await page.clock.runFor(3100)
-  await expect.poll(() => reads.length).toBe(3)
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
-  await expect.poll(() => reads.length).toBe(4)
   const accountEntry = page.getByRole('button', { name: /^在途委托 ·/ })
   await expect(accountEntry).toContainText('在途委托 · 2')
   await page.clock.runFor(15100)
-  await expect.poll(() => reads.length).toBe(5)
+  expect(reads).toEqual([1])
   await accountEntry.click()
   const accountDialog = page.getByRole('dialog', { name: '在途委托', exact: true })
-  await expect(accountDialog.getByRole('button', { name: '自动拉取' })).toHaveAttribute('aria-pressed', 'true')
-  await expect.poll(() => reads.length).toBe(6)
+  await expect(accountDialog.getByRole('button', { name: '展开委托 c-1' })).toBeVisible()
+  await expect(accountDialog.getByRole('button', { name: '自动拉取' })).toHaveCount(0)
+  expect(reads).toEqual([1])
   await page.keyboard.press('Escape')
-  await expect.poll(() => reads.length).toBe(7)
   await page.getByRole('button', { name: '切换账户' }).click()
   await page.getByRole('button', { name: '查看 c2611 持仓与目标' }).click()
-  await expect(dialog.getByRole('button', { name: '手动拉取' })).toHaveAttribute('aria-pressed', 'true')
-  await expect(dialog.getByText('尚未拉取委托')).toBeVisible()
+  await expect(dialog.getByText('该品种当前无在途委托')).toBeVisible()
   await expect(dialog.getByRole('button', { name: '展开委托 c-1' })).toHaveCount(0)
   await page.clock.runFor(10000)
-  expect(reads.length).toBe(7)
-  await dialog.getByRole('button', { name: '查看在途委托' }).click()
+  expect(reads).toEqual([1])
+  await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect.poll(() => reads.at(-1)).toBe(2)
 })

@@ -676,9 +676,16 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if getattr(self, "_execution_query_runtime_observers_registered", False):
             return
         bridge = self.get_execution_query_runtime_bridge()
+        self._callback_dispatcher.register_order_observer(self.account_orders.apply)
         self._callback_dispatcher.register_order_observer(bridge.observe_order_update)
         self._callback_dispatcher.register_trade_observer(bridge.observe_trade_record)
         self._execution_query_runtime_observers_registered = True
+
+    @property
+    def connection_recovery_in_progress(self) -> bool:
+        """策略桥仍在运行时由 SDK 恢复登录，避免宿主重复启动。"""
+        bridge = self._strategy_bridge
+        return bridge is not None and bridge.is_running() and not bridge.is_ready()
 
     def _place_order_impl(
         self,

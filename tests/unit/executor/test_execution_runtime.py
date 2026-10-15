@@ -215,3 +215,21 @@ def test_execute_releases_runtime_between_runs(monkeypatch) -> None:
     assert executor._active_execution_runtime is None
     assert observed_seqs == [1, 1]
     assert observed_runtimes[0] is not observed_runtimes[1]
+
+
+def test_late_account_order_metadata_and_audit_do_not_recreate_finished_runtime():
+    executor = _RuntimeExecutor()
+    context = {"execution_id": "finished", "account_id": 1, "algorithm": "TEST"}
+    executor.register_order_audit_metadata("old-order", {"audit_context": context})
+    executor.set_audit_sink(None)
+    executor.set_audit_context({})
+    executor.clear_execution_runtime()
+    assert executor.get_order_audit_metadata("old-order")["audit_context"] == context
+    assert not executor.emit_audit_event(
+        event_type="ORDER_TERMINAL",
+        status="SUCCESS",
+        reason_family="EXCHANGE",
+        reason_code="COMMON.ORDER_TERMINAL",
+        audit_context=context,
+    )
+    assert executor.get_active_execution_runtime() is None

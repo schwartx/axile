@@ -17,8 +17,9 @@ from loguru import logger
 from axile.server.account_control.monitor import monitor
 from axile.server.connection_events import connection_frames, connection_hub
 from axile.server.execution.live import live_hub
+from axile.server.orders_live import orders_frames, orders_hub
 
-Topic = Literal["execution", "control", "connection"]
+Topic = Literal["execution", "control", "connection", "orders"]
 _QUEUE_SIZE = 32
 _CONTROL_TIMEOUT_SECONDS = 5.0
 
@@ -106,6 +107,33 @@ async def connection_events() -> AsyncGenerator[StreamEvent, None]:
             )
 
 
+async def orders_events() -> AsyncGenerator[StreamEvent, None]:
+    """读取共享委托镜像；采样和渠道核对均不由浏览器订阅触发。"""
+    async with orders_hub.subscribe() as queue:
+        version = orders_hub.version
+        yield StreamEvent(
+            "orders.snapshot",
+            {"stream_id": orders_hub.stream_id, "version": version, "kind": "snapshot", "data": await orders_frames()},
+        )
+        while True:
+            incoming, ids = await queue.get()
+            if incoming <= version:
+                continue
+            frames = await orders_frames(ids)
+            version = incoming
+            kind = "snapshot" if ids is None else "update"
+            yield StreamEvent(
+                f"orders.{kind}",
+                {
+                    "stream_id": orders_hub.stream_id,
+                    "version": version,
+                    "kind": kind,
+                    "data": frames,
+                    "removed": sorted(ids - {frame["account_id"] for frame in frames}) if ids is not None else [],
+                },
+            )
+
+
 async def _forward(
     topic: Topic,
     source: Callable[[], AsyncGenerator[StreamEvent, None]],
@@ -124,10 +152,15 @@ async def _forward(
 
 
 async def merge_events(
-    topics: tuple[Topic, ...] = ("execution", "control", "connection"), *, heartbeat_seconds: float = 15.0
+    topics: tuple[Topic, ...] = ("execution", "control", "connection", "orders"), *, heartbeat_seconds: float = 15.0
 ) -> AsyncGenerator[StreamEvent | None, None]:
     """并行转发各域；空闲返回心跳，退出时回收所有连接专属任务及订阅。"""
-    sources = {"execution": execution_events, "control": control_events, "connection": connection_events}
+    sources = {
+        "execution": execution_events,
+        "control": control_events,
+        "connection": connection_events,
+        "orders": orders_events,
+    }
     queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=_QUEUE_SIZE)
     tasks = [asyncio.create_task(_forward(topic, sources[topic], queue)) for topic in topics]
     try:

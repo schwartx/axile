@@ -105,6 +105,7 @@ class AbstractExecutorFacadeMixin:
         executor.get_execution_query_runtime_bridge().handle_place_order_result(
             order, fallback_symbol=normalized_symbol
         )
+        executor.account_orders.apply(order)
         return order
 
     @controlled_operation(
@@ -128,7 +129,11 @@ class AbstractExecutorFacadeMixin:
         """
         executor = _executor(self)
         normalized_symbol = None if symbol is None else executor._normalize_symbol(symbol)
-        return executor._get_pending_orders_impl(normalized_symbol)
+        watermark = executor.account_orders.begin_sync()
+        orders = executor._get_pending_orders_impl(normalized_symbol)
+        if normalized_symbol is None:
+            executor.account_orders.replace(orders, watermark)
+        return orders
 
     @controlled_operation(
         "query_trades",

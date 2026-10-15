@@ -253,7 +253,19 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
     @override
     def _verify_connection(self) -> bool:
-        return not self._closed and self._runtime is not None and self._runtime.is_alive()
+        return (
+            not self._closed and self._runtime is not None and self._runtime.is_alive() and self._runtime.synchronized
+        )
+
+    @property
+    def connection_revision(self) -> int:
+        """提供原生断线代次，宿主在 SDK 补齐后重新确认账户状态。"""
+        return self._runtime.connection_revision if self._runtime is not None else 0
+
+    @property
+    def connection_recovery_in_progress(self) -> bool:
+        """活着的 SDK 负责自身重连，宿主等待完整截面后再核对。"""
+        return self._runtime is not None and self._runtime.is_alive() and not self._runtime.synchronized
 
     @override
     def _check_trading_time(self) -> bool:
@@ -664,7 +676,17 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             self._quotes[value.symbol] = value
             self._dispatch(self._price_callbacks, value)
         elif kind == "order":
-            self._dispatch(self._order_callbacks, order_to_unified(row, runtime.resolver))
+            order = order_to_unified(row, runtime.resolver)
+            self.account_orders.apply(order)
+            self._dispatch(self._order_callbacks, order)
+        elif kind == "connection":
+            self.account_orders.invalidate("天勤连接已断开，委托状态待确认")
+        elif kind == "orders.reset":
+            watermark = self.account_orders.begin_sync()
+            rows = cast(list[dict[str, object]], row["rows"])
+            self.account_orders.replace(
+                [order_to_unified(value, runtime.resolver) for value in rows], watermark, drop_missing=True
+            )
         elif kind == "trade":
             self._dispatch(self._trade_callbacks, trade_to_unified(row, runtime.resolver))
 

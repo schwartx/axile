@@ -821,6 +821,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     source = reason if isinstance(reason, BaseException) else self._connection_failure
                     connection_monitor(self).failed(source, label=label, presentation=presentation)
                     preserve_connection_failure(self._connection_failure, source)
+            self.account_orders.invalidate(str(reason))
             self._ready = False
             self._monitoring = False
             self._quotes.clear()
@@ -1037,6 +1038,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         这是柜台查询屏障，不承诺多次查询在柜台侧构成原子快照。
         """
         c = self._config()
+        watermark = self.account_orders.begin_sync()
         orders = self._query_session_rows("query_orders", "ReqQryOrder", build_query_orders(c))
         for row in orders:
             self._remember_order(row)
@@ -1044,6 +1046,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if self._connection_progress is not None:
             self.connection_records["query_orders"] = orders
         self._report_connection("query_orders", "passed")
+        self.account_orders.replace([self._remember_order(row) for row in orders], watermark)
         trades = self._query_session_rows("query_trades", "ReqQryTrade", build_query_trades(c, ""))
         converted_trades = []
         for row in trades:
@@ -1496,6 +1499,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._control_order_result(
             row, "broker_rejected" if o.status == OrderStatus.REJECTED else "broker_acknowledged", order_id=o.order_id
         )
+        self.account_orders.apply(o)
         self._dispatch(self._order_callbacks, o)
 
     def _on_trade(self, row):
@@ -1620,6 +1624,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             )
             rejected = UnifiedOrder.create(**fields)
             self.logger.error(f"报单拒绝已关联订单 {order_id}: ErrorID={error_id}, {error_msg}, source={source}")
+        self.account_orders.apply(rejected)
         self._dispatch(self._order_callbacks, rejected)
 
     def reconcile_terminal_order(self, symbol: str, order_id: str):

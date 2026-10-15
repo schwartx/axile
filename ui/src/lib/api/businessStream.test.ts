@@ -1,3 +1,4 @@
+import { useLiveOrders } from '@/stores/liveOrders'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { useLiveConnection } from '@/stores/liveConnection'
 import { BUSINESS_STREAM_PATH, startBusinessStream } from './businessStream'
@@ -38,6 +39,7 @@ beforeEach(() => {
   useLiveExecStore.setState({ running: new Map(), connected: false, error: null })
   useLiveControl.setState({ frames: {}, streamId: null, version: -1, connected: false, error: null, lastReceivedAt: null, disconnectedAt: null })
   useLiveConnection.setState({ frames: {}, streamId: null, version: -1, connected: false })
+  useLiveOrders.setState({ frames: {}, streamId: null, version: -1, connected: false })
   start()
 })
 afterEach(() => { stop?.(); stop = undefined })
@@ -205,4 +207,31 @@ test('connection errors stay isolated and malformed states require a fresh strea
   expect(opened[0].closed).toBe(true)
   expect(useLiveConnection.getState().connected).toBe(false)
   expect(deferred.size).toBe(1)
+})
+
+
+test('orders use the existing SSE and isolate errors and reconnect snapshots', () => {
+  const frame = { account_id: 1, snapshot: { data: [], count: 0, complete: true, sampled_at: '2026-10-15T10:00:00', cancellations: [], version: 1, instance_id: 'worker' } }
+  const envelope = { stream_id: 'orders', version: 1, kind: 'snapshot', data: [frame] }
+  opened[0].send('orders.update', { ...envelope, kind: 'update' })
+  expect(useLiveOrders.getState().connected).toBe(false)
+  opened[0].send('orders.snapshot', envelope)
+  expect(useLiveOrders.getState().frames[1].count).toBe(0)
+  opened[0].send('execution.snapshot', snapshot())
+  opened[0].send('orders.error', { message: 'orders unavailable' })
+  expect(useLiveExecStore.getState().connected).toBe(true)
+  expect(useLiveOrders.getState().connected).toBe(false)
+  opened[0].send('orders.snapshot', envelope)
+  expect(useLiveOrders.getState().connected).toBe(true)
+  visibility.change(true)
+  expect(useLiveOrders.getState().connected).toBe(false)
+  expect(opened.length).toBe(1)
+})
+
+test('manual order response cannot overwrite newer SSE or another worker', () => {
+  const value = { data: [], count: 0, complete: true, sampled_at: 'now', cancellations: [], version: 4, instance_id: 'new' }
+  useLiveOrders.getState().apply({ stream_id: 'o', version: 1, kind: 'snapshot', data: [{ account_id: 1, snapshot: value }] })
+  useLiveOrders.getState().applyRead(1, { ...value, version: 3, count: 9 })
+  useLiveOrders.getState().applyRead(1, { ...value, instance_id: 'old', version: 99, count: 9 })
+  expect(useLiveOrders.getState().frames[1].count).toBe(0)
 })

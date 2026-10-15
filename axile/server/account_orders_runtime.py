@@ -105,6 +105,7 @@ def order_control_scope(executor: Any, account: AccountContext, active_guard: An
     )
     deadline = clock_monotonic() + 20
     if owned:
+        providers.observe_outcomes(guard)
 
         def checkpoint(_symbol=None):
             if clock_monotonic() >= deadline:
@@ -189,7 +190,7 @@ async def _persist_cancel_outcomes(events: list[dict[str, Any]]) -> None:
         await session.commit()
 
 
-def _cancellation_failures(executor: Any, tracked: list) -> list[dict[str, Any]]:
+def _cancellation_failures(executor: Any, tracked: list, *, persist: bool = True) -> list[dict[str, Any]]:
     observations = getattr(executor, "_manual_cancel_observations", {})
     events, failures = [], []
     for symbol, order_id in tracked:
@@ -213,14 +214,21 @@ def _cancellation_failures(executor: Any, tracked: list) -> list[dict[str, Any]]
                 "message": event["metadata"].get("error_msg") or "撤单被拒绝或未提交成功",
             }
         )
-    if events:
+    if events and persist:
         asyncio.run(_persist_cancel_outcomes(events))
     return failures
 
 
 def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """查询账户全部未完成委托，或验证身份后提交一次撤单。"""
-    orders = executor.get_pending_orders(None)
+    book = getattr(executor, "account_orders", None)
+    snapshot = book.snapshot() if book is not None else None
+    if payload["command"] == "query" or snapshot is None or payload["command"] == "cancel" and not snapshot["complete"]:
+        orders = executor.get_pending_orders(None)
+        if book is not None:
+            orders = book.snapshot()["data"]
+    else:
+        orders = snapshot["data"]
     active = {(order.symbol, order.order_id): order for order in orders if not order.is_completed()}
     if payload["command"] == "cancel":
         key = payload["symbol"], payload["order_id"]
@@ -246,7 +254,7 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
     resolved = []
     for key in payload.get("tracked", []):
         symbol, order_id = key
-        if (symbol, order_id) in active:
+        if payload["command"] != "verify" and (symbol, order_id) in active:
             continue
         try:
             order = terminal_order(executor, symbol, order_id)
@@ -254,10 +262,20 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
             # 局部终态核实失败不丢弃已经成功读取的账户委托；上层继续保留未知状态。
             order = None
         if order is not None:
+            if book is not None:
+                book.apply(order)
             resolved.append(public_order(order))
+    current = book.snapshot() if book is not None else None
+    terminals = {(row["symbol"], row["order_id"]): row for row in resolved}
+    if current is not None:
+        for order in current["resolved"]:
+            terminals.setdefault((order.symbol, order.order_id), public_order(order))
     return {
-        "data": [public_order(order) for order in active.values()],
-        "resolved": resolved,
+        "data": [public_order(order) for order in (current["data"] if current else active.values())],
+        "complete": current["complete"] if current else True,
+        "error": current["error"] if current else None,
+        "version": current["version"] if current else 0,
+        "resolved": list(terminals.values()),
         "cancel_failures": _cancellation_failures(executor, payload.get("tracked", [])),
         "sampled_at": clock_now_iso(),
     }

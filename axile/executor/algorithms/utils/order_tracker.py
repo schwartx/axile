@@ -178,8 +178,6 @@ class OrderTracker:
     chase_config: ChaseConfig | None = None
     clock: Clock = field(default_factory=get_default_clock)
     order_refresh_interval: float = 30.0
-    # WS 回报通道降级 / 失联时改用的 REST 对账快频，令 REST 顶替 WS 维持正确性。
-    degraded_query_interval: float = 3.0
     # 盘口新鲜度兜底：WS 深度流静默失效时 latest_prices 会冻住，据此挂/改被动价可能越过
     # 点差吃成 taker（REST 对账只兜底订单终态、不兜底盘口）。追价读价前若快照年龄超过
     # price_stale_after 秒，则刷新行情快照，并按 rest_price_refresh_interval 限频。
@@ -314,8 +312,7 @@ class OrderTracker:
         for buffered_order in buffered_order_updates:
             self.on_order_update(buffered_order)
 
-        # 下单即探针：订单纳入跟踪即登记“期待 WS 回报”。若超时未回报则 WS 健康降级，
-        # 驱动 REST 对账提频接管（仅提供该能力的渠道生效）。
+        # 下单即探针：未收到期待的回报时报告通道可疑，由账户恢复核对。
         self._register_order_ack_probe(order.order_id)
 
     def on_order_update(self, order: UnifiedOrder) -> None:
@@ -580,9 +577,7 @@ class OrderTracker:
             elapsed = self.clock.time() - start_time
 
             if pending_count := self.get_pending_count():
-                # 每轮按 WS 健康度重算对账间隔：健康时慢频（WS 加速为主），降级 / 失联时
-                # 快频（REST 接管保正确性）。用“距上次查询已过时长”判定，避免间隔从慢切快
-                # 时被旧的下次时点卡住。
+                # 常驻账户依赖回报；没有账户内存簿的独立执行器沿用显式刷新间隔。
                 current_query_interval = self._current_query_interval(timeout, check_interval)
                 if current_query_interval != float("inf") and elapsed - last_query_elapsed >= current_query_interval:
                     self._query_pending_orders()
@@ -672,31 +667,24 @@ class OrderTracker:
 
     def _current_query_interval(self, timeout: float, check_interval: float) -> float:
         """
-        计算本轮 REST 对账间隔，随 WS 回报通道健康度自适应.
-
-        WS 健康或渠道无 WS 概念（``UNKNOWN``）时沿用基础刷新间隔（WS 作为加速主力）；
-        通道降级 / 失联时收敛到 ``degraded_query_interval`` 快频，令 REST 对账顶替 WS
-        维持正确性。即便基础间隔被配置为禁用（``inf``），降级时也会启用快频接管。
+        常驻账户通过回报同步；显式超时、撤单和恢复核对仍使用渠道查询。
 
         Parameters
         ----------
         timeout : float
             本次等待允许的最长时长，单位为秒。
         check_interval : float
-            主循环轮询步长，作为快频下限，单位为秒。
+            主循环检查步长，单位为秒。
 
         Returns
         -------
         float
             本轮有效对账间隔；``inf`` 表示本轮不做定时对账。
         """
-        base = self._get_effective_refresh_interval(timeout, check_interval)
-        if not self._order_channel_health().needs_rest_takeover():
-            return base
-        fast = max(check_interval, self.degraded_query_interval)
-        if base == float("inf"):
-            return fast
-        return min(base, fast)
+        owner = getattr(self.executor, "_owner", self.executor)
+        if getattr(owner, "account_orders", None) is not None:
+            return float("inf")
+        return self._get_effective_refresh_interval(timeout, check_interval)
 
     def _register_order_ack_probe(self, order_id: str) -> None:
         """登记下单探针（仅提供 ``expect_order_ack`` 能力的执行器生效）."""

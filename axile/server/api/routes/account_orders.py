@@ -2,14 +2,11 @@
 
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
-from sqlalchemy import tuple_
-from sqlmodel import col, select
 
 from axile.server.account_orders import cancel_account_order, query_account_orders
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account_order import AccountOrdersPublic, OrderCancelReceipt, OrderCancelRequest
-from axile.server.db.models.execution import ExecutionEvent
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
@@ -30,24 +27,6 @@ async def current_orders(session: SessionDep, account_id: int, refresh: bool = Q
     except Exception as exc:
         logger.exception("当前委托查询失败 account_id={}", account_id)
         raise HTTPException(502, detail="当前委托查询失败，请稍后刷新") from exc
-    identities = [(order.symbol, order.order_id) for order in result.data if order.execution_id is None]
-    if identities:
-        rows = (
-            await session.execute(
-                select(ExecutionEvent.symbol, ExecutionEvent.order_id, ExecutionEvent.execution_id)
-                .where(
-                    col(ExecutionEvent.account_id) == account_id,
-                    tuple_(col(ExecutionEvent.symbol), col(ExecutionEvent.order_id)).in_(identities),
-                )
-                .order_by(col(ExecutionEvent.id).desc())
-            )
-        ).all()
-        linked = {}
-        for symbol, order_id, execution_id in rows:
-            linked.setdefault((symbol, order_id), execution_id)
-        for order in result.data:
-            if order.execution_id is None:
-                order.execution_id = linked.get((order.symbol, order.order_id))
     return result
 
 

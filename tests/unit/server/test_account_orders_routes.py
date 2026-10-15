@@ -133,7 +133,11 @@ def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_pat
                     )
                 await session.commit()
             async with factory() as session:
-                result = await routes.current_orders(session, 1, refresh=True)
+                result = await query(build_account())
+                from axile.server.account_orders import _link_executions
+
+                monkeypatch.setattr("axile.server.core.db.SessionLocal", factory)
+                await _link_executions(build_account(), result)
                 assert {row.symbol: row.execution_id for row in result.data} == {
                     "rb2610": "new-rb",
                     "ag2612": "ag",

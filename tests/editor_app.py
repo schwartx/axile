@@ -3,8 +3,11 @@
 from fastapi import FastAPI
 
 from axile.server.api.routes.editor import _sessions, router
+from tests.orders_app import app as orders_app
+from tests.orders_app import lifespan
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
+app.include_router(orders_app.router)
 app.include_router(router, prefix="/api/v1")
 
 

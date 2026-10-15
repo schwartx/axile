@@ -8,6 +8,8 @@ import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { getAccountAssetSnapshots, getAccountTargetSnapshot } from '../src/lib/api/accounts'
 import { usePolling } from '../src/lib/hooks/usePolling'
 import { useLiveConnection } from '../src/stores/liveConnection'
+import { useLiveOrders } from '../src/stores/liveOrders'
+import type { CurrentOrdersSnapshot } from '../src/lib/api/orders'
 import '../src/styles/theme.css'
 
 const units = { quantity_kind: 'contract', quantity_label: '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' } as const
@@ -15,11 +17,18 @@ const units = { quantity_kind: 'contract', quantity_label: '手', quantity_max_d
 useLiveConnection.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot',
   data: [1, 2].map(account_id => ({ account_id, connection: { status: 'ready', observed_at: null, message: null, error: null } })) })
 
+// 持仓布局用例直接注入统一镜像；真实 SSE / IPC 在 orders.e2e.ts 覆盖。
+const seeded = (window as Window & { holdingsOrders?: CurrentOrdersSnapshot }).holdingsOrders
+if (seeded) useLiveOrders.getState().apply({ stream_id: 'fixture', version: 1, kind: 'snapshot', data: [
+  { account_id: 1, snapshot: seeded },
+  { account_id: 2, snapshot: { ...seeded, data: [], count: 0, cancellations: [] } },
+] })
+
 export function Fixture() {
   const [accountId, setAccountId] = useState(1)
   const [selection, setSelection] = useState<{ accountId: number; symbol: string; keyboardOpened: boolean } | null>(null)
   const symbol = selection?.accountId === accountId ? selection.symbol : null
-  const orders = useCurrentOrders(accountId, symbol != null)
+  const orders = useCurrentOrders(accountId)
   const assets = usePolling(useCallback((signal: AbortSignal) => getAccountAssetSnapshots(accountId, { limit: 1 }, signal), [accountId]), { queryKey: `assets:${accountId}`, intervalMs: 0 })
   const target = usePolling(useCallback((signal: AbortSignal) => getAccountTargetSnapshot(accountId, signal), [accountId]), { queryKey: `target:${accountId}`, intervalMs: 0 })
   const latest = assets.data?.data[0]

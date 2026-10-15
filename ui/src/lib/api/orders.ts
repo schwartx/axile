@@ -32,6 +32,9 @@ export interface CurrentOrdersSnapshot {
   count: number | null
   complete: boolean
   sampled_at: string
+  instance_id?: string | null
+  version?: number
+  error?: string | null
   cancellations: CancelReceipt[]
 }
 

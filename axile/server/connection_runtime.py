@@ -46,6 +46,9 @@ def register_session(binding, alive: Callable[[], bool]) -> None:
     from axile.server.connection_events import connection_hub
 
     connection_hub.changed(binding.account_id)
+    from axile.server.orders_live import orders_hub
+
+    orders_hub.changed(binding.account_id)
     connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
 
 
@@ -77,6 +80,9 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
     connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
     if recovered or changed:
         connection_hub.changed(binding.account_id)
+        from axile.server.orders_live import orders_hub
+
+        orders_hub.changed(binding.account_id)
 
 
 def session_deadlines() -> dict[int, float]:
@@ -103,6 +109,9 @@ def end_session(binding, message: str, *, failed: bool = False) -> bool:
     from axile.server.connection_events import connection_hub
 
     connection_hub.changed(binding.account_id)
+    from axile.server.orders_live import orders_hub
+
+    orders_hub.changed(binding.account_id)
     return True
 
 
@@ -113,6 +122,9 @@ def clear_sessions() -> None:
     from axile.server.connection_events import connection_hub
 
     connection_hub.changed()
+    from axile.server.orders_live import reset_orders
+
+    reset_orders()
 
 
 def forget_session(account_id: int) -> None:
@@ -122,6 +134,9 @@ def forget_session(account_id: int) -> None:
     from axile.server.connection_events import connection_hub
 
     connection_hub.changed(account_id)
+    from axile.server.orders_live import forget_orders
+
+    forget_orders(account_id)
 
 
 def current_session(account_id: int, config_key: str) -> AccountConnectionPublic:
@@ -154,4 +169,17 @@ def current_session(account_id: int, config_key: str) -> AccountConnectionPublic
             retry_after_seconds=max(0, math.ceil(session.retry_deadline - clock_monotonic()))
             if status == "unavailable"
             else 0,
+        )
+
+
+def matches_session(binding) -> bool:
+    """确认 IPC 来源仍是当前存活实例，拒绝替换后的迟到帧。"""
+    with _lock:
+        session = _sessions.get(binding.account_id)
+        return bool(
+            session
+            and not session.ended
+            and session.instance_id == binding.instance_id
+            and session.config_key == binding.config_key
+            and session.alive()
         )

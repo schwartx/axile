@@ -136,3 +136,20 @@ def test_read_guard_rejects_every_non_ready_state_before_worker_creation(monkeyp
         manager._order_command_blocking(build_account(is_started=False), {"command": "query"})
     spawn.assert_not_called()
     manager.close()
+
+
+def test_late_order_command_cannot_rebind_current_worker_to_previous_session():
+    from dataclasses import asdict
+
+    from axile.server.connection_state import ConnectionBinding, ConnectionCollector
+    from axile.server.execution.resident_connection import AccountConnectionUnavailable
+    from axile.server.execution.worker_backend.orders import _command
+    from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+
+    account = build_account()
+    old = ConnectionBinding(account.id, "same-config", "old")
+    current = ConnectionBinding(account.id, "same-config", "current")
+    state = _WorkerBackendState(connection_collector=ConnectionCollector(current))
+    with pytest.raises(AccountConnectionUnavailable, match="会话已变化"):
+        _command(state, {"command": "query", "account": account.model_dump(), "connection_binding": asdict(old)})
+    assert state.connection_collector.binding == current
