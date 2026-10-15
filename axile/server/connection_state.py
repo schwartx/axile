@@ -305,18 +305,25 @@ def end_connection_instance(
 
     end_session(binding, message, failed=error is not None)
     try:
+        from sqlalchemy import update
+
         with Session(connection_engine()) as session:
-            state = session.get(AccountConnectionState, binding.account_id)
-            if state is None or state.instance_id != binding.instance_id:
-                return
-            state.instance_id = ""
+            values: dict[str, object] = {"instance_id": ""}
             if error is not None:
-                state.last_failure = {
+                values["last_failure"] = {
                     "observed_at": clock_now_iso(),
                     "message": message,
                     "error": exception_details(error),
                 }
-            session.add(state)
+            session.execute(
+                update(AccountConnectionState)
+                .where(
+                    col(AccountConnectionState.account_id) == binding.account_id,
+                    col(AccountConnectionState.instance_id) == binding.instance_id,
+                    col(AccountConnectionState.config_key) == binding.config_key,
+                )
+                .values(**values)
+            )
             session.commit()
     except Exception:
         logger.exception("账户会话结束状态保存失败 account_id={}", binding.account_id)

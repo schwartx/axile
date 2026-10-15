@@ -49,7 +49,7 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
     """心跳只刷新采样时间，不能伪造新的渠道访问成功时间。"""
     with _lock:
         session = _sessions.get(binding.account_id)
-        if session is None or session.ended or session.instance_id != binding.instance_id:
+        if session is None or session.ended or session.instance_id != binding.instance_id or session.config_key != binding.config_key:
             return
         session.sampled, session.sampled_at = clock_monotonic(), clock_now_iso()
         if sequence > session.sequence:

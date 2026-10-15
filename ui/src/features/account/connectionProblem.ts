@@ -49,7 +49,6 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   const summary = failed ? presentation.summary || detail.message || summaries.unavailable : summaries[detail.status] ?? summaries.unknown
   const at = (value?: string | null) => value?.replace('T', ' ') ?? '尚无记录'
   const facts = [
-    { label: '账户', value: String(accountId) }, { label: '当前会话', value: label },
     { label: '执行器', value: detail.worker_alive ? '正在驻留' : '未驻留' },
     { label: '状态更新', value: at(detail.observed_at) },
     { label: '最近访问成功', value: at(detail.last_success_at) },
@@ -66,7 +65,7 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   } : null
   const sections = presentation.sections ?? []
   const actions = presentation.actions ?? []
-  const copy = [title, summary, ...facts.map(field => `${field.label}：${field.value}`), ...sections.flatMap(section => [section.title, section.text,
+  const copy = [title, summary, `账户：${accountId}`, `当前会话：${label}`, ...facts.map(field => `${field.label}：${field.value}`), ...sections.flatMap(section => [section.title, section.text,
     ...(section.fields ?? []).map(field => `${field.label}：${field.value}`), ...(section.steps ?? []).map((step, i) => `${i + 1}. ${step}`)]),
   ...actions.map(action => action.label), technical, history ? `最近连接失败（历史）\n${at(history.observed_at)}\n${history.message ?? ""}\n${errorValueText(history.error ?? {})}\n${errorValueText(history.presentation ?? {})}` : ""].filter(Boolean).join('\n\n')
   return { title, summary, facts, sections, actions, technical, history, technicalInfo: connectionTechnicalDetails(detail), copy }

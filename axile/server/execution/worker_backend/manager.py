@@ -124,6 +124,7 @@ _TERMINATION_GRACE_SECONDS = 5.0
 """人工终止后等待 worker 协作撤单并退出的宽限时间（秒）."""
 
 _worker_backend_manager: "WorkerBackendManager | None" = None
+_connection_binding_lock = Lock()
 
 
 def _require_account_id(account: AccountContext) -> int:
@@ -450,6 +451,13 @@ class WorkerBackendManager:
     @staticmethod
     def _bind_connection_request(handle: _WorkerBackendHandle, request: WorkerBackendRequest) -> AccountSnapshot:
         """连接观察绑定到当前配置和 worker，不让重试携带已退役实例的令牌。"""
+        # 委托与交易使用不同管道；首次并发请求也必须共用一个观察身份。
+        with _connection_binding_lock:
+            return WorkerBackendManager._bind_connection_request_locked(handle, request)
+
+    @staticmethod
+    def _bind_connection_request_locked(handle: _WorkerBackendHandle, request: WorkerBackendRequest) -> AccountSnapshot:
+        """在短临界区内解析配置并登记实例；不包含柜台访问或 IPC 等待。"""
         from dataclasses import asdict
 
         from axile.server.connection_state import begin_connection_instance, connection_config_key
