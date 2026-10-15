@@ -215,3 +215,18 @@ def test_account_operation_logs_are_included_with_the_same_privacy_boundary(data
     assert _manifest(archive)["logs"]["matched_rows"] == 1
     assert _jsonl(archive, "logs.jsonl")[0]["context"]["execution_id"] == "op"
     assert "hidden" not in archive.read("logs.jsonl").decode()
+
+
+def test_unknown_or_conflicting_context_types_stay_unknown_for_both_export_paths(database):
+    _seed(
+        database,
+        _control("old-unknown"),
+        _control("conflicting", context_kind="account_operation"),
+        _control("conflicting", seq=2),
+    )
+    for key in ("old-unknown", "conflicting"):
+        for url in (_DATE_URL, f"/account/executions/{key}/evidence"):
+            archive = _zip(_client(database).get(url))
+            report = next(item for item in _manifest(archive)["executions"] if item["key"] == key)
+            assert report["context_kind"] == "unknown"
+            assert report["task_status"] == "UNKNOWN"

@@ -285,6 +285,10 @@ def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) 
             item.context_kind = "execution"
         elif operation:
             item.context_kind = "account_operation"
+        elif kinds == {AccountControlContextKind.EXECUTION}:
+            item.context_kind = "execution"
+        else:
+            item.context_kind = "unknown"
         for row in rows:
             source = row.get("source", "unknown")
             if source not in item.sources:

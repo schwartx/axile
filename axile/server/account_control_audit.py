@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import Field, SQLModel, select
+from sqlmodel import Field, SQLModel, col, select
 
 from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.models import AccountControlDecision
@@ -73,7 +73,7 @@ async def query_account_control_audit_summary(
             AccountControlEvent.operation,
             AccountControlEvent.decision,
             AccountControlEvent.outcome,
-            func.count(AccountControlEvent.id).label("count"),
+            func.count(col(AccountControlEvent.id)).label("count"),
         )
         .where(
             AccountControlEvent.account_id == account_id,
@@ -129,7 +129,7 @@ async def query_account_control_audit_executions(
 
     first_event_at = func.min(AccountControlEvent.created_at).label("first_event_at")
     last_event_at = func.max(AccountControlEvent.created_at).label("last_event_at")
-    event_count = func.count(AccountControlEvent.id).label("event_count")
+    event_count = func.count(col(AccountControlEvent.id)).label("event_count")
     stmt = (
         select(
             AccountControlEvent.execution_id,
@@ -169,7 +169,7 @@ async def _context_descriptions(
         return {}
     statement = (
         select(AccountControlEvent.execution_id, AccountControlEvent.context_kind, AccountControlEvent.source)
-        .where(*conditions, AccountControlEvent.execution_id.in_(ids))
+        .where(*conditions, col(AccountControlEvent.execution_id).in_(ids))
         .distinct()
     )
     values = (await session.execute(statement)).all()
@@ -207,9 +207,9 @@ async def query_account_control_execution_events(
     stmt = (
         select(AccountControlEvent)
         .where(*conditions)
-        .order_by(AccountControlEvent.seq, AccountControlEvent.id)
+        .order_by(col(AccountControlEvent.seq), col(AccountControlEvent.id))
         .offset(skip)
         .limit(limit)
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return AccountControlAuditEventPage(data=rows, count=total)
+    return AccountControlAuditEventPage(data=list(rows), count=total)
