@@ -2,6 +2,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useEffect, useRef, useState } from 'react'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { getAccountControlPolicy } from '@/lib/api/accounts'
 import type { AccountControlPolicyEditorModel } from '@/types/api'
 import { CenteredModal } from '@/components/ui/CenteredModal'
@@ -169,6 +170,13 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const names = { ...OPERATIONS, ...Object.fromEntries((model?.operations ?? []).map((operation) => [operation.key, operation.display_name])) }
 
   const rules = metricRules(frame)
+  const stale = Boolean(frame?.stale && !frame.waiting_total && !frame.incomplete)
+  const updatedAt = frame?.sampled_at_ms != null
+    ? new Date(frame.sampled_at_ms).toLocaleTimeString('zh-CN', { timeZone: frame.timezone ?? 'Asia/Shanghai', hour12: false })
+    : null
+  const freshness = updatedAt
+    ? `${stale ? '统计待更新 · 最后更新于' : '统计更新于'} ${updatedAt}`
+    : stale ? '统计待更新 · 尚无更新时间' : '尚未收到流控统计'
   const close = () => setOpen(false)
   const save = () => {
     if (draft.length < 1 || draft.length > 3) return
@@ -177,20 +185,23 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
     close()
   }
   return <>
-    <button
+    <Tooltip content={freshness}><button
       type="button"
       onClick={(event) => { event.stopPropagation(); setDraft([...selected]); setOpen(true) }}
       className="group flex min-w-0 max-w-full flex-none cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-left text-[14px]"
     >
-      <span className="flex-none text-ink-3">流控</span>
+      <span className="flex flex-none items-center gap-1.5 text-ink-3">
+        流控
+        <span role={stale ? 'img' : undefined} aria-label={stale ? '统计待更新' : undefined} aria-hidden={!stale}
+          className={`h-1.5 w-1.5 flex-none rounded-full ${stale ? 'bg-warn' : 'bg-transparent'}`} />
+      </span>
       <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
         {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
       </span>
       {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
         : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
-        : frame?.stale ? <span className="flex-none text-warn">陈旧</span>
-        : frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
-    </button>
+        : !stale && frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}
+    </button></Tooltip>
     <ControlDialog model={model} loading={loading} failed={failed} retry={() => setAttempt((value) => value + 1)} names={names} open={open} frame={frame} accountId={accountId} accountName={accountName} selected={selected} draft={draft} onDraftChange={setDraft} onSave={save} onClose={close} />
   </>
 }
