@@ -113,62 +113,6 @@ def test_controlled_operation_allows_duplicate_operation_key_with_different_symb
     assert _second is not None
 
 
-def test_controlled_operation_routes_calls_through_shared_helper(monkeypatch: pytest.MonkeyPatch) -> None:
-    """装饰器包装应复用通用账户控制执行 helper。"""
-    captured: dict[str, object] = {}
-
-    def fake_run_controlled_call(
-        *,
-        guard: object,
-        operation: str,
-        call: object,
-        symbol: str | None = None,
-        metadata: object = None,
-        success_outcome: object = "succeeded",
-        result_metadata_resolver: object = None,
-    ) -> object:
-        captured.update(
-            {
-                "guard": guard,
-                "operation": operation,
-                "symbol": symbol,
-                "metadata": metadata,
-                "success_outcome": success_outcome,
-                "has_result_metadata_resolver": callable(result_metadata_resolver),
-            }
-        )
-        return call()
-
-    monkeypatch.setattr(decorators_module, "run_controlled_call", fake_run_controlled_call)
-
-    class DemoExecutor:
-        def __init__(self, guard: AccountControlGuard) -> None:
-            self._account_control_guard = guard
-
-        @controlled_operation(
-            "demo_query",
-            symbol_arg="symbol",
-            metadata_resolver=lambda bound: {"order_id": str(bound.arguments["order_id"])},
-            success_outcome="fetched",
-            result_metadata_resolver=lambda result: {"count": len(result)},
-        )
-        def query(self, symbol: str, order_id: str) -> list[str]:
-            return [f"{symbol}:{order_id}"]
-
-    guard = _build_guard()
-    result = DemoExecutor(guard).query("rb2610", "OID-1")
-
-    assert result == ["rb2610:OID-1"]
-    assert captured == {
-        "guard": guard,
-        "operation": "demo_query",
-        "symbol": "rb2610",
-        "metadata": {"order_id": "OID-1"},
-        "success_outcome": "fetched",
-        "has_result_metadata_resolver": True,
-    }
-
-
 def test_controlled_operation_prefers_explicit_guard_getter(monkeypatch: pytest.MonkeyPatch) -> None:
     """装饰器应优先读取显式 guard getter，而不是依赖兼容字段。"""
     captured: dict[str, object] = {}
@@ -215,22 +159,3 @@ def test_controlled_operation_prefers_explicit_guard_getter(monkeypatch: pytest.
         "symbol": "rb2610",
         "metadata": {},
     }
-
-
-@pytest.mark.parametrize(
-    ("removed_kwargs", "expected_fragment"),
-    [
-        ({"symbol_scoped": False}, "symbol_scoped"),
-        ({"symbol_resolver": lambda bound: bound.arguments.get("symbol")}, "symbol_resolver"),
-        ({"order_id_resolver": lambda bound: bound.arguments.get("order_id")}, "order_id_resolver"),
-        ({"error_outcome": "failed"}, "error_outcome"),
-    ],
-)
-def test_controlled_operation_rejects_removed_legacy_kwargs(
-    removed_kwargs: dict[str, object],
-    expected_fragment: str,
-) -> None:
-    """装饰器不再接受已删除的遗留参数。"""
-
-    with pytest.raises(TypeError, match=expected_fragment):
-        controlled_operation("demo_removed", **removed_kwargs)

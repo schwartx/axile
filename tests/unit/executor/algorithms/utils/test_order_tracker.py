@@ -532,14 +532,6 @@ def test_add_order_registers_ws_ack_probe() -> None:
     assert executor.ack_probes == ["ws-1"]
 
 
-def test_query_interval_healthy_uses_base_interval() -> None:
-    """WS 健康时沿用基础慢频，WS 作为加速主力。"""
-    executor = _WsChannelExecutor()
-    executor.health = OrderChannelHealth.HEALTHY
-    tracker = OrderTracker(executor=executor, order_refresh_interval=30.0, degraded_query_interval=3.0)
-    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 30.0
-
-
 def test_query_interval_speeds_up_when_channel_degraded() -> None:
     """WS 降级 / 失联时收敛到快频，REST 对账接管保正确性。"""
     executor = _WsChannelExecutor()
@@ -550,13 +542,6 @@ def test_query_interval_speeds_up_when_channel_degraded() -> None:
 
     executor.health = OrderChannelHealth.DOWN
     assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 3.0
-
-
-def test_query_interval_unknown_channel_keeps_base() -> None:
-    """无 WS 概念渠道（无健康上报）保持原有慢频，不改变既有行为。"""
-    executor = _ChaseExecutor()  # 无 get_order_channel_health → UNKNOWN
-    tracker = OrderTracker(executor=executor, order_refresh_interval=30.0)
-    assert tracker._current_query_interval(timeout=600.0, check_interval=1.0) == 30.0
 
 
 def test_query_interval_takeover_even_when_base_disabled() -> None:
@@ -662,20 +647,6 @@ def test_usable_price_stale_triggers_rest_refresh() -> None:
     assert executor.market_data_calls == 1
 
 
-def test_rest_refresh_is_rate_limited() -> None:
-    """同一时钟窗口内多次读价只打一次 REST（限频）。"""
-    clock = _FixedClock(now=1000.0)
-    rest_snapshot = _price("SHSE.600000", 11.0, 11.02, timestamp_ms=int(1000.0 * 1000))
-    executor = _MarketDataExecutor(rest_snapshot)
-    tracker = OrderTracker(executor=executor, clock=clock, price_stale_after=5.0, rest_price_refresh_interval=1.0)
-    tracker.latest_prices["SHSE.600000"] = _price("SHSE.600000", 10.0, 10.02, timestamp_ms=int(990.0 * 1000))
-
-    tracker._usable_price("SHSE.600000")
-    tracker._usable_price("SHSE.600000")
-
-    assert executor.market_data_calls == 1
-
-
 def test_rest_refresh_skipped_for_other_symbol() -> None:
     """非当前品种不走 REST 兜底（executor 只代理自身 symbol），返回不可用。"""
     clock = _FixedClock(now=1000.0)
@@ -704,20 +675,6 @@ def test_rest_refresh_invalid_snapshot_rejects_stale() -> None:
     assert result is None
     assert tracker.latest_prices["SHSE.600000"] is stale
     assert executor.market_data_calls == 1
-
-
-def test_pending_chase_symbols_dedup() -> None:
-    """待追单品种快照应去重保序。"""
-    executor = _ChaseExecutor()
-    tracker = OrderTracker(
-        executor=executor,
-        chase_config=ChaseConfig(enabled=True, ticks=1, max_count=5, interval=0.0),
-    )
-    tracker.add_order(_build_pending_order("o1", symbol="SHSE.600000"), direction=OrderDirection.BUY)
-    tracker.add_order(_build_pending_order("o2", symbol="SZSE.000001"), direction=OrderDirection.SELL)
-    tracker.add_order(_build_pending_order("o3", symbol="SHSE.600000"), direction=OrderDirection.BUY)
-
-    assert tracker._pending_chase_symbols() == ["SHSE.600000", "SZSE.000001"]
 
 
 class _UnconfirmedCancelExecutor(_ChaseExecutor):

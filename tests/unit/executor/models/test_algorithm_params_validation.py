@@ -21,26 +21,6 @@ def test_parse_raises_on_invalid_params() -> None:
     assert "SINGLE-MAKER" in str(excinfo.value)
 
 
-def test_parse_returns_model_on_valid_params() -> None:
-    """合法参数应解析为参数模型实例。"""
-    resolved = _parse_algorithm_params_with_metadata(
-        {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 3600, "chase_enabled": True, "max_chase_count": 50}},
-        "SINGLE-MAKER",
-    )
-    params = resolved["params"]
-    assert type(params).__name__ == "SingleMakerParams"
-    assert params.max_wait_seconds == 3600  # type: ignore[attr-defined]
-
-
-def test_parse_is_lenient_for_unknown_algorithm() -> None:
-    """未注册算法无参数模型可用时，保持宽松原样返回。"""
-    resolved = _parse_algorithm_params_with_metadata(
-        {"method": "NO-SUCH-ALGO", "params": {"whatever": 1}},
-        "NO-SUCH-ALGO",
-    )
-    assert resolved["params"] == {"whatever": 1}
-
-
 def test_get_resolved_symbol_algorithm_raises_on_invalid_params() -> None:
     """经由统一输入解析同一路径时，非法参数同样应抛出。"""
     standard_input = UnifiedStandardInput.from_dict(

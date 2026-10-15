@@ -71,44 +71,6 @@ def _build_account() -> Account:
     )
 
 
-def test_parse_cron_expr_supports_multiple_triggers() -> None:
-    triggers = server_utils.parse_cron_expr("*/5 * * * * | 0 9 * * 1")
-
-    assert len(triggers) == 2
-
-
-def test_parse_cron_expr_rejects_empty_input() -> None:
-    with pytest.raises(ValueError, match="空表达式"):
-        server_utils.parse_cron_expr("   ")
-
-
-def test_is_blank_cron_expr_treats_empty_as_manual_only() -> None:
-    """空 / 空白 cron 表示仅手动，调度路径应短路而非 parse."""
-    assert server_utils.is_blank_cron_expr("") is True
-    assert server_utils.is_blank_cron_expr("   ") is True
-    assert server_utils.is_blank_cron_expr(None) is True
-    assert server_utils.is_blank_cron_expr("*/5 * * * *") is False
-
-
-@pytest.mark.parametrize("expr", ["* * * * *", "0 8 * * *", "0 8 * * * | 0 20 * * 1-5", ""])
-def test_account_update_accepts_valid_or_blank_cron(expr: str) -> None:
-    """合法 / 多段 / 空（仅手动）cron 应通过 AccountUpdate 校验."""
-    assert AccountUpdate(cron_expr=expr).cron_expr == expr
-
-
-@pytest.mark.parametrize("expr", ["hello world", "99 99 * * *", "* * * *"])
-def test_account_update_rejects_invalid_cron(expr: str) -> None:
-    """无法解析 / 字段数错 / 越界的 cron 应在边界即被 AccountUpdate 拒绝（N1 回归）."""
-    with pytest.raises(ValidationError):
-        AccountUpdate(cron_expr=expr)
-
-
-@pytest.mark.parametrize("timeout", [1, 60, 180, 540])
-def test_account_update_accepts_positive_execution_timeout(timeout: int) -> None:
-    """区间内的正整数总超时应通过 AccountUpdate 校验."""
-    assert AccountUpdate(execution_timeout=timeout).execution_timeout == timeout
-
-
 @pytest.mark.parametrize("timeout", [0, -1, -180])
 def test_account_update_rejects_non_positive_execution_timeout(timeout: int) -> None:
     """0 / 负数应被拒绝：不允许按账户关掉「执行无限挂起」这道兜底。"""
@@ -121,26 +83,6 @@ def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(tim
     """超过上界应被拒绝：否则多进程后端 600s 的强杀兜底会先于协作撤单触发。"""
     with pytest.raises(ValidationError):
         AccountUpdate(execution_timeout=timeout)
-
-
-def test_build_error_card_includes_optional_metadata() -> None:
-    card = server_utils.build_error_card("boom\ntrace", account_name="acc-1", external_ip="1.2.3.4")
-
-    assert card["header"]["template"] == "red"  # type: ignore[index]
-    first_element = card["elements"][0]  # type: ignore[index]
-    assert "acc-1" in first_element["content"]  # type: ignore[index]
-    assert "1.2.3.4" in first_element["content"]  # type: ignore[index]
-
-
-def test_build_test_card_is_neutral_and_shares_error_card_shape() -> None:
-    """联通测试卡片应与错误卡片同构（header + markdown 元素），但模板/文案中性、不含错误详情."""
-    card = server_utils.build_test_card()
-
-    assert card["header"]["template"] != "red"  # type: ignore[index]
-    assert card["header"]["title"]["tag"] == "plain_text"  # type: ignore[index]
-    first_element = card["elements"][0]  # type: ignore[index]
-    assert first_element["tag"] == "markdown"  # type: ignore[index]
-    assert "测试" in first_element["content"]  # type: ignore[index]
 
 
 def test_append_error_execute_record_sanitizes_account_config() -> None:

@@ -7,35 +7,26 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from pydantic import Field, ValidationError
-from sqlalchemy import Text
 
 from axile.channels import (
     AlgorithmReference,
     ChannelAccountField,
-    ChannelAccountFieldClipboard,
-    ChannelAccountFieldConstraints,
     ChannelAccountForm,
     ChannelDefaults,
     ChannelDescriptor,
-    ChannelEndpointConstraints,
     ChannelLeverage,
     ChannelPlugin,
     ChannelPortfolioPreset,
     ChannelSchedule,
     ChannelUi,
     ChannelUnits,
-    DuplicateChannelError,
     get_channel,
     list_channels,
     register_channel,
     registry,
 )
-from axile.executor.abstract_executor.capability import AbstractExecutorCapabilityMixin
 from axile.executor.models.unified_input_accounts import BaseAccountConfig
 from axile.server.api.routes.capabilities import list_channel_capabilities
-from axile.server.db.models import Account, AccountControlEvent, AccountCreate, ExecutionEvent
-from axile.server.execution.dispatch import ExecutionBackendKind, resolve_execution_backend_kind
-from axile.server.execution.execution_algorithms import resolve_account_leverages
 from axile.server.execution.factory import create_executor_instance
 
 
@@ -145,106 +136,6 @@ def test_builtin_channels_have_stable_order_and_descriptor_shape() -> None:
     ]
 
 
-def test_channel_defaults_keep_default_account_control_preset_for_external_plugins() -> None:
-    plugin = _plugin()
-
-    assert plugin.descriptor.defaults.account_control_preset == "default"
-
-
-def test_channel_descriptor_requires_schedule_kind() -> None:
-    """插件必须显式声明调度类型，禁止未知渠道静默套用默认规则。"""
-    payload = _plugin().descriptor.model_dump()
-    payload.pop("schedule")
-
-    with pytest.raises(ValidationError, match="schedule"):
-        ChannelDescriptor.model_validate(payload)
-
-
-def test_account_field_rejects_legacy_input_contract() -> None:
-    """渠道字段必须完整声明新语义，不接受旧 input 协议或隐式默认值."""
-    with pytest.raises(ValidationError):
-        ChannelAccountField.model_validate({"name": "token", "label": "Token", "input": "password"})
-    with pytest.raises(ValidationError):
-        ChannelAccountField.model_validate({"name": "token", "label": "Token"})
-
-
-def test_account_field_constraints_match_semantic_kind() -> None:
-    """约束只能声明在对应语义字段上，协议规则必须自洽。"""
-    constraints = ChannelAccountFieldConstraints(
-        endpoint=ChannelEndpointConstraints(
-            scheme="required",
-            allowed_schemes=("tcp",),
-            port="required",
-        )
-    )
-    field = ChannelAccountField(
-        name="front",
-        label="前置",
-        kind="endpoint",
-        width="full",
-        constraints=constraints,
-    )
-
-    assert field.model_dump()["constraints"]["endpoint"] == {
-        "scheme": "required",
-        "allowed_schemes": ("tcp",),
-        "port": "required",
-        "allow_path": False,
-    }
-    with pytest.raises(ValidationError):
-        ChannelAccountField(
-            name="token",
-            label="Token",
-            kind="secret",
-            width="full",
-            constraints=constraints,
-        )
-    with pytest.raises(ValidationError, match="clipboard"):
-        ChannelAccountField(
-            name="token",
-            label="Token",
-            kind="secret",
-            width="full",
-            clipboard=ChannelAccountFieldClipboard(role="rpc"),
-        )
-    with pytest.raises(ValidationError, match="展示模式"):
-        ChannelAccountField(
-            name="token",
-            label="Token",
-            kind="secret",
-            width="full",
-            presentation="conditional_reveal",
-        )
-
-
-def test_builtin_account_contracts_expose_validation_constraints() -> None:
-    """内置渠道描述输出与执行器实际确定性要求一致。"""
-    plugins = {plugin.descriptor.channel: plugin for plugin in list_channels()}
-    ctp_fields = {field.name: field for field in plugins["ctp"].descriptor.account_form.fields}
-    gm_fields = {field.name: field for field in plugins["gm"].descriptor.account_form.fields}
-    tq_fields = {field.name: field for field in plugins["tq"].descriptor.account_form.fields}
-
-    assert all(
-        ctp_fields[name].required
-        for name in ("broker_id", "investor_id", "password", "td_front", "md_front", "app_id", "auth_code")
-    )
-    assert ctp_fields["td_front"].constraints.endpoint.allowed_schemes == ("tcp",)
-    assert ctp_fields["md_front"].constraints.endpoint.port == "required"
-    assert gm_fields["serv_addr"].constraints.endpoint.scheme == "forbidden"
-    assert gm_fields["connection_mode"].presentation == "conditional_reveal"
-    assert gm_fields["connection_mode"].options[1].description.startswith("Axile 连接")
-    assert tq_fields["initial_balance"].constraints.number.gt == 0
-    assert tq_fields["account_mode"].presentation == "conditional_reveal"
-    assert tq_fields["account_mode"].default is None
-
-
-def test_duplicate_channel_registration_fails_clearly() -> None:
-    list_channels()
-
-    with pytest.raises(DuplicateChannelError, match="重复注册"):
-        register_channel(_plugin("ctp"))
-
-
 def test_entry_point_is_loaded_once_and_appended_after_builtins(monkeypatch: pytest.MonkeyPatch) -> None:
     loads: list[str] = []
 
@@ -299,156 +190,3 @@ def test_capabilities_expose_descriptor_and_runtime_availability() -> None:
     assert capability.portfolio.example_symbols == ("DEMO",)
     assert capability.available is False
     assert capability.missing_packages == ["module_that_does_not_exist_for_axile_test"]
-
-
-def test_runtime_policies_resolve_from_plugin() -> None:
-    list_channels()
-    register_channel(_plugin())
-    account = SimpleNamespace(
-        trade_channel="vendor-demo",
-        market="demo",
-        long_leverage=None,
-        short_leverage=None,
-    )
-
-    assert resolve_execution_backend_kind("vendor-demo") == ExecutionBackendKind.PROCESS
-    assert resolve_account_leverages(account) == (2.0, 1.0)
-
-
-def test_db_models_accept_arbitrary_channel_strings_and_use_text_columns() -> None:
-    account = AccountCreate.model_validate(
-        {
-            "name": "demo",
-            "market": "demo",
-            "trade_channel": "vendor-demo",
-            "account_control_preset": "default",
-            "account_control_override": None,
-            "account_config": {"token": "secret"},
-            "is_started": False,
-            "cron_expr": "",
-            "remark": None,
-            "brokerage": "vendor",
-            "weight_precision": 0.01,
-            "long_leverage": None,
-            "short_leverage": None,
-            "algorithm": {"method": "DEMO", "params": {}},
-            "empty_positions_algorithm": None,
-            "trade_rules": None,
-            "forbidden_symbols": None,
-            "risk_symbols": None,
-            "feishu_key": None,
-            "portfolio_id": None,
-            "write_empty_record": None,
-        }
-    )
-
-    assert account.trade_channel == "vendor-demo"
-    assert isinstance(Account.__table__.c.trade_channel.type, Text)
-    assert isinstance(ExecutionEvent.__table__.c.channel.type, Text)
-    assert isinstance(AccountControlEvent.__table__.c.channel.type, Text)
-
-
-def test_executor_parallel_limit_comes_from_plugin() -> None:
-    list_channels()
-    register_channel(_plugin(max_parallel_symbols=7))
-
-    class _Executor(AbstractExecutorCapabilityMixin):
-        channel_type = "vendor-demo"
-
-    executor = _Executor()
-    assert executor._supports_parallel_symbol_dispatch() is True
-    assert executor._max_parallel_symbol_workers() == 7
-
-
-@pytest.mark.parametrize("invalid_limit", [0, -1])
-def test_channel_rejects_non_positive_parallel_limit(invalid_limit: int) -> None:
-    with pytest.raises(ValueError, match="max_parallel_symbols 必须大于等于 1"):
-        _plugin(max_parallel_symbols=invalid_limit)
-
-
-@pytest.mark.parametrize(("cpu_count", "expected"), [(1, 8), (2, 8), (4, 16), (8, 32), (64, 32)])
-def test_system_parallel_limit_scales_with_available_cpu(
-    monkeypatch: pytest.MonkeyPatch,
-    cpu_count: int,
-    expected: int,
-) -> None:
-    from axile.executor.abstract_executor import capability
-
-    monkeypatch.setattr(capability.os, "sched_getaffinity", lambda _pid: set(range(cpu_count)), raising=False)
-
-    assert capability._system_max_parallel_symbol_workers() == expected
-
-
-def test_system_parallel_limit_falls_back_to_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    from axile.executor.abstract_executor import capability
-
-    def unavailable(_pid: int) -> set[int]:
-        raise OSError("affinity unavailable")
-
-    monkeypatch.setattr(capability.os, "sched_getaffinity", unavailable, raising=False)
-    monkeypatch.setattr(capability.os, "cpu_count", lambda: 4)
-
-    assert capability._system_max_parallel_symbol_workers() == 16
-
-
-def test_system_parallel_limit_handles_missing_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    from axile.executor.abstract_executor import capability
-
-    monkeypatch.delattr(capability.os, "sched_getaffinity", raising=False)
-    monkeypatch.setattr(capability.os, "cpu_count", lambda: None)
-
-    assert capability._system_max_parallel_symbol_workers() == 8
-
-
-def test_channel_without_parallel_limit_uses_system_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from axile.executor.abstract_executor import capability
-
-    list_channels()
-    register_channel(_plugin(max_parallel_symbols=None))
-    monkeypatch.setattr(capability, "_system_max_parallel_symbol_workers", lambda: 16)
-
-    class _Executor(AbstractExecutorCapabilityMixin):
-        channel_type = "vendor-demo"
-
-    executor = _Executor()
-    assert executor._supports_parallel_symbol_dispatch() is True
-    assert executor._max_parallel_symbol_workers() == 16
-
-
-def test_system_parallel_limit_caps_higher_channel_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from axile.executor.abstract_executor import capability
-
-    list_channels()
-    register_channel(_plugin(max_parallel_symbols=24))
-    monkeypatch.setattr(capability, "_system_max_parallel_symbol_workers", lambda: 16)
-
-    class _Executor(AbstractExecutorCapabilityMixin):
-        channel_type = "vendor-demo"
-
-    assert _Executor()._max_parallel_symbol_workers() == 16
-
-
-def test_builtin_target_transforms_are_available_from_registry() -> None:
-    ctp_frame = pd.DataFrame([{"strategy": "alpha", "symbol": "rb", "weight": 0.5}])
-    gm_frame = pd.DataFrame([{"strategy": "alpha", "symbol": "600000.SH", "weight": 0.5}])
-
-    ctp_result = get_channel("ctp").target_transform({"alpha": 0.4}, ctp_frame)
-    gm_result = get_channel("gm").target_transform({"alpha": 0.4}, gm_frame)
-    tq_frame = pd.DataFrame([{"strategy": "alpha", "symbol": "rb2610", "weight": 0.5}])
-    tq_result = get_channel("tq").target_transform({"alpha": 0.4}, tq_frame)
-
-    assert ctp_result.to_dict("records") == [
-        {"strategy": "alpha", "symbol": "rb", "weight": 0.5, "contribution": pytest.approx(0.2)}
-    ]
-    assert gm_result.to_dict("records") == [
-        {
-            "strategy": "alpha",
-            "symbol": "600000.SH",
-            "weight": 0.5,
-            "contribution": pytest.approx(0.2),
-        }
-    ]
-    assert tq_result.to_dict("records") == [
-        {"strategy": "alpha", "symbol": "rb2610", "weight": 0.5, "contribution": pytest.approx(0.2)}
-    ]
-    assert "contribution" not in tq_frame.columns

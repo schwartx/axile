@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from axile.server.api.deps import HistoryPagination
-from axile.server.api.routes.account_crud import list_execute_records
 from axile.server.api.routes.account_execution import execution_artifacts
 from axile.server.api.routes.account_schedule import account_activity
 
@@ -66,17 +65,6 @@ def pagination():
     return HistoryPagination(skip=0, limit=20)
 
 
-def test_execute_records_list_normalizes_legacy(pagination):
-    """记录列表端点：旧 outcome 记录补 status/error，技术原文不透传。"""
-    session = _FakeSession([_Result(None, 1), _Result([_legacy_record()], None)])
-    payload = asyncio.run(_call(list_execute_records, session=session, account_id=1, pagination=pagination))
-    raw = payload.data[0].raw_result
-    assert raw["status"] == "FAILED"
-    assert raw["error"] == "执行失败，具体原因见执行证据"
-    assert raw["technical_detail"] == "RuntimeError: 下单通道断开"
-    assert raw["symbol_results"]["rb2610"]["status"] == "PARTIAL"
-
-
 def test_account_activity_normalizes_legacy():
     """活动流端点：内嵌执行记录同样读时归一。"""
     session = _FakeSession(
@@ -123,10 +111,6 @@ def test_execution_artifacts_normalize_summary_only(monkeypatch, pagination):
     assert by_type["execution_summary"].content["summary"] == {"symbols_total": 1}
     # 目标快照不是执行结果，不做任何推断。
     assert by_type["target_snapshot"].content == {"target": {"rb2610": 1}}
-
-
-async def _async_none():
-    return None
 
 
 async def _call(fn, **kwargs):

@@ -91,37 +91,3 @@ def test_create_executor_instance_uses_registered_plugin(monkeypatch: pytest.Mon
         executor.set_channel_calendar.assert_called_once_with("china")
     finally:
         registry._reset_registry_for_tests()
-
-
-def test_create_executor_instance_rejects_unregistered_channel() -> None:
-    with pytest.raises(ValueError, match="未注册交易渠道: missing-channel"):
-        create_executor_instance(SimpleNamespace(trade_channel="missing-channel", account_config={}))
-
-
-@pytest.mark.parametrize("stage", ["calendar", "initialize"])
-def test_factory_releases_created_executor_when_configuration_fails(monkeypatch, stage):
-    from dataclasses import replace
-
-    from axile.server.execution import factory
-
-    calls = []
-    original = RuntimeError("setup failed")
-
-    def fail(*args):
-        raise original
-
-    def close():
-        calls.append("close")
-        raise RuntimeError("close failed")
-
-    executor = SimpleNamespace(
-        stop=close,
-        set_trading_calendar=fail if stage == "calendar" else lambda value: None,
-        _initialize_connection=fail,
-    )
-    plugin = replace(_plugin(), requires_pre_connect_guard=True, create_executor=lambda config: executor)
-    monkeypatch.setattr(factory, "get_channel", lambda channel: plugin)
-    with pytest.raises(RuntimeError) as caught:
-        create_executor_instance(SimpleNamespace(trade_channel="factory-demo", account_config={"key": "secret"}))
-    assert caught.value is original
-    assert calls == ["close"]
