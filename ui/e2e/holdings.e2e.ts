@@ -82,7 +82,7 @@ test('pointer dismissal leaves no persistent row highlight; keyboard dismissal r
   const dialog = page.getByRole('dialog', { name: 'c2611 · 持仓与目标' })
   await entry.click()
   await expect(page.locator('main')).toHaveAttribute('data-keyboard-opened', 'false')
-  console.log('focus-debug', await page.evaluate(() => ({ active: document.activeElement?.outerHTML.slice(0, 300), panels: [...document.querySelectorAll('[role=dialog]')].map(panel => ({ contains: panel.contains(document.activeElement), inert: (panel as HTMLElement).inert, visibility: getComputedStyle(panel).visibility })) })))
+  await expect(dialog).toBeFocused()
   await page.keyboard.press('Escape')
   await page.mouse.move(5, 5)
   await expect(dialog).toBeHidden()

@@ -233,6 +233,13 @@ export function AccountDetail({
   const isActivelyExecuting = live?.status === 'running'
   const isQueued = isBusy && !isExecuting
   const runKind = live?.kind ?? (runner.kind === 'clear' ? 'clear' : 'rebalance')
+  const pausedWhileExecuting = !isStarted && isActivelyExecuting && !isTerminating
+  const activeExecutionName = runKind === 'clear_positions' || runKind === 'clear' ? '清仓' : '调仓'
+  const pauseExecutionNotice = toggling
+    ? `正在暂停自动执行，本次${activeExecutionName}仍在执行，仍可能下单和成交。`
+    : runtime.data?.status === 'synchronized'
+      ? `自动执行已暂停，本次${activeExecutionName}仍会继续，仍可能下单和成交。`
+      : `暂停设置已保存，本次${activeExecutionName}仍在执行，仍可能下单和成交。`
   const latestRecord = recordList[0]
   const latestOutcome = latestRecord ? executionOutcome(latestRecord) : null
   const idleStatusTextClass = latestOutcome
@@ -604,6 +611,19 @@ export function AccountDetail({
           {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}
         </div>
 
+        </div>
+
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-hidden={!pausedWhileExecuting}
+          inert={!pausedWhileExecuting}
+          className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${pausedWhileExecuting ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <p className="mt-1.5 text-[13px] leading-6 text-ink-2">{pauseExecutionNotice}</p>
+          </div>
         </div>
 
         {/*

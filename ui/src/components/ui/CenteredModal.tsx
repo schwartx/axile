@@ -29,12 +29,17 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
   useEffect(() => {
     if (!open) return
     const previous = document.activeElement as HTMLElement | null
-    panelRef.current?.focus({ preventScroll: true })
-    // visibility 过渡的首帧可能拒绝 focus；下一帧补入，但不打断已进入弹窗的操作。
-    const focusFrame = window.requestAnimationFrame(() => {
-      const panel = panelRef.current
+    const panel = panelRef.current
+    const focusInside = () => {
       if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true })
-    })
+    }
+    focusInside()
+    // visibility 过渡的首帧可能拒绝 focus；下一帧补入，但不打断已进入弹窗的操作。
+    const focusFrame = window.requestAnimationFrame(focusInside)
+    const afterTransition = (event: TransitionEvent) => {
+      if (event.target === panel) focusInside()
+    }
+    panel?.addEventListener('transitionend', afterTransition)
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (event.key === 'Escape') {
@@ -56,6 +61,7 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
     document.addEventListener('keydown', keydown)
     return () => {
       window.cancelAnimationFrame(focusFrame)
+      panel?.removeEventListener('transitionend', afterTransition)
       document.removeEventListener('keydown', keydown)
       if (restoreFocus) previous?.focus({ preventScroll: true })
       else previous?.blur()
