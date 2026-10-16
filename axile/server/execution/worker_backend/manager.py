@@ -821,6 +821,28 @@ class WorkerBackendManager:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户资产查询失败")
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
+    async def query_instruments(
+        self, account: AccountContext, symbols: list[str], *, timeout: float = 5.0, require_specs: bool = False
+    ) -> dict[str, dict[str, object]]:
+        """精确资料查询复用当前目录管道，不运行组合函数或创建交易 worker。"""
+        from axile.server.execution.resident_connection import AccountConnectionUnavailable
+
+        self._check_read_session(account)
+        with self._lock:
+            handle = self._workers.get(_require_account_id(account))
+            if (
+                handle is None
+                or not self._is_handle_healthy(handle)
+                or handle.catalog is None
+                or handle.catalog.source is None
+            ):
+                raise AccountConnectionUnavailable("账户目录会话尚未就绪，请先连接账户")
+            source = handle.catalog.source
+        rows = await asyncio.to_thread(
+            self.instrument_catalog.ensure, symbols, timeout=timeout, require_specs=require_specs, source_name=source
+        )
+        return {symbol: row.wire() for symbol, row in rows.items()}
+
     async def calculate_portfolio(
         self,
         account: AccountContext,

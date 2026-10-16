@@ -383,7 +383,7 @@ def test_new_pending_order_between_scenes_prevents_execution_prep(tmp_path):
     assert not api.sessions
 
 
-def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
+def test_unknown_contract_uses_exact_query_without_recycling_session(tmp_path):
     runner, api = make_runner(tmp_path, invalid_case="unknown")
     request = api.request
     disconnected = False
@@ -391,12 +391,10 @@ def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
 
     def catalog(method, path, body=None, **kwargs):
         nonlocal disconnected
-        if (
-            path == "/account/4/target_snapshot/refresh"
-            and "FT_UNKNOWN_CONTRACT" in api.portfolio["custom_calc_py_code"]
-        ):
-            disconnected = True
-            raise ApiError("CatalogError: 获取合约资料失败: 合约查询返回空结果或合约已下市", 400)
+        if path == "/instrument-catalog/query":
+            assert body["symbols"] == ["FT_UNKNOWN_CONTRACT"]
+            assert "context.get_quote" not in api.portfolio["custom_calc_py_code"]
+            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
         if path == "/account/4/connection" and disconnected:
             return {"status": "closed"}
         if path == "/account/4/connection/reconnect":
@@ -407,7 +405,7 @@ def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
     api.request = catalog
     run_scenarios(runner, ["invalid"])
     assert runner.bundle.index["scenarios"][0]["status"] == "passed"
-    assert len(recoveries) == 1
+    assert not recoveries
     assert not api.sessions
     assert (runner.bundle.path / "final-residue.json").exists()
 

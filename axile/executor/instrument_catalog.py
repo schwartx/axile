@@ -19,10 +19,13 @@ type Query = Callable[[list[str] | None, float | None], list[Instrument]]
 class CatalogError(RuntimeError):
     """必要资料不可用时在下单前终止执行。"""
 
-    def __init__(self, message: str, reason_code: str = "CATALOG.UNAVAILABLE") -> None:
+    def __init__(
+        self, message: str, reason_code: str = "CATALOG.UNAVAILABLE", *, causes: list[dict[str, str]] | None = None
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.execution_error = message
+        self.causes = list(causes or [])
 
 
 @dataclass(frozen=True)
@@ -267,8 +270,21 @@ class InstrumentCatalog:
                             raise CatalogError(f"合约资料不存在或有歧义: {symbol}")
                 return rows
             except Exception as exc:
-                errors.append(str(exc))
-        raise CatalogError("获取合约资料失败: " + ("; ".join(errors) if errors else "没有可用的已登录查询来源"))
+                errors.append(
+                    {
+                        "reason_code": getattr(exc, "reason_code", "CATALOG.UNAVAILABLE"),
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        codes = {error["reason_code"] for error in errors}
+        reason = next(iter(codes)) if len(codes) == 1 else "CATALOG.MIXED_FAILURE" if codes else "CATALOG.UNAVAILABLE"
+        raise CatalogError(
+            "获取合约资料失败: "
+            + ("; ".join(error["message"] for error in errors) if errors else "没有可用的已登录查询来源"),
+            reason,
+            causes=errors,
+        )
 
     def _fill(self, symbols: list[str], attempt: _Attempt, require_specs: bool, source_name: str | None) -> None:
         try:

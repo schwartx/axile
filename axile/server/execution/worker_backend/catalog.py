@@ -57,7 +57,9 @@ class _CatalogPipe:
                 get_default_clock().event_wait(response.ready, min(remaining, 0.05))
             if response.payload.get("error"):
                 raise CatalogError(
-                    response.payload["error"], response.payload.get("reason_code", "CATALOG.UNAVAILABLE")
+                    response.payload["error"],
+                    response.payload.get("reason_code", "CATALOG.UNAVAILABLE"),
+                    causes=response.payload.get("causes"),
                 )
             return response.payload.get("result")
         finally:
@@ -99,6 +101,7 @@ class _CatalogPipe:
                 "reply": message["id"],
                 "error": str(exc),
                 "reason_code": getattr(exc, "reason_code", "CATALOG.UNAVAILABLE"),
+                "causes": getattr(exc, "causes", []),
             }
         try:
             self._send(response)

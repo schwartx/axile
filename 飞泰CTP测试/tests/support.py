@@ -375,6 +375,8 @@ class OfflineApi(Api):
         }
         if route in simple:
             return simple[route]
+        if route == "/instrument-catalog/query":
+            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
         if binary:
             stream = io.BytesIO()
             with zipfile.ZipFile(stream, "w") as archive:
