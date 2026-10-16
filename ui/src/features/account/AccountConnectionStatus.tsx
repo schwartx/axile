@@ -4,7 +4,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { AccountConnectionProblemModal } from '@/features/account/AccountConnectionProblemModal'
 import { connectionLabel } from '@/features/account/connectionProblem'
-import { useAccountConnection, useLiveConnection } from '@/stores/liveConnection'
+import { useAccountConnectionSnapshot, useLiveConnection } from '@/stores/liveConnection'
 import { useConnectionOperation, useConnectionOperations } from '@/stores/connectionOperations'
 
 /** 同一对链环单次分合，在途停在中间态，确认成功后落位。 */
@@ -19,7 +19,7 @@ function ConnectionIcon({ connected, busy, phase }: { connected: boolean; busy: 
 
 /** 连接开关与详情入口独立，共享 SSE 状态和在途操作。 */
 export function AccountConnectionStatus({ accountId }: { accountId: number }) {
-  const connection = useAccountConnection(accountId)
+  const connection = useAccountConnectionSnapshot(accountId)
   const operation = useConnectionOperation(accountId)
   const synced = useLiveConnection(state => state.connected)
   const [openFor, setOpenFor] = useState<number | null>(null)
@@ -38,7 +38,7 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
   const stateName = { uninitialized: '未建立', unknown: '待确认', ready: '就绪', unavailable: '暂不可用', connecting: '准备中', recovering: '恢复中', disconnected: '已断开' }[status]
   const accessible = `账户连通状态：${stateName}${status === 'unavailable' && connection.label?.trim() ? `，${label}` : ''}`
   const buttonClass = 'inline-flex min-w-0 items-center gap-1.5 rounded-chip px-2.5 py-1 text-xs hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
-  return <div className="inline-flex min-w-0 max-w-full items-center gap-2" onClick={event => event.stopPropagation()}>
+  return <div className="inline-flex min-w-0 max-w-full items-center gap-1" onClick={event => event.stopPropagation()}>
     <button type="button" role="switch" aria-checked={connected} aria-label="账户连接" aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
       data-tone={busy ? 'busy' : connected ? 'ready' : status === 'unavailable' ? 'warning' : 'idle'}
       title={busy ? switchLabel : !synced ? '连接状态待同步' : action} disabled={!synced || busy}
@@ -49,9 +49,8 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
     </button>
     <button type="button" aria-label={`连接详情，${accessible}`} aria-haspopup="dialog" title="查看连接详情"
       onClick={() => { setRequestId(value => value + 1); setOpenFor(accountId) }}
-      className={`${buttonClass} shrink-0 cursor-pointer whitespace-nowrap border border-line text-ink-2 hover:border-border-strong`}>
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-chip hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer ${status === 'unavailable' ? 'text-warn' : 'text-ink-2'}`}>
       <Info size={14} className="shrink-0" aria-hidden />
-      <span>连接详情</span>
     </button>
     <AccountConnectionProblemModal selection={openFor === accountId ? { accountId, requestId, detail: connection } : null} onClose={() => setOpenFor(null)} />
   </div>

@@ -193,6 +193,23 @@ test('connection loss clears readiness and equal-version reconnect snapshot rest
   expect(useLiveConnection.getState().frames[7]).toBeUndefined()
 })
 
+test('visibility reconnect keeps account snapshots and waits for fresh authority', () => {
+  const message = { stream_id: 'conn', version: 3, kind: 'snapshot', data: [{ account_id: 7,
+    connection: { status: 'unavailable', label: '令牌更新失败', observed_at: 'now', message: null, error: null } }] }
+  opened[0].send('connection.snapshot', message)
+  visibility.change(true)
+  visibility.change(false)
+  expect(useLiveConnection.getState().connected).toBe(false)
+  expect(useLiveConnection.getState().frames[7].label).toBe('令牌更新失败')
+  opened[1].send('connection.update', { ...message, version: 4, kind: 'update', data: [] })
+  expect(useLiveConnection.getState().connected).toBe(false)
+  opened[0].send('connection.snapshot', { ...message, version: 99, data: [] })
+  expect(useLiveConnection.getState().frames[7].label).toBe('令牌更新失败')
+  opened[1].send('connection.snapshot', message)
+  expect(useLiveConnection.getState().connected).toBe(true)
+  expect(useLiveConnection.getState().frames[7].label).toBe('令牌更新失败')
+})
+
 test('connection errors stay isolated and malformed states require a fresh stream', () => {
   opened[0].send('execution.snapshot', snapshot())
   opened[0].send('control.snapshot', control())

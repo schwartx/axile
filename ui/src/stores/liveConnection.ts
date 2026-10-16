@@ -37,6 +37,15 @@ export const useLiveConnection = create<State>((set) => ({
   disconnect: () => set({ connected: false }),
 }))
 
+const awaitingConnection: AccountConnectionDetail = {
+  status: 'unknown', observed_at: null, message: '连接状态待同步', error: null,
+}
+
+/** 展示保留最近的 SSE 快照；不能用它判断操作是否可执行。 */
+export function useAccountConnectionSnapshot(accountId: number): AccountConnectionDetail {
+  return useLiveConnection(state => state.frames[accountId] ?? awaitingConnection)
+}
+
 /** 事件流尚未同步或已断开时，不沿用旧的就绪结论或当前故障建议。 */
 export function useAccountConnection(accountId: number): AccountConnectionDetail {
   const frame = useLiveConnection(state => state.frames[accountId])

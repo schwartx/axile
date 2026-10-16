@@ -908,7 +908,7 @@ for (const status of ['ready', 'unknown']) test(`connection response ${status} h
   expect(await copied(page)).not.toContain(raw('A'))
 })
 
-test('connection stream loss replaces readiness until a reconnect snapshot arrives', async ({ page }) => {
+test('connection stream loss retains the label and disables actions until a new snapshot', async ({ page }) => {
   await mockConnectionSnapshot(page, { ...problem(), status: 'ready' })
   await page.goto('/e2e/errors.html?mode=connection')
   await page.getByRole('button', { name: /账户连通状态/ }).click()
@@ -918,9 +918,52 @@ test('connection stream loss replaces readiness until a reconnect snapshot arriv
     const { useLiveConnection } = await import(modulePath)
     useLiveConnection.getState().disconnect()
   })
-  await expect(page.getByRole('dialog', { name: '状态待确认' })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '已连接' })).toBeVisible()
+  await expect(page.getByRole('switch', { name: '账户连接' })).toContainText('已连接')
+  await expect(page.getByRole('switch', { name: '账户连接' })).toBeDisabled()
+  await expect(page.getByRole('dialog').getByRole('button', { name: '重新连接', exact: true })).toBeDisabled()
+  await expect(page.getByRole('dialog').getByRole('button', { name: '断开连接', exact: true })).toBeDisabled()
   await pushConnection(page, { ...problem(), status: 'disconnected' })
   await expect(page.getByRole('dialog', { name: '已断开' })).toBeVisible()
+  await expect(page.getByRole('switch', { name: '账户连接' })).toBeEnabled()
+})
+
+test('retained connection failures stay quiet during resync and prolonged foreground loss uses the global entry', async ({ page }) => {
+  await defaults(page)
+  await page.clock.install()
+  await mockConnectionSnapshot(page, { ...problem(), label: '令牌更新失败', presentation: null })
+  await page.goto('/e2e/errors.html?mode=connection&global')
+  const toggle = page.getByRole('switch', { name: '账户连接' })
+  const header = page.getByRole('banner')
+  await expect(header).toContainText('服务正常')
+  await page.evaluate(async () => {
+    const modulePath = '/src/stores/liveConnection.ts'
+    const { useLiveConnection } = await import(modulePath)
+    useLiveConnection.getState().disconnect()
+  })
+  await expect(toggle).toContainText('令牌更新失败')
+  await expect(toggle).toBeDisabled()
+  await page.clock.runFor(4500)
+  await expect(header).toContainText('服务正常')
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await page.clock.fastForward(60_000)
+  await expect(header).not.toContainText('实时状态同步中断')
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await page.clock.runFor(4900)
+  await expect(header).not.toContainText('实时状态同步中断')
+  await page.clock.runFor(200)
+  await expect(header).toContainText('实时状态同步中断')
+  await expect(toggle).toContainText('令牌更新失败')
+  await pushConnection(page, { ...problem(), status: 'ready' })
+  await expect(toggle).toContainText('已连接')
+  await expect(toggle).toBeEnabled()
+  await expect(header).toContainText('服务正常')
 })
 
 test('connection generic settings action targets current account and ignores malformed blocks and unknown intents', async ({ page }) => {
@@ -1174,7 +1217,7 @@ test('connection failure keeps the header compact and feedback below the control
   const toggle = page.getByRole('switch', { name: '账户连接' })
   const details = page.getByRole('button', { name: /连接详情，账户连通状态/ })
   await expect(toggle).toContainText(label)
-  await expect(details).toHaveText('连接详情')
+  await expect(details).toHaveText('')
   const before = await toggle.boundingBox()
   await toggle.click()
   const alert = page.getByRole('alert').filter({ hasText: '连接操作未完成' })

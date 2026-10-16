@@ -28,6 +28,34 @@ async function mock(page: Page, options: { legacy?: boolean; unsynced?: boolean;
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ json: orders }))
 }
 
+test('preview shows full ETF codes without pushing numeric columns aside', async ({ page }) => {
+  await mock(page, { emptyOrders: true })
+  const longSymbol = 'VERY-LONG-INSTRUMENT-IDENTIFIER-THAT-CANNOT-FIT-IN-THE-PREVIEW'
+  await page.route('**/api/v1/account/*/asset_snapshots*', route => route.fulfill({ json: {
+    ...assets, data: [{ ...assets.data[0], assets: { ...assets.data[0].assets, positions: [] } }],
+  } }))
+  await page.route('**/api/v1/account/*/target_snapshot', route => route.fulfill({ json: {
+    ...target, weights: { '518880.SH': 0.4, '159920.SZ': 0.4, [longSymbol]: 0.2 },
+  } }))
+  await page.setViewportSize({ width: 416, height: 812 })
+  await page.goto('/e2e/holdings.html')
+  const table = page.getByRole('table', { name: '当前持仓' })
+  for (const width of [416, 520, 800, 416]) {
+    await page.setViewportSize({ width, height: 812 })
+    for (const symbol of ['518880.SH', '159920.SZ']) {
+      const text = table.getByRole('button', { name: `查看 ${symbol} 持仓与目标` }).locator('.overflow-text')
+      await expect(text).toHaveAttribute('data-overflow', 'false')
+      expect(await text.locator('.overflow-text-static').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true)
+    }
+    const bounds = await table.boundingBox()
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width)
+    const symbolCell = await table.locator('tbody tr').first().getByRole('cell').first().boundingBox()
+    expect(symbolCell!.width / bounds!.width).toBeLessThan(0.36)
+  }
+  await expect(table.getByRole('button', { name: `查看 ${longSymbol} 持仓与目标` }).locator('.overflow-text'))
+    .toHaveAttribute('data-overflow', 'true')
+})
+
 test('click a row; explain frozen sizing and only this symbol; Escape clears pointer focus', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   const writes: string[] = []

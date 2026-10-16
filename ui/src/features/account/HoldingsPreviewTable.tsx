@@ -7,7 +7,8 @@ import { fmtMoney, withCurrency } from '@/lib/format'
 /**
  * 账户详情「持仓 vs 目标」右栏的当前持仓快照。
  *
- * 表头与行共用固定列宽：品种 22%、仓位 25%、持仓/可用 25%、货值 28%。
+ * 表头与行共用固定列宽：品种 32%、仓位 22%、持仓/可用 26%、货值 20%。
+ * 品种留足常见完整代码的空间，各列仍均衡分布，不随内容长短挤向一侧。
  * 品种左对齐、数字右对齐；滚动槽前保留间距，长内容在各自列内呈现。
  * 表头 sticky 钉在滚动容器顶。
  */
@@ -35,10 +36,10 @@ export function HoldingsPreviewTable({
     >
       <table aria-label="当前持仓" className="w-full table-fixed border-separate border-spacing-0">
         <colgroup>
+          <col className="w-[32%]" />
           <col className="w-[22%]" />
-          <col className="w-[25%]" />
-          <col className="w-[25%]" />
-          <col className="w-[28%]" />
+          <col className="w-[26%]" />
+          <col className="w-[20%]" />
         </colgroup>
         <thead>
           <tr className="text-[12px] font-medium text-ink-3">
