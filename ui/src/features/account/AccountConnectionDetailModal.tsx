@@ -36,15 +36,16 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
   const synced = useLiveConnection(state => state.connected)
   const feedback = useConnectionFeedback(selection?.accountId ?? -1)
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
-  const title = (selection?.detail.status === 'unavailable' ? view?.title : feedback.label ?? view?.title) ?? '账户连接详情'
   const operationInfo = feedback.error ? errorInfo(feedback.error) : null
   if (operationInfo) operationInfo.evidence = operationInfo.evidence.filter(field => field.label !== 'HTTP')
+  const messages = [...new Set([view?.title, view?.summary].map(message => message?.trim()))]
+    .filter(message => message && message !== operationInfo?.message.trim())
   const copy = [view?.copy, operationInfo?.text].filter(Boolean).join('\n\n')
   const footerActions = <>
     {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
     <button type="button" aria-label="关闭详情" onClick={onClose} className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2">关闭</button>
   </>
-  return <CenteredModal open={selection !== null} title={title} onClose={onClose} widthClassName="w-[640px]"
+  return <CenteredModal open={selection !== null} title="账户连接详情" onClose={onClose} widthClassName="w-[640px]"
     footer={selection
       ? <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail}>{footerActions}</AccountConnectionActions>
       : <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-[22px] py-3">{footerActions}</div>}>
@@ -53,7 +54,7 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
         <ErrorDetailsContent info={operationInfo} />
       </section>}
       {view && <>
-        <p className="whitespace-pre-wrap text-[14px] text-ink-2">{view.summary}</p>
+        <p className="whitespace-pre-wrap text-[14px] text-ink-2">{messages.join('\n')}</p>
         {selection?.detail.progress && <ConnectionProgressView key={selection.detail.progress.run_id}
           progress={selection.detail.progress} active={synced && !['unknown', 'disconnected'].includes(selection.detail.status)}
           source={{ kind: 'account', accountId: selection.accountId, runId: selection.detail.progress.run_id }} /> }
