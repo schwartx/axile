@@ -105,7 +105,7 @@ def _select_execution(
     if key not in selected:
         if not operations and len(snapshot.executions) >= budget.limits.executions:
             raise EvidenceError(
-                "执行数量超过导出上限，请通过 POST /account/{account_id}/evidence 按 execution_ids 分批导出",
+                "执行数量超过导出上限，请按执行清单分批导出",
                 code="EVIDENCE_TOO_MANY_EXECUTIONS",
                 status=413,
             )
@@ -305,7 +305,7 @@ def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) 
             snapshot.executions[item.key] = item
     if len(snapshot.executions) > budget.limits.executions:
         raise EvidenceError(
-            "执行数量超过导出上限，请通过 POST /account/{account_id}/evidence 按 execution_ids 分批导出",
+            "执行数量超过导出上限，请按执行清单分批导出",
             code="EVIDENCE_TOO_MANY_EXECUTIONS",
             status=413,
         )
