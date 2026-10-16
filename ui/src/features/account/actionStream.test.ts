@@ -126,7 +126,7 @@ describe('buildSymbolActionStream', () => {
     expect(buildSymbolActionStream([], 'rb2610')).toEqual([])
   })
 
-  it('按渠道描述追加数量与价格单位', () => {
+  it('数量标签为空时只显示数量，并保留价格单位', () => {
     const lines = buildSymbolActionStream(
       [
         ev({
@@ -135,10 +135,10 @@ describe('buildSymbolActionStream', () => {
         }),
       ],
       'rb2610',
-      { quantityLabel: '基础资产', quantityMaxDecimals: 3, priceLabel: 'CNY' },
+      { quantityLabel: '', quantityMaxDecimals: 3, priceLabel: 'CNY' },
     )
 
-    expect(lines[0]?.text).toBe('挂单 买 0.001 基础资产 @62,000 元')
+    expect(lines[0]?.text).toBe('挂单 买 0.001 @62,000 元')
   })
 })
 

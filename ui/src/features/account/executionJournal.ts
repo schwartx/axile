@@ -19,6 +19,14 @@ export interface JournalExecution {
 export interface JournalSymbol extends Quality { symbol: string; lastTime: number; trades: JournalTrade[]; summary: CostSummary }
 export const journalAmount = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 export const journalTime = (value: string) => value.replace('T', ' ').slice(0, 16)
+
+/** 休市展示仍归入已有筛选分类，不落入执行失败。 */
+export function matchesJournalStatus(row: Pick<JournalExecution, 'status'>, filter: string): boolean {
+  if (filter === '全部状态' || row.status === filter) return true
+  if (filter === '已跳过' && row.status === '休市跳过') return true
+  return filter === '执行不到位' && row.status === '部分品种休市 · 执行未全部完成'
+}
+
 export const journalTrade = (trade: CostTrade, key: string): JournalTrade => ({ ...trade, key, executionId: trade.execution_id ?? null, slippageBps: trade.lossBp })
 export function qualityOf(trades: JournalTrade[]): Quality {
   const s = summarizeCosts(trades)

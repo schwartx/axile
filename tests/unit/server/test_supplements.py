@@ -13,7 +13,7 @@ from sqlmodel import SQLModel, select
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
-from axile.server.db.models import Account
+from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
@@ -86,20 +86,20 @@ async def database(monkeypatch, schema_template, *, enabled=True):
         temporary.cleanup()
 
 
-async def seed(factory, *, count=2):
+async def seed(factory, *, count=2, base=BASE):
     async with factory() as session:
         group = SupplementGroup(
             account_id=1,
             fingerprint=supplements.fingerprint(await session.get(Account, 1)),
-            base_scheduled_at=BASE.isoformat(),
-            expires_at=(BASE + timedelta(minutes=15)).isoformat(),
+            base_scheduled_at=base.isoformat(),
+            expires_at=(base + timedelta(minutes=15)).isoformat(),
             configured_count=count,
             effective_count=count,
         )
         session.add(group)
         await session.flush()
         steps = [
-            SupplementStep(group_id=group.id, index=index, scheduled_at=(BASE + timedelta(minutes=index)).isoformat())
+            SupplementStep(group_id=group.id, index=index, scheduled_at=(base + timedelta(minutes=index)).isoformat())
             for index in range(count + 1)
         ]
         session.add_all(steps)
@@ -246,6 +246,102 @@ def test_failed_execution_keeps_future_supplements(monkeypatch, schema_template)
                 event = (await session.scalars(select(NotificationEvent))).one()
                 assert event.context["execution"]["status"] == "FAILED"
                 assert not event.context["execution"]["supplements"][0]["is_last"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("scope", ["all", "partial", "error"])
+def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_template, scope):
+    from tests.unit.server.test_session_closed_execution import closed_result
+
+    async def run():
+        async with database(monkeypatch, schema_template) as (factory, now):
+            group, steps = await seed(factory)
+            next_group, next_steps = await seed(factory, base=BASE + timedelta(minutes=15))
+            await supplements.fire_step(steps[0].id)
+            async with factory() as session:
+                execution = (await session.scalars(select(ExecutionIntent))).one()
+                execution.status = ExecutionTaskStatus.RUNNING
+                execution.started_at = BASE.isoformat()
+                session.add(execution)
+                raw = closed_result()
+                if scope == "partial":
+                    raw["status"] = "PARTIAL"
+                    raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
+                elif scope == "error":
+                    raw["symbol_results"]["ag2612"] = {"status": "FAILED", "reason_code": "CHANNEL.QUERY_FAILED"}
+                session.add(
+                    ExecuteRecord(
+                        account_id=1, execution_id=execution.execution_id, raw_input={}, raw_result=raw, is_success=0
+                    )
+                )
+                await session.commit()
+            terminal = ExecutionTaskStatus.SKIPPED if scope == "all" else ExecutionTaskStatus.FAILED
+            await intents.mark_intent_finished(execution.execution_id, terminal)
+            # 幂等收尾不能重复取消/通知，也不能影响下一组。
+            await intents.mark_intent_finished(execution.execution_id, terminal)
+            async with factory() as session:
+                actual_group = await session.get(SupplementGroup, group.id)
+                assert actual_group.status == ("cancelled" if scope == "all" else "active")
+                assert (await session.get(SupplementStep, steps[0].id)).status == "finished"
+                assert (await session.get(SupplementStep, steps[-1].id)).status == (
+                    "cancelled" if scope == "all" else "pending"
+                )
+                assert (await session.get(SupplementGroup, next_group.id)).status == "active"
+                events = list(
+                    (await session.scalars(select(NotificationEvent).order_by(NotificationEvent.sequence))).all()
+                )
+                assert [event.event_type for event in events] == (
+                    ["execution.finished", "supplement.cancelled"] if scope == "all" else ["execution.finished"]
+                )
+            if scope == "all":
+                await supplements.fire_step(steps[-1].id)
+                now[0] = BASE + timedelta(minutes=15)
+                clear_queued_execution(1, execution.execution_id)
+                await supplements.fire_step(next_steps[0].id)
+                async with factory() as session:
+                    assert (await session.get(SupplementStep, next_steps[0].id)).status == "queued"
+                    assert len(list((await session.scalars(select(ExecutionIntent))).all())) == 2
+
+    asyncio.run(run())
+
+
+def test_session_skip_preserves_manual_request_sharing_a_future_step(monkeypatch, schema_template):
+    from tests.unit.server.test_session_closed_execution import closed_result
+
+    async def run():
+        async with database(monkeypatch, schema_template) as (factory, now):
+            group, steps = await seed(factory)
+            await supplements.fire_step(steps[0].id)
+            async with factory() as session:
+                running = (await session.scalars(select(ExecutionIntent))).one()
+                running.status = ExecutionTaskStatus.RUNNING
+                running.started_at = BASE.isoformat()
+                session.add(running)
+                session.add(
+                    ExecuteRecord(
+                        account_id=1,
+                        execution_id=running.execution_id,
+                        raw_input={},
+                        raw_result=closed_result(),
+                        is_success=0,
+                    )
+                )
+                await session.commit()
+            clear_queued_execution(1, running.execution_id)
+            manual = await intents.submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            now[0] = BASE + timedelta(minutes=1)
+            await supplements.fire_step(steps[1].id)
+            await intents.mark_intent_finished(running.execution_id, ExecutionTaskStatus.SKIPPED)
+            async with factory() as session:
+                queued = await session.scalar(
+                    select(ExecutionIntent).where(ExecutionIntent.execution_id == manual.execution_id)
+                )
+                assert queued.status == ExecutionTaskStatus.QUEUED
+                assert queued.payload["independent_request"]
+                assert (await session.get(SupplementStep, steps[1].id)).status == "cancelled"
+                assert (await session.get(SupplementGroup, group.id)).status == "cancelled"
+            assert await supplement_notifications.validate_execution_requests(manual.execution_id)
 
     asyncio.run(run())
 

@@ -16,6 +16,7 @@ export interface OutcomeView {
   symbols: string[]
   text: string
   warning: boolean
+  sessionScope: 'all' | 'partial' | null
 }
 
 function recordedReason(raw: Dict, results: Dict[]): string {
@@ -26,6 +27,19 @@ function recordedReason(raw: Dict, results: Dict[]): string {
   if (!reasons.some(Boolean)) return ''
   if (reasons.every(value => value === reasons[0])) return `${reasons[0]}${affected.length > 1 ? `，${affected.length} 个品种执行受阻` : ''}`
   return `${affected.length} 个品种执行受阻，原因不同`
+}
+
+function sessionScopeOf(state: ViewState, reasonCode: string, taskStatus: unknown, results: Dict[]): OutcomeView['sessionScope'] {
+  if (!['BLOCKED', 'PARTIAL'].includes(state)) return null
+  const closed = results.filter(result => result.status === 'BLOCKED')
+  if (results.length && !closed.length) return null
+  const sessionOnly = results.every(result => ['SUCCEEDED', 'NOOP'].includes(text(result.status)) || (
+    result.status === 'BLOCKED' && (!result.reason_code || result.reason_code === SESSION_CLOSED)
+    && !(Array.isArray(result.orders) && result.orders.length) && !(Array.isArray(result.trades) && result.trades.length)
+  ))
+  if (!sessionOnly) return null
+  if (reasonCode !== SESSION_CLOSED) return taskStatus === 'SKIPPED' && state === 'BLOCKED' ? 'all' : null
+  return state === 'PARTIAL' || results.length > closed.length ? 'partial' : 'all'
 }
 
 export function executionRecordView(value: unknown, clear = false): OutcomeView {
@@ -40,19 +54,21 @@ export function executionRecordView(value: unknown, clear = false): OutcomeView 
   const state: ViewState = taskStatus === 'TERMINATED' ? 'TERMINATED' : ['SUCCEEDED', 'NOOP', 'BLOCKED', 'PARTIAL', 'FAILED'].includes(status) ? status as ViewState : 'UNKNOWN'
   const isClear = clear || raw.execution_kind === 'clear_positions'
   const reasonCode = text(record.reason_code) || text(raw.reason_code)
-  const blockedTitle = reasonCode === SESSION_CLOSED
-    ? '未执行 · 非交易时段'
+  const sessionScope = sessionScopeOf(state, reasonCode, taskStatus, results)
+  const blockedTitle = sessionScope === 'all'
+    ? '休市跳过'
+    : sessionScope === 'partial' ? '部分品种休市 · 执行未全部完成'
     : `未执行${affectedCount ? ` · ${affectedCount} 个品种执行受阻` : ''}`
   const title = {
     SUCCEEDED: isClear ? '清仓完成' : '调仓完成',
     NOOP: isClear ? '无需清仓' : '无需调仓',
     BLOCKED: blockedTitle,
-    PARTIAL: '执行未全部完成',
+    PARTIAL: sessionScope === 'partial' ? '部分品种休市 · 执行未全部完成' : '执行未全部完成',
     FAILED: '执行失败', TERMINATED: '执行已终止', UNKNOWN: '执行状态未知',
   }[state]
-  const warning = affectedStates.has(state) || state === 'TERMINATED'
+  const warning = (affectedStates.has(state) && sessionScope !== 'all') || state === 'TERMINATED'
   return { state, title, text: title, tone: warning ? 'warn' : 'neutral', warning,
-    reason: recordedReason(raw, results), symbols, symbolCount: entries.length, affectedCount,
+    reason: recordedReason(raw, results), symbols, symbolCount: entries.length, affectedCount, sessionScope,
     tradeCount: results.reduce((count, result) => count + (Array.isArray(result.trades) ? result.trades.length : 0), 0) }
 }
 

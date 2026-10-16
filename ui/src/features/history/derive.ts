@@ -149,7 +149,7 @@ export function aggregateStats(
       fills++
       // 成功清仓确有平仓成交，不按调仓口径算「空跑」（否则清仓被误当没发生）。
       if (r.raw_result?.execution_kind !== 'clear_positions' && isNoop(r)) noops++
-    } else {
+    } else if (!executionOutcome(r).sessionScope) {
       fails++
     }
     const c = r.raw_result?.account_assets?.currency

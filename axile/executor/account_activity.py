@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
-from axile.executor.order_observation import merge_order, with_trade_average
+from axile.executor.order_observation import merge_order, merge_trade, with_trade_average
 
 
 class AccountActivityBook:
@@ -50,10 +50,11 @@ class AccountActivityBook:
                 str(trade.extra.get("exchange_id", "")),
                 trade.trade_id,
             )
-            if self._trades.get(key) == trade:
+            merged = merge_trade(self._trades.get(key), trade)
+            if self._trades.get(key) == merged:
                 return
             self.version += 1
-            self._trades[key] = trade.model_copy(deep=True)
+            self._trades[key] = merged
             self._trim(self._trades)
 
     def enrich_orders(self, orders: list[UnifiedOrder]) -> tuple[list[UnifiedOrder], int]:

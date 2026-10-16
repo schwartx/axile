@@ -66,6 +66,7 @@ class AccountTradePublic(SQLModel):
     """账户逐笔成交的公开字段，不输出渠道原始载荷。"""
 
     trade_id: str
+    attributes: dict[str, str] = Field(default_factory=dict)
     order_id: str
     symbol: str
     direction: str

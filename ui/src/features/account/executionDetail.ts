@@ -768,7 +768,7 @@ export function buildExecutionDetail(
     error: task?.error ?? summary?.error,
   } : { ...summary, status: summary?.status ?? task?.output_status, task_status: task?.status, error: summary?.error ?? task?.error }
   const conclusion = executionOutcome(conclusionSource, task?.execution_kind === 'clear_positions')
-  const failure = ['FAILED', 'BLOCKED', 'PARTIAL'].includes(conclusion.state) && !!conclusion.reason
+  const failure = conclusion.sessionScope !== 'all' && ['FAILED', 'BLOCKED', 'PARTIAL'].includes(conclusion.state) && !!conclusion.reason
     ? describeFailureText(conclusion.reason || task?.error || '执行过程发生错误')
     : null
   const terminatedDetails = asDict(eventAt(events, 'execution_terminated')?.details)

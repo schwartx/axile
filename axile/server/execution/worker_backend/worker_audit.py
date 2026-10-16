@@ -17,6 +17,7 @@ from axile.domain.execution import (
 )
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.session_closed import session_closed_scope
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_records_output import resolve_completion_event_status
@@ -275,7 +276,11 @@ def _append_success_audit(
         channel=account.trade_channel,
         algorithm=algorithm_name,
         event_type=ExecutionEventType.EXECUTION_COMPLETED,
-        status=resolve_completion_event_status(output.status),
+        status=(
+            ExecutionEventStatus.INFO
+            if session_closed_scope(result) == "all"
+            else resolve_completion_event_status(output.status)
+        ),
         reason_family=ExecutionReasonFamily.SYSTEM,
         reason_code="COMMON.EXECUTION_COMPLETED",
         seq=_event_seq(executor),

@@ -25,7 +25,7 @@ test('BLOCKED 标题只认 reason_code，不从中文 error 推断', () => {
     status: 'BLOCKED', error: '非交易时段，6 个品种未执行', reason_code: 'COMMON.SESSION.CLOSED',
     symbol_results: { ag2612: { status: 'BLOCKED', error: '非交易时段' } },
   })
-  expect(session).toMatchObject({ title: '未执行 · 非交易时段', reason: '非交易时段，6 个品种未执行' })
+  expect(session).toMatchObject({ title: '休市跳过', reason: '非交易时段，6 个品种未执行' })
   const chineseOnly = executionRecordView({
     status: 'BLOCKED', error: '非交易时段',
     symbol_results: { ag2612: { status: 'BLOCKED', error: '非交易时段' } },
@@ -69,6 +69,24 @@ test('错误只按明确字段顺序回放，品种同因和不同因分别汇�
 
 test('终止优先，旧完成摘要不能覆盖生命周期终止', () => {
   expect(executionRecordView({ task_status: 'TERMINATED', raw_result: { status: 'SUCCEEDED' } }).title).toBe('执行已终止')
+})
+
+test('全休市是中性跳过，部分休市保留未完成和品种证据', () => {
+  const closed = { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED', error: '非交易时段', target_volume: 2, final_volume: null }
+  expect(executionRecordView({ status: 'BLOCKED', task_status: 'SKIPPED', reason_code: 'COMMON.SESSION.CLOSED', symbol_results: { m2701: closed } }))
+    .toMatchObject({ title: '休市跳过', tone: 'neutral', warning: false, sessionScope: 'all', symbols: ['m2701'] })
+  for (const status of ['PARTIAL', 'BLOCKED']) {
+    expect(executionRecordView({ status, reason_code: 'COMMON.SESSION.CLOSED', symbol_results: { m2701: closed, ag2612: { status: 'NOOP' } } }))
+      .toMatchObject({ title: '部分品种休市 · 执行未全部完成', tone: 'warn', sessionScope: 'partial', symbols: ['m2701'] })
+  }
+  expect(closed.final_volume).toBeNull()
+})
+
+test('真实错误或订单证据不会被休市原因遮住', () => {
+  expect(executionRecordView({ status: 'PARTIAL', reason_code: null, error: '最终持仓查询失败', symbol_results: { m2701: { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED' }, ag2612: { status: 'NOOP' } } }))
+    .toMatchObject({ title: '执行未全部完成', reason: '最终持仓查询失败', sessionScope: null, warning: true })
+  expect(executionRecordView({ status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED', symbol_results: { m2701: { status: 'BLOCKED', orders: [{}] } } }).sessionScope).toBeNull()
+  expect(executionRecordView({ status: 'FAILED', reason_code: 'COMMON.SESSION.CLOSED' }).title).toBe('执行失败')
 })
 
 test('详情逐只状态使用原始结果，不把受阻且缺仓位的品种显示为到位', () => {

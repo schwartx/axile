@@ -10,6 +10,7 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.feishu_notifications import LoggerLike, build_execution_notification_context
 from axile.executor.models.unified_order import OrderDirection, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.execution_intent import ExecutionIntent
@@ -183,4 +184,9 @@ async def finish_supplement_execution(session: AsyncSession, row: ExecutionInten
                 )
             )
     await session.flush()
+    if row.status == ExecutionTaskStatus.SKIPPED:
+        record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == row.execution_id))
+        if record is not None and session_closed_scope(record.raw_result) == "all":
+            for group in groups.values():
+                await cancel_groups_in_session(session, row.account_id, COMMON_SESSION_CLOSED, group_id=group.id)
     await settle_groups(session, row.account_id)

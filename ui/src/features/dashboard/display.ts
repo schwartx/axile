@@ -95,6 +95,7 @@ export function positionValueLabelOf(
 
 /** 渠道 + 市场的完整描述（hero 胶囊用）。 */
 export function channelLabel(channel: TradeChannel, market: string): string {
+  if (channel === 'binance') return 'Binance'
   const base = getChannelDescriptor(channel)?.label ?? CHANNEL_TAG[channel] ?? channel
   return market ? `${base} · ${market}` : base
 }

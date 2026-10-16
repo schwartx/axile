@@ -68,6 +68,7 @@ class ExecutionTaskStatus(str, Enum):
     TERMINATED = "TERMINATED"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
 
 
 class ExecutionTerminateMode(str, Enum):

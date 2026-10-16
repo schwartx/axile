@@ -76,6 +76,7 @@ _TERMINAL_EXECUTION_TASK_STATES: frozenset[ExecutionTaskStatus] = frozenset(
         ExecutionTaskStatus.SUCCEEDED,
         ExecutionTaskStatus.FAILED,
         ExecutionTaskStatus.TERMINATED,
+        ExecutionTaskStatus.SKIPPED,
     }
 )
 """被视为终态、可释放重引用并安排淘汰的任务状态集合。."""
@@ -508,7 +509,7 @@ def request_execution_termination(
         if state is None:
             return None, False
 
-        if state.status in {ExecutionTaskStatus.SUCCEEDED, ExecutionTaskStatus.FAILED}:
+        if state.status in _TERMINAL_EXECUTION_TASK_STATES:
             return state, False
 
         if state.status == ExecutionTaskStatus.QUEUED:

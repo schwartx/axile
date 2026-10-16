@@ -10,7 +10,7 @@ import { DatePicker } from '@/components/ui/DatePicker'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
 import { evidenceDatesFromSnapshot, evidenceDatesFromWindow } from '@/features/account/evidenceExport'
-import { journalWindow, type JournalRange } from '@/features/account/executionJournal'
+import { journalWindow, matchesJournalStatus, type JournalRange } from '@/features/account/executionJournal'
 import { ExecutionGroup, SymbolGroup, EXEC_COLS, SYMBOL_COLS, type Expansion } from '@/features/account/JournalRows'
 import { parseJournalScope, scopeLabel, SNAPSHOT_PARAMS, loadSnapshotJournal, loadLiveJournal, filterLiveExecutions, compareJournal, journalTotals, activityWindowQuery } from '@/features/account/journalSource'
 import { amount, coverageText, shanghaiLabel, lossClass } from '@/features/history/costs'
@@ -62,7 +62,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   })
   const filtered = useMemo(() => {
     const rows = poll.data?.executions ?? []
-    return (scope ? rows : filterLiveExecutions(rows, keyword)).filter(row => status === '全部状态' || row.status === status).toSorted((a, b) => compareJournal(a, b, sort))
+    return (scope ? rows : filterLiveExecutions(rows, keyword)).filter(row => matchesJournalStatus(row, status)).toSorted((a, b) => compareJournal(a, b, sort))
   }, [poll.data, scope, keyword, status, sort])
   const symbols = useMemo(() => (poll.data?.symbols ?? []).filter(row => scope || row.symbol.toLowerCase().includes(keyword.trim().toLowerCase())).toSorted((a, b) => compareJournal(a, b, sort)), [poll.data, scope, keyword, sort])
   const summary = useMemo(() => journalTotals(view === 'executions' ? filtered : symbols), [view, filtered, symbols])

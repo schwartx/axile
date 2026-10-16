@@ -177,6 +177,7 @@ async def cas_intent_status(
             ExecutionTaskStatus.TERMINATED,
             ExecutionTaskStatus.FAILED,
             ExecutionTaskStatus.SUCCEEDED,
+            ExecutionTaskStatus.SKIPPED,
         }:
             from axile.server.execution.supplement_notifications import finish_supplement_execution
 
@@ -207,6 +208,7 @@ async def mark_intent_finished(
             ExecutionTaskStatus.SUCCEEDED,
             ExecutionTaskStatus.FAILED,
             ExecutionTaskStatus.TERMINATED,
+            ExecutionTaskStatus.SKIPPED,
         }:
             return
         row.status = status
@@ -621,6 +623,7 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
         ExecutionTaskStatus.TERMINATING,
         ExecutionTaskStatus.FAILED,
         ExecutionTaskStatus.SUCCEEDED,
+        ExecutionTaskStatus.SKIPPED,
     }:
         raise IntentNotRunnable(f"intent {execution_id} 内存态为 {memory.status.value}")
 

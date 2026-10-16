@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
+from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 from axile.server.asset_observations import is_asset_observation
 from axile.server.core.db import SessionLocal
@@ -152,7 +153,14 @@ async def append_error_execute_record(
     persisted_raw_result.setdefault("error", msg)
     persisted_raw_result.setdefault("outcome", "error")
     persisted_raw_result.setdefault("outcome_reason", msg)
-    logger.error("{}", msg)
+    session_scope = session_closed_scope(persisted_raw_result)
+    if session_scope == "all":
+        persisted_raw_result["task_status"] = ExecutionTaskStatus.SKIPPED.value
+    if session_scope:
+        persisted_raw_result["outcome"] = "blocked" if session_scope == "all" else "not_reached"
+        logger.info("{}", msg)
+    else:
+        logger.error("{}", msg)
     return await _persist_execute_record(
         account_id=cast("int", account_id),
         execution_id=execution_id,
