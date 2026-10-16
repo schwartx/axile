@@ -116,7 +116,7 @@ uv run python ./axile/飞泰CTP测试/run.py collect --execution-id <execution_i
 
 ## 开发回归与构建
 
-测试替身只在 `tests/support.py` 中，运行包和 wheel 不提供模拟交易入口。测试验证脚本实现，不代替实际柜台结果。
+脚本回归替身在 `tests/support.py` 中；`diagnostics/` 另提供核心问题的独立表征探针。运行包和 wheel 不提供模拟交易入口。这些验证不代替实际柜台结果。
 
 ```bash
 uv run pytest ./axile/飞泰CTP测试/tests -q
@@ -127,3 +127,5 @@ uv build --offline --no-sources --out-dir ./axile/飞泰CTP测试/dist ./axile/�
 构建命令的 `--offline` 仅指构建工具不下载依赖，与脚本交易运行无关。正式柜台对照、`.dat` 取证和飞泰验收沿用 #87/#88/#90 的分工。
 
 本轮联机验收结论与未通过项见 [验收报告](验收报告.md)。发送后终止的强制中断与残留风险尚未消除；脚本会记录未知和残留，不能把任务 TERMINATED 当作撤单成功。
+
+五项问题的代码归因、独立复现、解决方案及验收要求见 [问题排查与解决方案](问题排查与解决方案.md)，探针命令见 [diagnostics/README.md](diagnostics/README.md)。
