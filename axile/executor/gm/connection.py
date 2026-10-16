@@ -7,6 +7,22 @@ from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.gm.common import AccConnectionState
 
 
+class GMAccountStartupError(RuntimeError):
+    """交易账户状态已明确异常，但不据此推断 Token 是否有效。"""
+
+    def __init__(self, account_id: str, status: dict) -> None:
+        """保留原生状态，并将已知状态与未知故障原因分开描述。"""
+        state = status.get("state")
+        state = int(state) if isinstance(state, int) else state
+        state_label = (
+            str(AccConnectionState(state)) if isinstance(state, int) and state in AccConnectionState else "未知"
+        )
+        reason = status.get("error") or status.get("error_msg") or status.get("message")
+        self.execution_error = f"GM 交易账户{state_label}，登录未完成（状态码 {state}）"
+        self.execution_error += f"：{reason}" if reason else "；SDK 未提供失败原因"
+        super().__init__(f"{self.execution_error}: account_id={account_id}, status={status}")
+
+
 def report_gm_failure(
     monitor: ConnectionMonitor,
     error: BaseException,
@@ -61,6 +77,7 @@ def report_account_status(monitor: ConnectionMonitor, error: BaseException, acco
 def report_runtime_failure(monitor: ConnectionMonitor, error: BaseException, *, authentication: bool = False) -> None:
     """明确鉴权证据与运行线程异常分别展示，1026 不推断为 Token 失效。"""
     if authentication or getattr(error, "status", None) == 1000:
+        error.execution_error = "GM token 无效或已失效"  # type: ignore[attr-defined]
         report_gm_failure(
             monitor,
             error,

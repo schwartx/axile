@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import TypeAlias
 
 from gm.api import *  # type: ignore  # noqa: F401, F403
+from gm.api._errors import GmError
 from gm.csdk.c_sdk import TickLikeDict2  # type: ignore
 from gm.model import DictLikeAccountStatus, DictLikeExecRpt, DictLikeOrder  # type: ignore
 from gm.model.storage import Context  # type: ignore
@@ -27,7 +28,12 @@ from axile.executor.gm.common import (
     convert_gm_status_to_string,
     from_gm_price,
 )
-from axile.executor.gm.connection import report_account_status, report_gm_failure, report_runtime_failure
+from axile.executor.gm.connection import (
+    GMAccountStartupError,
+    report_account_status,
+    report_gm_failure,
+    report_runtime_failure,
+)
 from axile.executor.gm.core.api_bridge import GMApiBridge, GMBridgeRequestPayload, GMSubscribeSymbolsRequest
 from axile.executor.gm.core.bridge_context import GMStrategyRuntimeContext, get_gm_strategy_runtime_context
 from axile.executor.gm.core.callback_dispatcher import GMRuntimeLogLevel
@@ -220,8 +226,9 @@ def init(_context: Context) -> None:
 
 
 def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dict) -> None:
-    """只有已登录账户可以打开 bridge 的就绪门。"""
+    """只有已登录账户可以打开就绪门，首次断开快照不作为最终失败原因。"""
     state = status.get("state", 0)
+    context.startup_state["account_state"] = state
     _update_startup_phase("account_status_checked", account_state=state)
     if state == AccConnectionState.LOGGEDIN:
         if context.connection_monitor is not None:
@@ -230,8 +237,8 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
             context.account_was_ready = True
             context.ready_event.set()
             _update_startup_phase("ready_signaled", account_state=state)
-    elif state in {AccConnectionState.DISCONNECTING, AccConnectionState.DISCONNECTED, AccConnectionState.ERROR}:
-        error = RuntimeError(f"GM 账户尚未登录，无法初始化: account_id={context.account_id}, status={status}")
+    elif state == AccConnectionState.ERROR:
+        error = GMAccountStartupError(context.account_id, status)
         if context.connection_monitor is not None:
             report_account_status(context.connection_monitor, error, context.account_id, status)
         raise error
@@ -279,7 +286,7 @@ def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
             return False
         _apply_account_startup_status(context, status)
     except Exception as error:
-        if context.connection_monitor is not None and getattr(error, "status", None) == 1000:
+        if context.connection_monitor is not None and getattr(error, "status", None) in {1000, 1026}:
             report_runtime_failure(context.connection_monitor, error)
         if context.connection_monitor is not None:
             report_gm_failure(
@@ -414,13 +421,30 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
 
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:
-    """错误事件."""
+    """将 SDK 明确的鉴权错误送回启动线程，其他错误只保留日志。"""
     if _is_stopped():
         return
     _emit_runtime_log("error", f"错误: code={code}, info={info}")
-    stats = _get_bridge_stats()
-    if stats:
-        stats["errors"] += 1
+    _increment_error_stat()
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        return
+    if status not in {1000, 1026}:
+        return
+    context = _get_bridge_context()
+    if context is None or context.startup_failed:
+        return
+    message = info.decode("utf-8", errors="replace") if isinstance(info, bytes) else info
+    error = GmError(status, message, "on_error")
+    if context.connection_monitor is not None:
+        report_runtime_failure(context.connection_monitor, error)
+    if not context.account_was_ready:
+        _fail_account_startup(context, error)
+        return
+    if context.ready_event.is_set():
+        context.stats["connection_revision"] = context.stats.get("connection_revision", 0) + 1
+    context.ready_event.clear()
 
 
 def on_trade_data_connected(_context: Context) -> None:
