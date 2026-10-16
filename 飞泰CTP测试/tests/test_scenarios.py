@@ -444,3 +444,33 @@ def test_quota_anchor_rejects_unrelated_query_throttling():
     assert waiting_for_test_quota(monitor)
     hit["limit"] = 30
     assert not waiting_for_test_quota(monitor)
+
+
+@pytest.mark.parametrize("checkpoint", ["before_send", "after_send"])
+def test_real_termination_propagates_without_five_second_final_query(tmp_path, checkpoint):
+    from axile.executor.algorithms.core.base import AlgorithmInput
+    from axile.executor.termination import ExecutionTerminated
+    from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
+    from support import OfflineSession
+
+    _, api = make_runner(tmp_path)
+    params = ScenarioParams(
+        symbol="rb2701",
+        action="hold",
+        batch="case",
+        step=checkpoint,
+        timeout_seconds=1,
+        **{f"{checkpoint}_hold_seconds": 3},
+    )
+    api.events[checkpoint], api.controls[checkpoint] = [], []
+    session = OfflineSession(api, checkpoint, params)
+
+    def stop(seconds):
+        if seconds == 3:
+            raise ExecutionTerminated(reason="stop", mode="cancel_pending", cancel_unconfirmed=True)
+
+    session.sleep_or_terminate = stop
+    with pytest.raises(ExecutionTerminated):
+        scenario_algorithm(session, AlgorithmInput(symbol="rb2701", target_volume=1, trade_rule={}, params=params))
+    assert not session.order_callbacks and not session.trade_callbacks
+    assert session.native_calls == (checkpoint == "after_send")

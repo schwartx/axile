@@ -151,6 +151,9 @@ def _merge_symbol_terminations(terminations: list[ExecutionTerminated]) -> Execu
     primary.cancel_failed_order_ids = list(
         dict.fromkeys(order_id for termination in terminations for order_id in termination.cancel_failed_order_ids)
     )
+    primary.cancel_unconfirmed = any(termination.cancel_unconfirmed for termination in terminations)
+    attempts = [termination.cancel_attempted for termination in terminations]
+    primary.cancel_attempted = True if any(attempts) else (False if all(value is False for value in attempts) else None)
     return primary
 
 
@@ -605,7 +608,10 @@ class ExecutionEngine:
         scoped_last_target = {
             symbol: weight for symbol, weight in standard_input.last_target.items() if symbol in set(symbols)
         }
-        planning_market_data = self._planning_market_data(symbols)
+        quote_symbols = self._planning_quote_symbols(
+            symbols, scoped_curr_target, account_assets, standard_input.trade_rules
+        )
+        planning_market_data = self._planning_market_data(quote_symbols)
         sizing_decisions = self._owner.calculate_target_sizing(
             scoped_curr_target,
             account_assets,
@@ -615,6 +621,22 @@ class ExecutionEngine:
             standard_input.forbidden_symbols,
         )
         return planning_market_data, sizing_decisions
+
+    @staticmethod
+    def _planning_quote_symbols(
+        symbols: list[str], targets: dict[str, float], assets: UnifiedAccountAssets, rules: dict[str, dict[str, object]]
+    ) -> list[str]:
+        """仅跳过可信快照中零目标且没有任何方向持仓的定手数合约。"""
+        if is_degraded_snapshot_source(assets.source):
+            return symbols
+        held = {position.symbol for position in assets.positions if position.volume != 0}
+        return [
+            symbol
+            for symbol in symbols
+            if symbol in held
+            or targets.get(symbol, 0) != 0
+            or rules.get(symbol, {}).get("sizing_mode", "weight") != "lots"
+        ]
 
     def _classify_symbol_dispatch_phases(
         self,
