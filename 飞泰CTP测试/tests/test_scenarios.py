@@ -4,6 +4,7 @@ import copy
 import json
 
 import pytest
+
 from ft_ctp.api import ApiError
 from ft_ctp.cli import main, run_scenarios
 from ft_ctp.evidence import Bundle
@@ -210,6 +211,7 @@ def test_restart_without_real_instance_change_is_not_passed(tmp_path):
 
 def test_hold_does_not_add_to_an_already_reached_target(tmp_path):
     from axile.executor.algorithms.core.base import AlgorithmInput
+
     from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
     from support import OfflineSession
 
@@ -225,6 +227,7 @@ def test_hold_does_not_add_to_an_already_reached_target(tmp_path):
 @pytest.mark.parametrize("checkpoint, expected_native", [("before_send", 0), ("after_send", 1)])
 def test_termination_at_send_boundary_never_reissues_and_only_cancels_owned(tmp_path, checkpoint, expected_native):
     from axile.executor.algorithms.core.base import AlgorithmInput
+
     from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
     from support import OfflineSession
 
@@ -450,6 +453,7 @@ def test_quota_anchor_rejects_unrelated_query_throttling():
 def test_real_termination_propagates_without_five_second_final_query(tmp_path, checkpoint):
     from axile.executor.algorithms.core.base import AlgorithmInput
     from axile.executor.termination import ExecutionTerminated
+
     from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
     from support import OfflineSession
 

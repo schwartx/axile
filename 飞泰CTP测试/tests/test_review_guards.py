@@ -4,6 +4,7 @@ import json
 from unittest.mock import Mock
 
 import pytest
+
 from ft_ctp.cli import main, parser, selected_config
 from ft_ctp.config import Config
 from ft_ctp.evidence import Bundle, Redactor

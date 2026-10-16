@@ -4,14 +4,13 @@ import math
 import threading
 from typing import Literal
 
+from axile import AlgorithmInput, AlgorithmResult, ExecutorProtocol, TradeChannel, register_algorithm
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.termination import ExecutionTerminated
 from pydantic import BaseModel, Field
-
-from axile import AlgorithmInput, AlgorithmResult, ExecutorProtocol, TradeChannel, register_algorithm
 
 
 class ScenarioParams(BaseModel):
