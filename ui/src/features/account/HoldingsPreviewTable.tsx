@@ -7,13 +7,12 @@ import { fmtMoney, withCurrency } from '@/lib/format'
 /**
  * 账户详情「持仓 vs 目标」右栏的当前持仓快照。
  *
- * 表头与行共用固定列宽：品种 32%、仓位 22%、持仓/可用 26%、货值 20%。
- * 品种留足常见完整代码的空间，各列仍均衡分布，不随内容长短挤向一侧。
- * 品种左对齐、数字右对齐；滚动槽前保留间距，长内容在各自列内呈现。
+ * 数字列由表头与内容共同决定宽度，列间统一留白；品种吸收剩余空间。
+ * 品种左对齐、超长代码在列内截断，数字右对齐并完整显示。
  * 表头 sticky 钉在滚动容器顶。
  */
 const PREVIEW_TH = 'sticky top-0 z-[1] h-8 bg-surface align-middle font-medium'
-const PREVIEW_COL = 'whitespace-nowrap'
+const PREVIEW_NUMBER = 'whitespace-nowrap pl-4 text-right'
 
 export function HoldingsPreviewTable({
   observed = false,
@@ -34,25 +33,19 @@ export function HoldingsPreviewTable({
       tabIndex={0}
       className="quiet-scrollbar h-48 min-w-0 overflow-y-auto overscroll-contain pr-2 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-line"
     >
-      <table aria-label="当前持仓" className="w-full table-fixed border-separate border-spacing-0">
-        <colgroup>
-          <col className="w-[32%]" />
-          <col className="w-[22%]" />
-          <col className="w-[26%]" />
-          <col className="w-[20%]" />
-        </colgroup>
+      <table aria-label="当前持仓" className="w-full table-auto border-separate border-spacing-0">
         <thead>
           <tr className="text-[12px] font-medium text-ink-3">
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line pr-1.5 text-left`}>
+            <th scope="col" className={`${PREVIEW_TH} w-full border-b border-line text-left whitespace-nowrap`}>
               品种
             </th>
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line px-1.5 text-right`}>
+            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
               仓位
             </th>
-            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_COL} border-b border-line px-1.5 text-right`}>
+            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
               持仓/可用
             </th>
-            <th scope="col" className={`${PREVIEW_TH} border-b border-line pl-1.5 text-right whitespace-nowrap`}>
+            <th scope="col" className={`${PREVIEW_TH} ${PREVIEW_NUMBER} border-b border-line`}>
               {positionValueLabel}
             </th>
           </tr>
@@ -61,16 +54,16 @@ export function HoldingsPreviewTable({
           {holdings == null ? (
             Array.from({ length: 5 }, (_, index) => (
               <tr key={index} className="border-t border-line first:border-t-0">
-                <td className={`h-8 ${PREVIEW_COL} pr-1.5`}>
+                <td className="h-8 w-full max-w-0">
                   <Skeleton className="h-3 w-12" />
                 </td>
-                <td className={`h-8 ${PREVIEW_COL} px-1.5`}>
+                <td className={`h-8 ${PREVIEW_NUMBER}`}>
                   <Skeleton className="ml-auto h-3 w-9" />
                 </td>
-                <td className={`h-8 ${PREVIEW_COL} px-1.5`}>
+                <td className={`h-8 ${PREVIEW_NUMBER}`}>
                   <Skeleton className="ml-auto h-3 w-12" />
                 </td>
-                <td className="h-8 pl-1.5 whitespace-nowrap">
+                <td className={`h-8 ${PREVIEW_NUMBER}`}>
                   <Skeleton className="ml-auto h-3 w-14" />
                 </td>
               </tr>
@@ -92,16 +85,16 @@ export function HoldingsPreviewTable({
               return (
                 <tr key={holding.key} onClick={onSelect ? () => onSelect(holding.symbol, false) : undefined}
                   className={`border-t border-line text-[13.5px] first:border-t-0 ${onSelect ? 'cursor-pointer hover:bg-fill has-[:focus-visible]:bg-fill' : ''}`}>
-                  <td className={`h-8 ${PREVIEW_COL} pr-1.5 text-[14px] font-[560] text-ink-1`}>{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${holding.symbol} 持仓与目标`}
+                  <td className="h-8 w-full max-w-0 text-[14px] font-[560] text-ink-1">{onSelect ? <button type="button" aria-haspopup="dialog" aria-label={`查看 ${holding.symbol} 持仓与目标`}
                     onClick={event => { event.stopPropagation(); onSelect(holding.symbol, event.detail === 0) }}
                     className="block min-h-8 w-full cursor-pointer text-left focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
                     <OverflowText text={holding.symbol} className="block" />
                   </button> : <OverflowText text={holding.symbol} className="block" />}</td>
-                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}><OverflowText text={weight} className="block" /></td>
-                  <td className={`num h-8 ${PREVIEW_COL} px-1.5 text-right text-ink-2`}>
-                    <OverflowText text={`${volume}/${availableVolume}`} className="block" />
+                  <td className={`num h-8 ${PREVIEW_NUMBER} text-ink-2`}>{weight}</td>
+                  <td className={`num h-8 ${PREVIEW_NUMBER} text-ink-2`}>
+                    {volume}/{availableVolume}
                   </td>
-                  <td className="num h-8 pl-1.5 text-right font-medium whitespace-nowrap text-ink-1"><OverflowText text={value} className="block" /></td>
+                  <td className={`num h-8 ${PREVIEW_NUMBER} font-medium text-ink-1`}>{value}</td>
                 </tr>
               )
             })

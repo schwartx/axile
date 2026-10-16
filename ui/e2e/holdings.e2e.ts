@@ -49,8 +49,9 @@ test('preview shows full ETF codes without pushing numeric columns aside', async
     }
     const bounds = await table.boundingBox()
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width)
-    const symbolCell = await table.locator('tbody tr').first().getByRole('cell').first().boundingBox()
-    expect(symbolCell!.width / bounds!.width).toBeLessThan(0.36)
+    for (const cell of await table.locator('tbody tr').first().getByRole('cell').all()) {
+      expect(await cell.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true)
+    }
   }
   await expect(table.getByRole('button', { name: `查看 ${longSymbol} 持仓与目标` }).locator('.overflow-text'))
     .toHaveAttribute('data-overflow', 'true')
@@ -145,7 +146,7 @@ test('target-only entry supports keyboard, legacy target never invents quantitie
   await page.goto('/e2e/holdings.html')
   const entry = page.getByRole('button', { name: '查看 m2701 持仓与目标' })
   await expect(entry).toBeVisible()
-  await expect(entry.locator('xpath=ancestor::tr').getByRole('cell').nth(1).locator('.overflow-text-static')).toHaveText('空仓')
+  await expect(entry.locator('xpath=ancestor::tr').getByRole('cell').nth(1)).toHaveText('空仓')
   await entry.focus()
   await page.keyboard.press('Enter')
   const dialog = page.getByRole('dialog', { name: 'm2701 · 持仓与目标' })
