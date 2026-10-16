@@ -76,7 +76,10 @@ def _query(executor: Any, symbol: str | None) -> None:
     activity = executor.account_orders.activity
     channel = str(getattr(executor.channel_type, "value", executor.channel_type))
     errors: list[str] = []
-    if channel not in {"ctp", "tq", "gm"}:
+    if channel == "binance":
+        symbols = [symbol]
+        scope = f"{'指定品种' if symbol else '全账户'}最近24小时记录，每类最多1000笔；另含本次连接观测"
+    elif channel not in {"ctp", "tq", "gm"}:
         symbols = [symbol] if symbol else activity.symbols()
         if not symbol:
             try:

@@ -115,6 +115,7 @@ test('account activity tabs expose fills and rejected orders and remember select
   const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   await expect(dialog).toContainText('成交时间')
+  await expect(dialog).toContainText('柜台当前交易日记录 + 本次连接观测')
   await expect(dialog.locator('[data-swap-current]').getByText('rb2610', { exact: true }).filter({ visible: true })).toBeVisible()
   await expect(dialog.locator('[data-swap-current]').getByText('1 手', { exact: true }).filter({ visible: true })).toBeVisible()
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()

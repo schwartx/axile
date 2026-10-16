@@ -75,6 +75,49 @@ def test_external_explicit_symbol_does_not_need_positions_or_other_symbols():
     assert result["errors"] == []
 
 
+@pytest.mark.parametrize("symbol", [None, "XRPUSDT"])
+def test_binance_history_discovers_closed_positions_on_a_fresh_connection(symbol):
+    instance = executor("binance")
+    assert instance.account_orders.activity.symbols() == []
+    queried = []
+    instance.query_recent_orders = lambda value: (
+        queried.append(("orders", value))
+        or [order("XRPUSDT").model_copy(update={"status": "已成交", "filled_volume": 2})]
+    )
+    instance.query_recent_trades = lambda value: (
+        queried.append(("trades", value))
+        or [TradeRecord.create(trade_id="fill", symbol="XRPUSDT", trade_price=100, trade_volume=2)]
+    )
+    result = run_activity_command(instance, {"refresh": True, "symbol": symbol})
+    assert queried == [("orders", symbol), ("trades", symbol)]
+    assert result["orders"][0]["symbol"] == result["trades"][0]["symbol"] == "XRPUSDT"
+    assert result["symbols"] == ["XRPUSDT"]
+    assert "最近24小时" in result["scope"]
+    assert ("全账户" if symbol is None else "指定品种") in result["scope"]
+    assert result["errors"] == []
+
+
+def test_binance_account_history_failure_is_not_a_successful_empty_result():
+    instance = executor("binance")
+
+    def fail(_symbol):
+        raise RuntimeError("api_key=secret")
+
+    instance.query_recent_orders = instance.query_recent_trades = fail
+    result = run_activity_command(instance, {"refresh": True})
+    assert len(result["errors"]) == 2
+    assert all("账户" in error and "核对失败" in error for error in result["errors"])
+    assert "secret" not in str(result)
+
+
+def test_binance_account_history_warns_when_exchange_limit_is_reached():
+    instance = executor("binance")
+    instance.query_recent_orders = lambda _symbol: [order("XRPUSDT")] * 1000
+    instance.query_recent_trades = lambda _symbol: []
+    result = run_activity_command(instance, {"refresh": True})
+    assert any("账户委托" in error and "截断" in error for error in result["errors"])
+
+
 def test_history_orders_are_sorted_by_native_tq_time_and_public_payload_is_whitelisted():
     instance = executor()
     instance.account_orders.apply(order(extra={"insert_date_time": 1_700_000_000_000_000_000, "password": "secret"}))

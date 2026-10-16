@@ -89,8 +89,10 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
         {query.error && <p role="status" className="mb-3 text-[13px] text-warn">记录读取失败{data ? '，以下为上次读取结果' : '，请稍后重试'}</p>}
         {query.loading && <Empty text="正在读取近期记录…" />}
         {data && <>
+          <p className="mb-3 text-xs leading-relaxed text-ink-3">{data.scope}{data.queried_at ? ` · 核对于 ${time(data.queried_at)}` : ''}</p>
           {data.errors.length > 0 && <div role="status" className="mb-3 text-xs leading-relaxed text-warn">{data.errors.map(message => <p key={message}>{message}</p>)}</div>}
           <ActivityTable data={data} tab={tab} units={units} />
+          {data.truncated && <p className="my-3 text-xs text-ink-3">每类显示最近 {data.limit} 笔记录</p>}
           {data.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
         </>}
         </>}
