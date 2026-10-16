@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
+from axile.executor.order_observation import merge_order, with_trade_average
 
 
 class AccountActivityBook:
@@ -19,6 +20,7 @@ class AccountActivityBook:
         self._orders: OrderedDict[tuple[str, str], UnifiedOrder] = OrderedDict()
         self._trades: OrderedDict[tuple[str, ...], TradeRecord] = OrderedDict()
         self._failures: OrderedDict[str, dict] = OrderedDict()
+        self.version = 0
         self.started_at = clock_now_iso()
         self.dropped = False
         self.queries: dict[str, dict] = {}
@@ -33,7 +35,7 @@ class AccountActivityBook:
                     return
                 if previous.filled_volume > order.filled_volume:
                     return
-            self._orders[key] = order.model_copy(deep=True)
+            self._orders[key] = merge_order(previous, order)
             self._orders.move_to_end(key)
             self._trim(self._orders)
 
@@ -48,8 +50,17 @@ class AccountActivityBook:
                 str(trade.extra.get("exchange_id", "")),
                 trade.trade_id,
             )
+            if self._trades.get(key) == trade:
+                return
+            self.version += 1
             self._trades[key] = trade.model_copy(deep=True)
             self._trim(self._trades)
+
+    def enrich_orders(self, orders: list[UnifiedOrder]) -> tuple[list[UnifiedOrder], int]:
+        """同一成交快照投影所有委托，并返回对应版本。"""
+        with self._lock:
+            trades = list(self._trades.values())
+            return [with_trade_average(order, trades) for order in orders], self.version
 
     def record_failure(
         self,
@@ -92,7 +103,9 @@ class AccountActivityBook:
         with self._lock:
             return {
                 "orders": [
-                    o.model_copy(deep=True) for o in self._orders.values() if symbol is None or o.symbol == symbol
+                    with_trade_average(o, list(self._trades.values()))
+                    for o in self._orders.values()
+                    if symbol is None or o.symbol == symbol
                 ],
                 "trades": [
                     t.model_copy(deep=True) for t in self._trades.values() if symbol is None or t.symbol == symbol

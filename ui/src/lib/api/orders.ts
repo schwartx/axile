@@ -1,6 +1,9 @@
 import { apiGet, apiSend } from '@/lib/api/client'
 
 export interface CurrentOrder {
+  avg_price?: number | null
+  avg_price_source?: 'native' | 'trades' | null
+  attributes?: Record<string, string | number | boolean>
   order_id: string
   symbol: string
   direction: string

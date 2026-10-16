@@ -10,6 +10,7 @@ from typing import Any
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import UnifiedOrder
+from axile.executor.order_observation import merge_order
 
 
 class AccountOrderBook:
@@ -47,7 +48,7 @@ class AccountOrderBook:
         with self._lock:
             key = order.symbol, order.order_id
             previous = self._orders.get(key)
-            value = order.model_copy(deep=True)
+            value = merge_order(previous, order)
             if previous is not None:
                 if previous.is_completed() and not value.is_completed():
                     return
@@ -79,7 +80,9 @@ class AccountOrderBook:
                     incoming[key] = previous
                 elif key not in incoming and not drop_missing:
                     incoming[key] = previous.model_copy(update={"status": "状态未知"}, deep=True)
-            self._orders = OrderedDict((key, value.model_copy(deep=True)) for key, value in incoming.items())
+            self._orders = OrderedDict(
+                (key, merge_order(self._orders.get(key), value)) for key, value in incoming.items()
+            )
             for order in self._orders.values():
                 self.activity.observe_order(order)
             if self._invalidated_at <= watermark:
@@ -93,15 +96,18 @@ class AccountOrderBook:
     def snapshot(self) -> dict[str, Any]:
         """复制订单与可信状态，不调用渠道、guard 或执行期 runtime。"""
         with self._lock:
-            active = [order.model_copy(deep=True) for order in self._orders.values() if not order.is_completed()]
+            active = [order for order in self._orders.values() if not order.is_completed()]
             terminal = [order for order in self._orders.values() if order.is_completed()]
+            projected, trade_version = self.activity.enrich_orders(active + terminal[-512:])
+            active_count = len(active)
+            active = projected[:active_count]
             complete = self.complete and all(order.is_active() for order in active)
             return {
                 "data": active,
-                "resolved": [order.model_copy(deep=True) for order in terminal[-512:]],
+                "resolved": projected[active_count:],
                 "complete": complete,
                 "error": self.error,
-                "version": self.version,
+                "version": self.version + trade_version,
                 "sampled_at": self.sampled_at,
             }
 

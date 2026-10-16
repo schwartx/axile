@@ -18,7 +18,7 @@ test('idle account receives callbacks over one SSE without REST polling', async 
   await expect(dialog.getByRole('group', { name: '委托拉取方式' })).toHaveCount(0)
   await request.post('/api/v1/test/orders/partial')
   await expect(dialog.getByText('部分成交', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(dialog.getByText('已成 1 手', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('3 / 1 手', { exact: true })).toBeVisible()
   expect(streams).toHaveLength(1)
   expect(reads).toHaveLength(0)
   expect((await (await request.get('/api/v1/test/orders/stats')).json()).queries).toBe(0)
@@ -32,7 +32,7 @@ test('execution end preserves reports and manual reconcile remains explicit', as
   await page.getByRole('button', { name: '结束执行', exact: true }).click()
   await request.post('/api/v1/test/orders/partial')
   await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  await expect(dialog.getByText('已成 1 手', { exact: true })).toBeVisible()
+  await expect(dialog.getByText('3 / 1 手', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect.poll(async () => (await (await request.get('/api/v1/test/orders/stats')).json()).queries).toBe(1)
 })
@@ -323,7 +323,7 @@ test('stock activity omits trade status, preserves order status and keeps IDs in
   expect((await row.boundingBox())!.height).toBe(64)
   await expect(current.getByText('状态', { exact: true })).toBeVisible()
   await expect(row.getByText('已成交', { exact: true })).toBeVisible()
-  await expect(row.locator(':scope > *')).toHaveCount(7)
+  await expect(row.locator(':scope > *')).toHaveCount(10)
   await expect(current).not.toContainText('开平未知')
   await expect(current.getByText('买卖 / 开平', { exact: true })).toHaveCount(0)
   await expect(row.locator('time')).toHaveText('2026-10-16 10:26:17')
@@ -364,6 +364,38 @@ for (const channel of ['ctp', 'tq', 'external'] as const) {
     await expect(current.getByText('状态', { exact: true })).toHaveCount(0)
     if (channel === 'external') await expect(rows.first().locator('.text-down')).toContainText('-2.5')
     await page.screenshot({ path: testInfo.outputPath(`${channel}-trade-columns.png`), animations: 'disabled' })
+    await page.setViewportSize({ width: 375, height: 812 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+}
+
+for (const scenario of [
+  { channel: 'ctp', attributes: { trading_day: '20261019', hedge_flag: '3', time_condition: '3', min_volume: 1 }, headers: ['交易日', '投机 / 套保'], cells: ['2026-10-19', '套保'], detail: '最小成交量' },
+  { channel: 'tq', attributes: { time_condition: 'IOC', volume_condition: 'ALL', exchange_order_id: 'exchange-demo', is_online: false }, headers: ['执行条件'], cells: ['立即成交剩余撤销 / 全部数量'], detail: '尚未确认' },
+  { channel: 'gm', attributes: { filled_amount: 312, order_business: '200', order_duration: '3' }, headers: ['已成金额', '业务类型'], cells: ['312.00', '融资买入'], detail: '委托时间属性' },
+  { channel: 'external', attributes: { native_order_type: 'LIMIT', position_side: 'SHORT', reduce_only: false, time_in_force: 'GTX' }, headers: ['订单类型', '持仓方向', '只减仓'], cells: ['空头', '否'], detail: '只做挂单' },
+]) {
+  test(`${scenario.channel} orders show verified average and keep secondary fields in details`, async ({ page }) => {
+    const time = '2026-10-16T10:00:00+08:00'
+    await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
+      channel: scenario.channel, orders: [{ order_id: 'demo-order', symbol: 'demo-symbol', direction: 'BUY', offset: 'OPEN',
+        order_type: 'LIMIT', price: 120, volume: 3, filled_volume: 3, remaining_volume: 0, status: '已成交',
+        create_time: time, execution_id: null, native_identity: {}, uncertain: false, avg_price: 104,
+        avg_price_source: 'trades', attributes: scenario.attributes }], trades: [], ended_orders: [], failures: [],
+      scope: '合成委托', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['demo-symbol'], limit: 100, truncated: false,
+    } }))
+    await page.goto('/e2e/orders.html')
+    await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+    await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
+    const table = dialog.locator('[data-swap-current] [data-order-table]')
+    for (const header of ['成交均价', ...scenario.headers]) await expect(table.getByRole('columnheader', { name: header, exact: true })).toBeVisible()
+    const row = table.locator('[data-activity-row]')
+    for (const value of ['104', ...scenario.cells]) await expect(row.getByText(value, { exact: true })).toBeVisible()
+    await expect(table.getByText('逐笔成交计算', { exact: true })).not.toBeVisible()
+    await table.getByRole('button', { name: '展开委托 demo-order', exact: true }).click()
+    await expect(table.getByText('逐笔成交计算', { exact: true })).toBeVisible()
+    await expect(table.getByText(scenario.detail, { exact: true })).toBeVisible()
     await page.setViewportSize({ width: 375, height: 812 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   })

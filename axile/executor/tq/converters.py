@@ -137,6 +137,10 @@ def order_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedOrder:
         is_error=_value(row, "is_error", None),
         exchange_order_id=str(_value(row, "exchange_order_id", "") or ""),
         tq_symbol=full_symbol,
+        **{
+            key: _value(row, key, None)
+            for key in ("time_condition", "volume_condition", "offset_leg2", "is_online", "is_dead")
+        },
     )
 
 

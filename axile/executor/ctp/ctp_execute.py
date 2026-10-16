@@ -658,6 +658,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     {(trade.extra.get("exchange_id"), trade.trade_id): trade for trade in trades}.values()
                 )
                 self._startup_trades.clear()
+                for trade in self._recovery_snapshot["trades"]:
+                    self.account_orders.activity.observe_trade(trade)
                 self._ready = True
             connection_monitor(self).step("channel_ready", "passed", step_details(self, "channel_ready"))
         except Exception:

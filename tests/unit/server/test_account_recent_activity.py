@@ -257,3 +257,50 @@ def test_missing_native_amount_and_fees_do_not_fall_back_to_price_times_quantity
     )
     trade = run_activity_command(instance, {})["trades"][0]
     assert trade["amount"] is trade["commission"] is trade["cost"] is trade["is_maker"] is None
+
+
+def test_order_average_and_channel_fields_are_whitelisted_and_paginated_after_aggregation():
+    instance = executor("ctp")
+    book = instance.account_orders
+    book.apply(
+        order(filled_volume=3, extra={"hedge_flag": "3", "time_condition": "3", "password": "secret"}).model_copy(
+            update={"volume": 3}
+        )
+    )
+    for identity, quantity, price in (("one", 1, 100), ("two", 2, 106)):
+        book.activity.observe_trade(
+            TradeRecord.create(
+                trade_id=identity, symbol="rb2610", order_id="one", trade_volume=quantity, trade_price=price
+            )
+        )
+    result = run_activity_command(instance, {"limit": 1})
+    assert result["orders"][0]["avg_price"] == 104
+    assert result["orders"][0]["avg_price_source"] == "trades"
+    assert result["orders"][0]["attributes"] == {"hedge_flag": "3", "time_condition": "3"}
+    assert "secret" not in str(result)
+    assert len(result["trades"]) == 1
+
+
+def test_order_attributes_keep_false_zero_and_hide_invalid_values_and_raw_payload():
+    from axile.server.account_orders_runtime import public_order
+
+    result = public_order(
+        order(
+            filled_volume=0,
+            avg_price=104,
+            extra={
+                "raw_order_data": {
+                    "filled_amount": 0,
+                    "order_business": 0,
+                    "reduce_only": False,
+                    "password": "secret",
+                    "stop_price": "NaN",
+                    "min_volume": True,
+                }
+            },
+        )
+    )
+    assert result["avg_price"] is result["avg_price_source"] is None
+    assert result["attributes"] == {"filled_amount": 0, "order_business": "0", "reduce_only": False}
+    assert "raw_order_data" not in result
+    assert "secret" not in str(result)

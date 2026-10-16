@@ -8,6 +8,9 @@ from sqlmodel import Field, SQLModel
 class AccountOrderPublic(SQLModel):
     """一笔当前委托及可公开的原生身份。"""
 
+    avg_price: float | None = None
+    avg_price_source: Literal["native", "trades"] | None = None
+    attributes: dict[str, str | float | bool] = Field(default_factory=dict)
     order_id: str
     symbol: str
     direction: str

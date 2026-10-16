@@ -23,9 +23,6 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.gm.common import (
     AccConnectionState,
     _build_gm_trade_id,
-    convert_gm_order_type_to_type,
-    convert_gm_side_to_direction,
-    convert_gm_status_to_string,
     from_gm_price,
 )
 from axile.executor.gm.connection import (
@@ -104,32 +101,46 @@ def _emit_runtime_log(level: GMRuntimeLogLevel, message: str) -> None:
 
 def _convert_order_to_unified(order: DictLikeOrder) -> UnifiedOrder:
     """将GM订单对象转换为统一订单模型."""
-    create_time = order.created_at
-    if isinstance(create_time, datetime):
-        create_time = create_time.isoformat()
+    from axile.executor.gm.common import convert_gm_order_to_unified
 
-    actionable_order_id = str(getattr(order, "cl_ord_id", None) or getattr(order, "order_id", "") or "")
-    unified_order = UnifiedOrder.create(
-        order_id=actionable_order_id,
-        symbol=str(order.symbol or ""),
-        direction=convert_gm_side_to_direction(int(order.side)).value,
-        order_type=convert_gm_order_type_to_type(int(order.order_type)).value,
-        volume=float(order.volume or 0),
-        price=float(order.price or 0),
-        channel_type=TradeChannel.GM,
-        status=convert_gm_status_to_string(int(order.status)),
-        create_time=create_time,
-        update_time=create_time,
-        raw_order_data=dict(order) if hasattr(order, "__iter__") else {},  # pyright: ignore[reportUnknownArgumentType]
+    fields = (
+        "cl_ord_id",
+        "order_id",
+        "ex_ord_id",
+        "symbol",
+        "side",
+        "order_type",
+        "volume",
+        "price",
+        "status",
+        "filled_volume",
+        "filled_vwap",
+        "filled_amount",
+        "created_at",
+        "updated_at",
+        "account_id",
+        "order_style",
+        "order_business",
+        "position_effect",
+        "position_side",
+        "ord_rej_reason",
+        "ord_rej_reason_detail",
+        "order_duration",
+        "order_qualifier",
+        "stop_price",
+        "value",
+        "percent",
+        "target_volume",
+        "target_value",
+        "target_percent",
+        "algo_order_id",
     )
-    unified_order.extra.update(
-        {
-            "account_id": getattr(order, "account_id", None),
-            "cl_ord_id": getattr(order, "cl_ord_id", None),
-            "exchange_order_id": getattr(order, "order_id", None),
-        }
+    raw = (
+        dict(order)
+        if hasattr(order, "__iter__")
+        else {key: getattr(order, key) for key in fields if hasattr(order, key)}
     )
-    return unified_order
+    return convert_gm_order_to_unified(raw)
 
 
 def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord:

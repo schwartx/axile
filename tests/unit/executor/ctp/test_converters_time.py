@@ -167,3 +167,29 @@ def test_trade_preserves_hedge_flag_and_trading_day_for_account_columns():
     assert trade.extra["hedge_flag"] == "3"
     assert trade.extra["trading_day"] == "20261019"
     assert "2026-10-16" in trade.trade_time
+
+
+def test_order_never_uses_limit_price_as_average_and_preserves_native_conditions():
+    order = order_to_unified(
+        dict(
+            InstrumentID="rb2610",
+            VolumeTotalOriginal=3,
+            VolumeTraded=2,
+            LimitPrice=120,
+            OrderPriceType="2",
+            OrderStatus="1",
+            CombHedgeFlag="3",
+            TimeCondition="3",
+            VolumeCondition="1",
+            MinVolume=1,
+            UpdateTime="10:01:02",
+        ),
+        trading_day="20261016",
+        front_id=1,
+        session_id=2,
+    )
+    assert order.price == 120
+    assert order.avg_price == 0
+    assert order.extra["hedge_flag"] == "3"
+    assert order.extra["time_condition"] == "3"
+    assert order.extra["native_update_time"] == "10:01:02"

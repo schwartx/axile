@@ -739,7 +739,7 @@ export function AccountDetail({
               </div>
             </div>
           ) : null}
-          <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} />
+          <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} channel={item.trade_channel} />
           <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
             positions={positions} observed={!!latestAssets}
             observedAt={assetSnapshots.data?.data[0]?.created_at ?? null}

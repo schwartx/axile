@@ -6,6 +6,7 @@ import asyncio
 from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime
+from math import isfinite
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -26,6 +27,7 @@ from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_control import AccountControlEvent
 from axile.server.db.models.account_order import AccountOrderPublic
 from axile.server.execution.execution_account_control import build_account_control_guard, flush_account_control_records
+from axile.server.order_attributes import order_attributes
 
 _IDENTITY_FIELDS = (
     "order_ref",
@@ -37,6 +39,8 @@ _IDENTITY_FIELDS = (
     "client_order_id",
     "cl_ord_id",
     "tq_symbol",
+    "exchange_order_id",
+    "ex_ord_id",
 )
 
 
@@ -75,6 +79,8 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
     offset = public_offset(extra)
     created = order.create_time
     updated = order.update_time
+    if extra.get("channel_type") == "ctp":
+        updated = None
     raw = extra.get("raw_order_data")
     if extra.get("channel_type") == "gm" and isinstance(raw, dict):
         created = _native_time(raw.get("created_at"))
@@ -88,6 +94,13 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
             created = None
     execution_id = extra.get("execution_id")
     return AccountOrderPublic(
+        avg_price=order.avg_price
+        if order.filled_volume > 0 and isfinite(order.avg_price) and order.avg_price > 0
+        else None,
+        avg_price_source=("trades" if extra.get("avg_price_source") == "trades" else "native")
+        if order.filled_volume > 0 and isfinite(order.avg_price) and order.avg_price > 0
+        else None,
+        attributes=order_attributes(extra),
         order_id=order.order_id,
         symbol=order.symbol,
         direction=str(getattr(order.direction, "value", order.direction)),
@@ -265,6 +278,12 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
         return run_activity_command(executor, payload)
     book = getattr(executor, "account_orders", None)
+
+    def publish(order: UnifiedOrder) -> dict[str, Any]:
+        if book is not None:
+            order = book.activity.enrich_orders([order])[0][0]
+        return public_order(order)
+
     snapshot = book.snapshot() if book is not None else None
     if payload["command"] == "query" or snapshot is None or payload["command"] == "cancel" and not snapshot["complete"]:
         orders = executor.get_pending_orders(None)
@@ -280,18 +299,18 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
             terminal = terminal_order(executor, *key)
             return {
                 "state": "terminal" if terminal else "unknown",
-                "order": public_order(terminal) if terminal else None,
+                "order": publish(terminal) if terminal else None,
                 "message": "订单已结束，未提交撤单" if terminal else "未找到当前委托，订单状态待确认；未提交撤单",
             }
         if not order.is_active():
-            return {"state": "unknown", "order": public_order(order), "message": "订单状态未知，未提交撤单"}
+            return {"state": "unknown", "order": publish(order), "message": "订单状态未知，未提交撤单"}
         try:
             submitted = executor.cancel_order(order.symbol, order.order_id)
         finally:
             _observe_cancellation(executor, order.symbol, order.order_id)
         return {
             "state": "submitted" if submitted else "failed",
-            "order": public_order(order),
+            "order": publish(order),
             "message": "撤单请求已提交，等待实际回报" if submitted else "撤单请求未提交成功",
         }
     resolved = []
@@ -307,14 +326,14 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
         if order is not None:
             if book is not None:
                 book.apply(order)
-            resolved.append(public_order(order))
+            resolved.append(publish(order))
     current = book.snapshot() if book is not None else None
     terminals = {(row["symbol"], row["order_id"]): row for row in resolved}
     if current is not None:
         for order in current["resolved"]:
-            terminals.setdefault((order.symbol, order.order_id), public_order(order))
+            terminals.setdefault((order.symbol, order.order_id), publish(order))
     return {
-        "data": [public_order(order) for order in (current["data"] if current else active.values())],
+        "data": [publish(order) for order in (current["data"] if current else active.values())],
         "complete": current["complete"] if current else True,
         "error": current["error"] if current else None,
         "version": current["version"] if current else 0,

@@ -74,7 +74,7 @@ def _summarize_trade_records(trades: list[TradeRecord]) -> tuple[float, float]:
         return 0.0, 0.0
 
     total_volume = sum(trade.trade_volume for trade in trades)
-    total_value = sum(trade.trade_value for trade in trades)
+    total_value = sum(trade.trade_price * trade.trade_volume for trade in trades)
     avg_price = total_value / total_volume if total_volume > 0 else 0.0
     return total_volume, avg_price
 
@@ -1350,16 +1350,14 @@ class OrderTracker:
         merged_order.extra = {**tracked_order.extra, **merged_order.extra}
         incoming_status = incoming_order.status
         baseline_filled_volume = max(tracked_order.filled_volume, incoming_order.filled_volume)
-        if incoming_order.avg_price > 0:
-            baseline_avg_price = incoming_order.avg_price
-        else:
-            baseline_avg_price = tracked_order.avg_price
-
-        self._preserve_cumulative_fill(
-            merged_order,
-            baseline_filled_volume=baseline_filled_volume,
-            baseline_avg_price=baseline_avg_price,
-        )
+        merged_order.filled_volume = baseline_filled_volume
+        if incoming_order.filled_volume < baseline_filled_volume:
+            merged_order.avg_price = tracked_order.avg_price
+        elif incoming_order.avg_price <= 0 and incoming_order.filled_volume == tracked_order.filled_volume:
+            merged_order.avg_price = tracked_order.avg_price
+        trade_volume, trade_average = _summarize_trade_records(self.order_trades.get(tracked_order_id, []))
+        if merged_order.avg_price <= 0 and trade_volume == baseline_filled_volume and trade_volume > 0:
+            merged_order.avg_price = trade_average
 
         if OrderStatus.is_completed(incoming_status):
             merged_order.status = incoming_status

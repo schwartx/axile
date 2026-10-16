@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from openctp_ctp import thosttraderapi as td
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.combination import split_combination_position
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
@@ -103,9 +104,29 @@ def order_to_unified(row: object, *, trading_day: str, front_id: int, session_id
         channel_type=TradeChannel.CTP,
         status=_ORDER_STATUS.get(_value(row, "OrderStatus"), OrderStatus.REJECTED),
         filled_volume=traded,
-        avg_price=_price(row, "LimitPrice") if traded else 0.0,
+        avg_price=0.0,
         create_time=create_time,
-        update_time=datetime.now(_SHANGHAI).isoformat(),
+        update_time=clock_now().astimezone(_SHANGHAI).isoformat(),
+        **{
+            key: _value(row, native, None)
+            for key, native in {
+                "hedge_flag": "CombHedgeFlag",
+                "native_order_type": "OrderPriceType",
+                "time_condition": "TimeCondition",
+                "gtd_date": "GTDDate",
+                "volume_condition": "VolumeCondition",
+                "min_volume": "MinVolume",
+                "contingent_condition": "ContingentCondition",
+                "stop_price": "StopPrice",
+                "submit_status": "OrderSubmitStatus",
+                "active_time": "ActiveTime",
+                "suspend_time": "SuspendTime",
+                "native_update_time": "UpdateTime",
+                "cancel_time": "CancelTime",
+                "order_local_id": "OrderLocalID",
+                "force_close_reason": "ForceCloseReason",
+            }.items()
+        },
         trading_day=day,
         **_time_evidence(insert_day, insert_time, "InsertDate", create_time),
         order_ref=order_ref,
