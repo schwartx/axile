@@ -38,7 +38,7 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
   const stateName = { uninitialized: '未建立', unknown: '待确认', ready: '就绪', unavailable: '暂不可用', connecting: '准备中', recovering: '恢复中', disconnected: '已断开' }[status]
   const accessible = `账户连通状态：${stateName}${status === 'unavailable' && connection.label?.trim() ? `，${label}` : ''}`
   const buttonClass = 'inline-flex min-w-0 items-center gap-1.5 rounded-chip px-2.5 py-1 text-xs hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
-  return <div className="inline-flex min-w-0 max-w-full items-center gap-1" onClick={event => event.stopPropagation()}>
+  return <div className="inline-flex min-w-0 max-w-full items-center gap-2" onClick={event => event.stopPropagation()}>
     <button type="button" role="switch" aria-checked={connected} aria-label="账户连接" aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
       data-tone={busy ? 'busy' : connected ? 'ready' : status === 'unavailable' ? 'warning' : 'idle'}
       title={busy ? switchLabel : !synced ? '连接状态待同步' : action} disabled={!synced || busy}
@@ -49,8 +49,9 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
     </button>
     <button type="button" aria-label={`连接详情，${accessible}`} aria-haspopup="dialog" title="查看连接详情"
       onClick={() => { setRequestId(value => value + 1); setOpenFor(accountId) }}
-      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-chip hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer ${status === 'unavailable' ? 'text-warn' : 'text-ink-2'}`}>
+      className={`${buttonClass} shrink-0 cursor-pointer whitespace-nowrap border border-line text-ink-2 hover:border-border-strong`}>
       <Info size={14} className="shrink-0" aria-hidden />
+      <span>连接详情</span>
     </button>
     <AccountConnectionProblemModal selection={openFor === accountId ? { accountId, requestId, detail: connection } : null} onClose={() => setOpenFor(null)} />
   </div>

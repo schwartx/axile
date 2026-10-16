@@ -1174,7 +1174,7 @@ test('connection failure keeps the header compact and feedback below the control
   const toggle = page.getByRole('switch', { name: '账户连接' })
   const details = page.getByRole('button', { name: /连接详情，账户连通状态/ })
   await expect(toggle).toContainText(label)
-  await expect(details).toHaveText('')
+  await expect(details).toHaveText('连接详情')
   const before = await toggle.boundingBox()
   await toggle.click()
   const alert = page.getByRole('alert').filter({ hasText: '连接操作未完成' })
