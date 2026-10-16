@@ -24,12 +24,13 @@ function DetailField({ label, children, wide = false }: { label: string; childre
   </div>
 }
 
-function OrderDetailPanel({ order, channel, units, formatTime, copy }: {
+function OrderDetailPanel({ order, channel, units, formatTime, copy, showAverage }: {
   order: CurrentOrder
   channel?: string
   units?: ChannelCapability['units']
   formatTime: Props['formatTime']
   copy: () => Promise<void>
+  showAverage: boolean
 }) {
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
   const fields = orderDetails(order)
@@ -46,7 +47,7 @@ function OrderDetailPanel({ order, channel, units, formatTime, copy }: {
       {common.map(field => <DetailField key={field.key} label={field.label}>{field.text}</DetailField>)}
       {order.reason && <DetailField label="状态说明" wide>{order.reason}</DetailField>}
       <DetailField label="记录时间">{formatTime(order.create_time)}</DetailField>
-      {order.avg_price != null && <DetailField label="均价来源">{order.avg_price_source === 'trades' ? '逐笔成交计算' : '渠道返回'}</DetailField>}
+      {showAverage && order.avg_price != null && <DetailField label="均价来源">{order.avg_price_source === 'trades' ? '逐笔成交计算' : '渠道返回'}</DetailField>}
       {Object.entries(order.native_identity).map(([key, value]) => <DetailField key={key} label={key === 'client_order_id' ? '客户端订单编号' : key} wide>{value}</DetailField>)}
       {extra.map(field => <DetailField key={field.key} label={field.label}>{field.text}</DetailField>)}
     </dl>
@@ -54,6 +55,7 @@ function OrderDetailPanel({ order, channel, units, formatTime, copy }: {
 }
 
 interface Props {
+  showAverage?: boolean
   loading?: boolean
   emptyText?: string
   orders: CurrentOrder[]
@@ -64,7 +66,7 @@ interface Props {
   statusText?: (order: CurrentOrder) => string
 }
 
-function Row({ order, channel, units, formatTime, action, statusText }: Omit<Props, 'orders'> & { order: CurrentOrder }) {
+function Row({ order, channel, units, formatTime, action, statusText, showAverage = true }: Omit<Props, 'orders'> & { order: CurrentOrder }) {
   const [expanded, setExpanded] = useState(false)
   const panel = useId()
   const toast = useToastStore(state => state.toast)
@@ -82,19 +84,19 @@ function Row({ order, channel, units, formatTime, action, statusText }: Omit<Pro
       <td className="font-medium"><OverflowText text={order.symbol} className="w-full" /></td>
       <td>{orderDirection(order.direction)}{units?.quantity_kind !== 'share' && <small className="block text-ink-3">{orderOffset(order.offset)}</small>}</td>
       <td className="num text-right" data-numeric><OverflowText text={price} /></td>
-      <td className="num text-right" data-numeric><OverflowText text={averageText(order)} /></td>
+      {showAverage && <td className="num text-right" data-numeric><OverflowText text={averageText(order)} /></td>}
       <td className="num text-right" data-numeric><OverflowText text={`${number(order.volume)} / ${number(order.filled_volume)}${units?.quantity_label ? ` ${units.quantity_label}` : ''}`} /></td>
       <td className={order.uncertain || status.includes('拒绝') || status.includes('确认') || status.includes('失败') ? 'text-warn' : 'text-ink-2'}><OverflowText text={status} /></td>
       {columns.map(column => <td key={column.key} data-numeric={column.numeric || undefined} className={column.numeric ? 'num text-right' : ''}><OverflowText text={column.text(order)} /></td>)}
       {action && <td>{action(order)}</td>}
-      <td className="w-8"><button type="button" aria-expanded={expanded} aria-controls={panel} aria-label={`${expanded ? '收起' : '展开'}委托 ${order.order_id}`}
-        onClick={() => setExpanded(value => !value)} className="flex min-h-8 cursor-pointer items-center justify-center text-ink-3 hover:text-ink-1">
+      <td className="sticky right-0 w-8 bg-surface"><button type="button" aria-expanded={expanded} aria-controls={panel} aria-label={`${expanded ? '收起' : '展开'}委托 ${order.order_id}`}
+        onClick={() => setExpanded(value => !value)} className="flex min-h-8 w-full cursor-pointer items-center justify-end text-ink-3 hover:text-ink-1">
         <ChevronDown size={15} aria-hidden className={`transition-transform duration-200 motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`} />
       </button></td>
     </tr>
-    <tr><td colSpan={8 + columns.length + (action ? 1 : 0)} className="p-0">
+    <tr><td colSpan={(showAverage ? 8 : 7) + columns.length + (action ? 1 : 0)} className="p-0">
       <div id={panel} aria-hidden={!expanded} inert={!expanded} className={`grid transition-[grid-template-rows,visibility] duration-200 motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr] visible' : 'grid-rows-[0fr] invisible'}`}>
-        <div className="min-h-0 overflow-hidden"><OrderDetailPanel order={order} channel={channel} units={units} formatTime={formatTime} copy={copy} /></div>
+        <div className="sticky left-0 min-h-0 min-w-0 max-w-[calc(92vw-44px)] overflow-hidden"><OrderDetailPanel order={order} channel={channel} units={units} formatTime={formatTime} copy={copy} showAverage={showAverage} /></div>
       </div>
     </td></tr>
   </tbody>
@@ -106,14 +108,14 @@ export function OrderRecordsTable(props: Props) {
   const quantity = (volume: number, filled: number) => `${number(volume)} / ${number(filled)}${props.units?.quantity_label ? ` ${props.units.quantity_label}` : ''}`
   const samples: Record<string, string> = { trading_day: '2026-12-28', hedge_flag: '投机/套保', conditions: '立即成交剩余撤销 / 全部数量', filled_amount: '999,999.99', order_business: '普通交易', native_order_type: '止损限价' }
   const layout: RecordColumn[] = [
-    { key: 'time', label: '委托时间', sample: '2026-12-28 23:59:59' },
-    { key: 'symbol', label: '品种', sample: 'ETHUSDT', values: props.orders.map(order => order.symbol), maxWidth: 160 },
+    { key: 'time', label: '委托时间', grow: 1, sample: '2026-12-28 23:59:59' },
+    { key: 'symbol', label: '品种', grow: 1, sample: 'ETHUSDT', values: props.orders.map(order => order.symbol), maxWidth: 160 },
     { key: 'direction', label: props.units?.quantity_kind === 'share' ? '买卖' : '买卖 / 开平' },
-    { key: 'price', label: '委托价', sample: '9,999.99999999', values: props.orders.map(order => number(order.price)), numeric: true },
-    { key: 'average', label: '成交均价', sample: '9,999.99999999', values: props.orders.map(averageText), numeric: true },
-    { key: 'volume', label: '委托 / 已成', sample: quantity(99999, 99999), values: props.orders.map(order => quantity(order.volume, order.filled_volume)), numeric: true },
+    { key: 'price', label: '委托价', grow: 1, sample: '9,999.99999999', values: props.orders.map(order => number(order.price)), numeric: true },
+    ...(props.showAverage === false ? [] : [{ key: 'average', label: '成交均价', grow: 1, sample: '9,999.99999999', values: props.orders.map(averageText), numeric: true }]),
+    { key: 'volume', label: '委托 / 已成', grow: 1, sample: quantity(99999, 99999), values: props.orders.map(order => quantity(order.volume, order.filled_volume)), numeric: true },
     { key: 'status', label: '状态', sample: '部分成交', values: props.orders.map(order => props.statusText?.(order) ?? order.status) },
-    ...columns.map(column => ({ key: column.key, label: column.label, numeric: column.numeric, sample: samples[column.key], values: props.orders.map(column.text), maxWidth: column.key === 'conditions' ? 280 : undefined })),
+    ...columns.map(column => ({ key: column.key, label: column.label, numeric: column.numeric, grow: column.numeric || column.key === 'conditions' ? 1 : 0, sample: samples[column.key], values: props.orders.map(column.text), maxWidth: column.key === 'conditions' ? 280 : undefined })),
     ...(props.action ? [{ key: 'action', label: '操作', sample: '撤单' }] : []), { key: 'details', label: '详情' },
   ]
   return <RecordTable columns={layout} kind="order" loading={props.loading} empty={!props.orders.length} emptyText={props.emptyText ?? '暂无委托记录'}>

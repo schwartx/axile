@@ -123,7 +123,8 @@ test('account activity tabs expose fills and rejected orders and remember select
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   await expect(dialog.locator('[data-swap-current]').getByText('ag2612', { exact: true }).filter({ visible: true }).last()).toBeVisible()
   await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
-  await expect(dialog.locator('[data-swap-current]').getByText('保证金不足', { exact: true })).toBeVisible()
+  await dialog.locator('[data-swap-current] [data-order-table]').getByRole('button', { name: /^展开委托/ }).first().click()
+  await expect(dialog.locator('[data-swap-current]').getByText('保证金不足', { exact: true }).filter({ visible: true })).toBeVisible()
   await expect(dialog).not.toContainText('本次连接起采集')
   await expect(dialog).not.toContainText('最多显示最近')
   await dialog.getByRole('button', { name: '核对记录', exact: true }).hover()
@@ -274,7 +275,8 @@ test('activity transitions only records, retains controls, and respects reduced 
 
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
-  await expect(slot.getByText('保证金不足', { exact: true })).toBeVisible()
+  await slot.locator('[data-order-table]').getByRole('button', { name: /^展开委托/ }).first().click()
+  await expect(slot.getByText('保证金不足', { exact: true }).filter({ visible: true })).toBeVisible()
   await expect(slot.locator('[data-swap-outgoing]')).toHaveCount(0)
   expect(await slot.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0)
 })
@@ -467,6 +469,8 @@ for (const scenario of [
   { channel: 'gm', tab: '最近委托', count: 80 },
   { channel: 'external', tab: '最近成交', count: 80 },
   { channel: 'tq', tab: '撤单 / 拒绝', count: 1 },
+  { channel: 'external', tab: '操作异常', count: 80 },
+  { channel: 'ctp', tab: '操作异常', count: 0 },
 ]) {
   test(`activity loading keeps geometry for ${scenario.channel} ${scenario.tab} ${scenario.count} records`, async ({ page }, testInfo) => {
     await page.emulateMedia({ reducedMotion: scenario.channel === 'external' ? 'no-preference' : 'reduce' })
@@ -479,21 +483,21 @@ for (const scenario of [
       create_time: time, execution_id: null, native_identity: {}, uncertain: false, attributes: {} }))
     const payload = { channel: scenario.channel, orders, ended_orders: scenario.tab === '撤单 / 拒绝' ? orders : [],
       trades: orders.map((order, i) => ({ trade_id: `loading-fill-${i}`, order_id: order.order_id, symbol: order.symbol, direction: 'BUY', offset: 'OPEN', time, price: 99, volume: 1, value: 99 })),
-      failures: [], scope: '合成记录范围，用于验证加载占位与真实表格的列宽、表头位置和弹窗尺寸', queried_at: time, started_at: time, sampled_at: time, errors: [], symbols: [], limit: 100, truncated: false }
+      failures: scenario.tab === '操作异常' ? orders.map((order, i) => ({ event_id: `operation-${i}`, operation: 'cancel_order', outcome: 'rejected', symbol: order.symbol, order_id: order.order_id, time, message: '测试操作失败原因' })) : [], scope: '合成记录范围，用于验证加载占位与真实表格的列宽、表头位置和弹窗尺寸', queried_at: time, started_at: time, sampled_at: time, errors: [], symbols: [], limit: 100, truncated: false }
     await page.route('**/api/v1/account/1/orders/activity?**', async route => { await gate; await route.fulfill({ json: payload }) })
     await page.goto(`/e2e/orders.html?channel=${scenario.channel}`)
     await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
     await dialog.getByRole('button', { name: scenario.tab, exact: true }).click()
     const current = dialog.locator('[data-swap-current]')
-    await expect(current.locator('[data-record-placeholder]')).toBeVisible()
+    await expect(current.locator('[data-record-placeholder]').first()).toBeVisible()
     await expect(dialog.locator('[data-swap-outgoing]')).toHaveCount(0)
     const anchors = [dialog, dialog.locator('h2'), dialog.getByRole('button', { name: scenario.tab, exact: true }),
       dialog.getByRole('button', { name: '品种', exact: true }), dialog.getByRole('button', { name: '核对记录', exact: true }), dialog.getByRole('button', { name: '关闭', exact: true }).last()]
     const geometry = () => Promise.all(anchors.map(locator => locator.boundingBox()))
     const before = await geometry()
     const headersBefore = await current.locator('th').evaluateAll(headers => headers.map(header => ({ x: header.getBoundingClientRect().x, y: header.getBoundingClientRect().y, width: header.getBoundingClientRect().width })))
-    const heading = scenario.tab === '撤单 / 拒绝' ? null : await current.locator('thead').elementHandle()
+    const heading = await current.locator('thead').first().elementHandle()
     await page.screenshot({ path: testInfo.outputPath('activity-loading.png'), animations: 'disabled' })
     release()
     await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
@@ -501,8 +505,13 @@ for (const scenario of [
     expect(await geometry()).toEqual(before)
     expect(await current.locator('th').evaluateAll(headers => headers.map(header => ({ x: header.getBoundingClientRect().x, y: header.getBoundingClientRect().y, width: header.getBoundingClientRect().width })))).toEqual(headersBefore)
     if (heading) expect(await heading.evaluate(node => node.isConnected)).toBe(true)
+    const table = current.locator('table')
+    const viewport = await table.locator('..').boundingBox()
+    const tableBox = await table.boundingBox()
+    expect(Math.abs(tableBox!.x + tableBox!.width - viewport!.x - viewport!.width)).toBeLessThan(1)
+    expect(Math.abs(headersBefore.at(-1)!.width - 32)).toBeLessThan(1)
     if (scenario.channel === 'external') expect(await current.evaluate(node => node.getAnimations({ subtree: true }).length)).toBe(0)
-    if (scenario.count === 0) await expect(current.getByText('暂无成交记录', { exact: true })).toBeVisible()
+    if (scenario.count === 0) await expect(current.getByText(scenario.tab === '操作异常' ? '暂无操作异常' : '暂无成交记录', { exact: true })).toBeVisible()
     else await expect(current.getByText('DEMO0', { exact: true }).first()).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('activity-loaded.png'), animations: 'disabled' })
     if (scenario.count > 5) {
@@ -625,9 +634,11 @@ for (const tab of ['最近成交', '最近委托']) {
     const before = await boundaries()
     const viewport = await table.locator('..').boundingBox()
     const tableBox = await table.boundingBox()
-    expect(tableBox!.width).toBeLessThan(viewport!.width)
+    expect(Math.abs(tableBox!.width - viewport!.width)).toBeLessThan(1)
+    const detailButton = table.locator('[data-activity-row] > td:last-child button')
+    expect(Math.abs((await detailButton.boundingBox())!.x + (await detailButton.boundingBox())!.width - viewport!.x - viewport!.width)).toBeLessThan(1)
     const headers = await table.locator('th').allTextContents()
-    expect(before[headers.indexOf('品种')].width).toBeLessThan(120)
+    expect(before[headers.indexOf('品种')].width).toBeLessThan(260)
     if (tab === '最近成交') {
       expect(before[headers.indexOf('手续费币种')].width).toBeLessThan(110)
       expect(before[headers.indexOf('持仓方向')].width).toBeLessThan(95)
@@ -644,7 +655,18 @@ for (const tab of ['最近成交', '最近委托']) {
     expect(await boundaries()).toEqual(before)
     await page.setViewportSize({ width: 375, height: 812 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    expect((await boundaries()).map(cell => cell.width)).toEqual(before.map(cell => cell.width))
+    const mobile = await boundaries()
+    for (const label of ['买卖', '状态', '订单类型', '持仓方向', '只减仓', '手续费币种', 'Maker/Taker', '详情']) {
+      const index = headers.indexOf(label)
+      if (index >= 0) expect(Math.abs(mobile[index].width - before[index].width)).toBeLessThan(1)
+    }
+    const mobileViewport = await table.locator('..').boundingBox()
+    expect((await table.boundingBox())!.width).toBeGreaterThan(mobileViewport!.width)
+    const mobileButton = await detailButton.boundingBox()
+    expect(Math.abs(mobileButton!.x + mobileButton!.width - mobileViewport!.x - mobileViewport!.width)).toBeLessThan(1)
+    await table.locator('..').evaluate(node => { node.scrollLeft = node.scrollWidth })
+    expect((await boundaries()).map(cell => cell.width)).toEqual(mobile.map(cell => cell.width))
+    expect(Math.abs((await detailButton.boundingBox())!.x + (await detailButton.boundingBox())!.width - mobileViewport!.x - mobileViewport!.width)).toBeLessThan(1)
   })
 }
 
@@ -700,7 +722,8 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
   await open()
   await expect(dialog.getByRole('button', { name: '最近成交', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('XRPUSDT')
-  await expect(dialog.locator('[data-record-placeholder]')).toBeVisible()
+  await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
+  await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
   await page.evaluate(() => {
     const frames: { top: number; left: number }[] = []
     Object.assign(window, { restoredFrames: frames, trackRestoration: true })
@@ -752,3 +775,156 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
 })
 
 }
+
+test('terminal orders and operation failures occupy separate top-level tabs', async ({ page }, testInfo) => {
+  const time = '2026-10-16T19:23:08+08:00'
+  const orderId = 'order-12345678901234567890123456789012345678901234567890'
+  const reason = '柜台返回的完整拒绝原因：'.repeat(12)
+  await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
+    channel: 'external', orders: [], ended_orders: [
+      { order_id: orderId, symbol: 'XRPUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, avg_price: 1.34, avg_price_source: 'native', volume: 14.8, filled_volume: 0, remaining_volume: 14.8, status: '已撤销', create_time: time, native_identity: {}, uncertain: false },
+      { order_id: 'rejected-order', symbol: 'BTCUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 100, volume: 1, filled_volume: 0, remaining_volume: 1, status: '已拒绝', reason, create_time: time, native_identity: {}, uncertain: false },
+    ], trades: [], failures: [
+      { event_id: 'cancel-rejection', operation: 'cancel_order', outcome: 'rejected', symbol: 'XRPUSDT', order_id: orderId, time, message: '柜台不允许撤单' },
+      { event_id: 'unknown', operation: 'place_order', symbol: '', order_id: null, time, message: '回报超时，结果待确认' },
+    ], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false,
+  } }))
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value: string) => Object.assign(window, { copiedEventOrder: value }) } }))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await page.goto('/e2e/orders.html?channel=external')
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
+  await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
+  const table = dialog.locator('[data-swap-current] [data-order-table]')
+  const rows = table.locator('[data-activity-row]')
+  await expect(rows).toHaveCount(2)
+  await expect(dialog.locator('[data-swap-current] [data-event-table]')).toHaveCount(0)
+  for (const header of ['委托时间', '品种', '买卖 / 开平', '委托价', '委托 / 已成', '状态', '订单类型', '持仓方向', '只减仓']) await expect(table.getByRole('columnheader', { name: header, exact: true })).toBeVisible()
+  expect(await rows.evaluateAll(elements => elements.every(element => element.getBoundingClientRect().height === 64))).toBe(true)
+  await expect(table.getByRole('columnheader', { name: '成交均价', exact: true })).toHaveCount(0)
+  const canceled = rows.filter({ has: page.getByText('已撤销', { exact: true }).filter({ visible: true }) })
+  await expect(canceled.getByText('14.8 / 0 手', { exact: true }).filter({ visible: true })).toBeVisible()
+  await canceled.getByRole('button').click()
+  const details = canceled.locator('..').locator('dl')
+  await expect(details.getByText('均价来源', { exact: true })).toHaveCount(0)
+  await expect(details.getByText(orderId, { exact: true })).toBeVisible()
+  await details.getByRole('button', { name: '复制订单编号', exact: true }).click()
+  expect(await page.evaluate(() => Reflect.get(window, 'copiedEventOrder'))).toBe(orderId)
+  const rejected = rows.filter({ has: page.getByText('已拒绝', { exact: true }).filter({ visible: true }) })
+  await rejected.getByRole('button').click()
+  await expect(rejected.locator('..').locator('dd').filter({ hasText: reason })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('terminal-order-details.png'), animations: 'disabled' })
+  await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
+  const operations = dialog.locator('[data-swap-current] [data-event-table]')
+  await expect(dialog.locator('[data-swap-current] [data-order-table]')).toHaveCount(0)
+  await expect(operations.locator('[data-activity-row]')).toHaveCount(2)
+  for (const header of ['发生时间', '品种', '操作', '结果', '失败原因']) await expect(operations.getByRole('columnheader', { name: header, exact: true })).toBeVisible()
+  const failed = operations.locator('[data-activity-row]').filter({ has: page.getByText('撤单被拒绝', { exact: true }).filter({ visible: true }) })
+  await expect(failed.getByText('撤单', { exact: true }).filter({ visible: true })).toBeVisible()
+  await failed.getByRole('button').click()
+  const operationDetails = failed.locator('..').locator('dl')
+  await expect(operationDetails.getByText('柜台不允许撤单', { exact: true })).toBeVisible()
+  await operationDetails.getByRole('button', { name: '复制订单编号', exact: true }).click()
+  expect(await page.evaluate(() => Reflect.get(window, 'copiedEventOrder'))).toBe(orderId)
+  await page.screenshot({ path: testInfo.outputPath('operation-failures-tab.png'), animations: 'disabled' })
+  await page.setViewportSize({ width: 375, height: 812 })
+  await operations.locator('..').evaluate(node => { node.scrollLeft = node.scrollWidth })
+  await expect(operationDetails.getByRole('button', { name: '复制订单编号', exact: true })).toBeInViewport()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+for (const reducedMotion of ['reduce', 'no-preference'] as const) {
+  test(`operation tab remembers its own filter and scroll through remount and refresh (${reducedMotion})`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion })
+    await page.setViewportSize({ width: 375, height: 812 })
+    let gate: Promise<void> | null = null
+    let release!: () => void
+    const time = '2026-10-16T19:23:08+08:00'
+    await page.route('**/api/v1/account/1/orders/activity?**', async route => {
+      if (gate) await gate
+      const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'XRPUSDT'
+      await route.fulfill({ json: { channel: 'external', orders: [], ended_orders: Array.from({ length: 40 }, (_, i) => ({
+        order_id: `ended-${i}`, symbol, direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35,
+        volume: 14.8, filled_volume: 0, remaining_volume: 14.8, status: '已撤销', create_time: time, native_identity: {}, uncertain: false,
+      })), trades: [], failures: Array.from({ length: 40 }, (_, i) => ({ event_id: `cancel-${i}`, operation: 'cancel_order', outcome: 'rejected', symbol, order_id: 'active-order', time, message: '撤单被柜台拒绝，原委托仍有效' })),
+        scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false } })
+    })
+    await page.goto('/e2e/orders.html?channel=external&memory')
+    const open = () => page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
+    const vertical = dialog.locator('[data-activity-scroll]')
+    const horizontal = dialog.locator('[data-swap-current] [data-record-scroll]')
+    const position = async () => ({ top: await vertical.evaluate(node => node.scrollTop), left: await horizontal.evaluate(node => node.scrollLeft) })
+    const selectSymbol = async (symbol: string) => {
+      await dialog.getByRole('button', { name: '品种', exact: true }).click()
+      await page.getByRole('option', { name: symbol, exact: true }).click()
+      await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
+    }
+    await open()
+    await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
+    await expect(dialog.locator('[data-swap-current] [data-order-table] [data-activity-row]')).toHaveCount(40)
+    await selectSymbol('XRPUSDT')
+    await vertical.evaluate(node => { node.scrollTop = 640 })
+    await horizontal.evaluate(node => { node.scrollLeft = 140 })
+    await expect.poll(position).toEqual({ top: 640, left: 140 })
+    await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('全部品种')
+    await selectSymbol('BTCUSDT')
+    await vertical.evaluate(node => { node.scrollTop = 320 })
+    await horizontal.evaluate(node => { node.scrollLeft = 90 })
+    await expect.poll(position).toEqual({ top: 320, left: 90 })
+    await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('XRPUSDT')
+    await expect.poll(position).toEqual({ top: 640, left: 140 })
+    await expect(dialog.locator('[data-swap-current] [data-order-table]').getByText('active-order', { exact: true })).toHaveCount(0)
+    await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('BTCUSDT')
+    await expect.poll(position).toEqual({ top: 320, left: 90 })
+    await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
+    await expect(vertical).toHaveCount(0)
+    await page.getByRole('button', { name: '重新挂载弹窗', exact: true }).click()
+    gate = new Promise<void>(resolve => { release = resolve })
+    await open()
+    await expect(dialog.getByRole('button', { name: '操作异常', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('BTCUSDT')
+    await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
+    await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
+    await expect(dialog.locator('[data-swap-current] table')).not.toBeVisible()
+    release()
+    gate = null
+    await expect.poll(position).toEqual({ top: 320, left: 90 })
+    const headerWidths = await dialog.locator('[data-swap-current] th').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width))
+    await dialog.getByRole('button', { name: '核对记录', exact: true }).click()
+    await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
+    await expect.poll(position).toEqual({ top: 320, left: 90 })
+    expect(await dialog.locator('[data-swap-current] th').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width))).toEqual(headerWidths)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+}
+
+test('an empty operation tab does not inherit pagination from other records', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const time = '2026-10-16T19:23:08+08:00'
+  const limits: number[] = []
+  await page.route('**/api/v1/account/1/orders/activity?**', route => {
+    const limit = Number(new URL(route.request().url()).searchParams.get('limit'))
+    limits.push(limit)
+    return route.fulfill({ json: { channel: 'external', orders: Array.from({ length: 100 }, (_, i) => ({ order_id: `page-${i}`, symbol: 'XRPUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, volume: 1, filled_volume: 0, remaining_volume: 1, status: '待成交', create_time: time, native_identity: {}, uncertain: false })),
+      ended_orders: [], trades: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT'], limit, truncated: true } })
+  })
+  await page.goto('/e2e/orders.html?channel=external')
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
+  await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
+  await expect(dialog.getByText('暂无操作异常', { exact: true })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '加载更多', exact: true })).toHaveCount(0)
+  await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '加载更多', exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '加载更多', exact: true }).click()
+  await expect.poll(() => limits.at(-1)).toBe(200)
+  await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
+  await expect.poll(() => limits.at(-1)).toBe(100)
+  await expect(dialog.getByRole('button', { name: '加载更多', exact: true })).toHaveCount(0)
+})

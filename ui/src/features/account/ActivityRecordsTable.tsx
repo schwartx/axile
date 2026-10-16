@@ -30,8 +30,8 @@ function TradeRow({ trade, channel, units, formatTime, extraColumns }: {
       {extraColumns.map(column => <td key={column.key} data-numeric={column.numeric || undefined} className={`${column.numeric ? 'num text-right' : ''} ${column.color?.(trade) ?? ''}`}>
         <OverflowText text={column.text(trade)} />
       </td>)}
-      <td className="w-8"><button type="button" aria-expanded={expanded} aria-controls={panelId} aria-label={`${expanded ? '收起' : '展开'}成交 ${trade.trade_id}`}
-        onClick={() => setExpanded(value => !value)} className="flex min-h-8 cursor-pointer items-center justify-center text-ink-3 hover:text-ink-1">
+      <td className="sticky right-0 w-8 bg-surface"><button type="button" aria-expanded={expanded} aria-controls={panelId} aria-label={`${expanded ? '收起' : '展开'}成交 ${trade.trade_id}`}
+        onClick={() => setExpanded(value => !value)} className="flex min-h-8 w-full cursor-pointer items-center justify-end text-ink-3 hover:text-ink-1">
         <ChevronDown size={15} aria-hidden className={`transition-transform duration-200 motion-reduce:transition-none ${expanded ? 'rotate-180' : ''}`} />
       </button></td>
     </tr>
@@ -55,12 +55,12 @@ export function ActivityRecordsTable({ trades, orders, units, formatTime, channe
   const extraColumns = channelTradeColumns(channel)
   const samples: Record<string, string> = { offset: '平今', trading_day: '2026-12-28', hedge_flag: '投机/套保', commission: '0.000000000000', realized_pnl: '-99.99999999', is_maker: 'Maker', position_side: '单向' }
   const columns: RecordColumn[] = [
-    { key: 'time', label: '成交时间', sample: '2026-12-28 23:59:59' },
-    { key: 'symbol', label: '品种', sample: 'ETHUSDT', values: trades?.map(trade => trade.symbol), maxWidth: 160 },
+    { key: 'time', label: '成交时间', grow: 1, sample: '2026-12-28 23:59:59' },
+    { key: 'symbol', label: '品种', grow: 1, sample: 'ETHUSDT', values: trades?.map(trade => trade.symbol), maxWidth: 160 },
     { key: 'direction', label: '买卖', sample: '卖出' },
-    { key: 'price', label: '成交价', sample: '9,999.99999999', values: trades?.map(trade => number(trade.price)), numeric: true },
-    { key: 'volume', label: '成交量', sample: `99,999.9999${units?.quantity_label ? ` ${units.quantity_label}` : ''}`, values: trades?.map(trade => `${number(trade.volume)}${units?.quantity_label ? ` ${units.quantity_label}` : ''}`), numeric: true },
-    ...extraColumns.map(column => ({ key: column.key, label: column.label, numeric: column.numeric, sample: samples[column.key] ?? (column.numeric ? '999,999.99' : ''), values: trades?.map(column.text) })),
+    { key: 'price', label: '成交价', grow: 1, sample: '9,999.99999999', values: trades?.map(trade => number(trade.price)), numeric: true },
+    { key: 'volume', label: '成交量', grow: 1, sample: `99,999.9999${units?.quantity_label ? ` ${units.quantity_label}` : ''}`, values: trades?.map(trade => `${number(trade.volume)}${units?.quantity_label ? ` ${units.quantity_label}` : ''}`), numeric: true },
+    ...extraColumns.map(column => ({ key: column.key, label: column.label, numeric: column.numeric, grow: column.numeric ? 1 : 0, sample: samples[column.key] ?? (column.numeric ? '999,999.99' : ''), values: trades?.map(column.text) })),
     { key: 'details', label: '详情' },
   ]
   if (trades) return <RecordTable columns={columns} kind="trade" loading={loading} empty={!trades.length} emptyText={emptyText ?? '暂无成交记录'}>

@@ -15,11 +15,11 @@ export function useActivityPosition(key: string, positions: Map<string, Activity
     const node = ref.current
     if (!node) return
     if (!open) { capture(); return }
-    if (!ready) { active.current = null; return }
     const position = positions.get(key)
-    node.scrollTop = position?.top ?? 0
     const horizontal = node.querySelector<HTMLElement>('[data-swap-current] [data-record-scroll]')
     if (horizontal) horizontal.scrollLeft = position?.left ?? 0
+    if (!ready) { active.current = null; return }
+    node.scrollTop = position?.top ?? 0
     active.current = key
   }, [key, ready, open, positions, capture])
   return { ref, capture, onScrollCapture: () => { if (open && ready && active.current === key) capture() } }
