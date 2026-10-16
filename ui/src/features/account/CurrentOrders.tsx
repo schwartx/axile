@@ -13,7 +13,6 @@ import { shanghaiTime } from '@/features/account/executionValues'
 import { OrderRecordsTable, OrderDetails } from '@/features/account/OrderRecordsTable'
 import { useErrorPresentation } from '@/lib/errorPresentation'
 import { AccountActivityContent } from '@/features/account/AccountActivity'
-import type { ActivityTab } from '@/features/account/accountActivityModel'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   const snapshot = state.query.data
@@ -63,11 +62,9 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
 }
 
 export function CurrentOrdersDialog({ state, units, channel }: { state: OrdersState; units?: ChannelCapability['units']; channel?: string }) {
-  const [selection, setSelection] = useState<{ accountId: number; tab: ActivityTab }>({ accountId: state.accountId, tab: 'pending' })
-  const tab = selection.accountId === state.accountId ? selection.tab : 'pending'
   return <CenteredModal open={state.open} title="当日委托与成交" onClose={state.close} widthClassName="w-[1440px] h-[min(760px,86dvh)]" scrollBody={false}
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
-    <AccountActivityContent state={state} units={units} channel={channel} tab={tab} onTabChange={value => setSelection({ accountId: state.accountId, tab: value })} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
+    <AccountActivityContent key={state.accountId} state={state} units={units} channel={channel} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
   </CenteredModal>
 }
 

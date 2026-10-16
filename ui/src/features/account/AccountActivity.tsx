@@ -11,6 +11,8 @@ import { getAccountActivity, type AccountActivity } from '@/lib/api/orders'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { shanghaiTime } from '@/features/account/executionValues'
 import type { ChannelCapability } from '@/types/api'
+import { activityView, rememberActivityView, activityPositionKey, type ActivityView } from '@/features/account/activityViewMemory'
+import { useActivityPosition } from '@/features/account/useActivityPosition'
 
 const time = (value: string | null) => {
   if (!value) return '未知'
@@ -40,12 +42,16 @@ function Empty({ text }: { text: string }) {
   return <p className="py-10 text-center text-sm text-ink-3">{text}</p>
 }
 
-export function AccountActivityContent({ state, units, channel, pendingContent, tab, onTabChange }: { channel?: string; state: OrdersState; units?: ChannelCapability['units']; pendingContent: ReactNode; tab: ActivityTab; onTabChange: (value: ActivityTab) => void }) {
+export function AccountActivityContent({ state, units, channel, pendingContent }: { channel?: string; state: OrdersState; units?: ChannelCapability['units']; pendingContent: ReactNode }) {
   const filterId = useId()
-  const [filter, setFilter] = useState({ accountId: state.accountId, value: '' })
-  const symbol = filter.accountId === state.accountId ? filter.value : ''
+  const [view, setView] = useState(() => activityView(state.accountId))
+  const { tab, symbol, limit } = view
+  const updateView = (patch: Partial<ActivityView>) => {
+    const next = { ...view, ...patch }
+    rememberActivityView(state.accountId, next)
+    setView(next)
+  }
   const [manual, setManual] = useState(false)
-  const [limit, setLimit] = useState(100)
   const request = useRef({ key: '', refresh: true })
   const key = `${state.accountId}:${state.query.data?.instance_id ?? ''}:${symbol}`
   const fetcher = useCallback(async (signal: AbortSignal) => {
@@ -56,7 +62,9 @@ export function AccountActivityContent({ state, units, channel, pendingContent, 
   }, [state.accountId, key, symbol, limit])
   const query = usePolling(fetcher, { queryKey: `${key}:${limit}`, enabled: state.open && state.connectionReady && tab !== 'pending', retainDataWhenDisabled: true, intervalMs: 5000 })
   const data = query.data
-  const chooseSymbol = (value: string) => { setFilter({ accountId: state.accountId, value }); setLimit(100); setManual(false) }
+  const position = useActivityPosition(activityPositionKey(tab, symbol), view.positions, tab === 'pending' ? state.query.data !== null && !state.query.loading : data !== null && !query.loading, state.open)
+  const onTabChange = (tab: ActivityTab) => { position.capture(); updateView({ tab }) }
+  const chooseSymbol = (symbol: string) => { position.capture(); updateView({ symbol, limit: 100 }); setManual(false) }
   const symbols = [...new Set([...(data?.symbols ?? []), ...(symbol ? [symbol] : [])])].sort()
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="mb-4 shrink-0 overflow-x-auto"><Segmented size="sm" className="whitespace-nowrap" value={tab} onChange={onTabChange} options={[
@@ -92,15 +100,15 @@ export function AccountActivityContent({ state, units, channel, pendingContent, 
         <button type="button" aria-label="核对记录" disabled={!state.connectionReady || query.loading || query.refreshing} onClick={() => { request.current.refresh = true; void query.refresh() }} className="flex min-h-8 min-w-20 cursor-pointer items-center justify-end gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{query.refreshing || query.loading ? '核对中' : '核对记录'}</button>
         </Tooltip>
       </div>
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]" data-activity-scroll>
-      <ContentSwap identity={tab}>
+      <div ref={position.ref} onScrollCapture={position.onScrollCapture} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]" data-activity-scroll>
+      <ContentSwap identity={tab} animateHeight={false}>
         {tab === 'pending' ? pendingContent : <>
           {query.error && <p role="status" className="mb-3 text-[13px] text-warn">记录读取失败{data ? '，以下为上次读取结果' : '，请稍后重试'}</p>}
           {data && data.errors.length > 0 && <div role="status" className="mb-3 text-xs leading-relaxed text-warn">{data.errors.map(message => <p key={message}>{message}</p>)}</div>}
           <ActivityTable data={data} tab={tab} units={units} channel={channel} loading={query.loading}
             emptyText={!state.connectionReady && !data ? '账户连接未就绪，记录暂不可查询' : query.error && !data ? '记录暂不可用，请稍后重试' : undefined} />
           {data?.truncated && <p className="my-3 text-xs text-ink-3">每类显示最近 {data.limit} 笔记录</p>}
-          {data?.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
+          {data?.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => updateView({ limit: Math.min(500, limit + 100) })} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
         </>}
       </ContentSwap>
       </div>

@@ -156,6 +156,12 @@ test('activity symbol filter isolates records and refresh failure preserves last
 })
 
 test('background and foreground preserve activity tab, filter, rows and scroll during stream recovery', async ({ page }) => {
+  // 过滤后仍有足够记录，确保验证的是真实滚动，而非交接动画的临时高度。
+  await page.route('**/api/v1/account/1/orders/activity?**', async route => {
+    const response = await route.fetch()
+    const data = await response.json()
+    await route.fulfill({ json: { ...data, orders: data.orders.flatMap((order: { order_id: string }) => Array.from({ length: 20 }, (_, i) => ({ ...order, order_id: `${order.order_id}-${i}` }))) } })
+  })
   await page.setViewportSize({ width: 900, height: 450 })
   await page.goto('/e2e/orders.html')
   await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
@@ -167,7 +173,7 @@ test('background and foreground preserve activity tab, filter, rows and scroll d
   await expect(dialog.locator('[data-swap-current]').getByText('rb2610', { exact: true })).toHaveCount(0)
   await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
   const scrollBefore = await dialog.evaluate(element => {
-    const body = element.querySelector<HTMLElement>('.overflow-y-auto')!
+    const body = element.querySelector<HTMLElement>('[data-activity-scroll]')!
     body.scrollTop = 60
     return body.scrollTop
   })
@@ -191,13 +197,13 @@ test('background and foreground preserve activity tab, filter, rows and scroll d
     await expect(rows).toBeVisible()
     await expect(dialog.getByRole('button', { name: '最近委托', exact: true })).toHaveAttribute('aria-pressed', 'true')
     await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('ag2612')
-    expect(await dialog.evaluate(element => element.querySelector<HTMLElement>('.overflow-y-auto')!.scrollTop)).toBe(scrollBefore)
+    expect(await dialog.evaluate(element => element.querySelector<HTMLElement>('[data-activity-scroll]')!.scrollTop)).toBe(scrollBefore)
   } finally {
     resume()
   }
   await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
   await expect(rows).toBeVisible()
-  expect(await dialog.evaluate(element => element.querySelector<HTMLElement>('.overflow-y-auto')!.scrollTop)).toBe(scrollBefore)
+  expect(await dialog.evaluate(element => element.querySelector<HTMLElement>('[data-activity-scroll]')!.scrollTop)).toBe(scrollBefore)
 })
 
 
@@ -640,4 +646,109 @@ for (const tab of ['最近成交', '最近委托']) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     expect((await boundaries()).map(cell => cell.width)).toEqual(before.map(cell => cell.width))
   })
+}
+
+for (const reducedMotion of ['reduce', 'no-preference'] as const) {
+test(`activity view restores per-account tabs, filters and scroll before the first data frame (${reducedMotion})`, async ({ page }) => {
+  await page.emulateMedia({ reducedMotion })
+  await page.setViewportSize({ width: 900, height: 900 })
+  let release!: () => void
+  let gate: Promise<void> | null = null
+  let count = 80
+  let fail = false
+  const time = '2026-10-16T10:00:00+08:00'
+  await page.route('**/api/v1/account/*/orders/activity?**', async route => {
+    if (gate) await gate
+    if (fail) { await route.fulfill({ status: 500, json: { detail: '测试读取失败' } }); return }
+    const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'XRPUSDT'
+    const orders = Array.from({ length: count }, (_, i) => ({ order_id: `remember-${i}`, symbol, direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT',
+      price: 1.35, avg_price: 1.35, volume: 1, filled_volume: 1, remaining_volume: 0, status: '已成交', create_time: time, native_identity: {}, uncertain: false,
+      attributes: { native_order_type: 'LIMIT', position_side: 'BOTH', reduce_only: false } }))
+    await route.fulfill({ json: { channel: 'external', orders, trades: orders.map((order, i) => ({ trade_id: `fill-${i}`, order_id: order.order_id, symbol, direction: 'BUY', time, price: 1.35, volume: 1, commission: 0.001, commission_asset: 'USDT', realized_pnl: 0, is_maker: false, position_side: 'BOTH' })),
+      ended_orders: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false } })
+  })
+  await page.goto('/e2e/orders.html?channel=external&memory')
+  const open = () => page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
+  const vertical = dialog.locator('[data-activity-scroll]')
+  const horizontal = dialog.locator('[data-swap-current] [data-record-scroll]')
+  const currentPosition = async () => ({ top: await vertical.evaluate(node => node.scrollTop), left: await horizontal.evaluate(node => node.scrollLeft) })
+  const scroll = async (top: number, left: number) => {
+    await vertical.evaluate((node, value) => { node.scrollTop = value }, top)
+    await horizontal.evaluate((node, value) => { node.scrollLeft = value }, left)
+    await expect.poll(currentPosition).toEqual({ top, left })
+  }
+  const close = async () => {
+    await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
+    await expect(vertical).toHaveCount(0)
+  }
+  await open()
+  await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: '品种', exact: true }).click()
+  await page.getByRole('option', { name: 'XRPUSDT', exact: true }).click()
+  await expect(dialog.locator('[data-swap-current] [data-activity-row]')).toHaveCount(80)
+  await scroll(640, 160)
+  await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
+  await expect.poll(currentPosition).toEqual({ top: 0, left: 0 })
+  await scroll(320, 100)
+  await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
+  await expect.poll(currentPosition).toEqual({ top: 640, left: 160 })
+  await close()
+  await page.getByRole('button', { name: '重新挂载弹窗', exact: true }).click()
+  gate = new Promise<void>(resolve => { release = resolve })
+  await open()
+  await expect(dialog.getByRole('button', { name: '最近成交', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('XRPUSDT')
+  await expect(dialog.locator('[data-record-placeholder]')).toBeVisible()
+  await page.evaluate(() => {
+    const frames: { top: number; left: number }[] = []
+    Object.assign(window, { restoredFrames: frames, trackRestoration: true })
+    const sample = () => {
+      if (!Reflect.get(window, 'trackRestoration')) return
+      const viewport = document.querySelector<HTMLElement>('[data-activity-scroll]')
+      const table = viewport?.querySelector<HTMLElement>('[data-swap-current] [data-record-scroll]')
+      if (viewport && table?.querySelector('[data-activity-row]')) frames.push({ top: viewport.scrollTop, left: table.scrollLeft })
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
+  release()
+  gate = null
+  await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(0)
+  await expect.poll(currentPosition).toEqual({ top: 640, left: 160 })
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'restoredFrames').length)).toBeGreaterThan(0)
+  const frames = await page.evaluate(() => { Object.assign(window, { trackRestoration: false }); return Reflect.get(window, 'restoredFrames') as { top: number; left: number }[] })
+  expect(frames.every(frame => frame.top === 640 && frame.left === 160)).toBe(true)
+  await dialog.getByRole('button', { name: '核对记录', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
+  await expect.poll(currentPosition).toEqual({ top: 640, left: 160 })
+  await close()
+  await page.getByRole('button', { name: '切换测试账户', exact: true }).click()
+  await open()
+  await expect(dialog.getByRole('button', { name: '在途委托 1', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
+  await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('全部品种')
+  await close()
+  await page.getByRole('button', { name: '切换测试账户', exact: true }).click()
+  await open()
+  await expect(dialog.getByRole('button', { name: '最近成交', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(currentPosition).toEqual({ top: 640, left: 160 })
+  await close()
+  fail = true
+  await open()
+  await expect(dialog.getByRole('status')).toContainText('记录读取失败')
+  fail = false
+  await dialog.getByRole('button', { name: '核对记录', exact: true }).click()
+  await expect.poll(currentPosition).toEqual({ top: 640, left: 160 })
+  await close()
+  count = 2
+  await open()
+  await expect(dialog.locator('[data-swap-current] [data-activity-row]')).toHaveCount(2)
+  await expect.poll(() => vertical.evaluate(node => node.scrollTop)).toBe(0)
+  await page.reload()
+  await open()
+  await expect(dialog.getByRole('button', { name: '在途委托 1', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
 }
