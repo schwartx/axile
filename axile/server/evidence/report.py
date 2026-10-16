@@ -14,6 +14,7 @@ from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
 from axile.server.evidence.models import EvidenceSnapshot, ExecutionEvidence
 from axile.server.evidence.records import normalize_result_records
+from axile.server.evidence.timing import context_time_known, counter_time_evidence, selection_time_evidence
 from axile.server.execution.legacy_compat import normalize_legacy_result
 
 _TASK_LABELS = {
@@ -118,13 +119,18 @@ def _coverage(item: ExecutionEvidence, task_status: str) -> dict[str, Any]:
         source = content.get("source") or assets.get("source")
         if is_degraded_snapshot_source(source) or not isinstance(assets.get("positions"), list):
             issues.append(f"{kind}_unavailable")
-    if "counter_bucket_context_time_assumed" in item.selection_reasons:
+    known_time = context_time_known(item)
+    counter_time = counter_time_evidence(item)
+    if item.counters and not known_time:
         issues.append("control_counter_activity_time_unknown")
     return {
         "read_complete": True,
         "coverage": "provisional" if pending else "incomplete" if missing or issues else "available",
         "missing_artifacts": missing,
         "issues": issues,
+        "context_time": "known" if known_time else "unknown",
+        "selection_time": selection_time_evidence(item),
+        "counter_time": counter_time,
         "audit_delivery": "best_effort; absence_of_missing_items_does_not_prove_all_callbacks_were_persisted",
     }
 
@@ -327,7 +333,8 @@ def account_operation_report(item: ExecutionEvidence) -> dict[str, Any]:
     issues = []
     if any(row.get("status") != "closed" for row in item.sessions):
         issues.append("control_session_not_cleanly_finished")
-    if "counter_bucket_context_time_assumed" in item.selection_reasons:
+    known_time = context_time_known(item)
+    if item.counters and not known_time:
         issues.append("control_counter_activity_time_unknown")
     return {
         "context_id": item.key,
@@ -340,6 +347,9 @@ def account_operation_report(item: ExecutionEvidence) -> dict[str, Any]:
         "coverage": {
             "read_complete": True,
             "issues": issues,
+            "context_time": "known" if known_time else "unknown",
+            "selection_time": selection_time_evidence(item),
+            "counter_time": counter_time_evidence(item),
             "audit_delivery": "best_effort",
         },
     }
@@ -347,7 +357,7 @@ def account_operation_report(item: ExecutionEvidence) -> dict[str, Any]:
 
 def index_markdown(snapshot: EvidenceSnapshot, reports: list[dict[str, Any]], account_name: str) -> str:
     """总摘要将每日统计范围和整次执行上下文的区别写清。"""
-    scope = snapshot.window.describe() if snapshot.window else {"basis": "explicit_execution"}
+    scope = snapshot.selection_description()
     lines = [
         "# Axile 执行证据包",
         "",

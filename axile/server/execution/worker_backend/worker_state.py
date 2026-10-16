@@ -17,6 +17,7 @@ from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.connection_state import connection_observer_scope
 from axile.executor.termination import ExecutionTerminationController
 from axile.server.connection_state import ConnectionBinding, ConnectionCollector
@@ -183,6 +184,8 @@ def _prepare_executor(
     execution_id: str | None,
     audit_context: dict[str, object],
     termination_controller: ExecutionTerminationController | None = None,
+    context_kind: AccountControlContextKind = AccountControlContextKind.EXECUTION,
+    source: AccountControlSource = AccountControlSource.ALGORITHM,
 ) -> None:
     """
     为当前请求准备执行器的审计与账户控制运行时。
@@ -212,7 +215,7 @@ def _prepare_executor(
     if callable(set_audit_sink):
         set_audit_sink(build_server_execution_audit_sink())
 
-    guard = asyncio.run(build_account_control_guard(account, execution_id))
+    guard = asyncio.run(build_account_control_guard(account, execution_id, context_kind=context_kind, source=source))
     set_account_control_guard = getattr(executor, "set_account_control_guard", None)
     if callable(set_account_control_guard):
         set_account_control_guard(guard)
@@ -236,6 +239,8 @@ def _resolve_prepared_executor(
     allow_recovery: bool = True,
     force_reconnect: bool = False,
     allow_connect: bool = True,
+    context_kind: AccountControlContextKind = AccountControlContextKind.EXECUTION,
+    source: AccountControlSource = AccountControlSource.ALGORITHM,
 ) -> object:
     """
     解析并准备本次请求要使用的执行器实例。
@@ -265,6 +270,8 @@ def _resolve_prepared_executor(
             execution_id=execution_id,
             audit_context=audit_context,
             termination_controller=termination_controller,
+            context_kind=context_kind,
+            source=source,
         )
 
     def initialize(executor: object) -> None:

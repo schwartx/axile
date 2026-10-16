@@ -16,6 +16,7 @@ from typing import cast
 from loguru import logger
 
 from axile.executor.abstract_executor.base import AbstractExecutor
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
 from axile.executor.algorithms.utils.clock import get_default_clock
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
@@ -94,6 +95,10 @@ def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -
             account=account,
             execution_id=request.execution_id or request.request_id,
             audit_context={"request_id": request.request_id, "trigger_source": "prepare"},
+            context_kind=AccountControlContextKind.EXECUTION
+            if request.execution_id
+            else AccountControlContextKind.ACCOUNT_OPERATION,
+            source=AccountControlSource.ALGORITHM if request.execution_id else AccountControlSource.CONNECTION_PREPARE,
             termination_controller=termination_controller,
             force_reconnect=bool(request.payload.get("force_reconnect", False)),
         )
@@ -165,6 +170,10 @@ def _handle_get_account_assets(
             account=account,
             execution_id=request.execution_id or request.request_id,
             audit_context={"request_id": request.request_id, "trigger_source": "account_assets"},
+            context_kind=AccountControlContextKind.EXECUTION
+            if request.execution_id
+            else AccountControlContextKind.ACCOUNT_OPERATION,
+            source=AccountControlSource.ALGORITHM if request.execution_id else AccountControlSource.ACCOUNT_ASSETS,
             allow_recovery=False,
             allow_connect=False,
         )

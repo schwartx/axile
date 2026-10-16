@@ -47,6 +47,8 @@ class AccountControlSource(str, Enum):
     MANUAL_CANCEL = "manual_cancel"
     CURRENT_ORDERS = "current_orders"
     INSTRUMENT_CATALOG = "instrument_catalog"
+    ACCOUNT_ASSETS = "account_assets"
+    CONNECTION_PREPARE = "connection_prepare"
     UNKNOWN = "unknown"
 
 

@@ -104,7 +104,11 @@ def _select_execution(
     selected = snapshot.account_operations if operations else snapshot.executions
     if key not in selected:
         if not operations and len(snapshot.executions) >= budget.limits.executions:
-            raise EvidenceError("执行数量超过导出上限，请缩小日期范围", code="EVIDENCE_TOO_MANY_EXECUTIONS", status=413)
+            raise EvidenceError(
+                "执行数量超过导出上限，请通过 POST /account/{account_id}/evidence 按 execution_ids 分批导出",
+                code="EVIDENCE_TOO_MANY_EXECUTIONS",
+                status=413,
+            )
         selected[key] = snapshot.account_operations.pop(key, None) or ExecutionEvidence(
             key=key, execution_id=execution_id
         )
@@ -300,7 +304,11 @@ def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) 
             snapshot.account_operations.pop(item.key)
             snapshot.executions[item.key] = item
     if len(snapshot.executions) > budget.limits.executions:
-        raise EvidenceError("执行数量超过导出上限，请缩小日期范围", code="EVIDENCE_TOO_MANY_EXECUTIONS", status=413)
+        raise EvidenceError(
+            "执行数量超过导出上限，请通过 POST /account/{account_id}/evidence 按 execution_ids 分批导出",
+            code="EVIDENCE_TOO_MANY_EXECUTIONS",
+            status=413,
+        )
 
 
 async def collect_evidence(
@@ -309,9 +317,19 @@ async def collect_evidence(
     *,
     account_id: int | None = None,
     execution_id: str | None = None,
+    execution_ids: list[str] | None = None,
     window: EvidenceWindow | None = None,
 ) -> EvidenceSnapshot:
     """冻结只读证据；独立会话须尚未开启事务，不接触交易进程。"""
+    if execution_ids is not None:
+        if execution_id is not None or window is not None or account_id is None:
+            raise EvidenceError("执行清单须绑定账户且不能与其他选择混用", code="EVIDENCE_INVALID_SELECTION")
+        if not execution_ids or len(execution_ids) > budget.limits.executions:
+            raise EvidenceError("执行清单超过导出上限", code="EVIDENCE_TOO_MANY_EXECUTIONS", status=413)
+        if any(not isinstance(key, str) or not key.strip() for key in execution_ids) or len(set(execution_ids)) != len(
+            execution_ids
+        ):
+            raise EvidenceError("执行清单须为不重复的非空标识", code="EVIDENCE_INVALID_SELECTION")
     # aiosqlite 的传统事务模式不会为 SELECT 发 BEGIN，必须显式开启读快照。
     await session.execute(text("BEGIN"))
     try:
@@ -328,10 +346,17 @@ async def collect_evidence(
             account={"id": row.id, "name": row.name, "channel": getattr(row.trade_channel, "value", row.trade_channel)},
             executions={},
             window=window,
+            selected_execution_ids=list(execution_ids) if execution_ids is not None else None,
             source_counts={str(model.__tablename__): 0 for model, _ in _SOURCES},
         )
         if execution_id is not None:
             _select_execution(snapshot, execution_id, execution_id, "explicit_execution", budget)
+        elif execution_ids is not None:
+            for key in execution_ids:
+                budget.check()
+                if await _owner(session, key) != account_id:
+                    raise EvidenceError("执行不存在或不属于所选账户", code="EVIDENCE_NOT_FOUND", status=404)
+                _select_execution(snapshot, key, key, "explicit_execution_ids", budget)
         else:
             await _discover(session, snapshot, budget)
         await _load_sources(session, snapshot, budget)

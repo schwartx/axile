@@ -347,7 +347,8 @@ def test_empty_positions_binds_account_control_guard(
             cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
         )
 
-    async def fake_build_account_control_guard(_account: Account, execution_id: str | None) -> object:
+    async def fake_build_account_control_guard(_account: Account, execution_id: str | None, **kwargs) -> object:
+        assert kwargs == {"context_kind": "execution", "source": "algorithm"}
         captured["account_id"] = _account.id
         captured["channel"] = _account.trade_channel
         captured["execution_id"] = execution_id
