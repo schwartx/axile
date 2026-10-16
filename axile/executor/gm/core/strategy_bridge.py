@@ -29,8 +29,18 @@ from loguru import logger
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
 from axile.executor.connection_state import CONNECTION_ERROR_SCOPE, ConnectionMonitor, preserve_connection_failure
 from axile.executor.gm.common import AccConnectionState
-from axile.executor.gm.connection import GMAccountStartupError, report_gm_failure, report_runtime_failure
-from axile.executor.gm.core.api_bridge import GMBridgeRequestPayload, GMSdkRequest, GMSubscribeSymbolsRequest
+from axile.executor.gm.connection import (
+    GMAccountNotFoundError,
+    GMAccountStartupError,
+    report_gm_failure,
+    report_runtime_failure,
+)
+from axile.executor.gm.core.api_bridge import (
+    GMApiBridge,
+    GMBridgeRequestPayload,
+    GMSdkRequest,
+    GMSubscribeSymbolsRequest,
+)
 from axile.executor.gm.core.bridge_context import (
     GMStartupHistoryEntry,
     GMStartupStateValue,
@@ -68,7 +78,7 @@ def _normalize_startup_error(error: Exception) -> GMBridgeStartupError:
     elif status == 1026:
         normalized = GMBridgeStartupError("GM 令牌更新失败（错误码 1026）")
         normalized.execution_error = "GM 令牌更新失败（错误码 1026）"
-    elif isinstance(error, GMAccountStartupError):
+    elif isinstance(error, (GMAccountStartupError, GMAccountNotFoundError)):
         normalized = GMBridgeStartupError(error.execution_error)
         normalized.execution_error = error.execution_error
     else:
@@ -603,8 +613,13 @@ class GMStrategyBridge:
             if self._serv_addr:
                 set_serv_addr(self._serv_addr)
             set_account_id(self._account_id)
-            basic.running = True
             self._update_startup_state("sdk_configured", serv_addr=bool(self._serv_addr))
+
+            # 错误 ID 的状态查询也会返回“已断开”；先查存在性，避免误入登录等待。
+            if self._account_id not in GMApiBridge.get_account_ids():
+                raise GMAccountNotFoundError(self._account_id)
+            self._update_startup_state("account_exists")
+            basic.running = True
 
             # 禁用 signal（因为 signal 只能在主线程中使用）
             # 保存原始的 signal 函数

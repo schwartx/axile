@@ -1,4 +1,5 @@
 import { useErrorPresentation } from '@/lib/errorPresentation'
+import { shortErrorReason } from '@/lib/errorInfo'
 import { useAccountConnectionSnapshot } from '@/stores/liveConnection'
 import { useConnectionOperation } from '@/stores/connectionOperations'
 
@@ -6,7 +7,10 @@ import { useConnectionOperation } from '@/stores/connectionOperations'
 export function connectionFeedback(operation: ReturnType<typeof useConnectionOperation>, connection: ReturnType<typeof useAccountConnectionSnapshot>, local: boolean) {
   const recovered = operation.action !== 'disconnect' && operation.failedFrame !== undefined && operation.failedFrame?.status !== 'ready' && operation.failedFrame !== connection && connection.status === 'ready'
   const error = local && !recovered ? operation.error : null
-  const label = error ? operation.action === 'disconnect' ? '断开失败' : '连接失败' : null
+  // 标识直接说明本次失败原因；全文交给 OverflowText，不在数据层截断。
+  const reason = error ? shortErrorReason(error, Infinity) : ''
+  const fallback = operation.action === 'disconnect' ? '断开失败' : '连接失败'
+  const label = error ? (reason && reason !== '未知错误' ? reason : fallback) : null
   return { error, label }
 }
 

@@ -9,7 +9,7 @@ from gm.api._errors import GmError
 
 from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.gm.common import AccConnectionState
-from axile.executor.gm.connection import GMAccountStartupError
+from axile.executor.gm.connection import GMAccountNotFoundError, GMAccountStartupError
 from axile.executor.gm.core import gm_strategy
 from axile.executor.gm.core.strategy_bridge import GMAuthenticationError, GMStrategyBridge, _normalize_startup_error
 
@@ -58,6 +58,15 @@ def test_initial_disconnected_snapshot_waits_for_login_callback_without_requeryi
     assert context.account_was_ready
     stop_timer.assert_not_called()
     stop_runtime.assert_not_called()
+
+
+def test_missing_account_status_reports_account_not_found(runtime):
+    context, observations, failures, query, _, _ = runtime
+    query.return_value = None
+    assert not gm_strategy._check_account_startup(context)
+    assert isinstance(failures[0], GMAccountNotFoundError)
+    assert observations[-1].label == "账户不存在"
+    assert _normalize_startup_error(failures[0]).execution_error == "账户不存在"
 
 
 @pytest.mark.parametrize(("code", "label"), [("1000", "Token 无效"), ("1026", "令牌更新失败")])

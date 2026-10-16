@@ -29,6 +29,7 @@ from axile.executor.gm.common import (
     from_gm_price,
 )
 from axile.executor.gm.connection import (
+    GMAccountNotFoundError,
     GMAccountStartupError,
     report_account_status,
     report_gm_failure,
@@ -269,18 +270,9 @@ def _check_account_startup(context: GMStrategyRuntimeContext) -> bool:
     try:
         status = GMApiBridge.get_account_status(context.account_id)
         if status is None:
-            error = RuntimeError(f"GM 未找到配置的交易账户，请检查账户 ID 或访问权限: {context.account_id}")
+            error = GMAccountNotFoundError(context.account_id)
             if context.connection_monitor is not None:
-                report_gm_failure(
-                    context.connection_monitor,
-                    error,
-                    "未找到账户",
-                    "当前运行时未找到配置的交易账户，具体原因尚未确认。",
-                    facts={"目标账户": context.account_id, "查找结果": "未找到目标账户"},
-                    facts_title="账户查找结果",
-                    steps_title="账户与权限检查",
-                    steps=("核对账户 ID 与当前连接的 GM 服务是否对应。", "确认当前用户有权访问该交易账户。"),
-                )
+                report_runtime_failure(context.connection_monitor, error)
             raise error
         if context.account_was_ready and status.get("state") != AccConnectionState.LOGGEDIN:
             return False

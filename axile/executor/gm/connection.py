@@ -7,6 +7,17 @@ from axile.executor.connection_state import ConnectionMonitor
 from axile.executor.gm.common import AccConnectionState
 
 
+class GMAccountNotFoundError(RuntimeError):
+    """账户列表查询成功，但配置的目标账户不存在。"""
+
+    execution_error = "账户不存在"
+
+    def __init__(self, account_id: str) -> None:
+        """保留目标 ID，供错误详情定位配置。"""
+        self.account_id = account_id
+        super().__init__(f"账户不存在（GM 账户 ID：{account_id}）")
+
+
 class GMAccountStartupError(RuntimeError):
     """交易账户状态已明确异常，但不据此推断 Token 是否有效。"""
 
@@ -76,6 +87,17 @@ def report_account_status(monitor: ConnectionMonitor, error: BaseException, acco
 
 def report_runtime_failure(monitor: ConnectionMonitor, error: BaseException, *, authentication: bool = False) -> None:
     """明确鉴权证据与运行线程异常分别展示，1026 不推断为 Token 失效。"""
+    if isinstance(error, GMAccountNotFoundError):
+        report_gm_failure(
+            monitor,
+            error,
+            "账户不存在",
+            "配置的 GM 账户 ID 不存在。",
+            facts={"目标账户": error.account_id, "查找结果": "账户列表中不存在目标账户"},
+            facts_title="账户查找结果",
+            steps=("核对连接设置中的 GM 账户 ID。",),
+        )
+        return
     if authentication or getattr(error, "status", None) == 1000:
         error.execution_error = "GM token 无效或已失效"  # type: ignore[attr-defined]
         report_gm_failure(
