@@ -1,0 +1,10 @@
+results/
+state/
+config.local.json
+*.egg-info/
+__pycache__/
+.pytest_cache/
+dist/
+build/
+.ruff_cache/
+.venv/

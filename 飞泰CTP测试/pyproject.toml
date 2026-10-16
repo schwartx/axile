@@ -1,0 +1,33 @@
+[project]
+name = "feitai-ctp-tests"
+version = "0.1.3"
+description = "Axile 飞泰 CTP 场景编排与证据核对"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["axile[ctp]>=0.19.1", "psutil>=7.0.0"]
+
+[project.entry-points."axile.algorithms"]
+feitai_ctp = "ft_ctp.algorithm"
+
+[project.scripts]
+feitai-ctp = "ft_ctp.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ft_ctp"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["ft_ctp", "tests", "run.py", "README.md", "config.example.json", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C90"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
