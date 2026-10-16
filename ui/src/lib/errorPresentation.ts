@@ -10,6 +10,7 @@ export type ErrorDisposition = 'none' | 'local' | 'stale' | 'unavailable' | 'unc
 export const GlobalErrorContext = createContext(false)
 
 export interface ErrorPresentationOptions {
+  networkFeedback?: 'default' | 'global-only'
   intent?: ErrorIntent
   hasData?: boolean
   accountId?: number
@@ -20,10 +21,11 @@ interface ErrorEnvironment {
   account: { accountId: number; handled: boolean } | null
 }
 
-/** 展示归属独立于视觉样式；主动操作的结果始终保留。 */
+/** 展示归属独立于视觉样式；默认保留主动操作结果，可选由全局承接网络故障。 */
 export function errorDisposition(error: unknown, options: ErrorPresentationOptions, environment: ErrorEnvironment): ErrorDisposition {
   if (error == null || (error instanceof Error && error.name === 'AbortError')) return 'none'
   const intent = options.intent ?? 'read'
+  if (options.networkFeedback === 'global-only' && environment.disconnected && isConnectionError(error)) return 'none'
   if (intent === 'mutation') return 'local'
   const networkHandled = environment.disconnected && isConnectionError(error)
   if (intent === 'uncertain') return networkHandled ? 'uncertain' : 'local'
@@ -39,9 +41,14 @@ export function useServiceDisconnected(): boolean {
   return hasGlobalEntry && isConnectionError(error)
 }
 
+const globallyHandled = new WeakSet<object>()
+
 export function useErrorPresentation(error: unknown, options: ErrorPresentationOptions = {}) {
   const disconnected = useServiceDisconnected()
   const account = useContext(AccountConnectionContext)
-  const disposition = errorDisposition(error, options, { disconnected, account })
+  const hasGlobalEntry = useContext(GlobalErrorContext)
+  const eligible = options.networkFeedback === 'global-only' && hasGlobalEntry && error !== null && typeof error === 'object'
+  if (eligible && disconnected && isConnectionError(error)) globallyHandled.add(error)
+  const disposition = eligible && globallyHandled.has(error) ? 'none' : errorDisposition(error, options, { disconnected, account })
   return { disposition, local: disposition === 'local', disconnected }
 }

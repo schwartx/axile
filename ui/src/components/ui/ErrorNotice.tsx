@@ -15,6 +15,7 @@ export type ErrorNoticeVariant = 'section' | 'compact' | 'mutation' | 'stale'
 interface ErrorNoticeProps {
   title: string
   error: unknown | null
+  networkFeedback?: 'default' | 'global-only'
   intent: ErrorIntent
   hasData?: boolean
   accountId?: number
@@ -31,6 +32,7 @@ export function ErrorNotice({
   title,
   error,
   intent,
+  networkFeedback,
   hasData = false,
   accountId,
   variant = 'section',
@@ -42,15 +44,15 @@ export function ErrorNotice({
 }: ErrorNoticeProps) {
   const inModal = useContext(ModalContentContext)
   const inlineDetails = embedded || inModal
-  const { disposition } = useErrorPresentation(error, { intent, hasData, accountId })
+  const { disposition } = useErrorPresentation(error, { intent, hasData, accountId, networkFeedback })
   const hasError = disposition === 'local'
   const neutral = disposition !== 'none' && !hasError
   const current = useMemo(() => hasError ? errorInfo(error) : null, [error, hasError])
   const [retained, setRetained] = useState<ErrorInfo | null>(current)
   const [selection, setSelection] = useState<{ title: string; info: ErrorInfo } | null>(null)
-  const open = hasError || neutral || (inlineDetails && selection !== null)
+  const open = hasError || neutral || (disposition !== 'none' && inlineDetails && selection !== null)
   useEffect(() => setSelection(null), [contextKey])
-  useEffect(() => { if (neutral) setSelection(null) }, [neutral])
+  useEffect(() => { if (neutral || disposition === 'none') setSelection(null) }, [neutral, disposition])
 
   useEffect(() => {
     if (current) setRetained(current)

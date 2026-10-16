@@ -39,8 +39,8 @@ export function ServiceConnectionStatus() {
   }, [])
   const connecting = updatedAt == null && error == null
   const title = isConnectionError(error) ? '与服务器失联' : '账户数据刷新失败'
-  const text = error ? `${title} · ${shortErrorReason(error)}`
-    : connecting ? '正在连接' : syncInterrupted ? '实时状态同步中断，正在重新同步' : `数据 ${timeAgo(updatedAt)} · 服务正常`
+  const text = error ? isConnectionError(error) ? title : `${title} · ${shortErrorReason(error)}`
+    : connecting ? '正在连接' : syncInterrupted ? '实时同步中断' : `数据 ${timeAgo(updatedAt)} · 服务正常`
   return <>
     <span role="status" className="flex min-w-0 items-center gap-1.5 text-[14px] text-ink-2">
       <span aria-hidden className={`h-2 w-2 flex-none rounded-full ${error || syncInterrupted

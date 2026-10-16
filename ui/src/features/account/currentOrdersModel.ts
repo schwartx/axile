@@ -8,8 +8,8 @@ export function orderDirection(direction: string): string {
   return direction === 'BUY' || direction === '买入' ? '买入' : direction === 'SELL' || direction === '卖出' ? '卖出' : '方向未知'
 }
 
-export function orderSummary(snapshot: CurrentOrdersSnapshot | null, stale: boolean): string {
-  if (!snapshot || !snapshot.complete || snapshot.count == null || stale) return '在途委托 · 待确认'
+export function orderSummary(snapshot: CurrentOrdersSnapshot | null, _stale: boolean): string {
+  if (!snapshot || !snapshot.complete || snapshot.count == null) return '在途委托'
   return `在途委托 · ${snapshot.count}`
 }
 
@@ -51,9 +51,10 @@ export function reconcileLocalReceipts(server: CancelReceipt[], local: CancelRec
 
 export function orderState(order: CurrentOrder, receipt?: CancelReceipt): string {
   if (receipt?.state === 'terminal' && receipt.order) return receipt.order.status
-  if (receipt?.state === 'unknown' || order.uncertain) return '状态待确认'
+  if (receipt?.state === 'unknown' || order.uncertain) return '待确认'
   if (receipt?.state === 'submitting') return '正在提交撤单'
   if (receipt?.state === 'submitted') return '撤单确认中'
+  if (receipt?.state === 'failed') return '撤单失败'
   return order.status
 }
 
@@ -61,4 +62,11 @@ export function canCancelOrder(order: CurrentOrder, receipt: CancelReceipt | und
   return !stale && !order.uncertain && order.remaining_volume > 0
     && ['待成交', '已报', '部分成交'].includes(order.status)
     && (!receipt || receipt.state === 'failed')
+}
+
+/** 不把初始化占位快照的生成时间当作有效查询时间。 */
+export function ordersSnapshotLabel(data: CurrentOrdersSnapshot | null, filtered: boolean, rows: number): string {
+  const count = data?.complete && data.count != null ? filtered ? rows : data.count : '—'
+  const sampled = data && (data.complete || data.data.length > 0 || data.count != null)
+  return `${count} 笔 · ${sampled ? data.sampled_at.replace('T', ' ') : '—'} 更新`
 }

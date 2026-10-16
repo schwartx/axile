@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { CurrentOrdersButton, CurrentOrdersDialog } from '../src/features/account/CurrentOrders'
+import { CurrentOrdersButton, CurrentOrdersDialog, CurrentOrdersContent } from '../src/features/account/CurrentOrders'
 import { useCurrentOrders } from '../src/features/account/useCurrentOrders'
 import { useBusinessSync } from '../src/lib/api/businessStream'
 import '../src/styles/theme.css'
@@ -19,7 +19,10 @@ export function Fixture() {
       <p className="mt-2 text-sm text-ink-2">当前 6 只 · 目标 6 只</p>
       <CurrentOrdersButton state={state} />
     </section>
-    <CurrentOrdersDialog state={state} accountName="示例账户" units={{ quantity_kind: 'custom', quantity_label: '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' }} />
+    {new URLSearchParams(location.search).has('compact') && <section aria-label="品种委托" className="mt-4 rounded-xl border border-line bg-surface p-4">
+      <CurrentOrdersContent state={state} compact symbolFilter={symbol => symbol === 'rb2610'} />
+    </section>}
+    <CurrentOrdersDialog state={state} units={{ quantity_kind: 'custom', quantity_label: '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' }} />
   </main>
 }
 createRoot(document.getElementById('root')!).render(<Fixture />)

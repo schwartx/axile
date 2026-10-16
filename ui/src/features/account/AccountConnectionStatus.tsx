@@ -1,3 +1,4 @@
+import { isAccountConnectionError } from '@/lib/accountConnection'
 import { useLayoutEffect, useState } from 'react'
 import { Info } from 'lucide-react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -27,9 +28,9 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
   useLayoutEffect(() => { setOpenFor(null) }, [accountId])
   const status = connection.status
   const connected = status === 'ready'
-  const busy = operation.pending !== null || status === 'connecting' || status === 'recovering'
+  const busy = operation.pending !== null || (synced && (status === 'connecting' || status === 'recovering'))
   const phase = operation.pending === 'disconnect' ? 'disconnecting'
-    : operation.pending === 'reconnect' || status === 'connecting' || status === 'recovering' ? 'connecting'
+    : operation.pending === 'reconnect' || (synced && (status === 'connecting' || status === 'recovering')) ? 'connecting'
       : connected ? 'closed' : 'open'
   const label = connectionLabel(connection)
   const switchLabel = operation.pending === 'disconnect' ? '断开中…' : operation.pending === 'reconnect' ? '连接中…'
@@ -59,7 +60,9 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
 /** 操作反馈独占卡片的一行，避免错误内容撑高标题栏。 */
 export function AccountConnectionNotice({ accountId }: { accountId: number }) {
   const operation = useConnectionOperation(accountId)
+  const detailOpen = useConnectionOperations(state => state.detailOpen[accountId])
+  const connection = useAccountConnectionSnapshot(accountId)
   return <div className="min-w-0 [overflow-wrap:anywhere]" onClick={event => event.stopPropagation()}>
-    <ErrorNotice error={operation.error} title="连接操作未完成" intent="mutation" variant="compact" contextKey={accountId} />
+    <ErrorNotice networkFeedback="global-only" error={detailOpen || (connection.status === 'unavailable' && isAccountConnectionError(operation.error)) ? null : operation.error} title="连接操作未完成" intent="mutation" variant="compact" contextKey={accountId} />
   </div>
 }

@@ -7,13 +7,13 @@ export function AccountConnectButton({ accountId, prominent = false }: { account
   const connection = useAccountConnection(accountId)
   const synced = useLiveConnection(state => state.connected)
   const { pending } = useConnectionOperation(accountId)
-  const busy = pending !== null || connection.status === 'connecting' || connection.status === 'recovering'
+  const busy = pending !== null || (synced && (connection.status === 'connecting' || connection.status === 'recovering'))
   const first = connection.status === 'uninitialized' || connection.status === 'disconnected'
   return <button type="button" disabled={!synced || busy}
     onClick={() => void useConnectionOperations.getState().run(accountId, 'reconnect')}
     className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] disabled:cursor-default disabled:text-ink-3 ${prominent ? 'bg-ink-1 text-surface disabled:bg-fill' : 'text-accent hover:bg-fill'}`}>
     <Link2 size={14} className="shrink-0" aria-hidden />
-    <InkRewrite text={pending === 'reconnect' || connection.status === 'connecting' || connection.status === 'recovering' ? '正在连接…' : first ? '连接账户' : '重新连接'} tone="label" />
+    <InkRewrite text={pending === 'reconnect' || (synced && (connection.status === 'connecting' || connection.status === 'recovering')) ? '正在连接…' : first ? '连接账户' : '重新连接'} tone="label" />
   </button>
 }
 import { Link2 } from 'lucide-react'

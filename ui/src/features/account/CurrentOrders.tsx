@@ -1,22 +1,20 @@
 import { useId, useState } from 'react'
 import { ChevronDown, RefreshCw } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { ErrorNotice } from '@/components/ui/ErrorNotice'
+import { ErrorDetailsModal } from '@/components/ui/ErrorDetailsModal'
+import { errorInfo } from '@/lib/errorInfo'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { OverflowText } from '@/components/ui/OverflowText'
 import type { CancelReceipt, CurrentOrder } from '@/lib/api/orders'
-import { canCancelOrder, currentOrderKey, orderDirection, orderOffset, orderState, orderSummary } from '@/features/account/currentOrdersModel'
+import { canCancelOrder, currentOrderKey, orderDirection, orderOffset, orderState, orderSummary, ordersSnapshotLabel } from '@/features/account/currentOrdersModel'
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import type { ChannelCapability } from '@/types/api'
 import { useErrorPresentation } from '@/lib/errorPresentation'
-import { AccountConnectButton } from '@/features/account/AccountConnectButton'
-import { useConnectionOperation } from '@/stores/connectionOperations'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
-  const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
-    className={`inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${failure.local || state.query.data?.complete === false ? 'text-warn' : 'text-ink-2'}`}>
-    <InkRewrite text={!state.connectionReady ? '在途委托 · 连接后获取' : state.query.loading ? '在途委托 · 同步中' : orderSummary(state.query.data, state.query.stale)} tone="label" />
+    className="inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+    <InkRewrite text={orderSummary(state.query.data, false)} tone="label" />
   </button>
 }
 
@@ -41,7 +39,7 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
       <span>{orderDirection(order.direction)}<small className="block text-ink-3">{orderOffset(order.offset)}</small></span>
       <span className="num">{order.order_type === 'MARKET' || order.order_type === '市价' ? '市价' : order.price.toLocaleString('zh-CN', { maximumFractionDigits: 8 })}</span>
       <span className="num">{qty(order.volume)}<small className="block text-ink-3">已成 {qty(order.filled_volume)}</small></span>
-      <span className={uncertain ? 'text-warn' : 'text-ink-2'}><InkRewrite text={orderState(order, receipt)} tone="label" /></span>
+      <span className={uncertain || receipt?.state === 'failed' ? 'text-warn' : 'text-ink-2'}><InkRewrite text={orderState(order, receipt)} tone="label" /></span>
       <button type="button" aria-label={`撤单 ${order.symbol} ${order.order_id}`} disabled={!canCancelOrder(order, receipt, orderQueryUncertain(state))}
         onClick={() => void state.cancel(order)} className="min-h-8 cursor-pointer text-accent hover:underline disabled:cursor-default disabled:text-ink-3 disabled:no-underline">撤单</button>
     </div>
@@ -55,13 +53,6 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
       </dl></div>
     </div>
   </div>
-}
-
-function ordersSnapshotLabel(state: OrdersState, filtered: boolean, rows: number): string {
-  const data = state.query.data
-  if (!data) return state.query.loading ? '正在同步在途委托' : state.query.error ? '委托状态待确认' : '委托状态待同步'
-  const count = !data.complete ? '未知' : filtered ? rows : data.count ?? '未知'
-  return `${count} 笔 · ${data.sampled_at.replace('T', ' ')} 更新`
 }
 
 export function CurrentOrdersDialog({ state, units }: { state: OrdersState; units?: ChannelCapability['units'] }) {
@@ -84,24 +75,30 @@ function OrdersTable({ rows, state, units, compact }: { rows: CurrentOrder[]; st
   </div></div>
 }
 
-function OrdersQueryStatus({ state }: { state: OrdersState }) {
-  const data = state.query.data
-  const operation = useConnectionOperation(state.accountId)
-  const failure = useErrorPresentation(state.query.error, { intent: 'uncertain' })
+function OrdersQueryFailure({ state }: { state: OrdersState }) {
+  const error = state.query.refreshError
+  const { local } = useErrorPresentation(error, { intent: 'mutation', networkFeedback: 'global-only' })
+  const [selectedError, setSelectedError] = useState<unknown>(null)
   return <>
-    <div inert={state.connectionReady} aria-hidden={state.connectionReady}
-      className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${state.connectionReady ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]'}`}>
-      <div className="min-h-0 overflow-hidden"><div className="mb-3 flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
-        <span>{data ? '当前显示上次委托数据，连接后更新。' : '连接账户后获取在途委托。'}</span>
-        <AccountConnectButton accountId={state.accountId} />
-      </div></div>
-    </div>
-    <ErrorNotice intent="uncertain" title="在途委托同步中断，状态待确认" error={state.query.error} embedded onRetry={state.refresh} />
-    <ErrorNotice intent="mutation" title="连接操作未完成" error={operation.error} embedded />
-    {data?.complete === false && <p role="status" className="mb-3 text-[13px] text-warn">部分订单终态尚未确认，保留最后已知数量。</p>}
-    {state.query.stale && <p role="status" className={`mb-3 text-[13px] ${failure.local ? 'text-warn' : 'text-ink-3'}`}>当前显示最后已知委托，等待同步或手动核对。</p>}
-    {state.query.loading && <p role="status" className="py-6 text-sm text-ink-3">在途委托同步中…</p>}
+    {local && <button type="button" className="min-h-8 cursor-pointer text-warn" onClick={() => setSelectedError(error)}>核对失败</button>}
+    <ErrorDetailsModal selection={local && selectedError === error ? { title: '核对失败', info: errorInfo(error) } : null} onClose={() => setSelectedError(null)} />
   </>
+}
+
+function ReceiptResult({ receipt }: { receipt: CancelReceipt }) {
+  const [expanded, setExpanded] = useState(false)
+  const panel = useId()
+  const label = receipt.state === 'terminal' ? receipt.order?.status ?? '撤单已确认' : receipt.state === 'unknown' ? '待确认' : '撤单失败'
+  return <div className="py-1">
+    <button type="button" aria-expanded={expanded} aria-controls={panel} onClick={() => setExpanded(value => !value)}
+      className={`flex min-h-8 cursor-pointer items-center gap-1.5 ${receipt.state === 'terminal' ? 'text-ink-2' : 'text-warn'}`}>
+      <ChevronDown size={14} aria-hidden className={`transition-transform motion-reduce:transition-none ${expanded ? 'rotate-180' : '-rotate-90'}`} />
+      {receipt.symbol} · {label}
+    </button>
+    <div id={panel} inert={!expanded} aria-hidden={!expanded} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+      <div className="min-h-0 overflow-hidden"><p className="break-words py-1 text-ink-2">{receipt.message}{receipt.order && receipt.state === 'terminal' ? ` · 已成 ${receipt.order.filled_volume} / ${receipt.order.volume}` : ''}</p></div>
+    </div>
+  </div>
 }
 
 /** 账户全部委托与品种弹窗共用同一份查询、回执及撤单逻辑。 */
@@ -113,17 +110,16 @@ export function CurrentOrdersContent({ state, units, symbolFilter, compact = fal
 }) {
   const data = state.query.data
   const rows = data?.data.filter(order => !symbolFilter || symbolFilter(order.symbol)) ?? []
-  const feedback = state.receipts.filter(r => (!symbolFilter || symbolFilter(r.symbol)) && (r.state === 'terminal' || r.state === 'failed' || r.state === 'unknown')).slice(-5)
+  const feedback = state.receipts.filter(r => (!symbolFilter || symbolFilter(r.symbol)) && !rows.some(order => currentOrderKey(order) === currentOrderKey(r)) && (r.state === 'terminal' || r.state === 'failed' || r.state === 'unknown')).slice(-5)
   return <>
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[12.5px] text-ink-3">
-      <span>{ordersSnapshotLabel(state, !!symbolFilter, rows.length)}</span>
-      <button type="button" aria-label={'核对在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
-        className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{state.query.refreshing ? '核对中' : '核对委托'}</button>
+      <span>{ordersSnapshotLabel(data, !!symbolFilter, rows.length)}</span>
+      <div className="flex items-center gap-3"><OrdersQueryFailure state={state} /><button type="button" aria-label={'核对在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
+        className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{state.query.refreshing ? '核对中' : '核对委托'}</button></div>
     </div>
-    <OrdersQueryStatus state={state} />
+    {!data?.complete && rows.length === 0 && <div className="py-6 text-center text-ink-3">—</div>}
     {state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无在途委托'}</p>}
     {rows.length > 0 && <OrdersTable rows={rows} state={state} units={units} compact={compact} />}
-    {feedback.length > 0 && <div className="mt-3 border-t border-line py-3 text-[12.5px]"><p className="mb-1 text-ink-3">最近撤单结果</p>{feedback.map(r => <p key={r.request_id} className={`py-1 ${r.state === 'terminal' ? 'text-ink-2' : 'text-warn'}`}>{r.symbol} · {r.message}{r.order && r.state === 'terminal' ? ` · 已成 ${r.order.filled_volume} / ${r.order.volume}` : ''}</p>)}</div>}
-    {!compact && <p className="py-3 text-[12px] text-ink-3">撤单只处理这笔委托的未成交部分。算法运行期间可能继续提交新委托。</p>}
+    {feedback.length > 0 && <div className="mt-3 border-t border-line py-3 text-[12.5px]">{feedback.map(receipt => <ReceiptResult key={receipt.request_id} receipt={receipt} />)}</div>}
   </>
 }

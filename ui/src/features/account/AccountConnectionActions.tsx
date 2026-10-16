@@ -1,3 +1,4 @@
+import { isAccountConnectionError } from '@/lib/accountConnection'
 import type { ReactNode } from 'react'
 import { Unlink } from 'lucide-react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -27,6 +28,6 @@ export function AccountConnectionActions({ accountId, detail, children }: {
       </div>
       <div className="ml-auto flex flex-wrap items-center gap-2">{children}</div>
     </div>
-    <ErrorNotice error={error} title="连接操作未完成，请核对当前状态" embedded intent="uncertain" />
+    <ErrorNotice networkFeedback="global-only" error={detail.status === 'unavailable' && isAccountConnectionError(error) ? null : error} title="连接操作未完成，请核对当前状态" embedded intent="uncertain" />
   </section>
 }

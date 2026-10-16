@@ -14,19 +14,20 @@ export function useCurrentOrders(accountId: number) {
   const connected = useLiveOrders(state => state.connected)
   const error = useMemo(() => data?.error ? new Error(data.error) : failure?.accountId === accountId ? failure.error : null, [accountId, data?.error, failure])
   const refresh = useCallback(async () => {
+    if (!connectionReady) return
     setChecking(accountId)
     setFailure(null)
     try { useLiveOrders.getState().applyRead(accountId, await getCurrentOrders(accountId, undefined, true)) }
     catch (error) { setFailure({ accountId, error: error instanceof Error ? error : new Error(String(error)) }) }
     finally { setChecking(current => current === accountId ? null : current) }
-  }, [accountId])
+  }, [accountId, connectionReady])
   const currentAccount = useRef(accountId)
   currentAccount.current = accountId
   const pending = useRef(new Set<string>())
   const open = openFor === accountId
-  const query = { data, error, stale: !connected || !connectionReady || !!error,
+  const query = { data, error, refreshError: failure?.accountId === accountId ? failure.error : null, stale: !connected || !connectionReady || !!error,
     loading: connectionReady && !data, refreshing: checking === accountId,
-    updatedAt: data ? Date.parse(data.sampled_at) : null, refresh }
+    updatedAt: data && (data.complete || data.data.length > 0 || data.count != null) ? Date.parse(data.sampled_at) : null, refresh }
   const snapshot = query.data
   useEffect(() => {
     if (snapshot && !snapshot.error) setFailure(null)

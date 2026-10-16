@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { canCancelOrder, currentOrderKey, mergeReceipts, orderOffset, orderState, orderSummary, reconcileLocalReceipts, updateLocalReceipt } from '@/features/account/currentOrdersModel'
+import { canCancelOrder, currentOrderKey, mergeReceipts, orderOffset, orderState, orderSummary, ordersSnapshotLabel, reconcileLocalReceipts, updateLocalReceipt } from '@/features/account/currentOrdersModel'
 import type { CancelReceipt, CurrentOrder, CurrentOrdersSnapshot } from '@/lib/api/orders'
 
 const order: CurrentOrder = { order_id: 'o1', symbol: 'rb2610', direction: '买入', offset: '0', order_type: '限价', price: 3500,
@@ -10,10 +10,10 @@ const terminal: CancelReceipt = { ...receipt, state: 'terminal', message: '订�
 
 test('automatic summary distinguishes zero orders from unknown and stale data', () => {
   expect(orderSummary(snapshot, false)).toBe('在途委托 · 1')
-  expect(orderSummary(null, false)).toBe('在途委托 · 待确认')
+  expect(orderSummary(null, false)).toBe('在途委托')
   expect(orderSummary({ ...snapshot, data: [], count: 0 }, false)).toBe('在途委托 · 0')
-  expect(orderSummary({ ...snapshot, complete: false, count: null }, false)).toBe('在途委托 · 待确认')
-  expect(orderSummary(snapshot, true)).toBe('在途委托 · 待确认')
+  expect(orderSummary({ ...snapshot, complete: false, count: null }, false)).toBe('在途委托')
+  expect(orderSummary(snapshot, true)).toBe('在途委托 · 1')
 })
 
 test('submitted cancel keeps pending state and disables duplicate operations', () => {
@@ -22,7 +22,7 @@ test('submitted cancel keeps pending state and disables duplicate operations', (
   expect(canCancelOrder(order, undefined, false)).toBe(true)
   expect(canCancelOrder(order, undefined, true)).toBe(false)
   expect(canCancelOrder({ ...order, uncertain: true }, undefined, false)).toBe(false)
-  expect(orderState(order, { ...receipt, state: 'unknown' })).toBe('状态待确认')
+  expect(orderState(order, { ...receipt, state: 'unknown' })).toBe('待确认')
 })
 
 test('actual terminal from refreshed server replaces accepted local receipt', () => {
@@ -97,4 +97,13 @@ test('channel close flags preserve today and yesterday distinctions', () => {
   expect(orderOffset('4')).toBe('平昨')
   expect(orderOffset('CLOSETODAY')).toBe('平今')
   expect(orderOffset(null)).toBe('开平未知')
+})
+
+test('未采样时间未知，失联订单保留原采样时间与独立状态', () => {
+  expect(ordersSnapshotLabel(null, false, 0)).toBe('— 笔 · — 更新')
+  expect(ordersSnapshotLabel({ ...snapshot, data: [], count: null, complete: false }, false, 0)).toBe('— 笔 · — 更新')
+  expect(ordersSnapshotLabel({ ...snapshot, count: null, complete: false }, false, 1)).toBe('— 笔 · 2026-10-15 10:00:00 更新')
+  expect(ordersSnapshotLabel({ ...snapshot, data: [], count: 0, complete: false, version: 2 }, false, 0)).toContain('2026-10-15 10:00:00')
+  expect(orderState(order)).toBe('部分成交')
+  expect(orderState(order, { ...receipt, state: 'failed' })).toBe('撤单失败')
 })

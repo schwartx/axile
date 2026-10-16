@@ -5,6 +5,8 @@ import { useLiveConnection } from '@/stores/liveConnection'
 type Action = 'reconnect' | 'disconnect'
 interface Operation { pending: Action | null; error: unknown }
 interface State {
+  detailOpen: Record<number, boolean>
+  setDetailOpen: (accountId: number, open: boolean) => void
   operations: Record<number, Operation>
   run: (accountId: number, action: Action) => Promise<void>
 }
@@ -13,6 +15,8 @@ const idle: Operation = { pending: null, error: null }
 /** 列表、详情和弹窗共享在途操作，避免快速点击多个入口重复提交。 */
 export const useConnectionOperations = create<State>((set, get) => ({
   operations: {},
+  detailOpen: {},
+  setDetailOpen: (accountId, open) => set(state => ({ detailOpen: { ...state.detailOpen, [accountId]: open } })),
   run: async (accountId, action) => {
     const live = useLiveConnection.getState()
     const status = live.frames[accountId]?.status

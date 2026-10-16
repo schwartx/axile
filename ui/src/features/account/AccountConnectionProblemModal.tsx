@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
@@ -7,6 +7,8 @@ import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
 import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
 import { AccountConnectionActions } from '@/features/account/AccountConnectionActions'
+
+import { useConnectionOperations } from '@/stores/connectionOperations'
 
 export type ConnectionSelection = { accountId: number; requestId: number; detail: AccountConnectionDetail }
 
@@ -28,6 +30,12 @@ function TechnicalDetails({ children, label = '技术详情', preview }: { child
 export function AccountConnectionProblemModal({ selection, onClose }: {
   selection: ConnectionSelection | null; onClose: () => void
 }) {
+  const accountId = selection?.accountId
+  useEffect(() => {
+    if (accountId == null) return
+    useConnectionOperations.getState().setDetailOpen(accountId, true)
+    return () => useConnectionOperations.getState().setDetailOpen(accountId, false)
+  }, [accountId])
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
   const title = view?.title ?? '账户连接详情'
   const copy = view?.copy

@@ -42,3 +42,14 @@ describe('错误展示归属', () => {
     expect(errorDisposition(null, {}, offline)).toBe('none')
   })
 })
+
+it('连接操作可选择由全局承接网络错误，独立响应仍保留', () => {
+  for (const intent of ['read', 'mutation', 'uncertain'] as const) {
+    const options = { intent, networkFeedback: 'global-only' as const }
+    expect(errorDisposition(network, options, offline)).toBe('none')
+    expect(errorDisposition(network, options, online)).toBe('local')
+    for (const status of [422, 500, 503]) {
+      expect(errorDisposition(new ApiError(status, '独立错误'), options, offline)).toBe('local')
+    }
+  }
+})

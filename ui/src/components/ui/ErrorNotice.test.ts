@@ -1,3 +1,5 @@
+import { GlobalErrorContext } from '@/lib/errorPresentation'
+import { useDomainStore } from '@/stores/domain'
 import { describe, expect, it } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -47,4 +49,22 @@ describe('ErrorNotice', () => {
     expect(render('mutation')).toContain('role="alert"')
     expect(render('mutation')).toContain('重试：保存失败')
   })
+})
+
+it('全局承接后不复活同一次网络错误，独立布局与新操作继续反馈', () => {
+  const error = new TypeError('Failed to fetch')
+  const render = (global: boolean, value = error) => renderToStaticMarkup(createElement(GlobalErrorContext.Provider, { value: global },
+    createElement(ErrorNotice, { intent: 'mutation', networkFeedback: 'global-only', title: '连接失败', error: value })))
+  const initial = useDomainStore.getInitialState()
+  const previous = initial.accountsError
+  try {
+    initial.accountsError = error
+    expect(render(false)).toContain('查看错误详情')
+    expect(render(true)).toContain('grid-rows-[0fr]')
+    expect(render(true)).not.toContain('暂不可用')
+    initial.accountsError = null
+    expect(render(true)).toContain('grid-rows-[0fr]')
+    expect(render(false)).toContain('查看错误详情')
+    expect(render(true, new TypeError('Failed to fetch'))).toContain('查看错误详情')
+  } finally { initial.accountsError = previous }
 })
