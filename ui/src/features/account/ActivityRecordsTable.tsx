@@ -56,7 +56,7 @@ export function ActivityRecordsTable({ trades, orders, units, formatTime, channe
   const samples: Record<string, string> = { offset: '平今', trading_day: '2026-12-28', hedge_flag: '投机/套保', commission: '0.000000000000', realized_pnl: '-99.99999999', is_maker: 'Maker', position_side: '单向' }
   const columns: RecordColumn[] = [
     { key: 'time', label: '成交时间', grow: 1, sample: '2026-12-28 23:59:59' },
-    { key: 'symbol', label: '品种', grow: 1, sample: 'ETHUSDT', values: trades?.map(trade => trade.symbol), maxWidth: 160 },
+    { key: 'symbol', label: '品种', grow: 1, sample: 'SHFE.rb2610', values: trades?.map(trade => trade.symbol), maxWidth: 160 },
     { key: 'direction', label: '买卖', sample: '卖出' },
     { key: 'price', label: '成交价', grow: 1, sample: '9,999.99999999', values: trades?.map(trade => number(trade.price)), numeric: true },
     { key: 'volume', label: '成交量', grow: 1, sample: `99,999.9999${units?.quantity_label ? ` ${units.quantity_label}` : ''}`, values: trades?.map(trade => `${number(trade.volume)}${units?.quantity_label ? ` ${units.quantity_label}` : ''}`), numeric: true },

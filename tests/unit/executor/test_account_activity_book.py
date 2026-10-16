@@ -73,7 +73,7 @@ def test_trade_query_and_callback_merge_without_losing_event_details(callback_fi
     book = AccountActivityBook()
     callback = TradeRecord.create(
         trade_id="one",
-        symbol="BTCUSDT",
+        symbol="SHFE.rb2610",
         order_id="order-1",
         trade_volume=1,
         trade_price=100,
@@ -109,7 +109,7 @@ def test_trade_merge_keeps_zero_and_false_updates_and_original_order_link():
     book = AccountActivityBook()
     first = TradeRecord.create(
         trade_id="one",
-        symbol="BTCUSDT",
+        symbol="SHFE.rb2610",
         order_id="order-1",
         trade_volume=1,
         trade_price=100,

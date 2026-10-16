@@ -58,8 +58,15 @@ def test_external_all_view_queries_known_and_position_symbols_and_labels_coverag
     instance.account_orders.apply(order("rb2610"))
     instance.get_account_assets = lambda: SimpleNamespace(positions=[SimpleNamespace(symbol="ag2612")])
     queried = []
-    instance.query_recent_orders = lambda symbol: queried.append(("orders", symbol)) or []
-    instance.query_recent_trades = lambda symbol: queried.append(("trades", symbol)) or []
+
+    def symbol_only(kind, symbol):
+        if symbol is None:
+            raise NotImplementedError("only symbol history")
+        queried.append((kind, symbol))
+        return []
+
+    instance.query_recent_orders = lambda symbol: symbol_only("orders", symbol)
+    instance.query_recent_trades = lambda symbol: symbol_only("trades", symbol)
     result = run_activity_command(instance, {"refresh": True})
     assert set(queried) == {(kind, symbol) for kind in ("orders", "trades") for symbol in ("rb2610", "ag2612")}
     assert "仅覆盖已观测及持仓品种" in result["scope"]
@@ -75,30 +82,30 @@ def test_external_explicit_symbol_does_not_need_positions_or_other_symbols():
     assert result["errors"] == []
 
 
-@pytest.mark.parametrize("symbol", [None, "XRPUSDT"])
-def test_binance_history_discovers_closed_positions_on_a_fresh_connection(symbol):
-    instance = executor("binance")
+@pytest.mark.parametrize("symbol", [None, "SHFE.ag2612"])
+def test_account_wide_plugin_history_discovers_closed_positions_on_a_fresh_connection(symbol):
+    instance = executor("account-wide-plugin")
     assert instance.account_orders.activity.symbols() == []
     queried = []
     instance.query_recent_orders = lambda value: (
         queried.append(("orders", value))
-        or [order("XRPUSDT").model_copy(update={"status": "已成交", "filled_volume": 2})]
+        or [order("SHFE.ag2612").model_copy(update={"status": "已成交", "filled_volume": 2})]
     )
     instance.query_recent_trades = lambda value: (
         queried.append(("trades", value))
-        or [TradeRecord.create(trade_id="fill", symbol="XRPUSDT", trade_price=100, trade_volume=2)]
+        or [TradeRecord.create(trade_id="fill", symbol="SHFE.ag2612", trade_price=100, trade_volume=2)]
     )
     result = run_activity_command(instance, {"refresh": True, "symbol": symbol})
     assert queried == [("orders", symbol), ("trades", symbol)]
-    assert result["orders"][0]["symbol"] == result["trades"][0]["symbol"] == "XRPUSDT"
-    assert result["symbols"] == ["XRPUSDT"]
-    assert "最近24小时" in result["scope"]
+    assert result["orders"][0]["symbol"] == result["trades"][0]["symbol"] == "SHFE.ag2612"
+    assert result["symbols"] == ["SHFE.ag2612"]
+    assert "渠道近期" in result["scope"]
     assert ("全账户" if symbol is None else "指定品种") in result["scope"]
     assert result["errors"] == []
 
 
-def test_binance_account_history_failure_is_not_a_successful_empty_result():
-    instance = executor("binance")
+def test_account_wide_plugin_account_history_failure_is_not_a_successful_empty_result():
+    instance = executor("account-wide-plugin")
 
     def fail(_symbol):
         raise RuntimeError("api_key=secret")
@@ -110,9 +117,9 @@ def test_binance_account_history_failure_is_not_a_successful_empty_result():
     assert "secret" not in str(result)
 
 
-def test_binance_account_history_warns_when_exchange_limit_is_reached():
-    instance = executor("binance")
-    instance.query_recent_orders = lambda _symbol: [order("XRPUSDT")] * 1000
+def test_account_wide_plugin_account_history_warns_when_exchange_limit_is_reached():
+    instance = executor("account-wide-plugin")
+    instance.query_recent_orders = lambda _symbol: [order("SHFE.ag2612")] * 1000
     instance.query_recent_trades = lambda _symbol: []
     result = run_activity_command(instance, {"refresh": True})
     assert any("账户委托" in error and "截断" in error for error in result["errors"])

@@ -109,7 +109,7 @@ export function OrderRecordsTable(props: Props) {
   const samples: Record<string, string> = { trading_day: '2026-12-28', hedge_flag: '投机/套保', conditions: '立即成交剩余撤销 / 全部数量', filled_amount: '999,999.99', order_business: '普通交易', native_order_type: '止损限价' }
   const layout: RecordColumn[] = [
     { key: 'time', label: '委托时间', grow: 1, sample: '2026-12-28 23:59:59' },
-    { key: 'symbol', label: '品种', grow: 1, sample: 'ETHUSDT', values: props.orders.map(order => order.symbol), maxWidth: 160 },
+    { key: 'symbol', label: '品种', grow: 1, sample: 'SHFE.rb2610', values: props.orders.map(order => order.symbol), maxWidth: 160 },
     { key: 'direction', label: props.units?.quantity_kind === 'share' ? '买卖' : '买卖 / 开平' },
     { key: 'price', label: '委托价', grow: 1, sample: '9,999.99999999', values: props.orders.map(order => number(order.price)), numeric: true },
     ...(props.showAverage === false ? [] : [{ key: 'average', label: '成交均价', grow: 1, sample: '9,999.99999999', values: props.orders.map(averageText), numeric: true }]),
