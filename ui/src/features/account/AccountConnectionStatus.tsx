@@ -35,30 +35,31 @@ export function AccountConnectionStatus({ accountId }: { accountId: number }) {
   const switchLabel = operation.pending === 'disconnect' ? '断开中…' : operation.pending === 'reconnect' ? '连接中…'
     : status === 'uninitialized' ? '未连接' : label
   const action = connected ? '断开连接' : '连接账户'
-  const detailLabel = status === 'unavailable' ? label : '连接详情'
   const stateName = { uninitialized: '未建立', unknown: '待确认', ready: '就绪', unavailable: '暂不可用', connecting: '准备中', recovering: '恢复中', disconnected: '已断开' }[status]
   const accessible = `账户连通状态：${stateName}${status === 'unavailable' && connection.label?.trim() ? `，${label}` : ''}`
   const buttonClass = 'inline-flex min-w-0 items-center gap-1.5 rounded-chip px-2.5 py-1 text-xs hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
-  return <div className="inline-flex min-w-0 max-w-full flex-col items-start" onClick={event => event.stopPropagation()}>
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-      <button type="button" role="switch" aria-checked={connected} aria-label="账户连接" aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
-        data-tone={busy ? 'busy' : connected ? 'ready' : status === 'unavailable' ? 'warning' : 'idle'}
-        title={busy ? switchLabel : !synced ? '连接状态待同步' : action} disabled={!synced || busy}
-        onClick={() => void useConnectionOperations.getState().run(accountId, connected ? 'disconnect' : 'reconnect')}
-        className={`${buttonClass} connection-toggle shrink-0 cursor-pointer border active:bg-ink-3/10 disabled:cursor-default`}>
-        <ConnectionIcon connected={connected} busy={busy} phase={phase} />
-        <span id={`connection-state-${accountId}`}>{switchLabel}</span>
-      </button>
-      <button type="button" aria-label={`连接详情，${accessible}`} aria-haspopup="dialog" title="查看连接详情"
-        onClick={() => { setRequestId(value => value + 1); setOpenFor(accountId) }}
-        className={`${buttonClass} border border-line hover:border-border-strong max-w-full cursor-pointer ${status === 'unavailable' ? 'text-warn' : 'text-ink-2'}`}>
-        <Info size={14} className="shrink-0" aria-hidden />
-        <OverflowText text={detailLabel} className="min-w-0" />
-      </button>
-    </div>
-    <div className="w-0 min-w-full">
-      <ErrorNotice error={openFor !== accountId ? operation.error : null} title="连接操作未完成" intent="mutation" variant="compact" />
-    </div>
+  return <div className="inline-flex min-w-0 max-w-full items-center gap-1" onClick={event => event.stopPropagation()}>
+    <button type="button" role="switch" aria-checked={connected} aria-label="账户连接" aria-describedby={`connection-state-${accountId}`} aria-busy={busy}
+      data-tone={busy ? 'busy' : connected ? 'ready' : status === 'unavailable' ? 'warning' : 'idle'}
+      title={busy ? switchLabel : !synced ? '连接状态待同步' : action} disabled={!synced || busy}
+      onClick={() => void useConnectionOperations.getState().run(accountId, connected ? 'disconnect' : 'reconnect')}
+      className={`${buttonClass} connection-toggle max-w-full cursor-pointer border active:bg-ink-3/10 disabled:cursor-default`}>
+      <ConnectionIcon connected={connected} busy={busy} phase={phase} />
+      <span id={`connection-state-${accountId}`} className="min-w-0"><OverflowText text={switchLabel} /></span>
+    </button>
+    <button type="button" aria-label={`连接详情，${accessible}`} aria-haspopup="dialog" title="查看连接详情"
+      onClick={() => { setRequestId(value => value + 1); setOpenFor(accountId) }}
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-chip hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer ${status === 'unavailable' ? 'text-warn' : 'text-ink-2'}`}>
+      <Info size={14} className="shrink-0" aria-hidden />
+    </button>
     <AccountConnectionProblemModal selection={openFor === accountId ? { accountId, requestId, detail: connection } : null} onClose={() => setOpenFor(null)} />
+  </div>
+}
+
+/** 操作反馈独占卡片的一行，避免错误内容撑高标题栏。 */
+export function AccountConnectionNotice({ accountId }: { accountId: number }) {
+  const operation = useConnectionOperation(accountId)
+  return <div className="min-w-0 [overflow-wrap:anywhere]" onClick={event => event.stopPropagation()}>
+    <ErrorNotice error={operation.error} title="连接操作未完成" intent="mutation" variant="compact" contextKey={accountId} />
   </div>
 }

@@ -13,7 +13,7 @@ import { AccountHoldingsPage } from '../src/pages/AccountHoldingsPage'
 import { PortfolioEditPage } from '../src/pages/PortfolioEditPage'
 import { SystemConfigPage } from '../src/pages/SystemConfigPage'
 import { useLiveConnection } from '../src/stores/liveConnection'
-import { AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
+import { AccountConnectionNotice, AccountConnectionStatus } from '../src/features/account/AccountConnectionStatus'
 import { ApiError } from '../src/lib/api/client'
 import { useDomainStore, useDomainSync } from '../src/stores/domain'
 import { useChannelCatalogSync } from '../src/stores/channels'
@@ -103,6 +103,7 @@ function ConnectionFixture() {
     }}>后台更新标签</button>
     <div className="mt-5 w-[220px] max-w-full">
       <AccountConnectionStatus accountId={accountId} />
+      <AccountConnectionNotice accountId={accountId} />
     </div>
   </main>
 }

@@ -1,7 +1,7 @@
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
-import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AccountConnectionNotice, AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
@@ -451,6 +451,7 @@ export function AccountDetail({
             onDelete={onDelete}
           />
         </div>
+        <AccountConnectionNotice accountId={accountId} />
         {account.data?.copied_from_account_name && (
           <div className="mt-2 text-sm text-ink-3">
             复制自{account.data.copied_from_account_id && useDomainStore.getState().accounts?.some((a) => a.account_id === account.data?.copied_from_account_id) ? (

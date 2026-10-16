@@ -958,7 +958,7 @@ test('long custom connection label, narrow dialog, reduced motion and keyboard f
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.keyboard.press('Escape')
   await expect(badge).toBeFocused()
-  await expect(badge.locator('.overflow-text').first()).toHaveAttribute('data-overflow', 'true')
+  await expect(page.getByRole('switch', { name: '账户连接' }).locator('.overflow-text')).toHaveAttribute('data-overflow', 'true')
 })
 
 test('resident connection actions are explicit and never trigger trading', async ({ page }) => {
@@ -1161,4 +1161,28 @@ test('connection switch toggles independently of details and waits for pushed st
   await expect(toggle.locator('svg')).toHaveAttribute('data-busy', 'false')
   await expect(toggle.locator('svg')).toHaveAttribute('data-phase', 'closed')
   expect(writes).toEqual(['/api/v1/account/7/connection/disconnect', '/api/v1/account/7/connection/reconnect'])
+})
+
+test('connection failure keeps the header compact and feedback below the controls', async ({ page }) => {
+  await defaults(page)
+  await page.setViewportSize({ width: 375, height: 620 })
+  const label = '交易运行时异常'
+  await mockConnectionSnapshot(page, { status: 'unavailable', label, observed_at: null, message: 'GM 启动失败', error: null })
+  await page.route('**/api/v1/account/7/connection/reconnect', route =>
+    route.fulfill({ status: 502, json: { detail: 'GM 启动失败，具体原因未确认' } }))
+  await page.goto('/e2e/errors.html?mode=connection')
+  const toggle = page.getByRole('switch', { name: '账户连接' })
+  const details = page.getByRole('button', { name: /连接详情，账户连通状态/ })
+  await expect(toggle).toContainText(label)
+  await expect(details).toHaveText('')
+  const before = await toggle.boundingBox()
+  await toggle.click()
+  const alert = page.getByRole('alert').filter({ hasText: '连接操作未完成' })
+  await expect(alert).toContainText('GM 启动失败')
+  const after = await toggle.boundingBox()
+  const feedback = await alert.boundingBox()
+  expect(after!.height).toBe(before!.height)
+  expect(after!.y).toBe(before!.y)
+  expect(feedback!.y).toBeGreaterThanOrEqual(after!.y + after!.height)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })

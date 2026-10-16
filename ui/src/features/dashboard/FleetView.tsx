@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useViewTransitionState } from 'react-router'
 import { ArrowUpRight, Copy, Plus } from 'lucide-react'
 import { CopyAccountDialog } from '@/features/account/CopyAccountDialog'
-import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AccountConnectionNotice, AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { cardPerformance, currentEquity } from '@/features/dashboard/performance'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
@@ -95,6 +95,7 @@ function FleetCard({
         </button>
       </div>
 
+      <AccountConnectionNotice accountId={item.account_id} />
       <div className="mt-2 flex min-w-0 items-center gap-2 text-[13px]">
         <span className="shrink-0 text-ink-3">组合 ·</span>
         {item.portfolio_id != null ? (
