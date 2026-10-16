@@ -127,7 +127,7 @@ jobs:
 
     - name: Sync test dependencies
       run: |
-        uv sync --locked --group dev --extra ctp
+        uv sync --locked --group dev --extra ctp --extra gm
 
     - name: 验证 CTP 原生模块
       run: |
