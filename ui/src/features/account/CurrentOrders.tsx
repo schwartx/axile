@@ -65,9 +65,9 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
 export function CurrentOrdersDialog({ state, units, channel }: { state: OrdersState; units?: ChannelCapability['units']; channel?: string }) {
   const [selection, setSelection] = useState<{ accountId: number; tab: ActivityTab }>({ accountId: state.accountId, tab: 'pending' })
   const tab = selection.accountId === state.accountId ? selection.tab : 'pending'
-  return <CenteredModal open={state.open} title="当日委托与成交" onClose={state.close} widthClassName="w-[1440px]"
+  return <CenteredModal open={state.open} title="当日委托与成交" onClose={state.close} widthClassName="w-[1440px] h-[min(760px,86dvh)]" scrollBody={false}
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
-    <AccountActivityContent state={state} units={units} tab={tab} onTabChange={value => setSelection({ accountId: state.accountId, tab: value })} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
+    <AccountActivityContent state={state} units={units} channel={channel} tab={tab} onTabChange={value => setSelection({ accountId: state.accountId, tab: value })} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
   </CenteredModal>
 }
 
@@ -76,9 +76,9 @@ function orderColumns(compact = false): string {
     : 'grid grid-cols-[minmax(90px,1fr)_90px_90px_100px_110px_52px] gap-3'
 }
 
-function OrdersTable({ rows, state, units, compact, channel }: { rows: CurrentOrder[]; state: OrdersState; units?: ChannelCapability['units']; compact?: boolean; channel?: string }) {
+function OrdersTable({ rows, state, units, compact, channel, loading, emptyText }: { loading?: boolean; emptyText?: string; rows: CurrentOrder[]; state: OrdersState; units?: ChannelCapability['units']; compact?: boolean; channel?: string }) {
   const receiptOf = (order: CurrentOrder) => state.receipts.find(r => r.order_id === order.order_id && r.symbol === order.symbol)
-  if (!compact) return <OrderRecordsTable orders={rows.map(order => { const receipt = receiptOf(order); return receipt?.state === 'terminal' && receipt.order ? receipt.order : order })} channel={channel} units={units}
+  if (!compact) return <OrderRecordsTable orders={rows.map(order => { const receipt = receiptOf(order); return receipt?.state === 'terminal' && receipt.order ? receipt.order : order })} channel={channel} units={units} loading={loading} emptyText={emptyText}
     formatTime={value => { const timestamp = shanghaiTime(value ?? ''); return value && Number.isFinite(timestamp) ? new Date(timestamp + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ') : '未知' }} statusText={order => orderState(order, receiptOf(order))}
     action={order => <button type="button" aria-label={`撤单 ${order.symbol} ${order.order_id}`} disabled={!canCancelOrder(order, receiptOf(order), orderQueryUncertain(state))}
       onClick={() => void state.cancel(order)} className="min-h-8 cursor-pointer text-accent disabled:cursor-default disabled:text-ink-3">撤单</button>} />
@@ -131,9 +131,10 @@ export function CurrentOrdersContent({ state, units, symbolFilter, channel, comp
       <div className="flex items-center gap-3"><OrdersQueryFailure state={state} /><button type="button" aria-label={'核对在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
         className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{state.query.refreshing ? '核对中' : '核对委托'}</button></div>
     </div>
-    {!data?.complete && rows.length === 0 && <div className="py-6 text-center text-ink-3">—</div>}
-    {state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无在途委托'}</p>}
-    {rows.length > 0 && <OrdersTable rows={rows} state={state} units={units} compact={compact} channel={channel} />}
+    {compact && !data?.complete && rows.length === 0 && <div className="py-6 text-center text-ink-3">—</div>}
+    {compact && state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无在途委托'}</p>}
+    {(!compact || rows.length > 0) && <OrdersTable rows={rows} state={state} units={units} compact={compact} channel={channel} loading={state.query.loading}
+      emptyText={data?.complete && !state.query.stale ? '当前无在途委托' : '委托状态待确认'} />}
     {feedback.length > 0 && <div className="mt-3 border-t border-line py-3 text-[12.5px]">{feedback.map(receipt => <ReceiptResult key={receipt.request_id} receipt={receipt} />)}</div>}
   </>
 }

@@ -23,7 +23,7 @@ export function Fixture() {
     {new URLSearchParams(location.search).has('compact') && <section aria-label="品种委托" className="mt-4 rounded-xl border border-line bg-surface p-4">
       <CurrentOrdersContent state={state} compact symbolFilter={symbol => symbol === 'rb2610'} />
     </section>}
-    <CurrentOrdersDialog state={state} channel="tq" units={{ quantity_kind: shares ? 'share' : 'custom', quantity_label: shares ? '股' : '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' }} />
+    <CurrentOrdersDialog state={state} channel={new URLSearchParams(location.search).get('channel') ?? (shares ? 'gm' : 'tq')} units={{ quantity_kind: shares ? 'share' : 'custom', quantity_label: shares ? '股' : '手', quantity_max_decimals: 0, price_label: '元', notional_label: '元' }} />
   </main>
 }
 createRoot(document.getElementById('root')!).render(<Fixture />)
