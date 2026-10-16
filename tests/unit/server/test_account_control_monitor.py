@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
+from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import resolve_control_window
 from axile.executor.account_control.models import (
     AccountControlBucketType,
@@ -248,8 +249,16 @@ def test_crash_preserves_last_known_value_and_restart_marks_confirmed_history_in
             await restarted.refresh()
             assert used(restarted.frames[1]) == 120
             assert restarted.frames[1]["incomplete"]
+            assert restarted.frames[1]["history_incomplete"]
+            assert not restarted.frames[1]["snapshot_stale"]
+            assert restarted.frames[1]["counter_integrity"] == "unknown"
+            assert restarted.frames[1]["incomplete_instances_total"] == 1
             next_guard = await persistence.build_account_control_guard(account, "after-crash")
-            next_guard.begin_operation("place_order").record_outcome("submitted")
+            with pytest.raises(AccountControlBlockedError) as caught:
+                next_guard.begin_operation("place_order")
+            assert caught.value.reason_code == "CONTROL.COUNTER_INCOMPLETE"
+            next_guard.begin_operation("query_order").record_outcome("fetched")
+            next_guard.begin_operation("cancel_order").record_outcome("submitted")
             await restarted.refresh()
             assert restarted.frames[1]["incomplete"]
 
@@ -341,5 +350,115 @@ def test_retired_worker_snapshot_cannot_replace_new_guard(monkeypatch):
             await monitor.refresh()
             assert used(monitor.frames[1]) == 121
             assert monitor.frames[1]["instance_id"] == second.instance_id
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", ["active", "incomplete"])
+@pytest.mark.parametrize("outcome", ["allowed", "submitted"])
+def test_orphan_risk_session_blocks_new_native_risk_without_monitor_sampling(monkeypatch, status, outcome):
+    """未刷盘的限额一次放行后，重建 guard 不能再使用空基线报单。"""
+    from axile.executor.account_control.models import AccountControlOverride
+
+    async def scenario():
+        async with database(monkeypatch) as (factory, account, _):
+            account.account_control_override = AccountControlOverride.model_validate(
+                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+            )
+            async with factory() as db:
+                await db.execute(delete(AccountControlCounterDelta))
+                await db.commit()
+            first = await persistence.build_account_control_guard(account, "lost")
+            first.begin_operation("place_order").record_outcome(outcome)  # 模拟发送前／受理后未刷盘被杀。
+            providers._guards.clear()
+            if status == "incomplete":
+                await monitor_module.recover_sessions()
+            second = await persistence.build_account_control_guard(account, "restart")
+            native_calls = []
+            with pytest.raises(AccountControlBlockedError) as caught:
+                second.begin_operation("place_order")
+                native_calls.append("new_order")
+            assert not native_calls
+            assert caught.value.reason_code == "CONTROL.COUNTER_INCOMPLETE"
+            assert second.monitor_incomplete
+            for operation in ("query_order", "cancel_order", "cancel_order_ctp"):
+                second.begin_operation(operation)
+            with pytest.raises(AccountControlBlockedError):
+                second.begin_operation("option_exercise")
+            deltas, events = second.flush_records()
+            assert any(event.outcome == "counter_incomplete" and not event.counted for event in events)
+            assert not any(delta.operation == "place_order" for delta in deltas)
+            async with factory() as db:
+                persisted = (await db.scalars(select(AccountControlCounterDelta))).all()
+                assert sum(row.delta_count for row in persisted) == 0  # 绝不伪造恢复出丢失的一次。
+
+    asyncio.run(scenario())
+
+
+def test_prior_day_gap_does_not_permanently_block_and_known_active_guard_is_not_an_orphan(monkeypatch):
+    from datetime import timedelta
+
+    from axile.executor.algorithms.utils.clock import clock_now
+
+    async def scenario():
+        async with database(monkeypatch) as (factory, account, _):
+            yesterday = int((clock_now() - timedelta(days=1)).timestamp() * 1000)
+            async with factory() as db:
+                db.add(
+                    AccountControlSession(
+                        instance_id="yesterday",
+                        account_id=1,
+                        execution_id="old",
+                        context_kind="execution",
+                        source="algorithm",
+                        timezone="Asia/Shanghai",
+                        started_at_ms=yesterday - 1000,
+                        finished_at_ms=yesterday,
+                        status="incomplete",
+                    )
+                )
+                await db.commit()
+            first = await persistence.build_account_control_guard(account, "today")
+            assert not first.incomplete_control_dates
+            second = await persistence.build_account_control_guard(account, "known-active")
+            assert not second.incomplete_control_dates
+            second.begin_operation("place_order")
+
+    asyncio.run(scenario())
+
+
+def test_commit_response_loss_and_duplicate_flush_do_not_restore_daily_quota(monkeypatch):
+    from axile.executor.account_control.models import AccountControlOverride
+    from axile.server.account_control.store import AccountControlStore
+
+    async def scenario():
+        async with database(monkeypatch) as (factory, account, _):
+            async with factory() as db:
+                await db.execute(delete(AccountControlCounterDelta))
+                await db.commit()
+            account.account_control_override = AccountControlOverride.model_validate(
+                {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+            )
+            first = await persistence.build_account_control_guard(account, "committed")
+            first.begin_operation("place_order").record_outcome("submitted")
+            deltas, events = first.flush_records()
+            await persistence.flush_account_control_records(executor(first))
+            # 模拟提交成功但响应丢失后的同一记录重试；delta/event 唯一标识防止重复累计。
+            async with factory() as db:
+                await AccountControlStore(db).flush_execution_records(counter_deltas=deltas, events=events)
+            providers._guards.clear()
+            second = await persistence.build_account_control_guard(account, "retry")
+            assert not second.incomplete_control_dates
+            with pytest.raises(AccountControlBlockedError) as caught:
+                second.begin_operation("place_order")
+            assert caught.value.reason_code != "CONTROL.COUNTER_INCOMPLETE"
+            assert (
+                second.baseline.get_count(
+                    bucket_type=AccountControlBucketType.DAY,
+                    bucket_start=resolve_control_window("Asia/Shanghai").day_bucket_start,
+                    operation="place_order",
+                )
+                == 1
+            )
 
     asyncio.run(scenario())

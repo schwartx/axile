@@ -74,6 +74,13 @@ async def build_account_control_guard(
         store = AccountControlStore(session)
         baseline = await store.load_daily_counters(account.id, control_window.control_date)
         recent_allowed_snapshot = await store.load_recent_allowed_timestamps(account.id)
+        active_guard = providers.active_guard(account.id)
+        incomplete = await store.has_incomplete_risk_history(
+            account.id,
+            control_window.control_date,
+            policy.timezone,
+            active_instance_id=None if active_guard is None else active_guard.instance_id,
+        )
     guard = AccountControlGuard(
         account_id=account.id,
         execution_id=execution_id,
@@ -84,6 +91,10 @@ async def build_account_control_guard(
         baseline=baseline,
         recent_allowed_snapshot=recent_allowed_snapshot,
     )
+
+    if incomplete:
+        guard.incomplete_control_dates = frozenset({control_window.control_date})
+        guard.monitor_incomplete = True
 
     try:
         async with SessionLocal() as session:
@@ -101,6 +112,7 @@ async def build_account_control_guard(
             await session.commit()
     except Exception:
         guard.monitor_incomplete = True
+        guard.counter_integrity_unavailable = True
         logger.exception("流控监控会话登记失败，统计完整性未知")
     if register_monitor:
         providers.register(guard)

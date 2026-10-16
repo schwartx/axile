@@ -9,13 +9,17 @@ Notes
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import func, select
+from sqlmodel import col, func, select
 
+from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.models import (
+    AccountControlContextKind,
     AccountControlCounterDeltaWrite,
     AccountControlDecision,
     AccountControlEventWrite,
@@ -26,6 +30,7 @@ from axile.executor.account_control.snapshot import (
 )
 from axile.server.account_control.warnings import enqueue_recorded_warnings
 from axile.server.db.models import AccountControlCounterDelta, AccountControlEvent
+from axile.server.db.models.account_control_session import AccountControlSession
 
 
 class AccountControlStore:
@@ -94,6 +99,34 @@ class AccountControlStore:
                 symbol=row.symbol if row.scope_type.value == "symbol" else None,
             )
         return snapshot
+
+    async def has_incomplete_risk_history(
+        self, account_id: int, control_date: str, timezone: str, *, active_instance_id: str | None = None
+    ) -> bool:
+        """检查窗口重叠的未收尾交易会话；只读账户操作不推断丢失报单。"""
+        start = datetime.fromisoformat(control_date).replace(tzinfo=ZoneInfo(timezone))
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int((start + timedelta(days=1)).timestamp() * 1000)
+        rows = (
+            await self.session.execute(
+                select(AccountControlSession).where(
+                    AccountControlSession.account_id == account_id,
+                    col(AccountControlSession.status).in_(["active", "incomplete"]),
+                    AccountControlSession.started_at_ms < end_ms,
+                )
+            )
+        ).scalars()
+        for row in rows:
+            if row.finished_at_ms is not None and row.finished_at_ms < start_ms:
+                continue
+            if row.status == "active" and row.instance_id == active_instance_id:
+                continue
+            if control_context_kind(row.context_kind, row.execution_id) == AccountControlContextKind.ACCOUNT_OPERATION:
+                # 仅确认无新风险操作的来源可排除；人工委托等仍保守阻断。
+                if row.source in {"account_assets", "connection_prepare", "instrument_catalog"}:
+                    continue
+            return True
+        return False
 
     async def load_recent_allowed_timestamps(self, account_id: int) -> AccountControlRecentAllowedSnapshot:
         """

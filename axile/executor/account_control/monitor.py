@@ -142,6 +142,8 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
         "instance_id": guard.instance_id,
         "seq": guard._monitor_seq,
         "incomplete": guard.monitor_incomplete,
+        "risk_operations_blocked": guard.counter_integrity_unavailable
+        or (context is not None and context.window.control_date in guard.incomplete_control_dates),
         "sampled_at_ms": now_ms,
         "status": "running" if guard._enabled() else "disabled",
         "timezone": None if guard.policy is None else guard.policy.timezone,

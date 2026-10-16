@@ -51,6 +51,7 @@ from axile.executor.account_control.snapshot import (
 )
 from axile.executor.account_control.warnings import AccountControlQuotaWarning
 from axile.executor.algorithms.utils.clock import Clock, clock_now, get_default_clock
+from axile.executor.termination_cleanup import cleanup_guard_allowed
 
 type AccountCounterKey = tuple[str, AccountControlBucketType, str, str]
 type SymbolCounterKey = tuple[str, str, AccountControlBucketType, str, str]
@@ -358,6 +359,9 @@ class AccountControlGuard:
     ) -> None:
         self.instance_id = uuid4().hex
         self.monitor_incomplete = False
+        # 日期明确的历史缺口不会在跨日后永久阻断新单。
+        self.incomplete_control_dates: frozenset[str] = frozenset()
+        self.counter_integrity_unavailable = False
         self._monitor_seq = 0
         self.monitor_outcome_sink: Callable[[AccountControlEventWrite], None] | None = None
         self._monitor_waits: dict[int, dict[str, object]] = {}
@@ -483,6 +487,7 @@ class AccountControlGuard:
         """
         if not self._enabled():
             return AccountControlAttempt(None, None)
+        cleanup_guard_allowed(self, operation, symbol)
         assert self.account_id is not None
         assert self.execution_id is not None
         assert self.policy is not None
@@ -565,7 +570,7 @@ class AccountControlGuard:
                             if label not in wait_hits:
                                 wait_hits.append(label)
                         wait_ms = min(hit.wait_ms, self._wait_poll_interval_ms)
-                self._wait_for_quota(wait_ms, symbol)
+                self._wait_for_quota(wait_ms, symbol, operation)
                 waited_ms += wait_ms
         finally:
             with self._locked_state():
@@ -702,11 +707,20 @@ class AccountControlGuard:
     ) -> AccountControlResolvedAttempt:
         """返回当前时刻的一轮额度评估结果，不在此处执行等待。"""
         context = self._current_context()
-        decision = self._evaluate_enforcement(
-            operation=operation,
-            symbol=symbol,
-            context=context,
-        )
+        if operation in {"place_order", "option_exercise", "option_abandon", "option_self_close"} and (
+            self.counter_integrity_unavailable or context.window.control_date in self.incomplete_control_dates
+        ):
+            decision = AccountControlEnforcementDecision(
+                kind="block",
+                message="当前控制窗口计数历史不完整，禁止新增风险操作；只读查询和撤单仍按原规则检查",
+                outcome="counter_incomplete",
+            )
+        else:
+            decision = self._evaluate_enforcement(
+                operation=operation,
+                symbol=symbol,
+                context=context,
+            )
         return AccountControlResolvedAttempt(context=context, decision=decision)
 
     def _record_blocked_attempt(
@@ -738,6 +752,7 @@ class AccountControlGuard:
         raise AccountControlBlockedError(
             decision.message,
             details=decision.details,
+            reason_code="CONTROL.COUNTER_INCOMPLETE" if decision.outcome == "counter_incomplete" else None,
             account_id=self.account_id,
             execution_id=self.execution_id,
             channel=self.channel,
@@ -1196,14 +1211,16 @@ class AccountControlGuard:
         next_day = local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         return max(int((next_day - local_now).total_seconds() * 1000), 0)
 
-    def _wait_for_quota(self, wait_ms: int, symbol: str | None) -> None:
+    def _wait_for_quota(self, wait_ms: int, symbol: str | None, operation: str = "") -> None:
         remaining_ms = wait_ms
         while remaining_ms > 0:
-            self._run_termination_checkpoint(symbol)
+            if not cleanup_guard_allowed(self, operation, symbol):
+                self._run_termination_checkpoint(symbol)
             sleep_ms = min(remaining_ms, self._wait_poll_interval_ms)
             self._sleep(sleep_ms / 1000)
             remaining_ms -= sleep_ms
-        self._run_termination_checkpoint(symbol)
+        if not cleanup_guard_allowed(self, operation, symbol):
+            self._run_termination_checkpoint(symbol)
 
     def _run_termination_checkpoint(self, symbol: str | None) -> None:
         if self._termination_checkpoint is None:
