@@ -12,6 +12,17 @@ const priorities: { value: ClosePriority; label: string }[] = [
   { value: 'today_first', label: '先今后昨' },
 ]
 
+function FeeDetails({ fee, shared = false }: { fee: string | null | undefined; shared?: boolean }) {
+  if (!fee) return <span className="text-ink-3">—</span>
+  return <div className={shared ? 'grid grid-cols-2 gap-x-5 gap-y-2' : 'space-y-2'}>{fee.split('；').map((entry, index) => {
+    const match = entry.match(/^([^（）]+)（([^（）]+)）$/)
+    return <div key={index} className="min-w-0 space-y-0.5">
+      <p className="font-medium text-ink-2">{match ? match[1] : entry}</p>
+      {match && <p className="text-xs leading-snug text-ink-3">{match[2]}</p>}
+    </div>
+  })}</div>
+}
+
 /** 账户级平仓规则；完成只写页面草稿，页面保存后才用于后续执行。 */
 export function FuturesClosePolicyEditor({ value, capability, onChange }: {
   value: FuturesClosePolicy
@@ -74,17 +85,23 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
           <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length} onClick={() => setDraft((d) => ({ ...d, overrides: {} }))}>恢复全部预设</button>
         </div>
         {error && <p role="alert" className="shrink-0 text-xs text-warn">{error}</p>}
-        <div className="min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
+        <div className="isolate min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
           <table className="w-full min-w-[620px] text-left text-[13px]">
-            <thead className="sticky top-0 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal">平仓顺序</th><th className="p-3 font-normal">来源</th></tr></thead>
-            <tbody>{shown.map((product) => {
+            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal">平仓顺序</th><th className="p-3 font-normal">来源</th></tr></thead>
+            <tbody className="relative z-0">{shown.map((product) => {
               const preset = presets.get(product)
               const modified = Object.hasOwn(draft.overrides, product)
               const priority = draft.overrides[product] ?? preset?.priority ?? draft.fallback
+              const sameFee = Boolean(preset?.yesterday_fee) && preset?.yesterday_fee === preset?.today_fee
               return <tr key={product} className="border-b border-line last:border-0">
                 <td className="p-3"><span className="font-medium text-ink-1">{product}</span><span className="ml-2 text-[11px] text-ink-3">{preset?.exchange}</span></td>
-                <td className="p-3 text-ink-2">{preset?.yesterday_fee ?? '—'}</td>
-                <td className="p-3 text-ink-2">{preset?.today_fee ?? '—'}</td>
+                {sameFee ? <td colSpan={2} className="p-3">
+                  <p className="mb-1 text-[11px] text-ink-3">平今、平昨相同</p>
+                  <FeeDetails fee={preset?.yesterday_fee} shared />
+                </td> : <>
+                  <td className="p-3 align-top"><FeeDetails fee={preset?.yesterday_fee} /></td>
+                  <td className="p-3 align-top"><FeeDetails fee={preset?.today_fee} /></td>
+                </>}
                 <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <div role="group" aria-label={`${product} 平仓顺序`} className="whitespace-nowrap"><Segmented size="sm" value={priority} options={priorities} onChange={(next) => setPriority(product, next)} /></div>}</td>
                 <td className="p-3 whitespace-nowrap">{modified ? <><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></> : <span className="text-ink-3">{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>}</td>
               </tr>
