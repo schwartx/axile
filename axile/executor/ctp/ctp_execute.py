@@ -83,6 +83,7 @@ from axile.executor.ctp_product_sessions import (
 from axile.executor.ctp_query_wait import QueryIdleClock
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
+from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -522,7 +523,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """复用当前会话；全量发一次，按需由 CTP 逐个指定合约。"""
         state = self._catalog_query_state
         state.active = True
-        state.deadline = clock_monotonic() + timeout if symbols is None and timeout is not None else None
+        state.deadline = catalog_deadline(timeout)
         records = []
         try:
             for symbol in symbols if symbols is not None else [None]:
@@ -532,10 +533,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     request.InstrumentID = local if separator else exchange
                     if separator:
                         request.ExchangeID = exchange
-                response_timeout = timeout if state.deadline is None else state.deadline - clock_monotonic()
-                if response_timeout is not None and response_timeout <= 0:
-                    raise TimeoutError("合约资料查询超时")
+                response_timeout = catalog_remaining(state.deadline)
                 rows = self._query("ReqQryInstrument", request, timeout=response_timeout)
+                catalog_remaining(state.deadline)
                 records.extend(
                     record
                     for row in rows

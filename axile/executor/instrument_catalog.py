@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from uuid import uuid4
@@ -28,9 +30,40 @@ class CatalogError(RuntimeError):
         self.causes = list(causes or [])
 
 
+_query_deadline: ContextVar[float | None] = ContextVar("catalog_query_deadline", default=None)
+
+
+def catalog_deadline(timeout: float | None, absolute: float | None = None) -> float | None:
+    """复用已有截止时间，各线程／IPC 层只能缩短预算，不能重新延长。"""
+    candidates = [value for value in (_query_deadline.get(), absolute) if value is not None]
+    if timeout is not None:
+        candidates.append(clock_monotonic() + timeout)
+    return min(candidates) if candidates else None
+
+
+def catalog_remaining(deadline: float | None) -> float | None:
+    """取得一次批量查询的剩余额度；到期后不允许再开始原生请求。"""
+    if deadline is None:
+        return None
+    remaining = deadline - clock_monotonic()
+    if remaining <= 0:
+        raise CatalogError("合约资料查询超时", "CATALOG.TIMEOUT")
+    return remaining
+
+
+@contextmanager
+def catalog_query_scope(deadline: float | None) -> Iterator[None]:
+    """绑定当前来源调用的预算，兼容原有双参数 Query 接口。"""
+    token = _query_deadline.set(catalog_deadline(None, deadline))
+    try:
+        yield
+    finally:
+        _query_deadline.reset(token)
+
+
 @dataclass(frozen=True)
 class CatalogLimits:
-    """有界目录查询的等待配置；CTP 按需补齐由单次响应超时控制。"""
+    """目录批次预算；未指定总预算的 CTP 执行准备保留单次响应超时。"""
 
     ensure: float = 15.0
     demand_source: float = 5.0
@@ -50,6 +83,7 @@ class CatalogLimits:
 
 @dataclass
 class _Attempt:
+    deadline: float | None = None
     done: threading.Event = field(default_factory=threading.Event)
     rows: list[Instrument] | None = None
     error: Exception | None = None
@@ -121,13 +155,16 @@ class InstrumentCatalog:
 
     def _pending_attempt(self, symbol: str, require_specs: bool) -> _Attempt | None:
         attempt = self._pending.get((require_specs, symbol))
-        if attempt is not None:
+        now = clock_monotonic()
+        if attempt is not None and (attempt.deadline is None or attempt.deadline > now):
             return attempt
         local = symbol.split(".", 1)[-1]
         matches = [
             a
             for (specs, key), a in self._pending.items()
-            if specs == require_specs and (key == local or ("." not in symbol and key.split(".", 1)[-1] == local))
+            if specs == require_specs
+            and (a.deadline is None or a.deadline > now)
+            and (key == local or ("." not in symbol and key.split(".", 1)[-1] == local))
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -143,7 +180,7 @@ class InstrumentCatalog:
         """缺失资料由执行账户补齐；重叠查询共享，取消仅结束当前等待。"""
         if timeout is None and not require_specs:
             timeout = self.limits.ensure
-        deadline = None if timeout is None else clock_monotonic() + timeout
+        deadline = catalog_deadline(timeout)
         while True:
             with self._lock:
                 current = {raw: self._find(raw) for raw in symbols}
@@ -155,7 +192,7 @@ class InstrumentCatalog:
                     dict.fromkeys(normalize_catalog_symbol(raw) for raw, row in current.items() if row is None)
                 )
                 fresh, waits = [], []
-                batch = _Attempt()
+                batch = _Attempt(deadline=deadline)
                 for symbol in missing:
                     attempt = self._pending_attempt(symbol, require_specs)
                     if attempt is None:
@@ -165,7 +202,7 @@ class InstrumentCatalog:
                 if fresh:
                     threading.Thread(
                         target=self._fill,
-                        args=(fresh, batch, require_specs, source_name),
+                        args=(fresh, batch, require_specs, source_name, deadline),
                         daemon=True,
                         name="instrument-demand",
                     ).start()
@@ -187,23 +224,25 @@ class InstrumentCatalog:
 
     def _call(self, query: Query, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         attempt = _Attempt()
+        deadline = catalog_deadline(timeout)
 
         def invoke() -> None:
             try:
-                attempt.rows = query(symbols, timeout)
+                with catalog_query_scope(deadline):
+                    attempt.rows = query(symbols, catalog_remaining(deadline))
             except Exception as exc:
                 attempt.error = exc
             finally:
                 attempt.done.set()
 
         threading.Thread(target=invoke, daemon=True, name="instrument-source").start()
-        if timeout is None:
-            while not get_default_clock().event_wait(attempt.done, 0.05):
-                with self._lock:
-                    if self._closed or not any(source.query is query for source in self._sources.values()):
-                        raise CatalogError("合约查询来源已退出")
-        elif not get_default_clock().event_wait(attempt.done, timeout):
-            raise CatalogError("合约查询来源超时", "CATALOG.TIMEOUT")
+        while not attempt.done.is_set():
+            remaining = catalog_remaining(deadline)
+            get_default_clock().event_wait(attempt.done, 0.05 if remaining is None else min(0.05, remaining))
+            with self._lock:
+                if self._closed or not any(source.query is query for source in self._sources.values()):
+                    raise CatalogError("合约查询来源已退出")
+        catalog_remaining(deadline)
         if attempt.error is not None:
             raise attempt.error
         return attempt.rows or []
@@ -266,13 +305,19 @@ class InstrumentCatalog:
                 if symbols is not None:
                     for symbol in symbols:
                         matches = [r for r in rows if normalize_catalog_symbol(symbol) in {r.key, r.symbol}]
-                        if len(matches) != 1:
-                            raise CatalogError(f"合约资料不存在或有歧义: {symbol}")
+                        if not matches:
+                            raise CatalogError(f"合约资料不存在: {symbol}", "CATALOG.NOT_FOUND")
+                        if len(matches) > 1:
+                            raise CatalogError(f"合约代码存在交易所歧义: {symbol}", "CATALOG.AMBIGUOUS")
                 return rows
             except Exception as exc:
                 errors.append(
                     {
-                        "reason_code": getattr(exc, "reason_code", "CATALOG.UNAVAILABLE"),
+                        "reason_code": getattr(
+                            exc,
+                            "reason_code",
+                            "CATALOG.TIMEOUT" if isinstance(exc, TimeoutError) else "CATALOG.UNAVAILABLE",
+                        ),
                         "type": type(exc).__name__,
                         "message": str(exc),
                     }
@@ -286,12 +331,20 @@ class InstrumentCatalog:
             causes=errors,
         )
 
-    def _fill(self, symbols: list[str], attempt: _Attempt, require_specs: bool, source_name: str | None) -> None:
+    def _fill(
+        self,
+        symbols: list[str],
+        attempt: _Attempt,
+        require_specs: bool,
+        source_name: str | None,
+        deadline: float | None,
+    ) -> None:
         try:
-            deadline = None if require_specs else clock_monotonic() + self.limits.ensure
-            rows = self._load(symbols, deadline, require_specs=require_specs, source_name=source_name)
+            with catalog_query_scope(deadline):
+                rows = self._load(symbols, deadline, require_specs=require_specs, source_name=source_name)
             with self._lock:
                 if not self._closed:
+                    catalog_remaining(deadline)
                     for row in rows:
                         current = self._rows.get(row.key)
                         if row.has_specs or current is None or not current.has_specs:

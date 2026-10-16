@@ -10,7 +10,14 @@ from typing import Any
 from uuid import uuid4
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, get_default_clock
-from axile.executor.instrument_catalog import CatalogError, InstrumentCatalog, Query
+from axile.executor.instrument_catalog import (
+    CatalogError,
+    InstrumentCatalog,
+    Query,
+    catalog_deadline,
+    catalog_query_scope,
+    catalog_remaining,
+)
 from axile.executor.instrument_catalog_records import Instrument
 
 
@@ -35,6 +42,8 @@ class _CatalogPipe:
         with self._send_lock:
             if self._closed.is_set():
                 raise CatalogError("合约目录管道已关闭")
+            if "deadline" in message:
+                catalog_remaining(message["deadline"])
             self.connection.send(message)
 
     def _request(
@@ -44,8 +53,10 @@ class _CatalogPipe:
         with self._lock:
             self._pending[request_id] = response
         try:
-            self._send({"id": request_id, "op": op, "timeout": timeout, **payload})
-            deadline = None if timeout is None else clock_monotonic() + timeout
+            deadline = catalog_deadline(timeout)
+            self._send(
+                {"id": request_id, "op": op, "timeout": catalog_remaining(deadline), "deadline": deadline, **payload}
+            )
             while not response.ready.is_set():
                 if checkpoint is not None:
                     checkpoint()
@@ -55,6 +66,7 @@ class _CatalogPipe:
                 if remaining <= 0:
                     raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
                 get_default_clock().event_wait(response.ready, min(remaining, 0.05))
+            catalog_remaining(deadline)
             if response.payload.get("error"):
                 raise CatalogError(
                     response.payload["error"],
@@ -94,13 +106,18 @@ class _CatalogPipe:
 
     def _handle(self, message: dict) -> None:
         try:
-            result = self._dispatch(message)
+            # 同机进程共享 monotonic 时基；排队和接收后的调度耗时不能重置预算。
+            with catalog_query_scope(catalog_deadline(message["timeout"], message.get("deadline"))):
+                catalog_remaining(catalog_deadline(None))
+                result = self._dispatch(message)
             response = {"reply": message["id"], "result": result}
         except Exception as exc:
             response = {
                 "reply": message["id"],
                 "error": str(exc),
-                "reason_code": getattr(exc, "reason_code", "CATALOG.UNAVAILABLE"),
+                "reason_code": getattr(
+                    exc, "reason_code", "CATALOG.TIMEOUT" if isinstance(exc, TimeoutError) else "CATALOG.UNAVAILABLE"
+                ),
                 "causes": getattr(exc, "causes", []),
             }
         try:
@@ -205,7 +222,7 @@ class CatalogSession(_CatalogPipe):
             rows = self.catalog.ensure(
                 message["symbols"],
                 self._check_alive,
-                message["timeout"],
+                catalog_remaining(catalog_deadline(None)),
                 require_specs=message.get("require_specs", False),
                 source_name=self.source,
             )
@@ -278,7 +295,7 @@ class RemoteCatalogProvider(_CatalogPipe):
             query = self.query
             if message["op"] != "query" or message["epoch"] != self.epoch or query is None:
                 raise CatalogError("合约查询来源会话已失效")
-        return [row.wire() for row in query(message["symbols"], message["timeout"])]
+        return [row.wire() for row in query(message["symbols"], catalog_remaining(catalog_deadline(None)))]
 
     @property
     def failed(self) -> bool:

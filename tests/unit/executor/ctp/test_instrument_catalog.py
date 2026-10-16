@@ -14,7 +14,13 @@ from axile.executor.account_control.presets import resolve_account_control_polic
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
 from axile.executor.ctp.ctp_execute import CTPExecutor
 from axile.executor.futures_close_policy import FuturesClosePolicy
-from axile.executor.instrument_catalog import CatalogLimits, InstrumentCatalog, LocalInstrumentCatalogProvider
+from axile.executor.instrument_catalog import (
+    CatalogError,
+    CatalogLimits,
+    InstrumentCatalog,
+    LocalInstrumentCatalogProvider,
+    catalog_query_scope,
+)
 from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
 
@@ -208,3 +214,64 @@ def test_public_order_is_blocked_by_catalog_usage_before_native_submission(monke
     with pytest.raises(AccountControlBlockedError):
         executor.place_order("rb2701", OrderDirection.BUY, OrderType.LIMIT, 1, 3500)
     executor._trader_api.ReqOrderInsert.assert_not_called()
+
+
+def test_bounded_batch_includes_shared_throttle_and_releases_native_query_slot(monkeypatch):
+    executor, clock, guards, sent = _controlled_executor(monkeypatch, respond=True)
+    started = clock.time()
+    with pytest.raises((CatalogError, TimeoutError), match="超时"):
+        executor._query_catalog([f"SHFE.rb27{index:02}" for index in range(1, 51)], 3.2)
+    assert len(sent) == 2  # 两次共享限流放行后，第三次等不到额度便到达整批截止时间。
+    assert all(stamp < started + 3.2 for _, stamp, _ in sent)
+    assert clock.time() - started < 3.31
+    assert not executor._pending_queries and not executor._catalog_query_state.active
+    assert executor._query_lock.acquire(blocking=False)
+    executor._query_lock.release()
+    executor._query_catalog(["SHFE.rb2799"], None)
+    assert len(sent) == 3 and sent[-1][0] == "rb2799"
+
+
+def test_inherited_dispatch_deadline_cannot_be_extended_by_native_source(monkeypatch):
+    executor, clock, _, sent = _controlled_executor(monkeypatch, respond=True)
+    started = clock.time()
+    with catalog_query_scope(started + 1):
+        clock.sleep(0.7)  # IPC 排队已用去的时间。
+        with pytest.raises(TimeoutError, match="超时"):
+            executor._query_catalog(["SHFE.rb2701"], 100)
+    assert sent == []  # 不能把 IPC 剩余 0.3 秒扩成来源声明的 100 秒。
+    assert clock.time() - started < 1.11
+    assert not executor._catalog_query_state.active
+
+
+def test_bounded_catalog_query_lock_wait_consumes_the_same_deadline(monkeypatch):
+    executor, clock, guards, sent = _controlled_executor(monkeypatch, respond=True)
+    started = clock.time()
+    with executor._query_lock:
+        with pytest.raises(TimeoutError, match="超时"):
+            executor._query_catalog(["SHFE.rb2701"], 0.2)
+    assert clock.time() - started < 0.22
+    assert guards == [] and sent == []
+    assert not executor._catalog_query_state.active
+
+
+def test_continuous_native_callbacks_do_not_extend_the_batch_deadline(monkeypatch):
+    executor, clock, _, sent = _controlled_executor(monkeypatch, respond=False)
+    executor._control_quota_state.group_timestamps.clear()
+    original_wait = clock.event_wait
+
+    def callbacks(event, timeout):
+        clock.sleep(0.04)
+        for rid in list(executor._pending_queries):
+            executor._query_response(_row(), None, rid, False)  # 有进展但不结束原生响应。
+        return event.is_set()
+
+    monkeypatch.setattr(clock, "event_wait", callbacks)
+    started = clock.time()
+    with pytest.raises(TimeoutError, match="超时"):
+        executor._query_catalog(["SHFE.rb2701", "SHFE.rb2702"], 0.15)
+    assert clock.time() - started < 0.2
+    assert len(sent) == 1
+    assert not executor._pending_queries
+    monkeypatch.setattr(clock, "event_wait", original_wait)
+    assert executor._query_lock.acquire(blocking=False)
+    executor._query_lock.release()
