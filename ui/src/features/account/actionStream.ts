@@ -174,6 +174,27 @@ function terminalText(e: ExecutionEvent, units: ActionDisplayUnits): { text: str
   }
 }
 
+/** 解释当次平仓计划，预设费用说明不冒充实际账户费率。 */
+function closePolicyText(e: ExecutionEvent): string {
+  const d = asDict(asDict(e.details)?.futures_close_decision)
+  if (!d) return '平仓规则'
+  if (d.source === 'exchange') return `平仓规则 · ${asStr(d.reason) || '按交易所规则执行'}`
+  const priority = d.priority === 'today_first' ? '先今后昨' : '先昨后今'
+  const sources: Record<string, string> = { fee: '低手续费优先', preset: '品种预设', override: '人工覆盖', default: '默认顺序' }
+  const parts = [`平仓规则 · ${priority}`, sources[asStr(d.source)] || '按品种规则']
+  const yesterday = asNum(d.yesterday_cost), today = asNum(d.today_cost)
+  if (yesterday != null && today != null) parts.push(`预计平昨 ${yesterday.toFixed(2)}／平今 ${today.toFixed(2)} 元/手`)
+  if (asStr(d.fallback_reason)) parts.push(asStr(d.fallback_reason))
+  if (asStr(d.preset_version)) parts.push(`预设 ${asStr(d.preset_version)}`)
+  const legs = Array.isArray(d.legs) ? d.legs.map((leg) => {
+    const row = asDict(leg)
+    const name = row?.offset_flag === 'close_today' ? '平今' : row?.offset_flag === 'close_yesterday' ? '平昨' : '平仓'
+    return `${name} ${asNum(row?.volume) ?? '—'} 手`
+  }) : []
+  if (legs.length) parts.push(legs.join(' → '))
+  return parts.join(' · ')
+}
+
 /** 一条事件 → 动作流文案与断点标记（symbol=null 为生命周期骨干行）。 */
 function lineOf(e: ExecutionEvent, units: ActionDisplayUnits): { text: string; broken: boolean; good?: boolean } {
   const err = eventError(e)
@@ -186,6 +207,8 @@ function lineOf(e: ExecutionEvent, units: ActionDisplayUnits): { text: string; b
     }
     case 'target_computed':
       return { text: '算出目标', broken: false }
+    case 'futures_close_planned':
+      return { text: closePolicyText(e), broken: false }
     case 'symbol_decision_made':
       return { text: decisionText(e, units), broken: e.status === 'ERROR' }
     case 'symbol_skipped':

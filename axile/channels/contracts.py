@@ -10,6 +10,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.common.order_param_model import OrderParamModel
+from axile.executor.futures_close_policy import FuturesCloseCapability
 from axile.executor.models.unified_input_accounts import BaseAccountConfig
 
 if TYPE_CHECKING:
@@ -393,6 +394,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     currency: str = Field(min_length=1)
     units: ChannelUnits = Field(default_factory=ChannelUnits)
     ui: ChannelUi = Field(default_factory=ChannelUi)
+    futures_close: FuturesCloseCapability | None = None
     defaults: ChannelDefaults
     leverage: ChannelLeverage
     account_form: ChannelAccountForm

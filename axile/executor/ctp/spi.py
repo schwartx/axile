@@ -40,6 +40,9 @@ class TraderSpi(td.CThostFtdcTraderSpi):
     def OnRspQryInstrument(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 
+    def OnRspQryInstrumentCommissionRate(self, row, info, request_id, is_last):
+        self.owner._query_response(row, info, request_id, is_last)
+
     def OnRspQryTradingAccount(self, row, info, request_id, is_last):
         self.owner._query_response(row, info, request_id, is_last)
 

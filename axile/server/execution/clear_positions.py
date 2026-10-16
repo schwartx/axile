@@ -172,6 +172,8 @@ def _build_clear_positions_backend_request(
         account = account.snapshot()
     resolved_algorithm = resolve_empty_positions_algorithm(account, algorithm)
     empty_kwargs = {
+        "trade_rules": account.trade_rules,
+        "futures_close_policy": account.futures_close_policy.model_dump(),
         "algorithm": resolved_algorithm,
         "feishu_key": account.feishu_key if account.feishu_key else None,
         "execution_notification_code": account.execution_notification_code,

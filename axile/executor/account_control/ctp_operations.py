@@ -19,6 +19,7 @@ CTP_TRADER_API_OPERATIONS = frozenset(
         "confirm_settlement",
         "cancel_order_ctp",
         "query_instruments",
+        "query_commission_rates",
         "query_account",
         "query_positions",
         "query_depth_market_data",

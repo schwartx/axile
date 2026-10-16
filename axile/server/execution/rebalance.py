@@ -268,6 +268,7 @@ def _build_rebalance_standard_input(
             "account_config": account.account_config,
             "algorithm": account.algorithm,
             "trade_rules": account.trade_rules,
+            "futures_close_policy": account.futures_close_policy.model_dump(),
             "forbidden_symbols": account.forbidden_symbols,
             "risk_symbols": account.risk_symbols,
             "feishu_key": feishu_key,

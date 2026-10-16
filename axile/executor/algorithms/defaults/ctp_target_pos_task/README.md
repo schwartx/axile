@@ -1,6 +1,6 @@
 # TARGET-POS-TASK · 期货目标持仓
 
-按目标净持仓安排开平仓，并按设置处理今仓、昨仓。适用于 CTP 和 TQ；品种规则可覆盖报价和平仓顺序。
+按目标净持仓安排开平仓，并按设置处理今仓、昨仓。适用于 CTP 和 TQ；报价支持合约规则覆盖，平仓顺序统一读取账户平仓规则。
 
 ## 执行方式
 
@@ -10,7 +10,7 @@
 
 `PASSIVE` 买单取买一、卖单取卖一；`ACTIVE` 买单取卖一、卖单取买一。
 所需报价不足时可能回退最新价。品种 `trade_rule.price` 优先于参数 `price_strategy`，
-品种 `trade_rule.offset_priority` 优先于参数同名值。
+账户 `futures_close_policy` 决定平仓顺序，主交易与清仓共用。算法不再提供平仓顺序参数。
 `price_strategy` 仅决定限价单的报价侧。开仓与平仓可分别选择限价或市价；市价单不依赖行情，
 限价单在盘口和最新价都无效时停止提交并记录错误，不会以零价报单或自动切换市价。
 市价平仓仍按今昨仓拆分并传递相应开平标志。直接提交的市价单不会追价。
@@ -25,7 +25,6 @@
 | `price_strategy` | `"PASSIVE"` | PASSIVE / ACTIVE | 本方挂单或对手价报价；品种 price 规则优先。 |
 | `close_order_type` | `"LIMIT"` | LIMIT / MARKET | 平仓订单类型；默认限价。 |
 | `open_order_type` | `"LIMIT"` | LIMIT / MARKET | 开仓订单类型；默认限价。 |
-| `offset_priority` | `"昨今"` | 昨今 / 今昨 | 先平昨仓或先平今仓；品种同名规则优先，费用取决于合约。 |
 | `max_wait_seconds` | `60` | ≥1，≤3600 | 等待本轮委托完成的上限，不保证持仓到位。 |
 | `chase_enabled` | `false` | 见说明 | 开启后按条件撤单追价；关闭时保留下面的追单配置。 |
 | `chase_ticks` | `1` | ≥0 | 触发追价的价格偏离，不是每次加价幅度。开启追单后生效。 |
@@ -45,13 +44,13 @@
 ```python
 algorithm = {
     "method": "TARGET-POS-TASK",
-    "params": {"price_strategy": "PASSIVE", "offset_priority": "昨今", "max_wait_seconds": 60},
+    "params": {"price_strategy": "PASSIVE", "max_wait_seconds": 60},
 }
 ```
 
 当前净空 3 手（昨空 2、今空 1），目标净多 2 手，需要增加净持仓 5 手。
 在可平仓数量等条件满足时，安排先平昨空 2、今空 1，再开多 2；订单是否实际成交需看回报。
-品种规则可覆盖上述默认报价和平仓顺序。
+合约规则可覆盖默认报价；账户品种平仓规则可以调整上述顺序。详见 `docs/期货平仓规则.md`。
 
 ## 结束与剩量
 

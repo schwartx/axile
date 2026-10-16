@@ -1,3 +1,5 @@
+import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
+import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { useEffect, useRef, useState } from 'react'
 import { Bitcoin, ChartCandlestick, CircleHelp, Landmark, Monitor, RadioTower, type LucideIcon } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
@@ -76,6 +78,7 @@ function channelDraft(channel: ChannelCapability) {
     channel: channel.channel,
     config: accountConfigDefaults(accountFields(channel)),
     algorithm: channel.defaults.trade_algorithm,
+    futuresClosePolicy: defaultClosePolicy(),
     longLeverage: String(channel.defaults.long_leverage),
     shortLeverage: String(channel.defaults.short_leverage),
     executionTimeout: String(channel.defaults.execution_timeout),
@@ -540,6 +543,10 @@ export function AcctTrade() {
             onChange={(v) => setAcct({ algorithm: v ?? descriptor?.defaults.trade_algorithm ?? acct.algorithm })}
           />
 
+          {descriptor?.futures_close && <div className="mt-5">
+            <p className="mb-2 text-sm text-ink-2">平仓规则</p>
+            <FuturesClosePolicyEditor value={acct.futuresClosePolicy} capability={descriptor.futures_close} onChange={(futuresClosePolicy) => setAcct({ futuresClosePolicy })} />
+          </div>}
           <div className="mt-6 max-w-[560px]">
             <div className="grid grid-cols-1 gap-3 border-t border-line py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-6">
               <div className="min-w-0">
@@ -779,6 +786,7 @@ export function AcctConfirm() {
         algorithm: algo,
         empty_positions_algorithm: descriptor.defaults.empty_positions_algorithm,
         trade_rules: null,
+        futures_close_policy: acct.futuresClosePolicy,
         forbidden_symbols: null,
         risk_symbols: null,
         feishu_key: null,

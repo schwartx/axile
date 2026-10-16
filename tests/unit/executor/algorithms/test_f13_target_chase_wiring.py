@@ -13,6 +13,7 @@ from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import (
 )
 from axile.executor.algorithms.utils.order_tracker import ChaseConfig, OrderTracker
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.futures_order_intent import plan_futures_close_orders
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, TradeRecord, UnifiedOrder
@@ -32,6 +33,9 @@ class _Exec:
         self.price_callbacks = []
         self.trade_callbacks = []
         self.orders: list[UnifiedOrder] = []
+
+    def plan_close_orders(self, direction, volume, account_assets):
+        return plan_futures_close_orders(self.symbol, direction, volume, account_assets, "SHFE")
 
     def get_account_assets(self):
         positions = [
@@ -150,7 +154,7 @@ def test_F13_target_chase_config_creates_chase_entries() -> None:
             AlgorithmInput(
                 symbol="rb2610",
                 target_volume=0,
-                trade_rule={"price": "PASSIVE", "offset_priority": "昨今", "max_single_order_size": 50},
+                trade_rule={"price": "PASSIVE", "max_single_order_size": 50},
                 params=CTPTargetPosTaskParams(max_wait_seconds=1, chase_enabled=True, chase_ticks=1),
             ),
         )

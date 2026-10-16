@@ -18,7 +18,6 @@ export const TARGET_POS_DEFAULT_PARAMS: Readonly<Record<string, unknown>> = {
   price_strategy: 'PASSIVE',
   close_order_type: 'LIMIT',
   open_order_type: 'LIMIT',
-  offset_priority: '昨今',
   max_wait_seconds: 60,
   chase_enabled: false,
   chase_ticks: 1,
@@ -72,9 +71,6 @@ export function validateAlgorithmParams(params: Record<string, unknown>, method?
         return `${key === 'close_order_type' ? '平仓订单' : '开仓订单'}（${key}）必须是 LIMIT 或 MARKET`
       }
     }
-  }
-  if (has('offset_priority') && params.offset_priority !== '昨今' && params.offset_priority !== '今昨') {
-    return `平仓优先（offset_priority）必须是 昨今 或 今昨`
   }
   if (has('on_missing_book') && !['skip', 'active', 'market'].includes(String(params.on_missing_book))) {
     return `盘口缺失策略（on_missing_book）必须是 skip、active 或 market`

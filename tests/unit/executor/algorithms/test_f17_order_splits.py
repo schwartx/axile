@@ -84,7 +84,6 @@ def test_F17_target_open_splits_by_max_single_order_size() -> None:
         flat,
         executor.get_market_data(),
         "PASSIVE",
-        "昨今",
         trade_rule={"max_single_order_size": 2},
     )
     assert len(orders) == 25

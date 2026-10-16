@@ -49,6 +49,7 @@ class _EmptyPositionsPlan:
     curr_target: dict[str, float]
     last_target: dict[str, float]
     trade_rules: dict[str, dict[str, object]]
+    futures_close_policy: dict[str, object]
     algorithm: dict[str, object]
     forbidden_symbols: list[str]
     feishu_key: str | None
@@ -517,6 +518,7 @@ class AbstractExecutorFacadeMixin:
             curr_target=curr_target,
             last_target=executor._calculate_last_target_unified(positions),
             trade_rules={**default_rules, **user_rules},
+            futures_close_policy=_coerce_object_dict(kwargs.get("futures_close_policy", {})),
             algorithm=_coerce_object_dict(kwargs.get("algorithm", executor._get_default_algorithm())),
             forbidden_symbols=forbidden_symbols,
             feishu_key=feishu_key_raw if isinstance(feishu_key_raw, str) else None,
@@ -553,6 +555,7 @@ class AbstractExecutorFacadeMixin:
             account_config=account_config,
             algorithm=plan.algorithm,
             trade_rules=plan.trade_rules,
+            futures_close_policy=plan.futures_close_policy,
             forbidden_symbols=plan.forbidden_symbols,
             risk_symbols=[],
             curr_target=plan.curr_target,

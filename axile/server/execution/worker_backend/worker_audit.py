@@ -149,7 +149,10 @@ def _append_trade_pre_execute_audit(
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.TRADE_RULES_SNAPSHOT,
-        content={"trade_rules": standard_input.trade_rules},
+        content={
+            "trade_rules": standard_input.trade_rules,
+            "futures_close_policy": standard_input.futures_close_policy.model_dump(),
+        },
     )
     _append_before_snapshot_artifact_sync(execution_id, before_account_assets)
     append_execution_event_sync(

@@ -110,6 +110,12 @@ class ExecutorProtocol(Protocol):
         """获取当前品种的净持仓数量（支持小数精度）."""
         ...
 
+    def plan_close_orders(
+        self, direction: OrderDirection, volume: float, account_assets: UnifiedAccountAssets
+    ) -> list[tuple[float, dict[str, object]]]:
+        """按账户规则和渠道能力生成当前合约的平仓计划。"""
+        ...
+
     def get_positions(self, account_assets: UnifiedAccountAssets) -> list[tuple[float, PositionDirection]]:
         """获取当前品种的所有持仓（含方向）."""
         ...

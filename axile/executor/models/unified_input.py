@@ -11,6 +11,7 @@ from typing import override
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input_accounts import (
     AccountConfig,
     BaseAccountConfig,
@@ -111,6 +112,7 @@ class UnifiedStandardInput(BaseModel):
 
     # 交易规则
     trade_rules: dict[str, TradeRule] = Field(default={}, description="各品种的交易规则")
+    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
 
     # 风控配置
     forbidden_symbols: list[str] = Field(default=[], description="禁止交易的品种列表")
@@ -215,6 +217,7 @@ class UnifiedStandardInput(BaseModel):
         UnifiedStandardInput
             校验完成后的当前输入对象。
         """
+        self.futures_close_policy.validate_channel(self.channel_type)
         channel_value = _channel_value(self.channel_type)
 
         # 验证账户配置与渠道类型匹配
@@ -305,6 +308,7 @@ class UnifiedStandardInput(BaseModel):
             algorithm=algorithm,
             symbol_algorithms=symbol_algorithms,
             trade_rules=trade_rules,
+            futures_close_policy=FuturesClosePolicy.model_validate(data.get("futures_close_policy") or {}),
             forbidden_symbols=_as_str_list(data.get("forbidden_symbols", [])),
             risk_symbols=_as_str_list(data.get("risk_symbols", [])),
             feishu_key=feishu_key_obj if isinstance(feishu_key_obj, str) else None,
@@ -333,6 +337,7 @@ class UnifiedStandardInput(BaseModel):
             "algorithm": self.algorithm,
             "symbol_algorithms": self.symbol_algorithms,
             "trade_rules": self.trade_rules,
+            "futures_close_policy": self.futures_close_policy.model_dump(),
             "forbidden_symbols": self.forbidden_symbols,
             "risk_symbols": self.risk_symbols,
             "execution_timeout": self.execution_timeout,

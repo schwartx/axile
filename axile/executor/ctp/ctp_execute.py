@@ -81,7 +81,7 @@ from axile.executor.ctp_product_sessions import (
 )
 from axile.executor.ctp_query_wait import QueryIdleClock
 from axile.executor.execution_engine import ExecutionEngine
-from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
+from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -401,6 +401,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._log_error(info, "撤单")
 
     @override
+    def handle_termination_checkpoint(self, symbol: str | None = None) -> None:
+        """费用查询等待额度时也检查本线程期限，不修改共享 guard 回调。"""
+        super().handle_termination_checkpoint(symbol)
+        state = getattr(self, "_catalog_query_state", None)
+        deadline = getattr(state, "fee_deadline", None)
+        if deadline is not None and clock_monotonic() >= deadline:
+            raise TimeoutError("手续费查询超时")
+
+    @override
     def get_account_control_guard(self) -> AccountControlGuard | None:
         """公开操作进入额度检查前即绑定会话总量，覆盖人工操作的局部 guard。"""
         guard = super().get_account_control_guard()
@@ -550,6 +559,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _catalog_checkpoint(self):
         self._require_active_connection()
         state = getattr(self, "_catalog_query_state", None)
+        fee_deadline = getattr(state, "fee_deadline", None)
+        if fee_deadline is not None and clock_monotonic() >= fee_deadline:
+            raise TimeoutError("手续费查询超时")
         if getattr(state, "active", False):
             if state.deadline is not None and clock_monotonic() >= state.deadline:
                 raise TimeoutError("合约资料查询超时")
@@ -935,6 +947,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         with self._query_slot(slot_timeout), self._catalog_query_control():
             operation = {
                 "ReqQryInstrument": "query_instruments",
+                "ReqQryInstrumentCommissionRate": "query_commission_rates",
                 "ReqQryTradingAccount": "query_account",
                 "ReqQryInvestorPosition": "query_positions",
                 "ReqQryDepthMarketData": "query_depth_market_data",
@@ -1231,6 +1244,38 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             return symbol
         return native_symbol
 
+    def _query_commission_rates(self, symbol):
+        """有界查询当前账户的实际合约费率；空响应不推断成零。"""
+        from axile.executor.algorithms.utils.clock import clock_now_iso
+        from axile.executor.futures_close_policy import CommissionRates
+
+        config = self._config()
+        req = td.CThostFtdcQryInstrumentCommissionRateField()
+        req.BrokerID, req.InvestorID, req.InstrumentID = config.broker_id, config.investor_id, symbol
+        req.ExchangeID = str(getattr(self._instruments.get(symbol), "ExchangeID", ""))
+        timeout = min(self._timeout, 3.0)
+        state = self._catalog_query_state
+        previous = getattr(state, "fee_deadline", None)
+        state.fee_deadline = clock_monotonic() + timeout
+        try:
+            rows = self._query("ReqQryInstrumentCommissionRate", req, symbol=symbol, timeout=timeout)
+        finally:
+            state.fee_deadline = previous
+        product = "".join(c for c in symbol if c.isalpha()).upper()
+        candidates = [row for row in rows if str(getattr(row, "InstrumentID", "")).upper() in {symbol.upper(), product}]
+        exact = [row for row in candidates if str(row.InstrumentID).upper() == symbol.upper()]
+        selected = exact or candidates
+        if len(selected) != 1:
+            raise ValueError("账户手续费率缺失或不唯一")
+        row = selected[0]
+        return CommissionRates(
+            yesterday_money=row.CloseRatioByMoney,
+            yesterday_volume=row.CloseRatioByVolume,
+            today_money=row.CloseTodayRatioByMoney,
+            today_volume=row.CloseTodayRatioByVolume,
+            queried_at=clock_now_iso(),
+        )
+
     @override
     def get_account_assets(self):
         c = self._config()
@@ -1408,7 +1453,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     ) -> list[tuple[float, dict[str, object]]]:
         """使用渠道交易所信息与持仓快照拆分平今、平昨订单。"""
         exchange = str(getattr(self._instruments.get(symbol), "ExchangeID", ""))
-        return plan_futures_close_orders(symbol, direction, volume, account_assets, exchange)
+        return self._plan_futures_close(symbol, direction, volume, account_assets, exchange)
 
     @override
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
@@ -2060,7 +2105,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _get_default_trade_rules_for_empty(self, symbols):
-        return {x: {"price": "PASSIVE", "offset_priority": "今昨,开", "max_single_order_size": 50} for x in symbols}
+        return {x: {"price": "PASSIVE", "max_single_order_size": 50} for x in symbols}
 
     @override
     def _cleanup(self):

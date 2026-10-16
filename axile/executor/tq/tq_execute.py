@@ -17,7 +17,7 @@ from axile.executor.catalog_execution import CatalogExecutionMixin
 from axile.executor.china_futures_session import is_within_possible_china_futures_session
 from axile.executor.connection_state import connection_monitor
 from axile.executor.execution_engine import ExecutionEngine
-from axile.executor.futures_order_intent import is_close_intent, plan_futures_close_orders, single_close_offset
+from axile.executor.futures_order_intent import is_close_intent, single_close_offset
 from axile.executor.instrument_catalog import InstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import normalize_catalog_symbol
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
@@ -456,7 +456,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     ) -> list[tuple[float, dict[str, object]]]:
         """使用渠道交易所信息与持仓快照拆分平今、平昨订单。"""
         exchange = self._require_runtime().resolver.to_tq(symbol, for_trade=True).split(".", 1)[0]
-        return plan_futures_close_orders(symbol, direction, volume, account_assets, exchange)
+        return self._plan_futures_close(symbol, direction, volume, account_assets, exchange)
 
     @override
     def _place_order_impl(

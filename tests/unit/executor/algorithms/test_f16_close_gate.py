@@ -12,6 +12,7 @@ from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import (
     _extract_ctp_position_details,
 )
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.futures_order_intent import plan_futures_close_orders
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -39,6 +40,9 @@ class _BaseExecutor:
             avg_price=3200,
             extra={f"{side}_td": today, f"{side}_yd": yesterday},
         )
+
+    def plan_close_orders(self, direction, volume, account_assets):
+        return plan_futures_close_orders(self.symbol, direction, volume, account_assets, "SHFE")
 
     def get_account_assets(self) -> UnifiedAccountAssets:
         positions = []
@@ -105,7 +109,6 @@ def test_F16_failed_close_falls_through_to_open_opposite_position() -> None:
         detail,
         executor.get_market_data(),
         "PASSIVE",
-        "昨今",
     )
     assert orders == []
     assert executor.orders == []
@@ -123,7 +126,6 @@ def test_F16_failed_close_short_does_not_open_long() -> None:
         detail,
         executor.get_market_data(),
         "PASSIVE",
-        "昨今",
     )
     assert orders == []
     assert executor.orders == []

@@ -21,8 +21,12 @@ def plan_futures_close_orders(
     volume: float,
     account_assets: UnifiedAccountAssets,
     exchange: str,
+    *,
+    priority: str = "yesterday_first",
 ) -> list[tuple[float, dict[str, object]]]:
-    """上期所、能源中心按先昨后今拆单，其他交易所使用普通平仓。"""
+    """按账户决策分配今昨数量，交易所不区分时使用普通平仓。"""
+    if priority not in {"yesterday_first", "today_first"}:
+        raise ValueError("无效的平仓顺序")
     if exchange not in ("SHFE", "INE"):
         return [(volume, {"offset_flag": "close"})]
     side = PositionDirection.LONG if direction == OrderDirection.SELL else PositionDirection.SHORT
@@ -44,13 +48,18 @@ def plan_futures_close_orders(
         available += position.available_volume
     if volume > available:
         raise ValueError(f"{symbol}: 平仓量超过可用持仓")
-    close_yesterday = min(volume, yesterday)
-    close_today = volume - close_yesterday
-    return [
-        (quantity, {"offset_flag": offset})
-        for quantity, offset in ((close_yesterday, "close_yesterday"), (close_today, "close_today"))
-        if quantity > 0
-    ]
+    today = available - yesterday
+    candidates = [(yesterday, "close_yesterday"), (today, "close_today")]
+    if priority == "today_first":
+        candidates.reverse()
+    remaining = volume
+    result = []
+    for available_quantity, offset in candidates:
+        quantity = min(remaining, available_quantity)
+        if quantity > 0:
+            result.append((quantity, {"offset_flag": offset}))
+            remaining -= quantity
+    return result
 
 
 def single_close_offset(plan: list[tuple[float, dict[str, object]]]) -> str:

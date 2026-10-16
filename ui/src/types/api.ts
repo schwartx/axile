@@ -62,7 +62,21 @@ export interface DirectoryListing {
 }
 
 /** 单个渠道的依赖可用性，对应 `ChannelCapabilityPublic`。 */
+export type ClosePriority = 'yesterday_first' | 'today_first'
+export interface FuturesClosePolicy {
+  mode: 'rules' | 'fee'
+  fallback: ClosePriority
+  overrides: Record<string, ClosePriority>
+}
+export interface FuturesCloseCapability {
+  modes: Array<'rules' | 'fee'>
+  preset_version: string
+  notice?: string
+  presets: Array<{ product: string; exchange: string; priority: ClosePriority; yesterday_fee: string | null; today_fee: string | null; can_choose: boolean }>
+}
+
 export interface ChannelCapability {
+  futures_close?: FuturesCloseCapability | null
   connection_validation?: { steps: Array<{ id: string; label: string }>; notice: string } | null
   channel: TradeChannel
   label: string
@@ -221,6 +235,7 @@ export interface Account {
   algorithm: Record<string, unknown>
   empty_positions_algorithm: Record<string, unknown> | null
   trade_rules: Record<string, unknown> | null
+  futures_close_policy?: FuturesClosePolicy
   forbidden_symbols: string[] | null
   risk_symbols: string[] | null
   feishu_configured: boolean

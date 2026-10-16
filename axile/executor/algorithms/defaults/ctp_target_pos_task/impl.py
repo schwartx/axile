@@ -15,7 +15,7 @@ Notes
 import math
 from typing import Any, Dict, List, Literal, Tuple, cast
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
@@ -49,6 +49,8 @@ from axile.executor.termination import ExecutionTerminated
 
 class CTPTargetPosTaskParams(BaseAlgorithmParams, ChaseParamsMixin):
     """TARGET-POS-TASK 算法参数."""
+
+    model_config = ConfigDict(extra="forbid")
 
     max_wait_seconds: int = Field(
         default=60,
@@ -87,16 +89,6 @@ class CTPTargetPosTaskParams(BaseAlgorithmParams, ChaseParamsMixin):
             "x-order": 12,
             "x-control": "choice",
             "x-enum-labels": {"LIMIT": "限价", "MARKET": "市价"},
-        },
-    )
-    offset_priority: Literal["昨今", "今昨"] = Field(
-        default="昨今",
-        title="平仓顺序",
-        description="先平昨仓或先平今仓；品种同名规则优先，费用取决于合约。",
-        json_schema_extra={
-            "x-order": 20,
-            "x-control": "choice",
-            "x-enum-labels": {"昨今": "先昨后今", "今昨": "先今后昨"},
         },
     )
 
@@ -316,40 +308,6 @@ def _get_close_position_availability(
     return position_detail.long_yesterday, position_detail.long_today, "平多"
 
 
-def _build_close_sequence(
-    offset_priority: str,
-    available_yesterday: int,
-    available_today: int,
-) -> Tuple[List[Tuple[str, int, str, str]], str]:
-    """
-    根据 ``offset_priority`` 构建分腿平仓顺序。
-
-    Parameters
-    ----------
-    offset_priority : str
-        平仓优先级，支持 ``昨今`` 和 ``今昨``。
-    available_yesterday : int
-        当前可平昨仓手数。
-    available_today : int
-        当前可平今仓手数。
-
-    Returns
-    -------
-    Tuple[List[Tuple[str, int, str, str]], str]
-        第一项为顺序化的平仓腿配置，第二项为便于日志审计的策略描述。
-    """
-    if offset_priority == "昨今":
-        return [
-            (THOST_FTDC_OF_CloseYesterday, available_yesterday, "平昨", "🔸"),
-            (THOST_FTDC_OF_CloseToday, available_today, "平今", "🔹"),
-        ], "先平昨再平今"
-
-    return [
-        (THOST_FTDC_OF_CloseToday, available_today, "平今", "🔸"),
-        (THOST_FTDC_OF_CloseYesterday, available_yesterday, "平昨", "🔹"),
-    ], "先平今再平昨"
-
-
 def _place_volume_slices(
     executor: ExecutorProtocol,
     direction: OrderDirection,
@@ -475,7 +433,6 @@ def _smart_close_position(
     direction: str,
     close_volume: float,
     limit_price: float,
-    offset_priority: str = "昨今",
     trade_rule: Dict[str, Any] | None = None,
     tracker: OrderTracker | None = None,
     order_type: OrderType = OrderType.LIMIT,
@@ -495,8 +452,6 @@ def _smart_close_position(
         计划平掉的手数。
     limit_price : float
         本次平仓使用的下单价格；市价单传入 ``0``。
-    offset_priority : str, default="昨今"
-        平仓优先级，支持 ``昨今`` 和 ``今昨``。
 
     Returns
     -------
@@ -508,7 +463,7 @@ def _smart_close_position(
     if close_volume <= 0:
         return orders, 0, True
 
-    executor.logger.info(f"开始智能平仓: {symbol} {direction} {close_volume}手, 优先级={offset_priority}")
+    executor.logger.info(f"开始平仓: {symbol} {direction} {close_volume}手，读取账户平仓规则")
 
     account_assets = executor.get_account_assets()
     position_detail = _extract_ctp_position_details(account_assets, [symbol]).get(symbol)
@@ -535,14 +490,15 @@ def _smart_close_position(
     executed_volume = 0
     remaining_volume = close_volume
 
-    close_sequence, priority_desc = _build_close_sequence(offset_priority, available_yesterday, available_today)
-    executor.logger.info(f"平仓策略: {priority_desc}")
-
-    for offset_flag, available_volume, offset_name, action_prefix in close_sequence:
-        if remaining_volume <= 0 or available_volume <= 0:
-            continue
-
-        leg_volume = min(remaining_volume, available_volume)
+    close_plan = executor.plan_close_orders(OrderDirection(direction), close_volume, account_assets)
+    offsets = {
+        "close_yesterday": THOST_FTDC_OF_CloseYesterday,
+        "close_today": THOST_FTDC_OF_CloseToday,
+        "close": THOST_FTDC_OF_Close,
+    }
+    for leg_volume, extra in close_plan:
+        offset_flag = offsets[str(extra["offset_flag"])]
+        offset_name = {"4": "平昨", "3": "平今", "1": "平仓"}[offset_flag]
         leg_orders, submitted_volume = _submit_close_leg(
             executor=executor,
             symbol=symbol,
@@ -550,7 +506,7 @@ def _smart_close_position(
             close_volume=leg_volume,
             limit_price=limit_price,
             offset_flag=offset_flag,
-            start_message=f"{action_prefix} 执行{offset_name}: {leg_volume}手",
+            start_message=f"执行{offset_name}: {leg_volume}手",
             success_message=f"{offset_name}订单提交成功: {leg_volume}手, 订单ID: {{order_id}}",
             failure_message=f"{offset_name}失败: {{error}}",
             trade_rule=trade_rule,
@@ -558,35 +514,11 @@ def _smart_close_position(
             order_type=order_type,
         )
         if not leg_orders:
-            continue
+            break
 
         orders.extend(leg_orders)
         executed_volume += submitted_volume
         remaining_volume -= submitted_volume
-
-    # 只有在显式昨/今腿都无法覆盖目标时，才退回通用平仓标记，尽量保留更精确的
-    # CTP offset_flag 语义。
-    if remaining_volume > 0:
-        fallback_volume = remaining_volume
-        leg_orders, submitted_volume = _submit_close_leg(
-            executor=executor,
-            symbol=symbol,
-            direction=direction,
-            close_volume=fallback_volume,
-            limit_price=limit_price,
-            offset_flag=THOST_FTDC_OF_Close,
-            start_message=f"最后尝试通用平仓: {fallback_volume}手",
-            success_message="通用平仓订单提交成功: 订单ID: {order_id}",
-            failure_message="通用平仓也失败: {error}",
-            failure_level="error",
-            trade_rule=trade_rule,
-            tracker=tracker,
-            order_type=order_type,
-        )
-        if leg_orders:
-            orders.extend(leg_orders)
-            executed_volume += submitted_volume
-            remaining_volume -= submitted_volume
 
     success = remaining_volume == 0
     if success:
@@ -604,7 +536,6 @@ def _execute_position_adjustment(
     position_detail: CTPPositionDetail,
     market_data: Any | None,
     price_type: str,
-    offset_priority: str,
     *,
     trade_rule: Dict[str, Any] | None = None,
     tracker: OrderTracker | None = None,
@@ -628,8 +559,6 @@ def _execute_position_adjustment(
         当前品种市场数据。
     price_type : str
         价格策略。
-    offset_priority : str
-        平仓优先级。
     trade_rule : Dict[str, Any] | None, optional
         当前品种的交易规则；其中 ``margin_ratio`` 在期权卖方场景下作为
         CTP 合约表保证金率为 0 时的兜底，会通过 ``executor.place_order``
@@ -682,7 +611,6 @@ def _execute_position_adjustment(
             direction.value,
             close_volume,
             close_price,
-            offset_priority,
             trade_rule=trade_rule,
             tracker=tracker,
             order_type=close_order_type,
@@ -725,7 +653,7 @@ def _execute_position_adjustment(
     channels=[TradeChannel.CTP, TradeChannel.TQ],
     params_class=CTPTargetPosTaskParams,
     label="期货目标持仓",
-    description="按目标净持仓安排开平仓，并按设置处理今仓、昨仓。适用于 CTP 和 TQ；品种规则可覆盖报价和平仓顺序。",
+    description="按目标净持仓安排开平仓，并按设置处理今仓、昨仓。适用于 CTP 和 TQ；报价支持合约规则覆盖；平仓顺序统一使用账户平仓规则。",
 )
 def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInput) -> AlgorithmResult:
     """
@@ -809,9 +737,8 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
 
         trade_rule = algorithm_input.trade_rule
         price_type = str(trade_rule.get("price", params.price_strategy))
-        offset_priority = str(trade_rule.get("offset_priority", params.offset_priority))
 
-        executor.logger.info(f"{symbol}: 目标={target_volume}, 价格策略={price_type}, 平仓优先级={offset_priority}")
+        executor.logger.info(f"{symbol}: 目标={target_volume}, 价格策略={price_type}")
 
         position_detail = position_details.get(symbol)
         if not position_detail:
@@ -824,7 +751,6 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 position_detail,
                 market_data,
                 price_type,
-                offset_priority,
                 trade_rule=trade_rule,
                 tracker=tracker,
                 close_order_type=OrderType(params.close_order_type),
@@ -836,7 +762,6 @@ def ctp_target_pos_task_algorithm(executor: ExecutorProtocol, algorithm_input: A
                 "target_volume": target_volume,
                 "orders_generated": len(symbol_orders),
                 "price_type": price_type,
-                "offset_priority": offset_priority,
                 "close_order_type": params.close_order_type,
                 "open_order_type": params.open_order_type,
             }

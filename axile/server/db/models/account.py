@@ -12,6 +12,7 @@ from sqlmodel._compat import SQLModelConfig
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
+from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
@@ -89,6 +90,7 @@ class AccountBase(BaseModel):
         default=None,
         description="清仓算法, 非必填; null 时由执行逻辑回退到默认值",
     )
+    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
     trade_rules: Optional[Dict[str, Any]] = Field(
         description="交易规则,非必填",
     )
@@ -307,6 +309,7 @@ class AccountPublic(SQLModel):
     algorithm: Dict[str, Any]
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
+    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
     forbidden_symbols: Optional[List[str]] = None
     risk_symbols: Optional[List[str]] = None
     feishu_configured: bool = False
@@ -506,6 +509,7 @@ class AccountUpdate(SQLModel):
     algorithm: Optional[Dict[str, Any]] = None
     empty_positions_algorithm: Optional[Dict[str, Any]] = None
     trade_rules: Optional[Dict[str, Any]] = None
+    futures_close_policy: FuturesClosePolicy | None = None
     forbidden_symbols: Optional[List[str]] = None
     risk_symbols: Optional[List[str]] = None
     feishu_key: Optional[str] = None

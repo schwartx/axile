@@ -342,6 +342,7 @@ async def create_account(
                     response.status_code = status.HTTP_202_ACCEPTED
                 return _account_public_with_runtime_sync(existing_account, existing_sync)
         account_routes._validate_account_control_binding(account.trade_channel, account.account_control_preset)
+        account.futures_close_policy.validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
         _check_algorithm_channel_compat(account.empty_positions_algorithm, str(account.trade_channel), "清仓算法")
@@ -767,6 +768,8 @@ async def _update_account(
         )
         normalized_account_config = _validate_channel_account_config(next_trade_channel, next_account_config)
         # 算法与渠道按"更新后的目标状态"配对校验:PATCH 可能只改其一,必须取生效后的组合。
+        next_close_policy = account.futures_close_policy or db_account.futures_close_policy
+        next_close_policy.validate_channel(next_trade_channel)
         next_algorithm = account.algorithm if account.algorithm is not None else db_account.algorithm
         next_empty_algorithm = (
             account.empty_positions_algorithm

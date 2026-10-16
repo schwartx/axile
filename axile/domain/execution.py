@@ -15,6 +15,7 @@ class ExecutionEventType(str, Enum):
     INSTRUMENTS_READY = "instruments_ready"
     INSTRUMENTS_FAILED = "instruments_failed"
     TARGET_COMPUTED = "target_computed"
+    FUTURES_CLOSE_PLANNED = "futures_close_planned"
     SYMBOL_DECISION_MADE = "symbol_decision_made"
     SYMBOL_SKIPPED = "symbol_skipped"
     ORDER_SUBMITTED = "order_submitted"

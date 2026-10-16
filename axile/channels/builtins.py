@@ -42,6 +42,7 @@ from axile.channels.schedule_clock import (
 )
 from axile.common.order_param_model import OrderParamModel
 from axile.common.trade_channel import TradeChannel
+from axile.executor.futures_close_policy import close_capability
 from axile.executor.models.unified_input_accounts import (
     BaseAccountConfig,
     CTPAccountConfig,
@@ -121,6 +122,7 @@ def _ctp_plugin() -> ChannelPlugin:
     return ChannelPlugin(
         descriptor=ChannelDescriptor(
             channel="ctp",
+            futures_close=close_capability(automatic=True),
             label="CTP",
             description="通过期货公司柜台连接国内期货市场",
             icon="chart-candlestick",
@@ -333,6 +335,7 @@ def _tq_plugin() -> ChannelPlugin:
     return ChannelPlugin(
         descriptor=ChannelDescriptor(
             channel="tq",
+            futures_close=close_capability(automatic=False),
             label="天勤",
             description="通过天勤连接国内期货、期权与组合市场",
             icon="radio-tower",

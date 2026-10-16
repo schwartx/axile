@@ -8,6 +8,7 @@ from sqlalchemy import Column, ForeignKey, Integer
 from sqlmodel import Field, SQLModel
 
 from axile.executor.account_control.models import AccountControlOverride
+from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
@@ -37,6 +38,7 @@ class ExecutionSettings(SettingsModel):
     algorithm: dict[str, Any] = Field(default_factory=dict)
     empty_positions_algorithm: dict[str, Any] | None = None
     trade_rules: dict[str, Any] | None = None
+    futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
     forbidden_symbols: list[str] | None = None
     risk_symbols: list[str] | None = None
     write_empty_record: int | None = None

@@ -49,7 +49,6 @@ describe('validateAlgorithmParams', () => {
     expect(validateAlgorithmParams({ close_order_type: 'INVALID' }, 'TARGET-POS-TASK')).toContain('close_order_type')
     expect(validateAlgorithmParams({ open_order_type: 'INVALID' }, 'TARGET-POS-TASK')).toContain('open_order_type')
     expect(validateAlgorithmParams({ close_order_type: 'MARKET', open_order_type: 'LIMIT' }, 'TARGET-POS-TASK')).toBeNull()
-    expect(validateAlgorithmParams({ offset_priority: '开平' })).toContain('offset_priority')
     expect(validateAlgorithmParams({ on_missing_book: 'fallback' })).toContain('on_missing_book')
     expect(validateAlgorithmParams({ max_wait_seconds: '60' })).toContain('必须是数字')
     expect(validateAlgorithmParams({ chase_enabled: true, max_chase_count: 1.5 })).toContain('整数')

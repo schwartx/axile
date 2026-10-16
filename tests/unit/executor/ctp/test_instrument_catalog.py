@@ -13,6 +13,7 @@ from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
 from axile.executor.ctp.ctp_execute import CTPExecutor
+from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.instrument_catalog import CatalogLimits, InstrumentCatalog, LocalInstrumentCatalogProvider
 from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
@@ -122,6 +123,7 @@ def test_paused_ctp_execution_fills_multiple_contracts_without_preheating(monkey
     executor.set_instrument_catalog_provider(provider)
     monkeypatch.setattr(executor, "_catalog_related_symbols", lambda: symbols if clear_positions else [])
     standard_input = SimpleNamespace(
+        futures_close_policy=FuturesClosePolicy(),
         curr_target={} if clear_positions else dict.fromkeys(symbols, 1),
         last_target={},
         trade_rules={},

@@ -18,6 +18,8 @@ from axile.executor.algorithms.defaults.ctp_target_pos_task.impl import (
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.converters import account_to_unified
 from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
+from axile.executor.futures_close_policy import FuturesClosePolicy
+from axile.executor.futures_order_intent import plan_futures_close_orders
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
@@ -190,6 +192,11 @@ class _FuturesExecutor:
         self.trade_callbacks: list[object] = []
         self.orders: list[UnifiedOrder] = []
 
+    def plan_close_orders(self, direction, volume, account_assets):
+        policy = getattr(self, "close_policy", FuturesClosePolicy())
+        priority = policy.overrides.get("RB", policy.fallback)
+        return plan_futures_close_orders(self.symbol, direction, volume, account_assets, "SHFE", priority=priority)
+
     def _position(self, direction: PositionDirection, today: int, yesterday: int) -> Position:
         side = "long" if direction == PositionDirection.LONG else "short"
         return Position(
@@ -319,7 +326,7 @@ def test_target_pos_task_uses_same_close_then_open_flow(channel: TradeChannel) -
     algorithm_input = AlgorithmInput(
         symbol="rb2610",
         target_volume=1,
-        trade_rule={"price": "PASSIVE", "offset_priority": "昨今"},
+        trade_rule={"price": "PASSIVE"},
         params=CTPTargetPosTaskParams(max_wait_seconds=1),
     )
 
@@ -349,7 +356,6 @@ def test_target_pos_task_params_expose_execution_defaults() -> None:
         "price_strategy": "PASSIVE",
         "close_order_type": "LIMIT",
         "open_order_type": "LIMIT",
-        "offset_priority": "昨今",
     }
 
 
@@ -491,8 +497,9 @@ def test_target_pos_task_active_price_falls_back_to_last_price() -> None:
 
 
 @pytest.mark.parametrize("channel", [TradeChannel.CTP, TradeChannel.TQ])
-def test_target_pos_task_uses_params_when_trade_rule_has_no_override(channel: TradeChannel) -> None:
+def test_target_pos_task_uses_account_close_policy(channel: TradeChannel) -> None:
     executor = _FuturesExecutor(channel)
+    executor.close_policy = FuturesClosePolicy(fallback="today_first")
     algorithm_input = AlgorithmInput(
         symbol="rb2610",
         target_volume=1,
@@ -500,7 +507,6 @@ def test_target_pos_task_uses_params_when_trade_rule_has_no_override(channel: Tr
         params=CTPTargetPosTaskParams(
             max_wait_seconds=1,
             price_strategy="ACTIVE",
-            offset_priority="今昨",
         ),
     )
 
@@ -511,16 +517,16 @@ def test_target_pos_task_uses_params_when_trade_rule_has_no_override(channel: Tr
     assert [order.price for order in executor.orders] == [3201, 3201, 3201]
 
 
-def test_target_pos_task_trade_rule_overrides_algorithm_params() -> None:
+def test_target_pos_task_uses_product_rule_over_default() -> None:
     executor = _FuturesExecutor(TradeChannel.CTP)
+    executor.close_policy = FuturesClosePolicy(fallback="today_first", overrides={"RB": "yesterday_first"})
     algorithm_input = AlgorithmInput(
         symbol="rb2610",
         target_volume=1,
-        trade_rule={"price": "PASSIVE", "offset_priority": "昨今"},
+        trade_rule={"price": "PASSIVE"},
         params=CTPTargetPosTaskParams(
             max_wait_seconds=1,
             price_strategy="ACTIVE",
-            offset_priority="今昨",
         ),
     )
 

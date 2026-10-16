@@ -6,13 +6,14 @@ from collections.abc import Mapping
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
 from axile.executor.algorithms.utils.clock import clock_monotonic
+from axile.executor.futures_close_runtime import FuturesCloseRuntimeMixin
 from axile.executor.futures_combination import parse_combination_legs
 from axile.executor.instrument_catalog import CatalogError, InstrumentCatalogProvider, LocalInstrumentCatalogProvider
 from axile.executor.instrument_catalog_records import Instrument, normalize_catalog_symbol
 from axile.executor.models.unified_input import UnifiedStandardInput
 
 
-class CatalogExecutionMixin:
+class CatalogExecutionMixin(FuturesCloseRuntimeMixin):
     """CTP/TQ 的公共准备步骤，不改变其他渠道。"""
 
     _catalog_requires_specs = False
@@ -112,6 +113,7 @@ class CatalogExecutionMixin:
 
     def _prepare_instrument_catalog(self, standard_input: UnifiedStandardInput) -> None:
         """所有必要资料齐全后才允许 planning；取消及失败不发送订单。"""
+        self._prepare_futures_close_policy(standard_input.futures_close_policy)
         self._catalog_frozen = False
         self._catalog_records = {}
         symbols = []

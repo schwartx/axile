@@ -1,3 +1,5 @@
+import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
+import type { FuturesClosePolicy } from '@/types/api'
 import { create } from 'zustand'
 import { defaultExecutionTimeoutForChannel } from '@/features/account/executionTimeout'
 import type { AlgorithmRef } from '@/features/setup/algorithms'
@@ -21,6 +23,7 @@ export interface AccountDraft {
   portfolioId: number | null
   /** 主交易算法引用（`{method, params}`）；由「怎么交易」步的算法编辑器产出。 */
   algorithm: AlgorithmRef
+  futuresClosePolicy: FuturesClosePolicy
   longLeverage: string
   shortLeverage: string
   executionTimeout: string
@@ -76,6 +79,7 @@ const initialAcct: AccountDraft = {
   config: {},
   portfolioId: null,
   algorithm: { method: '', params: {} },
+  futuresClosePolicy: defaultClosePolicy(),
   ...defaultLeveragesForChannel(''),
   executionTimeout: defaultExecutionTimeoutForChannel(''),
   autoOn: true,

@@ -25,6 +25,8 @@ import {
   validateAlgorithmRef,
   type AlgorithmRef,
 } from '@/features/setup/algorithms'
+import { FuturesClosePolicyEditor } from '@/features/account/FuturesClosePolicyEditor'
+import { defaultClosePolicy } from '@/features/account/futuresClosePolicy'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AlgorithmEditor } from '@/features/setup/AlgorithmEditor'
@@ -95,6 +97,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
   const [ready, setReady] = useState(() => algorithmRefOf(accountPreview?.algorithm) !== null)
   const [trade, setTrade] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.algorithm))
   const [empty, setEmpty] = useState<AlgorithmRef | null>(() => algorithmRefOf(accountPreview?.empty_positions_algorithm))
+  const [closePolicy, setClosePolicy] = useState(accountPreview?.futures_close_policy ?? defaultClosePolicy())
   const [saving, setSaving] = useState(false)
   const [tradeError, setTradeError] = useState<string | null>(null)
   const [emptyError, setEmptyError] = useState<string | null>(null)
@@ -105,6 +108,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
     if (!acc || !descriptor) return false
     setTrade(algorithmRefOf(acc.algorithm) ?? descriptor.defaults.trade_algorithm)
     setEmpty(algorithmRefOf(acc.empty_positions_algorithm))
+    setClosePolicy(acc.futures_close_policy ?? defaultClosePolicy())
     setSaveError(null)
     return true
   }, [acc, descriptor])
@@ -167,10 +171,12 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
 
   const tradeChanged = norm(trade) !== norm(origTrade)
   const emptyChanged = norm(empty) !== norm(origEmpty)
-  const dirty = tradeChanged || emptyChanged
+  const closeChanged = norm(closePolicy) !== norm(acc.futures_close_policy ?? defaultClosePolicy())
+  const dirty = tradeChanged || emptyChanged || closeChanged
 
   const err = tradeError ?? emptyError ?? algoParamError(trade) ?? algoParamError(empty)
   const changes: string[] = []
+  if (closeChanged) changes.push('平仓规则已改')
   if (tradeChanged) changes.push('主交易算法已改')
   if (emptyChanged) changes.push(empty ? '清仓算法已改' : '清仓算法已清除')
 
@@ -184,6 +190,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
         ? (empty as unknown as Record<string, unknown>)
         : null
     }
+    if (closeChanged) patch.futures_close_policy = closePolicy
     if (saving) return
     runtime.invalidate()
     setSaving(true)
@@ -195,6 +202,7 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       writeAlgorithmAccountPreview(accountId, updated)
       setTrade(algorithmRefOf(updated.algorithm) ?? descriptor.defaults.trade_algorithm)
       setEmpty(algorithmRefOf(updated.empty_positions_algorithm))
+      setClosePolicy(updated.futures_close_policy ?? defaultClosePolicy())
       runtime.acceptSaved(updated.runtime_sync)
       // 保存响应直接写摘要缓存：返回详情时 hero「算法」值首帧即新值，FLIP 落地同文。
       writeAccountConfigSummary(accountId, updated, {
@@ -248,6 +256,10 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
           {slotRow('empty', '算法', empty, (value) => { setSaveError(null); setEmpty(value) })}
         </Section>
 
+        {descriptor.futures_close && <Section label="平仓规则">
+          <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
+          <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
+        </Section>}
       </fieldset>
 
       <EditSaveBar

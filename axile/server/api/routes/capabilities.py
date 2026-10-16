@@ -15,6 +15,7 @@ from axile.channels import (
     list_channels,
 )
 from axile.channels.contracts import ChannelConnectionValidation
+from axile.executor.futures_close_policy import FuturesCloseCapability
 from axile.server.channel_capabilities import install_extra, missing_packages
 
 router = APIRouter(prefix="/capabilities", tags=["capabilities"])
@@ -36,6 +37,7 @@ class ChannelCapabilityPublic(BaseModel):
         安装该渠道依赖所用的 pyproject extra 名（``uv sync --extra <extra>``）。
     """
 
+    futures_close: FuturesCloseCapability | None = None
     channel: str
     label: str
     description: str

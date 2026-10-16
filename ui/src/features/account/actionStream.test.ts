@@ -150,3 +150,16 @@ it('新决策未到位时不复述旧失败摘要', () => {
   expect(lines[0].text).toContain('执行未全部完成')
   expect(lines[0].text).not.toContain('失败')
 })
+
+describe('平仓规则审计', () => {
+  it('解释实际费用、人工兜底及分腿，不把零手续费省略', () => {
+    const lines = buildSymbolActionStream([ev({ event_type: 'futures_close_planned', details: {
+      futures_close_decision: { source: 'fee', priority: 'today_first', yesterday_cost: 10, today_cost: 0,
+        preset_version: 'v1', legs: [{ volume: 1, offset_flag: 'close_today' }, { volume: 2, offset_flag: 'close_yesterday' }] },
+    } })], 'rb2610')
+    expect(lines[0].text).toContain('低手续费优先')
+    expect(lines[0].text).toContain('平今 0.00')
+    expect(lines[0].text).toContain('平今 1 手 → 平昨 2 手')
+    expect(lines[0].text).toContain('预设 v1')
+  })
+})

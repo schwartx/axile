@@ -105,6 +105,8 @@ account_snapshot_before trade_rules_snapshot target_snapshot standard_input exec
 symbol_decision_reason_code signed_volume source_type precision max_order_volume min_order_volume
 level component context function line process thread create_time sizing value_currency
 price_currency native_value_currencies limits trigger_source source_ref
+futures_close_policy futures_close_decision mode fallback overrides product priority preset_version
+yesterday_cost today_cost fallback_reason queried_at exchange observed_at legs
 market_order_price_type limit_order_price_type offset_priority close_order_type open_order_type
 max_wait_seconds order_timeout_seconds order_volume order_price strategy_name
 """.split()
@@ -118,6 +120,7 @@ _DYNAMIC_MAPS = {
     "trade_rules",
     "symbol_algorithms",
     "symbol_overrides",
+    "overrides",
     "packages",
     "operations",
     "groups",
