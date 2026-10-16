@@ -739,7 +739,7 @@ export function AccountDetail({
             </div>
           ) : null}
           {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
-          <CurrentOrdersDialog state={currentOrders} accountName={item.name} units={channelDescriptor?.units} />
+          <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} />
           <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
             positions={positions} observed={!!latestAssets}
             observedAt={assetSnapshots.data?.data[0]?.created_at ?? null}

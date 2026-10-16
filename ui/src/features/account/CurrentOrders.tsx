@@ -64,8 +64,8 @@ function ordersSnapshotLabel(state: OrdersState, filtered: boolean, rows: number
   return `${count} 笔 · ${data.sampled_at.replace('T', ' ')} 更新`
 }
 
-export function CurrentOrdersDialog({ state, accountName, units }: { state: OrdersState; accountName: string; units?: ChannelCapability['units'] }) {
-  return <CenteredModal open={state.open} title="在途委托" subtitle={accountName} onClose={state.close} widthClassName="w-[820px]"
+export function CurrentOrdersDialog({ state, units }: { state: OrdersState; units?: ChannelCapability['units'] }) {
+  return <CenteredModal open={state.open} title="在途委托" onClose={state.close} widthClassName="w-[820px]"
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
     <CurrentOrdersContent state={state} units={units} />
   </CenteredModal>
@@ -121,7 +121,7 @@ export function CurrentOrdersContent({ state, units, symbolFilter, compact = fal
         className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{state.query.refreshing ? '核对中' : '核对委托'}</button>
     </div>
     <OrdersQueryStatus state={state} />
-    {state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无未完成委托'}</p>}
+    {state.connectionReady && data && rows.length === 0 && data.complete && !state.query.stale && <p className={compact ? 'py-2 text-[13px] text-ink-3' : 'py-8 text-center text-sm text-ink-3'}>{symbolFilter ? '该品种当前无在途委托' : '当前无在途委托'}</p>}
     {rows.length > 0 && <OrdersTable rows={rows} state={state} units={units} compact={compact} />}
     {feedback.length > 0 && <div className="mt-3 border-t border-line py-3 text-[12.5px]"><p className="mb-1 text-ink-3">最近撤单结果</p>{feedback.map(r => <p key={r.request_id} className={`py-1 ${r.state === 'terminal' ? 'text-ink-2' : 'text-warn'}`}>{r.symbol} · {r.message}{r.order && r.state === 'terminal' ? ` · 已成 ${r.order.filled_volume} / ${r.order.volume}` : ''}</p>)}</div>}
     {!compact && <p className="py-3 text-[12px] text-ink-3">撤单只处理这笔委托的未成交部分。算法运行期间可能继续提交新委托。</p>}

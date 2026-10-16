@@ -67,17 +67,19 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
       </div>}>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-          {capability.modes.length > 1 ? <Segmented size="sm" value={draft.mode} options={capability.modes.map((mode) => ({ value: mode, label: mode === 'fee' ? '低手续费优先' : '按品种规则' }))} onChange={(mode) => setDraft((d) => ({ ...d, mode }))} /> : <p className="text-sm text-ink-1">按品种规则</p>}
+          <div className="flex items-center gap-2">
+            {capability.modes.length > 1 ? <Segmented size="sm" value={draft.mode} options={capability.modes.map((mode) => ({ value: mode, label: mode === 'fee' ? '低手续费优先' : '按品种规则' }))} onChange={(mode) => setDraft((d) => ({ ...d, mode }))} /> : <p className="text-sm text-ink-1">按品种规则</p>}
+            <Tooltip content={<>
+              <p>{draft.mode === 'fee' ? '低手续费优先；同费或不可比较时：人工覆盖 → 预设 → 默认顺序。' : '人工覆盖 → 程序预设 → 默认顺序。'}</p>
+              <p>常规调仓与清仓共用。优先仓位不足时继续平另一类仓位；不支持选择平今平昨的交易所按交易所规则执行。</p>
+            </>}>
+              <button type="button" aria-label="平仓规则说明" className="shrink-0 cursor-help text-ink-3 hover:text-ink-2"><CircleHelp size={14} aria-hidden /></button>
+            </Tooltip>
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-ink-3">默认顺序</span>
             <Segmented size="sm" value={draft.fallback} options={priorities} onChange={(fallback) => setDraft((d) => ({ ...d, fallback }))} />
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2 text-xs text-ink-3">
-          <p aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '低手续费优先；同费或不可比较时：人工覆盖 → 预设 → 默认顺序' : '人工覆盖 → 程序预设 → 默认顺序'} tone="label" /></p>
-          <Tooltip content="常规调仓与清仓共用。优先仓位不足时继续平另一类仓位；不支持选择平今平昨的交易所按交易所规则执行。">
-            <button type="button" aria-label="平仓规则说明" className="shrink-0 cursor-help text-ink-3 hover:text-ink-2"><CircleHelp size={14} aria-hidden /></button>
-          </Tooltip>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
           <input aria-label="搜索或添加品种" placeholder="搜索品种或交易所，例如 AG" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="min-w-0 flex-1 basis-[180px] rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm" />
@@ -87,7 +89,7 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
         {error && <p role="alert" className="shrink-0 text-xs text-warn">{error}</p>}
         <div className="isolate min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
           <table className="w-full min-w-[620px] text-left text-[13px]">
-            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal">平仓顺序</th><th className="p-3 font-normal">来源</th></tr></thead>
+            <thead className="sticky top-0 z-20 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal" aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '兜底顺序' : '平仓顺序'} tone="label" /></th><th className="p-3 font-normal">来源</th></tr></thead>
             <tbody className="relative z-0">{shown.map((product) => {
               const preset = presets.get(product)
               const modified = Object.hasOwn(draft.overrides, product)
