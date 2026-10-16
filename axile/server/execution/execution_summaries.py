@@ -20,7 +20,7 @@ def build_execution_outcome_details(result: Mapping[str, object]) -> dict[str, o
     symbols = normalized.get("symbol_results")
     forwarded: dict[str, object] = {
         key: normalized[key]
-        for key in ("status", "error", "outcome", "outcome_reason", "symbol_results")
+        for key in ("status", "error", "reason_code", "outcome", "outcome_reason", "symbol_results")
         if key in normalized
     }
     forwarded["outcome_symbols"] = (

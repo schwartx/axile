@@ -930,8 +930,8 @@ export function AccountDetail({
                     )}
                     {row.type === 'blocked' && (
                       <>
-                        <span className="w-4 flex-none text-center text-warn">–</span>
-                        <OverflowText className="min-w-0 flex-1 text-warn" text={recentRowText(row)} />
+                        <span className={`w-4 flex-none text-center ${row.sessionScope === 'all' ? 'text-ink-3' : 'text-warn'}`}>–</span>
+                        <OverflowText className={`min-w-0 flex-1 ${row.sessionScope === 'all' ? 'text-ink-2' : 'text-warn'}`} text={recentRowText(row)} />
                       </>
                     )}
                   </div>

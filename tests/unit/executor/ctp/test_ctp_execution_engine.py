@@ -196,6 +196,71 @@ def test_ctp_engine_only_queries_and_dispatches_session_allowed_symbols(monkeypa
     assert dispatched_symbols == ["ag2612"]
 
 
+@pytest.mark.parametrize("open_status", [ExecutionStatus.NOOP, ExecutionStatus.SUCCEEDED, ExecutionStatus.FAILED])
+def test_mixed_session_output_preserves_open_results_and_closed_targets(monkeypatch, open_status):
+    from axile.executor import execution_engine as engine_module
+    from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
+
+    executor = _CtpSessionExecutor({"IF2609": "CTP.SESSION.CLOSED", "ag2612": None})
+    monkeypatch.setattr(
+        engine_module,
+        "resolve_algorithm",
+        lambda _name, _session: (
+            lambda _session, value: AlgorithmResult(
+                symbol=value.symbol,
+                algorithm="SINGLE-MAKER",
+                status=open_status,
+                target_volume=value.target_volume,
+                final_volume=0,
+                error="下单失败" if open_status == ExecutionStatus.FAILED else None,
+            )
+        ),
+    )
+    output = executor.execute(_input(), cleanup=False)
+    assert output.symbol_results["ag2612"].status == open_status
+    assert output.symbol_results["IF2609"].final_volume is None
+    assert executor.market_data_requests == [["ag2612"]]
+    if open_status == ExecutionStatus.FAILED:
+        assert output.status == ExecutionStatus.FAILED
+        assert output.reason_code is None
+        assert session_closed_scope(output.model_dump(mode="json")) is None
+    else:
+        assert output.status == ExecutionStatus.PARTIAL
+        assert output.reason_code == COMMON_SESSION_CLOSED
+        assert output.error == "部分品种休市，1 个品种未处理"
+        assert not output.success
+        assert session_closed_scope(output.model_dump(mode="json")) == "partial"
+
+
+def test_final_snapshot_failure_is_not_labeled_partial_session(monkeypatch):
+    from axile.executor import execution_engine as engine_module
+    from axile.executor.session_closed import session_closed_scope
+    from axile.server.execution.legacy_compat import normalize_legacy_result
+
+    executor = _CtpSessionExecutor({"IF2609": "CTP.SESSION.CLOSED", "ag2612": None})
+    monkeypatch.setattr(
+        engine_module,
+        "resolve_algorithm",
+        lambda _name, _session: (
+            lambda _session, value: AlgorithmResult(
+                symbol=value.symbol,
+                algorithm="SINGLE-MAKER",
+                target_volume=value.target_volume,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        CtpExecutionEngine,
+        "_read_result_assets",
+        lambda _self: (UnifiedAccountAssets.unavailable(), "最终持仓查询失败"),
+    )
+    output = executor.execute(_input(), cleanup=False)
+    assert output.status == ExecutionStatus.PARTIAL
+    assert output.error == "最终持仓查询失败"
+    assert output.reason_code is None
+    assert session_closed_scope(normalize_legacy_result(output.model_dump(mode="json"))) is None
+
+
 def test_ctp_engine_sizes_closed_symbol_from_cached_quote_without_blocking_io(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

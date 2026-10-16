@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { activityWindowQuery, journalExecutions, journalWindow, loadJournal } from '@/features/account/executionJournal'
+import { activityWindowQuery, journalExecutions, journalWindow, loadJournal, matchesJournalStatus } from '@/features/account/executionJournal'
 import { summarizeCosts } from '@/features/history/costs'
 import type { AccountActivity, ActivityExecutionRecord } from '@/lib/api/accounts'
 
@@ -11,6 +11,15 @@ function execution(id: number, extra: Partial<ActivityExecutionRecord> = {}): Ac
   } }
 }
 const window = journalWindow('custom', '2026-09-01', '2026-09-07')!
+
+it('休市记录仍可通过跳过和未到位筛选，失败筛选不会收进休市', () => {
+  const skipped = { status: '休市跳过' }
+  const partial = { status: '部分品种休市 · 执行未全部完成' }
+  expect(matchesJournalStatus(skipped, '已跳过')).toBe(true)
+  expect(matchesJournalStatus(partial, '执行不到位')).toBe(true)
+  expect(matchesJournalStatus(skipped, '执行失败')).toBe(false)
+  expect(matchesJournalStatus(partial, '执行失败')).toBe(false)
+})
 
 describe('journal pagination', () => {
   it('loads beyond 500 records without folding individual executions', async () => {

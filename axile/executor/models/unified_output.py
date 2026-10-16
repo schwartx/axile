@@ -21,6 +21,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.session_closed import COMMON_SESSION_CLOSED
 
 
 class ExtraData(TypedDict, total=False):
@@ -73,6 +74,8 @@ def _derive_output_reason_code(
     if len(codes) != 1:
         return None
     code = next(iter(codes))
+    if code == COMMON_SESSION_CLOSED and any(result.orders or result.trades for result in failed):
+        return None
     return code if isinstance(code, str) and code else None
 
 

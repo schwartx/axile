@@ -42,3 +42,15 @@ def test_mixed_blocked_reasons_do_not_lift_account_code() -> None:
     assert normalized["symbol_results"]["IF2609"]["reason_code"] == COMMON_SESSION_CLOSED
     assert normalized["symbol_results"]["ag2612"]["reason_code"] == "CTP.SESSION.NO_SESSION_TABLE"
     assert "reason_code" not in normalized or normalized.get("reason_code") is None
+
+
+def test_explicit_null_reason_preserves_account_failure_alongside_closed_symbol():
+    raw = {
+        "status": "PARTIAL",
+        "error": "最终持仓查询失败",
+        "reason_code": None,
+        "symbol_results": {"A": {"status": "BLOCKED", "reason_code": COMMON_SESSION_CLOSED}},
+    }
+    normalized = normalize_legacy_result(raw)
+    assert normalized["reason_code"] is None
+    assert normalized["error"] == "最终持仓查询失败"

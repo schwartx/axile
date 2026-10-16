@@ -16,6 +16,7 @@ from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
+from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from axile.server.execution.backend import _dump_output_result
 from axile.server.execution.worker_backend import worker_audit
@@ -104,6 +105,7 @@ def _algorithm_result(case):
         orders=orders,
         target_volume=inputs["target"],
         account_assets=assets,
+        reason_code=COMMON_SESSION_CLOSED if inputs.get("blocked") else None,
     )
 
 

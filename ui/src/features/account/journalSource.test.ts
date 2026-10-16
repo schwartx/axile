@@ -63,7 +63,7 @@ test('lightweight pagination completes beyond one page and fails closed on broke
 test('snapshot execution status preserves blocked and partial outcomes before is_success', () => {
   const base = { key: '1', record: { id: 1, execution_id: 'e1', created_at: record.created_at, is_success: 0, raw_result: { status: 'BLOCKED' } }, noop: false, symbolCount: 0, summary: summarizeCosts([]) }
   expect(snapshotExecution(base).status).toBe('未执行')
-  expect(snapshotExecution({ ...base, record: { ...base.record, raw_result: { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED' } } }).status).toBe('未执行 · 非交易时段')
+  expect(snapshotExecution({ ...base, record: { ...base.record, raw_result: { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED' } } }).status).toBe('休市跳过')
   expect(snapshotExecution({ ...base, record: { ...base.record, raw_result: { status: 'PARTIAL' } } }).status).toBe('执行未全部完成')
 })
 

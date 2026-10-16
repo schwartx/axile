@@ -12,6 +12,15 @@ function execution(id: number, state?: string, extra: Partial<ActivityExecutionR
 }
 const rows = (items: AccountActivity[], cap = 6, fetchLimit = 50) => buildRecentActivity(items, { cap, fetchLimit })
 
+test('休市跳过与其他阻断分开折叠，部分休市保留未处理数量', () => {
+  const result = rows([
+    execution(24, 'BLOCKED', { task_status: 'SKIPPED', reason_code: 'COMMON.SESSION.CLOSED' }),
+    execution(23, 'BLOCKED', { reason_code: 'CHANNEL.QUERY_FAILED' }),
+    execution(22, 'PARTIAL', { reason_code: 'COMMON.SESSION.CLOSED', symbol_results: { m2701: { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED' }, ag2612: { status: 'NOOP' } } }),
+  ])
+  expect(result.rows.map(recentRowText)).toEqual(['休市跳过', '未执行', '执行未全部完成 · 部分品种休市，1 个品种未处理'])
+})
+
 test('最新清仓成功保留在前，旧失败不覆盖最新结论', () => {
   const result = rows([execution(23, 'SUCCEEDED', { execution_kind: 'clear_positions' }), execution(10, 'FAILED', { error: '连接断开' })])
   expect(result.rows.map(recentRowText)).toEqual(['清仓完成', '执行失败 · 最近：连接断开'])
@@ -68,7 +77,7 @@ test('近期记录展示后端受阻和失败原因', () => {
     execution(23, 'BLOCKED', { error: '非交易时段', reason_code: 'COMMON.SESSION.CLOSED' }),
     execution(22, 'FAILED', { error: '交易日历不可用' }),
   ])
-  expect(result.rows.map(recentRowText)).toEqual(['未执行 · 非交易时段', '执行失败 · 最近：交易日历不可用'])
+  expect(result.rows.map(recentRowText)).toEqual(['休市跳过', '执行失败 · 最近：交易日历不可用'])
 })
 
 test('没有 reason_code 的 BLOCKED 不把中文 error 升成非交易时段标题', () => {

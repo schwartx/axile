@@ -9,6 +9,7 @@ from sqlalchemy.dialects.sqlite import insert
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
+from axile.executor.session_closed import session_closed_scope
 from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, ScheduleSkip, TargetWeightSnapshot
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
@@ -21,7 +22,7 @@ from axile.server.performance_costs import SHANGHAI, daily_costs, project_execut
 from axile.server.performance_replay import ENGINE_VERSION
 
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
-LOGIC_VERSION = "17"
+LOGIC_VERSION = "18"
 RETRY_DELAYS = (5, 30, 120)
 
 
@@ -215,6 +216,11 @@ def _events(records, bindings, skips) -> list[dict]:
             "FAILED": "执行失败",
             "BLOCKED": "未执行",
         }.get(status, "执行状态未知")
+        scope = session_closed_scope(raw)
+        if scope == "all":
+            label = "休市跳过"
+        elif scope == "partial":
+            label = "部分品种休市 · 执行未全部完成"
         if raw.get("task_status") == "TERMINATED":
             label = "执行已终止"
         reason = raw.get("error") if status in {"FAILED", "BLOCKED", "PARTIAL"} else None

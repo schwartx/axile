@@ -33,7 +33,7 @@ export type RecentRow =
       reason: string
       amount: string
     }
-  | { type: 'blocked'; key: string; time: string; count: number; executionId: string | null; reason: string }
+  | { type: 'blocked'; key: string; time: string; count: number; executionId: string | null; reason: string; sessionScope?: 'all' | null }
   | { type: 'terminated'; key: string; time: string; count: number; executionId: string | null }
   | { type: 'skip'; key: string; time: string; count: number; reason: string }
 
@@ -50,7 +50,8 @@ function assetAmount(r: ActivityExecutionRecord): string {
  * 再判成功清仓（`execution_kind==='clear_positions'`）：确有平仓成交，不应按调仓口径误判为「空跑」。
  */
 function kindOf(r: ActivityExecutionRecord): Kind {
-  const { state } = executionOutcome(r)
+  const { state, sessionScope } = executionOutcome(r)
+  if (sessionScope === 'partial') return 'partial'
   if (state === 'UNKNOWN') return 'unknown'
   if (state === 'BLOCKED') return 'blocked'
   if (state === 'TERMINATED') return 'terminated'
@@ -85,7 +86,7 @@ function partialRow(latest: ActivityExecutionRecord, i: number, count: number, s
     executionId: latest.execution_id ?? null,
     reached: null,
     failed: view.symbols.length || null,
-    reason: symbolPreview(view.symbols),
+    reason: view.sessionScope === 'partial' ? `部分品种休市，${view.symbols.length} 个品种未处理` : symbolPreview(view.symbols),
     amount: assetAmount(latest),
   }
 }
@@ -110,6 +111,7 @@ export function recentRowText(row: RecentRow): string {
   if (row.type === 'terminated') return row.count > 1 ? `执行已终止 · ${row.count} 次` : '执行已终止'
   if (row.type === 'skip') return row.count > 1 ? `连续 ${row.count} 次${row.reason}` : row.reason
   if (row.type !== 'blocked') return ''
+  if (row.sessionScope === 'all') return row.count > 1 ? `连续 ${row.count} 次休市跳过` : '休市跳过'
   return `${row.count > 1 ? `${row.count} 次未执行` : '未执行'}${row.reason ? ` · ${row.reason}` : ''}`
 }
 
@@ -170,7 +172,7 @@ export function buildRecentActivity(
     let j = i
     while (j < activity.length) {
       const candidate = activity[j]
-      if (candidate.kind !== 'execution' || kindOf(candidate.record) !== k || candidate.record.execution_kind !== current.record.execution_kind) break
+      if (candidate.kind !== 'execution' || kindOf(candidate.record) !== k || candidate.record.execution_kind !== current.record.execution_kind || executionOutcome(candidate.record).sessionScope !== executionOutcome(current.record).sessionScope) break
       j += 1
     }
     const run = activity.slice(i, j).map((item) => item.kind === 'execution' ? item.record : null).filter((item): item is ActivityExecutionRecord => item != null)
@@ -194,6 +196,7 @@ export function buildRecentActivity(
         time: latest.created_at,
         count: run.length,
         executionId: latest.execution_id ?? null,
+        sessionScope: view.sessionScope === 'all' ? 'all' : null,
         reason: view.title.startsWith('未执行 · ') ? view.title.slice('未执行 · '.length) : '',
       })
     } else if (k === 'partial') {

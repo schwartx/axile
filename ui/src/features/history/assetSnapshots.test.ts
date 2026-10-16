@@ -33,3 +33,13 @@ test('人工刷新快照进入权益曲线，但不增加执行统计', () => {
   expect(stats.noops).toBe(1)
   expect(stats.pnl).toBe(8)
 })
+
+test('休市跳过和部分休市不增加成功或硬失败计数', () => {
+  const record = (raw_result: ExecuteRecord['raw_result']): ExecuteRecord => ({ id: 1, execution_id: 'rest', raw_input: {}, raw_result, is_success: 0, created_at: '2026-10-16T10:15:00' })
+  const records = [
+    record({ status: 'BLOCKED', task_status: 'SKIPPED', reason_code: 'COMMON.SESSION.CLOSED' }),
+    record({ status: 'PARTIAL', reason_code: 'COMMON.SESSION.CLOSED', symbol_results: { m2701: { status: 'BLOCKED', reason_code: 'COMMON.SESSION.CLOSED' }, ag2612: { status: 'NOOP' } } }),
+    record({ status: 'FAILED', error: '下单失败' }),
+  ]
+  expect(aggregateStats(records, [], 'CNY')).toMatchObject({ fills: 0, noops: 0, fails: 1 })
+})

@@ -28,6 +28,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData, clone_price_data
+from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.executor.termination import ExecutionTerminated
 
 if TYPE_CHECKING:
@@ -101,12 +102,26 @@ def _derive_dispatch_status(symbol_results: dict[str, AlgorithmResult]) -> Execu
             return ExecutionStatus.FAILED
         return ExecutionStatus.PARTIAL
     if ExecutionStatus.BLOCKED in statuses:
+        if any(is_success_status(status) for status in statuses) and _only_session_closed_failures(symbol_results):
+            return ExecutionStatus.PARTIAL
         if ExecutionStatus.SUCCEEDED not in statuses:
             return ExecutionStatus.BLOCKED
         return ExecutionStatus.PARTIAL
     if all(status == ExecutionStatus.NOOP for status in statuses):
         return ExecutionStatus.NOOP
     return ExecutionStatus.SUCCEEDED
+
+
+def _only_session_closed_failures(symbol_results: dict[str, AlgorithmResult]) -> bool:
+    """确认所有未完成品种均为尚未下单的休市阻断。"""
+    affected = [result for result in symbol_results.values() if not is_success_status(result.status)]
+    return bool(affected) and all(
+        result.status == ExecutionStatus.BLOCKED
+        and result.reason_code == COMMON_SESSION_CLOSED
+        and not result.orders
+        and not result.trades
+        for result in affected
+    )
 
 
 def _derive_dispatch_error(
@@ -117,6 +132,8 @@ def _derive_dispatch_error(
     failed_results = [result for result in symbol_results.values() if not is_success_status(result.status)]
     if not failed_results:
         return None
+    if status == ExecutionStatus.PARTIAL and _only_session_closed_failures(symbol_results):
+        return f"部分品种休市，{len(failed_results)} 个品种未处理"
     if len(failed_results) == 1 and failed_results[0].error:
         return failed_results[0].error
     if status == ExecutionStatus.BLOCKED:
@@ -1123,10 +1140,20 @@ class ExecutionEngine:
             symbol_results=symbol_results,
             status=status,
             error=error,
+            reason_code=self._session_reason_code(status, symbol_results, explicit_error),
             execution_time=self._runtime.elapsed_seconds(),
             channel_type=self._owner.channel_type,
             inputs=standard_input,
         )
+
+    @staticmethod
+    def _session_reason_code(
+        status: ExecutionStatus, symbol_results: dict[str, AlgorithmResult], explicit_error: str | None
+    ) -> str | None:
+        """部分休市仅在没有收尾查询错误时提升原因码，保留真实异常。"""
+        if status == ExecutionStatus.PARTIAL and not explicit_error and _only_session_closed_failures(symbol_results):
+            return COMMON_SESSION_CLOSED
+        return None
 
     def _read_result_assets(self) -> tuple[UnifiedAccountAssets, str | None]:
         """收尾查询失败也保留已生成的品种与订单证据。"""

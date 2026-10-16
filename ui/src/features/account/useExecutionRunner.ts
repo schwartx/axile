@@ -5,7 +5,7 @@ import { useToastStore } from '@/stores/ui'
 import type { ExecutionStatus } from '@/types/api'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
-const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'TERMINATED'])
+const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'TERMINATED', 'SKIPPED'])
 export type { RunKind }
 interface RunnerState {
   running: boolean

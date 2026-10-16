@@ -156,6 +156,9 @@ def _fill_reason_code(result: dict[str, Any]) -> None:
         if existing in _SESSION_CLOSED_CODES and existing != COMMON_SESSION_CLOSED:
             result["reason_code"] = COMMON_SESSION_CLOSED
         return
+    if "reason_code" in result:
+        # 新结果显式为空表示多种原因或账户级异常，不能被品种休市证据覆盖。
+        return
 
     memory = result.get("memory") if isinstance(result.get("memory"), dict) else {}
     from_memory = _as_reason_code(memory.get("symbol_decision_reason_code"))

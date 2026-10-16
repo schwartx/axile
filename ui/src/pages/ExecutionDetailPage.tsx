@@ -620,7 +620,7 @@ export function ExecutionDetailPage() {
             {model.symbols.length > 0 ? (
               <>
                 <div className="mb-2 text-xs font-semibold tracking-wide text-ink-3">逐只结果</div>
-                {model.symbols.filter(s => model.conclusion.state !== 'PARTIAL' || model.conclusion.symbols.length === 0 || model.conclusion.symbols.includes(s.symbol)).map((s) => {
+                {model.symbols.filter(s => model.conclusion.sessionScope === 'partial' || model.conclusion.state !== 'PARTIAL' || model.conclusion.symbols.length === 0 || model.conclusion.symbols.includes(s.symbol)).map((s) => {
                   const symbolUnits = quantityDisplayUnits(units)
                   return (
                     <SymbolChainRow

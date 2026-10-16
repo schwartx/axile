@@ -691,6 +691,7 @@ export type ExecutionTaskStatus =
   | 'TERMINATED'
   | 'SUCCEEDED'
   | 'FAILED'
+  | 'SKIPPED'
 
 /** 立即执行触发响应，对应 `ExecutionTriggerResponse`。 */
 export interface ExecutionTrigger {

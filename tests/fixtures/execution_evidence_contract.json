@@ -234,7 +234,7 @@
         },
         "reason_code": "COMMON.SESSION.CLOSED"
       },
-      "event_label": "未执行"
+      "event_label": "休市跳过"
     }
   },
   {
@@ -631,7 +631,7 @@
         },
         "reason_code": "COMMON.SESSION.CLOSED"
       },
-      "event_label": "未执行"
+      "event_label": "休市跳过"
     }
   },
   {
