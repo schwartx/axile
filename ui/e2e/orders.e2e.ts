@@ -116,7 +116,7 @@ test('account activity tabs expose fills and rejected orders and remember select
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   await expect(dialog).toContainText('成交时间')
   await expect(dialog.locator('[data-swap-current]').getByText('rb2610', { exact: true }).filter({ visible: true })).toBeVisible()
-  await expect(dialog.locator('[data-swap-current]').getByText('1 手', { exact: true })).toBeVisible()
+  await expect(dialog.locator('[data-swap-current]').getByText('1 手', { exact: true }).filter({ visible: true })).toBeVisible()
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   await expect(dialog.locator('[data-swap-current]').getByText('ag2612', { exact: true }).filter({ visible: true }).last()).toBeVisible()
   await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
@@ -267,4 +267,59 @@ test('activity transitions only records, retains controls, and respects reduced 
   await expect(slot.getByText('保证金不足', { exact: true })).toBeVisible()
   await expect(slot.locator('[data-swap-outgoing]')).toHaveCount(0)
   expect(await slot.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0)
+})
+
+test('stock activity shares column tracks and row heights and keeps IDs in copyable details', async ({ page }, testInfo) => {
+  const orderId = 'f7d3e42a-c908-11f1-8f84-02410e5860af'
+  const submitted = '2026-10-16T10:26:17+08:00'
+  const filled = '2026-10-16T13:59:46+08:00'
+  const stockOrders = [
+    { order_id: orderId, symbol: '159920.SZ', volume: 5500, price: 1.425 },
+    { order_id: 'f7a68a77-c908-11f1-8f84-02410e5860af', symbol: '518880.SH', volume: 200, price: 8.517 },
+  ].map(order => ({ ...order, direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', filled_volume: order.volume,
+    remaining_volume: 0, status: '已成交', create_time: submitted, update_time: filled,
+    execution_id: null, native_identity: {}, uncertain: false }))
+  await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
+    orders: stockOrders, ended_orders: [], trades: stockOrders.map((order, i) => ({
+      trade_id: `stock-fill-${i}`, order_id: order.order_id, symbol: order.symbol,
+      direction: 'BUY', offset: 'OPEN', time: i === 0 ? filled : '2026-10-16T10:26:21+08:00',
+      price: order.price, volume: order.volume, value: order.price * order.volume,
+    })), failures: [], scope: 'GM 当前可查询记录', started_at: submitted, sampled_at: filled,
+    queried_at: filled, errors: [], symbols: stockOrders.map(order => order.symbol), limit: 100, truncated: false,
+  } }))
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (value: string) => { Object.assign(window, { copiedActivityId: value }) },
+  } }))
+  await page.goto('/e2e/orders.html?shares')
+  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
+  const current = dialog.locator('[data-swap-current]')
+  await expect(current.getByText('159920.SZ', { exact: true }).filter({ visible: true })).toBeVisible()
+  await expect(dialog.locator('[data-swap-outgoing]')).toHaveCount(0)
+  await expect(current).not.toContainText('开平未知')
+  await expect(current.getByText('买卖', { exact: true })).toBeVisible()
+  const row = current.locator('[data-activity-row]').first()
+  const tracks = await row.evaluate(element => [...element.children].map(child => child.getBoundingClientRect().x))
+  expect((await row.boundingBox())!.height).toBe(64)
+  await expect(current.getByText(orderId, { exact: true })).not.toBeVisible()
+  await current.getByRole('button', { name: '展开成交 stock-fill-0', exact: true }).click()
+  await expect(current.getByText(orderId, { exact: true })).toBeVisible()
+  await current.getByRole('button', { name: '复制订单编号', exact: true }).click()
+  expect(await page.evaluate(() => Reflect.get(window, 'copiedActivityId'))).toBe(orderId)
+  await current.getByRole('button', { name: '收起成交 stock-fill-0', exact: true }).click()
+  await expect(current.getByText(orderId, { exact: true })).not.toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('stock-trades.png'), animations: 'disabled' })
+
+  await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
+  await expect(dialog.locator('[data-swap-outgoing]')).toHaveCount(0)
+  expect((await row.boundingBox())!.height).toBe(64)
+  expect(await row.evaluate(element => [...element.children].map(child => child.getBoundingClientRect().x))).toEqual(tracks)
+  await expect(current).not.toContainText('开平未知')
+  await expect(current.getByText('买卖 / 开平', { exact: true })).toHaveCount(0)
+  await expect(row.locator('time')).toHaveText('2026-10-16 10:26:17')
+  await page.screenshot({ path: testInfo.outputPath('stock-orders.png'), animations: 'disabled' })
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('stock-orders-mobile.png'), animations: 'disabled' })
 })

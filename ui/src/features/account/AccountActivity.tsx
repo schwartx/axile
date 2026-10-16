@@ -3,25 +3,21 @@ import { RefreshCw } from 'lucide-react'
 import { ContentSwap } from '@/components/ui/ContentSwap'
 import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
-import { OverflowText } from '@/components/ui/OverflowText'
 import { activityEvents, type ActivityTab } from '@/features/account/accountActivityModel'
-import { orderDirection, orderOffset } from '@/features/account/currentOrdersModel'
+import { ActivityRecordsTable } from '@/features/account/ActivityRecordsTable'
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import { getAccountActivity, type AccountActivity } from '@/lib/api/orders'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { shanghaiTime } from '@/features/account/executionValues'
 import type { ChannelCapability } from '@/types/api'
 
-const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
 const time = (value: string | null) => {
   if (!value) return '未知'
   const timestamp = shanghaiTime(value)
   return Number.isFinite(timestamp) ? new Date(timestamp + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ') : '未知'
 }
-const columns = 'grid grid-cols-[145px_minmax(90px,1fr)_80px_100px_100px_110px] gap-3'
 
-function ActivityTable({ data, tab, quantityLabel }: { data: AccountActivity; tab: ActivityTab; quantityLabel: string }) {
-  const qty = (value: number) => `${number(value)}${quantityLabel ? ` ${quantityLabel}` : ''}`
+function ActivityTable({ data, tab, units }: { data: AccountActivity; tab: ActivityTab; units?: ChannelCapability['units'] }) {
   if (tab === 'failures') {
     const events = activityEvents(data)
     return events.length ? <div className="divide-y divide-line">{events.map(event => <div key={event.key} className="grid grid-cols-[145px_minmax(0,1fr)] gap-x-4 gap-y-1 py-3 text-[13px]">
@@ -33,18 +29,7 @@ function ActivityTable({ data, tab, quantityLabel }: { data: AccountActivity; ta
   const trades = tab === 'trades'
   const rows = trades ? data.trades : data.orders
   if (!rows.length) return <Empty text={trades ? '暂无成交记录' : '暂无委托记录'} />
-  return <div className="overflow-x-auto"><div className="min-w-[700px]">
-    <div className={`${columns} border-b border-line py-2 text-xs text-ink-3`}><span>{trades ? '成交时间' : '委托时间'}</span><span>品种</span><span>买卖 / 开平</span><span>{trades ? '成交价' : '委托价'}</span><span>{trades ? '成交量' : '委托 / 已成'}</span><span>{trades ? '订单编号' : '状态'}</span></div>
-    {trades ? data.trades.map(trade => <div key={JSON.stringify([trade.symbol, trade.trade_id, trade.time])} className={`${columns} items-center border-b border-line py-3 text-[13px]`}>
-      <span className="num text-xs text-ink-3">{time(trade.time)}</span><OverflowText text={trade.symbol} className="min-w-0 font-medium" />
-      <span>{orderDirection(trade.direction)}<small className="block text-ink-3">{orderOffset(trade.offset)}</small></span><span className="num">{number(trade.price)}</span><span className="num">{qty(trade.volume)}</span><OverflowText text={trade.order_id} className="min-w-0 text-xs text-ink-3" />
-    </div>) : data.orders.map(order => <div key={JSON.stringify([order.symbol, order.order_id])} className="border-b border-line">
-      <div className={`${columns} items-center py-3 text-[13px]`}><span className="num text-xs text-ink-3">{time(order.create_time)}</span><OverflowText text={order.symbol} className="min-w-0 font-medium" />
-        <span>{orderDirection(order.direction)}<small className="block text-ink-3">{orderOffset(order.offset)}</small></span><span className="num">{['MARKET', '市价'].includes(order.order_type) ? '市价' : number(order.price)}</span>
-        <span className="num">{qty(order.volume)}<small className="block text-ink-3">已成 {qty(order.filled_volume)}</small></span><span className={order.status === '已拒绝' || order.uncertain ? 'text-warn' : 'text-ink-2'}>{order.status}</span></div>
-      <p className="pb-2 text-xs break-all text-ink-3">订单编号 {order.order_id}{order.reason ? ` · ${order.reason}` : ''}</p>
-    </div>)}
-  </div></div>
+  return <ActivityRecordsTable trades={trades ? data.trades : undefined} orders={trades ? undefined : data.orders} units={units} formatTime={time} />
 }
 
 function Empty({ text }: { text: string }) {
@@ -105,7 +90,7 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
         {query.loading && <Empty text="正在读取近期记录…" />}
         {data && <>
           {data.errors.length > 0 && <div role="status" className="mb-3 text-xs leading-relaxed text-warn">{data.errors.map(message => <p key={message}>{message}</p>)}</div>}
-          <ActivityTable data={data} tab={tab} quantityLabel={units?.quantity_label ?? ''} />
+          <ActivityTable data={data} tab={tab} units={units} />
           {data.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
         </>}
         </>}

@@ -104,3 +104,50 @@ def test_trade_projection_normalizes_channel_directions(direction, expected):
     )
     result = run_activity_command(instance, {})
     assert result["trades"][0]["direction"] == expected
+
+
+@pytest.mark.parametrize(
+    "effect,expected", [(1, "OPEN"), (2, "CLOSE"), (3, "CLOSETODAY"), (4, "CLOSEYESTERDAY"), (0, None)]
+)
+def test_gm_trade_and_order_share_native_offset_and_keep_distinct_times(effect, expected):
+    from axile.executor.gm.common import convert_gm_order_to_unified, convert_gm_trade_to_trade_record
+
+    instance = executor("gm")
+    submitted = "2026-10-16T10:26:17+08:00"
+    filled = "2026-10-16T13:59:46+08:00"
+    row = {
+        "cl_ord_id": "gm-one",
+        "symbol": "SZSE.159920",
+        "side": 1,
+        "position_effect": effect,
+        "volume": 5500,
+        "price": 1.425,
+        "status": 3,
+        "order_type": 1,
+        "filled_volume": 5500,
+        "created_at": submitted,
+        "updated_at": filled,
+    }
+    instance.account_orders.activity.observe_order(convert_gm_order_to_unified(row))
+    instance.account_orders.activity.observe_trade(
+        convert_gm_trade_to_trade_record({**row, "created_at": filled, "exec_id": "fill-one"})
+    )
+    result = run_activity_command(instance, {})
+    assert result["orders"][0]["create_time"] == submitted
+    assert result["orders"][0]["update_time"] == filled
+    assert result["trades"][0]["time"] == filled
+    assert result["orders"][0]["offset"] == result["trades"][0]["offset"] == expected
+    assert result["trades"][0]["direction"] == "BUY"
+
+
+def test_gm_missing_native_times_do_not_become_local_sampling_time():
+    from axile.executor.gm.common import convert_gm_order_to_unified, convert_gm_trade_to_trade_record
+
+    instance = executor("gm")
+    row = {"cl_ord_id": "gm-one", "symbol": "SZSE.159920", "side": 1, "volume": 1, "price": 1}
+    instance.account_orders.activity.observe_order(convert_gm_order_to_unified(row))
+    instance.account_orders.activity.observe_trade(convert_gm_trade_to_trade_record({**row, "exec_id": "fill-one"}))
+    result = run_activity_command(instance, {})
+    assert result["orders"][0]["create_time"] is None
+    assert result["orders"][0]["update_time"] is None
+    assert result["trades"][0]["time"] == ""

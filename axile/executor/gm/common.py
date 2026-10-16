@@ -153,7 +153,7 @@ def convert_gm_trade_to_trade_record(trade: dict[str, Any]) -> TradeRecord:
         ),
         symbol=GM_SYMBOL_RESOLVER.to_axile(gm_symbol),
         order_id=str(trade.get("cl_ord_id") or trade.get("order_id") or ""),
-        trade_time=trade_time,
+        trade_time=trade_time or "",
         trade_volume=trade_volume,
         trade_price=trade_price,
         extra={
@@ -194,7 +194,11 @@ def convert_gm_order_to_unified(order: dict[str, Any]) -> UnifiedOrder:
         filled_volume=float(order.get("filled_volume") or 0),
         avg_price=float(order.get("filled_vwap") or 0),
         create_time=create_time,
-        update_time=create_time,
+        update_time=(
+            order["updated_at"].isoformat()
+            if isinstance(order.get("updated_at"), datetime)
+            else order.get("updated_at")
+        ),
         raw_order_data=order,
     )
 

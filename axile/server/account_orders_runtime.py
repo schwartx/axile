@@ -40,15 +40,45 @@ _IDENTITY_FIELDS = (
 )
 
 
+def public_offset(extra: dict[str, Any]) -> str | None:
+    """保留渠道原生开平，GM 委托与成交使用同一套 position_effect 映射。"""
+    offset = extra.get("offset_flag", extra.get("offset"))
+    if offset is not None:
+        return str(offset)
+    effect = extra.get("position_effect")
+    if effect is None:
+        raw = extra.get("raw_trade_data", extra.get("raw_order_data", {}))
+        if isinstance(raw, dict):
+            effect = raw.get("position_effect")
+    return {
+        "1": "OPEN",
+        "2": "CLOSE",
+        "3": "CLOSETODAY",
+        "4": "CLOSEYESTERDAY",
+        "PositionEffect_Open": "OPEN",
+        "PositionEffect_Close": "CLOSE",
+        "PositionEffect_CloseToday": "CLOSETODAY",
+        "PositionEffect_CloseYesterday": "CLOSEYESTERDAY",
+    }.get(str(effect))
+
+
+def _native_time(value: Any) -> str | None:
+    """展示渠道实际提供的时间，缺失时不拿本地观测时间补齐。"""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if isinstance(value, str) and value else None
+
+
 def public_order(order: UnifiedOrder) -> dict[str, Any]:
     """按白名单导出订单，未知开平与执行关联保持为空。"""
     extra = order.extra
-    offset = extra.get("offset_flag", extra.get("offset"))
-    if offset is None:
-        offset = {"1": "OPEN", "2": "CLOSE", "PositionEffect_Open": "OPEN", "PositionEffect_Close": "CLOSE"}.get(
-            str(extra.get("position_effect"))
-        )
+    offset = public_offset(extra)
     created = order.create_time
+    updated = order.update_time
+    raw = extra.get("raw_order_data")
+    if extra.get("channel_type") == "gm" and isinstance(raw, dict):
+        created = _native_time(raw.get("created_at"))
+        updated = _native_time(raw.get("updated_at"))
     if "insert_date_time" in extra:
         try:
             value = extra["insert_date_time"]
@@ -72,7 +102,7 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
         execution_id=execution_id if isinstance(execution_id, str) else None,
         native_identity={key: str(extra[key]) for key in _IDENTITY_FIELDS if extra.get(key) is not None},
         uncertain=not order.is_active() and not order.is_completed(),
-        update_time=order.update_time,
+        update_time=updated,
         reason=next(
             (
                 str(extra[key])

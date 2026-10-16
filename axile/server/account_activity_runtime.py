@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.models.unified_order import TradeRecord
-from axile.server.account_orders_runtime import public_order
+from axile.server.account_orders_runtime import public_offset, public_order
 from axile.server.db.models.account_order import AccountActivityPublic, AccountTradePublic
 
 
@@ -26,9 +26,7 @@ def _trade(trade: TradeRecord) -> AccountTradePublic:
         order_id=trade.order_id,
         symbol=trade.symbol,
         direction=direction,
-        offset=str(extra.get("offset_flag", extra.get("offset")))
-        if extra.get("offset_flag", extra.get("offset")) is not None
-        else None,
+        offset=public_offset(extra),
         time=trade.trade_time,
         price=trade.trade_price,
         volume=trade.trade_volume,
