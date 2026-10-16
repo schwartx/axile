@@ -814,3 +814,10 @@
   .connection-toggle[data-tone='busy'] .connection-link { animation: none; }
   .connection-link g, .connection-link-join { transition: none; }
 }
+
+
+/* 同槽记录交接：仅切换视图播放，透明度与自然高度同轨，锚点不参与。 */
+.content-swap {
+  --motion-content-swap-ms: 600;
+  --motion-content-swap-ease: cubic-bezier(.45, 0, .55, 1);
+}

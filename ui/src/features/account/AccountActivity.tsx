@@ -1,5 +1,6 @@
 import { useCallback, useId, useRef, useState, type ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
+import { ContentSwap } from '@/components/ui/ContentSwap'
 import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -8,7 +9,6 @@ import { orderDirection, orderOffset } from '@/features/account/currentOrdersMod
 import type { OrdersState } from '@/features/account/useCurrentOrders'
 import { getAccountActivity, type AccountActivity } from '@/lib/api/orders'
 import { usePolling } from '@/lib/hooks/usePolling'
-import { useRemountFade } from '@/lib/viewTransition'
 import { shanghaiTime } from '@/features/account/executionValues'
 import type { ChannelCapability } from '@/types/api'
 
@@ -66,7 +66,6 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
     return result
   }, [state.accountId, key, symbol, limit])
   const query = usePolling(fetcher, { queryKey: `${key}:${limit}`, enabled: state.open && state.connectionReady && tab !== 'pending', retainDataWhenDisabled: true, intervalMs: 5000 })
-  const fade = useRemountFade(tab)
   const data = query.data
   const chooseSymbol = (value: string) => { setFilter({ accountId: state.accountId, value }); setLimit(100); setManual(false) }
   const symbols = [...new Set([...(data?.symbols ?? []), ...(symbol ? [symbol] : [])])].sort()
@@ -76,30 +75,31 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
       { value: 'pending', label: '在途委托', badge: state.query.data?.complete ? <span className="num text-ink-3">{state.query.data.count}</span> : undefined },
       { value: 'failures', label: '撤单 / 拒绝' },
     ]} /></div>
-    <div key={tab} className={`min-h-[260px] ${fade ? 'panel-fade-in' : ''}`}>
-      {tab === 'pending' ? pendingContent : <>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[13px]">
-          <div className="min-w-0 max-w-full">
-            <div className="flex items-center gap-2">
-              <span className="text-ink-3">品种</span>
-              <Select value={symbol} ariaLabel="品种" searchable className="min-h-8 w-48 max-w-full justify-between px-2.5 py-1.5 text-[13px]" options={[
-                { value: '', label: '全部品种' },
-                ...symbols.map(value => ({ value, label: value })),
-                { value: '__custom__', label: '输入其他品种…' },
-              ]} onChange={value => { if (value === '__custom__') setManual(true); else chooseSymbol(value) }} />
-            </div>
-            <div className={`grid transition-[grid-template-rows] duration-150 motion-reduce:transition-none ${manual ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} inert={!manual}>
-              <div className="min-h-0 overflow-hidden">
-                <form className="flex flex-wrap items-center gap-2 pt-2" onSubmit={event => { event.preventDefault(); const value = String(new FormData(event.currentTarget).get('symbol') ?? '').trim(); chooseSymbol(value) }}>
-                  <input key={key} id={filterId} aria-label="其他品种代码" name="symbol" defaultValue={symbol} required pattern={'[A-Za-z0-9_.:\\/\\-]+'} maxLength={100} placeholder="输入完整品种代码" className="min-h-8 w-48 rounded-md border border-line bg-transparent px-2 text-ink-1 outline-accent" />
-                  <button type="submit" className="min-h-8 cursor-pointer text-accent">筛选</button>
-                  <button type="button" onClick={() => setManual(false)} className="min-h-8 cursor-pointer text-ink-3">取消</button>
-                </form>
-              </div>
+    <div className="min-h-[260px]">
+      <div hidden={tab === 'pending'} className={`mb-3 ${tab === 'pending' ? 'hidden' : 'flex'} flex-wrap items-center justify-between gap-3 text-[13px]`}>
+        <div className="min-w-0 max-w-full">
+          <div className="flex items-center gap-2">
+            <span className="text-ink-3">品种</span>
+            <Select value={symbol} ariaLabel="品种" searchable className="min-h-8 w-48 max-w-full justify-between px-2.5 py-1.5 text-[13px]" options={[
+              { value: '', label: '全部品种' },
+              ...symbols.map(value => ({ value, label: value })),
+              { value: '__custom__', label: '输入其他品种…' },
+            ]} onChange={value => { if (value === '__custom__') setManual(true); else chooseSymbol(value) }} />
+          </div>
+          <div className={`grid transition-[grid-template-rows] duration-150 motion-reduce:transition-none ${manual ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} inert={!manual}>
+            <div className="min-h-0 overflow-hidden">
+              <form className="flex flex-wrap items-center gap-2 pt-2" onSubmit={event => { event.preventDefault(); const value = String(new FormData(event.currentTarget).get('symbol') ?? '').trim(); chooseSymbol(value) }}>
+                <input key={key} id={filterId} aria-label="其他品种代码" name="symbol" defaultValue={symbol} required pattern={'[A-Za-z0-9_.:\\/\\-]+'} maxLength={100} placeholder="输入完整品种代码" className="min-h-8 w-48 rounded-md border border-line bg-transparent px-2 text-ink-1 outline-accent" />
+                <button type="submit" className="min-h-8 cursor-pointer text-accent">筛选</button>
+                <button type="button" onClick={() => setManual(false)} className="min-h-8 cursor-pointer text-ink-3">取消</button>
+              </form>
             </div>
           </div>
-          <button type="button" title={data?.queried_at ? `上次核对：${time(data.queried_at)}` : undefined} disabled={!state.connectionReady || query.loading || query.refreshing} onClick={() => { request.current.refresh = true; void query.refresh() }} className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{query.refreshing || query.loading ? '核对中' : '核对记录'}</button>
         </div>
+        <button type="button" title={data?.queried_at ? `上次核对：${time(data.queried_at)}` : undefined} disabled={!state.connectionReady || query.loading || query.refreshing} onClick={() => { request.current.refresh = true; void query.refresh() }} className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{query.refreshing || query.loading ? '核对中' : '核对记录'}</button>
+      </div>
+      <ContentSwap identity={tab}>
+        {tab === 'pending' ? pendingContent : <>
         {!state.connectionReady && !data && <Empty text="账户连接未就绪，记录暂不可查询" />}
         {query.error && <p role="status" className="mb-3 text-[13px] text-warn">记录读取失败{data ? '，以下为上次读取结果' : '，请稍后重试'}</p>}
         {query.loading && <Empty text="正在读取近期记录…" />}
@@ -108,7 +108,8 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
           <ActivityTable data={data} tab={tab} quantityLabel={units?.quantity_label ?? ''} />
           {data.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
         </>}
-      </>}
+        </>}
+      </ContentSwap>
     </div>
   </>
 }
