@@ -31,7 +31,15 @@ class Redactor:
             return [self(v) for v in value]
         if isinstance(value, str):
             for secret in self.secrets:
-                value = value.replace(secret, "[REDACTED]")
+                if len(secret) >= 6:
+                    value = value.replace(secret, "[REDACTED]")
+            # 短值仅按带敏感字段名的文字处理，避免破坏订单身份、时间戳和错误码。
+            value = re.sub(
+                r"(?i)((?:password|passwd|secret|token|auth_code|app_id|investor_id|broker_id|user_id)"
+                r"[\"']?\s*[:=]\s*[\"']?)([^\s,;\"'{}]+)",
+                lambda match: match[1] + "[REDACTED]",
+                value,
+            )
         return value
 
 

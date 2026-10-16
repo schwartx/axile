@@ -125,7 +125,7 @@ class Runner:
         return items[0]
 
     def connect(self):
-        """经 Axile 恢复宏源测试连接，登录失败保留实际服务证据。"""
+        """经 Axile 恢复CTP测试账户连接，登录失败保留实际服务证据。"""
         self.call("GET", "/utils/health-check/")
         account = self.call("GET", self.base)
         if account["name"] != self.config.account_name or account["trade_channel"] != "ctp":
@@ -298,6 +298,12 @@ class Runner:
 
     def collect(self, execution_id, step):
         """ZIP 优先；逐接口查询用于判定与核对必需材料。"""
+        state = self.api.request("GET", f"/account/executions/{execution_id}")
+        if state.get("account_id") != self.account_id:
+            raise Conditions("execution 不属于所选账户，拒绝采集")
+        if state.get("status") not in TERMINAL:
+            raise Conditions("execution 尚未结束，拒绝采集不稳定证据")
+        self.bundle.write(f"{step}/status.json", state)
         collected = {}
         for suffix in ("events", "artifacts", "control/events"):
             try:

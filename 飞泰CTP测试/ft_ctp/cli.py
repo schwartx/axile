@@ -19,7 +19,7 @@ SCENARIOS = ("open", "close", "cancel", "stats", "threshold", "invalid", "reject
 def parser():
     argument_parser = argparse.ArgumentParser(description="通过 Axile REST API 联机执行飞泰 CTP 场景")
     argument_parser.add_argument("command", choices=("run", "inspect", "connect", "collect"))
-    argument_parser.add_argument("--config", type=Path)
+    argument_parser.add_argument("--config", type=Path, required=True, help="本地配置文件，路径相对该文件解析")
     argument_parser.add_argument("--batch", default=None, help="唯一批次；已存在批次禁止再次执行交易")
     argument_parser.add_argument("--scenarios", default="open,close,cancel,stats", help=",".join(SCENARIOS))
     argument_parser.add_argument("--symbol", help="联机必须显式选择测试合约")
@@ -111,24 +111,31 @@ def finish_run(runner):
     runner.bundle.finish()
 
 
+def selected_config(args):
+    """先解析覆盖值再校验，交易合约必须由用户明确选择。"""
+    values = json.loads(args.config.read_text())
+    overrides = {}
+    for setting in args.set:
+        key, separator, raw = setting.partition("=")
+        if not separator or key not in Config.__dataclass_fields__:
+            raise ValueError("--set 必须指定已知配置字段 KEY=VALUE")
+        try:
+            overrides[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            overrides[key] = raw
+    if args.symbol is not None:
+        overrides["symbol"] = args.symbol
+    symbol = overrides.get("symbol", values.get("symbol"))
+    if args.command == "run" and (not isinstance(symbol, str) or not symbol.strip()):
+        raise ValueError("run 必须通过 --symbol、--set symbol=... 或配置文件显式选择测试合约")
+    return Config.read(args.config, overrides)
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     bundle = None
     try:
-        config = Config.read(args.config)
-        for setting in args.set:
-            key, separator, raw = setting.partition("=")
-            if not separator or key not in config.public():
-                raise ValueError("--set 必须指定已知配置字段 KEY=VALUE")
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError:
-                value = raw
-            setattr(config, key, value)
-        config.validate()
-        if args.symbol:
-            config.symbol = args.symbol
-            config.validate()
+        config = selected_config(args)
         if args.command == "inspect":
             account = load_account(config.database, config.account_name)
             print(

@@ -9,9 +9,9 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    database: str = "../../axile.db"
-    account_name: str = "宏源测试"
-    api_url: str = "http://127.0.0.1:1419/api/v1"
+    database: str = "axile.db"
+    account_name: str = "CTP测试账户"
+    api_url: str = "http://127.0.0.1:8000/api/v1"
     symbol: str = "rb2701"
     lots: int = 1
     side: str = "long"
@@ -42,11 +42,13 @@ class Config:
     results_dir: str = "results"
 
     @classmethod
-    def read(cls, path: Path | None):
+    def read(cls, path: Path | None, overrides=None):
         """路径相对配置文件解析，不依赖启动目录。"""
         source = Path(__file__).resolve().parents[1]
         base = path.resolve().parent if path else source if (source / "run.py").exists() else Path.cwd()
-        config = cls(**json.loads(path.read_text()) if path else {})
+        values = json.loads(path.read_text()) if path else {}
+        values.update(overrides or {})
+        config = cls(**values)
         if path is None and not (source / "run.py").exists():
             config.database = "axile.db"
         for key in ("database", "results_dir"):
@@ -96,8 +98,8 @@ class Config:
             raise ValueError("发送边界锚点仅用于 pause_point=executing")
         if type(self.warning_percent) is not int or not 1 <= self.warning_percent <= 99:
             raise ValueError("warning_percent 必须在 1..99")
-        if not self.symbol or not self.account_name:
-            raise ValueError("必须指定账户与合约")
+        if not isinstance(self.symbol, str) or not self.account_name:
+            raise ValueError("必须指定账户名称，合约必须为字符串")
 
     def public(self):
         """配置只含选择器与测试参数，不含凭据。"""

@@ -1,8 +1,8 @@
 {
-  "database": "../../axile.db",
-  "account_name": "宏源测试",
-  "api_url": "http://127.0.0.1:1419/api/v1",
-  "symbol": "rb2701",
+  "database": "./axile.db",
+  "account_name": "填写测试账户名称",
+  "api_url": "http://127.0.0.1:8000/api/v1",
+  "symbol": "",
   "lots": 1,
   "side": "long",
   "close_offset": "auto",
@@ -22,7 +22,10 @@
   "terminate_mode": "graceful",
   "observe_seconds": 5,
   "cron_expr": "* * * * *",
-  "supplement": {"count": 1, "interval_minutes": 1},
+  "supplement": {
+    "count": 1,
+    "interval_minutes": 1
+  },
   "invalid_case": "price",
   "unknown_symbol": "FT_UNKNOWN_CONTRACT",
   "reject_case": "insufficient_funds",

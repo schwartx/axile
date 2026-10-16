@@ -293,7 +293,7 @@ def test_default_cli_connects_to_axile_and_reads_selected_credentials(tmp_path, 
     monkeypatch.setattr("ft_ctp.cli.load_account", selected)
     monkeypatch.setattr("ft_ctp.cli.Api", lambda *a: api)
     path = tmp_path / "settings.json"
-    path.write_text(json.dumps({"results_dir": str(tmp_path / "results")}))
+    path.write_text(json.dumps({"results_dir": str(tmp_path / "results"), "symbol": config.symbol}))
     assert main(["run", "--config", str(path), "--batch", "default"]) == 0
     assert reads and api.counts["place_order"] > 0
     assert main(["run", "--config", str(path), "--batch", "default"]) == 2
@@ -315,7 +315,7 @@ def test_connect_failure_preserves_actual_connection_error_and_never_triggers_tr
     monkeypatch.setattr("ft_ctp.cli.load_account", lambda *a: {"id": 4, "account_config": {"password": "fixture"}})
     monkeypatch.setattr("ft_ctp.cli.Api", lambda *a: api)
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"results_dir": str(tmp_path / "results")}))
+    path.write_text(json.dumps({"results_dir": str(tmp_path / "results"), "symbol": config.symbol}))
     assert main(["connect", "--config", str(path), "--batch", "connection-failed"]) == 2
     saved = json.loads((tmp_path / "results/connection-failed/connection.json").read_text())
     assert saved["last_failure"]["error"]["reason_code"] == "4097"

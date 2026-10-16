@@ -25,20 +25,20 @@ def test_database_credentials_are_exact_read_only_and_not_exported(tmp_path, lay
     with sqlite3.connect(path) as connection:
         if layout == "flat":
             connection.execute("CREATE TABLE account(id INTEGER, name TEXT, trade_channel TEXT, account_config TEXT)")
-            connection.execute("INSERT INTO account VALUES(4, '宏源测试', 'ctp', ?)", (json.dumps(credentials),))
+            connection.execute("INSERT INTO account VALUES(4, 'CTP测试账户', 'ctp', ?)", (json.dumps(credentials),))
         else:
             connection.execute("CREATE TABLE account(id INTEGER, name TEXT, trade_channel TEXT)")
-            connection.execute("INSERT INTO account VALUES(4, '宏源测试', 'ctp')")
+            connection.execute("INSERT INTO account VALUES(4, 'CTP测试账户', 'ctp')")
             connection.execute(
                 "CREATE TABLE account_settings(account_id INTEGER, connection TEXT, execution TEXT, schedule TEXT)"
             )
             connection.execute("INSERT INTO account_settings VALUES(4, ?, '{}', '{}')", (json.dumps(credentials),))
     before = path.read_bytes()
-    account = load_account(str(path), "宏源测试")
+    account = load_account(str(path), "CTP测试账户")
     assert account["account_config"] == credentials
     assert path.read_bytes() == before
     with pytest.raises(ValueError, match="不存在"):
-        load_account(str(path), "宏源")
+        load_account(str(path), "不存在的账户")
     bundle = Bundle(str(tmp_path / "out"), "safe", {}, Redactor(credentials))
     bundle.write("error.json", {"ErrorMsg": "broker says never-export-me", "account_config": credentials})
     bundle.index["scenarios"].append({"scenario": "fault", "status": "unknown", "reason": "never-export-me"})
