@@ -681,7 +681,10 @@ export function AccountDetail({
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card className="px-6 py-4 md:col-span-2">
           <div className="mb-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-            <h3 className="mr-auto text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
+            <div className="mr-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <h3 className="flex-none text-[14px] font-semibold text-ink-2">持仓 vs 目标</h3>
+              {targetSnapshotControl}
+            </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
               <CurrentOrdersButton state={currentOrders} />
               <Link
@@ -712,9 +715,6 @@ export function AccountDetail({
                 <div className="mt-1.5 text-[14px] text-ink-2">
                   当前 {!latestAssets ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
                 </div>
-                <div className="mt-2 flex min-h-8 items-center">
-                  {targetSnapshotControl}
-                </div>
                 {plan.off > 0 && (
                   <>
                     <div className="mt-1 text-[14px] text-ink-2">
@@ -739,7 +739,6 @@ export function AccountDetail({
               </div>
             </div>
           ) : null}
-          {!showComparisonPanel && <div className="mt-2 flex min-h-8 items-center">{targetSnapshotControl}</div>}
           <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} />
           <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
             positions={positions} observed={!!latestAssets}

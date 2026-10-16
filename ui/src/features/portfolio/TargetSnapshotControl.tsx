@@ -40,7 +40,7 @@ export function TargetSnapshotControl({
   const compactMeta = loading && !snapshot
     ? '目标读取中'
     : snapshot?.calculated_at
-      ? `目标 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}`
+      ? `目标计算于 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}`
       : readError ? '目标暂不可用' : '目标未计算'
 
   const refreshButton = (
