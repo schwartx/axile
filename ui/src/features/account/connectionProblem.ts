@@ -49,7 +49,7 @@ export function connectionProblem(accountId: number, detail: AccountConnectionDe
   const summary = failed ? presentation.summary || detail.message || summaries.unavailable : summaries[detail.status] ?? summaries.unknown
   const at = (value?: string | null) => value?.replace('T', ' ') ?? '尚无记录'
   const facts = [
-    { label: '执行器', value: detail.worker_alive == null ? '待确认' : detail.worker_alive ? '正在驻留' : '未驻留' },
+    { label: '工作进程', value: detail.worker_alive == null ? '待确认' : detail.worker_alive ? '运行中' : '未运行' },
     { label: '状态更新', value: at(detail.observed_at) },
     { label: '最近访问成功', value: at(detail.last_success_at) },
     { label: '最近连接失败', value: at(detail.last_failure_at) },

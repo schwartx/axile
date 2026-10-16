@@ -72,6 +72,28 @@ def report_runtime_failure(monitor: ConnectionMonitor, error: BaseException, *, 
             steps=("核对当前 GM Token 是否有效。", "更新连接设置中的 Token 后重新启动账户运行时。"),
         )
         return
+    if getattr(error, "status", None) == 1026:
+        # 1026 确认的是令牌更新失败；是否凭证失效仍缺少证据。
+        error.execution_error = "GM 令牌更新失败（错误码 1026）"  # type: ignore[attr-defined]
+        report_gm_failure(
+            monitor,
+            error,
+            "令牌更新失败",
+            "GM SDK 报告令牌更新失败（错误码 1026）。尚无法确认是 Token 本身、GM 服务还是网络问题。",
+            facts={
+                "失败阶段": "令牌更新",
+                "错误码": 1026,
+                "SDK 说明": getattr(error, "message", None) or "更新令牌错误",
+                "调用": getattr(error, "function", None),
+            },
+            facts_title="已确认的信息",
+            steps_title="令牌更新检查",
+            steps=(
+                "核对当前配置的 GM Token。该错误不能单独证明 Token 已失效。",
+                "检查 GM 服务和网络访问情况，处理后重新连接账户。",
+            ),
+        )
+        return
     report_gm_failure(
         monitor,
         error,

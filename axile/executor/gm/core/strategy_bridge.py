@@ -64,6 +64,9 @@ def _normalize_startup_error(error: Exception) -> GMBridgeStartupError:
     if status == 1000 or isinstance(error, GMAuthenticationError):
         normalized = GMAuthenticationError("GM token 无效或已失效")
         normalized.execution_error = "GM token 无效或已失效"
+    elif status == 1026:
+        normalized = GMBridgeStartupError("GM 令牌更新失败（错误码 1026）")
+        normalized.execution_error = "GM 令牌更新失败（错误码 1026）"
     else:
         normalized = GMBridgeStartupError(f"GM bridge 启动失败: {message or error.__class__.__name__}")
         normalized.execution_error = "GM 启动失败，具体原因未确认"
