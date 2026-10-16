@@ -247,6 +247,11 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
       <RuntimeSyncStatus runtime={runtime} disabled={saving} accountId={accountId} />
 
       <fieldset disabled={saving} className="min-w-0" inert={saving}>
+        {descriptor.futures_close && <Section label="平仓规则">
+          <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
+          <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
+        </Section>}
+
         <Section label="主交易算法">
           <p className="mb-3 text-sm text-ink-3">用于常规定时调仓。</p>
           {slotRow('trade', '算法', trade, (v) => { setSaveError(null); setTrade(v ?? descriptor.defaults.trade_algorithm) })}
@@ -255,11 +260,6 @@ function AccountAlgorithmForm({ accountId }: { accountId: number }) {
           <p className="mb-3 text-sm text-ink-3">用于清仓执行。</p>
           {slotRow('empty', '算法', empty, (value) => { setSaveError(null); setEmpty(value) })}
         </Section>
-
-        {descriptor.futures_close && <Section label="平仓规则">
-          <p className="mb-3 text-sm text-ink-3">常规调仓与清仓共用，修改后用于后续执行。</p>
-          <FuturesClosePolicyEditor value={closePolicy} capability={descriptor.futures_close} onChange={(value) => { setSaveError(null); setClosePolicy(value) }} />
-        </Section>}
       </fieldset>
 
       <EditSaveBar

@@ -534,6 +534,11 @@ export function AcctTrade() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto">
         <WizardPage kicker="账户设置 · 4 / 6" title="怎么交易？" lead="选择执行算法，按需调整参数。">
+          {descriptor?.futures_close && <div className="mb-5">
+            <p className="mb-2 text-sm text-ink-2">平仓规则</p>
+            <FuturesClosePolicyEditor value={acct.futuresClosePolicy} capability={descriptor.futures_close} onChange={(futuresClosePolicy) => setAcct({ futuresClosePolicy })} />
+          </div>}
+
           <label className="mb-2 block text-[14px] text-ink-2">交易方式</label>
           <AlgorithmEditor
             onValidationError={setAlgorithmError}
@@ -543,10 +548,6 @@ export function AcctTrade() {
             onChange={(v) => setAcct({ algorithm: v ?? descriptor?.defaults.trade_algorithm ?? acct.algorithm })}
           />
 
-          {descriptor?.futures_close && <div className="mt-5">
-            <p className="mb-2 text-sm text-ink-2">平仓规则</p>
-            <FuturesClosePolicyEditor value={acct.futuresClosePolicy} capability={descriptor.futures_close} onChange={(futuresClosePolicy) => setAcct({ futuresClosePolicy })} />
-          </div>}
           <div className="mt-6 max-w-[560px]">
             <div className="grid grid-cols-1 gap-3 border-t border-line py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start sm:gap-6">
               <div className="min-w-0">
