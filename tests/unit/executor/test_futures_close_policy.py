@@ -186,6 +186,49 @@ def test_money_and_volume_fees_are_compared_on_same_basis():
         rates(today=float("nan"))
 
 
+@pytest.mark.parametrize(
+    "money_yesterday,money_today,volume_yesterday,volume_today,expected,reason",
+    [
+        (0.0004508, 0.0004508, 0, 0, "yesterday_first", "相同"),
+        (0, 0, 10, 1, "today_first", None),
+        (0.0001, 0.0002, 0, 0, "yesterday_first", None),
+        (0.0002, 0.0001, 3, 2, "today_first", None),
+        (0.0001, 0.0002, 5, 1, "yesterday_first", "高低相反"),
+        (0.0000000001, 0, 0, 0, "today_first", None),
+    ],
+)
+def test_fee_comparison_never_requests_quotes(
+    money_yesterday, money_today, volume_yesterday, volume_today, expected, reason
+):
+    owner = Owner(FuturesClosePolicy(mode="fee"))
+    actual_rates = CommissionRates(
+        yesterday_money=money_yesterday,
+        today_money=money_today,
+        yesterday_volume=volume_yesterday,
+        today_volume=volume_today,
+        queried_at="2026-10-16T09:00:00",
+    )
+    owner._query_commission_rates.return_value = actual_rates
+    owner.get_market_data.side_effect = AssertionError("手续费比较不能连接行情")
+    owner.plan()
+    owner.get_market_data.assert_not_called()
+    decision = owner.runtime.emit_audit_event.call_args.kwargs["details"]["futures_close_decision"]
+    assert decision["priority"] == expected
+    assert decision["commission_rates"] == actual_rates.model_dump()
+    assert decision["reference_price"] is None
+    if reason:
+        assert reason in decision["fallback_reason"]
+        assert decision["source"] == "preset"
+    else:
+        assert decision["source"] == "fee"
+        assert "fallback_reason" not in decision
+    if money_yesterday or money_today:
+        assert "yesterday_cost" not in decision and "today_cost" not in decision
+    else:
+        assert decision["yesterday_cost"] == volume_yesterday
+        assert decision["today_cost"] == volume_today
+
+
 def test_ctp_query_builds_account_request_and_preserves_real_zero_rate():
     import threading
 

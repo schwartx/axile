@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import threading
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
@@ -58,24 +57,22 @@ class FuturesCloseRuntimeMixin:
                     rates = getattr(self, "_query_commission_rates")(symbol)
                     if day:
                         self._futures_fee_cache[key] = rates
-                quotes = getattr(self, "get_market_data")([symbol])
-                quote = quotes.get(symbol)
-                price = float(quote.last_price) if quote is not None else 0.0
-                price = price if math.isfinite(price) and price > 0 else 0.0
-                instrument = getattr(self, "_instruments", {}).get(symbol)
-                multiplier = float(getattr(instrument, "VolumeMultiple", 0) or 0)
-                yesterday, today = rates.costs(price, multiplier)
                 decision.update(
-                    yesterday_cost=yesterday,
-                    today_cost=today,
-                    reference_price=price if price > 0 else None,
+                    commission_rates=rates.model_dump(),
+                    reference_price=None,
                     queried_at=rates.queried_at,
                     trading_day=day,
                 )
-                if math.isclose(yesterday, today, rel_tol=1e-9, abs_tol=1e-9):
+                # 纯按手费用可直接展示金额；按金额费率不伪装为每手费用。
+                if not rates.yesterday_money and not rates.today_money:
+                    decision.update(yesterday_cost=rates.yesterday_volume, today_cost=rates.today_volume)
+                priority = rates.compare_priority()
+                if priority == "equal":
                     decision["fallback_reason"] = "平昨、平今预计费用相同"
+                elif priority is None:
+                    decision["fallback_reason"] = "按金额费率与按手费用高低相反，使用品种规则"
                 else:
-                    decision.update(priority="yesterday_first" if yesterday < today else "today_first", source="fee")
+                    decision.update(priority=priority, source="fee")
             except (AttributeError, ValueError, RuntimeError, TimeoutError) as exc:
                 # 终止及会话失效必须继续传播，不能当成费率缺失吞掉。
                 from axile.executor.termination import ExecutionTerminated

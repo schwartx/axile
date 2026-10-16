@@ -108,6 +108,18 @@ class CommissionRates(BaseModel):
     today_volume: float = Field(ge=0, allow_inf_nan=False)
     queried_at: str
 
+    def compare_priority(self) -> ClosePriority | Literal["equal"] | None:
+        """分别比较同单位费率；两项高低相反时不猜测成交额。"""
+        yesterday = (self.yesterday_money, self.yesterday_volume)
+        today = (self.today_money, self.today_volume)
+        if yesterday == today:
+            return "equal"
+        if all(y <= t for y, t in zip(yesterday, today, strict=True)):
+            return "yesterday_first"
+        if all(t <= y for y, t in zip(yesterday, today, strict=True)):
+            return "today_first"
+        return None
+
     def costs(self, price: float, multiplier: float) -> tuple[float, float]:
         """按同一参考价换算每手费用；纯按手计费不依赖行情。"""
         turnover = 0.0
