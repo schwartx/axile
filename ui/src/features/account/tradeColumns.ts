@@ -29,7 +29,7 @@ const columns: Record<string, TradeColumn[]> = {
     { ...fee, text: trade => money(trade.commission) },
     { key: 'cost', label: '成本', numeric: true, text: trade => money(trade.cost) },
   ],
-  binance: [
+  external: [
     fee,
     { key: 'commission_asset', label: '手续费币种', text: trade => trade.commission_asset || '—' },
     { key: 'realized_pnl', label: '已实现盈亏', numeric: true, text: trade => number(trade.realized_pnl),
@@ -41,5 +41,5 @@ const columns: Record<string, TradeColumn[]> = {
 
 /** 渠道决定列，不因某一行缺失字段增删表头。 */
 export function tradeColumns(channel: string | undefined): TradeColumn[] {
-  return columns[channel ?? ''] ?? []
+  return channel ? columns[channel] ?? columns.external : []
 }

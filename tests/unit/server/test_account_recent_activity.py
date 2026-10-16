@@ -53,25 +53,25 @@ def test_partial_query_failure_preserves_old_data_and_does_not_publish_exception
     assert "当前交易日" in result["scope"]
 
 
-def test_binance_all_view_queries_known_and_position_symbols_and_labels_coverage():
-    instance = executor("binance")
-    instance.account_orders.apply(order("BTCUSDT"))
-    instance.get_account_assets = lambda: SimpleNamespace(positions=[SimpleNamespace(symbol="ETHUSDT")])
+def test_external_all_view_queries_known_and_position_symbols_and_labels_coverage():
+    instance = executor("external")
+    instance.account_orders.apply(order("rb2610"))
+    instance.get_account_assets = lambda: SimpleNamespace(positions=[SimpleNamespace(symbol="ag2612")])
     queried = []
     instance.query_recent_orders = lambda symbol: queried.append(("orders", symbol)) or []
     instance.query_recent_trades = lambda symbol: queried.append(("trades", symbol)) or []
     result = run_activity_command(instance, {"refresh": True})
-    assert set(queried) == {(kind, symbol) for kind in ("orders", "trades") for symbol in ("BTCUSDT", "ETHUSDT")}
+    assert set(queried) == {(kind, symbol) for kind in ("orders", "trades") for symbol in ("rb2610", "ag2612")}
     assert "仅覆盖已观测及持仓品种" in result["scope"]
 
 
-def test_binance_explicit_symbol_does_not_need_positions_or_other_symbols():
-    instance = executor("binance")
+def test_external_explicit_symbol_does_not_need_positions_or_other_symbols():
+    instance = executor("external")
     queried = []
     instance.query_recent_orders = lambda symbol: queried.append(symbol) or []
     instance.query_recent_trades = lambda symbol: queried.append(symbol) or []
-    result = run_activity_command(instance, {"refresh": True, "symbol": "BTCUSDT"})
-    assert queried == ["BTCUSDT", "BTCUSDT"]
+    result = run_activity_command(instance, {"refresh": True, "symbol": "rb2610"})
+    assert queried == ["rb2610", "rb2610"]
     assert result["errors"] == []
 
 
@@ -172,17 +172,17 @@ def test_gm_missing_native_times_do_not_become_local_sampling_time():
             {"amount": 7837.5, "commission": 0, "cost": 7837.5},
         ),
         (
-            "binance",
+            "external",
             {
                 "commission": "0",
-                "commission_asset": "BNB",
+                "commission_asset": "CNY",
                 "realized_pnl": "-2.5",
                 "is_maker": False,
                 "position_side": "SHORT",
             },
             {
                 "commission": 0,
-                "commission_asset": "BNB",
+                "commission_asset": "CNY",
                 "realized_pnl": -2.5,
                 "is_maker": False,
                 "position_side": "SHORT",

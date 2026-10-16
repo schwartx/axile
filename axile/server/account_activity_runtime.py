@@ -76,14 +76,14 @@ def _query(executor: Any, symbol: str | None) -> None:
     activity = executor.account_orders.activity
     channel = str(getattr(executor.channel_type, "value", executor.channel_type))
     errors: list[str] = []
-    if channel == "binance":
+    if channel not in {"ctp", "tq", "gm"}:
         symbols = [symbol] if symbol else activity.symbols()
         if not symbol:
             try:
                 symbols = sorted(set(symbols) | {p.symbol for p in executor.get_account_assets().positions})
             except Exception:
                 errors.append("持仓品种读取失败，仅核对已观测品种")
-        scope = "Binance 最近24小时，单品种最多1000笔；另含本次连接观测"
+        scope = "渠道近期记录，单品种最多1000笔；另含本次连接观测"
         if not symbol:
             scope += "；全部视图仅覆盖已观测及持仓品种"
         if len(symbols) > 8:

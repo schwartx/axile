@@ -333,16 +333,16 @@ test('stock activity omits trade status, preserves order status and keeps IDs in
 })
 
 
-for (const channel of ['ctp', 'tq', 'binance'] as const) {
+for (const channel of ['ctp', 'tq', 'external'] as const) {
   test(`${channel} fills expose channel columns in the wider dialog`, async ({ page }, testInfo) => {
     const extras = {
       ctp: { offset: 'OPEN', trading_day: '20261019', hedge_flag: '3' },
       tq: { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-fill-12345' },
-      binance: { commission: 0, commission_asset: 'BNB', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' },
+      external: { commission: 0, commission_asset: 'CNY', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' },
     }[channel]
-    const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平', '交易所成交编号'], binance: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
-    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今', 'exchange-fill-12345'], binance: ['0', 'BNB', '-2.5', 'Taker', '空头'] }[channel]
-    const fill = { trade_id: 'channel-fill', order_id: 'channel-order', symbol: channel === 'binance' ? 'BTCUSDT' : 'rb2610', direction: 'BUY', offset: null, time: '2026-10-16T21:01:02+08:00', price: 100, volume: 1, value: 100 }
+    const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平', '交易所成交编号'], external: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
+    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今', 'exchange-fill-12345'], external: ['0', 'CNY', '-2.5', 'Taker', '空头'] }[channel]
+    const fill = { trade_id: 'channel-fill', order_id: 'channel-order', symbol: channel === 'external' ? 'rb2610' : 'rb2610', direction: 'BUY', offset: null, time: '2026-10-16T21:01:02+08:00', price: 100, volume: 1, value: 100 }
     await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
       channel, orders: [], ended_orders: [], trades: [{ ...fill, ...extras }, { ...fill, trade_id: 'missing-fields' }], failures: [], scope: '', started_at: fill.time, sampled_at: fill.time, queried_at: fill.time, errors: [], symbols: [fill.symbol], limit: 100, truncated: false,
     } }))
@@ -361,7 +361,7 @@ for (const channel of ['ctp', 'tq', 'binance'] as const) {
     await expect(rows.first().locator(':scope > *')).toHaveCount(6 + labels.length)
     await expect(rows.last().locator(':scope > *')).toHaveCount(6 + labels.length)
     await expect(current.getByText('状态', { exact: true })).toHaveCount(0)
-    if (channel === 'binance') await expect(rows.first().locator('.text-down')).toContainText('-2.5')
+    if (channel === 'external') await expect(rows.first().locator('.text-down')).toContainText('-2.5')
     await page.screenshot({ path: testInfo.outputPath(`${channel}-trade-columns.png`), animations: 'disabled' })
     await page.setViewportSize({ width: 375, height: 812 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
