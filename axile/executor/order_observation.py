@@ -6,6 +6,26 @@ from math import isclose, isfinite
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 
 
+def merge_trade(previous: TradeRecord | None, incoming: TradeRecord) -> TradeRecord:
+    """同一笔成交合并查询和回报信息，缺失值不覆盖已知字段。"""
+    result = incoming.model_copy(deep=True)
+    if previous is None:
+        return result
+    extra = deepcopy(previous.extra)
+    for key, value in result.extra.items():
+        previous_value = extra.get(key)
+        if isinstance(value, dict) and isinstance(previous_value, dict):
+            extra[key] = {**previous_value, **{k: v for k, v in value.items() if v is not None and v != ""}}
+        elif value is not None and value != "":
+            extra[key] = value
+    result.extra = extra
+    if not result.order_id:
+        result.order_id = previous.order_id
+    if not result.trade_time:
+        result.trade_time = previous.trade_time
+    return result
+
+
 def merge_order(previous: UnifiedOrder | None, incoming: UnifiedOrder) -> UnifiedOrder:
     """保留未携带的扩展信息；均价只对应同一累计成交量。"""
     result = incoming.model_copy(deep=True)

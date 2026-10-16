@@ -12,8 +12,8 @@ test('idle account receives callbacks over one SSE without REST polling', async 
     if (/\/account\/1\/orders(?:\?|$)/.test(value.url())) reads.push(value.url())
   })
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await expect(dialog.getByRole('button', { name: '展开委托 native-1', exact: true })).toBeVisible()
   await expect(dialog.getByRole('group', { name: '委托拉取方式' })).toHaveCount(0)
   await request.post('/api/v1/test/orders/partial')
@@ -26,12 +26,12 @@ test('idle account receives callbacks over one SSE without REST polling', async 
 
 test('execution end preserves reports and manual reconcile remains explicit', async ({ page, request }) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
   await page.getByRole('button', { name: '结束执行', exact: true }).click()
   await request.post('/api/v1/test/orders/partial')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
   await expect(dialog.getByText('3 / 1 手', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect.poll(async () => (await (await request.get('/api/v1/test/orders/stats')).json()).queries).toBe(1)
@@ -39,8 +39,8 @@ test('execution end preserves reports and manual reconcile remains explicit', as
 
 test('disconnect retains orders and disables cancellation until recovery', async ({ page, request }, testInfo) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   const cancel = dialog.getByRole('button', { name: '撤单 rb2610 native-1' })
   await expect(cancel).toBeEnabled()
   await request.post('/api/v1/test/orders/disconnect')
@@ -59,7 +59,7 @@ test('native terminal callback resolves cancellation in every browser', async ({
   const second = await context.newPage()
   for (const target of [page, second]) {
     await target.goto('/e2e/orders.html')
-    await target.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+    await target.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
   }
   await page.getByRole('button', { name: '撤单 rb2610 native-1' }).click()
   for (const target of [page, second]) {
@@ -74,8 +74,8 @@ test('native terminal callback resolves cancellation in every browser', async ({
 
 test('manual reconcile failure stays accessible beside the action', async ({ page }, testInfo) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await page.route('**/api/v1/account/1/orders?refresh=true', route => route.fulfill({ status: 500, json: { detail: 'independent query failure' } }))
   await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect(dialog.getByRole('button', { name: '核对失败', exact: true })).toBeVisible()
@@ -92,7 +92,7 @@ test('manual reconcile failure stays accessible beside the action', async ({ pag
 test('incomplete compact snapshot only marks the uncertain order', async ({ page }) => {
   await page.goto('/e2e/orders.html?compact')
   const content = page.getByRole('region', { name: '品种委托' })
-  await expect(page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true })).toBeVisible()
   await page.evaluate(async () => {
     const path = '/src/stores/liveOrders.ts'
     const { useLiveOrders } = await import(path)
@@ -102,7 +102,7 @@ test('incomplete compact snapshot only marks the uncertain order', async ({ page
       data: [order, { ...order, order_id: 'uncertain-2', uncertain: true }] })
   })
   await expect(content).toContainText('— 笔')
-  await expect(page.getByRole('button', { name: '委托与成交', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '当日委托与成交', exact: true })).toBeVisible()
   await expect(content.getByText('待确认', { exact: true }).filter({ visible: true })).toHaveCount(1)
   await expect(content.getByRole('button', { name: '撤单 rb2610 native-1' })).toBeDisabled()
   await expect(content.getByRole('button', { name: '撤单 rb2610 uncertain-2' })).toBeDisabled()
@@ -111,8 +111,8 @@ test('incomplete compact snapshot only marks the uncertain order', async ({ page
 
 test('account activity tabs expose fills and rejected orders and remember selection after reopening', async ({ page }, testInfo) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   await expect(dialog).toContainText('成交时间')
   await expect(dialog).toContainText('柜台当前交易日记录 + 本次连接观测')
@@ -128,14 +128,14 @@ test('account activity tabs expose fills and rejected orders and remember select
   await page.screenshot({ path: testInfo.outputPath('account-activity-rejections.png'), animations: 'disabled' })
   await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
   await expect(dialog).not.toBeVisible()
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('activity symbol filter isolates records and refresh failure preserves last successful data', async ({ page }, testInfo) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   await expect(dialog.locator('[data-swap-current]').getByText('rb2610', { exact: true }).filter({ visible: true })).toBeVisible()
   await dialog.getByRole('button', { name: '品种', exact: true }).click()
@@ -155,8 +155,8 @@ test('activity symbol filter isolates records and refresh failure preserves last
 test('background and foreground preserve activity tab, filter, rows and scroll during stream recovery', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 450 })
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   await expect(dialog.locator('[data-swap-current]').getByText('ag2612', { exact: true }).filter({ visible: true }).last()).toBeVisible()
   await dialog.getByRole('button', { name: '品种', exact: true }).click()
@@ -200,8 +200,8 @@ test('background and foreground preserve activity tab, filter, rows and scroll d
 
 test('activity picker supports search, immediate selection and manual symbols', async ({ page }, testInfo) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   const picker = dialog.getByRole('button', { name: '品种', exact: true })
   await expect(dialog.locator('[data-swap-current]').getByText('rb2610', { exact: true }).filter({ visible: true })).toBeVisible()
@@ -226,8 +226,8 @@ test('activity picker supports search, immediate selection and manual symbols', 
 
 test('activity transitions only records, retains controls, and respects reduced motion', async ({ page }) => {
   await page.goto('/e2e/orders.html')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   const slot = dialog.locator('[data-content-swap]')
   await expect(dialog.locator('[data-swap-current]').getByText('成交时间', { exact: true })).toBeVisible()
@@ -293,8 +293,8 @@ test('stock activity omits trade status, preserves order status and keeps IDs in
     writeText: async (value: string) => { Object.assign(window, { copiedActivityId: value }) },
   } }))
   await page.goto('/e2e/orders.html?shares')
-  await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+  await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   const current = dialog.locator('[data-swap-current]')
   await expect(current.getByText('159920.SZ', { exact: true }).filter({ visible: true })).toBeVisible()
@@ -341,16 +341,16 @@ for (const channel of ['ctp', 'tq', 'external'] as const) {
       tq: { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-fill-12345' },
       external: { commission: 0, commission_asset: 'CNY', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' },
     }[channel]
-    const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平', '交易所成交编号'], external: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
-    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今', 'exchange-fill-12345'], external: ['0', 'CNY', '-2.5', 'Taker', '空头'] }[channel]
+    const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平'], external: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
+    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今'], external: ['0', 'CNY', '-2.5', 'Taker', '空头'] }[channel]
     const fill = { trade_id: 'channel-fill', order_id: 'channel-order', symbol: channel === 'external' ? 'rb2610' : 'rb2610', direction: 'BUY', offset: null, time: '2026-10-16T21:01:02+08:00', price: 100, volume: 1, value: 100 }
     await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
       channel, orders: [], ended_orders: [], trades: [{ ...fill, ...extras }, { ...fill, trade_id: 'missing-fields' }], failures: [], scope: '', started_at: fill.time, sampled_at: fill.time, queried_at: fill.time, errors: [], symbols: [fill.symbol], limit: 100, truncated: false,
     } }))
     await page.setViewportSize({ width: 1600, height: 900 })
     await page.goto('/e2e/orders.html')
-    await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+    await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
     await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
     const current = dialog.locator('[data-swap-current]')
     await expect(current.locator('[data-activity-row]')).toHaveCount(2)
@@ -385,8 +385,8 @@ for (const scenario of [
       scope: '合成委托', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['demo-symbol'], limit: 100, truncated: false,
     } }))
     await page.goto('/e2e/orders.html')
-    await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+    await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
     await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
     const table = dialog.locator('[data-swap-current] [data-order-table]')
     for (const header of ['成交均价', ...scenario.headers]) await expect(table.getByRole('columnheader', { name: header, exact: true })).toBeVisible()
@@ -398,5 +398,56 @@ for (const scenario of [
     await expect(table.getByText(scenario.detail, { exact: true })).toBeVisible()
     await page.setViewportSize({ width: 375, height: 812 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+}
+
+for (const scenario of [
+  { channel: 'ctp', attributes: { exchange_id: 'SHFE', order_sys_id: 'sys-123', order_ref: 'ref-123', event_date: '20261016', event_clock: '21:01:02' }, extras: { offset: 'OPEN', trading_day: '20261019', hedge_flag: '3' }, expected: ['SHFE', 'sys-123', 'ref-123', '2026-10-16', '21:01:02'] },
+  { channel: 'tq', attributes: { exchange_id: 'SHFE', tq_symbol: 'SHFE.rb2610' }, extras: { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-fill-12345' }, expected: ['SHFE', 'SHFE.rb2610', 'exchange-fill-12345'] },
+  { channel: 'gm', attributes: { cl_ord_id: 'client-123', exchange_order_id: 'counter-123', gm_symbol: 'SHSE.600000' }, extras: { offset: 'OPEN', commission: 0, amount: 100, cost: 100 }, expected: ['client-123', 'counter-123', 'SHSE.600000', '开仓'] },
+  { channel: 'external', attributes: { client_order_id: 'client-123', execution_type: 'TRADE', order_status: 'PARTIALLY_FILLED' }, extras: { commission: 0, commission_asset: 'USDT', realized_pnl: 0, is_maker: false, position_side: 'SHORT' }, expected: ['client-123', '成交', '部分成交'] },
+]) {
+  test(`${scenario.channel} fill details expand, copy both IDs and adapt to narrow screens`, async ({ page }, testInfo) => {
+    const time = '2026-10-16T21:01:02+08:00'
+    const orderId = 'order-12345678901234567890123456789012345678901234567890'
+    const tradeId = 'fill-12345678901234567890123456789012345678901234567890'
+    await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
+      channel: scenario.channel, orders: [], ended_orders: [], trades: [{ trade_id: tradeId, order_id: orderId,
+        symbol: 'rb2610', direction: 'BUY', offset: null, time, price: 100, volume: 1, value: 100,
+        attributes: scenario.attributes, ...scenario.extras }], failures: [], scope: '合成成交记录', started_at: time,
+      sampled_at: time, queried_at: time, errors: [], symbols: ['rb2610'], limit: 100, truncated: false,
+    } }))
+    await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (value: string) => { Object.assign(window, { copiedTradeDetail: value }) },
+    } }))
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await page.goto('/e2e/orders.html')
+    await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '当日委托与成交', exact: true })
+    await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
+    const current = dialog.locator('[data-swap-current]')
+    await expect(current.getByRole('button', { name: '复制成交编号', exact: true })).not.toBeVisible()
+    if (scenario.channel === 'tq') {
+      await expect(current.getByRole('columnheader', { name: '交易所成交编号', exact: true })).toHaveCount(0)
+      await expect(current.getByText('exchange-fill-12345', { exact: true })).not.toBeVisible()
+    }
+    await current.getByRole('button', { name: `展开成交 ${tradeId}`, exact: true }).click()
+    for (const value of scenario.expected) await expect(current.getByText(value, { exact: true })).toBeVisible()
+    await current.getByRole('button', { name: '复制订单编号', exact: true }).click()
+    expect(await page.evaluate(() => Reflect.get(window, 'copiedTradeDetail'))).toBe(orderId)
+    await current.getByRole('button', { name: '复制成交编号', exact: true }).click()
+    expect(await page.evaluate(() => Reflect.get(window, 'copiedTradeDetail'))).toBe(tradeId)
+    const details = current.locator('dl')
+    const desktopColumns = await details.evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)
+    expect(desktopColumns).toBeGreaterThan(1)
+    await page.screenshot({ path: testInfo.outputPath(`${scenario.channel}-trade-details.png`), animations: 'disabled' })
+    await page.setViewportSize({ width: 375, height: 812 })
+    await expect.poll(async () => details.evaluate(node => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await current.locator('[data-trade-table]').evaluate(table => { table.parentElement!.scrollLeft = table.parentElement!.scrollWidth })
+    await expect(current.getByRole('button', { name: '复制成交编号', exact: true })).toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath(`${scenario.channel}-trade-details-mobile.png`), animations: 'disabled' })
+    await current.getByRole('button', { name: `收起成交 ${tradeId}`, exact: true }).click()
+    await expect(current.getByRole('button', { name: '复制成交编号', exact: true })).not.toBeVisible()
   })
 }

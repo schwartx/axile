@@ -13,7 +13,11 @@ export function healthCheck(signal?: AbortSignal): Promise<boolean> {
 
 /** 各交易渠道的依赖可用性（后端按本机是否装了依赖探测）。 */
 export function getChannelCapabilities(signal?: AbortSignal): Promise<ChannelCapability[]> {
-  return apiGet<ChannelCapability[]>('/capabilities/channels', signal)
+  return apiGet<ChannelCapability[]>('/capabilities/channels', signal).then(channels => channels.map(channel =>
+    channel.units.quantity_kind === 'base_asset'
+      ? { ...channel, units: { ...channel.units, quantity_label: '' } }
+      : channel,
+  ))
 }
 
 /** 已注册算法列表（内置 + 用户自定义）；渠道/槽位过滤在前端完成。 */

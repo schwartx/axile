@@ -23,7 +23,7 @@ const columns: Record<string, TradeColumn[]> = {
     { key: 'trading_day', label: '交易日', text: trade => trade.trading_day?.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') || '—' },
     { key: 'hedge_flag', label: '投机 / 套保', text: trade => ({ '1': '投机', '2': '套利', '3': '套保', '5': '做市', '6': '投机/套保', '7': '套保/投机' }[trade.hedge_flag ?? ''] ?? '—') },
   ],
-  tq: [offset, { key: 'exchange_trade_id', label: '交易所成交编号', truncate: true, text: trade => trade.exchange_trade_id || '—' }],
+  tq: [offset],
   gm: [
     { key: 'amount', label: '成交金额', numeric: true, text: trade => money(trade.amount) },
     { ...fee, text: trade => money(trade.commission) },

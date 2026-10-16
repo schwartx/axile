@@ -122,7 +122,7 @@ class ChannelUnits(_FrozenDescriptorModel):
     quantity_kind : Literal["share", "contract", "base_asset", "custom"]
         数量的业务语义；``base_asset`` 表示单位随品种变化。
     quantity_label : str
-        数量后展示的短标签，例如“股”“手”或“基础资产”。
+        数量后展示的短标签，例如“股”“手”；留空时不显示数量单位。
     quantity_max_decimals : int
         前端展示数量时允许保留的最大小数位数。
     price_label : str

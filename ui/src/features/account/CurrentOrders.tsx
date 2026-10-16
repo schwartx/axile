@@ -17,7 +17,7 @@ import type { ActivityTab } from '@/features/account/accountActivityModel'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   const snapshot = state.query.data
-  const label = snapshot?.complete && snapshot.count != null ? `委托与成交 · 在途 ${snapshot.count}` : '委托与成交'
+  const label = snapshot?.complete && snapshot.count != null ? `当日委托与成交 · 在途 ${snapshot.count}` : '当日委托与成交'
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
     className="inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
     <InkRewrite text={label} tone="label" />
@@ -65,7 +65,7 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
 export function CurrentOrdersDialog({ state, units, channel }: { state: OrdersState; units?: ChannelCapability['units']; channel?: string }) {
   const [selection, setSelection] = useState<{ accountId: number; tab: ActivityTab }>({ accountId: state.accountId, tab: 'pending' })
   const tab = selection.accountId === state.accountId ? selection.tab : 'pending'
-  return <CenteredModal open={state.open} title="委托与成交" onClose={state.close} widthClassName="w-[1440px]"
+  return <CenteredModal open={state.open} title="当日委托与成交" onClose={state.close} widthClassName="w-[1440px]"
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
     <AccountActivityContent state={state} units={units} tab={tab} onTabChange={value => setSelection({ accountId: state.accountId, tab: value })} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
   </CenteredModal>

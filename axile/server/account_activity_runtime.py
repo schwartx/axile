@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.models.unified_order import TradeRecord
 from axile.server.account_orders_runtime import public_offset, public_order
-from axile.server.db.models.account_order import AccountActivityPublic, AccountTradePublic
+from axile.server.db.models.account_order import AccountActivityPublic, AccountOrderPublic, AccountTradePublic
 
 
 def _number(value: Any) -> float | None:
@@ -28,6 +28,32 @@ def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _trade_attributes(extra: dict[str, Any], raw: dict[str, Any]) -> dict[str, str]:
+    """只发布成交本身的渠道核对信息，不读取订单当前状态或原始载荷。"""
+    values = {**raw, **{key: value for key, value in extra.items() if value is not None and value != ""}}
+    if extra.get("channel_type") == "gm" and not values.get("gm_symbol"):
+        values["gm_symbol"] = raw.get("symbol")
+    fields = (
+        "exchange_id",
+        "order_sys_id",
+        "order_ref",
+        "event_date",
+        "event_clock",
+        "tq_symbol",
+        "gm_symbol",
+        "cl_ord_id",
+        "exchange_order_id",
+        "client_order_id",
+        "execution_type",
+        "order_status",
+    )
+    return {
+        key: str(values[key])
+        for key in fields
+        if isinstance(values.get(key), (str, int)) and not isinstance(values[key], bool) and str(values[key])
+    }
+
+
 def _trade(trade: TradeRecord) -> AccountTradePublic:
     extra = trade.extra
     raw = extra.get("raw_trade_data", {})
@@ -35,12 +61,14 @@ def _trade(trade: TradeRecord) -> AccountTradePublic:
     direction = extra.get("direction", "")
     direction = str(getattr(direction, "value", direction))
     if isinstance(raw, dict) and not direction:
-        direction = {1: "BUY", 2: "SELL"}.get(raw.get("side"), "")
+        side = raw.get("side")
+        direction = {1: "BUY", 2: "SELL"}.get(side, "") if isinstance(side, int) and not isinstance(side, bool) else ""
     if extra.get("channel_type") == "ctp" or direction in {"0", "1"}:
         direction = {"0": "BUY", "1": "SELL"}.get(direction, direction)
     maker = extra.get("is_maker")
     return AccountTradePublic(
         trade_id=trade.trade_id,
+        attributes=_trade_attributes(extra, raw),
         order_id=trade.order_id,
         symbol=trade.symbol,
         direction=direction,
@@ -129,12 +157,12 @@ def run_activity_command(executor: Any, payload: dict[str, Any]) -> dict[str, An
     snapshot = activity.snapshot(symbol)
     limit = min(500, max(1, int(payload.get("limit", 100))))
     orders = sorted(
-        [public_order(order) for order in snapshot["orders"]],
-        key=lambda order: (_time(order["create_time"]), order["order_id"]),
+        [AccountOrderPublic.model_validate(public_order(order)) for order in snapshot["orders"]],
+        key=lambda order: (_time(order.create_time), order.order_id),
         reverse=True,
     )
     trades = sorted(snapshot["trades"], key=lambda trade: (_time(trade.trade_time), trade.trade_id), reverse=True)
-    ended_orders = [order for order in orders if order["status"] in {"已撤销", "已拒绝", "已过期"}]
+    ended_orders = [order for order in orders if order.status in {"已撤销", "已拒绝", "已过期"}]
     failures = sorted(snapshot["failures"], key=lambda row: (_time(row["time"]), row["event_id"]), reverse=True)
     result = AccountActivityPublic(
         channel=str(getattr(executor.channel_type, "value", executor.channel_type)),

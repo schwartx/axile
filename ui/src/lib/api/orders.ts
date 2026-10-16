@@ -55,6 +55,7 @@ export function cancelCurrentOrder(accountId: number, order: CurrentOrder, reque
 
 export interface AccountTrade {
   trade_id: string
+  attributes?: Record<string, string>
   order_id: string
   symbol: string
   direction: string

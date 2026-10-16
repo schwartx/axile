@@ -1,5 +1,7 @@
 """账户记录跨 execution 保留、成交去重及有界缓存。"""
 
+import pytest
+
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
@@ -64,3 +66,61 @@ def test_native_trade_id_reused_on_another_trading_day_is_not_deduplicated():
             TradeRecord.create(trade_id="one", symbol="rb2610", trade_volume=1, trading_day=day, exchange_id="SHFE")
         )
     assert len(book.snapshot()["trades"]) == 2
+
+
+@pytest.mark.parametrize("callback_first", [True, False])
+def test_trade_query_and_callback_merge_without_losing_event_details(callback_first):
+    book = AccountActivityBook()
+    callback = TradeRecord.create(
+        trade_id="one",
+        symbol="BTCUSDT",
+        order_id="order-1",
+        trade_volume=1,
+        trade_price=100,
+        trade_time="2026-10-16T10:00:00",
+        client_order_id="client-1",
+        execution_type="TRADE",
+        order_status="PARTIALLY_FILLED",
+        commission=0,
+        is_maker=False,
+        raw_trade_data={"commission": 0, "reference": "native"},
+    )
+    query = callback.model_copy(
+        update={"extra": {"client_order_id": "", "commission": None, "raw_trade_data": {"commission": None}}}, deep=True
+    )
+    for value in [callback, query] if callback_first else [query, callback]:
+        book.observe_trade(value)
+    result = book.snapshot()["trades"]
+    assert len(result) == 1
+    assert result[0].extra["client_order_id"] == "client-1"
+    assert result[0].extra["execution_type"] == "TRADE"
+    assert result[0].extra["order_status"] == "PARTIALLY_FILLED"
+    assert result[0].extra["commission"] == 0
+    assert result[0].extra["is_maker"] is False
+    assert result[0].extra["raw_trade_data"] == {"commission": 0, "reference": "native"}
+    version = book.version
+    book.observe_trade(query)
+    assert book.version == version
+    result[0].extra["client_order_id"] = "mutated"
+    assert book.snapshot()["trades"][0].extra["client_order_id"] == "client-1"
+
+
+def test_trade_merge_keeps_zero_and_false_updates_and_original_order_link():
+    book = AccountActivityBook()
+    first = TradeRecord.create(
+        trade_id="one",
+        symbol="BTCUSDT",
+        order_id="order-1",
+        trade_volume=1,
+        trade_price=100,
+        commission=1,
+        is_maker=True,
+    )
+    book.observe_trade(first)
+    book.observe_trade(
+        first.model_copy(update={"order_id": "", "trade_time": "", "extra": {"commission": 0, "is_maker": False}})
+    )
+    result = book.snapshot()["trades"][0]
+    assert result.order_id == "order-1"
+    assert result.trade_time == first.trade_time
+    assert result.extra == {"commission": 0, "is_maker": False}

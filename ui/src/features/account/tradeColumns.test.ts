@@ -5,9 +5,9 @@ import type { AccountTrade } from '@/lib/api/orders'
 const trade: AccountTrade = { trade_id: 'one', order_id: 'order', symbol: 'symbol', direction: 'BUY', offset: 'OPEN', time: '', price: 100, volume: 1, value: 100 }
 const cells = (channel: string, fields: Partial<AccountTrade>) => Object.fromEntries(tradeColumns(channel).map(column => [column.key, column.text({ ...trade, ...fields })]))
 
-test('CTP trading day and hedge semantics and TQ exchange trade ID are explicit columns', () => {
+test('CTP trading day and hedge semantics stay in columns; TQ identifiers move to details', () => {
   expect(cells('ctp', { trading_day: '20261019', hedge_flag: '3' })).toEqual({ offset: '开仓', trading_day: '2026-10-19', hedge_flag: '套保' })
-  expect(cells('tq', { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-one' })).toEqual({ offset: '平今', exchange_trade_id: 'exchange-one' })
+  expect(cells('tq', { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-one' })).toEqual({ offset: '平今' })
 })
 
 test('GM uses native amount and distinguishes a zero commission from absent costs', () => {

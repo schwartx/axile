@@ -304,3 +304,75 @@ def test_order_attributes_keep_false_zero_and_hide_invalid_values_and_raw_payloa
     assert result["attributes"] == {"filled_amount": 0, "order_business": "0", "reduce_only": False}
     assert "raw_order_data" not in result
     assert "secret" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "channel,extra,expected",
+    [
+        (
+            "ctp",
+            {
+                "exchange_id": "SHFE",
+                "order_sys_id": "sys-1",
+                "order_ref": "ref-1",
+                "event_date": "20261016",
+                "event_clock": "21:01:02",
+            },
+            {
+                "exchange_id": "SHFE",
+                "order_sys_id": "sys-1",
+                "order_ref": "ref-1",
+                "event_date": "20261016",
+                "event_clock": "21:01:02",
+            },
+        ),
+        (
+            "tq",
+            {"exchange_id": "SHFE", "tq_symbol": "SHFE.rb2610"},
+            {"exchange_id": "SHFE", "tq_symbol": "SHFE.rb2610"},
+        ),
+        (
+            "gm",
+            {"gm_symbol": "SHSE.600000", "cl_ord_id": "client-1", "exchange_order_id": "counter-1"},
+            {"gm_symbol": "SHSE.600000", "cl_ord_id": "client-1", "exchange_order_id": "counter-1"},
+        ),
+        (
+            "external",
+            {"client_order_id": "client-1", "execution_type": "TRADE", "order_status": "PARTIALLY_FILLED"},
+            {"client_order_id": "client-1", "execution_type": "TRADE", "order_status": "PARTIALLY_FILLED"},
+        ),
+    ],
+)
+def test_trade_details_use_only_native_record_fields_and_hide_raw_payload(channel, extra, expected):
+    instance = executor(channel)
+    instance.account_orders.apply(order().model_copy(update={"status": "已成交"}))
+    instance.account_orders.activity.observe_trade(
+        TradeRecord.create(
+            trade_id="fill",
+            symbol="rb2610",
+            order_id="one",
+            trade_volume=1,
+            trade_price=100,
+            extra={**extra, "password": "secret", "raw_trade_data": {"token": "secret", "account_id": "private"}},
+        )
+    )
+    result = run_activity_command(instance, {})["trades"][0]
+    assert result["attributes"] == expected
+    assert "secret" not in str(result)
+    assert "private" not in str(result)
+    assert result["attributes"].get("order_status") != "已成交"
+
+
+def test_gm_callback_details_keep_native_symbol_without_exposing_raw_fields():
+    instance = executor("gm")
+    instance.account_orders.activity.observe_trade(
+        TradeRecord.create(
+            trade_id="fill",
+            symbol="600000.SH",
+            order_id="one",
+            trade_volume=1,
+            trade_price=100,
+            extra={"channel_type": "gm", "raw_trade_data": {"symbol": "SHSE.600000", "password": "secret"}},
+        )
+    )
+    assert run_activity_command(instance, {})["trades"][0]["attributes"] == {"gm_symbol": "SHSE.600000"}

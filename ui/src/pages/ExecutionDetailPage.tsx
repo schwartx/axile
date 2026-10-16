@@ -95,14 +95,9 @@ function fmtPrice(v: number, units: DisplayUnits, currency: string): string {
   return label ? `${value} ${label}` : value
 }
 
-/** 基础资产数量按品种派生实际单位；无法可靠拆分时保留插件提供的兜底标签。 */
-function unitsForSymbol(units: DisplayUnits, symbol: string, currency: string): DisplayUnits {
-  if (units.quantity_kind !== 'base_asset') return units
-  const normalizedSymbol = symbol.toUpperCase()
-  const normalizedCurrency = currency.toUpperCase()
-  if (!normalizedCurrency || !normalizedSymbol.endsWith(normalizedCurrency)) return units
-  const baseAsset = normalizedSymbol.slice(0, -normalizedCurrency.length)
-  return baseAsset ? { ...units, quantity_label: baseAsset } : units
+/** 基础资产数量只显示数字，不追加标签或从品种派生币种单位。 */
+function quantityDisplayUnits(units: DisplayUnits): DisplayUnits {
+  return units.quantity_kind === 'base_asset' ? { ...units, quantity_label: '' } : units
 }
 
 /** 持仓与目标保留方向符号；订单成交数量仍使用绝对值。 */
@@ -534,7 +529,7 @@ export function ExecutionDetailPage() {
   const item = accounts?.find((a) => a.account_id === accountId) ?? null
   const currency = currencyOf(item?.currency)
   const descriptor = useChannelDescriptor(item?.trade_channel)
-  const units = descriptor?.units ?? DEFAULT_UNITS
+  const units = quantityDisplayUnits(descriptor?.units ?? DEFAULT_UNITS)
   const positionValueLabel = positionValueLabelOf(descriptor?.ui)
   const assetTerms = accountAssetTerms(item?.trade_channel)
 
@@ -626,7 +621,7 @@ export function ExecutionDetailPage() {
               <>
                 <div className="mb-2 text-xs font-semibold tracking-wide text-ink-3">逐只结果</div>
                 {model.symbols.filter(s => model.conclusion.state !== 'PARTIAL' || model.conclusion.symbols.length === 0 || model.conclusion.symbols.includes(s.symbol)).map((s) => {
-                  const symbolUnits = unitsForSymbol(units, s.symbol, currency)
+                  const symbolUnits = quantityDisplayUnits(units)
                   return (
                     <SymbolChainRow
                       key={s.symbol}

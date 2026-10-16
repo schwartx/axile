@@ -11,6 +11,6 @@ export function snapshotPositions(artifacts: ExecutionArtifact[], type: string) 
   return rows.every(p => p.symbol && p.volume != null) ? rows.filter(p => p.volume !== 0) : null
 }
 
-export function quantityUnit(units: ChannelCapability['units'] | undefined, symbol: string, currency: string) {
-  return units?.quantity_kind === 'base_asset' && currency && symbol.endsWith(currency) ? symbol.slice(0, -currency.length) : units?.quantity_label ?? ''
+export function quantityUnit(units: ChannelCapability['units'] | undefined, _symbol: string, _currency: string) {
+  return units?.quantity_kind === 'base_asset' ? '' : units?.quantity_label ?? ''
 }
