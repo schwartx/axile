@@ -565,6 +565,20 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         trades = [trade_to_unified(row, runtime.resolver) for row in rows]
         return [trade for trade in trades if trade.order_id == order_id and trade.symbol == symbol]
 
+    def _query_recent_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
+        """读取天勤当前同步的账户委托集合。"""
+        runtime = self._require_runtime()
+        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
+        orders = [order_to_unified(row, runtime.resolver) for row in rows]
+        return [order for order in orders if symbol is None or order.symbol == symbol]
+
+    def _query_recent_trades_impl(self, symbol: str | None = None) -> list[TradeRecord]:
+        """读取天勤当前交易日的账户成交集合。"""
+        runtime = self._require_runtime()
+        rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_trade")().values()])
+        trades = [trade_to_unified(row, runtime.resolver) for row in rows]
+        return [trade for trade in trades if symbol is None or trade.symbol == symbol]
+
     @override
     def get_tick_size(self, symbol: str) -> float | None:
         value = self._quote_snapshot(symbol).get("price_tick", 0)
@@ -689,7 +703,19 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
                 [order_to_unified(value, runtime.resolver) for value in rows], watermark, drop_missing=True
             )
         elif kind == "trade":
-            self._dispatch(self._trade_callbacks, trade_to_unified(row, runtime.resolver))
+            trade = trade_to_unified(row, runtime.resolver)
+            self.account_orders.activity.observe_trade(trade)
+            self._dispatch(self._trade_callbacks, trade)
+        elif kind == "notification":
+            message = str(row.get("content") or "")
+            if "撤单" in message and any(word in message for word in ("失败", "拒绝")):
+                self.account_orders.activity.record_failure(
+                    "cancel_order",
+                    str(row.get("instrument_id") or ""),
+                    str(row["order_id"]) if row.get("order_id") else None,
+                    message,
+                    event_id=f"tq-notify-{row.get('notification_id')}",
+                )
 
     def _register(self, callbacks: list[Any], callback: Any) -> None:
         with self._lock:

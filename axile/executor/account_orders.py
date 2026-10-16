@@ -7,6 +7,7 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any
 
+from axile.executor.account_activity import AccountActivityBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.models.unified_order import UnifiedOrder
 
@@ -15,6 +16,7 @@ class AccountOrderBook:
     """合并完整查询与并发回报，保留有限终态以拒绝迟到的活跃状态。"""
 
     def __init__(self) -> None:
+        self.activity = AccountActivityBook()
         self._lock = RLock()
         self._orders: OrderedDict[tuple[str, str], UnifiedOrder] = OrderedDict()
         self._changed: dict[tuple[str, str], int] = {}
@@ -56,6 +58,7 @@ class AccountOrderBook:
             self.version += 1
             self.sampled_at = clock_now_iso()
             self._orders[key] = value
+            self.activity.observe_order(value)
             self._orders.move_to_end(key)
             self._changed[key] = self.version
             self._trim()
@@ -77,6 +80,8 @@ class AccountOrderBook:
                 elif key not in incoming and not drop_missing:
                     incoming[key] = previous.model_copy(update={"status": "状态未知"}, deep=True)
             self._orders = OrderedDict((key, value.model_copy(deep=True)) for key, value in incoming.items())
+            for order in self._orders.values():
+                self.activity.observe_order(order)
             if self._invalidated_at <= watermark:
                 self.complete, self.error = True, None
             self.version += 1

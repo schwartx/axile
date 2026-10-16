@@ -22,6 +22,8 @@ class AccountOrderPublic(SQLModel):
     execution_id: str | None = None
     native_identity: dict[str, str] = Field(default_factory=dict)
     uncertain: bool = False
+    update_time: str | None = None
+    reason: str | None = None
 
 
 class OrderCancelRequest(SQLModel):
@@ -55,3 +57,46 @@ class AccountOrdersPublic(SQLModel):
     version: int = 0
     error: str | None = None
     cancellations: list[OrderCancelReceipt] = Field(default_factory=list)
+
+
+class AccountTradePublic(SQLModel):
+    """账户逐笔成交的公开字段，不输出渠道原始载荷。"""
+
+    trade_id: str
+    order_id: str
+    symbol: str
+    direction: str
+    offset: str | None = None
+    time: str
+    price: float
+    volume: float
+    value: float
+
+
+class AccountOperationFailure(SQLModel):
+    """操作失败记录与订单终态独立，失败不意味着订单已撤销。"""
+
+    event_id: str
+    operation: str
+    outcome: str = "unknown"
+    symbol: str
+    order_id: str | None = None
+    time: str
+    message: str
+
+
+class AccountActivityPublic(SQLModel):
+    """近期委托、成交和操作失败；查询范围与采集范围显式公开。"""
+
+    orders: list[AccountOrderPublic]
+    ended_orders: list[AccountOrderPublic] = Field(default_factory=list)
+    trades: list[AccountTradePublic]
+    failures: list[AccountOperationFailure]
+    scope: str
+    started_at: str
+    sampled_at: str
+    queried_at: str | None = None
+    errors: list[str] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    limit: int
+    truncated: bool = False

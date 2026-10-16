@@ -22,10 +22,11 @@ os.environ["AXILE_CONFIG_TOML"] = str(_path / "config.toml")
 
 from sqlmodel import SQLModel
 
+from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.connection_state import ConnectionObservation
-from axile.executor.models.unified_order import UnifiedOrder
+from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 from axile.server import account_orders, connection_runtime
 from axile.server.account_control.ipc import RemoteMonitor, serve
 from axile.server.account_orders_runtime import run_order_command
@@ -69,7 +70,13 @@ def cancel(_symbol, _order_id):
 
 
 executor = SimpleNamespace(
-    account_orders=book, get_pending_orders=query, cancel_order=cancel, get_account_control_guard=lambda: None
+    account_orders=book,
+    get_pending_orders=query,
+    cancel_order=cancel,
+    get_account_control_guard=lambda: None,
+    channel_type="tq",
+    query_recent_orders=lambda symbol: book.activity.snapshot(symbol)["orders"],
+    query_recent_trades=lambda symbol: book.activity.snapshot(symbol)["trades"],
 )
 state = _WorkerBackendState(
     executor=executor, account_id=1, connection_collector=collector, orders_binding=binding, orders_executor=executor
@@ -116,6 +123,30 @@ async def events(request: Request):
 @app.post("/api/v1/test/orders/{action}")
 async def change(action: str):
     if action == "reset":
+        book.activity = AccountActivityBook()
+        book.activity.observe_trade(
+            TradeRecord.create(
+                trade_id="fill-1",
+                order_id="native-1",
+                symbol="rb2610",
+                trade_price=3500,
+                trade_volume=1,
+                direction="BUY",
+                offset="OPEN",
+            )
+        )
+        book.activity.observe_order(
+            UnifiedOrder(
+                order_id="rejected-1",
+                symbol="ag2612",
+                direction="SELL",
+                order_type="LIMIT",
+                volume=1,
+                price=100,
+                status="已拒绝",
+                extra={"last_msg": "保证金不足"},
+            )
+        )
         with book._lock:
             book._orders.clear()
             book._changed.clear()

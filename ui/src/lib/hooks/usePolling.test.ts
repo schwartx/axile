@@ -56,6 +56,17 @@ describe('pollingView', () => {
     })
   })
 
+  it('暂停读取可以保留同查询数据，但不声称正在读取或数据仍然实时', () => {
+    expect(pollingView({ ...ready, refreshing: true }, 'account:1', false, false, true)).toEqual({
+      data: { value: 1 }, error: null, loading: false, refreshing: false, updatedAt: 123, stale: true,
+    })
+  })
+
+  it('保留暂停数据时，换账户或交易会话仍隐藏旧值', () => {
+    expect(pollingView(ready, 'account:2', false, false, true).data).toBeNull()
+    expect(pollingView(ready, 'account:1:new-session', true, false, true).data).toBeNull()
+  })
+
   it('手动查询在首次读取或切换实体前保持未读取状态', () => {
     expect(pollingView(ready, 'account:2', true, true)).toEqual({
       data: null,

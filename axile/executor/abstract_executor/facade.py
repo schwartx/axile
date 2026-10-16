@@ -102,7 +102,16 @@ class AbstractExecutorFacadeMixin:
         """
         executor = _executor(self)
         normalized_symbol = executor._normalize_symbol(symbol)
-        order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
+        try:
+            order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
+        except Exception as exc:
+            executor.account_orders.activity.record_failure(
+                "place_order",
+                normalized_symbol,
+                None,
+                getattr(exc, "execution_error", None) or "下单未确认成功，请查看执行详情；未据此认定订单已结束",
+            )
+            raise
         executor.get_execution_query_runtime_bridge().handle_place_order_result(
             order, fallback_symbol=normalized_symbol
         )
@@ -399,10 +408,46 @@ class AbstractExecutorFacadeMixin:
         """
         executor = _executor(self)
         normalized_symbol = executor._normalize_symbol(symbol)
-        canceled = executor._cancel_order_impl(normalized_symbol, order_id)
+        try:
+            canceled = executor._cancel_order_impl(normalized_symbol, order_id)
+        except Exception as exc:
+            executor.account_orders.activity.record_failure(
+                "cancel_order",
+                normalized_symbol,
+                order_id,
+                getattr(exc, "execution_error", None) or "撤单未确认成功，请核对订单状态",
+            )
+            raise
+        if not canceled:
+            detail = getattr(executor, "get_cancel_failure_detail", lambda *_: {})(normalized_symbol, order_id)
+            executor.account_orders.activity.record_failure(
+                "cancel_order",
+                normalized_symbol,
+                order_id,
+                detail.get("message") or "撤单未提交成功或结果待确认",
+                outcome=detail.get("outcome", "unknown"),
+            )
         if canceled:
             executor.get_execution_query_runtime_bridge().handle_cancel_order_result(normalized_symbol, order_id)
         return canceled
+
+    @controlled_operation("query_order", symbol_arg="symbol", success_outcome="fetched")
+    def query_recent_orders(self, symbol: str | None = None) -> list[UnifiedOrder]:
+        """读取渠道可查询的近期委托，具体时间范围由渠道声明。"""
+        return self._query_recent_orders_impl(symbol)
+
+    def _query_recent_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
+        """外部渠道未实现历史查询时明确报告能力缺失。"""
+        raise NotImplementedError("渠道尚未支持近期委托查询")
+
+    @controlled_operation("query_trades", symbol_arg="symbol", success_outcome="fetched")
+    def query_recent_trades(self, symbol: str | None = None) -> list[TradeRecord]:
+        """读取账户近期逐笔成交，不按某一次 execution 过滤。"""
+        return self._query_recent_trades_impl(symbol)
+
+    def _query_recent_trades_impl(self, symbol: str | None = None) -> list[TradeRecord]:
+        """外部渠道未实现历史查询时明确报告能力缺失。"""
+        raise NotImplementedError("渠道尚未支持近期成交查询")
 
     def _get_operation_display(self, order: UnifiedOrder) -> str:
         """

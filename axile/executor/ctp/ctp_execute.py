@@ -398,6 +398,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if detail is not None:
             rid = request_id or getattr(row, "RequestID", None)
             self._control_request_result(rid, "broker_rejected", {"error_id": detail[0], "error_msg": detail[1]})
+            link = getattr(self, "_control_request_links", {}).get(rid)
+            if link is not None:
+                self.account_orders.activity.record_failure(
+                    "cancel_order",
+                    str(getattr(row, "InstrumentID", "")),
+                    link[4],
+                    detail[1],
+                    event_id=f"ctp-cancel-{rid}",
+                    outcome="rejected",
+                )
         self._log_error(info, "撤单")
 
     @override
@@ -1566,6 +1576,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if key in self._dispatched_trades:
                 return
             self._dispatched_trades.add(key)
+        self.account_orders.activity.observe_trade(trade)
         self._dispatch(self._trade_callbacks, trade)
 
     def _replay_unassociated_trades(self):
@@ -1697,6 +1708,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         r = build_query_trades(self._config(), symbol)
         ts = [self._convert_trade(x) for x in self._query("ReqQryTrade", r)]
         return [x for x in ts if x.order_id == order_id]
+
+    def _query_recent_orders_impl(self, symbol=None):
+        """查询当前交易日柜台委托，包含真实终态。"""
+        rows = self._query("ReqQryOrder", build_query_orders(self._config(), symbol))
+        return [self._remember_order(row) for row in rows]
+
+    def _query_recent_trades_impl(self, symbol=None):
+        """查询当前交易日柜台逐笔成交，沿用完整订单身份关联。"""
+        rows = self._query("ReqQryTrade", build_query_trades(self._config(), symbol or ""))
+        return [self._convert_trade(row) for row in rows]
 
     @override
     def get_tick_size(self, symbol):

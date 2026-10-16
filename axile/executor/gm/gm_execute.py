@@ -597,6 +597,14 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             if order.get("account_id") == query_account_id
         ]
 
+    def _query_recent_orders_impl(self, symbol: str | None = None) -> list[UnifiedOrder]:
+        """读取 GM 当前可查询的账户委托。"""
+        return [order for order in self._query_order_records() if symbol is None or order.symbol == symbol]
+
+    def _query_recent_trades_impl(self, symbol: str | None = None) -> list[TradeRecord]:
+        """读取 GM 当前可查询的账户成交。"""
+        return [trade for trade in self._query_trade_records() if symbol is None or trade.symbol == symbol]
+
     def _submit_cancel_request(
         self,
         *,
@@ -684,6 +692,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._callback_dispatcher.register_order_observer(self.account_orders.apply)
         self._callback_dispatcher.register_order_observer(bridge.observe_order_update)
         self._callback_dispatcher.register_trade_observer(bridge.observe_trade_record)
+        self._callback_dispatcher.register_trade_observer(self.account_orders.activity.observe_trade)
         self._execution_query_runtime_observers_registered = True
 
     @property

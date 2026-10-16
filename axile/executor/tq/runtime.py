@@ -387,6 +387,8 @@ class TQRuntime:
                     self.synchronized = True
                     reset = reset or code == 2019112902
                     self._connection.succeeded()
+            else:
+                self._emit("notification", {**snapshot_entity(row), "notification_id": str(key)})
         self._notifications = current_ids
         return reset
 

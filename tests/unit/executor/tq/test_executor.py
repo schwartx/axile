@@ -52,6 +52,27 @@ def test_unknown_native_order_is_retained_and_never_confirmed_as_canceled(execut
     assert instance.reconcile_terminal_order("rb2610", "o1") is None
 
 
+def test_recent_queries_include_terminals_and_preserve_independent_fills(executor):
+    instance, api = executor
+    api.order.update(status="FINISHED", volume_left=1)
+    orders = instance.query_recent_orders()
+    assert len(orders) == 1 and orders[0].status == "已撤销"
+    trades = instance.query_recent_trades()
+    assert len(trades) == 1 and trades[0].trade_id == "t1"
+    assert instance.query_recent_orders("ag2612") == []
+
+
+def test_cancel_failure_notifications_without_identity_remain_account_events(executor):
+    instance, _ = executor
+    notification = {"content": "撤单被拒绝", "notification_id": "one"}
+    instance._on_runtime_event("notification", notification)
+    instance._on_runtime_event("notification", notification)
+    result = instance.account_orders.activity.snapshot()
+    assert len(result["failures"]) == 1
+    assert result["failures"][0]["order_id"] is None
+    assert result["failures"][0]["symbol"] == ""
+
+
 class FakeApi(CatalogApiMixin):
     def __init__(self) -> None:
         self.quote = {

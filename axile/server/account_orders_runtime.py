@@ -72,6 +72,15 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
         execution_id=execution_id if isinstance(execution_id, str) else None,
         native_identity={key: str(extra[key]) for key in _IDENTITY_FIELDS if extra.get(key) is not None},
         uncertain=not order.is_active() and not order.is_completed(),
+        update_time=order.update_time,
+        reason=next(
+            (
+                str(extra[key])
+                for key in ("error_msg", "ord_rej_reason_detail", "last_msg", "cancel_reason", "status_msg")
+                if extra.get(key)
+            ),
+            None,
+        ),
     ).model_dump(mode="json")
 
 
@@ -221,6 +230,10 @@ def _cancellation_failures(executor: Any, tracked: list, *, persist: bool = True
 
 def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """查询账户全部未完成委托，或验证身份后提交一次撤单。"""
+    if payload["command"] == "activity":
+        from axile.server.account_activity_runtime import run_activity_command
+
+        return run_activity_command(executor, payload)
     book = getattr(executor, "account_orders", None)
     snapshot = book.snapshot() if book is not None else None
     if payload["command"] == "query" or snapshot is None or payload["command"] == "cancel" and not snapshot["complete"]:

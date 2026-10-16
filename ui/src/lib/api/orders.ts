@@ -15,6 +15,8 @@ export interface CurrentOrder {
   execution_id: string | null
   native_identity: Record<string, string>
   uncertain: boolean
+  update_time?: string | null
+  reason?: string | null
 }
 
 export interface CancelReceipt {
@@ -46,4 +48,47 @@ export function cancelCurrentOrder(accountId: number, order: CurrentOrder, reque
   return apiSend('POST', `/account/${accountId}/orders/cancel`, {
     request_id: requestId, order_id: order.order_id, symbol: order.symbol,
   })
+}
+
+export interface AccountTrade {
+  trade_id: string
+  order_id: string
+  symbol: string
+  direction: string
+  offset: string | null
+  time: string
+  price: number
+  volume: number
+  value: number
+}
+
+export interface OperationFailure {
+  event_id: string
+  operation: string
+  outcome?: string
+  symbol: string
+  order_id: string | null
+  time: string
+  message: string
+}
+
+export interface AccountActivity {
+  orders: CurrentOrder[]
+  ended_orders?: CurrentOrder[]
+  trades: AccountTrade[]
+  failures: OperationFailure[]
+  scope: string
+  started_at: string
+  sampled_at: string
+  queried_at: string | null
+  errors: string[]
+  symbols: string[]
+  limit: number
+  truncated: boolean
+}
+
+export function getAccountActivity(accountId: number, symbol: string, limit: number, refresh: boolean, signal?: AbortSignal): Promise<AccountActivity> {
+  const params = new URLSearchParams({ limit: String(limit), refresh: String(refresh) })
+  if (symbol) params.set('symbol', symbol)
+  return apiGet(`/account/${accountId}/orders/activity?${params}`, signal)
 }

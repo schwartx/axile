@@ -12,6 +12,7 @@ from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.server.connection_state import connection_config_key
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_order import (
+    AccountActivityPublic,
     AccountOrderPublic,
     AccountOrdersPublic,
     OrderCancelReceipt,
@@ -177,6 +178,23 @@ async def query_account_orders(account: AccountContext, *, refresh: bool = False
     if state.refresh_task is None or state.refresh_task.done():
         state.refresh_task = _background(_query(account, state, True))
     return await asyncio.wait_for(asyncio.shield(state.refresh_task), timeout=35)
+
+
+async def query_account_activity(
+    account: AccountContext, *, refresh: bool = False, symbol: str | None = None, limit: int = 100
+) -> AccountActivityPublic:
+    """复用账户委托通路读取近期记录；仅显式核对访问渠道。"""
+    state = _state(account)
+
+    async def query() -> AccountActivityPublic:
+        async with state.lock:
+            result = await _command(
+                account, {"command": "activity", "refresh": refresh, "symbol": symbol, "limit": limit}
+            )
+            return AccountActivityPublic.model_validate(result)
+
+    task = _background(query())
+    return await asyncio.wait_for(asyncio.shield(task), timeout=35)
 
 
 async def _cancel(account: AccountContext, state: _OrdersState, payload: OrderCancelRequest) -> OrderCancelReceipt:

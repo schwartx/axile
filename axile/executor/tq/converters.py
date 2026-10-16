@@ -88,6 +88,8 @@ def quote_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedPriceDat
 
 
 def _order_status(row: object) -> str:
+    if _value(row, "is_error", None) is True:
+        return OrderStatus.REJECTED
     status = str(_value(row, "status", "") or "")
     volume = _float(row, "volume_orign")
     left = _float(row, "volume_left")
@@ -99,7 +101,7 @@ def _order_status(row: object) -> str:
     if left <= 0 and volume > 0:
         return OrderStatus.FILLED
     message = str(_value(row, "last_msg", "") or "")
-    if any(word in message for word in ("拒绝", "失败", "错误", "不合法")):
+    if _value(row, "is_error", None) is None and any(word in message for word in ("拒绝", "失败", "错误", "不合法")):
         return OrderStatus.REJECTED
     return OrderStatus.CANCELED
 
@@ -127,10 +129,13 @@ def order_to_unified(row: object, resolver: TQSymbolResolver) -> UnifiedOrder:
         status=_order_status(row),
         filled_volume=max(0.0, volume - left),
         avg_price=_float(row, "trade_price"),
+        create_time=_iso_from_nano(_value(row, "insert_date_time", 0)),
         insert_date_time=_value(row, "insert_date_time", 0),
         exchange_id=exchange,
         offset=str(_value(row, "offset", "") or ""),
         last_msg=str(_value(row, "last_msg", "") or ""),
+        is_error=_value(row, "is_error", None),
+        exchange_order_id=str(_value(row, "exchange_order_id", "") or ""),
         tq_symbol=full_symbol,
     )
 

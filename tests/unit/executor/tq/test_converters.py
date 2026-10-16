@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_account_assets import PositionDirection
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
@@ -10,6 +12,26 @@ from axile.executor.tq.symbols import TQInstrument, TQSymbolResolver
 
 def _resolver() -> TQSymbolResolver:
     return TQSymbolResolver([TQInstrument("SHFE.rb2610", "rb2610", "SHFE", "FUTURE")])
+
+
+@pytest.mark.parametrize("message", ["开仓资金不足", "平今仓手数不足", ""])
+def test_sdk_error_flag_identifies_rejected_orders_without_matching_message(message):
+    order = order_to_unified(
+        {
+            "order_id": "rejected",
+            "exchange_id": "SHFE",
+            "instrument_id": "rb2610",
+            "direction": "BUY",
+            "volume_orign": 1,
+            "volume_left": 1,
+            "status": "FINISHED",
+            "is_error": True,
+            "last_msg": message,
+        },
+        _resolver(),
+    )
+    assert order.status == OrderStatus.REJECTED
+    assert order.extra["last_msg"] == message
 
 
 def test_quote_and_order_return_to_common_symbol() -> None:

@@ -83,6 +83,44 @@ def test_timeout_returns_unknown_gateway_error(client, monkeypatch):
     assert client.get("/account/1/orders").status_code == 504
 
 
+def test_recent_activity_validates_scope_and_keeps_partial_query_failure_visible(client, monkeypatch):
+    from axile.server.db.models.account_order import AccountActivityPublic
+
+    calls = []
+
+    async def query(_account, **kwargs):
+        calls.append(kwargs)
+        return AccountActivityPublic(
+            orders=[],
+            trades=[],
+            failures=[],
+            scope="当前交易日",
+            started_at="2026-10-16T09:00:00",
+            sampled_at="2026-10-16T10:00:00",
+            limit=100,
+            errors=["成交核对失败"],
+        )
+
+    monkeypatch.setattr(routes, "query_account_activity", query)
+    response = client.get("/account/1/orders/activity?refresh=true&symbol=rb2610")
+    assert response.status_code == 200
+    assert response.json()["errors"] == ["成交核对失败"]
+    assert calls == [{"refresh": True, "symbol": "rb2610", "limit": 100}]
+    assert client.get("/account/404/orders/activity").status_code == 404
+    assert client.get("/account/1/orders/activity?limit=501").status_code == 422
+    assert client.get("/account/1/orders/activity?symbol=%20bad").status_code == 422
+
+
+def test_recent_activity_gateway_error_does_not_disclose_channel_exception(client, monkeypatch):
+    async def fail(_account, **_kwargs):
+        raise RuntimeError("password=secret")
+
+    monkeypatch.setattr(routes, "query_account_activity", fail)
+    response = client.get("/account/1/orders/activity")
+    assert response.status_code == 502
+    assert "secret" not in response.text
+
+
 def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_path):
     async def query(_account, **_kwargs):
         return AccountOrdersPublic(

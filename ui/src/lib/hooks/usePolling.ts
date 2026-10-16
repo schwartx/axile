@@ -8,6 +8,8 @@ export interface PollingOptions {
   intervalMs?: number
   /** 依赖未就绪时关闭查询。 */
   enabled?: boolean
+  /** 暂停读取时保留同一查询的成功值；换账户或会话仍立即隐藏旧数据。 */
+  retainDataWhenDisabled?: boolean
   /** 仅由 refresh 发起读取，关闭首次加载、定时轮询及连接恢复读取。 */
   manual?: boolean
 }
@@ -52,8 +54,9 @@ export function pollingView<T>(
   queryKey: string,
   enabled: boolean,
   manual = false,
+  retainDataWhenDisabled = false,
 ): PollingView<T> {
-  if (!enabled || state.key !== queryKey) {
+  if ((!enabled && !retainDataWhenDisabled) || state.key !== queryKey) {
     return {
       data: null,
       error: null,
@@ -66,10 +69,10 @@ export function pollingView<T>(
   return {
     data: state.data,
     error: state.error,
-    loading: state.loading,
-    refreshing: state.refreshing,
+    loading: enabled && state.loading,
+    refreshing: enabled && state.refreshing,
     updatedAt: state.updatedAt,
-    stale: state.data !== null && state.error !== null,
+    stale: state.data !== null && (!enabled || state.error !== null),
   }
 }
 
@@ -81,7 +84,7 @@ export function pollingView<T>(
  */
 export function usePolling<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
-  { queryKey, intervalMs = 5000, enabled = true, manual = false }: PollingOptions,
+  { queryKey, intervalMs = 5000, enabled = true, manual = false, retainDataWhenDisabled = false }: PollingOptions,
 ): PollingState<T> {
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher
@@ -178,6 +181,6 @@ export function usePolling<T>(
   }, [enabled, intervalMs, manual, queryKey, run])
 
   useReadRecovery(run, enabled && !manual)
-  const view = pollingView(state, queryKey, enabled, manual)
+  const view = pollingView(state, queryKey, enabled, manual, retainDataWhenDisabled)
   return { ...view, refresh: run }
 }
