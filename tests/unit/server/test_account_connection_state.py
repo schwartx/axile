@@ -470,8 +470,9 @@ def _offline_session_worker(*args):
 def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(database, monkeypatch):
     import asyncio
 
+    from axile.server.execution.resident_connection import AccountConnectionUnavailable
     from axile.server.execution.worker_backend import manager as manager_module
-    from axile.server.execution.worker_backend.manager import WorkerBackendExecutionError, WorkerBackendManager
+    from axile.server.execution.worker_backend.manager import WorkerBackendManager
 
     engine, account = database
     monkeypatch.setattr(manager_module, "run_worker_backend_loop", _offline_session_worker)
@@ -496,9 +497,9 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
         from axile.server.connection_runtime import clear_sessions
 
         clear_sessions()
-        with pytest.raises(WorkerBackendExecutionError, match="主动断开"):
+        with pytest.raises(AccountConnectionUnavailable, match="请先连接账户"):
             await manager.get_account_assets(snapshot)
-        assert manager._workers[1].process.pid != first
+        assert not manager._workers
         assert status().status == "disconnected"
         await manager.prepare_account(snapshot, force_reconnect=True)
         assert status().status == "ready" and not status().manually_disconnected
@@ -634,9 +635,9 @@ def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(da
 
     async def run():
         for _ in range(2):
-            with pytest.raises(AccountConnectionUnavailable, match="显式重新连接"):
+            with pytest.raises(AccountConnectionUnavailable, match="请先连接账户"):
                 await manager.get_account_assets(account)
-            with pytest.raises(AccountConnectionUnavailable, match="显式重新连接"):
+            with pytest.raises(AccountConnectionUnavailable, match="请先连接账户"):
                 await manager.order_command(account, {"command": "query"})
         with pytest.raises(AccountConnectionUnavailable, match="冷却") as error:
             await manager.prepare_account(account)
