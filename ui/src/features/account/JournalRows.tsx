@@ -98,9 +98,13 @@ function ExecutionExpansion({ row, accountId, scope, expansion, update, currency
   })
   const scoped = !!scope && (scope.start != null || !!scope.day)
   return <div className="border-l-2 border-accent px-3 py-2" data-testid="execution-expansion">
-    <div className="flex min-h-9 items-center gap-4 text-xs">{detailLink(row.executionId)}{scope && <span className="text-ink-3">完整执行持仓变化</span>}</div>
+    <div className="mb-2 flex min-h-9 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      {detailLink(row.executionId)}
+      <span aria-hidden className="text-ink-3">·</span>
+      <ExecutionErrorEvidence accountId={accountId} executionId={row.executionId} recordId={row.recordId} record={row.record} enabled={expansion.open} className="inline-flex items-center [&>button]:text-xs" />
+      {scope && <span className="text-ink-3">完整执行持仓变化</span>}
+    </div>
     {!row.executionId && <p className="py-2 text-xs text-ink-3">历史记录无执行附件</p>}
-    <ExecutionErrorEvidence accountId={accountId} executionId={row.executionId} recordId={row.recordId} record={row.record} enabled={expansion.open} />
     <ErrorNotice intent="read" title="执行证据读取失败" hasData={evidence.data != null} error={evidence.error} onRetry={evidence.refresh} />
     <ErrorNotice intent="read" title="执行事件读取失败" error={evidence.data?.eventsError} onRetry={evidence.refresh} />
     <ErrorNotice intent="read" title="执行附件读取失败" error={evidence.data?.artifactsError} onRetry={evidence.refresh} />

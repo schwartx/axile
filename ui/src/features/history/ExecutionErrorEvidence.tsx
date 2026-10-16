@@ -33,7 +33,7 @@ function sourceScope(source: Source, snapshot: Snapshot): string {
 }
 
 /** 打开时独立读取并冻结证据；页面轮询不会替换正文或复制内容。 */
-export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEvent[]; label?: string; enabled?: boolean }) {
+export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEvent[]; label?: string; enabled?: boolean; className?: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const requests = useRef(new Map<Source, AbortController>())
   const generation = useRef(0)
@@ -96,7 +96,7 @@ export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEven
     scope: (Object.keys(names) as Source[]).filter(source => snapshot.context.executionId || source === 'record')
       .map(source => ({ label: names[source], value: sourceScope(source, snapshot) })),
   }) : null
-  return <div className="mt-3">
+  return <div className={props.className ?? 'mt-3'}>
     {(props.events ?? []).map(event => { const item = catalogEvidence(event); return item && <div key={event.id ?? event.seq} className={`mb-1 text-[13px] ${event.event_type === 'instruments_failed' ? 'text-warn' : 'text-ink-2'}`}><span>{item.label.split(' · ')[0]}</span><span className="ml-2 whitespace-pre-wrap">{shortErrorReason(item.value)}</span></div> })}
     <button type="button" onClick={open} className="cursor-pointer text-[13px] text-accent hover:underline">{props.label ?? '查看错误详情'}</button>
     {snapshot && info && <CenteredModal open title="执行错误详情" subtitle={snapshot.context.executionId ?? `记录 ${snapshot.context.recordId}`} onClose={close} widthClassName="w-[720px]"

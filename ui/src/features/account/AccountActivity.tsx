@@ -1,5 +1,6 @@
 import { useCallback, useId, useRef, useState, type ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
+import { Select } from '@/components/ui/Select'
 import { Segmented } from '@/components/ui/Segmented'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { activityEvents, type ActivityTab } from '@/features/account/accountActivityModel'
@@ -27,11 +28,11 @@ function ActivityTable({ data, tab, quantityLabel }: { data: AccountActivity; ta
       <span className="num text-xs text-ink-3"><small className="block">{event.timeLabel}</small>{time(event.time)}</span>
       <div className="min-w-0"><span className="font-medium">{event.symbol || '账户通知'}</span><span className={`ml-3 ${event.warning ? 'text-warn' : 'text-ink-2'}`}>{event.label}</span>
         <p className="mt-1 break-words text-ink-2">{event.message}</p>{event.orderId && <p className="mt-1 break-all text-xs text-ink-3">订单编号 {event.orderId}</p>}</div>
-    </div>)}</div> : <Empty text="当前查询范围内暂无撤单或拒绝记录" />
+    </div>)}</div> : <Empty text="暂无撤单或拒绝记录" />
   }
   const trades = tab === 'trades'
   const rows = trades ? data.trades : data.orders
-  if (!rows.length) return <Empty text={trades ? '当前查询范围内暂无成交记录' : '当前查询范围内暂无委托记录'} />
+  if (!rows.length) return <Empty text={trades ? '暂无成交记录' : '暂无委托记录'} />
   return <div className="overflow-x-auto"><div className="min-w-[700px]">
     <div className={`${columns} border-b border-line py-2 text-xs text-ink-3`}><span>{trades ? '成交时间' : '委托时间'}</span><span>品种</span><span>买卖 / 开平</span><span>{trades ? '成交价' : '委托价'}</span><span>{trades ? '成交量' : '委托 / 已成'}</span><span>{trades ? '订单编号' : '状态'}</span></div>
     {trades ? data.trades.map(trade => <div key={JSON.stringify([trade.symbol, trade.trade_id, trade.time])} className={`${columns} items-center border-b border-line py-3 text-[13px]`}>
@@ -54,6 +55,7 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
   const filterId = useId()
   const [filter, setFilter] = useState({ accountId: state.accountId, value: '' })
   const symbol = filter.accountId === state.accountId ? filter.value : ''
+  const [manual, setManual] = useState(false)
   const [limit, setLimit] = useState(100)
   const request = useRef({ key: '', refresh: true })
   const key = `${state.accountId}:${state.query.data?.instance_id ?? ''}:${symbol}`
@@ -66,7 +68,8 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
   const query = usePolling(fetcher, { queryKey: `${key}:${limit}`, enabled: state.open && state.connectionReady && tab !== 'pending', retainDataWhenDisabled: true, intervalMs: 5000 })
   const fade = useRemountFade(tab)
   const data = query.data
-  const chooseSymbol = (value: string) => { setFilter({ accountId: state.accountId, value }); setLimit(100) }
+  const chooseSymbol = (value: string) => { setFilter({ accountId: state.accountId, value }); setLimit(100); setManual(false) }
+  const symbols = [...new Set([...(data?.symbols ?? []), ...(symbol ? [symbol] : [])])].sort()
   return <>
     <div className="mb-4 overflow-x-auto"><Segmented size="sm" className="whitespace-nowrap" value={tab} onChange={onTabChange} options={[
       { value: 'trades', label: '最近成交' }, { value: 'orders', label: '最近委托' },
@@ -76,22 +79,34 @@ export function AccountActivityContent({ state, units, pendingContent, tab, onTa
     <div key={tab} className={`min-h-[260px] ${fade ? 'panel-fade-in' : ''}`}>
       {tab === 'pending' ? pendingContent : <>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[13px]">
-          <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); const value = String(new FormData(event.currentTarget).get('symbol') ?? '').trim(); chooseSymbol(value) }}>
-            <label className="text-ink-3" htmlFor={filterId}>品种</label><input key={key} id={filterId} name="symbol" defaultValue={symbol} list={`${filterId}-symbols`} pattern={'[A-Za-z0-9_.:\\/\\-]+'} maxLength={100} placeholder="全部已观测品种" className="min-h-8 w-40 rounded-md border border-line bg-transparent px-2 text-ink-1 outline-accent" />
-            <datalist id={`${filterId}-symbols`}>{data?.symbols.map(value => <option key={value} value={value} />)}</datalist><button type="submit" className="min-h-8 cursor-pointer text-accent">筛选</button>{symbol && <button type="button" onClick={() => chooseSymbol('')} className="min-h-8 cursor-pointer text-ink-3">全部</button>}
-          </form>
-          <button type="button" disabled={!state.connectionReady || query.loading || query.refreshing} onClick={() => { request.current.refresh = true; void query.refresh() }} className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{query.refreshing || query.loading ? '核对中' : '核对记录'}</button>
+          <div className="min-w-0 max-w-full">
+            <div className="flex items-center gap-2">
+              <span className="text-ink-3">品种</span>
+              <Select value={symbol} ariaLabel="品种" searchable className="min-h-8 w-48 max-w-full justify-between px-2.5 py-1.5 text-[13px]" options={[
+                { value: '', label: '全部品种' },
+                ...symbols.map(value => ({ value, label: value })),
+                { value: '__custom__', label: '输入其他品种…' },
+              ]} onChange={value => { if (value === '__custom__') setManual(true); else chooseSymbol(value) }} />
+            </div>
+            <div className={`grid transition-[grid-template-rows] duration-150 motion-reduce:transition-none ${manual ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} inert={!manual}>
+              <div className="min-h-0 overflow-hidden">
+                <form className="flex flex-wrap items-center gap-2 pt-2" onSubmit={event => { event.preventDefault(); const value = String(new FormData(event.currentTarget).get('symbol') ?? '').trim(); chooseSymbol(value) }}>
+                  <input key={key} id={filterId} aria-label="其他品种代码" name="symbol" defaultValue={symbol} required pattern={'[A-Za-z0-9_.:\\/\\-]+'} maxLength={100} placeholder="输入完整品种代码" className="min-h-8 w-48 rounded-md border border-line bg-transparent px-2 text-ink-1 outline-accent" />
+                  <button type="submit" className="min-h-8 cursor-pointer text-accent">筛选</button>
+                  <button type="button" onClick={() => setManual(false)} className="min-h-8 cursor-pointer text-ink-3">取消</button>
+                </form>
+              </div>
+            </div>
+          </div>
+          <button type="button" title={data?.queried_at ? `上次核对：${time(data.queried_at)}` : undefined} disabled={!state.connectionReady || query.loading || query.refreshing} onClick={() => { request.current.refresh = true; void query.refresh() }} className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{query.refreshing || query.loading ? '核对中' : '核对记录'}</button>
         </div>
         {!state.connectionReady && !data && <Empty text="账户连接未就绪，记录暂不可查询" />}
         {query.error && <p role="status" className="mb-3 text-[13px] text-warn">记录读取失败{data ? '，以下为上次读取结果' : '，请稍后重试'}</p>}
         {query.loading && <Empty text="正在读取近期记录…" />}
         {data && <>
-          <p className="mb-2 text-xs leading-relaxed text-ink-3">{data.scope}{symbol ? ` · ${symbol}` : ''}</p>
-          <p className="mb-3 text-xs text-ink-3">{data.queried_at ? `渠道核对于 ${time(data.queried_at)}` : '尚未核对渠道记录'} · 最多显示最近 {data.limit} 笔</p>
           {data.errors.length > 0 && <div role="status" className="mb-3 text-xs leading-relaxed text-warn">{data.errors.map(message => <p key={message}>{message}</p>)}</div>}
-          {tab === 'failures' && <p className="mb-3 text-xs leading-relaxed text-ink-3">操作失败记录自 {time(data.started_at)} 本次连接起采集；撤单失败不表示订单已结束。无法关联的 TQ 通知保留为账户记录。</p>}
           <ActivityTable data={data} tab={tab} quantityLabel={units?.quantity_label ?? ''} />
-          {data.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">显示更多记录</button>}
+          {data.truncated && limit < 500 && <button type="button" disabled={query.refreshing} onClick={() => setLimit(value => Math.min(500, value + 100))} className="my-3 min-h-8 cursor-pointer text-[13px] text-accent disabled:text-ink-3">加载更多</button>}
         </>}
       </>}
     </div>
