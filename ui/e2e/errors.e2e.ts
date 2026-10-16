@@ -89,17 +89,17 @@ test('all first-read network failures share one global notice and recover withou
   })
   await page.goto('/e2e/errors.html?mode=outage')
   await expect(page.getByRole('button', { name: '查看服务连接错误详情' })).toContainText('与服务器失联')
-  await expect(page.getByText('无法连接 axile 服务', { exact: false })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: '查看服务连接错误详情' })).toHaveCount(1)
   await expect(page.getByRole('button', { name: '查看错误详情', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /^重试：/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '重试同步', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '重新计算当前目标权重', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '重新计算当前目标权重', exact: true })).toBeDisabled()
   await expect(page.getByText('暂不可用', { exact: true }).filter({ visible: true }).first()).toBeVisible()
   const previous = { ...reads }
   offline = false
   await page.getByRole('button', { name: '重试连接服务器' }).click()
   await expect(page.getByRole('banner')).toContainText('服务正常')
-  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('switch', { name: '账户连接' })).toBeVisible()
   for (const source of ['runtime-sync', 'asset_snapshots', 'target_snapshot', 'next_run_time', 'rebalance_plan']) {
     const path = `/api/v1/account/7/${source}`
     await expect.poll(() => reads[path]).toBe((previous[path] ?? 0) + 1)
@@ -113,18 +113,24 @@ test('all first-read network failures share one global notice and recover withou
 
 test('cached values remain visible during outage; active operations retain their own failure', async ({ page }) => {
   await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
   let offline = false, patches = 0
   await page.route('**/api/v1/**', route => {
     if (route.request().method() === 'PATCH') patches++
     return offline ? route.abort() : route.fallback()
   })
   await page.goto('/e2e/errors.html?mode=outage')
-  await expect(page.getByRole('status', { name: '账户连通状态：正常' })).toBeVisible()
+  await expect(page.getByRole('switch', { name: '账户连接' })).toBeVisible()
   await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeVisible()
   offline = true
+  await page.evaluate(async () => {
+    const modulePath = '/src/stores/liveConnection.ts'
+    const { useLiveConnection } = await import(modulePath)
+    useLiveConnection.getState().disconnect()
+  })
   await page.getByRole('button', { name: '刷新页面读取' }).click()
   await expect(page.getByRole('banner')).toContainText('与服务器失联')
-  await expect(page.getByRole('button', { name: '账户连通状态：未知' })).toContainText('连接状态待更新')
+  await expect(page.getByRole('switch', { name: '账户连接' })).toBeDisabled()
   await expect(page.getByText(/当前显示 .*的数据/).filter({ visible: true }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeVisible()
   const start = page.getByRole('button', { name: '启动自动执行', exact: true })
@@ -133,6 +139,7 @@ test('cached values remain visible during outage; active operations retain their
   await expect(page.getByRole('alert').filter({ hasText: '自动执行配置保存失败' })).toContainText('无法连接 axile 服务')
   expect(patches).toBe(1)
   offline = false
+  await pushConnection(page, { status: 'ready', observed_at: null, message: null, error: null })
   await page.getByRole('button', { name: '重试连接服务器' }).click()
   await expect(page.getByRole('banner')).toContainText('服务正常')
   await expect(start).toBeEnabled()
@@ -223,16 +230,15 @@ test('full error and copy freeze A while the page receives B; Escape restores fo
   await expect(dialog).toHaveCount(0)
 })
 
-test('inline details stay frozen when the enclosing modal query recovers', async ({ page }) => {
+test('inline details close when the enclosing modal query recovers', async ({ page }) => {
   await page.goto('/e2e/errors.html?mode=embedded')
   const dialog = page.getByRole('dialog', { name: '已有业务弹窗' })
   await dialog.getByRole('button', { name: '查看错误详情' }).click()
-  await dialog.getByRole('button', { name: '后台查询恢复成功' }).click()
-  await expect(page.getByRole('dialog')).toHaveCount(1)
   await expect(dialog).toContainText('尾部根因-A')
   await dialog.getByRole('button', { name: '复制错误信息' }).click()
   expect(await copied(page)).toContain(raw('A'))
-  await dialog.getByRole('button', { name: '收起详情' }).click()
+  await dialog.getByRole('button', { name: '后台查询恢复成功' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(1)
   await expect(dialog.getByRole('button', { name: '复制错误信息' })).not.toBeVisible()
 })
 

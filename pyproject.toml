@@ -1,6 +1,6 @@
 [project]
 name = "axile"
-version = "0.19.1"
+version = "0.20.0"
 description = "通过 Web UI 配置和运行的多渠道交易执行服务"
 readme = "README.md"
 requires-python = ">=3.12"

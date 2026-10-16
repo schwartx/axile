@@ -159,4 +159,4 @@ def test_real_account_patch_rejects_tq_automatic_before_any_commit(monkeypatch):
 
 def test_migration_does_not_remove_private_algorithm_parameters():
     raw = {"algorithm": {"method": "PRIVATE", "params": {"offset_priority": "custom"}}}
-    assert revision.migrate_execution(raw, 1, "binance")["algorithm"] == raw["algorithm"]
+    assert revision.migrate_execution(raw, 1, "external")["algorithm"] == raw["algorithm"]
