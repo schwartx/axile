@@ -22,7 +22,7 @@ const steps = [
   { id: 'query_account', label: '资金查询', details: { title: '资金查询记录', rows: [{ key: '资金账号', value: 'full-account' }, { key: '权益', value: 0 }, { key: '可用资金', value: null }] } },
   { id: 'ready', label: '会话就绪', status: 'failed', error: { reason_code: 'TEST_FAILURE', message: '会话整理失败' } },
 ].map((step) => ({ status: 'passed', ...step }))
-const job = { validation_id: 'test-validation', channel: 'ctp', status: 'failed', steps, created_at: '2026-10-13T10:00:00+08:00', finished_at: '2026-10-13T10:00:01+08:00', error: null }
+const job = { validation_id: 'test-validation', run_id: 'test-validation', purpose: 'validation', channel: 'ctp', status: 'failed', steps, created_at: '2026-10-13T10:00:00+08:00', finished_at: '2026-10-13T10:00:01+08:00', error: null }
 
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => { throw error })
@@ -34,12 +34,12 @@ test.beforeEach(async ({ page }) => {
 test('key-value details and lazy records support filtering sorting pagination and cache', async ({ page }) => {
   let reads = 0
   await page.route('**/steps/query_orders/table', (route) => { reads++; return route.fulfill({ json: table }) })
-  const orders = page.locator('[data-validation-step="query_orders"]')
+  const orders = page.locator('[data-connection-step="query_orders"]')
   await expect(orders).toContainText('60 条')
-  await expect(page.locator('[data-validation-step="trader_connection"]').getByRole('button')).toHaveCount(0)
+  await expect(page.locator('[data-connection-step="trader_connection"]').getByRole('button')).toHaveCount(0)
   expect(reads).toBe(0)
   await page.screenshot({ path: '/tmp/axon-validation-compact.png', fullPage: true })
-  const login = page.locator('[data-validation-step="trader_login"]').getByRole('button', { name: '查看详情' })
+  const login = page.locator('[data-connection-step="trader_login"]').getByRole('button', { name: '查看详情' })
   await login.click()
   const loginDialog = page.getByRole('dialog', { name: '交易账户登录信息' })
   await expect(loginDialog).toContainText('full-account')
@@ -78,18 +78,18 @@ test('expired data requires validation again before empty snapshots are shown', 
     return tries === 1 ? route.fulfill({ status: 404, json: { detail: '验证任务不存在或已过期，请重新验证' } })
       : route.fulfill({ json: { ...table, title: '持仓查询记录', rows: [], row_count: 0 } })
   })
-  await page.locator('[data-validation-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
+  await page.locator('[data-connection-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
   const dialog = page.getByRole('dialog', { name: '持仓查询记录' })
-  await expect(dialog).toContainText('验证任务已过期')
+  await expect(dialog).toContainText('过程记录已过期或被新连接替换')
   await expect(dialog.getByRole('button', { name: '重试：查询记录读取失败' })).toHaveCount(0)
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: '重新验证', exact: true }).click()
-  await page.locator('[data-validation-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
+  await page.locator('[data-connection-step="query_positions"]').getByRole('button', { name: '查看详情' }).click()
   await expect(dialog).toContainText('本次查询无记录')
   await expect(dialog.getByRole('button', { name: '下一页' })).toBeDisabled()
   await page.screenshot({ path: '/tmp/axon-validation-mobile.png', fullPage: true })
   await page.keyboard.press('Escape')
-  await page.locator('[data-validation-step="query_account"]').getByRole('button', { name: '查看详情' }).click()
+  await page.locator('[data-connection-step="query_account"]').getByRole('button', { name: '查看详情' }).click()
   await expect(page.getByRole('dialog', { name: '资金查询记录' })).toContainText('未返回')
 })
 
@@ -130,7 +130,7 @@ test('server outage still allows an explicit validation attempt without a duplic
 test('table query keeps HTTP code request id and full raw error inside its current dialog', async ({ page }) => {
   const raw = 'synthetic table error '.repeat(100) + '\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因'
   await page.route('**/steps/query_orders/table', route => route.fulfill({ status: 500, json: { detail: { code: 'TABLE_FAILED', request_id: 'table-97', message: raw, traceback: 'Traceback\n  table.py:123\n' + raw } } }))
-  await page.locator('[data-validation-step="query_orders"]').getByRole('button', { name: '查看详情' }).click()
+  await page.locator('[data-connection-step="query_orders"]').getByRole('button', { name: '查看详情' }).click()
   const dialog = page.getByRole('dialog', { name: '订单查询记录' })
   await dialog.getByRole('button', { name: '查看错误详情' }).click()
   await expect(dialog).toContainText('TABLE_FAILED')

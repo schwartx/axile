@@ -10,6 +10,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.common.order_param_model import OrderParamModel
+from axile.executor.connection_progress import ConnectionStepDefinition as ConnectionStepDefinition
 from axile.executor.futures_close_policy import FuturesCloseCapability
 from axile.executor.models.unified_input_accounts import BaseAccountConfig
 
@@ -336,17 +337,10 @@ class ChannelPortfolioPreset(_FrozenDescriptorModel):
     example_symbols: tuple[str, ...] = Field(min_length=1)
 
 
-class ConnectionValidationStep(_FrozenDescriptorModel):
-    """一个渠道声明的连接检查项；标识只在该渠道内有意义。"""
-
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    label: str = Field(min_length=1)
-
-
 class ChannelConnectionValidation(_FrozenDescriptorModel):
     """渠道的连接验证能力，具体流程由渠道自己的验证器实现。"""
 
-    steps: tuple[ConnectionValidationStep, ...] = Field(min_length=1)
+    steps: tuple[ConnectionStepDefinition, ...] = Field(min_length=1)
     notice: str = Field(min_length=1)
 
 
@@ -400,6 +394,7 @@ class ChannelDescriptor(_FrozenDescriptorModel):
     account_form: ChannelAccountForm
     schedule: ChannelSchedule
     calendar: ChannelCalendar | None = None
+    connection_steps: tuple[ConnectionStepDefinition, ...] = ()
     connection_validation: ChannelConnectionValidation | None = None
     portfolio: ChannelPortfolioPreset
 

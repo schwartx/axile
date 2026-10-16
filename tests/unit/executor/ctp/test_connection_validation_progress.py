@@ -10,6 +10,22 @@ from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
 from tests.unit.executor.test_account_control_guard import _AdvancingClock
 
 
+def _observe_steps(executor, events):
+    from axile.executor.connection_progress import ConnectionProgressTracker
+    from axile.executor.connection_state import connection_monitor
+
+    previous = {}
+
+    def observe(data):
+        for step in data["steps"]:
+            status = step["status"]
+            if status in {"running", "passed"} and previous.get(step["id"]) != status:
+                previous[step["id"]] = status
+                events.append((step["id"], status))
+
+    connection_monitor(executor).progress = ConnectionProgressTracker("ctp", observer=observe)
+
+
 @pytest.fixture(autouse=True)
 def _advance_validation_clock(monkeypatch):
     # 仅加速 guard 的配额等待；目录查询线程和事件超时继续使用真实时钟。
@@ -35,7 +51,7 @@ def _validation_broker(monkeypatch):
 def test_connection_progress_matches_real_startup(monkeypatch):
     broker = ScriptedBroker(monkeypatch)
     events = []
-    broker.executor.set_connection_progress(lambda step, status: events.append((step, status)))
+    _observe_steps(broker.executor, events)
     try:
         broker.start()
         assert events == [
@@ -50,7 +66,7 @@ def test_connection_progress_matches_real_startup(monkeypatch):
                 "query_trades",
                 "query_positions",
                 "query_account",
-                "ready",
+                "channel_ready",
             )
             for status in ("running", "passed")
         ]
@@ -63,7 +79,7 @@ def test_connection_progress_matches_real_startup(monkeypatch):
 def test_connected_transport_does_not_pass_authentication(monkeypatch):
     broker = ScriptedBroker(monkeypatch)
     events = []
-    broker.executor.set_connection_progress(lambda step, status: events.append((step, status)))
+    _observe_steps(broker.executor, events)
     broker.trader.ReqAuthenticate.side_effect = None
     broker.trader.ReqAuthenticate.return_value = -1
     try:
@@ -85,6 +101,10 @@ def test_validator_binds_effective_policy_and_releases_executor(monkeypatch):
     from axile.executor.models.unified_input_accounts import CTPAccountConfig
 
     executor = Mock()
+    executor.account_orders = None
+    executor.get_account_assets.return_value = type(
+        "Assets", (), dict(currency="CNY", total_asset=0, available_cash=0, source="live")
+    )()
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: executor)
     config = CTPAccountConfig(
         broker_id="9999",
@@ -109,6 +129,10 @@ def test_validator_releases_executor_when_preparation_fails(monkeypatch):
     from axile.executor.models.unified_input_accounts import CTPAccountConfig
 
     executor = Mock()
+    executor.account_orders = None
+    executor.get_account_assets.return_value = type(
+        "Assets", (), dict(currency="CNY", total_asset=0, available_cash=0, source="live")
+    )()
     executor.set_account_control_guard.side_effect = RuntimeError("offline preparation failure")
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: executor)
     config = CTPAccountConfig(
@@ -177,9 +201,9 @@ def test_validator_reports_settlement_record_before_later_stages(monkeypatch):
 
 @pytest.mark.parametrize("source, label", [("existing", "当日已有确认"), ("submitted", "本次连接自动确认")])
 def test_settlement_details_preserve_values_and_order(source, label):
-    from axile.executor.ctp.connection_validation import _settlement_details
+    from axile.executor.ctp.connection_details import settlement_details
 
-    details = _settlement_details({"source": source, "account_id": "full-account", "settlement_id": 0})
+    details = settlement_details({"source": source, "account_id": "full-account", "settlement_id": 0})
     assert details == {
         "title": "结算确认记录",
         "rows": [
@@ -212,7 +236,7 @@ def test_session_query_failure_stays_on_actual_step(monkeypatch, request_name, s
 
     broker = ScriptedBroker(monkeypatch)
     events = []
-    broker.executor.set_connection_progress(lambda stage, status: events.append((stage, status)))
+    _observe_steps(broker.executor, events)
     if failure == "broker_error":
         broker.errors[request_name] = SimpleNamespace(ErrorID=999, ErrorMsg="查询拒绝")
     else:
@@ -221,7 +245,7 @@ def test_session_query_failure_stays_on_actual_step(monkeypatch, request_name, s
         broker.start()
     assert events[-1] == (step, "running")
     assert (step, "passed") not in events
-    assert ("ready", "running") not in events
+    assert ("channel_ready", "running") not in events
     assert not broker.executor._verify_connection()
 
 
@@ -231,7 +255,7 @@ def test_empty_funds_does_not_pass_funds_stage(monkeypatch):
     broker = ScriptedBroker(monkeypatch)
     broker.rows["ReqQryTradingAccount"] = []
     events = []
-    broker.executor.set_connection_progress(lambda stage, status: events.append((stage, status)))
+    _observe_steps(broker.executor, events)
     with pytest.raises(CtpRequestError, match="资金查询返回空结果"):
         broker.start()
     assert events[-1] == ("query_account", "running")
@@ -250,7 +274,8 @@ def test_validation_emits_only_useful_details_before_following_queries(monkeypat
         if data is not None:
             assert status == "passed"
             details[step] = data
-            assert not broker.executor._verify_connection()
+            if step not in {"account_assets", "pending_orders"}:
+                assert not broker.executor._verify_connection()
         if step == "query_trades" and status == "running":
             assert "query_orders" in details
 
@@ -263,6 +288,8 @@ def test_validation_emits_only_useful_details_before_following_queries(monkeypat
         "query_trades",
         "query_positions",
         "query_account",
+        "account_assets",
+        "pending_orders",
     }
     assert details["query_positions"]["rows"] == []
     assert details["query_orders"]["kind"] == "table"

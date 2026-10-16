@@ -1,54 +1,9 @@
 import { apiGet, apiSend } from '@/lib/api/client'
 
-export type ValidationStepStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped'
-export interface ConnectionValidationError {
-  reason_code: string
-  message: string
-  error_id?: number | null
-  details?: string | null
-  traceback?: string | null
-}
-export type ValidationCell = string | number | boolean | null
+import type { ConnectionRun } from '@/lib/api/connectionProgress'
 
-export interface ValidationKeyValueDetails {
-  title: string
-  rows: Array<{ key: string; value: ValidationCell }>
-}
-export interface ValidationTableColumn {
-  key: string
-  label: string
-  type: 'text' | 'number' | 'date' | 'time'
-  filterable?: boolean
-}
-export interface ValidationTableSummary {
-  kind: 'table'
-  title: string
-  summary: string
-  description?: string | null
-  columns: ValidationTableColumn[]
-  row_count: number
-}
-export interface ValidationTable extends ValidationTableSummary {
-  rows: ValidationCell[][]
-}
-export type ValidationStepDetails = ValidationKeyValueDetails | ValidationTableSummary
-export function isValidationTable(details: ValidationStepDetails): details is ValidationTableSummary {
-  return 'kind' in details && details.kind === 'table'
-}
-
-/** 表格快照只在查看时读取一次，独立于阶段状态的轮询。 */
-export const getValidationTable = (id: string, stepId: string, signal?: AbortSignal) => apiGet<ValidationTable>(
-  `/channel-validations/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}/table`, signal,
-)
-
-export interface ConnectionValidationJob {
+export interface ConnectionValidationJob extends ConnectionRun {
   validation_id: string
-  channel: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-  steps: Array<{ id: string; label: string; status: ValidationStepStatus; error?: ConnectionValidationError | null; details?: ValidationStepDetails | null }>
-  created_at: string
-  finished_at: string | null
-  error: ConnectionValidationError | null
 }
 
 export const connectionValidationApi = {

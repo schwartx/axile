@@ -1,15 +1,15 @@
 import { ErrorDetailsModal } from '@/components/ui/ErrorDetailsModal'
 import { errorInfoFromEntries } from '@/lib/errorInfo'
-import type { ConnectionValidationError } from '@/lib/api/connectionValidation'
+import type { ConnectionStepError } from '@/lib/api/connectionProgress'
 
-export interface ValidationErrorSelection {
+export interface ConnectionErrorSelection {
   stage: string
-  error: ConnectionValidationError
+  error: ConnectionStepError
 }
 
 /** 柜台错误沿用原文、原因代码和柜台错误码，与请求错误共用详情组件。 */
-export function ConnectionValidationErrorModal({ selection, onClose }: {
-  selection: ValidationErrorSelection | null
+export function ConnectionStepErrorModal({ selection, onClose }: {
+  selection: ConnectionErrorSelection | null
   onClose: () => void
 }) {
   const info = selection ? errorInfoFromEntries(selection.error.message, [
@@ -21,5 +21,5 @@ export function ConnectionValidationErrorModal({ selection, onClose }: {
     { label: '错误原文', value: selection.error.details || selection.error.message },
     ...(selection.error.traceback ? [{ label: 'traceback', value: selection.error.traceback }] : []),
   ]) : null
-  return <ErrorDetailsModal selection={info ? { title: '连接验证错误详情', info } : null} onClose={onClose} />
+  return <ErrorDetailsModal selection={info ? { title: '连接步骤错误详情', info } : null} onClose={onClose} />
 }

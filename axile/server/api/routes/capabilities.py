@@ -15,6 +15,7 @@ from axile.channels import (
     list_channels,
 )
 from axile.channels.contracts import ChannelConnectionValidation
+from axile.executor.connection_progress import ConnectionStepDefinition, connection_plan
 from axile.executor.futures_close_policy import FuturesCloseCapability
 from axile.server.channel_capabilities import install_extra, missing_packages
 
@@ -52,6 +53,7 @@ class ChannelCapabilityPublic(BaseModel):
     calendar: ChannelCalendar | None
     schedule: ChannelSchedule
     portfolio: ChannelPortfolioPreset
+    connection_steps: tuple[ConnectionStepDefinition, ...] = ()
     connection_validation: ChannelConnectionValidation | None = None
     available: bool
     missing_packages: list[str]
@@ -75,7 +77,15 @@ def list_channel_capabilities() -> list[ChannelCapabilityPublic]:
     """
     return [
         ChannelCapabilityPublic(
-            **plugin.descriptor.model_dump(mode="python"),
+            **{
+                **plugin.descriptor.model_dump(mode="python"),
+                "connection_validation": {
+                    **plugin.descriptor.connection_validation.model_dump(mode="python"),
+                    "steps": connection_plan(plugin.descriptor.channel, "validation"),
+                }
+                if plugin.descriptor.connection_validation
+                else None,
+            },
             available=not (missing := missing_packages(plugin.descriptor.channel)),
             missing_packages=missing,
             install_extra=install_extra(plugin.descriptor.channel),

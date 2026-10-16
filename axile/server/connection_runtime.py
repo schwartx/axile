@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 
 from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
+from axile.executor.connection_progress import ConnectionRun
 from axile.executor.connection_state import ConnectionObservation, ConnectionStatus
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountSessionStatus
 
@@ -27,6 +28,7 @@ class _LiveSession:
     instance_id: str
     alive: Callable[[], bool]
     observation: ConnectionObservation | None = None
+    progress: dict | None = None
     sequence: int = 0
     sampled: float = field(default_factory=clock_monotonic)
     sampled_at: str | None = None
@@ -52,7 +54,9 @@ def register_session(binding, alive: Callable[[], bool]) -> None:
     connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
 
 
-def observe_session(binding, sequence: int, observation: ConnectionObservation | None) -> None:
+def observe_session(
+    binding, sequence: int, observation: ConnectionObservation | None, *, progress: dict | None = None
+) -> None:
     """心跳只刷新采样时间，不能伪造新的渠道访问成功时间。"""
     with _lock:
         session = _sessions.get(binding.account_id)
@@ -75,6 +79,8 @@ def observe_session(binding, sequence: int, observation: ConnectionObservation |
                     float(seconds) if isinstance(seconds, (int, float)) else 0
                 )
             session.observation = observation
+            if progress is not None:
+                session.progress = progress
     from axile.server.connection_events import connection_hub
 
     connection_hub.sampled(binding.account_id, _STALE_SECONDS + 0.01)
@@ -103,6 +109,23 @@ def end_session(binding, message: str, *, failed: bool = False) -> bool:
         if session is None or session.instance_id != binding.instance_id or session.ended:
             return False
         session.ended = True
+        if session.progress and session.progress.get("status") in {"queued", "running"}:
+            from axile.executor.connection_progress import (
+                ConnectionProgressTracker,
+                ConnectionRun,
+                ConnectionStepError,
+                ConnectionTable,
+            )
+
+            tracker = ConnectionProgressTracker("", run=ConnectionRun.model_validate(session.progress))
+            tracker.tables = {
+                key: ConnectionTable.model_validate(value) for key, value in session.progress.get("tables", {}).items()
+            }
+            tracker.finish(
+                "failed" if failed else "cancelled",
+                ConnectionStepError(reason_code="CONNECTION.ENDED", message=message),
+            )
+            session.progress = tracker.snapshot(tables=True)
         if failed:
             session.retry_deadline = clock_monotonic() + 30
         session.observation = ConnectionObservation("error" if failed else "disconnected", clock_now_iso(), message)
@@ -160,6 +183,7 @@ def current_session(account_id: int, config_key: str) -> AccountConnectionPublic
         if status != session.view_status:
             session.view_status, session.updated_at = status, clock_now_iso()
         return AccountConnectionPublic(
+            progress=ConnectionRun.model_validate(session.progress) if session.progress else None,
             status=status,
             message=message,
             worker_alive=alive,
@@ -183,3 +207,14 @@ def matches_session(binding) -> bool:
             and session.config_key == binding.config_key
             and session.alive()
         )
+
+
+def connection_table(account_id: int, config_key: str, run_id: str, step_id: str) -> dict | None:
+    """读取当前实例已有的表格，不查询柜台；旧过程不能误读新过程记录。"""
+    with _lock:
+        session = _sessions.get(account_id)
+        if session is None or session.config_key != config_key or not session.progress:
+            return None
+        if session.progress.get("run_id") != run_id:
+            return None
+        return session.progress.get("tables", {}).get(step_id)

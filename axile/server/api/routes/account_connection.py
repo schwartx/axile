@@ -2,8 +2,9 @@
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
+from axile.executor.connection_progress import ConnectionTable
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.connection_state import public_connection
@@ -77,3 +78,20 @@ async def _reconnect_in_owned_session(account_id: int) -> AccountConnectionDetai
 async def disconnect_account(session: SessionDep, account_id: int) -> AccountConnectionDetail:
     """主动断开账户会话；定时任务的启停配置保持独立。"""
     return await _connection_operation(session, account_id, reconnect=False)
+
+
+@router.get("/{account_id}/connection/progress/{run_id}/steps/{step_id}/table", response_model=ConnectionTable)
+async def get_connection_table(
+    account_id: int, run_id: str, step_id: str, session: SessionDep, response: Response
+) -> ConnectionTable:
+    """读取本次连接阶段的记录快照，不访问柜台。"""
+    from axile.server.connection_runtime import connection_table
+    from axile.server.connection_state import connection_config_key
+
+    response.headers["Cache-Control"] = "no-store"
+    account = await _get_account_or_404(session, account_id)
+    key = connection_config_key(account.trade_channel, account.account_config)
+    table = connection_table(account_id, key, run_id, step_id)
+    if table is None:
+        raise HTTPException(404, "连接过程记录不存在或已被新连接替换")
+    return ConnectionTable.model_validate(table)

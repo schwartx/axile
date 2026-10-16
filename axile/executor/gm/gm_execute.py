@@ -189,6 +189,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._gm_config = account_config
         self.account_id = account_config.account_id
 
+        connection_monitor(self).step("environment", "running")
         if account_config.connection_mode == "service":
             self.just_started = False
         else:
@@ -198,7 +199,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             with connection_monitor(self).connecting():
                 self.just_started = self._start_gm_desktop_if_not(terminal_path)
 
+        connection_monitor(self).step("environment", "passed")
+        connection_monitor(self).step("runtime", "running")
         self._ensure_strategy_bridge()
+        connection_monitor(self).step("runtime", "passed")
+        connection_monitor(self).step("account_login", "passed")
         logger.success(f"账户 {self.account_id} GM runtime 初始化完成")
 
     def _verify_connection(self) -> bool:

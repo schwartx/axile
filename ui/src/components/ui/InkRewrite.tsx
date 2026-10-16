@@ -171,17 +171,17 @@ export function InkRewrite({
         </span>
         {pair.prev != null && (
           <span
-            className={`absolute left-0 top-0 whitespace-nowrap ${outCls} ${pair.prevCls ?? ''}`.trim()}
+            className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${outCls} ${pair.prevCls ?? ''}`.trim()}
             aria-hidden
           >
-            {pair.prev}
+            {overflow ? <OverflowText text={pair.prev} /> : pair.prev}
           </span>
         )}
         <span
           key={pair.gen}
-          className={`absolute left-0 top-0 whitespace-nowrap ${inCls} ${pair.curCls}`.trim()}
+          className={`absolute left-0 top-0 whitespace-nowrap ${overflow ? 'w-full' : ''} ${inCls} ${pair.curCls}`.trim()}
         >
-          {pair.cur}
+          {overflow ? <OverflowText text={pair.cur} /> : pair.cur}
         </span>
       </span>
     )

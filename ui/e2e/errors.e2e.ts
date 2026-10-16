@@ -891,7 +891,7 @@ for (const label of ['', '   ']) test(`blank connection label falls back; missin
   await mockConnectionSnapshot(page, { ...problem(), label, presentation: null })
   await page.goto(`/e2e/errors.html?mode=connection&label=${encodeURIComponent(label)}`)
   const badge = page.getByRole('button', { name: '连接详情，账户连通状态：暂不可用', exact: true })
-  await expect(badge).toContainText('连接异常')
+  await expect(page.getByRole('switch', { name: '账户连接' })).toContainText('连接异常')
   await badge.click()
   const dialog = page.getByRole('dialog', { name: '账户会话暂不可用' })
   await expect(dialog).toContainText('原始说明-A')
@@ -1151,10 +1151,10 @@ for (const label of ['交易前置失败', '认证失败']) test(`connection act
   await mockConnectionSnapshot(page, { ...problem(), label, presentation: null })
   await page.goto('/e2e/errors.html?mode=connection')
   const status = page.getByRole('button', { name: `连接详情，账户连通状态：暂不可用，${label}`, exact: true })
-  await expect(status).toContainText(label)
+  await expect(page.getByRole('switch', { name: '账户连接' })).toContainText(label)
   await expect(status.locator('svg')).toBeVisible()
   await expect(page.getByRole('switch', { name: '账户连接' }).locator('svg')).toBeVisible()
-  await expect(page.getByRole('switch', { name: '账户连接' })).toContainText('未连接')
+  await expect(page.getByRole('switch', { name: '账户连接' })).toHaveAttribute('aria-checked', 'false')
   await status.click()
   await expect(page.getByRole('dialog', { name: label, exact: true })).toBeVisible()
   await expect(page.getByRole('dialog').getByRole('button', { name: '技术详情' })).toBeVisible()
@@ -1354,4 +1354,68 @@ test('automatic asset failure has an inline detail entry and a successful manual
   await expect(failed).toHaveCount(0)
   await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeEnabled()
   expect(calls).toBe(2)
+})
+
+for (const width of [390, 1280]) test(`connection progress stays live in the card and details at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 })
+  const definitions = [
+    ['environment', '准备掘金运行环境'], ['runtime', '启动策略桥'], ['account_login', '等待交易账户就绪'],
+    ['account_assets', '核对账户资产'], ['pending_orders', '核对未完成委托'], ['ready', '账户就绪'],
+  ]
+  const steps = definitions.map(([id, label], index) => ({ id, label, status: index < 2 ? 'passed' : index === 2 ? 'running' : 'pending' }))
+  const progress = { run_id: 'live-progress', channel: 'gm', purpose: 'connect', status: 'running', steps,
+    created_at: '2026-10-16T14:00:00+08:00', finished_at: null, error: null }
+  const connection = { status: 'connecting', worker_alive: true, observed_at: null, message: null, error: null, progress }
+  await mockConnectionSnapshot(page, connection)
+  let reads = 0
+  await page.route('**/api/v1/account/7/**', route => { reads++; return route.fulfill({ json: {} }) })
+  await page.goto('/e2e/errors.html?mode=connection')
+  const card = page.getByRole('switch', { name: '账户连接' })
+  await expect(card).toContainText('等待交易账户就绪')
+  await expect(card.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2')
+  await page.getByRole('button', { name: /连接详情，账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2')
+  await expect(dialog.getByRole('list', { name: '连接检查步骤' })).toHaveAttribute('aria-busy', 'true')
+  await page.screenshot({ path: testInfo.outputPath('account-connection-progress.png'), fullPage: true })
+  const checking = { ...progress, steps: steps.map((step, index) => ({ ...step, status: index < 3 ? 'passed' : index === 3 ? 'running' : 'pending' })) }
+  await pushConnection(page, { ...connection, progress: checking })
+  await expect(card).toContainText('核对账户资产')
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '3')
+  const finished = { ...progress, status: 'succeeded', finished_at: '2026-10-16T14:00:04+08:00', steps: steps.map(step => ({ ...step, status: 'passed' })) }
+  await pushConnection(page, { ...connection, status: 'ready', progress: finished })
+  await expect(card.getByRole('progressbar')).toHaveCount(0)
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6')
+  await expect(page.getByRole('dialog', { name: '已连接', exact: true })).toBeVisible()
+  expect(reads).toBe(0)
+})
+
+test('connection step failure retains completed progress and a lost stream stops animation', async ({ page }) => {
+  const progress = { run_id: 'failing-progress', channel: 'tq', purpose: 'connect', status: 'running',
+    steps: [
+      { id: 'api_connection', label: '建立天勤账户连接', status: 'passed' },
+      { id: 'event_pump', label: '启动实时更新', status: 'running' },
+      { id: 'account_assets', label: '核对账户资产', status: 'pending' },
+      { id: 'pending_orders', label: '核对未完成委托', status: 'pending' },
+      { id: 'ready', label: '账户就绪', status: 'pending' },
+    ], created_at: '2026-10-16T14:00:00+08:00', finished_at: null, error: null }
+  const connection = { status: 'connecting', worker_alive: true, observed_at: null, message: null, error: null, progress }
+  await mockConnectionSnapshot(page, connection)
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /连接详情，账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.locator('.animate-spin')).toHaveCount(1)
+  await page.evaluate(async () => {
+    const path = '/src/stores/liveConnection.ts'
+    const { useLiveConnection } = await import(path)
+    useLiveConnection.getState().disconnect()
+  })
+  await expect(dialog.locator('.animate-spin')).toHaveCount(0)
+  const error = { reason_code: 'CONNECTION.FAILED', message: '事件泵退出', details: '原始事件泵错误' }
+  const failed = { ...progress, status: 'failed', error,
+    steps: progress.steps.map((step, i) => ({ ...step, status: i === 0 ? 'passed' : i === 1 ? 'failed' : 'skipped', error: i === 1 ? error : null })) }
+  await pushConnection(page, { ...connection, status: 'unavailable', label: '实时更新失败', progress: failed })
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1')
+  await expect(dialog.getByRole('alert')).toContainText('事件泵退出')
+  await expect(dialog.getByRole('list', { name: '连接检查步骤' })).toHaveAttribute('aria-busy', 'false')
 })

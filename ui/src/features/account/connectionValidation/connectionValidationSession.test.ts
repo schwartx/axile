@@ -3,7 +3,7 @@ import { ConnectionValidationSession } from './connectionValidationSession'
 import type { ConnectionValidationJob } from '@/lib/api/connectionValidation'
 
 const job = (status: ConnectionValidationJob['status'] = 'running'): ConnectionValidationJob => ({
-  validation_id: 'test-validation', channel: 'ctp', status,
+  validation_id: 'test-validation', run_id: 'test-validation', purpose: 'validation', channel: 'ctp', status,
   steps: [], created_at: '2026-10-13T14:00:00', finished_at: null, error: null,
 })
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10))

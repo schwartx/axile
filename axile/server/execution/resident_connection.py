@@ -8,6 +8,7 @@ import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 from loguru import logger
 
@@ -180,28 +181,95 @@ def reuse_resident_connection(state: ResidentConnectionState, account: AccountCo
 
 
 def reconcile_resident_executor(executor: object) -> None:
-    """就绪前核对资金和未完成订单；只查询，不恢复或重放任何交易任务。"""
-    assets = getattr(executor, "get_account_assets", None)
-    orders = getattr(executor, "get_pending_orders", None)
-    recovery = getattr(executor, "_recovery_snapshot", None)
-    if callable(assets):
-        snapshot = recovery["assets"] if isinstance(recovery, dict) and recovery.get("assets") is not None else assets()
-        if getattr(snapshot, "source", None) in {"unavailable", "degraded"}:
-            raise ConnectionError("账户连接恢复后尚未取得有效资产快照")
-    book = getattr(executor, "account_orders", None)
-    if callable(orders) and (book is None or not book.snapshot()["complete"]):
-        orders(None)
-    if book is not None:
-        from axile.server.account_orders_runtime import terminal_order
+    """复用统一核对，并保留常驻账户的终态委托确认。"""
+    from axile.executor.connection_reconciliation import reconcile_account_connection
+    from axile.server.account_orders_runtime import terminal_order
 
-        for order in book.snapshot()["data"]:
-            if not order.is_active():
-                terminal = terminal_order(executor, order.symbol, order.order_id)
-                if terminal is not None:
-                    book.apply(terminal)
+    reconcile_account_connection(executor, terminal_order)
+
+
+def _progress_connection_ready(state: ResidentConnectionState) -> bool:
+    """进度计划读取同一份渠道状态；探测失败沿用宿主的故障记录。"""
+    if state.executor is None:
+        return False
+    try:
+        return _connected(state.executor)
+    except Exception as exc:
+        _failed(state, exc)
+        raise
 
 
 def ensure_resident_connection(
+    state: ResidentConnectionState,
+    account: AccountContext,
+    *,
+    create: Callable[[], object],
+    close: Callable[[object], None],
+    initialize: Callable[[object], None],
+    prepare: Callable[[object], None] = lambda _executor: None,
+    reconcile: Callable[[object], None] = reconcile_resident_executor,
+    allow_recovery: bool = False,
+    force: bool = False,
+) -> object:
+    """建立过程覆盖构造、渠道登录和账户核对；健康会话复用不重置进度。"""
+    from axile.executor.connection_progress import (
+        ConnectionProgressTracker,
+        connection_progress_scope,
+        connection_step_error,
+    )
+    from axile.executor.connection_state import current_connection_observer
+
+    observed_attempt = state.attempt_revision
+    with state.resource_lock:
+        if force and state.attempt_revision != observed_attempt:
+            force = False
+        ensure = partial(
+            _ensure_resident_connection,
+            state,
+            account,
+            create=create,
+            close=close,
+            initialize=initialize,
+            prepare=prepare,
+            reconcile=reconcile,
+            allow_recovery=allow_recovery,
+            force=force,
+        )
+        unchanged = state.account_id == account.id and state.config_signature == executor_config_signature(account)
+        connected = unchanged and _progress_connection_ready(state)
+        healthy = unchanged and state.connected_once and state.connection_error is None and state.executor is not None
+        if healthy and connected and state.reconciled_revision == getattr(state.executor, "connection_revision", None):
+            return ensure()
+        observer = current_connection_observer()
+        monitor = getattr(state.executor, "_connection_monitor", None) if unchanged else None
+        tracker = getattr(monitor, "progress", None)
+        native_recovered = connected
+        if tracker is None or tracker.run.status != "running" or not native_recovered:
+            tracker = ConnectionProgressTracker(
+                str(account.trade_channel),
+                "recovery" if native_recovered else "connect",
+                observer=lambda data: (
+                    observer(ConnectionObservation("connecting", clock_now_iso(), kind="progress", progress=data))
+                    if observer
+                    else None
+                ),
+            )
+        with connection_progress_scope(tracker):
+            if native_recovered:
+                tracker.step("recover_connection", "running")
+                tracker.step("recover_connection", "passed")
+            try:
+                executor = ensure()
+                tracker.step("ready", "running")
+                tracker.step("ready", "passed")
+                tracker.finish()
+                return executor
+            except Exception as exc:
+                tracker.finish("failed", connection_step_error(exc))
+                raise
+
+
+def _ensure_resident_connection(
     state: ResidentConnectionState,
     account: AccountContext,
     *,

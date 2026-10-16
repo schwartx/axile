@@ -1,16 +1,16 @@
 import { useRef } from 'react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import type { ValidationKeyValueDetails } from '@/lib/api/connectionValidation'
+import type { ConnectionKeyValueDetails } from '@/lib/api/connectionProgress'
 
 /** 窄标签列保留渠道字段顺序；关闭时保留内容，直到共用弹窗完成过渡。 */
-export function ValidationStepDetailsModal({ details, onClose }: {
-  details: ValidationKeyValueDetails | null
+export function ConnectionStepDetailsModal({ details, onClose }: {
+  details: ConnectionKeyValueDetails | null
   onClose: () => void
 }) {
   const lastDetails = useRef(details)
   if (details) lastDetails.current = details
   const shown = details ?? lastDetails.current
-  return <CenteredModal open={details !== null} title={shown?.title ?? '验证步骤详情'} onClose={onClose}>
+  return <CenteredModal open={details !== null} title={shown?.title ?? '连接步骤详情'} onClose={onClose}>
     <dl className="space-y-3 pt-1 pb-4 text-[13px] leading-6">
       {shown?.rows.map((row, index) => {
         const missing = row.value == null || row.value === ''

@@ -7,6 +7,7 @@ from sqlalchemy import JSON, Column, ForeignKey, Integer, Text
 from sqlmodel import Field, SQLModel
 
 from axile.executor.connection_presentation import ConnectionPresentation, presentation_snapshot
+from axile.executor.connection_progress import ConnectionRun
 
 type AccountSessionStatus = Literal[
     "uninitialized", "connecting", "ready", "recovering", "unavailable", "disconnected", "unknown"
@@ -26,6 +27,7 @@ class AccountConnectionFailure(SQLModel):
 class AccountConnectionPublic(SQLModel):
     """账户读取接口的轻量连通状态。"""
 
+    progress: ConnectionRun | None = None
     status: AccountSessionStatus = "uninitialized"
     observed_at: str | None = None
     message: str | None = None

@@ -1,3 +1,5 @@
+import { ConnectionProgressView } from '@/features/account/connectionProgress/ConnectionProgressView'
+import { useLiveConnection } from '@/stores/liveConnection'
 import { useId, useState, type ReactNode } from 'react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { CenteredModal } from '@/components/ui/CenteredModal'
@@ -28,9 +30,10 @@ function TechnicalDetails({ children, label = '技术详情', preview }: { child
 }
 
 /** 展示共享实时状态；渠道提供内容，公共 UI 只解析通用导航意图。 */
-export function AccountConnectionProblemModal({ selection, onClose }: {
+export function AccountConnectionDetailModal({ selection, onClose }: {
   selection: ConnectionSelection | null; onClose: () => void
 }) {
+  const synced = useLiveConnection(state => state.connected)
   const feedback = useConnectionFeedback(selection?.accountId ?? -1)
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
   const title = (selection?.detail.status === 'unavailable' ? view?.title : feedback.label ?? view?.title) ?? '账户连接详情'
@@ -50,6 +53,9 @@ export function AccountConnectionProblemModal({ selection, onClose }: {
       </section>}
       {view && <>
         <p className="whitespace-pre-wrap text-[14px] text-ink-2">{view.summary}</p>
+        {selection?.detail.progress && <ConnectionProgressView key={selection.detail.progress.run_id}
+          progress={selection.detail.progress} active={synced && !['unknown', 'disconnected'].includes(selection.detail.status)}
+          source={{ kind: 'account', accountId: selection.accountId, runId: selection.detail.progress.run_id }} /> }
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label} className="contents">
           <dt className="text-[12px] text-ink-3">{field.label}</dt><dd className="min-w-0 tabular-nums">{field.value}</dd>
         </div>)}</dl>

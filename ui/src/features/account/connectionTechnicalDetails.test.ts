@@ -3,7 +3,7 @@ import { connectionTechnicalDetails } from './connectionTechnicalDetails'
 import { connectionProblem } from './connectionProblem'
 import type { AccountConnectionDetail } from '../../types/api'
 
-const message = 'CTP 交易前置已断开'
+const message = '交易前置已断开'
 const raw = 'CTP 交易前置断线: 4097'
 const base: AccountConnectionDetail = { status: 'unavailable', observed_at: null, message, error: {
   message, technical_detail: raw, traceback: `axile.executor.ctp.ctp_execute.CtpSessionRecoveryRequired: ${raw}\n`,

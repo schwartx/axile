@@ -14,6 +14,12 @@ from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_now_iso
 from axile.executor.connection_presentation import PresentationInput, presentation_snapshot
+from axile.executor.connection_progress import (
+    ConnectionProgressTracker,
+    ConnectionStepUpdate,
+    connection_step_error,
+    current_connection_progress,
+)
 
 CONNECTION_ERROR_SCOPE = "account_connection"
 type ConnectionStatus = Literal["ok", "error", "connecting", "recovering", "cooldown", "disconnected"]
@@ -43,7 +49,9 @@ class ConnectionObservation:
     error: dict[str, object] | None = None
     label: str | None = None
     presentation: dict[str, object] | None = None
-    kind: Literal["connection", "access", "session"] = "connection"
+    kind: Literal["connection", "access", "session", "progress"] = "connection"
+
+    progress: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         """旧位置参数保持原义，正常结果清除故障内容。"""
@@ -152,6 +160,7 @@ class ConnectionMonitor:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._observer = current_connection_observer()
+        self.progress = current_connection_progress()
         self._latest: ConnectionObservation | None = None
         self._active = True
         self._failure_revision = 0
@@ -160,8 +169,40 @@ class ConnectionMonitor:
         """绑定观察者并回放最新结果，不伪造新的确认时间。"""
         with self._lock:
             self._observer = observer
+            self.progress = current_connection_progress() or self.progress
             if self._active and self._latest is not None:
                 self._notify(self._latest)
+
+    def step(self, step: str, status: ConnectionStepUpdate, details: dict | None = None) -> None:
+        """渠道共用的阶段上报入口；记录器在连接前由宿主注入。"""
+        with self._lock:
+            if not self._active:
+                return
+            self.progress = self.progress or current_connection_progress()
+            tracker = self.progress
+        if tracker is not None:
+            tracker.step(step, status, details)
+
+    def begin_recovery(self) -> None:
+        """已有会话断线后开启真实恢复过程，不重演首次登录步骤。"""
+        with self._lock:
+            if not self._active:
+                return
+            tracker = self.progress
+            if tracker is None or (tracker.run.status == "running" and tracker.run.purpose == "recovery"):
+                return
+            observer = self._observer
+            self.progress = ConnectionProgressTracker(
+                tracker.run.channel,
+                "recovery",
+                lambda data: (
+                    observer(ConnectionObservation("recovering", clock_now_iso(), kind="progress", progress=data))
+                    if observer
+                    else None
+                ),
+            )
+            self.progress.step("recover_connection", "running")
+            self._publish(ConnectionObservation("recovering", clock_now_iso(), "正在恢复账户通道"))
 
     def close(self) -> None:
         """主动释放后忽略迟到回调，保留最后观察。"""
@@ -179,6 +220,8 @@ class ConnectionMonitor:
 
     def succeeded(self) -> None:
         """渠道明确完成连接、认证或实际账户访问时调用。"""
+        if self.progress is not None and self.progress.run.purpose == "recovery":
+            self.step("recover_connection", "passed")
         self._publish(ConnectionObservation("ok", clock_now_iso()))
 
     @contextmanager
@@ -194,6 +237,10 @@ class ConnectionMonitor:
 
     def failed(self, error: BaseException, *, label: str | None = None, presentation: PresentationInput = None) -> None:
         """连接故障发生处标记归属并固定完整异常链。"""
+        if not self._active:
+            return
+        if self.progress is not None:
+            self.progress.finish("failed", connection_step_error(error))
         error.error_scope = CONNECTION_ERROR_SCOPE  # type: ignore[attr-defined]
         previous = _failure_observation(error)
         if previous is not None:

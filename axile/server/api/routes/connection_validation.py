@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from axile.channels import get_channel
 from axile.server.api.deps import SessionDep
-from axile.server.connection_validation import ValidationJob, ValidationRejected, ValidationTable, service
+from axile.server.connection_validation import ConnectionTable, ValidationJob, ValidationRejected, service
 from axile.server.db.models import Account
 from axile.server.error_details import exception_details
 
@@ -85,8 +85,8 @@ async def cancel_validation(validation_id: str) -> ValidationJob:
         raise HTTPException(exc.status, exception_details(exc)) from exc
 
 
-@router.get("/{validation_id}/steps/{step_id}/table", response_model=ValidationTable)
-async def get_validation_table(validation_id: str, step_id: str, response: Response) -> ValidationTable:
+@router.get("/{validation_id}/steps/{step_id}/table", response_model=ConnectionTable)
+async def get_validation_table(validation_id: str, step_id: str, response: Response) -> ConnectionTable:
     """按需读取验证时的表格快照，不发起新的柜台请求。"""
     response.headers["Cache-Control"] = "no-store"
     try:

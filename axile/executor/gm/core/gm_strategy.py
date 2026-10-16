@@ -220,6 +220,9 @@ def init(_context: Context) -> None:
     # init 回调可能发生在 SDK 账户加载之前；在事件泵的首次定时回调中验证账户。
     if context is not None:
         context.strategy_initialized = True
+        if context.connection_monitor is not None:
+            context.connection_monitor.step("runtime", "passed")
+            context.connection_monitor.step("account_login", "running")
         _update_startup_phase("account_validation_pending")
 
     # 记录初始化
@@ -236,6 +239,8 @@ def _apply_account_startup_status(context: GMStrategyRuntimeContext, status: dic
             context.connection_monitor.succeeded()
         if context.strategy_initialized:
             context.account_was_ready = True
+            if context.connection_monitor is not None:
+                context.connection_monitor.step("account_login", "passed")
             context.ready_event.set()
             _update_startup_phase("ready_signaled", account_state=state)
     elif state == AccConnectionState.ERROR:
@@ -410,6 +415,8 @@ def on_account_status(_context: Context, account: DictLikeAccountStatus) -> None
         report_account_status(
             context.connection_monitor, RuntimeError(f"账户连接异常: {status}"), context.account_id, status
         )
+        if state == AccConnectionState.DISCONNECTED:
+            context.connection_monitor.begin_recovery()
 
 
 def on_error(_context: Context, code: str, info: str | bytes) -> None:
@@ -448,6 +455,8 @@ def on_trade_data_connected(_context: Context) -> None:
     context = _get_bridge_context()
     if context is not None and context.account_was_ready:
         context.account_checked = False
+        if context.connection_monitor is not None:
+            context.connection_monitor.begin_recovery()
 
 
 def on_trade_data_disconnected(_context: Context) -> None:

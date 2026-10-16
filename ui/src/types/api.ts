@@ -1,3 +1,4 @@
+import type { ConnectionRun } from '@/lib/api/connectionProgress'
 /**
  * 手写 API DTO —— 对齐后端 `axile/server/db/models` 的 *Public 模型。
  *
@@ -77,6 +78,7 @@ export interface FuturesCloseCapability {
 
 export interface ChannelCapability {
   futures_close?: FuturesCloseCapability | null
+  connection_steps?: Array<{ id: string; label: string }>
   connection_validation?: { steps: Array<{ id: string; label: string }>; notice: string } | null
   channel: TradeChannel
   label: string
@@ -183,6 +185,7 @@ export interface AccountConnectionFailure {
 }
 
 export interface AccountConnection {
+  progress?: ConnectionRun | null
   status: 'uninitialized' | 'unknown' | 'ready' | 'unavailable' | 'connecting' | 'recovering' | 'disconnected'
   observed_at: string | null
   message: string | null

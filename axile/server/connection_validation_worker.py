@@ -12,6 +12,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from axile.executor.connection_progress import connection_step_error
+
 
 def _stop(_signum: int, _frame: object) -> None:
     """允许主线程进入渠道验证器的 finally 释放原生 API。"""
@@ -54,28 +56,11 @@ def validation_worker(connection: Connection) -> None:
         validate(config, report)
         send({"result": "succeeded"})
     except Exception as exc:  # noqa: BLE001 - 在进程边界组装结构化错误
-        error_id = getattr(exc, "error_id", None)
-        if not isinstance(error_id, int):
-            error_id = None
-        code = "CONNECTION.FAILED"
-        message = "该阶段验证失败，请检查配置和测试柜台状态"
-        if isinstance(exc, (ImportError, OSError)):
-            code, message = "CONNECTION.SDK_UNAVAILABLE", "SDK 或原生依赖无法加载"
-        elif isinstance(exc, TimeoutError):
-            code, message = "CONNECTION.STAGE_TIMEOUT", "该阶段等待柜台响应超时"
-        elif error_id is not None:
-            code, message = "CONNECTION.BROKER_REJECTED", "柜台拒绝请求"
-        raw = getattr(exc, "broker_message", None)
-        if not isinstance(raw, str) or not raw:
-            raw = str(exc) or type(exc).__name__
+        error = connection_step_error(exc)
         send(
             {
-                "details": raw,
-                "traceback": "".join(traceback.format_exception(exc)),
+                **error.model_dump(mode="json"),
                 "result": "failed",
-                "reason_code": code,
-                "message": message,
-                "error_id": error_id,
                 # 仅保留异常类型及代码位置；不包含异常原文、源码行或局部变量。
                 "diagnostic": {
                     "exception_type": type(exc).__name__,

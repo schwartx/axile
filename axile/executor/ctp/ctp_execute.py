@@ -34,6 +34,7 @@ from axile.executor.connection_state import connection_error_scope, connection_m
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.combination import split_combination_position
 from axile.executor.ctp.connection import report_ctp_failure, report_ctp_stage
+from axile.executor.ctp.connection_details import step_details
 from axile.executor.ctp.converters import (
     account_to_unified,
     order_to_unified,
@@ -230,7 +231,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._ready = False
         self._invalid_reason = None
         self._connection_started = False
-        self._connection_progress = None
         self.connection_records: dict[str, object] = {}
         self._catalog_queried = False
         self.settlement_confirmation: dict[str, object] | None = None
@@ -573,16 +573,6 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if runtime is not None:
             runtime.handle_termination_checkpoint()
 
-    @override
-    def set_connection_progress(self, callback) -> None:
-        """绑定只传递阶段标识的诊断回调，不输出凭据或原生响应。"""
-        self._connection_progress = callback
-
-    def _report_connection(self, step: str, status: str) -> None:
-        callback = self._connection_progress
-        if callback is not None:
-            callback(step, status)
-
     def _initialize_connection(self, account_config):
         with self._lock:
             self._require_active_connection()
@@ -607,7 +597,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._timeout = float(getattr(account_config, "query_timeout", 15))
         self._flow_dir = Path(tempfile.mkdtemp(prefix="axile-ctp-"))
         try:
-            self._report_connection("trader_connection", "running")
+            connection_monitor(self).step("trader_connection", "running")
             path = self._flow_dir / "trader"
             path.mkdir()
             with connection_monitor(self).connecting(
@@ -623,15 +613,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._trader_api.Init()
             self._wait(self._auth, "认证")
             self._wait(self._login, "登录")
-            self._report_connection("trader_login", "passed")
-            self._report_connection("settlement", "running")
+            connection_monitor(self).step("trader_login", "passed", step_details(self, "trader_login"))
+            connection_monitor(self).step("settlement", "running")
             self._ensure_settlement_confirmed()
-            self._report_connection("settlement", "passed")
+            connection_monitor(self).step("settlement", "passed", step_details(self, "settlement"))
             if self._validation_catalog:
-                self._report_connection("instruments", "running")
+                connection_monitor(self).step("instruments", "running")
                 self._instruments = self._validation_catalog()
-                self._report_connection("instruments", "passed")
-            self._report_connection("market_login", "running")
+                connection_monitor(self).step("instruments", "passed", step_details(self, "instruments"))
+            connection_monitor(self).step("market_login", "running")
             path = self._flow_dir / "market"
             path.mkdir()
             with connection_monitor(self).connecting(
@@ -644,7 +634,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._market_api.RegisterFront(account_config.md_front)
                 self._market_api.Init()
             self._wait(self._md_login, "行情登录")
-            self._report_connection("market_login", "passed")
+            connection_monitor(self).step("market_login", "passed", step_details(self, "market_login"))
             if not self._validation_catalog:
                 self._instrument_provider.bind(self._query_catalog, channel="ctp")
             self._reconcile_session()
@@ -659,7 +649,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 )
                 self._startup_trades.clear()
                 self._ready = True
-            self._report_connection("ready", "passed")
+            connection_monitor(self).step("channel_ready", "passed", step_details(self, "channel_ready"))
         except Exception:
             self.close()
             raise
@@ -671,16 +661,16 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if self._trader_connected:
                 return
             self._trader_connected = True
-        self._report_connection("trader_connection", "passed")
-        self._report_connection("authenticate", "running")
+        connection_monitor(self).step("trader_connection", "passed", step_details(self, "trader_connection"))
+        connection_monitor(self).step("authenticate", "running")
         req = build_authenticate(self._config())
         self._send_stage(self._auth, "authenticate", "ReqAuthenticate", req)
 
     def _authenticated(self, row, info, request_id):
         if not self._finish_stage(self._auth, info, "认证", request_id):
             return
-        self._report_connection("authenticate", "passed")
-        self._report_connection("trader_login", "running")
+        connection_monitor(self).step("authenticate", "passed", step_details(self, "authenticate"))
+        connection_monitor(self).step("trader_login", "running")
         req = build_trader_login(self._config())
         self._send_stage(self._login, "trader_login", "ReqUserLogin", req)
 
@@ -705,8 +695,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._front_id = int(row.FrontID)
             self._session_id = int(row.SessionID)
             self._order_ref = int(row.MaxOrderRef or 0) + 1
-            if self._connection_progress is not None:
-                self.connection_records["trader_login"] = _copy_native_row(row)
+            self.connection_records["trader_login"] = _copy_native_row(row)
             self._finish_stage(self._login, info, "登录", request_id)
 
     def _ensure_settlement_confirmed(self):
@@ -797,7 +786,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._trader_connected = False
             else:
                 self._market_connected = False
-            self._connection_error = f"CTP {kind}前置已断开"
+            self._connection_error = f"{kind}前置已断开"
             self._invalidate_connection(
                 CtpSessionRecoveryRequired(
                     f"CTP {kind}前置断线: {reason}",
@@ -1056,31 +1045,27 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         for row in orders:
             self._remember_order(row)
             self._catalog_progress("对账记录", throttled=True)
-        if self._connection_progress is not None:
-            self.connection_records["query_orders"] = orders
-        self._report_connection("query_orders", "passed")
+        self.connection_records["query_orders"] = orders
+        connection_monitor(self).step("query_orders", "passed", step_details(self, "query_orders"))
         self.account_orders.replace([self._remember_order(row) for row in orders], watermark)
         trades = self._query_session_rows("query_trades", "ReqQryTrade", build_query_trades(c, ""))
         converted_trades = []
         for row in trades:
             converted_trades.append(self._convert_trade(row))
             self._catalog_progress("对账记录", throttled=True)
-        if self._connection_progress is not None:
-            self.connection_records["query_trades"] = trades
-        self._report_connection("query_trades", "passed")
+        self.connection_records["query_trades"] = trades
+        connection_monitor(self).step("query_trades", "passed", step_details(self, "query_trades"))
         positions = self._query_session_rows("query_positions", "ReqQryInvestorPosition", build_query_positions(c))
         if not self._validation_catalog:
             self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
-        if self._connection_progress is not None:
-            self.connection_records["query_positions"] = positions
-        self._report_connection("query_positions", "passed")
+        self.connection_records["query_positions"] = positions
+        connection_monitor(self).step("query_positions", "passed", step_details(self, "query_positions"))
         accounts = self._query_session_rows("query_account", "ReqQryTradingAccount", build_query_account(c))
         if not accounts:
             raise CtpRequestError("会话对账资金查询返回空结果")
-        if self._connection_progress is not None:
-            self.connection_records["query_account"] = accounts
-        self._report_connection("query_account", "passed")
-        self._report_connection("ready", "running")
+        self.connection_records["query_account"] = accounts
+        connection_monitor(self).step("query_account", "passed", step_details(self, "query_account"))
+        connection_monitor(self).step("channel_ready", "running")
         quotes, quote_errors = self._position_valuation_quotes(positions)
         self._recovery_snapshot = {
             "trading_day": self._trading_day,
@@ -1098,7 +1083,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query_session_rows(self, step, request_name, request):
         """查询并逐阶段校验交易日，让失败归属于实际执行的检查项。"""
-        self._report_connection(step, "running")
+        connection_monitor(self).step(step, "running")
         rows = self._query(request_name, request)
         for row in rows:
             day = str(getattr(row, "TradingDay", "") or "")

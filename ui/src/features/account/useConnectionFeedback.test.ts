@@ -21,8 +21,8 @@ test('连接恢复解除旧失败，断开失败不会被仍然就绪的快照�
 })
 
 test('连接标识保留 API 的具体断开原因和完整长文案', () => {
-  const error = apiErrorFromBody(503, 'Service Unavailable', { detail: { message: 'CTP 交易前置已断开' } })
-  expect(connectionFeedback({ ...failure, error }, disconnected, true).label).toBe('CTP 交易前置已断开')
+  const error = apiErrorFromBody(503, 'Service Unavailable', { detail: { message: '交易前置已断开' } })
+  expect(connectionFeedback({ ...failure, error }, disconnected, true).label).toBe('交易前置已断开')
   const long = '连接失败原因'.repeat(50)
   expect(connectionFeedback({ ...failure, error: new Error(long) }, disconnected, true).label).toBe(long)
 })

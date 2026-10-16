@@ -31,7 +31,7 @@ from axile.channels.contracts import (
     ChannelUi,
     ChannelUnits,
     ConnectionProgress,
-    ConnectionValidationStep,
+    ConnectionStepDefinition,
 )
 from axile.channels.schedule_clock import (
     CN_FUTURES_WINDOWS,
@@ -79,6 +79,52 @@ def _gm_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
 def _tq_target(config: dict[str, float], frame: pd.DataFrame) -> pd.DataFrame:
     """计算天勤目标贡献度并保持 Axile 通用合约代码."""
     return _contribution_target(config, frame.copy())
+
+
+_CTP_STEPS = tuple(
+    ConnectionStepDefinition(id=key, label=label)
+    for key, label in (
+        ("trader_connection", "交易前置连接"),
+        ("authenticate", "授权码认证"),
+        ("trader_login", "交易账户登录"),
+        ("settlement", "结算确认"),
+        ("market_login", "行情登录"),
+        ("query_orders", "订单查询"),
+        ("query_trades", "成交查询"),
+        ("query_positions", "持仓查询"),
+        ("query_account", "资金查询"),
+        ("channel_ready", "渠道会话就绪"),
+    )
+)
+_GM_STEPS = tuple(
+    ConnectionStepDefinition(id=key, label=label)
+    for key, label in (
+        ("environment", "准备掘金运行环境"),
+        ("runtime", "启动策略桥"),
+        ("account_login", "等待交易账户就绪"),
+    )
+)
+_TQ_STEPS = tuple(
+    ConnectionStepDefinition(id=key, label=label)
+    for key, label in (
+        ("api_connection", "建立天勤账户连接"),
+        ("event_pump", "启动实时更新"),
+    )
+)
+
+
+def _validate_gm_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
+    """在临时会话中复用 GM 工厂及真实账户核对。"""
+    from axile.executor.connection_validation import validate_channel_connection
+
+    validate_channel_connection("gm", config, report)
+
+
+def _validate_tq_connection(config: BaseAccountConfig, report: ConnectionProgress) -> None:
+    """在临时会话中复用 TQ 工厂及真实账户核对。"""
+    from axile.executor.connection_validation import validate_channel_connection
+
+    validate_channel_connection("tq", config, report)
 
 
 def _create_ctp_executor(config: BaseAccountConfig):
@@ -142,10 +188,11 @@ def _ctp_plugin() -> ChannelPlugin:
                 position_value_label="货值",
                 account_connect_lead="填写凭据后可验证账户连接；验证通过仅代表本次接入成功。",
             ),
+            connection_steps=_CTP_STEPS,
             connection_validation=ChannelConnectionValidation(
                 notice="使用当前凭据连接柜台，查询账户并确认当日结算；不创建账户、不下单。",
                 steps=tuple(
-                    ConnectionValidationStep(id=key, label=label)
+                    ConnectionStepDefinition(id=key, label=label)
                     for key, label in (
                         ("trader_connection", "交易前置连接"),
                         ("authenticate", "授权码认证"),
@@ -157,7 +204,7 @@ def _ctp_plugin() -> ChannelPlugin:
                         ("query_trades", "成交查询"),
                         ("query_positions", "持仓查询"),
                         ("query_account", "资金查询"),
-                        ("ready", "会话就绪"),
+                        ("channel_ready", "渠道会话就绪"),
                     )
                 ),
             ),
@@ -228,7 +275,12 @@ def _ctp_plugin() -> ChannelPlugin:
 def _gm_plugin() -> ChannelPlugin:
     """构造掘金内置渠道插件."""
     return ChannelPlugin(
+        validate_connection=_validate_gm_connection,
         descriptor=ChannelDescriptor(
+            connection_steps=_GM_STEPS,
+            connection_validation=ChannelConnectionValidation(
+                steps=_GM_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
+            ),
             channel="gm",
             label="掘金",
             description="通过本机终端或 RPC 服务连接掘金量化",
@@ -333,7 +385,12 @@ def _tq_plugin() -> ChannelPlugin:
     live = ChannelAccountFieldCondition(field="account_mode", equals="live")
     sim = ChannelAccountFieldCondition(field="account_mode", equals="sim")
     return ChannelPlugin(
+        validate_connection=_validate_tq_connection,
         descriptor=ChannelDescriptor(
+            connection_steps=_TQ_STEPS,
+            connection_validation=ChannelConnectionValidation(
+                steps=_TQ_STEPS, notice="使用当前配置建立临时会话并核对账户；不保存配置、不下单。"
+            ),
             channel="tq",
             futures_close=close_capability(automatic=False),
             label="天勤",

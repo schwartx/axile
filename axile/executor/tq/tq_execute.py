@@ -194,6 +194,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _initialize_connection(self, account_config: AccountConfig) -> None:
         if not isinstance(account_config, TQAccountConfig):
             raise TypeError("TQExecutor requires TQAccountConfig")
+        connection_monitor(self).step("api_connection", "running")
         runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
         self._runtime = runtime

@@ -2,41 +2,41 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { ApiError } from '@/lib/api/client'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { getValidationTable, type ValidationTable, type ValidationTableSummary } from '@/lib/api/connectionValidation'
-import { selectValidationRows, validationCellText } from '@/features/account/connectionValidation/validationTable'
+import { getConnectionTable, connectionSourceKey, type ConnectionProgressSource, type ConnectionTable, type ConnectionTableSummary } from '@/lib/api/connectionProgress'
+import { selectConnectionRows, connectionCellText } from '@/features/account/connectionProgress/connectionTable'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
-export interface ValidationTableSelection {
-  validationId: string
+export interface ConnectionTableSelection {
+  source: ConnectionProgressSource
   stepId: string
-  details: ValidationTableSummary
+  details: ConnectionTableSummary
 }
 const pageSize = 25
 
 /** 同一验证的各表按需读取并在内存复用；关闭或换任务时中止未完成请求。 */
-export function ValidationRecordsModal({ selection, onClose }: {
-  selection: ValidationTableSelection | null
+export function ConnectionRecordsModal({ selection, onClose }: {
+  selection: ConnectionTableSelection | null
   onClose: () => void
 }) {
   const lastSelection = useRef(selection)
   if (selection) lastSelection.current = selection
   const shown = selection ?? lastSelection.current
-  const cache = useRef(new Map<string, ValidationTable>())
+  const cache = useRef(new Map<string, ConnectionTable>())
   const cacheJob = useRef<string | null>(null)
-  const [loaded, setLoaded] = useState<{ key: string; table: ValidationTable } | null>(null)
+  const [loaded, setLoaded] = useState<{ key: string; table: ConnectionTable } | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [attempt, setAttempt] = useState(0)
   useReadRecovery(() => setAttempt(value => value + 1), selection != null)
-  const key = shown ? `${shown.validationId}/${shown.stepId}` : ''
+  const key = shown ? `${connectionSourceKey(shown.source)}/${shown.stepId}` : ''
   useEffect(() => {
     if (!selection) return
-    if (cacheJob.current !== selection.validationId) { cache.current.clear(); cacheJob.current = selection.validationId }
+    if (cacheJob.current !== connectionSourceKey(selection.source)) { cache.current.clear(); cacheJob.current = connectionSourceKey(selection.source) }
     setError(null)
     const cached = cache.current.get(key)
     if (cached) { setLoaded({ key, table: cached }); return }
     setLoaded(null)
     const controller = new AbortController()
-    void getValidationTable(selection.validationId, selection.stepId, controller.signal).then((table) => {
+    void getConnectionTable(selection.source, selection.stepId, controller.signal).then((table) => {
       if (controller.signal.aborted) return
       cache.current.set(key, table)
       setLoaded({ key, table })
@@ -46,14 +46,14 @@ export function ValidationRecordsModal({ selection, onClose }: {
     return () => controller.abort()
   }, [selection, key, attempt])
   const table = loaded?.key === key ? loaded.table : null
-  return <ValidationRecordsView key={key} table={table} details={shown?.details ?? null} open={selection !== null}
+  return <ConnectionRecordsView key={key} table={table} details={shown?.details ?? null} open={selection !== null}
     error={error} onRetry={() => setAttempt((value) => value + 1)} onClose={onClose} />
 }
 
 /** 表头与筛选保持在原位；只翻页切换记录，长字段自然换行。 */
-function ValidationRecordsView({ table, details, open, error, onRetry, onClose }: {
-  table: ValidationTable | null
-  details: ValidationTableSummary | null
+function ConnectionRecordsView({ table, details, open, error, onRetry, onClose }: {
+  table: ConnectionTable | null
+  details: ConnectionTableSummary | null
   open: boolean
   error: Error | null
   onRetry: () => void
@@ -66,16 +66,16 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
   useEffect(() => {
     if (open) { setQuery(''); setFilters({}); setSort(null); setPage(1) }
   }, [open])
-  const rows = useMemo(() => table ? selectValidationRows(table, query, filters, sort) : [], [table, query, filters, sort])
+  const rows = useMemo(() => table ? selectConnectionRows(table, query, filters, sort) : [], [table, query, filters, sort])
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   const currentPage = Math.min(page, pages)
   const options = useMemo(() => table?.columns.flatMap((column, index) => {
     if (!column.filterable) return []
-    const values = [...new Set(table.rows.map((row) => validationCellText(row[index])))].sort()
+    const values = [...new Set(table.rows.map((row) => connectionCellText(row[index])))].sort()
     return values.length > 1 ? [{ column, values }] : []
   }) ?? [], [table])
   return <CenteredModal open={open} title={details?.title ?? '查询记录'} widthClassName="w-[1120px]"
-    subtitle="本次连接验证的查询快照" onClose={onClose}
+    subtitle="本次连接过程的查询快照" onClose={onClose}
     footer={<div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-[22px] py-4 text-[12px] text-ink-3">
       <span aria-live="polite">{table ? `共 ${table.rows.length} 条${rows.length !== table.rows.length ? `，筛选后 ${rows.length} 条` : ''}` : ''}</span>
       <div className="flex items-center gap-3">
@@ -114,7 +114,7 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
           </tr></thead>
           <tbody className="text-ink-1">
             {rows.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((index) => <tr key={index} className="[&:last-child>td]:border-b-0">
-              {table.columns.map((column, columnIndex) => <td key={column.key} className="border-b border-line whitespace-pre-wrap px-3 py-2 align-top tabular-nums [overflow-wrap:anywhere]">{validationCellText(table.rows[index][columnIndex])}</td>)}
+              {table.columns.map((column, columnIndex) => <td key={column.key} className="border-b border-line whitespace-pre-wrap px-3 py-2 align-top tabular-nums [overflow-wrap:anywhere]">{connectionCellText(table.rows[index][columnIndex])}</td>)}
             </tr>)}
           </tbody>
         </table>
@@ -122,7 +122,7 @@ function ValidationRecordsView({ table, details, open, error, onRetry, onClose }
       </div>
     </> : <div className="flex min-h-[300px] flex-col items-center justify-center gap-3 text-[13px] text-ink-3" aria-live="polite">
       <ErrorNotice intent="read" title="查询记录读取失败" error={error} embedded contextKey={open ? 'open' : 'closed'} onRetry={error instanceof ApiError && error.status === 404 ? undefined : onRetry} />
-      {error instanceof ApiError && error.status === 404 && <p>验证任务已过期，请关闭后重新验证。</p>}
+      {error instanceof ApiError && error.status === 404 && <p>过程记录已过期或被新连接替换，请关闭后重新连接。</p>}
       {!error && <p role="status">正在读取查询记录…</p>}
     </div>}
   </CenteredModal>

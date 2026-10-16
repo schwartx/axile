@@ -379,6 +379,7 @@ class TQRuntime:
                     self._disconnected_connections.add(connection_id)
                     self.synchronized = False
                     self._connection.failed(ConnectionError("天勤连接已断开，等待交易数据补齐"))
+                    self._connection.begin_recovery()
                     self._emit("connection", {"ready": False})
             elif code in {2019112901, 2019112902}:
                 self._disconnected_connections.discard(connection_id)
@@ -423,6 +424,8 @@ class TQRuntime:
             except BaseException as exc:
                 report_tq_failure(self._connection, exc, "天勤连接失败", "API 工厂初始化")
                 raise
+            self._connection.step("api_connection", "passed")
+            self._connection.step("event_pump", "running")
             self._connection.succeeded()
             self._api = api
             self._resolver = self._build_catalog(api)
@@ -437,6 +440,7 @@ class TQRuntime:
             self._ready.set()
             self._stopped.set()
             return
+        self._connection.step("event_pump", "passed")
         self._ready.set()
         try:
             while True:

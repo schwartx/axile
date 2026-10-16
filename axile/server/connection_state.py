@@ -124,6 +124,7 @@ def record_connection_observation(
                 return
             values = asdict(observation)
             values.pop("kind", None)
+            values.pop("progress", None)
             if observation.kind == "access" and observation.status == "ok":
                 values["last_success_at"] = observation.observed_at
             if observation.status in {"error", "cooldown"}:
@@ -167,6 +168,7 @@ class ConnectionCollector:
         self._lock = threading.RLock()
         self._sequence = 0
         self._latest: ConnectionObservation | None = None
+        self._progress: dict[str, object] | None = None
         self._session: ConnectionObservation | None = None
         self._last_success_at: str | None = None
         self._last_failure: dict[str, object] | None = None
@@ -174,13 +176,21 @@ class ConnectionCollector:
     def observe(self, observation: ConnectionObservation) -> None:
         """序列化观察来源；同一观察回放不刷新确认时间。"""
         with self._lock:
+            if observation.kind == "progress":
+                self._sequence += 1
+                self._progress = observation.progress
+                return
             if observation == self._latest:
                 return
             self._sequence += 1
             self._latest = observation
             if observation.kind == "session":
                 self._session = observation
-            elif observation.status == "error" and self._session is not None and self._session.status == "ok":
+            elif (
+                observation.status in {"error", "recovering"}
+                and self._session is not None
+                and self._session.status in {"ok", "recovering"}
+            ):
                 self._session = observation
             if observation.kind == "access" and observation.status == "ok":
                 self._last_success_at = observation.observed_at
@@ -201,7 +211,7 @@ class ConnectionCollector:
     def needs_reconciliation(self) -> bool:
         """原生连接故障恢复后仍需一次真实核对，成功回调不能直接恢复会话就绪。"""
         with self._lock:
-            return self._session is not None and self._session.status == "error"
+            return self._session is not None and self._session.status in {"error", "recovering"}
 
     def _history(self) -> dict[str, object]:
         return {"last_success_at": self._last_success_at, "last_failure": self._last_failure}
@@ -217,6 +227,7 @@ class ConnectionCollector:
                 "observation": asdict(self._latest),
                 "session": asdict(self._session) if self._session else None,
                 "history": self._history(),
+                "progress": self._progress,
             }
 
 
@@ -232,6 +243,7 @@ def consume_connection_snapshot(snapshot: dict[str, object] | None) -> None:
                 binding,
                 int(str(snapshot["sequence"])),
                 ConnectionObservation(**cast("dict[str, Any]", raw_session)) if raw_session else None,
+                progress=cast("dict | None", snapshot.get("progress")),
             )
             record_connection_observation(
                 binding,  # type: ignore[arg-type]
