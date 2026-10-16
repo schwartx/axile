@@ -746,7 +746,7 @@ export function AccountEditControlPage() {
 
       <ControlWaitingSection frame={monitorFrame} operationNames={operationNames} />
       <Section label="常用操作"><div className="flex flex-col gap-2 md:col-span-2">{common.map(renderOperation)}</div></Section>
-      <p className="mt-3 text-xs leading-5 text-ink-3">额度预警沿用系统告警的发送方式，同一账户、操作和统计日只提醒一次。<Link to="/settings/notification" className="ml-1 text-accent">查看系统告警配置 →</Link></p>
+      <p className="mt-3 text-xs leading-5 text-ink-3">达到预警线和额度用尽时，页面分别自动提醒一次，关闭后仍保留额度状态。系统通知沿用系统告警的发送方式，同一账户、操作和统计日的额度预警只发送一次。<Link to="/settings/notification" className="ml-1 text-accent">查看系统告警配置 →</Link></p>
 
       {other.length > 0 && (
         <div className="mt-4">

@@ -1,5 +1,10 @@
 import { create } from 'zustand'
 
+/** 监控中预警所需的策略投影；旧快照可缺少操作目录。 */
+export interface ControlWarningPolicy {
+  operations?: Record<string, { daily_warning_percent?: number | null }>
+}
+
 export interface ControlRule {
   id: string
   operation: string
@@ -25,8 +30,8 @@ export interface ControlFrame {
   pending_policy: boolean
   timezone: string | null
   control_date: string | null
-  actual_policy: unknown
-  saved_policy: unknown
+  actual_policy: ControlWarningPolicy | null
+  saved_policy: ControlWarningPolicy | null
   rules: ControlRule[]
   metrics: ControlRule[]
   waiting_total: number

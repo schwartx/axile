@@ -16,6 +16,9 @@ import {
 import { useLiveControl, type ControlFrame, type ControlRule } from '@/stores/liveControl'
 import { useDomainStore } from '@/stores/domain'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
+import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
+import { quotaOperationName, quotaStageName } from '@/features/account/controlWarnings'
+import { InkRewrite } from '@/components/ui/InkRewrite'
 
 function metricRules(frame: ControlFrame | undefined): ControlRule[] {
   // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
@@ -62,6 +65,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
   }
   const dirty = JSON.stringify(draft) !== JSON.stringify(selected)
   const unknownWaiting = !frame || frame.status === 'unknown' || frame.status === 'incomplete'
+  const warnings = useControlQuotaWarnings(frame)
   return <CenteredModal
     open={open}
     title="账户流控"
@@ -73,6 +77,12 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
     </div>}
   >
     <div className="space-y-5">
+      {warnings.length > 0 && <section aria-label="额度预警" className="rounded-[10px] border border-warn/30 bg-warn/5 px-3 py-2">
+        {warnings.map(warning => <div key={warning.id} className="py-1 text-[13px]">
+          <p className="font-medium text-warn">今日{quotaOperationName(warning.operation)} · <InkRewrite text={quotaStageName(warning.stage)} /></p>
+          <p className="num mt-1 text-xs text-ink-2">已用 {warning.used}/{warning.limit} · 剩余 {warning.remaining} 次{warning.percent != null ? ` · 预警线 ${warning.percent}%` : ''}{warning.stale ? ' · 数据待更新' : ''}</p>
+        </div>)}
+      </section>}
       <section aria-label="当前等待">
         <h3 className="mb-2 text-sm font-[640]">当前等待({unknownWaiting ? '未知' : frame.waiting_total})</h3>
         <div className="max-h-56 overflow-y-auto"><ControlWaitingList frame={frame} operationNames={names} /></div>
@@ -147,6 +157,7 @@ export function AccountControlSummary({ accountId }: { accountId: number }) {
 
 function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const frame = useLiveControl((state) => state.frames[accountId])
+  const warnings = useControlQuotaWarnings(frame)
   const accountName = useDomainStore((state) => state.accounts?.find((account) => account.account_id === accountId)?.name)
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(() => readControlPreferences(accountId))
@@ -198,6 +209,7 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
       <span data-config-value className="num min-w-0 font-medium text-ink-1 group-hover:underline">
         {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
       </span>
+      {warnings.length > 0 && <span className="min-w-0 text-warn"><InkRewrite overflow text={warnings.map(warning => `${quotaOperationName(warning.operation)}${quotaStageName(warning.stage)}${warning.stale ? '（待更新）' : ''}`).join(' · ')} /></span>}
       {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
         : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
         : !stale && frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}

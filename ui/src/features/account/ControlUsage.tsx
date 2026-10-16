@@ -1,5 +1,7 @@
 import { Tooltip } from '@/components/ui/Tooltip'
 import type { ControlFrame, ControlRule } from '@/stores/liveControl'
+import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
+import { quotaStageName } from '@/features/account/controlWarnings'
 
 function usageText(rules: ControlRule[], live: boolean): string {
   const parts: string[] = []
@@ -22,6 +24,8 @@ export function ControlScopeUsage({ frame, operation, scope = 'account', symbol 
   scope?: ControlRule['scope']
   symbol?: string
 }) {
+  const warnings = useControlQuotaWarnings(frame)
+  const warning = scope === 'account' ? warnings.find(item => item.operation === operation) : undefined
   const rules = frame?.rules.filter((rule) => rule.operation === operation && rule.scope === scope && (symbol == null || rule.symbol === symbol)) ?? []
   const waiting = frame?.waiting.filter((request) => {
     if (scope !== 'group' && request.operation !== operation) return false
@@ -32,6 +36,7 @@ export function ControlScopeUsage({ frame, operation, scope = 'account', symbol 
   return <span className="mt-1 block text-[12px] font-normal leading-5 text-ink-3">
     {rules.length ? usageText(rules, frame?.status === 'running') : '用量未知'}
     {waiting > 0 && <span className="ml-2 text-warn">{waiting} 个请求等待</span>}
+    {warning && <span className="ml-2 font-medium text-warn">{quotaStageName(warning.stage)}{warning.stale ? ' · 数据待更新' : ''}</span>}
   </span>
 }
 

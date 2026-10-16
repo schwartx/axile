@@ -5,6 +5,7 @@ import { AppSidebar } from '@/components/AppSidebar'
 import { TopBar } from '@/components/TopBar'
 import { Toast } from '@/components/Toast'
 import { RouteWorkspace } from '@/components/RouteWorkspace'
+import { ControlWarningPanel } from '@/features/account/ControlWarningPanel'
 
 /** 应用外壳：状态带、贴边导航栏与独立滚动工作区——一体化驾驶舱框架。 */
 export function AppShell() {
@@ -34,6 +35,7 @@ export function AppShell() {
         </RouteWorkspace>
       </div>
       <Toast />
+      <ControlWarningPanel />
     </div></GlobalErrorContext.Provider>
   )
 }
