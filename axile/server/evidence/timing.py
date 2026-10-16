@@ -2,8 +2,9 @@
 
 from bisect import bisect_left
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from axile.server.evidence.models import ExecutionEvidence, parse_time
 
@@ -61,6 +62,26 @@ def _event_times(item: ExecutionEvidence) -> dict[tuple, list[int]]:
     return times
 
 
+def _bucket_bounds(item: ExecutionEvidence, raw_start: object, bucket: str) -> tuple[float, float] | None:
+    """本地桶必须有会话时区依据；自然日用该时区计算夏令时边界。"""
+    if not isinstance(raw_start, str):
+        return None
+    try:
+        start = datetime.fromisoformat(raw_start)
+        zones = {row.get("timezone") for row in item.sessions if row.get("timezone")}
+        zone = ZoneInfo(next(iter(zones))) if len(zones) == 1 else None
+        if start.tzinfo is None:
+            if zone is None:
+                return None
+            start = start.replace(tzinfo=zone)
+        elif zone is not None:
+            start = start.astimezone(zone)
+        end = start + (timedelta(days=1) if bucket == "day" else timedelta(minutes=1))
+        return start.timestamp() * 1000, end.timestamp() * 1000
+    except (ValueError, TypeError, ZoneInfoNotFoundError, OverflowError, OSError):
+        return None
+
+
 def counter_time_evidence(item: ExecutionEvidence) -> dict[str, Any]:
     """对账桶增量与已保存事件；匹配不等于柜台回报完整或交易成功。"""
     if not item.counters:
@@ -81,13 +102,12 @@ def counter_time_evidence(item: ExecutionEvidence) -> dict[str, Any]:
     unmatched = 0
     for key, count in counts.items():
         base, bucket, raw_start = key[:5], key[5], key[6]
-        start = parse_time(raw_start)
-        if start is None or bucket not in {"day", "minute"} or base[3] not in {"account", "symbol"}:
+        bounds = _bucket_bounds(item, raw_start, bucket)
+        if bounds is None or bucket not in {"day", "minute"} or base[3] not in {"account", "symbol"}:
             unmatched += 1
             continue
-        end = start + timedelta(days=1) if bucket == "day" else start + timedelta(minutes=1)
         values = times.get(base, [])
-        actual = bisect_left(values, end.timestamp() * 1000) - bisect_left(values, start.timestamp() * 1000)
+        actual = bisect_left(values, bounds[1]) - bisect_left(values, bounds[0])
         unmatched += actual != count
     return {
         "status": "unknown" if unmatched else "reconciled",

@@ -66,3 +66,24 @@ def test_missing_or_uncounted_event_cannot_supply_counter_time(changes):
     item = evidence()
     item.controls[0].update(changes)
     assert counter_time_evidence(item)["status"] == "unknown"
+
+
+def test_local_counter_bucket_needs_one_explicit_session_timezone():
+    item = evidence(bucket_start="2026-10-15T09:00:00")
+    assert counter_time_evidence(item)["status"] == "unknown"
+    item.sessions = [{"timezone": "Asia/Shanghai"}]
+    assert counter_time_evidence(item)["status"] == "reconciled"
+    item.sessions.append({"timezone": "UTC"})
+    assert counter_time_evidence(item)["status"] == "unknown"
+
+
+def test_day_bucket_uses_local_next_midnight_across_daylight_saving():
+    item = evidence(bucket_type="day", bucket_start="2026-03-29T00:00:00", control_date="2026-03-29")
+    item.sessions = [{"timezone": "Europe/Berlin"}]
+    item.controls[0].update(
+        control_date="2026-03-29",
+        occurred_at_ms=int(datetime.fromisoformat("2026-03-29T22:30:00+00:00").timestamp() * 1000),
+    )
+    assert counter_time_evidence(item)["status"] == "unknown"  # 已属当地次日，不能固定按 24 小时纳入。
+    item.controls[0]["occurred_at_ms"] = int(datetime.fromisoformat("2026-03-29T21:30:00+00:00").timestamp() * 1000)
+    assert counter_time_evidence(item)["status"] == "reconciled"
