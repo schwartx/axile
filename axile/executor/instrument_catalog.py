@@ -216,6 +216,7 @@ class InstrumentCatalog:
                     get_default_clock().event_wait(attempt.done, min(0.05, remaining))
                 if checkpoint is not None:
                     checkpoint()
+                catalog_remaining(deadline)
                 if attempt.error is not None:
                     raise attempt.error
             # 刷新可能替换了等待期间的结果；在同一锁内复制全部必要资料。
@@ -261,7 +262,7 @@ class InstrumentCatalog:
         while True:
             remaining = None if deadline is None else deadline - clock_monotonic()
             if remaining is not None and remaining <= 0:
-                break
+                raise CatalogError("合约资料查询超时", "CATALOG.TIMEOUT", causes=errors)
             with self._lock:
                 if self._closed:
                     raise CatalogError("合约目录已关闭")

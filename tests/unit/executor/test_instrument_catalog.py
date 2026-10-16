@@ -376,3 +376,26 @@ def test_successful_tq_code_refresh_replaces_specs_and_failed_refresh_keeps_code
     catalog.register("tq", lambda symbols, timeout: [], channel="tq")
     assert finish(catalog, catalog.refresh())["status"] == "failed"
     assert catalog.snapshot() == {RB.key: codes}
+
+
+def test_expired_background_batch_is_timeout_without_starting_a_source(monkeypatch):
+    """补齐线程排队到预算耗尽，不能变成来源不可用或重新开始查询。"""
+    now = [100.0]
+    monkeypatch.setattr("axile.executor.instrument_catalog.clock_monotonic", lambda: now[0])
+    catalog = InstrumentCatalog()
+    calls = []
+    catalog.register("source", lambda symbols, timeout: calls.append(symbols) or [RB])
+    original = catalog._fill
+
+    def delayed_fill(*args):
+        now[0] = 102.0
+        original(*args)
+
+    monkeypatch.setattr(catalog, "_fill", delayed_fill)
+    try:
+        with pytest.raises(CatalogError) as caught:
+            catalog.ensure([RB.key], timeout=1)
+        assert caught.value.reason_code == "CATALOG.TIMEOUT"
+        assert calls == [] and catalog.snapshot() == {}
+    finally:
+        catalog.close()
