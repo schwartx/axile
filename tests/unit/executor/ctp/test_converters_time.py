@@ -143,3 +143,27 @@ def test_order_uses_insert_date_and_keeps_trading_day_identity():
     assert order.create_time == "2026-09-04T21:05:00+08:00"
     assert order.extra["trading_day"] == "20260907"
     assert order.update_time.endswith("+08:00")
+
+
+def test_trade_preserves_hedge_flag_and_trading_day_for_account_columns():
+    trade = trade_to_unified(
+        {
+            "TradeID": "t1",
+            "InstrumentID": "rb2610",
+            "TradingDay": "20261019",
+            "TradeDate": "20261016",
+            "TradeTime": "21:01:02",
+            "Direction": "0",
+            "OffsetFlag": "0",
+            "HedgeFlag": "3",
+            "Price": 3500,
+            "Volume": 1,
+        },
+        trading_day="20261019",
+        front_id=1,
+        session_id=2,
+        resolved_order_id="one",
+    )
+    assert trade.extra["hedge_flag"] == "3"
+    assert trade.extra["trading_day"] == "20261019"
+    assert "2026-10-16" in trade.trade_time

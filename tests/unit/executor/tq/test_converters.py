@@ -74,6 +74,7 @@ def test_trade_reads_tqsdk_trade_entity_fields() -> None:
     trade = trade_to_unified(
         {
             "trade_id": "t1",
+            "exchange_trade_id": "exchange-t1",
             "order_id": "o1",
             "exchange_id": "SHFE",
             "instrument_id": "rb2610",
@@ -92,6 +93,7 @@ def test_trade_reads_tqsdk_trade_entity_fields() -> None:
     assert trade.trade_price == 3092.0
     assert trade.trade_value == 4.0 * 3092.0
     assert trade.extra["offset"] == "CLOSE"
+    assert trade.extra["exchange_trade_id"] == "exchange-t1"
 
 
 def test_trade_price_nan_falls_back_to_zero() -> None:

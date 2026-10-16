@@ -71,6 +71,16 @@ class AccountTradePublic(SQLModel):
     price: float
     volume: float
     value: float
+    trading_day: str | None = None
+    hedge_flag: str | None = None
+    exchange_trade_id: str | None = None
+    amount: float | None = None
+    commission: float | None = None
+    commission_asset: str | None = None
+    cost: float | None = None
+    realized_pnl: float | None = None
+    is_maker: bool | None = None
+    position_side: str | None = None
 
 
 class AccountOperationFailure(SQLModel):
@@ -88,6 +98,7 @@ class AccountOperationFailure(SQLModel):
 class AccountActivityPublic(SQLModel):
     """近期委托、成交和操作失败；查询范围与采集范围显式公开。"""
 
+    channel: str = ""
     orders: list[AccountOrderPublic]
     ended_orders: list[AccountOrderPublic] = Field(default_factory=list)
     trades: list[AccountTradePublic]

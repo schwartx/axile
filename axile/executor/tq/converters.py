@@ -156,6 +156,7 @@ def trade_to_unified(row: object, resolver: TQSymbolResolver) -> TradeRecord:
         direction=str(_value(row, "direction", "") or ""),
         offset=str(_value(row, "offset", "") or ""),
         tq_symbol=full_symbol,
+        exchange_trade_id=str(_value(row, "exchange_trade_id", "") or ""),
     )
 
 

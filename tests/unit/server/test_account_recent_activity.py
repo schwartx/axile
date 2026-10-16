@@ -151,3 +151,66 @@ def test_gm_missing_native_times_do_not_become_local_sampling_time():
     assert result["orders"][0]["create_time"] is None
     assert result["orders"][0]["update_time"] is None
     assert result["trades"][0]["time"] == ""
+
+
+@pytest.mark.parametrize(
+    "channel,extra,expected",
+    [
+        (
+            "ctp",
+            {"trading_day": "20261019", "hedge_flag": "3", "offset_flag": "0"},
+            {"trading_day": "20261019", "hedge_flag": "3", "offset": "0"},
+        ),
+        (
+            "tq",
+            {"exchange_trade_id": "exchange-fill-1", "offset": "CLOSETODAY"},
+            {"exchange_trade_id": "exchange-fill-1", "offset": "CLOSETODAY"},
+        ),
+        (
+            "gm",
+            {"raw_trade_data": {"amount": 7837.5, "commission": 0, "cost": 7837.5, "password": "secret"}},
+            {"amount": 7837.5, "commission": 0, "cost": 7837.5},
+        ),
+        (
+            "binance",
+            {
+                "commission": "0",
+                "commission_asset": "BNB",
+                "realized_pnl": "-2.5",
+                "is_maker": False,
+                "position_side": "SHORT",
+            },
+            {
+                "commission": 0,
+                "commission_asset": "BNB",
+                "realized_pnl": -2.5,
+                "is_maker": False,
+                "position_side": "SHORT",
+            },
+        ),
+    ],
+)
+def test_channel_trade_columns_preserve_native_fields_and_zero_values(channel, extra, expected):
+    instance = executor(channel)
+    instance.account_orders.activity.observe_trade(
+        TradeRecord.create(trade_id="one", symbol="symbol", trade_price=100, trade_volume=1, extra=extra)
+    )
+    result = run_activity_command(instance, {})
+    assert result["channel"] == channel
+    assert {key: result["trades"][0][key] for key in expected} == expected
+    assert "secret" not in str(result)
+
+
+def test_missing_native_amount_and_fees_do_not_fall_back_to_price_times_quantity_or_zero():
+    instance = executor("gm")
+    instance.account_orders.activity.observe_trade(
+        TradeRecord.create(
+            trade_id="one",
+            symbol="symbol",
+            trade_price=100,
+            trade_volume=2,
+            extra={"raw_trade_data": {"amount": "NaN", "commission": None, "cost": "invalid"}},
+        )
+    )
+    trade = run_activity_command(instance, {})["trades"][0]
+    assert trade["amount"] is trade["commission"] is trade["cost"] is trade["is_maker"] is None

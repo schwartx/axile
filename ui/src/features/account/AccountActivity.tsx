@@ -29,7 +29,7 @@ function ActivityTable({ data, tab, units }: { data: AccountActivity; tab: Activ
   const trades = tab === 'trades'
   const rows = trades ? data.trades : data.orders
   if (!rows.length) return <Empty text={trades ? '暂无成交记录' : '暂无委托记录'} />
-  return <ActivityRecordsTable trades={trades ? data.trades : undefined} orders={trades ? undefined : data.orders} units={units} formatTime={time} />
+  return <ActivityRecordsTable trades={trades ? data.trades : undefined} orders={trades ? undefined : data.orders} channel={data.channel} units={units} formatTime={time} />
 }
 
 function Empty({ text }: { text: string }) {

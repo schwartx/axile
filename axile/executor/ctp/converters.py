@@ -143,6 +143,7 @@ def trade_to_unified(
         order_sys_id=str(_value(row, "OrderSysID", "") or "").strip(),
         direction=str(_value(row, "Direction", "") or ""),
         offset_flag=str(_value(row, "OffsetFlag", "") or ""),
+        hedge_flag=str(_value(row, "HedgeFlag", "") or ""),
     ).model_copy(update={"order_id": resolved_order_id})
 
 

@@ -269,7 +269,7 @@ test('activity transitions only records, retains controls, and respects reduced 
   expect(await slot.evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0)
 })
 
-test('stock activity shares column tracks and row heights and keeps IDs in copyable details', async ({ page }, testInfo) => {
+test('stock activity omits trade status, preserves order status and keeps IDs in copyable details', async ({ page }, testInfo) => {
   const orderId = 'f7d3e42a-c908-11f1-8f84-02410e5860af'
   const submitted = '2026-10-16T10:26:17+08:00'
   const filled = '2026-10-16T13:59:46+08:00'
@@ -280,10 +280,11 @@ test('stock activity shares column tracks and row heights and keeps IDs in copya
     remaining_volume: 0, status: '已成交', create_time: submitted, update_time: filled,
     execution_id: null, native_identity: {}, uncertain: false }))
   await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
-    orders: stockOrders, ended_orders: [], trades: stockOrders.map((order, i) => ({
+    channel: 'gm', orders: stockOrders, ended_orders: [], trades: stockOrders.map((order, i) => ({
       trade_id: `stock-fill-${i}`, order_id: order.order_id, symbol: order.symbol,
       direction: 'BUY', offset: 'OPEN', time: i === 0 ? filled : '2026-10-16T10:26:21+08:00',
       price: order.price, volume: order.volume, value: order.price * order.volume,
+      amount: i === 0 ? 7837.4997377 : 1703.4000396, commission: i === 0 ? 2.5 : 0, cost: i === 0 ? 7840 : 1703.4,
     })), failures: [], scope: 'GM 当前可查询记录', started_at: submitted, sampled_at: filled,
     queried_at: filled, errors: [], symbols: stockOrders.map(order => order.symbol), limit: 100, truncated: false,
   } }))
@@ -300,7 +301,12 @@ test('stock activity shares column tracks and row heights and keeps IDs in copya
   await expect(current).not.toContainText('开平未知')
   await expect(current.getByText('买卖', { exact: true })).toBeVisible()
   const row = current.locator('[data-activity-row]').first()
-  const tracks = await row.evaluate(element => [...element.children].map(child => child.getBoundingClientRect().x))
+  await expect(current.getByText('状态', { exact: true })).toHaveCount(0)
+  await expect(current.getByText('已成交', { exact: true })).toHaveCount(0)
+  await expect(row.locator(':scope > *')).toHaveCount(9)
+  for (const label of ['成交金额', '手续费', '成本']) await expect(current.getByText(label, { exact: true })).toBeVisible()
+  await expect(row.getByText('7,837.50', { exact: true }).filter({ visible: true })).toBeVisible()
+  expect(await row.locator('[data-numeric]').evaluateAll(cells => cells.every(cell => cell.scrollWidth <= cell.clientWidth))).toBe(true)
   expect((await row.boundingBox())!.height).toBe(64)
   await expect(current.getByText(orderId, { exact: true })).not.toBeVisible()
   await current.getByRole('button', { name: '展开成交 stock-fill-0', exact: true }).click()
@@ -314,7 +320,9 @@ test('stock activity shares column tracks and row heights and keeps IDs in copya
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
   await expect(dialog.locator('[data-swap-outgoing]')).toHaveCount(0)
   expect((await row.boundingBox())!.height).toBe(64)
-  expect(await row.evaluate(element => [...element.children].map(child => child.getBoundingClientRect().x))).toEqual(tracks)
+  await expect(current.getByText('状态', { exact: true })).toBeVisible()
+  await expect(row.getByText('已成交', { exact: true })).toBeVisible()
+  await expect(row.locator(':scope > *')).toHaveCount(7)
   await expect(current).not.toContainText('开平未知')
   await expect(current.getByText('买卖 / 开平', { exact: true })).toHaveCount(0)
   await expect(row.locator('time')).toHaveText('2026-10-16 10:26:17')
@@ -323,3 +331,39 @@ test('stock activity shares column tracks and row heights and keeps IDs in copya
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('stock-orders-mobile.png'), animations: 'disabled' })
 })
+
+
+for (const channel of ['ctp', 'tq', 'binance'] as const) {
+  test(`${channel} fills expose channel columns in the wider dialog`, async ({ page }, testInfo) => {
+    const extras = {
+      ctp: { offset: 'OPEN', trading_day: '20261019', hedge_flag: '3' },
+      tq: { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-fill-12345' },
+      binance: { commission: 0, commission_asset: 'BNB', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' },
+    }[channel]
+    const labels = { ctp: ['开平', '交易日', '投机 / 套保'], tq: ['开平', '交易所成交编号'], binance: ['手续费', '手续费币种', '已实现盈亏', 'Maker/Taker', '持仓方向'] }[channel]
+    const values = { ctp: ['开仓', '2026-10-19', '套保'], tq: ['平今', 'exchange-fill-12345'], binance: ['0', 'BNB', '-2.5', 'Taker', '空头'] }[channel]
+    const fill = { trade_id: 'channel-fill', order_id: 'channel-order', symbol: channel === 'binance' ? 'BTCUSDT' : 'rb2610', direction: 'BUY', offset: null, time: '2026-10-16T21:01:02+08:00', price: 100, volume: 1, value: 100 }
+    await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
+      channel, orders: [], ended_orders: [], trades: [{ ...fill, ...extras }, { ...fill, trade_id: 'missing-fields' }], failures: [], scope: '', started_at: fill.time, sampled_at: fill.time, queried_at: fill.time, errors: [], symbols: [fill.symbol], limit: 100, truncated: false,
+    } }))
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await page.goto('/e2e/orders.html')
+    await page.getByRole('button', { name: '委托与成交 · 在途 1', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '委托与成交', exact: true })
+    await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
+    const current = dialog.locator('[data-swap-current]')
+    await expect(current.locator('[data-activity-row]')).toHaveCount(2)
+    await expect(dialog.locator('[data-swap-outgoing]')).toHaveCount(0)
+    expect((await dialog.boundingBox())!.width).toBe(1440)
+    for (const label of labels) await expect(current.getByText(label, { exact: true })).toBeVisible()
+    const rows = current.locator('[data-activity-row]')
+    for (const value of values) await expect(rows.first().getByText(value, { exact: true }).filter({ visible: true })).toBeVisible()
+    await expect(rows.first().locator(':scope > *')).toHaveCount(6 + labels.length)
+    await expect(rows.last().locator(':scope > *')).toHaveCount(6 + labels.length)
+    await expect(current.getByText('状态', { exact: true })).toHaveCount(0)
+    if (channel === 'binance') await expect(rows.first().locator('.text-down')).toContainText('-2.5')
+    await page.screenshot({ path: testInfo.outputPath(`${channel}-trade-columns.png`), animations: 'disabled' })
+    await page.setViewportSize({ width: 375, height: 812 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+}

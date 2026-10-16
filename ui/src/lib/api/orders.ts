@@ -60,6 +60,16 @@ export interface AccountTrade {
   price: number
   volume: number
   value: number
+  trading_day?: string | null
+  hedge_flag?: string | null
+  exchange_trade_id?: string | null
+  amount?: number | null
+  commission?: number | null
+  commission_asset?: string | null
+  cost?: number | null
+  realized_pnl?: number | null
+  is_maker?: boolean | null
+  position_side?: string | null
 }
 
 export interface OperationFailure {
@@ -73,6 +83,7 @@ export interface OperationFailure {
 }
 
 export interface AccountActivity {
+  channel?: string
   orders: CurrentOrder[]
   ended_orders?: CurrentOrder[]
   trades: AccountTrade[]
