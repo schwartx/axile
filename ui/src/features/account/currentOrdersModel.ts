@@ -1,7 +1,7 @@
 import type { CancelReceipt, CurrentOrder, CurrentOrdersSnapshot } from '@/lib/api/orders'
 
 export function orderOffset(offset: string | null): string {
-  return ({ '0': '开仓', '1': '平仓', '3': '平今', '4': '平昨', OPEN: '开仓', CLOSE: '平仓', CLOSETODAY: '平今', CLOSEYESTERDAY: '平昨' } as Record<string, string>)[offset ?? ''] ?? '开平未知'
+  return ({ '0': '开仓', '1': '平仓', '3': '平今', '4': '平昨', OPEN: '开仓', CLOSE: '平仓', CLOSETODAY: '平今', CLOSEYESTERDAY: '平昨' } as Record<string, string>)[offset ?? ''] ?? ''
 }
 
 export function orderDirection(direction: string): string {

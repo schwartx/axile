@@ -360,7 +360,7 @@ export function AppSidebar({
         }`}
       />
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[218px] flex-none flex-col border-r border-line bg-surface py-3.5 pr-2.5 pl-3 transition-transform duration-200 motion-reduce:transition-none md:static md:z-auto md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-[184px] flex-none flex-col border-r border-line bg-surface py-3.5 pr-2.5 pl-3 transition-transform duration-200 motion-reduce:transition-none md:static md:z-auto md:translate-x-0 ${
           mobileOpen ? 'visible translate-x-0' : 'invisible -translate-x-full md:visible'
         }`}
         aria-label="主导航"
@@ -390,7 +390,7 @@ export function AppSidebar({
               ) : (
                 /* 账户段：身份块头（账户名 + 渠道）+ 左缘贯通 hairline + 统一缩进——
                    整段条目属于这个账户。不用围合面板，层次靠线。 */
-                <div className={`${denseNav ? 'mt-3' : 'mt-4'} ml-1.5 border-l border-line pl-2 transition-[margin] duration-200 motion-reduce:transition-none`}>
+                <div className={`${denseNav ? 'mt-3' : 'mt-4'} ml-1 border-l border-line pl-1 transition-[margin] duration-200 motion-reduce:transition-none`}>
                   <div className="mb-1 flex min-w-0 items-center gap-1.5 px-2.5 pt-0.5" title={activeAccount?.name ?? '当前账户'}>
                     <span className="truncate text-[14px] font-[620] text-ink-1">
                       {activeAccount?.name ?? '当前账户'}

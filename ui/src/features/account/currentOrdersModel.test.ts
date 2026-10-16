@@ -96,7 +96,8 @@ test('channel close flags preserve today and yesterday distinctions', () => {
   expect(orderOffset('3')).toBe('平今')
   expect(orderOffset('4')).toBe('平昨')
   expect(orderOffset('CLOSETODAY')).toBe('平今')
-  expect(orderOffset(null)).toBe('开平未知')
+  expect(orderOffset(null)).toBe('')
+  expect(orderOffset('UNKNOWN')).toBe('')
 })
 
 test('未采样时间未知，失联订单保留原采样时间与独立状态', () => {

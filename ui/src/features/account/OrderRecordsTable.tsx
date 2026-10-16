@@ -15,6 +15,43 @@ export function OrderDetails({ order }: { order: CurrentOrder }) {
   </>
 }
 
+const detailGrid = 'grid grid-cols-1 gap-x-6 gap-y-2 @xl:grid-cols-2 @4xl:grid-cols-3'
+
+function DetailField({ label, children, wide = false }: { label: string; children: ReactNode; wide?: boolean }) {
+  return <div className={`grid min-w-0 grid-cols-[120px_minmax(0,1fr)] gap-x-3 ${wide ? 'col-span-full' : ''}`}>
+    <dt className="text-ink-3">{label}</dt><dd className="min-w-0 break-all">{children}</dd>
+  </div>
+}
+
+function OrderDetailPanel({ order, channel, units, formatTime, copy }: {
+  order: CurrentOrder
+  channel?: string
+  units?: ChannelCapability['units']
+  formatTime: Props['formatTime']
+  copy: () => Promise<void>
+}) {
+  const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
+  const fields = orderDetails(order)
+  const commonKeys = new Set(['time_in_force', 'cum_quote'])
+  const columnKeys = new Set(orderColumns(channel).map(column => column.key))
+  const common = fields.filter(field => commonKeys.has(field.key) && !columnKeys.has(field.key))
+  const extra = fields.filter(field => !commonKeys.has(field.key) && !columnKeys.has(field.key))
+  return <div className="@container pb-4 text-xs text-ink-2">
+    <dl className={detailGrid}>
+      <DetailField label="订单编号"><span className="inline-flex max-w-full items-start gap-3"><span className="min-w-0 select-text break-all">{order.order_id}</span><button type="button" onClick={() => void copy()} className="shrink-0 cursor-pointer text-accent" aria-label="复制订单编号">复制</button></span></DetailField>
+      <DetailField label="更新时间">{formatTime(order.update_time ?? order.create_time)}</DetailField>
+      <DetailField label="未成数量">{number(order.remaining_volume)}{units?.quantity_label ? ` ${units.quantity_label}` : ''}</DetailField>
+      <DetailField label="关联执行" wide={Boolean(order.execution_id)}>{order.execution_id ?? '未关联'}</DetailField>
+      {common.map(field => <DetailField key={field.key} label={field.label}>{field.text}</DetailField>)}
+      {order.reason && <DetailField label="状态说明" wide>{order.reason}</DetailField>}
+      <DetailField label="记录时间">{formatTime(order.create_time)}</DetailField>
+      {order.avg_price != null && <DetailField label="均价来源">{order.avg_price_source === 'trades' ? '逐笔成交计算' : '渠道返回'}</DetailField>}
+      {Object.entries(order.native_identity).map(([key, value]) => <DetailField key={key} label={key === 'client_order_id' ? '客户端订单编号' : key} wide>{value}</DetailField>)}
+      {extra.map(field => <DetailField key={field.key} label={field.label}>{field.text}</DetailField>)}
+    </dl>
+  </div>
+}
+
 interface Props {
   orders: CurrentOrder[]
   channel?: string
@@ -54,16 +91,7 @@ function Row({ order, channel, units, formatTime, action, statusText }: Omit<Pro
     </tr>
     <tr><td colSpan={8 + columns.length + (action ? 1 : 0)} className="p-0">
       <div id={panel} aria-hidden={!expanded} inert={!expanded} className={`grid transition-[grid-template-rows,visibility] duration-200 motion-reduce:transition-none ${expanded ? 'grid-rows-[1fr] visible' : 'grid-rows-[0fr] invisible'}`}>
-        <div className="min-h-0 overflow-hidden"><dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-2 pb-4 text-xs text-ink-2 [&_dt]:text-ink-3 [&_dd]:min-w-0 [&_dd]:break-all">
-          <dt>订单编号</dt><dd className="flex items-start gap-3"><span className="select-text">{order.order_id}</span><button type="button" onClick={() => void copy()} className="cursor-pointer text-accent" aria-label="复制订单编号">复制</button></dd>
-          <dt>记录时间</dt><dd>{formatTime(order.create_time)}</dd>
-          <dt>未成数量</dt><dd>{number(order.remaining_volume)} {units?.quantity_label}</dd>
-          {order.update_time && <><dt>更新时间</dt><dd>{formatTime(order.update_time)}</dd></>}
-          {order.reason && <><dt>状态说明</dt><dd>{order.reason}</dd></>}
-          <dt>关联执行</dt><dd>{order.execution_id ?? '未关联'}</dd>
-          {Object.entries(order.native_identity).map(([key, value]) => <div key={key} className="contents"><dt>{key}</dt><dd>{value}</dd></div>)}
-          <OrderDetails order={order} />
-        </dl></div>
+        <div className="min-h-0 overflow-hidden"><OrderDetailPanel order={order} channel={channel} units={units} formatTime={formatTime} copy={copy} /></div>
       </div>
     </td></tr>
   </tbody>
