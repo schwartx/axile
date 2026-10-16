@@ -37,7 +37,8 @@ export function AccountConnectionDetailModal({ selection, onClose }: {
   const feedback = useConnectionFeedback(selection?.accountId ?? -1)
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
   const title = (selection?.detail.status === 'unavailable' ? view?.title : feedback.label ?? view?.title) ?? '账户连接详情'
-  const operationInfo = feedback.error ? errorInfo(feedback.error, [{ label: '操作', value: feedback.label ?? '连接操作' }]) : null
+  const operationInfo = feedback.error ? errorInfo(feedback.error) : null
+  if (operationInfo) operationInfo.evidence = operationInfo.evidence.filter(field => field.label !== 'HTTP')
   const copy = [view?.copy, operationInfo?.text].filter(Boolean).join('\n\n')
   const footerActions = <>
     {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
