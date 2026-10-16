@@ -98,12 +98,29 @@ def test_override_normalization_and_validation():
     assert rule_priority(FuturesClosePolicy(fallback="today_first"), "AG") == ("yesterday_first", "preset")
 
 
-def test_presets_leave_fees_unknown_and_declare_modes():
+def test_presets_include_supplied_fees_and_declare_modes():
     assert close_capability(automatic=True).modes == ["rules", "fee"]
     assert close_capability(automatic=False).modes == ["rules"]
     presets = close_capability(automatic=False).presets
     assert len(presets) == len({p.product for p in presets})
-    assert all(p.yesterday_fee is None and p.today_fee is None for p in presets)
+    assert len(presets) == 88
+    by_product = {p.product: p for p in presets}
+    assert by_product["JD"].yesterday_fee == by_product["JD"].today_fee == "万分之1.5"
+    assert by_product["LR"].yesterday_fee is by_product["LR"].today_fee is None
+    assert all(p.yesterday_fee and p.today_fee for p in presets if p.product != "LR")
+    assert by_product["AU"].yesterday_fee == "20元/手（AU2610、2611、2612、2706）；10元/手（AU2702、2704、2708、2710）"
+    assert by_product["AU"].today_fee == "免收"
+    assert by_product["L"].yesterday_fee == "1元/手"
+    for product in ("ZN", "PB", "AU", "SC"):
+        assert by_product[product].priority == "today_first"
+        assert by_product[product].can_choose
+    for product in ("CU", "EC", "AG", "LR"):
+        assert by_product[product].priority == "yesterday_first"
+    assert not by_product["JD"].can_choose
+    assert rule_priority(FuturesClosePolicy(overrides={"ZN": "yesterday_first"}), "ZN") == (
+        "yesterday_first",
+        "override",
+    )
 
 
 @pytest.mark.parametrize(

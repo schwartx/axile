@@ -83,7 +83,7 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
           </table>
           {!shown.length && <p className="p-4 text-sm text-ink-3">没有匹配的品种，可输入字母代码添加。</p>}
         </div>
-        <p className="text-[12px] leading-5 text-ink-3">预设 {capability.preset_version}。手续费说明暂留空，等待补充；空白不代表零费用。预设说明不代替账户实际费率。{capability.notice}</p>
+        <p className="text-[12px] leading-5 text-ink-3">预设 {capability.preset_version}。空白表示未知，不代表零费用。预设说明不代替账户实际费率。{capability.notice}</p>
       </div>
     </CenteredModal>
   </>

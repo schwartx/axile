@@ -105,14 +105,19 @@ def test_downgrade_restores_snapshot_but_rejects_changed_policy_before_writes():
     engine.dispose()
 
 
-def test_public_capability_keeps_modes_and_unknown_fee_columns():
+def test_public_capability_keeps_modes_and_supplied_fee_columns():
     from axile.server.api.routes.capabilities import list_channel_capabilities
 
     channels = {row.channel: row.model_dump(mode="json") for row in list_channel_capabilities()}
     assert channels["ctp"]["futures_close"]["modes"] == ["rules", "fee"]
     assert channels["tq"]["futures_close"]["modes"] == ["rules"]
     ag = next(p for p in channels["tq"]["futures_close"]["presets"] if p["product"] == "AG")
-    assert ag["yesterday_fee"] is ag["today_fee"] is None
+    assert (
+        ag["yesterday_fee"] == ag["today_fee"] == "万分之0.5（AG2610—2612、2706）；万分之0.1（AG2701—2705、2707—2709）"
+    )
+    zn = next(p for p in channels["ctp"]["futures_close"]["presets"] if p["product"] == "ZN")
+    assert zn["priority"] == "today_first"
+    assert zn["yesterday_fee"] == "3元/手" and zn["today_fee"] == "免收"
 
 
 def test_real_account_patch_rejects_tq_automatic_before_any_commit(monkeypatch):

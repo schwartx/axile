@@ -1,104 +1,104 @@
 {
-  "version": "2026-10-16.1",
-  "notice": "初始顺序为先昨后今基线，可按品种修改；手续费说明待补充，不代表账户实际费率。",
+  "version": "2026-10-16.2",
+  "notice": "手续费说明来自用户提供的九期网 2026-10-15 数据，具体月份见说明；空白表示未知，不代表账户实际费率。仅支持选择平今平昨的交易所按预设顺序报单。",
   "products": [
     {
       "product": "IC",
       "exchange": "CFFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.23",
+      "today_fee": "万分之2.3"
     },
     {
       "product": "IF",
       "exchange": "CFFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.23",
+      "today_fee": "万分之2.3"
     },
     {
       "product": "IH",
       "exchange": "CFFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.23",
+      "today_fee": "万分之2.3"
     },
     {
       "product": "IM",
       "exchange": "CFFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.23",
+      "today_fee": "万分之2.3"
     },
     {
       "product": "T",
       "exchange": "CFFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "TF",
       "exchange": "CFFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "TL",
       "exchange": "CFFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "TS",
       "exchange": "CFFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "AP",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "5元/手",
+      "today_fee": "10元/手"
     },
     {
       "product": "CF",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "4.3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "CJ",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "CY",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "1元/手",
+      "today_fee": "免收"
     },
     {
       "product": "FG",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2元/手",
+      "today_fee": "2元/手"
     },
     {
       "product": "JR",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "LR",
@@ -111,512 +111,513 @@
       "product": "MA",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "OI",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2元/手",
+      "today_fee": "2元/手"
     },
     {
       "product": "PF",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "PK",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2元/手",
+      "today_fee": "2元/手"
     },
     {
       "product": "PL",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "PM",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "30元/手",
+      "today_fee": "30元/手"
     },
     {
       "product": "PR",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "免收"
     },
     {
       "product": "PX",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之1",
+      "today_fee": "免收"
     },
     {
       "product": "RI",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2.5元/手",
+      "today_fee": "2.5元/手"
     },
     {
       "product": "RM",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "1.5元/手",
+      "today_fee": "免收"
     },
     {
       "product": "RS",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "SA",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "SF",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "SH",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之1",
+      "today_fee": "免收"
     },
     {
       "product": "SM",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "SR",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "TA",
       "exchange": "CZCE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "UR",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "WH",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "30元/手",
+      "today_fee": "30元/手"
     },
     {
       "product": "ZC",
       "exchange": "CZCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "150元/手",
+      "today_fee": "150元/手"
     },
     {
       "product": "A",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2元/手",
+      "today_fee": "2元/手"
     },
     {
       "product": "B",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "BB",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "万分之0.5"
     },
     {
       "product": "BZ",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "C",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1.2元/手",
+      "today_fee": "1.2元/手"
     },
     {
       "product": "CS",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1.5元/手",
+      "today_fee": "1.5元/手"
     },
     {
       "product": "EB",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "EG",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "FB",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "万分之0.5"
     },
     {
       "product": "I",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "J",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1.4"
     },
     {
       "product": "JD",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1.5",
+      "today_fee": "万分之1.5"
     },
     {
       "product": "JM",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "L",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "LG",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.3",
+      "today_fee": "万分之0.3"
     },
     {
       "product": "LH",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之2"
     },
     {
       "product": "M",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1.5元/手",
+      "today_fee": "1.5元/手"
     },
     {
       "product": "P",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2.5元/手",
+      "today_fee": "2.5元/手"
     },
     {
       "product": "PG",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "6元/手",
+      "today_fee": "6元/手"
     },
     {
       "product": "PP",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "RR",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "V",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "1元/手",
+      "today_fee": "1元/手"
     },
     {
       "product": "Y",
       "exchange": "DCE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "2.5元/手",
+      "today_fee": "2.5元/手"
     },
     {
       "product": "LC",
       "exchange": "GFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.8",
+      "today_fee": "万分之0.8"
     },
     {
       "product": "PD",
       "exchange": "GFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之1",
+      "today_fee": "免收"
     },
     {
       "product": "PS",
       "exchange": "GFEX",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之2.5"
     },
     {
       "product": "PT",
       "exchange": "GFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之1",
+      "today_fee": "免收"
     },
     {
       "product": "SI",
       "exchange": "GFEX",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之1",
+      "today_fee": "免收"
     },
     {
       "product": "BC",
       "exchange": "INE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.1",
+      "today_fee": "免收"
     },
     {
       "product": "EC",
       "exchange": "INE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之6",
+      "today_fee": "万分之12"
     },
     {
       "product": "LU",
       "exchange": "INE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.1",
+      "today_fee": "万分之0.1"
     },
     {
       "product": "NR",
       "exchange": "INE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.2",
+      "today_fee": "免收"
     },
     {
       "product": "SC",
       "exchange": "INE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "20元/手",
+      "today_fee": "免收"
     },
     {
       "product": "AD",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "免收"
     },
     {
       "product": "AG",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.5（AG2610—2612、2706）；万分之0.1（AG2701—2705、2707—2709）",
+      "today_fee": "万分之0.5（AG2610—2612、2706）；万分之0.1（AG2701—2705、2707—2709）"
     },
     {
       "product": "AL",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "AO",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1",
+      "today_fee": "万分之1"
     },
     {
       "product": "AU",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "20元/手（AU2610、2611、2612、2706）；10元/手（AU2702、2704、2708、2710）",
+      "today_fee": "免收"
     },
     {
       "product": "BR",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.2",
+      "today_fee": "万分之0.2"
     },
     {
       "product": "BU",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "免收"
     },
     {
       "product": "CU",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之0.5",
+      "today_fee": "万分之1"
     },
     {
       "product": "FU",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.5（FU2611、2612、2701、2705、2709）；万分之0.1（FU2702—2704、2706—2708、2710）",
+      "today_fee": "免收"
     },
     {
       "product": "HC",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1（HC2610—2612、2701、2705）；万分之0.2（HC2702—2704、2706—2709）",
+      "today_fee": "万分之1（HC2610—2612、2701、2705）；万分之0.2（HC2702—2704、2706—2709）"
     },
     {
       "product": "NI",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "OP",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.2",
+      "today_fee": "免收"
     },
     {
       "product": "PB",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.4",
+      "today_fee": "免收"
     },
     {
       "product": "RB",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "万分之1（RB2610—2612、2701、2705）；万分之0.2（RB2702—2704、2706—2709）",
+      "today_fee": "万分之1（RB2610—2612、2701、2705）；万分之0.2（RB2702—2704、2706—2709）"
     },
     {
       "product": "RU",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     },
     {
       "product": "SN",
       "exchange": "SHFE",
       "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "yesterday_fee": "3元/手",
+      "today_fee": "3元/手"
     },
     {
       "product": "SP",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.2",
+      "today_fee": "免收"
     },
     {
       "product": "SS",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "2元/手",
+      "today_fee": "免收"
     },
     {
       "product": "WR",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "万分之0.4",
+      "today_fee": "免收"
     },
     {
       "product": "ZN",
       "exchange": "SHFE",
-      "priority": "yesterday_first",
-      "yesterday_fee": null,
-      "today_fee": null
+      "priority": "today_first",
+      "yesterday_fee": "3元/手",
+      "today_fee": "免收"
     }
-  ]
+  ],
+  "source": "docs/data/futures_close_fees_2026-10-15.csv"
 }
