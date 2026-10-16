@@ -465,11 +465,12 @@ test('account restores runtime failure on entry and all holdings sources retain 
 
 for (const failed of [false, true]) test(`asset refresh settles independently of an automatic toggle, failed=${failed}`, async ({ page }) => {
   await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })
   let refreshes = 0
   await page.route('**/api/v1/account/7/assets/refresh', async route => {
-    if (++refreshes === 1) {
+    if (++refreshes === 2) {
       await pending
       if (failed) return route.fulfill({ status: 502, json: { detail: raw('资产刷新') } })
     }
@@ -477,26 +478,30 @@ for (const failed of [false, true]) test(`asset refresh settles independently of
   })
   await page.route('**/api/v1/account/7', route => route.fulfill({ json: { ...account, is_started: route.request().method() === 'PATCH', runtime_sync: sync() } }))
   await page.goto('/e2e/errors.html?mode=account')
-  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
   await expect.poll(() => refreshes).toBe(1)
+  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
+  await expect.poll(() => refreshes).toBe(2)
   await expect(page.getByRole('button', { name: '正在查询账户资产', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: '启动自动执行', exact: true }).click()
   await expect(page.getByRole('button', { name: '暂停自动执行', exact: true })).toBeEnabled()
   release()
   const refresh = page.getByRole('button', { name: '刷新账户资产', exact: true })
   await expect(refresh).toBeEnabled()
-  const notice = page.getByRole('alert').filter({ hasText: '账户资产刷新失败' })
+  const notice = page.getByRole('button', { name: '查看资产刷新详情：刷新失败' })
   if (failed) {
-    await expect(notice).toContainText('资产刷新开始')
-    await notice.getByRole('button', { name: '重试：账户资产刷新失败' }).click()
+    await notice.click()
+    await expect(page.getByRole('dialog', { name: '资产刷新详情' })).toContainText('资产刷新开始')
+    await page.keyboard.press('Escape')
+    await refresh.click()
   } else await refresh.click()
-  await expect.poll(() => refreshes).toBe(2)
+  await expect.poll(() => refreshes).toBe(3)
   await expect(refresh).toBeEnabled()
   await expect(notice).toHaveCount(0)
 })
 
 test('a late asset request cannot clear the new account loading state or display its old failure', async ({ page }) => {
   await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
   const release = new Map<string, () => void>()
   await page.route(/\/api\/v1\/account\/[78]\/assets\/refresh$/, async route => {
     const id = route.request().url().split('/').at(-3)!
@@ -505,10 +510,8 @@ test('a late asset request cannot clear the new account loading state or display
   })
   await page.route('**/api/v1/account/8', route => route.fulfill({ json: { ...account, id: 8, name: '合成账户 B' } }))
   await page.goto('/e2e/errors.html?mode=account')
-  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
   await expect.poll(() => release.has('7')).toBe(true)
   await page.getByRole('button', { name: '切换账户', exact: true }).click()
-  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
   await expect.poll(() => release.has('8')).toBe(true)
   release.get('7')!()
   await expect(page.getByRole('button', { name: '正在查询账户资产', exact: true })).toBeDisabled()
@@ -739,7 +742,7 @@ test('a comparison-only failure has its own error and retry without hiding succe
 })
 
 
-test('账户连接标识读取后端三态，连接错误集中展示，业务错误保留原位置', async ({ page }) => {
+test('账户连接标识读取后端三态，连接错误归连接入口，资产业务错误归资产入口', async ({ page }) => {
   await defaults(page)
   let state: 'unknown' | 'ready' | 'unavailable' = 'unknown'
   let business = false
@@ -754,9 +757,10 @@ test('账户连接标识读取后端三态，连接错误集中展示，业务�
   })
   await page.goto('/e2e/errors.html?mode=account')
   await expect(page.getByRole('button', { name: '连接详情，账户连通状态：待确认' })).toBeVisible()
-  await page.getByRole('button', { name: '刷新账户资产' }).click()
+  state = 'ready'
+  await pushConnection(page, { ...connection(), error: null })
   await expect(page.getByRole('button', { name: '连接详情，账户连通状态：暂不可用' })).toBeVisible()
-  await expect(page.getByRole('alert').filter({ hasText: '账户资产刷新失败' })).toContainText('更新令牌错误')
+  await expect(page.getByRole('button', { name: /查看资产刷新详情/ })).toHaveCount(0)
   await page.getByRole('button', { name: '连接详情，账户连通状态：暂不可用' }).click()
   const modal = page.getByRole('dialog', { name: '账户会话暂不可用' })
   await expect(modal.getByRole('button', { name: '技术详情' })).toHaveAttribute('aria-expanded', 'false')
@@ -770,8 +774,8 @@ test('账户连接标识读取后端三态，连接错误集中展示，业务�
   await mockConnectionSnapshot(page, { ...connection(), error: null })
   await page.reload()
   await expect(page.getByRole('switch', { name: '账户连接' })).toHaveAttribute('aria-checked', 'true')
-  await page.getByRole('button', { name: '刷新账户资产' }).click()
-  await expect(page.getByText('资金查询业务拒绝', { exact: true }).filter({ visible: true })).toBeVisible()
+  await page.getByRole('button', { name: '查看资产刷新详情：刷新失败' }).click()
+  await expect(page.getByRole('dialog', { name: '资产刷新详情' })).toContainText('资金查询业务拒绝')
   await expect(page.getByRole('switch', { name: '账户连接' })).toHaveAttribute('aria-checked', 'true')
 })
 
@@ -1048,7 +1052,7 @@ test('failed resident reconnect is not replayed by read recovery', async ({ page
   await page.goto('/e2e/errors.html?mode=connection')
   await page.getByRole('button', { name: /账户连通状态/ }).click()
   await page.getByRole('dialog').getByRole('button', { name: '重新连接', exact: true }).click()
-  await expect(page.getByRole('dialog')).toContainText('连接操作未完成')
+  await expect(page.getByRole('dialog').getByRole('region', { name: '连接操作结果' })).toContainText('获取令牌超时')
   await page.evaluate(async () => {
     const modulePath = '/src/lib/readRecovery.ts'
     const { notifyReadRecovery } = await import(modulePath)
@@ -1206,7 +1210,7 @@ test('connection switch toggles independently of details and waits for pushed st
   expect(writes).toEqual(['/api/v1/account/7/connection/disconnect', '/api/v1/account/7/connection/reconnect'])
 })
 
-test('connection failure keeps the header compact and feedback below the controls', async ({ page }) => {
+test('connection failure keeps channel label and puts feedback in details', async ({ page }) => {
   await defaults(page)
   await page.setViewportSize({ width: 375, height: 620 })
   const label = '交易运行时异常'
@@ -1221,12 +1225,13 @@ test('connection failure keeps the header compact and feedback below the control
   const before = await toggle.boundingBox()
   await toggle.click()
   const alert = page.getByRole('alert').filter({ hasText: '连接操作未完成' })
-  await expect(alert).toContainText('GM 启动失败')
+  await expect(alert).toHaveCount(0)
+  await expect(toggle).toContainText(label)
   const after = await toggle.boundingBox()
-  const feedback = await alert.boundingBox()
   expect(after!.height).toBe(before!.height)
   expect(after!.y).toBe(before!.y)
-  expect(feedback!.y).toBeGreaterThanOrEqual(after!.y + after!.height)
+  await details.click()
+  await expect(page.getByRole('dialog')).toContainText('GM 启动失败，具体原因未确认')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
@@ -1249,7 +1254,6 @@ test('global connection loss owns network feedback and recovery does not revive 
   await expect(page.getByRole('banner')).toContainText('与服务器失联')
   await expect(page.getByText('无法连接 axile 服务', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('alert').filter({ hasText: '连接操作未完成' })).toHaveCount(0)
-  expect(await page.getByText('连接操作未完成', { exact: true }).locator('xpath=ancestor::div[contains(@class, "grid-rows-")]').evaluate(el => el.getBoundingClientRect().height)).toBe(0)
   await expect(page.getByRole('switch', { name: '账户连接' })).toBeDisabled()
   await page.screenshot({ path: testInfo.outputPath('connection-global-loss.png') })
   await page.evaluate(async () => {
@@ -1258,5 +1262,96 @@ test('global connection loss owns network feedback and recovery does not revive 
     useDomainStore.setState({ accountsError: null })
   })
   await expect(page.getByRole('alert').filter({ hasText: '连接操作未完成' })).toHaveCount(0)
-  expect(await page.getByText('连接操作未完成', { exact: true }).locator('xpath=ancestor::div[contains(@class, "grid-rows-")]').evaluate(el => el.getBoundingClientRect().height)).toBe(0)
+})
+
+test('failed GM start belongs to connection entry and details, with no card error block', async ({ page }, testInfo) => {
+  await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'disconnected', worker_alive: false, observed_at: null, message: null, error: null })
+  let writes = 0
+  await page.route('**/api/v1/account/7/connection/reconnect', route => {
+    writes++
+    return route.fulfill({ status: 500, json: { detail: { message: 'GM 启动失败，具体原因未确认', traceback: 'native-gm-start-traceback' } } })
+  })
+  await page.goto('/e2e/errors.html?mode=connection')
+  const toggle = page.getByRole('switch', { name: '账户连接' })
+  await toggle.click()
+  await expect(toggle).toContainText('连接失败')
+  await expect(toggle).toHaveAttribute('data-tone', 'warning')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await page.getByRole('button', { name: /连接详情，账户连通状态/ }).click()
+  const dialog = page.getByRole('dialog', { name: '连接失败', exact: true })
+  await expect(dialog.getByRole('region', { name: '连接操作结果' })).toContainText('GM 启动失败')
+  await expect(dialog).toContainText('native-gm-start-traceback')
+  await dialog.getByRole('button', { name: '复制连接详情' }).click()
+  expect(await copied(page)).toContain('native-gm-start-traceback')
+  await page.screenshot({ path: testInfo.outputPath('connection-failure-details.png') })
+  await page.keyboard.press('Escape')
+  await expect(toggle).toContainText('连接失败')
+  await pushConnection(page, { status: 'ready', worker_alive: true, observed_at: null, message: null, error: null })
+  await expect(toggle).toContainText('已连接')
+  await pushConnection(page, { status: 'disconnected', worker_alive: false, observed_at: null, message: null, error: null })
+  await expect(toggle).toContainText('已断开')
+  expect(writes).toBe(1)
+})
+
+test('asset refresh busy and failure stay beside the asset action', async ({ page }, testInfo) => {
+  await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
+  let status = 409, calls = 0
+  await page.route('**/api/v1/account/7/assets/refresh', route => {
+    calls++
+    return route.fulfill({ status, json: status === 409 ? { detail: '账户正在执行或刷新资产，请稍后再试' }
+      : status === 500 ? { detail: { message: 'asset-provider-failure', traceback: 'asset-native-traceback' } }
+      : { assets: { total_asset: 100, available_cash: 100, market_value: 0, positions: [] } } })
+  })
+  await page.goto('/e2e/errors.html?mode=account')
+  const refresh = page.getByRole('button', { name: '刷新账户资产', exact: true })
+  await expect(refresh).toBeEnabled()
+  await expect.poll(() => calls).toBe(1)
+  await expect(page.getByRole('button', { name: /查看资产刷新详情/ })).toHaveCount(0)
+  await expect(page.getByText('连接后的资产更新未完成', { exact: true })).toHaveCount(0)
+  await refresh.click()
+  const busy = page.getByRole('button', { name: '查看资产刷新详情：账户忙碌' })
+  await expect(busy).toBeVisible()
+  await expect(busy).not.toHaveClass(/text-warn/)
+  await busy.click()
+  await expect(page.getByRole('dialog', { name: '资产刷新详情' })).toContainText('账户正在执行或刷新资产')
+  await page.keyboard.press('Escape')
+  status = 500
+  await refresh.click()
+  const failed = page.getByRole('button', { name: '查看资产刷新详情：刷新失败' })
+  await expect(failed).toBeVisible()
+  await expect(page.getByRole('switch', { name: '账户连接' })).toContainText('已连接')
+  await failed.click()
+  await expect(page.getByRole('dialog', { name: '资产刷新详情' })).toContainText('asset-native-traceback')
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('asset-refresh-inline-feedback.png') })
+  status = 200
+  await refresh.click()
+  await expect(page.getByRole('button', { name: /查看资产刷新详情/ })).toHaveCount(0)
+  await expect(refresh).toBeEnabled()
+  expect(calls).toBe(4)
+})
+
+test('automatic asset failure has an inline detail entry and a successful manual refresh clears it', async ({ page }) => {
+  await defaults(page)
+  await mockConnectionSnapshot(page, { status: 'ready', observed_at: null, message: null, error: null })
+  let calls = 0
+  await page.route('**/api/v1/account/7/assets/refresh', route => ++calls === 1
+    ? route.fulfill({ status: 500, json: { detail: 'automatic-asset-failure' } })
+    : route.fulfill({ json: { assets: { total_asset: 100 } } }))
+  await page.goto('/e2e/errors.html?mode=account')
+  const failed = page.getByRole('button', { name: '查看资产刷新详情：刷新失败' })
+  await expect(failed).toBeVisible()
+  await failed.click()
+  await expect(page.getByRole('dialog', { name: '资产刷新详情' })).toContainText('automatic-asset-failure')
+  await page.keyboard.press('Escape')
+  await expect(failed).toBeFocused()
+  await page.getByRole('button', { name: '刷新账户资产', exact: true }).click()
+  await expect(failed).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeEnabled()
+  expect(calls).toBe(2)
 })

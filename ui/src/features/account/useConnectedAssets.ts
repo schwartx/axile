@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { refreshAccountAssets } from '@/lib/api/accounts'
 import { useAccountConnection } from '@/stores/liveConnection'
 
@@ -28,5 +28,6 @@ export function useConnectedAssets(accountId: number, onSaved: () => void) {
     })
     return () => { active = false }
   }, [accountId, ready])
-  return state.accountId === accountId && ready ? state : { accountId, refreshing: false, error: null }
+  const clearError = useCallback(() => setState(previous => previous.accountId === accountId ? { ...previous, error: null } : previous), [accountId])
+  return { ...(state.accountId === accountId && ready ? state : { accountId, refreshing: false, error: null }), clearError }
 }

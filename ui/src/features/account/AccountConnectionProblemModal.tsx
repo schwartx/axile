@@ -1,14 +1,15 @@
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { ErrorCopyButton } from '@/components/ui/ErrorDetailsContent'
+import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
 import { Link } from '@/components/ui/nav'
 import type { AccountConnectionDetail } from '@/types/api'
 import { connectionProblem } from '@/features/account/connectionProblem'
 import { ConnectionTechnicalContent } from '@/features/account/ConnectionTechnicalContent'
 import { AccountConnectionActions } from '@/features/account/AccountConnectionActions'
 
-import { useConnectionOperations } from '@/stores/connectionOperations'
+import { useConnectionFeedback } from '@/features/account/useConnectionFeedback'
+import { errorInfo } from '@/lib/errorInfo'
 
 export type ConnectionSelection = { accountId: number; requestId: number; detail: AccountConnectionDetail }
 
@@ -30,15 +31,11 @@ function TechnicalDetails({ children, label = '技术详情', preview }: { child
 export function AccountConnectionProblemModal({ selection, onClose }: {
   selection: ConnectionSelection | null; onClose: () => void
 }) {
-  const accountId = selection?.accountId
-  useEffect(() => {
-    if (accountId == null) return
-    useConnectionOperations.getState().setDetailOpen(accountId, true)
-    return () => useConnectionOperations.getState().setDetailOpen(accountId, false)
-  }, [accountId])
+  const feedback = useConnectionFeedback(selection?.accountId ?? -1)
   const view = selection ? connectionProblem(selection.accountId, selection.detail) : null
-  const title = view?.title ?? '账户连接详情'
-  const copy = view?.copy
+  const title = (selection?.detail.status === 'unavailable' ? view?.title : feedback.label ?? view?.title) ?? '账户连接详情'
+  const operationInfo = feedback.error ? errorInfo(feedback.error, [{ label: '操作', value: feedback.label ?? '连接操作' }]) : null
+  const copy = [view?.copy, operationInfo?.text].filter(Boolean).join('\n\n')
   const footerActions = <>
     {copy && <ErrorCopyButton text={copy} label="复制连接详情" variant="text" />}
     <button type="button" aria-label="关闭详情" onClick={onClose} className="cursor-pointer rounded-lg border border-line px-3 py-2 text-[13px] text-ink-2">关闭</button>
@@ -48,6 +45,9 @@ export function AccountConnectionProblemModal({ selection, onClose }: {
       ? <AccountConnectionActions key={selection.accountId} accountId={selection.accountId} detail={selection.detail}>{footerActions}</AccountConnectionActions>
       : <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-[22px] py-3">{footerActions}</div>}>
     <div className="min-w-0 space-y-4 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
+      {operationInfo && <section aria-label="连接操作结果" className="min-w-0">
+        <ErrorDetailsContent info={operationInfo} />
+      </section>}
       {view && <>
         <p className="whitespace-pre-wrap text-[14px] text-ink-2">{view.summary}</p>
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-ink-2">{view.facts.map(field => <div key={field.label} className="contents">

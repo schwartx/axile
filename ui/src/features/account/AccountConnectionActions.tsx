@@ -1,7 +1,5 @@
-import { isAccountConnectionError } from '@/lib/accountConnection'
 import type { ReactNode } from 'react'
 import { Unlink } from 'lucide-react'
-import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { AccountConnectButton } from '@/features/account/AccountConnectButton'
 import { useConnectionOperation, useConnectionOperations } from '@/stores/connectionOperations'
@@ -12,7 +10,7 @@ import type { AccountConnectionDetail } from '@/types/api'
 export function AccountConnectionActions({ accountId, detail, children }: {
   accountId: number; detail: AccountConnectionDetail; children?: ReactNode
 }) {
-  const { pending, error } = useConnectionOperation(accountId)
+  const { pending } = useConnectionOperation(accountId)
   const synced = useLiveConnection(state => state.connected)
   const busy = !synced || pending !== null || detail.status === 'connecting' || detail.status === 'recovering'
   const needsConnection = detail.status === 'disconnected' || detail.status === 'uninitialized'
@@ -28,6 +26,5 @@ export function AccountConnectionActions({ accountId, detail, children }: {
       </div>
       <div className="ml-auto flex flex-wrap items-center gap-2">{children}</div>
     </div>
-    <ErrorNotice networkFeedback="global-only" error={detail.status === 'unavailable' && isAccountConnectionError(error) ? null : error} title="连接操作未完成，请核对当前状态" embedded intent="uncertain" />
   </section>
 }

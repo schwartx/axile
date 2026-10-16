@@ -1,7 +1,8 @@
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
-import { AccountConnectionNotice, AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
+import { AssetRefreshFeedback } from '@/features/account/AssetRefreshFeedback'
+import { AccountConnectionStatus } from '@/features/account/AccountConnectionStatus'
 import { AccountConnectionContext } from '@/lib/accountConnection'
 import { runtimeSyncMessage, useAccountRuntimeSync } from '@/features/account/useAccountRuntimeSync'
 import { AccountControlSummary } from '@/features/account/ControlMonitor'
@@ -354,6 +355,7 @@ export function AccountDetail({
     const request = assetRefreshRequest.current
     if (request.busy) return
     request.busy = true
+    connectedAssets.clearError()
     // 启停只使自己的请求失效；资产请求仅随账户切换或卸载失效。
     const generation = ++request.generation
     setRefreshingAssets(true)
@@ -404,8 +406,6 @@ export function AccountDetail({
     <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && (connection?.status === 'unavailable') }}><section>
       <RuntimeSyncStatus runtime={runtime} disabled={toggling} accountId={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="自动执行配置保存失败" error={toggleError} onRetry={onToggleStarted} contextKey={accountId} />
-      <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="账户资产刷新失败" error={assetRefreshError} onRetry={onRefreshAssets} contextKey={accountId} />
-      <ErrorNotice accountId={accountId} intent="read" evidence={accountEvidence} title="连接后的资产更新未完成" error={connectedAssets.error} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="mutation" evidence={accountEvidence} title="执行请求失败" error={runner.triggerError} contextKey={accountId} />
       <ErrorNotice accountId={accountId} intent="uncertain" title="状态待确认：执行状态查询失败" error={runner.queryError} onRetry={runner.resumeQuery} contextKey={accountId}
         evidence={[...accountEvidence, { label: 'execution_id', value: runner.executionId ?? '' }, { label: '最后已知状态', value: runner.lastStatus?.status ?? '已受理' }]} />
@@ -451,7 +451,6 @@ export function AccountDetail({
             onDelete={onDelete}
           />
         </div>
-        <AccountConnectionNotice accountId={accountId} />
         {account.data?.copied_from_account_name && (
           <div className="mt-2 text-sm text-ink-3">
             复制自{account.data.copied_from_account_id && useDomainStore.getState().accounts?.some((a) => a.account_id === account.data?.copied_from_account_id) ? (
@@ -470,7 +469,7 @@ export function AccountDetail({
                 {equity == null ? '—' : <NumberTicker value={equity} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
                 <span className="ml-1.5 text-[17px] font-medium text-ink-3">{displayCurrencyUnit(item.currency)}</span>
               </div>
-              <div className="mt-1 flex items-center gap-1.5 text-xs text-ink-3">
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
                 <span>{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</span>
             <Tooltip content={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}>
               <span className="inline-flex">
@@ -478,17 +477,18 @@ export function AccountDetail({
                   type="button"
                   onClick={onRefreshAssets}
                   disabled={refreshingAssets || connectedAssets.refreshing || connection.status !== 'ready'}
-                  aria-label={refreshingAssets ? '正在查询账户资产' : '刷新账户资产'}
+                  aria-label={refreshingAssets || connectedAssets.refreshing ? '正在查询账户资产' : '刷新账户资产'}
                   title={connection.status !== 'ready' ? '连接账户后可刷新资产' : '刷新账户资产'}
                   className="grid h-6 w-6 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-fill hover:text-ink-1 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
                 >
                   <RefreshCw
                     size={14}
-                    className={refreshingAssets ? 'animate-spin motion-reduce:animate-none' : undefined}
+                    className={refreshingAssets || connectedAssets.refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
                   />
                 </button>
               </span>
             </Tooltip>
+                <AssetRefreshFeedback accountId={accountId} manualError={assetRefreshError} automaticError={connectedAssets.error} />
               </div>
               <div className="mt-1.5 text-[14.5px] text-ink-2">
                 {pct == null && <span>{dayLabel} — · </span>}
