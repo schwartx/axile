@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Settings } from 'lucide-react'
+import { CircleHelp, Settings } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
 import { Segmented } from '@/components/ui/Segmented'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { closePolicySummary, closePriorityLabel } from '@/features/account/futuresClosePolicy'
 import type { ClosePriority, FuturesClosePolicy, FuturesCloseCapability } from '@/types/api'
 
@@ -42,30 +43,38 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
       <InkRewrite text={closePolicySummary(value)} tone="label" />
       <Settings size={16} aria-hidden />
     </button>
-    <CenteredModal open={open} title="平仓规则" subtitle="用于常规调仓和清仓。完成后还需在执行算法页面保存。" onClose={() => setOpen(false)} widthClassName="w-[800px]"
-      footer={<div className="flex justify-end gap-3 border-t border-line px-[22px] py-3">
+    <CenteredModal open={open} title="平仓规则" onClose={() => setOpen(false)} widthClassName="w-[1040px]" scrollBody={false}
+      footer={<div className="flex items-center gap-3 border-t border-line px-[22px] py-2">
+        <div className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-ink-3">
+          <span>预设 {capability.preset_version}</span>
+          <Tooltip content={<>空白表示未知，实际费用以账户费率为准。{capability.notice}</>}>
+            <button type="button" aria-label="预设手续费来源" className="shrink-0 cursor-help text-ink-3 hover:text-ink-2"><CircleHelp size={14} aria-hidden /></button>
+          </Tooltip>
+        </div>
         <button type="button" className="cursor-pointer text-sm text-ink-2" onClick={() => setOpen(false)}>取消</button>
-        <button type="button" className="cursor-pointer rounded-lg bg-accent px-4 py-2 text-sm text-white" onClick={() => { onChange(draft); setOpen(false) }}>完成</button>
+        <button type="button" className="shrink-0 cursor-pointer rounded-lg bg-accent px-3 py-1.5 text-sm text-white" onClick={() => { onChange(draft); setOpen(false) }}>完成</button>
       </div>}>
-      <div className="space-y-5">
-        {capability.modes.length > 1 ? <Segmented value={draft.mode} options={capability.modes.map((mode) => ({ value: mode, label: mode === 'fee' ? '低手续费优先' : '按品种规则' }))} onChange={(mode) => setDraft((d) => ({ ...d, mode }))} /> : <p className="text-[15px] text-ink-1">按品种规则</p>}
-        <p className="text-[13px] leading-6 text-ink-3" aria-live="polite">{draft.mode === 'fee'
-          ? '优先平预计手续费较低的仓位；费用相同或费率不可用时，依次使用人工覆盖、预设和默认顺序。'
-          : '优先使用人工修改，其次使用程序预设；未覆盖的品种使用默认顺序。优先仓位不足时继续平另一类仓位。'}</p>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm text-ink-2">默认顺序</span>
-          <Segmented size="sm" value={draft.fallback} options={priorities} onChange={(fallback) => setDraft((d) => ({ ...d, fallback }))} />
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          {capability.modes.length > 1 ? <Segmented size="sm" value={draft.mode} options={capability.modes.map((mode) => ({ value: mode, label: mode === 'fee' ? '低手续费优先' : '按品种规则' }))} onChange={(mode) => setDraft((d) => ({ ...d, mode }))} /> : <p className="text-sm text-ink-1">按品种规则</p>}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-ink-3">默认顺序</span>
+            <Segmented size="sm" value={draft.fallback} options={priorities} onChange={(fallback) => setDraft((d) => ({ ...d, fallback }))} />
+          </div>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[14px] text-ink-1">{draft.mode === 'fee' ? '兜底品种规则' : '品种规则'}</span>
-          <button type="button" className="cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length} onClick={() => setDraft((d) => ({ ...d, overrides: {} }))}>恢复全部预设</button>
+        <div className="flex shrink-0 items-center gap-2 text-xs text-ink-3">
+          <p aria-live="polite"><InkRewrite text={draft.mode === 'fee' ? '低手续费优先；同费或不可比较时：人工覆盖 → 预设 → 默认顺序' : '人工覆盖 → 程序预设 → 默认顺序'} tone="label" /></p>
+          <Tooltip content="常规调仓与清仓共用。优先仓位不足时继续平另一类仓位；不支持选择平今平昨的交易所按交易所规则执行。">
+            <button type="button" aria-label="平仓规则说明" className="shrink-0 cursor-help text-ink-3 hover:text-ink-2"><CircleHelp size={14} aria-hidden /></button>
+          </Tooltip>
         </div>
-        <div className="flex gap-2">
-          <input aria-label="搜索或添加品种" placeholder="搜索品种或交易所，例如 AG" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="min-w-0 flex-1 rounded-lg border border-line bg-transparent px-3 py-2 text-sm" />
-          <button type="button" className="cursor-pointer text-sm text-accent" onClick={add}>添加品种</button>
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
+          <input aria-label="搜索或添加品种" placeholder="搜索品种或交易所，例如 AG" value={search} onChange={(e) => { setSearch(e.target.value); setError('') }} className="min-w-0 flex-1 basis-[180px] rounded-lg border border-line bg-transparent px-3 py-1.5 text-sm" />
+          <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent" onClick={add}>添加品种</button>
+          <button type="button" className="shrink-0 cursor-pointer text-[13px] text-accent disabled:cursor-default disabled:text-ink-3" disabled={!Object.keys(draft.overrides).length} onClick={() => setDraft((d) => ({ ...d, overrides: {} }))}>恢复全部预设</button>
         </div>
-        {error && <p role="alert" className="text-sm text-warn">{error}</p>}
-        <div className="max-h-[360px] overflow-auto rounded-lg border border-line">
+        {error && <p role="alert" className="shrink-0 text-xs text-warn">{error}</p>}
+        <div className="min-h-0 max-h-[440px] flex-1 overflow-auto rounded-lg border border-line">
           <table className="w-full min-w-[620px] text-left text-[13px]">
             <thead className="sticky top-0 whitespace-nowrap bg-surface"><tr className="border-b border-line text-ink-3"><th className="p-3 font-normal">品种</th><th className="p-3 font-normal">平昨手续费</th><th className="p-3 font-normal">平今手续费</th><th className="p-3 font-normal">平仓顺序</th><th className="p-3 font-normal">来源</th></tr></thead>
             <tbody>{shown.map((product) => {
@@ -76,14 +85,13 @@ export function FuturesClosePolicyEditor({ value, capability, onChange }: {
                 <td className="p-3"><span className="font-medium text-ink-1">{product}</span><span className="ml-2 text-[11px] text-ink-3">{preset?.exchange}</span></td>
                 <td className="p-3 text-ink-2">{preset?.yesterday_fee ?? '—'}</td>
                 <td className="p-3 text-ink-2">{preset?.today_fee ?? '—'}</td>
-                <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <select aria-label={`${product} 平仓顺序`} value={priority} onChange={(e) => setPriority(product, e.target.value as ClosePriority)} className="rounded border border-line bg-transparent px-2 py-1 text-ink-2">{priorities.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}</select>}</td>
+                <td className="p-3">{preset?.can_choose === false ? <span className="text-ink-3">按交易所规则执行</span> : <div role="group" aria-label={`${product} 平仓顺序`} className="whitespace-nowrap"><Segmented size="sm" value={priority} options={priorities} onChange={(next) => setPriority(product, next)} /></div>}</td>
                 <td className="p-3 whitespace-nowrap">{modified ? <><span className="text-accent">已修改</span><button type="button" aria-label={`${product} 恢复预设`} className="ml-2 cursor-pointer text-ink-3 hover:text-accent" onClick={() => restore(product)}>恢复预设</button></> : <span className="text-ink-3">{preset ? '预设' : `默认${closePriorityLabel(priority)}`}</span>}</td>
               </tr>
             })}</tbody>
           </table>
           {!shown.length && <p className="p-4 text-sm text-ink-3">没有匹配的品种，可输入字母代码添加。</p>}
         </div>
-        <p className="text-[12px] leading-5 text-ink-3">预设 {capability.preset_version}。空白表示未知，不代表零费用。预设说明不代替账户实际费率。{capability.notice}</p>
       </div>
     </CenteredModal>
   </>

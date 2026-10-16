@@ -3,7 +3,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from 'react-dom'
 
 /** 居中弹窗共用外壳：遮罩、开关过渡、标题、关闭图标与焦点管理。 */
-export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = true, widthClassName = 'w-[480px]', footer, children }: {
+export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = true, widthClassName = 'w-[480px]', scrollBody = true, footer, children }: {
   open: boolean
   title: string
   subtitle?: ReactNode
@@ -13,6 +13,8 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
   /** 调用方按打开方式决定是否恢复入口焦点，不由关闭时的按键推断。 */
   restoreFocus?: boolean
   widthClassName?: string
+  /** 内部已有滚动区域时关闭正文滚动，避免嵌套滚动条。 */
+  scrollBody?: boolean
   footer?: ReactNode
   children: ReactNode
 }) {
@@ -85,15 +87,15 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
       inert={!open}
       className={`fixed left-1/2 top-1/2 z-[36] flex max-h-[86vh] ${widthClassName} max-w-[92vw] -translate-x-1/2 flex-col rounded-[18px] bg-surface text-ink-1 shadow-[0_24px_60px_rgba(0,0,0,0.24)] outline-none transition-all duration-150 motion-reduce:transition-none ${open ? 'visible -translate-y-1/2 opacity-100' : 'pointer-events-none invisible -translate-y-[46%] opacity-0'}`}
     >
-      <div className="flex items-start justify-between px-[22px] pt-5 pb-3">
+      <div className="flex shrink-0 items-start justify-between px-[22px] pt-5 pb-3">
         <div className="min-w-0">
           <h2 id={titleId} className="text-[18px] font-[640] [overflow-wrap:anywhere]">{title}</h2>
           {subtitle && <div className="mt-1 text-[14px] text-ink-2">{subtitle}</div>}
         </div>
         <button type="button" className="cursor-pointer text-[21px] leading-none text-ink-3 hover:text-ink-1 disabled:cursor-default" onClick={close} disabled={closeDisabled} aria-label="关闭">✕</button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-[22px] pb-2">{present && children}</div>
-      {present && footer}
+      <div className={`min-h-0 flex-1 px-[22px] pb-2 ${scrollBody ? 'overflow-y-auto' : 'flex flex-col overflow-hidden'}`}>{present && children}</div>
+      {present && footer && <div className="shrink-0">{footer}</div>}
     </div>
   </div></ModalContentContext.Provider>, document.body)
 }

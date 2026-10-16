@@ -2,16 +2,36 @@ import { expect, test } from '@playwright/test'
 
 test.beforeEach(async ({ request }) => { await request.post('/api/v1/test/reset') })
 
+test('compact rules keep controls and footer visible while only the table scrolls', async ({ page }) => {
+  await page.goto('/e2e/futures-close.html')
+  await page.getByRole('button', { name: '设置平仓规则' }).click()
+  const dialog = page.getByRole('dialog', { name: '平仓规则', exact: true })
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 1280, height: 500 }, { width: 390, height: 700 }]) {
+    await page.setViewportSize(viewport)
+    await expect(dialog.getByRole('button', { name: '完成', exact: true })).toBeInViewport()
+    await expect(dialog.getByRole('textbox', { name: '搜索或添加品种' })).toBeInViewport()
+    const table = dialog.locator('table').locator('..')
+    await expect.poll(() => table.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+    await expect.poll(() => dialog.evaluate((element) => {
+      const body = element.children[1] as HTMLElement
+      return body.scrollHeight <= body.clientHeight + 1 && element.scrollWidth <= element.clientWidth + 1
+    })).toBe(true)
+    await table.evaluate((element) => { element.scrollTop = element.scrollHeight })
+    await expect(dialog.getByRole('textbox', { name: '搜索或添加品种' })).toBeInViewport()
+    await expect(dialog.getByRole('button', { name: '完成', exact: true })).toBeInViewport()
+  }
+})
+
 test('CTP edits product rules in a dialog and persists only on page save', async ({ page, request }) => {
   await page.goto('/e2e/futures-close.html')
   await page.getByRole('button', { name: '设置平仓规则' }).click()
   const dialog = page.getByRole('dialog', { name: '平仓规则', exact: true })
   await expect(dialog.getByRole('button', { name: '低手续费优先', exact: true })).toBeVisible()
   await dialog.getByRole('textbox', { name: '搜索或添加品种' }).fill('AG')
-  const row = dialog.getByRole('row').filter({ has: page.getByRole('combobox', { name: 'AG 平仓顺序', exact: true }) })
+  const row = dialog.getByRole('row').filter({ has: page.getByRole('group', { name: 'AG 平仓顺序', exact: true }) })
   await expect(row).toContainText('万分之0.5（AG2610—2612、2706）')
   await expect(row).toContainText('万分之0.1（AG2701—2705、2707—2709）')
-  await dialog.getByRole('combobox', { name: 'AG 平仓顺序', exact: true }).selectOption('today_first')
+  await dialog.getByRole('group', { name: 'AG 平仓顺序', exact: true }).getByRole('button', { name: '先今后昨', exact: true }).click()
   await dialog.getByRole('button', { name: '完成', exact: true }).click()
   expect((await (await request.get('/api/v1/account/1')).json()).futures_close_policy.overrides).toEqual({})
   await expect(page.getByRole('button', { name: '设置平仓规则' })).toContainText('1 个品种已修改')
@@ -20,9 +40,9 @@ test('CTP edits product rules in a dialog and persists only on page save', async
   await page.reload()
   await page.getByRole('button', { name: '设置平仓规则' }).click()
   await dialog.getByRole('textbox', { name: '搜索或添加品种' }).fill('AG')
-  await expect(dialog.getByRole('combobox', { name: 'AG 平仓顺序', exact: true })).toHaveValue('today_first')
+  await expect(dialog.getByRole('group', { name: 'AG 平仓顺序', exact: true }).getByRole('button', { name: '先今后昨', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await dialog.getByRole('button', { name: 'AG 恢复预设', exact: true }).click()
-  await expect(dialog.getByRole('combobox', { name: 'AG 平仓顺序', exact: true })).toHaveValue('yesterday_first')
+  await expect(dialog.getByRole('group', { name: 'AG 平仓顺序', exact: true }).getByRole('button', { name: '先昨后今', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(page.getByRole('button', { name: '设置平仓规则' })).toContainText('1 个品种已修改')
 })
