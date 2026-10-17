@@ -4,13 +4,13 @@ import math
 import threading
 from typing import Literal
 
+from axile import AlgorithmInput, AlgorithmResult, ExecutorProtocol, TradeChannel, register_algorithm
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.termination import ExecutionTerminated
 from pydantic import BaseModel, Field
-
-from axile import AlgorithmInput, AlgorithmResult, ExecutorProtocol, TradeChannel, register_algorithm
 
 
 class ScenarioParams(BaseModel):
@@ -208,6 +208,8 @@ def cancel_owned(executor, capture, memory):
         memory["cancellations"].append(attempt)
         try:
             attempt["accepted"] = executor.cancel_order(order.order_id)
+        except ExecutionTerminated:
+            raise
         except Exception as exc:
             attempt["error"] = exception_details(exc)
 
@@ -256,6 +258,36 @@ def submit_plan(executor, input_data, params, capture, memory, assets, current):
             executor.sleep_or_terminate(params.after_send_hold_seconds)
 
 
+def collect_final_state(executor, capture, memory, params):
+    """普通结束时补收证据；终止异常继续上抛，不在 worker 内拖延退出。"""
+    final = None
+    cancel_owned(executor, capture, memory)
+    settle_deadline = get_default_clock().time() + min(5, params.timeout_seconds)
+    while capture.snapshots() and not all(o.is_completed() for o in capture.snapshots()):
+        executor.handle_termination_checkpoint()
+        if get_default_clock().time() >= settle_deadline:
+            break
+        get_default_clock().sleep(0.1)
+    for order in capture.snapshots():
+        try:
+            for trade in executor.query_trades(order.order_id):
+                capture.on_trade(trade)
+        except ExecutionTerminated:
+            raise
+        except Exception as exc:
+            memory.setdefault("query_errors", []).append(exception_details(exc))
+    try:
+        final, final_volume = guard_assets(executor, params)
+        memory["after"] = final.model_dump(mode="json")
+        memory["final_volume"] = final_volume
+        memory["remaining_orders"] = [o.model_dump(mode="json") for o in executor.get_pending_orders()]
+    except ExecutionTerminated:
+        raise
+    except Exception as exc:
+        memory["final_read_error"] = exception_details(exc)
+    return final
+
+
 @register_algorithm("FT-CTP-SCENARIO", channels=[TradeChannel.CTP], params_class=ScenarioParams)
 def scenario_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInput) -> AlgorithmResult:
     """有界运行，回报和未完成状态全部进入现有 execution summary。"""
@@ -276,6 +308,7 @@ def scenario_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInp
         "started_at": clock_now_iso(),
     }
     status, error, final = ExecutionStatus.FAILED, None, None
+    terminated = False
     executor.register_order_callback(capture.on_order)
     executor.register_trade_callback(capture.on_trade)
     try:
@@ -297,32 +330,19 @@ def scenario_algorithm(executor: ExecutorProtocol, algorithm_input: AlgorithmInp
             wait_orders(executor, capture, get_default_clock().time() + min(10, params.timeout_seconds))
         orders = capture.snapshots()
         status = ExecutionStatus.SUCCEEDED if all(o.is_completed() for o in orders) else ExecutionStatus.PARTIAL
+    except ExecutionTerminated:
+        terminated = True
+        raise
     except Exception as exc:
         error = str(exc)
         memory["error"] = exception_details(exc)
     finally:
-        # 不调用 cancel_pending_orders；终止/超时只处理本次拥有的委托。
-        cancel_owned(executor, capture, memory)
-        settle_deadline = get_default_clock().time() + min(5, params.timeout_seconds)
-        while capture.snapshots() and not all(o.is_completed() for o in capture.snapshots()):
-            if get_default_clock().time() >= settle_deadline:
-                break
-            get_default_clock().sleep(0.1)
-        for order in capture.snapshots():
-            try:
-                for trade in executor.query_trades(order.order_id):
-                    capture.on_trade(trade)
-            except Exception as exc:
-                memory.setdefault("query_errors", []).append(exception_details(exc))
         try:
-            final, final_volume = guard_assets(executor, params)
-            memory["after"] = final.model_dump(mode="json")
-            memory["final_volume"] = final_volume
-            memory["remaining_orders"] = [o.model_dump(mode="json") for o in executor.get_pending_orders()]
-        except Exception as exc:
-            memory["final_read_error"] = exception_details(exc)
-        executor.unregister_order_callback(capture.on_order)
-        executor.unregister_trade_callback(capture.on_trade)
+            if not terminated:
+                final = collect_final_state(executor, capture, memory, params)
+        finally:
+            executor.unregister_order_callback(capture.on_order)
+            executor.unregister_trade_callback(capture.on_trade)
     memory["finished_at"] = clock_now_iso()
     if any(not o.is_completed() for o in capture.snapshots()) or memory.get("final_read_error"):
         status = ExecutionStatus.PARTIAL

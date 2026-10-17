@@ -83,6 +83,7 @@ from axile.executor.ctp_product_sessions import (
 from axile.executor.ctp_query_wait import QueryIdleClock
 from axile.executor.execution_engine import ExecutionEngine
 from axile.executor.futures_order_intent import is_close_intent, single_close_offset
+from axile.executor.instrument_catalog import catalog_deadline, catalog_remaining
 from axile.executor.instrument_catalog_records import Instrument, InstrumentRecord, from_ctp
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus, TargetSizingDecision
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -100,7 +101,9 @@ from axile.executor.order_volume_limits import (
     effective_max_order_volume,
     ensure_order_volume_allowed,
 )
+from axile.executor.quote_diagnostics import QuoteDiagnostics
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
+from axile.executor.termination_cleanup import cleanup_query_allowed
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID, ShinnyTradingCalendar
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -213,6 +216,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._valuation_quotes = {}
         self._quote_time_logged = set()
         self._quote_rejections = {}
+        self._quote_diagnostics = QuoteDiagnostics()
         self._quote_calendar = ShinnyTradingCalendar()
         self._order_keys = {}
         self._option_actions = {}
@@ -519,7 +523,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """复用当前会话；全量发一次，按需由 CTP 逐个指定合约。"""
         state = self._catalog_query_state
         state.active = True
-        state.deadline = clock_monotonic() + timeout if symbols is None and timeout is not None else None
+        state.deadline = catalog_deadline(timeout)
         records = []
         try:
             for symbol in symbols if symbols is not None else [None]:
@@ -529,10 +533,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     request.InstrumentID = local if separator else exchange
                     if separator:
                         request.ExchangeID = exchange
-                response_timeout = timeout if state.deadline is None else state.deadline - clock_monotonic()
-                if response_timeout is not None and response_timeout <= 0:
-                    raise TimeoutError("合约资料查询超时")
+                response_timeout = catalog_remaining(state.deadline)
                 rows = self._query("ReqQryInstrument", request, timeout=response_timeout)
+                catalog_remaining(state.deadline)
                 records.extend(
                     record
                     for row in rows
@@ -581,7 +584,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             raise TimeoutError("等待合约资料超时")
         runtime = self.get_active_execution_runtime()
         if runtime is not None:
-            runtime.handle_termination_checkpoint()
+            if not cleanup_query_allowed(runtime):
+                runtime.handle_termination_checkpoint()
 
     def _initialize_connection(self, account_config):
         with self._lock:
@@ -864,6 +868,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _require_new_order_ready(self, symbol=None):
         """未归属成交只阻止新增委托，不阻止健康会话撤销已知订单。"""
         self._require_session_ready()
+        runtime = self.get_active_execution_runtime()
+        if runtime is not None:
+            runtime.handle_termination_checkpoint(symbol)
         if self._unassociated_trades or self._ambiguous_exchange_orders:
             raise CtpRequestError("CTP 存在未归属成交或歧义订单关联，禁止新单")
         if symbol:
@@ -1373,8 +1380,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     @override
     def get_market_data(self, symbols):
         self.initialize_websocket(symbols)
-        deadline = time.monotonic() + self._timeout
-        while time.monotonic() < deadline:
+        deadline = clock_monotonic() + self._timeout
+        while clock_monotonic() < deadline:
             with self._lock:
                 self._require_session_ready()
                 errors = {x: self._subscription_errors[x] for x in symbols if x in self._subscription_errors}
@@ -1382,7 +1389,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     raise CtpRequestError(f"行情订阅失败: {errors}")
                 if all(x in self._subscription_acks and self._quote_error(x) is None for x in symbols):
                     return {x: self._quotes[x] for x in symbols}
-            threading.Event().wait(0.05)
+            get_default_clock().sleep(0.05)
         with self._lock:
             diagnostics = {symbol: self._quote_diagnostic(symbol) for symbol in symbols}
         raise TimeoutError(f"行情等待超时: {symbols}; {diagnostics}")
@@ -1391,8 +1398,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         quote = self._quotes.get(symbol)
         return {
             "reason": self._quote_error(symbol),
-            "time": self._quote_time_evidence(quote, time.time()) if quote else None,
+            "time": self._quote_time_evidence(quote, clock_now().timestamp()) if quote else None,
             "last_rejection": self._quote_rejections.get(symbol),
+            "subscription_acknowledged": symbol in self._subscription_acks,
+            "subscription_error": self._subscription_errors.get(symbol),
+            "samples": self._quote_diagnostics.snapshot(symbol)
+            if hasattr(self, "_quote_diagnostics")
+            else {"sampled": False},
         }
 
     @staticmethod
@@ -1852,7 +1864,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         with self._lock:
             if self._closed or self._invalid_reason:
                 return
-            received_at = time.time()
+            received_at = clock_now().timestamp()
             q = quote_to_unified(row)
             if q.symbol not in self._subscriptions:
                 return
@@ -1873,6 +1885,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             error = self._snapshot_quote_error(q.symbol, q, now=received_at)
             previous = self._quotes.get(q.symbol)
             out_of_order = previous is not None and q.timestamp <= previous.timestamp <= received_at * 1000
+            if not hasattr(self, "_quote_diagnostics"):
+                self._quote_diagnostics = QuoteDiagnostics()
+            self._quote_diagnostics.observe(
+                q.symbol,
+                event_time_ms=q.timestamp,
+                received_at=received_at,
+                reason=error or ("out_of_order" if out_of_order else None),
+            )
             valuation_previous = self._valuation_quotes.get(q.symbol)
             if (
                 not out_of_order

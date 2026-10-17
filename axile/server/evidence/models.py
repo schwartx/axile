@@ -159,6 +159,15 @@ class EvidenceSnapshot:
     snapshot_at: str = field(default_factory=lambda: clock_now(tz=UTC).isoformat())
     source_counts: dict[str, int] = field(default_factory=dict)
     account_operations: dict[str, ExecutionEvidence] = field(default_factory=dict)
+    selected_execution_ids: list[str] | None = None
+
+    def selection_description(self) -> dict[str, Any]:
+        """记录日期发现或明确清单选择，不将 ID 清单冒充时间窗口。"""
+        if self.window is not None:
+            return self.window.describe()
+        if self.selected_execution_ids is not None:
+            return {"basis": "explicit_execution_ids", "execution_ids": self.selected_execution_ids}
+        return {"basis": "explicit_execution"}
 
     def iter_contexts(self) -> Iterator[ExecutionEvidence]:
         """遍历两类材料，控制统计与关联日志均不能遗漏账户操作。"""

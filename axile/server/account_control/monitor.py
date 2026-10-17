@@ -272,7 +272,33 @@ class AccountControlMonitor:
                 frame.update(status="incomplete", waiting=[], waiting_total=0)
         frame.pop("outcome_updates", None)
         now = clock_now_ms()
+        gaps = [s for s in sessions if s.status == "incomplete" and _affected(s, window.control_date)]
+        risk_unknown = await AccountControlStore(db).has_incomplete_risk_history(
+            account.id,
+            window.control_date,
+            policy.timezone,
+            active_instance_id=None if not live else live.get("instance_id"),
+        )
+        risk_unknown = risk_unknown or bool(live and live.get("risk_operations_blocked", False))
         frame.update(
+            history_incomplete=incomplete,
+            snapshot_stale=bool(active and (failed or not sampled or now - sampled > 5000)),
+            counter_integrity="unknown" if risk_unknown else "known",
+            risk_operations_blocked=risk_unknown,
+            incomplete_instances=[
+                {
+                    "instance_id": s.instance_id,
+                    "status": s.status,
+                    "context_kind": s.context_kind,
+                    "source": s.source,
+                    "started_at_ms": s.started_at_ms,
+                    "finished_at_ms": s.finished_at_ms,
+                    "timezone": s.timezone,
+                }
+                for s in sorted(gaps, key=lambda s: s.started_at_ms, reverse=True)[:100]
+            ],
+            incomplete_instances_total=len(gaps),
+            counter_recovery="affected_control_window_ends; historical_gap_retained" if risk_unknown else None,
             saved_policy=policy.model_dump(mode="json"),
             saved_fingerprint=policy_fingerprint(policy.model_dump(mode="json")),
             incomplete=incomplete or frame.get("incomplete", False) or frame["status"] == "incomplete",

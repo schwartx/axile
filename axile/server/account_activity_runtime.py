@@ -104,17 +104,19 @@ def _query(executor: Any, symbol: str | None) -> None:
     activity = executor.account_orders.activity
     channel = str(getattr(executor.channel_type, "value", executor.channel_type))
     errors: list[str] = []
-    if channel == "binance":
-        symbols = [symbol]
-        scope = f"{'指定品种' if symbol else '全账户'}最近24小时记录，每类最多1000笔；另含本次连接观测"
-    elif channel not in {"ctp", "tq", "gm"}:
+    if channel not in {"ctp", "tq", "gm"}:
+        if symbol is None and _query_symbol(executor, None, errors, allow_unsupported=True):
+            activity.mark_query(
+                symbol, scope="渠道近期全账户记录，每类最多1000笔；时间范围由渠道提供；另含本次连接观测", errors=errors
+            )
+            return
         symbols = [symbol] if symbol else activity.symbols()
         if not symbol:
             try:
                 symbols = sorted(set(symbols) | {p.symbol for p in executor.get_account_assets().positions})
             except Exception:
                 errors.append("持仓品种读取失败，仅核对已观测品种")
-        scope = "渠道近期记录，单品种最多1000笔；另含本次连接观测"
+        scope = "渠道近期指定品种记录，单品种最多1000笔；另含本次连接观测"
         if not symbol:
             scope += "；全部视图仅覆盖已观测及持仓品种"
         if len(symbols) > 8:
@@ -132,8 +134,10 @@ def _query(executor: Any, symbol: str | None) -> None:
     activity.mark_query(symbol, scope=scope, errors=errors)
 
 
-def _query_symbol(executor: Any, symbol: str | None, errors: list[str]) -> None:
+def _query_symbol(executor: Any, symbol: str | None, errors: list[str], *, allow_unsupported: bool = False) -> bool:
+    """可选账户查询只在明确不支持时回退，不把失败当作空的成功结果。"""
     activity = executor.account_orders.activity
+    supported = True
     for label, query, observe in (
         ("委托", executor.query_recent_orders, activity.observe_order),
         ("成交", executor.query_recent_trades, activity.observe_trade),
@@ -144,8 +148,13 @@ def _query_symbol(executor: Any, symbol: str | None, errors: list[str]) -> None:
                 observe(row)
             if len(rows) >= 1000:
                 errors.append(f"{symbol or '账户'}{label}记录较多，查询结果可能被渠道截断")
+        except NotImplementedError:
+            supported = False
+            if not allow_unsupported:
+                errors.append(f"{symbol or '账户'}{label}查询尚未支持，保留最后观测记录")
         except Exception:
             errors.append(f"{symbol or '账户'}{label}核对失败，保留最后观测记录")
+    return supported
 
 
 def run_activity_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:

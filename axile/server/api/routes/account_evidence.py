@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from starlette.types import Receive, Scope, Send
 
 from axile.common.config import settings
@@ -28,6 +29,21 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
     409: {"description": "证据归属冲突或无效数据"},
     413: {"description": "超出导出规模"},
 }
+
+
+class EvidenceExecutionSelection(BaseModel):
+    """限定同一账户的明确执行清单，防止同日范围无法拆分。"""
+
+    model_config = ConfigDict(extra="forbid")
+    execution_ids: list[StrictStr] = Field(min_length=1, max_length=100)
+
+    @field_validator("execution_ids")
+    @classmethod
+    def validate_ids(cls, values: list[str]) -> list[str]:
+        """拒绝重复、空白及过长标识，不修改历史标识。"""
+        if any(not value.strip() or len(value) > 256 for value in values) or len(set(values)) != len(values):
+            raise ValueError("execution_ids 须为不重复的非空标识，每项最多 256 字符")
+        return values
 
 
 class EvidenceFileResponse(FileResponse):
@@ -111,3 +127,15 @@ async def export_account_evidence(
     except EvidenceError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
     return await _export(session, profile, include_logs, account_id=account_id, window=window)
+
+
+@router.post("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
+async def export_selected_execution_evidence(
+    account_id: int,
+    selection: EvidenceExecutionSelection,
+    session: SessionDep,
+    profile: EvidenceProfile = EvidenceProfile.SHAREABLE,
+    include_logs: bool = False,
+) -> FileResponse:
+    """只读导出同一账户的 1～100 个执行，不扫描整天或触发交易。"""
+    return await _export(session, profile, include_logs, account_id=account_id, execution_ids=selection.execution_ids)

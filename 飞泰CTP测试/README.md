@@ -53,7 +53,7 @@ uv run python ./axile/飞泰CTP测试/run.py run --config ./axile/飞泰CTP测�
 uv run python ./axile/飞泰CTP测试/run.py run --config ./axile/飞泰CTP测试/config.local.json --symbol TEST_CONTRACT --batch invalid-001 --scenarios invalid --set invalid_case=price
 ```
 
-`invalid_case` 支持 `price/volume/unknown`。未知合约走现有 `Context.get_quote` 元数据校验，记录实际失败阶段，不将规划跳过记成委托校验通过。
+`invalid_case` 支持 `price/volume/unknown`。未知合约通过后端 `POST /instrument-catalog/query` 的精确元数据查询验证；后端须包含该接口。负查询不运行组合函数，不将规划跳过记成委托校验通过；只有结构化 `CATALOG.NOT_FOUND` 可作为对应检查命中的依据。
 
 阈值必须满足 `threshold=ceil(daily_limit*warning_percent/100)`。不重置已有计数、不关闭或放宽保护。报单统计采用 `place_order`，撤单只采用原生 `cancel_order_ctp`，不叠加外层撤单；本地放行、柜台受理与成交分别核对。过期、跨日、分页缺失等情况标记未知。
 

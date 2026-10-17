@@ -17,6 +17,7 @@ from axile.executor.models.unified_account_assets import Position, UnifiedAccoun
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.order_volume_limits import ensure_order_volume_allowed
+
 from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
 from ft_ctp.api import Api, ApiError
 from ft_ctp.config import Config
@@ -375,6 +376,8 @@ class OfflineApi(Api):
         }
         if route in simple:
             return simple[route]
+        if route == "/instrument-catalog/query":
+            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
         if binary:
             stream = io.BytesIO()
             with zipfile.ZipFile(stream, "w") as archive:
@@ -403,14 +406,7 @@ class OfflineApi(Api):
             self.portfolio = {**body, "id": 99}
             return self.portfolio
         if route == "/portfolio/99":
-            self.portfolio.update(body)
-            code = body.get("custom_calc_py_code", "")
-            if "context.get_quote" not in code and code:
-                # 只执行脚本自己生成的固定字典函数，离线不加载任意外部组合。
-                import ast
-
-                self.target = ast.literal_eval(code.split("return ", 1)[1].strip())[self.config.symbol]
-            return copy.deepcopy(self.portfolio)
+            return self.update_portfolio(body)
         if route == "/account/4":
             return self.account_resource(method, body)
         if route.endswith("/orders"):
@@ -437,6 +433,16 @@ class OfflineApi(Api):
         if route.startswith("/account/executions/"):
             return self.execution_resource(path, route)
         raise ApiError(f"离线 API 未实现 {method} {path}", 404)
+
+    def update_portfolio(self, body):
+        """只回放脚本自己生成的固定目标函数，不加载外部组合。"""
+        self.portfolio.update(body)
+        code = body.get("custom_calc_py_code", "")
+        if "context.get_quote" not in code and code:
+            import ast
+
+            self.target = ast.literal_eval(code.split("return ", 1)[1].strip())[self.config.symbol]
+        return copy.deepcopy(self.portfolio)
 
     def target_snapshot(self):
         if "context.get_quote" in self.portfolio.get("custom_calc_py_code", ""):

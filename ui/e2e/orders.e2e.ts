@@ -416,7 +416,7 @@ for (const scenario of [
   { channel: 'ctp', attributes: { exchange_id: 'SHFE', order_sys_id: 'sys-123', order_ref: 'ref-123', event_date: '20261016', event_clock: '21:01:02' }, extras: { offset: 'OPEN', trading_day: '20261019', hedge_flag: '3' }, expected: ['SHFE', 'sys-123', 'ref-123', '2026-10-16', '21:01:02'] },
   { channel: 'tq', attributes: { exchange_id: 'SHFE', tq_symbol: 'SHFE.rb2610' }, extras: { offset: 'CLOSETODAY', exchange_trade_id: 'exchange-fill-12345' }, expected: ['SHFE', 'SHFE.rb2610', 'exchange-fill-12345'] },
   { channel: 'gm', attributes: { cl_ord_id: 'client-123', exchange_order_id: 'counter-123', gm_symbol: 'SHSE.600000' }, extras: { offset: 'OPEN', commission: 0, amount: 100, cost: 100 }, expected: ['client-123', 'counter-123', 'SHSE.600000', '开仓'] },
-  { channel: 'external', attributes: { client_order_id: 'client-123', execution_type: 'TRADE', order_status: 'PARTIALLY_FILLED' }, extras: { commission: 0, commission_asset: 'USDT', realized_pnl: 0, is_maker: false, position_side: 'SHORT' }, expected: ['client-123', '成交', '部分成交'] },
+  { channel: 'external', attributes: { client_order_id: 'client-123', execution_type: 'TRADE', order_status: 'PARTIALLY_FILLED' }, extras: { commission: 0, commission_asset: 'CNY', realized_pnl: 0, is_maker: false, position_side: 'SHORT' }, expected: ['client-123', '成交', '部分成交'] },
 ]) {
   test(`${scenario.channel} fill details expand, copy both IDs and adapt to narrow screens`, async ({ page }, testInfo) => {
     const time = '2026-10-16T21:01:02+08:00'
@@ -611,11 +611,11 @@ for (const tab of ['最近成交', '最近委托']) {
     const time = '2026-10-16T10:00:00+08:00'
     let long = false
     await page.route('**/api/v1/account/1/orders/activity?**', route => {
-      const symbol = long ? 'VERY-LONG-SYMBOL-123456789012345678901234567890' : 'XRPUSDT'
+      const symbol = long ? 'VERY-LONG-SYMBOL-123456789012345678901234567890' : 'SHFE.ag2612'
       return route.fulfill({ json: { channel: 'external', scope: '合成记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: [symbol], limit: 100, truncated: false,
         trades: [{ trade_id: 'sizing-trade', order_id: 'sizing-order', symbol, direction: 'SELL', time,
           price: long ? 123456789123456 : 1.3501, volume: long ? 123456789012345 : 14.8,
-          commission: long ? 12345678912345 : 0.00799259, commission_asset: long ? 'LONG-COMMISSION-ASSET' : 'USDT',
+          commission: long ? 12345678912345 : 0.00799259, commission_asset: long ? 'LONG-COMMISSION-ASSET' : 'CNY',
           realized_pnl: long ? -123456789012345 : -0.00148, is_maker: false, position_side: 'BOTH' }],
         orders: [{ order_id: 'sizing-order', symbol, direction: 'SELL', offset: 'OPEN', order_type: 'LIMIT',
           price: long ? 123456789123456 : 1.3501, avg_price: 1.3501, volume: long ? 123456789012345 : 14.8,
@@ -682,12 +682,12 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
   await page.route('**/api/v1/account/*/orders/activity?**', async route => {
     if (gate) await gate
     if (fail) { await route.fulfill({ status: 500, json: { detail: '测试读取失败' } }); return }
-    const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'XRPUSDT'
+    const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'SHFE.ag2612'
     const orders = Array.from({ length: count }, (_, i) => ({ order_id: `remember-${i}`, symbol, direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT',
       price: 1.35, avg_price: 1.35, volume: 1, filled_volume: 1, remaining_volume: 0, status: '已成交', create_time: time, native_identity: {}, uncertain: false,
       attributes: { native_order_type: 'LIMIT', position_side: 'BOTH', reduce_only: false } }))
-    await route.fulfill({ json: { channel: 'external', orders, trades: orders.map((order, i) => ({ trade_id: `fill-${i}`, order_id: order.order_id, symbol, direction: 'BUY', time, price: 1.35, volume: 1, commission: 0.001, commission_asset: 'USDT', realized_pnl: 0, is_maker: false, position_side: 'BOTH' })),
-      ended_orders: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false } })
+    await route.fulfill({ json: { channel: 'external', orders, trades: orders.map((order, i) => ({ trade_id: `fill-${i}`, order_id: order.order_id, symbol, direction: 'BUY', time, price: 1.35, volume: 1, commission: 0.001, commission_asset: 'CNY', realized_pnl: 0, is_maker: false, position_side: 'BOTH' })),
+      ended_orders: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['SHFE.ag2612', 'SHFE.rb2610'], limit: 100, truncated: false } })
   })
   await page.goto('/e2e/orders.html?channel=external&memory')
   const open = () => page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
@@ -708,7 +708,7 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '核对记录', exact: true })).toBeEnabled()
   await dialog.getByRole('button', { name: '品种', exact: true }).click()
-  await page.getByRole('option', { name: 'XRPUSDT', exact: true }).click()
+  await page.getByRole('option', { name: 'SHFE.ag2612', exact: true }).click()
   await expect(dialog.locator('[data-swap-current] [data-activity-row]')).toHaveCount(80)
   await scroll(640, 160)
   await dialog.getByRole('button', { name: '最近委托', exact: true }).click()
@@ -721,7 +721,7 @@ test(`activity view restores per-account tabs, filters and scroll before the fir
   gate = new Promise<void>(resolve => { release = resolve })
   await open()
   await expect(dialog.getByRole('button', { name: '最近成交', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('XRPUSDT')
+  await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.ag2612')
   await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
   await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
   await page.evaluate(() => {
@@ -782,12 +782,12 @@ test('terminal orders and operation failures occupy separate top-level tabs', as
   const reason = '柜台返回的完整拒绝原因：'.repeat(12)
   await page.route('**/api/v1/account/1/orders/activity?**', route => route.fulfill({ json: {
     channel: 'external', orders: [], ended_orders: [
-      { order_id: orderId, symbol: 'XRPUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, avg_price: 1.34, avg_price_source: 'native', volume: 14.8, filled_volume: 0, remaining_volume: 14.8, status: '已撤销', create_time: time, native_identity: {}, uncertain: false },
-      { order_id: 'rejected-order', symbol: 'BTCUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 100, volume: 1, filled_volume: 0, remaining_volume: 1, status: '已拒绝', reason, create_time: time, native_identity: {}, uncertain: false },
+      { order_id: orderId, symbol: 'SHFE.ag2612', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, avg_price: 1.34, avg_price_source: 'native', volume: 14.8, filled_volume: 0, remaining_volume: 14.8, status: '已撤销', create_time: time, native_identity: {}, uncertain: false },
+      { order_id: 'rejected-order', symbol: 'SHFE.rb2610', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 100, volume: 1, filled_volume: 0, remaining_volume: 1, status: '已拒绝', reason, create_time: time, native_identity: {}, uncertain: false },
     ], trades: [], failures: [
-      { event_id: 'cancel-rejection', operation: 'cancel_order', outcome: 'rejected', symbol: 'XRPUSDT', order_id: orderId, time, message: '柜台不允许撤单' },
+      { event_id: 'cancel-rejection', operation: 'cancel_order', outcome: 'rejected', symbol: 'SHFE.ag2612', order_id: orderId, time, message: '柜台不允许撤单' },
       { event_id: 'unknown', operation: 'place_order', symbol: '', order_id: null, time, message: '回报超时，结果待确认' },
-    ], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false,
+    ], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['SHFE.ag2612', 'SHFE.rb2610'], limit: 100, truncated: false,
   } }))
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value: string) => Object.assign(window, { copiedEventOrder: value }) } }))
   await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -843,12 +843,12 @@ for (const reducedMotion of ['reduce', 'no-preference'] as const) {
     const time = '2026-10-16T19:23:08+08:00'
     await page.route('**/api/v1/account/1/orders/activity?**', async route => {
       if (gate) await gate
-      const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'XRPUSDT'
+      const symbol = new URL(route.request().url()).searchParams.get('symbol') || 'SHFE.ag2612'
       await route.fulfill({ json: { channel: 'external', orders: [], ended_orders: Array.from({ length: 40 }, (_, i) => ({
         order_id: `ended-${i}`, symbol, direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35,
         volume: 14.8, filled_volume: 0, remaining_volume: 14.8, status: '已撤销', create_time: time, native_identity: {}, uncertain: false,
       })), trades: [], failures: Array.from({ length: 40 }, (_, i) => ({ event_id: `cancel-${i}`, operation: 'cancel_order', outcome: 'rejected', symbol, order_id: 'active-order', time, message: '撤单被柜台拒绝，原委托仍有效' })),
-        scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT', 'BTCUSDT'], limit: 100, truncated: false } })
+        scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['SHFE.ag2612', 'SHFE.rb2610'], limit: 100, truncated: false } })
     })
     await page.goto('/e2e/orders.html?channel=external&memory')
     const open = () => page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()
@@ -864,22 +864,22 @@ for (const reducedMotion of ['reduce', 'no-preference'] as const) {
     await open()
     await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
     await expect(dialog.locator('[data-swap-current] [data-order-table] [data-activity-row]')).toHaveCount(40)
-    await selectSymbol('XRPUSDT')
+    await selectSymbol('SHFE.ag2612')
     await vertical.evaluate(node => { node.scrollTop = 640 })
     await horizontal.evaluate(node => { node.scrollLeft = 140 })
     await expect.poll(position).toEqual({ top: 640, left: 140 })
     await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
     await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('全部品种')
-    await selectSymbol('BTCUSDT')
+    await selectSymbol('SHFE.rb2610')
     await vertical.evaluate(node => { node.scrollTop = 320 })
     await horizontal.evaluate(node => { node.scrollLeft = 90 })
     await expect.poll(position).toEqual({ top: 320, left: 90 })
     await dialog.getByRole('button', { name: '撤单 / 拒绝', exact: true }).click()
-    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('XRPUSDT')
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.ag2612')
     await expect.poll(position).toEqual({ top: 640, left: 140 })
     await expect(dialog.locator('[data-swap-current] [data-order-table]').getByText('active-order', { exact: true })).toHaveCount(0)
     await dialog.getByRole('button', { name: '操作异常', exact: true }).click()
-    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('BTCUSDT')
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.rb2610')
     await expect.poll(position).toEqual({ top: 320, left: 90 })
     await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
     await expect(vertical).toHaveCount(0)
@@ -887,7 +887,7 @@ for (const reducedMotion of ['reduce', 'no-preference'] as const) {
     gate = new Promise<void>(resolve => { release = resolve })
     await open()
     await expect(dialog.getByRole('button', { name: '操作异常', exact: true })).toHaveAttribute('aria-pressed', 'true')
-    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('BTCUSDT')
+    await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('SHFE.rb2610')
     await expect(dialog.locator('[data-record-placeholder]')).toHaveCount(1)
     await expect(dialog.getByRole('status')).toHaveText('正在恢复记录位置…')
     await expect(dialog.locator('[data-swap-current] table')).not.toBeVisible()
@@ -910,8 +910,8 @@ test('an empty operation tab does not inherit pagination from other records', as
   await page.route('**/api/v1/account/1/orders/activity?**', route => {
     const limit = Number(new URL(route.request().url()).searchParams.get('limit'))
     limits.push(limit)
-    return route.fulfill({ json: { channel: 'external', orders: Array.from({ length: 100 }, (_, i) => ({ order_id: `page-${i}`, symbol: 'XRPUSDT', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, volume: 1, filled_volume: 0, remaining_volume: 1, status: '待成交', create_time: time, native_identity: {}, uncertain: false })),
-      ended_orders: [], trades: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['XRPUSDT'], limit, truncated: true } })
+    return route.fulfill({ json: { channel: 'external', orders: Array.from({ length: 100 }, (_, i) => ({ order_id: `page-${i}`, symbol: 'SHFE.ag2612', direction: 'BUY', offset: 'OPEN', order_type: 'LIMIT', price: 1.35, volume: 1, filled_volume: 0, remaining_volume: 1, status: '待成交', create_time: time, native_identity: {}, uncertain: false })),
+      ended_orders: [], trades: [], failures: [], scope: '测试记录', started_at: time, sampled_at: time, queried_at: time, errors: [], symbols: ['SHFE.ag2612'], limit, truncated: true } })
   })
   await page.goto('/e2e/orders.html?channel=external')
   await page.getByRole('button', { name: '当日委托与成交 · 在途 1', exact: true }).click()

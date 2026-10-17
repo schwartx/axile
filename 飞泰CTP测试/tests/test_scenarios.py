@@ -4,6 +4,7 @@ import copy
 import json
 
 import pytest
+
 from ft_ctp.api import ApiError
 from ft_ctp.cli import main, run_scenarios
 from ft_ctp.evidence import Bundle
@@ -210,6 +211,7 @@ def test_restart_without_real_instance_change_is_not_passed(tmp_path):
 
 def test_hold_does_not_add_to_an_already_reached_target(tmp_path):
     from axile.executor.algorithms.core.base import AlgorithmInput
+
     from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
     from support import OfflineSession
 
@@ -225,6 +227,7 @@ def test_hold_does_not_add_to_an_already_reached_target(tmp_path):
 @pytest.mark.parametrize("checkpoint, expected_native", [("before_send", 0), ("after_send", 1)])
 def test_termination_at_send_boundary_never_reissues_and_only_cancels_owned(tmp_path, checkpoint, expected_native):
     from axile.executor.algorithms.core.base import AlgorithmInput
+
     from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
     from support import OfflineSession
 
@@ -383,7 +386,7 @@ def test_new_pending_order_between_scenes_prevents_execution_prep(tmp_path):
     assert not api.sessions
 
 
-def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
+def test_unknown_contract_uses_exact_query_without_recycling_session(tmp_path):
     runner, api = make_runner(tmp_path, invalid_case="unknown")
     request = api.request
     disconnected = False
@@ -391,12 +394,10 @@ def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
 
     def catalog(method, path, body=None, **kwargs):
         nonlocal disconnected
-        if (
-            path == "/account/4/target_snapshot/refresh"
-            and "FT_UNKNOWN_CONTRACT" in api.portfolio["custom_calc_py_code"]
-        ):
-            disconnected = True
-            raise ApiError("CatalogError: 获取合约资料失败: 合约查询返回空结果或合约已下市", 400)
+        if path == "/instrument-catalog/query":
+            assert body["symbols"] == ["FT_UNKNOWN_CONTRACT"]
+            assert "context.get_quote" not in api.portfolio["custom_calc_py_code"]
+            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
         if path == "/account/4/connection" and disconnected:
             return {"status": "closed"}
         if path == "/account/4/connection/reconnect":
@@ -407,7 +408,7 @@ def test_unknown_contract_catalog_error_and_session_recovery(tmp_path):
     api.request = catalog
     run_scenarios(runner, ["invalid"])
     assert runner.bundle.index["scenarios"][0]["status"] == "passed"
-    assert len(recoveries) == 1
+    assert not recoveries
     assert not api.sessions
     assert (runner.bundle.path / "final-residue.json").exists()
 
@@ -446,3 +447,34 @@ def test_quota_anchor_rejects_unrelated_query_throttling():
     assert waiting_for_test_quota(monitor)
     hit["limit"] = 30
     assert not waiting_for_test_quota(monitor)
+
+
+@pytest.mark.parametrize("checkpoint", ["before_send", "after_send"])
+def test_real_termination_propagates_without_five_second_final_query(tmp_path, checkpoint):
+    from axile.executor.algorithms.core.base import AlgorithmInput
+    from axile.executor.termination import ExecutionTerminated
+
+    from ft_ctp.algorithm import ScenarioParams, scenario_algorithm
+    from support import OfflineSession
+
+    _, api = make_runner(tmp_path)
+    params = ScenarioParams(
+        symbol="rb2701",
+        action="hold",
+        batch="case",
+        step=checkpoint,
+        timeout_seconds=1,
+        **{f"{checkpoint}_hold_seconds": 3},
+    )
+    api.events[checkpoint], api.controls[checkpoint] = [], []
+    session = OfflineSession(api, checkpoint, params)
+
+    def stop(seconds):
+        if seconds == 3:
+            raise ExecutionTerminated(reason="stop", mode="cancel_pending", cancel_unconfirmed=True)
+
+    session.sleep_or_terminate = stop
+    with pytest.raises(ExecutionTerminated):
+        scenario_algorithm(session, AlgorithmInput(symbol="rb2701", target_volume=1, trade_rule={}, params=params))
+    assert not session.order_callbacks and not session.trade_callbacks
+    assert session.native_calls == (checkpoint == "after_send")

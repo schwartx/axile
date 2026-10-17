@@ -458,7 +458,7 @@ def _offline_session_worker(*args):
         def get_pending_orders(self, symbol=None):
             return []
 
-    async def noop(*args):
+    async def noop(*args, **kwargs):
         return None
 
     worker_state.create_executor_instance = lambda *args, **kwargs: OfflineExecutor()

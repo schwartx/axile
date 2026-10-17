@@ -45,7 +45,7 @@ export function OperationFailuresTable({ data, formatTime, loading, emptyText }:
   const events = data ? operationEvents(data) : []
   const columns: RecordColumn[] = [
     { key: 'time', label: '发生时间', sample: '2026-12-28 23:59:59' },
-    { key: 'symbol', label: '品种', sample: 'ETHUSDT', values: events.map(event => event.symbol || '账户通知'), maxWidth: 160 },
+    { key: 'symbol', label: '品种', sample: 'SHFE.rb2610', values: events.map(event => event.symbol || '账户通知'), maxWidth: 160 },
     { key: 'operation', label: '操作', sample: '撤单', values: events.map(event => event.operation ?? '') },
     { key: 'result', label: '结果', sample: '撤单失败 / 待确认', values: events.map(event => event.label) },
     { key: 'message', label: '失败原因', grow: 1, sample: '操作结果待确认，请核对渠道记录', values: events.map(event => event.message), maxWidth: 320 },

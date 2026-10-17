@@ -206,7 +206,7 @@ def build_archive(
     path = Path(directory.name) / "evidence.zip"
     try:
         _build(path, snapshot, profile, budget, logs or [], log_report)
-        scope = "account" if snapshot.window else "execution"
+        scope = "account" if snapshot.window or snapshot.selected_execution_ids is not None else "execution"
         return EvidenceArchive(directory=directory, path=path, filename=f"axile-{scope}-evidence.zip")
     except BaseException:
         directory.cleanup()
@@ -236,6 +236,7 @@ def _build(
         window=snapshot.window,
         snapshot_at=snapshot.snapshot_at,
         source_counts=snapshot.source_counts,
+        selected_execution_ids=snapshot.selected_execution_ids,
     )
     with ZipFile(path, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
         writer = _Writer(archive, budget)
@@ -284,7 +285,7 @@ def _build(
             "exporter": {"axile_version": package_version("axile")},
             "account": account,
             "snapshot_at": snapshot.snapshot_at,
-            "selection": snapshot.window.describe() if snapshot.window else {"basis": "explicit_execution"},
+            "selection": snapshot.selection_description(),
             "database": {
                 "read_complete": True,
                 "consistency": "single_explicit_read_transaction",

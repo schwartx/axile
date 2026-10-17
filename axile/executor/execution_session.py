@@ -11,12 +11,18 @@ from typing import TYPE_CHECKING, cast
 
 from axile.common.logging import LogComponent, bind_log_context
 from axile.common.order_param_model import OrderParamModel
+from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.order_channel_health import OrderChannelHealth
 from axile.executor.models.unified_account_assets import PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.termination import ExecutionTerminated, wait_or_terminate
+from axile.executor.termination_cleanup import (
+    TerminationCleanupResult,
+    cleanup_query_allowed,
+    termination_cleanup_scope,
+)
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
@@ -155,19 +161,24 @@ class ExecutionSession:
         elif not self._owner.is_termination_requested():
             return
 
-        cancel_failed_order_ids: list[str] = []
-        # terminate(cancel_pending) 时先在 symbol 维度尝试清挂单，再把终止异常继续向上抛出。
-        termination_mode = runtime.get_termination_mode() if runtime is not None else self._owner.get_termination_mode()
-        if termination_mode == "cancel_pending":
-            cancel_failed_order_ids = self._cancel_pending_orders_before_termination()
-
         try:
             if runtime is not None:
                 runtime.handle_termination_checkpoint(self.symbol)
             else:
                 self._owner.handle_termination_checkpoint(self.symbol)
         except ExecutionTerminated as exc:
-            exc.cancel_failed_order_ids = cancel_failed_order_ids
+            target = runtime if runtime is not None else self._owner
+            # 先记录 ACK，再进入有界清理；重入的终止检查点直接抛出，不能递归清理。
+            if exc.mode == "cancel_pending" and not cleanup_query_allowed(target):
+                getter = getattr(self._owner, "get_account_control_guard", None)
+                guard = getter() if callable(getter) else None
+                with termination_cleanup_scope(target, guard, self.symbol):
+                    result = self._cancel_pending_orders_before_termination()
+                exc.cancel_failed_order_ids = result.failed_order_ids
+                exc.cancel_attempted = result.attempted
+                exc.cancel_unconfirmed = (
+                    not result.query_complete or result.unconfirmed or bool(result.failed_order_ids)
+                )
             raise
 
     def sleep_or_terminate(self, seconds: float) -> None:
@@ -325,7 +336,7 @@ class ExecutionSession:
         if callable(owner_expect):
             owner_expect(order_id)
 
-    def _cancel_pending_orders_before_termination(self) -> list[str]:
+    def _cancel_pending_orders_before_termination(self) -> TerminationCleanupResult:
         """在 terminate(cancel_pending) 模式下查询并逐笔撤销当前 symbol 挂单."""
         try:
             pending_orders = self.get_pending_orders()
@@ -333,23 +344,35 @@ class ExecutionSession:
             if bool(getattr(exc, "requires_session_recovery", False)):
                 raise
             self.logger.warning(f"terminate 查询挂单失败: {exc}")
-            return []
+            return TerminationCleanupResult(unconfirmed=True)
 
-        failed_order_ids: list[str] = []
+        result = TerminationCleanupResult(query_complete=True)
         for order in pending_orders:
             try:
+                result.attempted = True
                 canceled = self.cancel_order(order.order_id)
             except Exception as exc:
                 if bool(getattr(exc, "requires_session_recovery", False)):
                     raise
                 self.logger.warning(f"terminate 撤单失败: order_id={order.order_id}, error={exc}")
-                failed_order_ids.append(order.order_id)
+                result.failed_order_ids.append(order.order_id)
                 continue
 
             if not canceled:
-                failed_order_ids.append(order.order_id)
+                result.failed_order_ids.append(order.order_id)
+            else:
+                try:
+                    terminal = self.reconcile_terminal_order(self.symbol, order.order_id)
+                    if terminal is None or not terminal.is_completed():
+                        result.unconfirmed = True
+                    elif terminal.status != OrderStatus.CANCELED:
+                        result.failed_order_ids.append(order.order_id)
+                except Exception as exc:
+                    if bool(getattr(exc, "requires_session_recovery", False)):
+                        raise
+                    result.unconfirmed = True
 
-        return failed_order_ids
+        return result
 
     def set_audit_context(self, context: AuditContext) -> None:
         """设置当前 symbol 会话的审计上下文."""

@@ -61,6 +61,13 @@ class AccountControlMonitorPublic(BaseModel):
     minute_start: str | None
     stale: bool
     incomplete: bool
+    history_incomplete: bool = False
+    snapshot_stale: bool = False
+    counter_integrity: Literal["known", "unknown"] = "known"
+    risk_operations_blocked: bool = False
+    incomplete_instances: list[dict[str, Any]] = Field(default_factory=list)
+    incomplete_instances_total: int = 0
+    counter_recovery: str | None = None
     pending_policy: bool
     actual_policy: dict[str, Any] | None
     actual_fingerprint: str | None

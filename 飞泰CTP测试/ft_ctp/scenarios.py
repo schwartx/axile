@@ -99,17 +99,15 @@ def threshold(runner, step):
 
 
 def unknown_contract(runner, step):
-    """从现有组合上下文精确调用未知合约查询，保留命中阶段。"""
-    code = (
-        "def calculate_portfolio(context):\n"
-        f"    context.get_quote({runner.config.unknown_symbol!r})\n"
-        f"    return {{{runner.config.symbol!r}: 0}}\n"
-    )
-    runner.call("PATCH", f"/portfolio/{runner.portfolio_id}", {"custom_calc_py_code": code})
+    """通过独立精确查询探测未知合约，不运行用户组合函数。"""
     before = runner.call("GET", runner.base + "/control/monitor")
     error = None
     try:
-        runner.call("POST", runner.base + "/target_snapshot/refresh")
+        runner.call(
+            "POST",
+            "/instrument-catalog/query",
+            {"account_id": runner.account_id, "symbols": [runner.config.unknown_symbol], "require_specs": True},
+        )
     except ApiError as exc:
         error = str(exc)
     connection = runner.call("GET", runner.base + "/connection")
@@ -123,7 +121,7 @@ def unknown_contract(runner, step):
         f"{step}/unknown-contract.json",
         {
             "requested_symbol": runner.config.unknown_symbol,
-            "stage": "portfolio_context.get_quote / CTP metadata",
+            "stage": "instrument-catalog/query / CTP metadata",
             "error": error,
             "before": before,
             "after": after,
@@ -131,10 +129,7 @@ def unknown_contract(runner, step):
             "note": "此场景验证未知合约元数据校验，不将规划跳过当作直接 place_order 校验",
         },
     )
-    matched = error and (
-        ("未知 CTP 合约" in error and runner.config.unknown_symbol in error)
-        or ("CatalogError" in error and "合约查询返回空结果或合约已下市" in error)
-    )
+    matched = error and "CATALOG.NOT_FOUND" in error
     return {
         "scenario": step,
         "status": "passed" if matched and a is not None and a == b else "insufficient_conditions",
