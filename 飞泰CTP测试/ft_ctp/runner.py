@@ -15,7 +15,7 @@ from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clo
 from ft_ctp.api import ApiError
 from ft_ctp.checks import find_core_results, find_results, judge, judge_core_noop, reconcile
 
-TERMINAL = {"SUCCEEDED", "FAILED", "TERMINATED"}
+TERMINAL = {"SUCCEEDED", "FAILED", "TERMINATED", "SKIPPED", "PARTIAL"}
 RESTORE_FIELDS = (
     "portfolio_id",
     "algorithm",

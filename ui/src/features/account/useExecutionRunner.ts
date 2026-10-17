@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getExecutionStatus, triggerEmptyPositions, triggerExecute } from '@/lib/api/executions'
-import { describeRunOutcome, type RunKind } from '@/features/account/runOutcome'
+import { describeRunOutcome, isTerminalExecutionTaskStatus, type RunKind } from '@/features/account/runOutcome'
 import { useToastStore } from '@/stores/ui'
 import type { ExecutionStatus } from '@/types/api'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
-const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'TERMINATED', 'SKIPPED'])
 export type { RunKind }
 interface RunnerState {
   running: boolean
@@ -42,7 +41,7 @@ export function useExecutionRunner(accountId: number, onSettled?: () => void) {
       try {
         const status = await getExecutionStatus(executionId, controller.signal)
         if (controller.signal.aborted) return
-        const terminal = TERMINAL.has(status.status)
+        const terminal = isTerminalExecutionTaskStatus(status.status)
         setState(previous => ({ ...previous, lastStatus: status, queryError: null, running: !terminal }))
         if (terminal) {
           runningRef.current = false

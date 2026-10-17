@@ -89,11 +89,12 @@ def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target():
     assert session_closed_scope(raw) == "partial"
     assert (
         lifecycle._resolve_completion_status(SimpleNamespace(is_success=0, raw_result=raw))
-        != ExecutionTaskStatus.SKIPPED
+        == ExecutionTaskStatus.PARTIAL
     )
 
 
-def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeypatch):
+@pytest.mark.parametrize("partial", [False, True])
+def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeypatch, partial):
     captured = {}
 
     async def persist(**kwargs):
@@ -104,29 +105,38 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
 
     monkeypatch.setattr(records, "_persist_execute_record", persist)
     logger = Mock()
+    raw = closed_result()
+    expected = ExecutionTaskStatus.SKIPPED
+    if partial:
+        raw["status"] = "PARTIAL"
+        raw["outcome_reason"] = None
+        raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
+        expected = ExecutionTaskStatus.PARTIAL
     record = asyncio.run(
         records.append_error_execute_record(
             account_id=1,
             execution_id="session-skip",
-            raw_result=closed_result(),
+            raw_result=raw,
             msg="非交易时段",
             logger=logger,
         )
     )
     assert captured["is_success"] == 0
-    assert record.raw_result["task_status"] == "SKIPPED"
-    assert record.raw_result["status"] == "BLOCKED"
+    assert record.raw_result["task_status"] == expected
+    assert record.raw_result["outcome_reason"] == "非交易时段"
+    assert record.raw_result["status"] == raw["status"]
     assert record.raw_result["symbol_results"]["m2701"]["final_volume"] is None
-    assert lifecycle._resolve_completion_status(record) == ExecutionTaskStatus.SKIPPED
+    assert lifecycle._resolve_completion_status(record) == expected
     replay = registry._build_persisted_execution_status(record)
-    assert replay["status"] == ExecutionTaskStatus.SKIPPED
-    assert replay["output_status"] == "BLOCKED"
+    assert replay["status"] == expected
+    assert replay["output_status"] == raw["status"]
     assert replay["is_success"] == 0
     logger.error.assert_not_called()
     logger.info.assert_called_once()
 
 
-def test_skipped_task_is_terminal_and_cannot_be_terminated_again():
+@pytest.mark.parametrize("terminal", [ExecutionTaskStatus.SKIPPED, ExecutionTaskStatus.PARTIAL])
+def test_skipped_task_is_terminal_and_cannot_be_terminated_again(terminal):
     from axile.domain.execution import ExecutionKind, ExecutionTerminateMode
 
     execution_id = "session-skip-terminal"
@@ -134,7 +144,7 @@ def test_skipped_task_is_terminal_and_cannot_be_terminated_again():
         execution_id=execution_id,
         account_id=1,
         execution_kind=ExecutionKind.REBALANCE,
-        status=ExecutionTaskStatus.SKIPPED,
+        status=terminal,
         created_at="2026-10-16T10:15:00",
         finished_at="2026-10-16T10:15:07",
     )
@@ -146,6 +156,6 @@ def test_skipped_task_is_terminal_and_cannot_be_terminated_again():
             mode=ExecutionTerminateMode.GRACEFUL,
         )
         assert not changed
-        assert registry.get_execution_task_state(execution_id).status == ExecutionTaskStatus.SKIPPED
+        assert registry.get_execution_task_state(execution_id).status == terminal
     finally:
         registry._clear_execution_task_state(execution_id)

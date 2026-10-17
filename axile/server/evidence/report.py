@@ -25,6 +25,7 @@ _TASK_LABELS = {
     "SUCCEEDED": "已结束",
     "FAILED": "执行失败",
     "SKIPPED": "休市跳过",
+    "PARTIAL": "未全部完成",
     "UNKNOWN": "任务状态未知",
 }
 _OUTCOME_LABELS = {
