@@ -160,11 +160,11 @@ uv run axile
 
 ## 📚 详细文档
 
-* [图文使用指南与函数参考](https://zengbin93.github.io/axile/)
+* [图文使用指南与函数参考](https://schwartx.github.io/axile/)
 * [文档源码、本地预览与 Pages 部署](docs/README.md)
 
 * [系统架构设计与执行拓扑细节全景 (HTML)](docs/architecture-design-details.html)
-* [Context 查询与组合函数参考](https://zengbin93.github.io/axile/reference/context.html)
+* [Context 查询与组合函数参考](https://schwartx.github.io/axile/reference/context.html)
 
 ---
 
