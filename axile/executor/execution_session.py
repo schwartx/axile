@@ -17,6 +17,7 @@ from axile.executor.models.unified_account_assets import PositionDirection, Unif
 from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDataCallback, TradeRecordCallback
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_submission_context import order_submission_context
 from axile.executor.termination import ExecutionTerminated, wait_or_terminate
 from axile.executor.termination_cleanup import (
     TerminationCleanupResult,
@@ -128,7 +129,8 @@ class ExecutionSession:
     ) -> UnifiedOrder:
         """对当前 symbol 下单."""
         self.handle_termination_checkpoint()
-        return self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
+        with order_submission_context(self.audit_context):
+            return self._owner.place_order(self.symbol, direction, order_type, volume, price, **kwargs)
 
     def get_pending_orders(self) -> list[UnifiedOrder]:
         """获取当前 symbol 的未完成订单."""
