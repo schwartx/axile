@@ -27,3 +27,8 @@ export function describeRunOutcome(
   if (view.state === 'PARTIAL') return { kind: 'not_reached', toast: view.text }
   return { kind: 'unknown', toast: view.text }
 }
+
+/** 终态结束轮询；部分完成仍保留未完成结果。 */
+export function isTerminalExecutionTaskStatus(status: string): boolean {
+  return ['SUCCEEDED', 'FAILED', 'TERMINATED', 'SKIPPED', 'PARTIAL'].includes(status)
+}

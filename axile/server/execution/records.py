@@ -113,6 +113,20 @@ async def _persist_execute_record(
         return record
 
 
+def resolve_record_task_status(record: ExecuteRecord | None) -> ExecutionTaskStatus:
+    """从业务证据解析任务终态，休市未完成不能记作成功或异常失败。"""
+    if record is None:
+        return ExecutionTaskStatus.FAILED
+    if record.is_success == 1:
+        return ExecutionTaskStatus.SUCCEEDED
+    scope = session_closed_scope(record.raw_result)
+    if scope == "all":
+        return ExecutionTaskStatus.SKIPPED
+    if scope == "partial":
+        return ExecutionTaskStatus.PARTIAL
+    return ExecutionTaskStatus.FAILED
+
+
 async def append_error_execute_record(
     account_id: int | None,
     raw_input: dict[str, object] | None = None,
@@ -154,9 +168,12 @@ async def append_error_execute_record(
     persisted_raw_result.setdefault("outcome", "error")
     persisted_raw_result.setdefault("outcome_reason", msg)
     session_scope = session_closed_scope(persisted_raw_result)
-    if session_scope == "all":
-        persisted_raw_result["task_status"] = ExecutionTaskStatus.SKIPPED.value
     if session_scope:
+        persisted_raw_result["task_status"] = (
+            ExecutionTaskStatus.SKIPPED.value if session_scope == "all" else ExecutionTaskStatus.PARTIAL.value
+        )
+        if not persisted_raw_result.get("outcome_reason"):
+            persisted_raw_result["outcome_reason"] = persisted_raw_result.get("error") or msg
         persisted_raw_result["outcome"] = "blocked" if session_scope == "all" else "not_reached"
         logger.info("{}", msg)
     else:

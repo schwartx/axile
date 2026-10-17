@@ -617,3 +617,30 @@ def test_terminal_intent_does_not_hide_persisted_outcome(monkeypatch):
     assert payload["error"] == "目标尚未到位"
     # 柔和版读时归一：status 反向补齐展示结论，不再有 legacy 空洞。
     assert payload["outcome"] == "not_reached"
+
+
+def test_partial_session_replay_preserves_later_task_exception(monkeypatch):
+    from axile.server.execution import intents
+    from tests.unit.server.test_session_closed_execution import closed_result
+
+    async def get_intent(_execution_id):
+        return SimpleNamespace(status=ExecutionTaskStatus.FAILED, error="收尾异常")
+
+    raw = closed_result()
+    raw.update(status="PARTIAL", task_status="PARTIAL")
+    raw["symbol_results"]["ag2612"] = {"status": "NOOP"}
+    record = SimpleNamespace(
+        id=1001,
+        execution_id="partial-worker-error",
+        account_id=1,
+        is_success=0,
+        created_at="2026-10-17T01:00:00",
+        raw_result=raw,
+    )
+    monkeypatch.setattr(intents, "get_intent", get_intent)
+    monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
+    payload = asyncio.run(execution_registry.get_execution_status(record.execution_id))
+    assert payload["status"] == ExecutionTaskStatus.FAILED
+    assert payload["error"] == "收尾异常"
+    assert payload["output_status"] == "FAILED"
+    assert payload["is_success"] == 0

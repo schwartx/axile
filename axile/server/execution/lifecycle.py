@@ -14,7 +14,6 @@ from axile.domain.execution import (
     ExecutionTaskStatus,
     ExecutionTerminateMode,
 )
-from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import (
     TERMINATION_TRIGGER_TIMEOUT,
     ExecutionTerminated,
@@ -37,7 +36,7 @@ from axile.server.execution.intents import (
     submit_intent,
     sync_account_live,
 )
-from axile.server.execution.records import append_terminated_execute_record
+from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
 from axile.server.execution.registry import (
     ExecutionTaskState,
     clear_queued_execution,
@@ -69,6 +68,7 @@ _TERMINAL_INTENT_STATUSES = frozenset(
         ExecutionTaskStatus.FAILED,
         ExecutionTaskStatus.SUCCEEDED,
         ExecutionTaskStatus.SKIPPED,
+        ExecutionTaskStatus.PARTIAL,
     }
 )
 
@@ -177,11 +177,7 @@ def _resolve_termination_requested_at(
 
 def _resolve_completion_status(record: ExecuteRecord | None) -> ExecutionTaskStatus:
     """根据执行记录解析后台任务的最终状态。"""
-    if record is not None and record.is_success == 1:
-        return ExecutionTaskStatus.SUCCEEDED
-    if record is not None and session_closed_scope(record.raw_result) == "all":
-        return ExecutionTaskStatus.SKIPPED
-    return ExecutionTaskStatus.FAILED
+    return resolve_record_task_status(record)
 
 
 def _mark_execution_finished(

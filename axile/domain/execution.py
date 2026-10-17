@@ -69,6 +69,7 @@ class ExecutionTaskStatus(str, Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
+    PARTIAL = "PARTIAL"
 
 
 class ExecutionTerminateMode(str, Enum):

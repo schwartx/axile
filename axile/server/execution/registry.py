@@ -27,7 +27,7 @@ from axile.server.db.models import (
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.execution_summaries import build_execution_outcome_details
 from axile.server.execution.legacy_compat import normalize_legacy_result
-from axile.server.execution.records import append_terminated_execute_record
+from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
 from axile.server.execution_audit import append_execution_event
 
 
@@ -77,6 +77,7 @@ _TERMINAL_EXECUTION_TASK_STATES: frozenset[ExecutionTaskStatus] = frozenset(
         ExecutionTaskStatus.FAILED,
         ExecutionTaskStatus.TERMINATED,
         ExecutionTaskStatus.SKIPPED,
+        ExecutionTaskStatus.PARTIAL,
     }
 )
 """被视为终态、可释放重引用并安排淘汰的任务状态集合。."""
@@ -441,7 +442,7 @@ def _build_persisted_execution_status(record: ExecuteRecord) -> dict[str, object
         normalized_raw.get("task_status") if isinstance(normalized_raw, dict) else None
     )
     if task_status is None:
-        task_status = ExecutionTaskStatus.SUCCEEDED if record.is_success == 1 else ExecutionTaskStatus.FAILED
+        task_status = resolve_record_task_status(record)
 
     termination_raw = record.raw_result.get("termination")
     termination = cast("dict[str, object]", termination_raw) if isinstance(termination_raw, dict) else {}
@@ -581,7 +582,16 @@ async def get_execution_status(execution_id: str) -> dict[str, object] | None:
     if record is None:
         return serialize_intent(intent) if intent is not None else None
 
-    return _build_persisted_execution_status(record)
+    payload = _build_persisted_execution_status(record)
+    # 业务记录写入后，任务收尾仍可能异常；重启不能用休市结果掩盖该异常。
+    if (
+        payload["status"] == ExecutionTaskStatus.PARTIAL
+        and intent is not None
+        and intent.status == ExecutionTaskStatus.FAILED
+        and getattr(intent, "error", None)
+    ):
+        payload.update(status=ExecutionTaskStatus.FAILED, error=intent.error, output_status="FAILED")
+    return payload
 
 
 def create_termination_controller(execution_id: str, cancel_event: Event) -> ExecutionTerminationController:

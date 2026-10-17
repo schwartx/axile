@@ -270,17 +270,40 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
                     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
                 elif scope == "error":
                     raw["symbol_results"]["ag2612"] = {"status": "FAILED", "reason_code": "CHANNEL.QUERY_FAILED"}
-                session.add(
-                    ExecuteRecord(
-                        account_id=1, execution_id=execution.execution_id, raw_input={}, raw_result=raw, is_success=0
-                    )
+                record = ExecuteRecord(
+                    account_id=1, execution_id=execution.execution_id, raw_input={}, raw_result=raw, is_success=0
                 )
+                session.add(record)
                 await session.commit()
-            terminal = ExecutionTaskStatus.SKIPPED if scope == "all" else ExecutionTaskStatus.FAILED
-            await intents.mark_intent_finished(execution.execution_id, terminal)
+            terminal = {
+                "all": ExecutionTaskStatus.SKIPPED,
+                "partial": ExecutionTaskStatus.PARTIAL,
+                "error": ExecutionTaskStatus.FAILED,
+            }[scope]
+            from axile.server.execution import lifecycle, registry
+
+            async def runner(_execution_id):
+                return record
+
+            registry.update_execution_task_state(execution.execution_id, status=ExecutionTaskStatus.QUEUED)
+            monkeypatch.setattr(lifecycle, "sync_account_live", lambda *_args: None)
+            await lifecycle._run_execution_task(
+                account_id=1,
+                execution_id=execution.execution_id,
+                execution_kind=ExecutionKind.REBALANCE,
+                runner=runner,
+            )
+            state = registry.get_execution_task_state(execution.execution_id)
+            assert state.status == terminal
+            assert state.output_status == raw["status"]
+            assert state.is_success == 0
+            assert state.error == "非交易时段"
             # 幂等收尾不能重复取消/通知，也不能影响下一组。
             await intents.mark_intent_finished(execution.execution_id, terminal)
             async with factory() as session:
+                finished = (await session.scalars(select(ExecutionIntent))).one()
+                assert finished.status == terminal
+                assert finished.finished_at is not None
                 actual_group = await session.get(SupplementGroup, group.id)
                 assert actual_group.status == ("cancelled" if scope == "all" else "active")
                 assert (await session.get(SupplementStep, steps[0].id)).status == "finished"
