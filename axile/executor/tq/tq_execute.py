@@ -28,6 +28,7 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
+from axile.executor.tq.order_terminal_audit import TQOrderTerminalAudit
 from axile.executor.tq.runtime import TQRuntime, snapshot_entity
 from axile.executor.tq.symbols import TQInstrument
 
@@ -194,6 +195,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
     def _initialize_connection(self, account_config: AccountConfig) -> None:
         if not isinstance(account_config, TQAccountConfig):
             raise TypeError("TQExecutor requires TQAccountConfig")
+        self._terminal_audit = TQOrderTerminalAudit(self.logger)
         connection_monitor(self).step("api_connection", "running")
         runtime = TQRuntime(lambda: self._build_api(account_config), connection=connection_monitor(self))
         runtime.add_listener(self._on_runtime_event)
@@ -488,6 +490,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             raise ValueError(f"TqSdk 不支持开平标志: {offset_flag}")
 
         order_id = uuid4().hex
+        self._terminal_audit.register(order_id, self.get_active_execution_runtime())
 
         def submit(api: object) -> TQTradingTimeCheck | dict[str, object]:
             check = self._check_tq_symbol_trading_time(api, sessions, datetime.now(_SHANGHAI))
@@ -509,6 +512,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
 
         result = runtime.call(submit)
         if isinstance(result, TQTradingTimeCheck):
+            self._terminal_audit.discard(order_id)
             raise AccountControlBlockedError(
                 result.message or "非交易时段",
                 reason_code=result.error,
@@ -521,6 +525,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         order = order_to_unified(result, runtime.resolver)
         # 意图翻译结果落进 extra,供订单跟踪器追价重报时回读开平标志。
         order.extra["offset_flag"] = offset_flag
+        self._terminal_audit.emit(order)
         return order
 
     @override
@@ -536,6 +541,8 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         symbol = normalize_catalog_symbol(symbol) if symbol is not None else None
         rows = runtime.call(lambda api: [snapshot_entity(row) for row in getattr(api, "get_order")().values()])
         orders = [order_to_unified(row, runtime.resolver) for row in rows]
+        for order in orders:
+            self._terminal_audit.emit(order)
         return [
             order
             for order in orders
@@ -554,6 +561,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         for row in rows:
             order = order_to_unified(row, runtime.resolver)
             if order.order_id == order_id and order.symbol == symbol and order.is_completed():
+                self._terminal_audit.emit(order)
                 return order
         return None
 
@@ -692,6 +700,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             self._dispatch(self._price_callbacks, value)
         elif kind == "order":
             order = order_to_unified(row, runtime.resolver)
+            self._terminal_audit.emit(order)
             self.account_orders.apply(order)
             self._dispatch(self._order_callbacks, order)
         elif kind == "connection":
@@ -699,9 +708,10 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         elif kind == "orders.reset":
             watermark = self.account_orders.begin_sync()
             rows = cast(list[dict[str, object]], row["rows"])
-            self.account_orders.replace(
-                [order_to_unified(value, runtime.resolver) for value in rows], watermark, drop_missing=True
-            )
+            orders = [order_to_unified(value, runtime.resolver) for value in rows]
+            self.account_orders.replace(orders, watermark, drop_missing=True)
+            for order in orders:
+                self._terminal_audit.emit(order)
         elif kind == "trade":
             trade = trade_to_unified(row, runtime.resolver)
             self.account_orders.activity.observe_trade(trade)
