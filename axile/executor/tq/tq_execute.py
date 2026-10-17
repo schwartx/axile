@@ -26,6 +26,7 @@ from axile.executor.models.unified_callback import OrderUpdateCallback, PriceDat
 from axile.executor.models.unified_input import AccountConfig, TQAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.order_submission_context import get_order_submission_context
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.tq.converters import account_to_unified, order_to_unified, quote_to_unified, trade_to_unified
 from axile.executor.tq.order_terminal_audit import TQOrderTerminalAudit
@@ -490,7 +491,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
             raise ValueError(f"TqSdk 不支持开平标志: {offset_flag}")
 
         order_id = uuid4().hex
-        self._terminal_audit.register(order_id, self.get_active_execution_runtime())
+        self._terminal_audit.register(order_id, self.get_active_execution_runtime(), get_order_submission_context())
 
         def submit(api: object) -> TQTradingTimeCheck | dict[str, object]:
             check = self._check_tq_symbol_trading_time(api, sessions, datetime.now(_SHANGHAI))
@@ -780,6 +781,7 @@ class TQExecutor(CatalogExecutionMixin, AbstractExecutor):
         if self._closed:
             return
         self._closed = True
+        self._terminal_audit.close()
         self._instrument_provider.close()
         if self._runtime is not None:
             self._runtime.close()

@@ -11,6 +11,7 @@ import pytest
 from axile.domain.execution import ExecutionEventType
 from axile.executor.algorithms.utils.order_tracker import OrderTracker
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.execution_session import ExecutionSession
 from axile.executor.models.unified_input import TQAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from axile.executor.tq import TQExecutor
@@ -87,8 +88,10 @@ def test_terminal_callback_emits_confirmed_state_and_volume(audited_executor, le
     instance.register_order_callback(tracker.on_order_update)
     instance._on_runtime_event("order", finish(api, left=left, message=message))
 
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     event = sink.events[0]
+    assert instance._terminal_audit.flush()
     assert event["event_type"] == ExecutionEventType.ORDER_TERMINAL
     assert event["reason_code"] == "COMMON.ORDER_TERMINAL"
     assert event["execution_id"] == "execution-A"
@@ -111,7 +114,9 @@ def test_nonterminal_and_unknown_states_never_emit_terminal(audited_executor, st
     order = submit(instance)
     api.order.update(status=status, volume_left=left)
     instance._on_runtime_event("order", dict(api.order))
+    assert instance._terminal_audit.flush()
     assert instance.reconcile_terminal_order("rb2610", order.order_id) is None
+    assert instance._terminal_audit.flush()
     assert not sink.events
 
 
@@ -131,6 +136,7 @@ def test_callback_and_reconciliation_concurrently_emit_once(audited_executor):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(report, range(8)))
     instance._get_pending_orders_impl()
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert not instance._terminal_audit._origins
 
@@ -151,6 +157,7 @@ def test_late_callback_keeps_original_execution_sink_and_sequence(audited_execut
     instance._on_runtime_event("order", finish(api))
     instance._on_runtime_event("order", old_row)
 
+    assert instance._terminal_audit.flush()
     assert len(original_sink.events) == len(next_sink.events) == 1
     assert original_sink.events[0]["execution_id"] == "execution-A"
     assert original_sink.events[0]["account_id"] == 2
@@ -171,7 +178,9 @@ def test_late_reconciliation_after_runtime_reset_keeps_original_execution(audite
     instance.set_audit_context({"execution_id": "execution-B", "account_id": 2, "algorithm": "OTHER"})
     instance.set_audit_sink(next_sink)
     runtime.reset_for_execute(execution_timeout=180)
+    assert instance._terminal_audit.flush()
     assert instance.reconcile_terminal_order("rb2610", order.order_id).is_completed()
+    assert instance._terminal_audit.flush()
     assert len(original_sink.events) == 1
     assert original_sink.events[0]["execution_id"] == "execution-A"
     assert not next_sink.events
@@ -192,6 +201,7 @@ def test_terminal_during_insert_is_not_lost(audited_executor, monkeypatch, early
     monkeypatch.setattr(api, "insert_order", immediate_fill)
     order = submit(instance)
     instance._on_runtime_event("order", dict(api.order))
+    assert instance._terminal_audit.flush()
     assert order.is_completed()
     assert len(sink.events) == 1
     assert sink.events[0]["order_id"] == order.order_id
@@ -207,10 +217,12 @@ def test_missing_callback_reconciles_tracker_and_backfills_once(audited_executor
     instance.register_order_callback(tracker.on_order_update)
     finish(api)
     tracker._reconcile_missing_pending([])
+    assert instance._terminal_audit.flush()
     assert tracker.get_pending_count() == 0
     assert tracker.all_done_event.is_set()
     assert len(sink.events) == 1
     instance._on_runtime_event("order", dict(api.order))
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
 
 
@@ -218,8 +230,11 @@ def test_open_order_snapshot_backfills_missing_terminal_callback(audited_executo
     instance, api, sink = audited_executor
     submit(instance)
     finish(api)
+    assert instance._terminal_audit.flush()
     assert instance._get_pending_orders_impl() == []
+    assert instance._terminal_audit.flush()
     assert instance._get_pending_orders_impl() == []
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
 
 
@@ -232,11 +247,14 @@ def test_failed_audit_write_preserves_reconciliation_retry(audited_executor, fai
     instance.register_order_callback(tracker.on_order_update)
     sink.failures.append(failure)
     instance._on_runtime_event("order", finish(api))
+    assert instance._terminal_audit.flush()
     assert tracker.all_done_event.is_set()
     assert not sink.events
     assert instance.reconcile_terminal_order("rb2610", order.order_id).is_completed()
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     instance.reconcile_terminal_order("rb2610", order.order_id)
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
 
 
@@ -244,8 +262,11 @@ def test_unowned_historical_order_is_not_assigned_to_current_execution(audited_e
     instance, api, sink = audited_executor
     row = finish(api)
     instance._on_runtime_event("order", row)
+    assert instance._terminal_audit.flush()
     assert instance.reconcile_terminal_order("rb2610", "o1").is_completed()
+    assert instance._terminal_audit.flush()
     instance._get_pending_orders_impl()
+    assert instance._terminal_audit.flush()
     assert not sink.events
 
 
@@ -256,7 +277,9 @@ def test_order_without_audit_context_is_not_adopted_by_later_execution(audited_e
     order = submit(instance)
     bind_execution(instance, sink, "execution-B")
     instance._on_runtime_event("order", finish(api))
+    assert instance._terminal_audit.flush()
     assert instance.reconcile_terminal_order("rb2610", order.order_id).is_completed()
+    assert instance._terminal_audit.flush()
     assert not sink.events
 
 
@@ -274,6 +297,7 @@ def test_uncertain_submit_failure_retains_origin_for_late_terminal(audited_execu
     next_sink = RecordingSink()
     bind_execution(instance, next_sink, "execution-B")
     instance._on_runtime_event("order", finish(api))
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert sink.events[0]["execution_id"] == "execution-A"
     assert not next_sink.events
@@ -290,6 +314,7 @@ def test_session_block_discards_registration_without_submitting(audited_executor
 
     with pytest.raises(AccountControlBlockedError):
         submit(instance)
+    assert instance._terminal_audit.flush()
     assert not api.insert_args
     assert not instance._terminal_audit._origins
     assert not sink.events
@@ -305,10 +330,12 @@ def test_reset_snapshot_backfills_terminal_without_callback_once(audited_executo
     instance._on_runtime_event("order", row)
     instance.reconcile_terminal_order("rb2610", order.order_id)
 
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert sink.events[0]["order_id"] == order.order_id
     assert sink.events[0]["details"]["order"]["terminal_status"] == OrderStatus.FILLED
     snapshot = instance.account_orders.snapshot()
+    assert instance._terminal_audit.flush()
     assert snapshot["complete"]
     assert not snapshot["data"]
     assert snapshot["resolved"][0].order_id == order.order_id
@@ -322,11 +349,13 @@ def test_reset_snapshot_retries_failed_terminal_write(audited_executor, failure)
     row = finish(api)
     sink.failures.append(failure)
     instance._on_runtime_event("order", row)
+    assert instance._terminal_audit.flush()
     assert not sink.events
 
     instance._on_runtime_event("orders.reset", {"rows": [row]})
     instance._on_runtime_event("orders.reset", {"rows": [row]})
 
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert not instance._terminal_audit._origins
 
@@ -339,13 +368,16 @@ def test_reset_snapshot_failure_keeps_order_book_and_can_retry(audited_executor)
 
     instance._on_runtime_event("orders.reset", {"rows": [row]})
 
+    assert instance._terminal_audit.flush()
     assert not sink.events
     snapshot = instance.account_orders.snapshot()
+    assert instance._terminal_audit.flush()
     assert snapshot["complete"]
     assert snapshot["resolved"][0].order_id == order.order_id
     assert order.order_id in instance._terminal_audit._origins
 
     instance._on_runtime_event("orders.reset", {"rows": [row]})
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert not instance._terminal_audit._origins
 
@@ -359,6 +391,7 @@ def test_reset_snapshot_after_next_execution_keeps_original_sink(audited_executo
 
     instance._on_runtime_event("orders.reset", {"rows": [row]})
 
+    assert instance._terminal_audit.flush()
     assert len(original_sink.events) == 1
     assert original_sink.events[0]["execution_id"] == "execution-A"
     assert original_sink.events[0]["order_id"] == order.order_id
@@ -373,6 +406,7 @@ def test_reset_snapshot_does_not_adopt_history_or_infer_missing_terminal(audited
     instance._on_runtime_event("orders.reset", {"rows": [dict(api.order)]})
     instance._on_runtime_event("orders.reset", {"rows": []})
 
+    assert instance._terminal_audit.flush()
     assert not sink.events
     assert order.order_id in instance._terminal_audit._origins
 
@@ -393,5 +427,67 @@ def test_reset_snapshot_and_callback_concurrently_emit_once(audited_executor):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(report, range(8)))
 
+    assert instance._terminal_audit.flush()
     assert len(sink.events) == 1
     assert not instance._terminal_audit._origins
+
+
+@pytest.mark.parametrize("kind", ["order", "orders.reset"])
+def test_slow_audit_sink_does_not_block_sdk_commands_or_callbacks(audited_executor, kind):
+    instance, api, sink = audited_executor
+    entered, release = threading.Event(), threading.Event()
+    original_append = sink.append_event
+    writing_threads = []
+
+    def blocked_append(**event):
+        writing_threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(5)
+        return original_append(**event)
+
+    sink.append_event = blocked_append
+    order = submit(instance)
+    tracker = OrderTracker(executor=instance)
+    tracker.add_order(order)
+    instance.register_order_callback(tracker.on_order_update)
+    row = finish(api)
+    payload = {"rows": [row]} if kind == "orders.reset" else row
+    runtime = instance._require_runtime()
+    try:
+        runtime.call(lambda _api: instance._on_runtime_event(kind, payload), timeout=0.5)
+        assert entered.wait(1)
+        owner_thread = runtime.call(lambda _api: threading.get_ident(), timeout=0.5)
+        assert writing_threads == [instance._terminal_audit._worker.ident]
+        assert writing_threads[0] != owner_thread
+        # 审计 IO 仍阻塞时，同订单重复回报也必须立即返回并驱动 tracker 完成。
+        runtime.call(lambda _api: instance._on_runtime_event("order", row), timeout=0.5)
+        assert tracker.all_done_event.is_set()
+        # 关闭也不等待审计 IO，避免重建连接时卡住 SDK 宿主。
+        instance._terminal_audit.close()
+        assert runtime.call(lambda _api: "sdk responsive", timeout=0.5) == "sdk responsive"
+    finally:
+        release.set()
+        assert instance._terminal_audit.flush()
+
+    assert len(sink.events) == 1
+
+
+@pytest.mark.parametrize("algorithm", ["SINGLE-MAKER", "TWAP"])
+def test_terminal_preserves_symbol_session_algorithm(audited_executor, algorithm):
+    instance, api, sink = audited_executor
+    session = ExecutionSession(
+        instance,
+        "rb2610",
+        runtime=instance.require_execution_runtime(),
+        audit_context={"execution_id": "execution-A", "account_id": 2, "algorithm": algorithm},
+    )
+    order = session.place_order(OrderDirection.BUY, OrderType.LIMIT, 2, 3200)
+    row = finish(api)
+    bind_execution(instance, RecordingSink(), "execution-B")
+    instance._on_runtime_event("orders.reset", {"rows": [row]})
+
+    assert instance._terminal_audit.flush()
+    assert len(sink.events) == 1
+    assert sink.events[0]["order_id"] == order.order_id
+    assert sink.events[0]["algorithm"] == algorithm
+    assert sink.events[0]["execution_id"] == "execution-A"
