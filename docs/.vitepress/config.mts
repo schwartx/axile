@@ -12,7 +12,7 @@ export default defineConfig({
     ['link', { rel: 'icon', href: '/axile/favicon.svg', type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#078b9f' }],
   ],
-  sitemap: { hostname: 'https://zengbin93.github.io/axile/' },
+  sitemap: { hostname: 'https://schwartx.github.io/axile/' },
   themeConfig: {
     logo: '/favicon.svg',
     siteTitle: 'Axile 使用文档',
