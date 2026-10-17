@@ -19,7 +19,7 @@ export default defineConfig({
     nav: [
       { text: '使用指南', link: '/guide/introduction' },
       { text: '函数参考', link: '/reference/context' },
-      { text: '0.19.1', link: 'https://github.com/zengbin93/axile/releases' },
+      { text: '版本与发行', link: 'https://github.com/zengbin93/axile/releases' },
     ],
     sidebar: [
       { text: '开始使用', items: [
@@ -30,10 +30,11 @@ export default defineConfig({
       { text: '理解与运行', items: [
         { text: '04 · 目标与持仓', link: '/guide/targets' },
         { text: '05 · 自定义组合函数', link: '/guide/functions' },
-        { text: '06 · 日常运行', link: '/guide/daily' },
-        { text: '07 · 结果与排错', link: '/guide/results' },
+        { text: '06 · 运行与账户控制', link: '/guide/daily' },
+        { text: '07 · 委托与成交', link: '/guide/activity' },
+        { text: '08 · 结果与排错', link: '/guide/results' },
       ] },
-      { text: '08 · 进阶参考', items: [
+      { text: '进阶参考', items: [
         { text: '参考入口', link: '/reference/' },
         { text: 'Context 查询接口', link: '/reference/context' },
         { text: '通知函数', link: '/reference/notifications' },
