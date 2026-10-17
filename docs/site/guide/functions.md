@@ -59,11 +59,11 @@
 
 ## 怎样定位错误
 
-截图中故意把 `total_asset` 写成 `total_assets`。试跑面板显示 `AttributeError`，并提供“定位到第 6 行”。
+截图中故意把 `total_asset` 写成 `total_assets`。试跑面板显示 `AttributeError`，并提供“定位到第 8 行”。
 
 ![函数拼写错误的错误行与 traceback](../assets/screenshots/05-functions/03-runtime-error.png)
 
-先看错误类型和行号，需要更多信息时再展开 traceback。把字段改回正确名称，重新试跑，检查返回值后保存。编辑器的代码提示、试跑结果和保存状态要分开看。
+先看错误类型和行号，需要更多信息时再展开 traceback。把字段改回正确名称，重新试跑，检查返回值后保存。使用账户数据试跑后，若提示会话未就绪，先回到账户概览确认连接，再试跑。编辑器的代码提示、试跑结果和保存状态要分开看。
 
 | 现象 | 优先检查 |
 | --- | --- |
