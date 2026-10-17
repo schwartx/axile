@@ -193,7 +193,10 @@ def test_partial_and_ambiguous_matches_keep_classification_through_real_ipc_http
 
 
 @pytest.mark.parametrize("require_specs", [False, True])
-def test_batch_timeout_stops_source_and_releases_query_slot_without_recycling_worker(monkeypatch, require_specs):
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_batch_timeout_stops_source_and_releases_query_slot_without_recycling_worker(
+    monkeypatch, require_specs, use_cache
+):
     finished = threading.Event()
     query_lock = threading.Lock()
     requested = []
@@ -225,6 +228,7 @@ def test_batch_timeout_stops_source_and_releases_query_slot_without_recycling_wo
                 "symbols": [f"SHFE.test{index}" for index in range(50)],
                 "timeout_seconds": 0.15,
                 "require_specs": require_specs,
+                "use_cache": use_cache,
             },
         )
         assert response.status_code == 408, response.text
@@ -268,3 +272,59 @@ def test_native_timeout_keeps_timeout_classification_across_ipc(monkeypatch):
         response = api.post("/instrument-catalog/query", json={"account_id": 1, "symbols": [ROW.key]})
         assert response.status_code == 408
         assert response.json()["detail"]["causes"][0]["reason_code"] == "CATALOG.TIMEOUT"
+
+
+def test_uncached_followup_exposes_broken_catalog_pipe_even_with_cached_normal_contract(monkeypatch):
+    calls = []
+
+    def query(symbols, timeout):
+        calls.append(symbols)
+        return [] if symbols == ["SHFE.missing"] else [ROW]
+
+    with real_catalog_api(monkeypatch, query) as (api, manager, provider, handle):
+        normal = {"account_id": 1, "symbols": [ROW.key]}
+        assert api.post("/instrument-catalog/query", json=normal).status_code == 200
+        negative = api.post(
+            "/instrument-catalog/query", json={**normal, "symbols": ["SHFE.missing"], "use_cache": False}
+        )
+        assert negative.status_code == 404
+        assert calls == [[ROW.key], ["SHFE.missing"]]
+        original_source = handle.catalog.source
+        attempted = []
+
+        def broken_request(*args, **kwargs):
+            attempted.append(args)
+            raise CatalogError("catalog IPC unavailable", "CATALOG.UNAVAILABLE")
+
+        monkeypatch.setattr(handle.catalog, "_request", broken_request)
+        # 正常缓存入口仍成功，不能作为原目录通道健康的证明。
+        assert api.post("/instrument-catalog/query", json=normal).status_code == 200
+        assert not attempted
+        response = api.post("/instrument-catalog/query", json={**normal, "use_cache": False})
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "CATALOG.UNAVAILABLE"
+        assert response.json()["detail"]["causes"][0]["message"] == "catalog IPC unavailable"
+        assert len(attempted) == 1
+        assert manager._workers[1] is handle and handle.catalog.source == original_source
+        assert not provider.failed
+        assert manager.instrument_catalog.snapshot()[ROW.key] == ROW
+
+
+def test_uncached_query_uses_original_source_and_does_not_replace_shared_cache(monkeypatch):
+    calls = []
+
+    def query(symbols, timeout):
+        calls.append(symbols)
+        return [ROW if len(calls) == 1 else replace(ROW, tick=2)]
+
+    with real_catalog_api(monkeypatch, query) as (api, manager, _, handle):
+        normal = {"account_id": 1, "symbols": [ROW.key]}
+        assert api.post("/instrument-catalog/query", json=normal).json()["data"][ROW.key]["tick"] == 1
+        # 不允许用别的可用账户来源替代原会话。
+        manager.instrument_catalog.register("other", lambda *args: pytest.fail("wrong source"), channel="ctp")
+        handle.catalog.configure(channel="ctp", enabled=False, last_execution="")
+        response = api.post("/instrument-catalog/query", json={**normal, "use_cache": False})
+        assert response.status_code == 200
+        assert response.json()["data"][ROW.key]["tick"] == 2
+        assert calls == [[ROW.key], [ROW.key]]
+        assert manager.instrument_catalog.snapshot()[ROW.key] == ROW

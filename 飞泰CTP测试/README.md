@@ -55,6 +55,8 @@ uv run python ./axile/飞泰CTP测试/run.py run --config ./axile/飞泰CTP测�
 
 `invalid_case` 支持 `price/volume/unknown`。未知合约通过后端 `POST /instrument-catalog/query` 的精确元数据查询验证；后端须包含该接口。负查询不运行组合函数，不将规划跳过记成委托校验通过；只有结构化 `CATALOG.NOT_FOUND` 可作为对应检查命中的依据。
 
+未知合约场景要求 HTTP 404 和结构化 `CATALOG.NOT_FOUND`，并核对探测前、探测后及正常合约查询后的委托快照实例标识（worker 身份及订单簿代次）、ready/alive、快照完整性和报撤计数。后续账户、订单及正常合约查询必须成功；负查询及后续正常查询均传 `use_cache=false`，强制经过所选原会话的目录管道，不能用共享缓存命中证明通道健康；探测中不自动重连。实例变化或失联不能记通过，身份缺失／快照不完整保留 unknown。证据见 `session-before-probe.json`、`connection-after-probe.json`、`normal-catalog-query.json`、`session-after-normal-query.json` 和 `probe-counters.json`。
+
 阈值必须满足 `threshold=ceil(daily_limit*warning_percent/100)`。不重置已有计数、不关闭或放宽保护。报单统计采用 `place_order`，撤单只采用原生 `cancel_order_ctp`，不叠加外层撤单；本地放行、柜台受理与成交分别核对。过期、跨日、分页缺失等情况标记未知。
 
 `reject` 场景要求填写柜台认可的 `broker_condition`、`reject_case`、真实期望 `expected_error_id` 及手数约束；`reject_case` 支持 `insufficient_funds/no_position/market_state`。本地保护先阻断时如实记录条件不足。原生返回码、异步错误码和原文分别保存，未知错误码不猜测含义。
@@ -66,6 +68,8 @@ uv run python ./axile/飞泰CTP测试/run.py run --config ./axile/飞泰CTP测�
 ```
 
 `pause_point` 支持 `executing/quota/queued/scheduled/supplement/idle/restart`。执行中可用 `pause_checkpoint=before_send/after_send`；`pause_action` 支持 `terminate/pause_auto/cancel_supplement`。终止默认 `graceful`，也可指定 `cancel_pending`。暂停自动调度不禁止手动执行，不伪造统一暂停确认。
+
+`after_send` 在发送返回后继续有界等待本批次锚点中的 order_id 与当前 execution／合约归属一致的真实挂单：完整快照、活动状态、剩余量大于零、非 uncertain，并具有非空 exchange_id 和 order_sys_id；同时不得出现其他挂单。确认材料写入 `confirmed-pending-order.json`，等待过程写入 `pending-order-samples.json`。未确认时记条件不足，不发送场景暂停／终止动作；外层异常收尾仍可按原规则终止本批次任务并核对残留，不能把该收尾当作场景通过。
 
 定时或补发场景需设置足够的 `observe_seconds` 和 `timeout_seconds`，覆盖实际触发窗口；默认短观察窗口不能证明后续没有触发。`restart` 需要另一终端重启服务并确认实例变化。受理、实际结束和观察结果分别保存。无法确认任务已结束时不恢复仍可能使用中的配置。
 

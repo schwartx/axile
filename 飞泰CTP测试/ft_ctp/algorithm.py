@@ -89,7 +89,7 @@ class Capture:
             return [t.model_copy(deep=True) for (order_id, _), t in self.trades.items() if order_id in self.owned]
 
 
-def checkpoint(executor, name, params):
+def checkpoint(executor, name, params, order_id=None):
     """通过现有审计流暴露可等待的时序锚点。"""
     executor.emit_audit_event(
         event_type="symbol_decision_made",
@@ -97,7 +97,7 @@ def checkpoint(executor, name, params):
         reason_family="EXECUTION_STRATEGY",
         reason_code=f"FT.CHECKPOINT.{name}",
         symbol=params.symbol,
-        details={"batch": params.batch, "step": params.step, "checkpoint": name},
+        details={"batch": params.batch, "step": params.step, "checkpoint": name, "order_id": order_id},
     )
 
 
@@ -253,7 +253,7 @@ def submit_plan(executor, input_data, params, capture, memory, assets, current):
             memory["request_error"] = exception_details(exc)
             raise
         capture.add(order)
-        checkpoint(executor, "after_send", params)
+        checkpoint(executor, "after_send", params, order.order_id)
         if params.after_send_hold_seconds:
             executor.sleep_or_terminate(params.after_send_hold_seconds)
 

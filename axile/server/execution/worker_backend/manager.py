@@ -822,7 +822,13 @@ class WorkerBackendManager:
         return UnifiedAccountAssets.model_validate(response.output_payload)
 
     async def query_instruments(
-        self, account: AccountContext, symbols: list[str], *, timeout: float = 5.0, require_specs: bool = False
+        self,
+        account: AccountContext,
+        symbols: list[str],
+        *,
+        timeout: float = 5.0,
+        require_specs: bool = False,
+        use_cache: bool = True,
     ) -> dict[str, dict[str, object]]:
         """精确资料查询复用当前目录管道，不运行组合函数或创建交易 worker。"""
         from axile.server.execution.resident_connection import AccountConnectionUnavailable
@@ -838,9 +844,8 @@ class WorkerBackendManager:
             ):
                 raise AccountConnectionUnavailable("账户目录会话尚未就绪，请先连接账户")
             source = handle.catalog.source
-        rows = await asyncio.to_thread(
-            self.instrument_catalog.ensure, symbols, timeout=timeout, require_specs=require_specs, source_name=source
-        )
+        query = self.instrument_catalog.ensure if use_cache else self.instrument_catalog.query_source
+        rows = await asyncio.to_thread(query, symbols, timeout=timeout, require_specs=require_specs, source_name=source)
         return {symbol: row.wire() for symbol, row in rows.items()}
 
     async def calculate_portfolio(
