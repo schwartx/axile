@@ -223,6 +223,19 @@ class InstrumentCatalog:
             if deadline is not None and clock_monotonic() >= deadline:
                 raise CatalogError("等待合约资料超时", "CATALOG.TIMEOUT")
 
+    def query_source(
+        self, symbols: list[str], *, source_name: str, timeout: float, require_specs: bool = False
+    ) -> dict[str, Instrument]:
+        """有界查询指定原会话，跳过共享缓存和补齐任务，不改写缓存。"""
+        deadline = catalog_deadline(timeout)
+        with catalog_query_scope(deadline):
+            rows = self._load(symbols, deadline, require_specs=require_specs, source_name=source_name)
+            catalog_remaining(deadline)
+        return {
+            symbol: next(row for row in rows if normalize_catalog_symbol(symbol) in {row.key, row.symbol})
+            for symbol in symbols
+        }
+
     def _call(self, query: Query, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         attempt = _Attempt()
         deadline = catalog_deadline(timeout)

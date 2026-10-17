@@ -34,6 +34,7 @@ def test_negative_probe_requires_original_session_and_normal_query(tmp_path, fau
         if path.endswith("/reconnect"):
             recoveries.append(path)
         if path == "/instrument-catalog/query":
+            assert body["use_cache"] is False
             if body["symbols"] == [runner.config.unknown_symbol]:
                 phase = 1
                 if fault == "replace":
@@ -89,6 +90,7 @@ def test_negative_probe_requires_original_session_and_normal_query(tmp_path, fau
         "incomplete",
         "late",
         "extra_order",
+        "terminal_partial",
     ],
 )
 def test_after_send_needs_owned_native_pending_before_terminate(tmp_path, fault):
@@ -103,6 +105,8 @@ def test_after_send_needs_owned_native_pending_before_terminate(tmp_path, fault)
             receipts.append(body)
             assert (runner.bundle.path / "pause/confirmed-pending-order.json").exists()
         value = original(method, path, body, **kwargs)
+        if fault == "terminal_partial" and path.startswith("/account/executions/"):
+            return {**value, "status": "PARTIAL"}
         if "/orders?" in path and api.sessions:
             reads += 1
             if fault == "late":
@@ -123,6 +127,8 @@ def test_after_send_needs_owned_native_pending_before_terminate(tmp_path, fault)
             pause(runner, "pause")
         assert not receipts
         assert (runner.bundle.path / "pause/pending-order-samples.json").exists()
+        if fault == "terminal_partial":
+            assert reads == 1
 
 
 def test_real_algorithm_anchor_links_returned_order(tmp_path):

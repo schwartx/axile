@@ -7,7 +7,7 @@ from axile.executor.constants.order_status import OrderStatus
 
 from ft_ctp.api import ApiError
 from ft_ctp.checks import day_counts
-from ft_ctp.runner import Conditions
+from ft_ctp.runner import TERMINAL, Conditions
 
 
 def session_sample(runner, step, name):
@@ -44,6 +44,7 @@ def unknown_contract(runner, step):
                 "account_id": runner.account_id,
                 "symbols": [runner.config.unknown_symbol],
                 "require_specs": True,
+                "use_cache": False,
             },
         )
     except ApiError as exc:
@@ -65,6 +66,7 @@ def unknown_contract(runner, step):
                 "account_id": runner.account_id,
                 "symbols": [runner.config.symbol],
                 "require_specs": True,
+                "use_cache": False,
             },
         )
         runner.bundle.write(f"{step}/normal-catalog-query.json", result)
@@ -128,7 +130,7 @@ def wait_owned_pending(runner, step):
         ):
             runner.bundle.write(f"{step}/confirmed-pending-order.json", sample)
             return
-        if state.get("status") in {"SUCCEEDED", "FAILED", "TERMINATED"}:
+        if state.get("status") in TERMINAL:
             break
         runner.clock.sleep(min(runner.config.poll_seconds, max(0, deadline - runner.clock.time())))
     raise Conditions("未确认本次 execution 的真实原生挂单身份，未发送场景终止操作；收尾另行记录")

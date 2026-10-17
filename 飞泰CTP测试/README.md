@@ -55,7 +55,7 @@ uv run python ./axile/飞泰CTP测试/run.py run --config ./axile/飞泰CTP测�
 
 `invalid_case` 支持 `price/volume/unknown`。未知合约通过后端 `POST /instrument-catalog/query` 的精确元数据查询验证；后端须包含该接口。负查询不运行组合函数，不将规划跳过记成委托校验通过；只有结构化 `CATALOG.NOT_FOUND` 可作为对应检查命中的依据。
 
-未知合约场景要求 HTTP 404 和结构化 `CATALOG.NOT_FOUND`，并核对探测前、探测后及正常合约查询后的委托快照实例标识（worker 身份及订单簿代次）、ready/alive、快照完整性和报撤计数。后续账户、订单及正常合约查询必须成功；探测中不自动重连。实例变化或失联不能记通过，身份缺失／快照不完整保留 unknown。证据见 `session-before-probe.json`、`connection-after-probe.json`、`normal-catalog-query.json`、`session-after-normal-query.json` 和 `probe-counters.json`。
+未知合约场景要求 HTTP 404 和结构化 `CATALOG.NOT_FOUND`，并核对探测前、探测后及正常合约查询后的委托快照实例标识（worker 身份及订单簿代次）、ready/alive、快照完整性和报撤计数。后续账户、订单及正常合约查询必须成功；负查询及后续正常查询均传 `use_cache=false`，强制经过所选原会话的目录管道，不能用共享缓存命中证明通道健康；探测中不自动重连。实例变化或失联不能记通过，身份缺失／快照不完整保留 unknown。证据见 `session-before-probe.json`、`connection-after-probe.json`、`normal-catalog-query.json`、`session-after-normal-query.json` 和 `probe-counters.json`。
 
 阈值必须满足 `threshold=ceil(daily_limit*warning_percent/100)`。不重置已有计数、不关闭或放宽保护。报单统计采用 `place_order`，撤单只采用原生 `cancel_order_ctp`，不叠加外层撤单；本地放行、柜台受理与成交分别核对。过期、跨日、分页缺失等情况标记未知。
 

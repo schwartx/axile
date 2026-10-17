@@ -22,6 +22,7 @@ class InstrumentQuery(BaseModel):
     symbols: list[StrictStr] = Field(min_length=1, max_length=50)
     timeout_seconds: float = Field(default=5, gt=0, le=15)
     require_specs: bool = False
+    use_cache: bool = True
 
     @field_validator("symbols")
     @classmethod
@@ -42,7 +43,11 @@ async def query_instruments(query: InstrumentQuery, session: SessionDep) -> dict
         raise HTTPException(404, detail={"code": "ACCOUNT_NOT_FOUND", "message": "账户不存在"})
     try:
         rows = await get_worker_backend_manager().query_instruments(
-            account.snapshot(), query.symbols, timeout=query.timeout_seconds, require_specs=query.require_specs
+            account.snapshot(),
+            query.symbols,
+            timeout=query.timeout_seconds,
+            require_specs=query.require_specs,
+            use_cache=query.use_cache,
         )
     except CatalogError as exc:
         status = {"CATALOG.NOT_FOUND": 404, "CATALOG.AMBIGUOUS": 409, "CATALOG.TIMEOUT": 408}.get(exc.reason_code, 503)

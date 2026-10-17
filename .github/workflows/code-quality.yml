@@ -141,6 +141,11 @@ jobs:
           --ignore=tests/live \
           --cov=axile --cov-report=xml --cov-report=term-missing --cov-fail-under=69
 
+    - name: Run offline CTP scenario script tests
+      run: |
+        # Tests block network access and use SDK request substitutes; no broker login.
+        uv run python -c 'import os, sys, pytest; code = pytest.main(sys.argv[1:]); sys.stdout.flush(); sys.stderr.flush(); os._exit(int(code))' 飞泰CTP测试/tests -q
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
       timeout-minutes: 5
