@@ -11,6 +11,7 @@ from axile.executor.algorithms.utils.clock import clock_now_iso
 
 from ft_ctp.api import ApiError
 from ft_ctp.checks import day_counts
+from ft_ctp.preconditions import unknown_contract, wait_owned_pending
 from ft_ctp.runner import Conditions
 
 
@@ -95,45 +96,6 @@ def threshold(runner, step):
         "reason": "三个位置及产品预警事实已保留；通知送达另行核对"
         if warnings
         else "三个位置已保留，但缺少产品预警事实；脚本提示不能替代",
-    }
-
-
-def unknown_contract(runner, step):
-    """通过独立精确查询探测未知合约，不运行用户组合函数。"""
-    before = runner.call("GET", runner.base + "/control/monitor")
-    error = None
-    try:
-        runner.call(
-            "POST",
-            "/instrument-catalog/query",
-            {"account_id": runner.account_id, "symbols": [runner.config.unknown_symbol], "require_specs": True},
-        )
-    except ApiError as exc:
-        error = str(exc)
-    connection = runner.call("GET", runner.base + "/connection")
-    runner.bundle.write(f"{step}/connection-after-probe.json", connection)
-    if connection.get("status") != "ready":
-        # 资料查询失败可能关闭共享会话；只恢复连接供只读残留核对，不重试执行或委托。
-        runner.connect()
-    after = runner.call("GET", runner.base + "/control/monitor")
-    a, b = day_counts(before), day_counts(after)
-    runner.bundle.write(
-        f"{step}/unknown-contract.json",
-        {
-            "requested_symbol": runner.config.unknown_symbol,
-            "stage": "instrument-catalog/query / CTP metadata",
-            "error": error,
-            "before": before,
-            "after": after,
-            "native_order_submission": "not invoked by script",
-            "note": "此场景验证未知合约元数据校验，不将规划跳过当作直接 place_order 校验",
-        },
-    )
-    matched = error and "CATALOG.NOT_FOUND" in error
-    return {
-        "scenario": step,
-        "status": "passed" if matched and a is not None and a == b else "insufficient_conditions",
-        "reason": "未知合约在 CTP 元数据边界被拒绝，报单计数不变" if matched else "未命中未知合约校验",
     }
 
 
@@ -361,6 +323,8 @@ def pause(runner, step):
         arm_pause(runner, step)
         before = runner.call("GET", runner.base + "/control/monitor")
         runner.bundle.write(f"{step}/before-operation.json", before)
+        if config.pause_point == "executing" and config.pause_checkpoint == "after_send":
+            wait_owned_pending(runner, step)
         if config.pause_action == "pause_auto":
             receipt = runner.call("PATCH", runner.base, {"is_started": False})
         else:

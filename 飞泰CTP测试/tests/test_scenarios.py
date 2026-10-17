@@ -395,9 +395,10 @@ def test_unknown_contract_uses_exact_query_without_recycling_session(tmp_path):
     def catalog(method, path, body=None, **kwargs):
         nonlocal disconnected
         if path == "/instrument-catalog/query":
-            assert body["symbols"] == ["FT_UNKNOWN_CONTRACT"]
             assert "context.get_quote" not in api.portfolio["custom_calc_py_code"]
-            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
+            if body["symbols"] == ["FT_UNKNOWN_CONTRACT"]:
+                raise ApiError(json.dumps({"detail": {"code": "CATALOG.NOT_FOUND"}}), 404)
+            return {"data": [{"symbol": runner.config.symbol}], "count": 1}
         if path == "/account/4/connection" and disconnected:
             return {"status": "closed"}
         if path == "/account/4/connection/reconnect":

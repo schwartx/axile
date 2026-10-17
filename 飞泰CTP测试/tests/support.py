@@ -343,7 +343,12 @@ class OfflineApi(Api):
                 self.events[execution_id].append(
                     {
                         "reason_code": f"FT.CHECKPOINT.{stage}",
-                        "details": {"checkpoint": stage, "batch": params.batch, "step": params.step},
+                        "details": {
+                            "checkpoint": stage,
+                            "batch": params.batch,
+                            "step": params.step,
+                            "order_id": next(iter(session.orders), None),
+                        },
                     }
                 )
             if self.config.pause_point == "queued" and len(self.sessions) > 1:
@@ -365,6 +370,11 @@ class OfflineApi(Api):
             self.executions[execution_id]["status"] = "SUCCEEDED" if result.success else "FAILED"
         return {"execution_id": execution_id, "accepted": "created", "account_id": 4}
 
+    def catalog_query(self, body):
+        if body["symbols"] == [self.config.unknown_symbol]:
+            raise ApiError(json.dumps({"detail": {"code": "CATALOG.NOT_FOUND", "causes": []}}), 404)
+        return {"data": [{"symbol": self.config.symbol}], "count": 1}
+
     def request(self, method, path, body=None, binary=False):
         route = path.split("?")[0]
         simple = {
@@ -377,7 +387,7 @@ class OfflineApi(Api):
         if route in simple:
             return simple[route]
         if route == "/instrument-catalog/query":
-            raise ApiError("CATALOG.NOT_FOUND: 合约查询返回空结果或合约已下市", 404)
+            return self.catalog_query(body)
         if binary:
             stream = io.BytesIO()
             with zipfile.ZipFile(stream, "w") as archive:
@@ -411,12 +421,17 @@ class OfflineApi(Api):
             return self.account_resource(method, body)
         if route.endswith("/orders"):
             orders = [
-                o.model_dump(mode="json")
+                {
+                    **o.model_dump(mode="json"),
+                    "execution_id": s.execution_id,
+                    "native_identity": {k: str(v) for k, v in o.extra.items()},
+                    "uncertain": False,
+                }
                 for s in self.sessions.values()
                 for o in s.orders.values()
                 if not o.is_completed()
             ]
-            return {"data": orders, "complete": True, "count": len(orders)}
+            return {"data": orders, "complete": True, "count": len(orders), "instance_id": self.instance_id}
         if route.endswith("/assets/refresh"):
             return {"assets": self.assets().model_dump(mode="json"), "account_id": 4}
         if route.endswith("/control/monitor"):
