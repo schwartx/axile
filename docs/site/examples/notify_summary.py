@@ -11,7 +11,7 @@ def notify(context: AccountNotificationContext) -> None:
     message = {
         "account": context["account"].get("name"),
         "status": execution.get("status"),
-        "trades": context["summary"]["trade_count"],
+        "trades": (context.get("summary") or {}).get("trade_count", 0),
         "is_test": context.get("is_test", False),
     }
     print(json.dumps(message, ensure_ascii=False))

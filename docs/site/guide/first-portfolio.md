@@ -64,7 +64,7 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ## 6. 查看交易方式
 
-天勤期货默认使用“期货目标持仓”算法。检查报价方式、开平仓设置和最大等待时间。其他算法见[执行算法参考](/reference/algorithms)。
+天勤期货默认使用“期货目标持仓”算法。检查报价方式、平仓规则和最大等待时间。其他算法见[执行算法参考](/reference/algorithms)。
 
 ![期货目标持仓的交易方式设置](../assets/screenshots/03-first-portfolio/06-trading-method.png)
 
@@ -76,9 +76,17 @@ def calculate_portfolio(context: Context) -> dict[str, float]:
 
 ![创建账户前确认目标和运行状态](../assets/screenshots/03-first-portfolio/07-confirm-account.png)
 
-<p class="caption">向导默认多空杠杆为 3。本例创建账户后会改成 1，后文的数量计算也按一倍杠杆说明。</p>
+<p class="caption">本例在向导中将多空杠杆均设为 1，后文的数量计算也按一倍杠杆说明。</p>
 
-## 8. 核对目标后手动执行
+## 8. 确认账户连接
+
+创建后在账户概览确认连接状态。尚未连接时，点击账户连接开关，等待连接完成。点击状态旁的详情入口，查看连接进度、核对结果和失败原因。
+
+![账户连接详情及核对状态](../assets/screenshots/03-first-portfolio/08-connection-detail.png)
+
+连接后会核对资产和委托，交易任务需另行执行。连接失败时，按详情中的提示检查凭据、渠道环境或连接设置；历史失败记录只用于排查，不能据此判断当前连接仍有故障。
+
+## 9. 核对目标后手动执行
 
 进入账户“杠杆设置”，把多空杠杆都设为 1 并保存。回到账户概览，刷新账户资产，重新计算目标，然后检查“持仓 vs 目标”。
 
