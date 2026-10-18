@@ -22,6 +22,7 @@ os.environ["AXILE_CONFIG_TOML"] = str(_path / "config.toml")
 
 from sqlmodel import SQLModel
 
+from axile.common.trade_channel import TradeChannel
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
 from axile.executor.algorithms.utils.clock import clock_now_iso
@@ -40,7 +41,14 @@ from tests.unit.server._execution_test_support import build_account
 
 book = AccountOrderBook()
 stats = {"queries": 0, "cancels": 0}
-account = build_account(id=1, portfolio_id=None)
+account = build_account(
+    id=1,
+    portfolio_id=None,
+    name="tq-browser",
+    trade_channel=TradeChannel.TQ,
+    brokerage="tq",
+    account_config={"account_mode": "kq", "tq_username": "fixture", "tq_password": "fixture"},
+)
 binding = ConnectionBinding(1, connection_config_key(account.trade_channel, account.account_config), "browser-worker")
 collector = ConnectionCollector(binding)
 
