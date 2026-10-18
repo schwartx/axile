@@ -23,7 +23,7 @@ def _started_ctp_executor(monkeypatch):
 
     config = CTPAccountConfig(
         app_id="app-id",
-        auth_code="auth-code",
+        auth_code="authcode",
         broker_id="9999",
         investor_id="100001",
         password="secret",

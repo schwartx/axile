@@ -20,7 +20,7 @@ def test_rest_confirmation_preserves_callback_and_reports_only_observed_source(h
     )
     tracker = OrderTracker(executor=executor)
     tracker._logger = MagicMock()
-    tracker.pending_orders["old"] = SimpleNamespace(symbol="XRPUSDT")
+    tracker.pending_orders["old"] = SimpleNamespace(symbol="ag2611")
     confirmed = []
     tracker.on_order_update = confirmed.append
     tracker._reconcile_missing_pending([])

@@ -255,7 +255,9 @@ def test_ctp_query_builds_account_request_and_preserves_real_zero_rate():
     executor = CTPExecutor.__new__(CTPExecutor)
     executor._catalog_query_state = threading.local()
     executor._timeout = 20
-    executor._config = lambda: SimpleNamespace(broker_id="fixture", investor_id="fixture")
+    executor._config = lambda: SimpleNamespace(
+        broker_id="fixture", investor_id="fixture", app_id="fixture", auth_code="fixture"
+    )
     executor._instruments = {"ag2611": SimpleNamespace(ExchangeID="SHFE")}
     row = SimpleNamespace(
         InstrumentID="ag2611",
