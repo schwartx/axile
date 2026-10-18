@@ -14,7 +14,7 @@ from tests.unit.server._execution_test_support import build_account
 
 def order(**changes):
     values = dict(
-        order_id="native-1",
+        order_id="20261018:1:2:1",
         symbol="rb2610",
         direction="BUY",
         order_type="LIMIT",
@@ -59,7 +59,7 @@ def test_same_order_id_terminal_receipts_resolve_each_symbol_independently():
     for index, symbol in enumerate(("rb2610", "ag2612")):
         state.receipts[str(index)] = OrderCancelReceipt(
             request_id=str(index),
-            order_id="native-1",
+            order_id="20261018:1:2:1",
             symbol=symbol,
             state="submitted",
             message="等待回报",
@@ -82,7 +82,7 @@ def test_missing_cancellation_does_not_overwrite_same_id_live_order_on_another_s
     state = service._OrdersState()
     state.receipts["pending"] = OrderCancelReceipt(
         request_id="pending",
-        order_id="native-1",
+        order_id="20261018:1:2:1",
         symbol="rb2610",
         state="submitted",
         message="等待回报",
@@ -106,9 +106,9 @@ def test_query_is_account_wide_and_cancel_requires_exact_symbol_and_identity():
         cancel_order=lambda *key: calls.append(key) or True,
     )
     snapshot = run_order_command(executor, {"command": "query"})
-    assert {row["order_id"] for row in snapshot["data"]} == {"native-1", "external"}
+    assert {row["order_id"] for row in snapshot["data"]} == {"20261018:1:2:1", "external"}
     assert calls == [None]
-    result = run_order_command(executor, {"command": "cancel", "symbol": "ag2612", "order_id": "native-1"})
+    result = run_order_command(executor, {"command": "cancel", "symbol": "ag2612", "order_id": "20261018:1:2:1"})
     assert result["state"] == "unknown"
     assert all(not isinstance(call, tuple) for call in calls)
 
@@ -120,7 +120,7 @@ def test_fill_before_cancel_is_terminal_and_never_sends_cancel():
         reconcile_terminal_order=lambda *_: order(status="已成交", filled_volume=3),
         cancel_order=lambda *_: pytest.fail("已成交订单不应撤单"),
     )
-    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})
+    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})
     assert result["state"] == "terminal"
     assert result["order"]["filled_volume"] == 3
 
@@ -132,13 +132,13 @@ def test_unknown_order_is_visible_and_cannot_be_canceled():
     )
     snapshot = run_order_command(executor, {"command": "query"})
     assert snapshot["data"][0]["uncertain"] is True
-    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})
+    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})
     assert result["state"] == "unknown"
 
 
 def test_cancel_accepted_does_not_mean_canceled():
     executor = SimpleNamespace(get_pending_orders=lambda _: [order()], cancel_order=lambda *_: True)
-    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})
+    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})
     assert result["state"] == "submitted"
     assert result["order"]["status"] == "部分成交"
     assert result["order"]["filled_volume"] == 1
@@ -152,14 +152,16 @@ def test_async_cancel_rejection_uses_original_guard_and_preserves_live_order(mon
         "operation": "cancel_order",
         "symbol": "rb2610",
         "outcome": "submitted",
-        "metadata": {"order_id": "native-1"},
+        "metadata": {"order_id": "20261018:1:2:1"},
     }
     guard = SimpleNamespace(monitor_snapshot=lambda: {"records": [event]})
     executor = SimpleNamespace(
         get_pending_orders=lambda _: [order()], get_account_control_guard=lambda: guard, cancel_order=lambda *_: True
     )
     assert (
-        runtime.run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})["state"]
+        runtime.run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})[
+            "state"
+        ]
         == "submitted"
     )
     event["outcome"] = "broker_rejected"
@@ -170,9 +172,11 @@ def test_async_cancel_rejection_uses_original_guard_and_preserves_live_order(mon
         persisted.extend(events)
 
     monkeypatch.setattr(runtime, "_persist_cancel_outcomes", persist)
-    result = runtime.run_order_command(executor, {"command": "query", "tracked": [["rb2610", "native-1"]]})
+    result = runtime.run_order_command(executor, {"command": "query", "tracked": [["rb2610", "20261018:1:2:1"]]})
     assert result["data"][0]["remaining_volume"] == 2
-    assert result["cancel_failures"] == [{"symbol": "rb2610", "order_id": "native-1", "message": "柜台不允许撤单"}]
+    assert result["cancel_failures"] == [
+        {"symbol": "rb2610", "order_id": "20261018:1:2:1", "message": "柜台不允许撤单"}
+    ]
     assert persisted[0]["event_uid"] == "cancel-r1"
 
 
@@ -209,7 +213,7 @@ def test_duplicate_cancel_across_concurrent_clients_is_sent_once(monkeypatch):
 
     async def run():
         account = build_account()
-        one = OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+        one = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         two = one.model_copy(update={"request_id": "r2"})
         receipts = await asyncio.gather(
             service.cancel_account_order(account, one), service.cancel_account_order(account, two)
@@ -241,7 +245,7 @@ def test_reused_receipt_keeps_original_identity_when_later_query_confirms_termin
 
     async def run():
         account = build_account()
-        first_request = OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+        first_request = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         first = await service.cancel_account_order(account, first_request)
         reused = await service.cancel_account_order(account, first_request.model_copy(update={"request_id": "r2"}))
         assert reused.request_id == first.request_id == "r1"
@@ -268,7 +272,7 @@ def test_timeout_keeps_unknown_and_does_not_retry(monkeypatch):
 
     async def run():
         account = build_account()
-        payload = OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+        payload = OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         first = await service.cancel_account_order(account, payload)
         second = await service.cancel_account_order(account, payload.model_copy(update={"request_id": "new"}))
         assert first.state == second.state == "unknown"
@@ -292,7 +296,7 @@ def test_query_preserves_partial_fill_until_actual_terminal_after_execution(monk
         account = build_account()
         assert (await service.query_account_orders(account, refresh=True)).count == 1
         await service.cancel_account_order(
-            account, OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+            account, OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         )
         data.clear()
         missing = await service.query_account_orders(account, refresh=True)
@@ -319,7 +323,7 @@ def test_configuration_change_does_not_leak_old_orders_or_cancel_receipts(monkey
     async def run():
         account = build_account()
         await service.cancel_account_order(
-            account, OrderCancelRequest(request_id="r1", order_id="native-1", symbol="rb2610")
+            account, OrderCancelRequest(request_id="r1", order_id="20261018:1:2:1", symbol="rb2610")
         )
         account.account_config = {**account.account_config, "investor_id": "different"}
         response = await service.query_account_orders(account)
@@ -348,7 +352,7 @@ def test_queries_coalesce_and_failures_do_not_replace_last_snapshot(monkeypatch)
         fail = True
         with pytest.raises(RuntimeError):
             await service.query_account_orders(account, refresh=True)
-        assert service._state(account).cached.data[0].order_id == "native-1"
+        assert service._state(account).cached.data[0].order_id == "20261018:1:2:1"
 
     asyncio.run(run())
     assert len(calls) == 2
@@ -366,8 +370,8 @@ def test_terminal_verification_reads_only_tracked_order_even_when_book_is_incomp
         get_account_control_guard=lambda: None,
         reconcile_terminal_order=lambda *key: calls.append(key) or order(status="已撤销"),
     )
-    result = run_order_command(executor, {"command": "verify", "tracked": [("rb2610", "native-1")]})
-    assert calls == [("rb2610", "native-1")]
+    result = run_order_command(executor, {"command": "verify", "tracked": [("rb2610", "20261018:1:2:1")]})
+    assert calls == [("rb2610", "20261018:1:2:1")]
     assert result["resolved"][0]["status"] == "已撤销"
     assert not result["complete"]  # 单笔终态不能补足缺失的账户基线。
 
@@ -389,7 +393,7 @@ def test_fill_callback_during_cancel_validation_prevents_native_cancel():
         reconcile_terminal_order=lambda *_: order(status="已成交", filled_volume=3),
         cancel_order=lambda *_: pytest.fail("查询期间已确认成交，不能发送撤单"),
     )
-    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "native-1"})
+    result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})
     assert result["state"] == "terminal" and result["order"]["filled_volume"] == 3
 
 
@@ -427,7 +431,7 @@ def test_one_shot_cancel_verification_keeps_unknown_without_resending(monkeypatc
         state = service._state(account)
         state.receipts["r1"] = OrderCancelReceipt(
             request_id="r1",
-            order_id="native-1",
+            order_id="20261018:1:2:1",
             symbol="rb2610",
             state="submitted",
             message="等待回报",
@@ -439,7 +443,7 @@ def test_one_shot_cancel_verification_keeps_unknown_without_resending(monkeypatc
         assert state.receipts["r1"].order.remaining_volume == 2
 
     asyncio.run(run())
-    assert calls == [{"command": "verify", "tracked": [("rb2610", "native-1")]}]
+    assert calls == [{"command": "verify", "tracked": [("rb2610", "20261018:1:2:1")]}]
 
 
 def test_sse_reads_do_not_wait_for_cancel_and_terminal_callback_wins_late_submission(monkeypatch):
@@ -461,7 +465,7 @@ def test_sse_reads_do_not_wait_for_cancel_and_terminal_callback_wins_late_submis
         await service.query_account_orders(account)
         cancel = asyncio.create_task(
             service.cancel_account_order(
-                account, OrderCancelRequest(request_id="r1", symbol="rb2610", order_id="native-1")
+                account, OrderCancelRequest(request_id="r1", symbol="rb2610", order_id="20261018:1:2:1")
             )
         )
         await started.wait()

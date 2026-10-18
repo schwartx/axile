@@ -8,7 +8,9 @@ from typing import Any
 
 from loguru import logger
 
+from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now_iso
+from axile.executor.ctp_input_validation import validate_cancel_id
 from axile.server.connection_state import connection_config_key
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_order import (
@@ -280,6 +282,8 @@ async def _verify_cancel(account: AccountContext, state: _OrdersState, request_i
 
 async def cancel_account_order(account: AccountContext, payload: OrderCancelRequest) -> OrderCancelReceipt:
     """提交幂等单笔撤单，HTTP 请求重试不会重复报撤。"""
+    if account.trade_channel == TradeChannel.CTP:
+        validate_cancel_id(payload.order_id)
     state = _state(account)
     task = _background(_cancel(account, state, payload))
     try:

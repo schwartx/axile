@@ -5,8 +5,10 @@ from __future__ import annotations
 from openctp_ctp import thostmduserapi as md
 from openctp_ctp import thosttraderapi as td
 
+from axile.executor.ctp_input_validation import validate_config, validate_instrument
 from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.order_input_validation import normalize_order_enums
 
 _OFFSETS = {
     "open": td.THOST_FTDC_OF_Open,
@@ -30,6 +32,7 @@ def resolve_offset(value: object) -> str:
 
 def build_authenticate(config: CTPAccountConfig) -> object:
     """构造交易认证请求。"""
+    validate_config(config)
     req = td.CThostFtdcReqAuthenticateField()
     req.BrokerID, req.UserID = config.broker_id, config.investor_id
     req.AppID, req.AuthCode = config.app_id, config.auth_code
@@ -38,6 +41,7 @@ def build_authenticate(config: CTPAccountConfig) -> object:
 
 def build_trader_login(config: CTPAccountConfig) -> object:
     """构造交易登录请求。"""
+    validate_config(config)
     req = td.CThostFtdcReqUserLoginField()
     req.BrokerID, req.UserID, req.Password = config.broker_id, config.investor_id, config.password
     req.UserProductInfo = str(config.product_info or "axile")
@@ -46,6 +50,7 @@ def build_trader_login(config: CTPAccountConfig) -> object:
 
 def build_market_login(config: CTPAccountConfig) -> object:
     """构造行情登录请求。"""
+    validate_config(config)
     req = md.CThostFtdcReqUserLoginField()
     req.BrokerID, req.UserID, req.Password = config.broker_id, config.investor_id, config.password
     return req
@@ -53,6 +58,7 @@ def build_market_login(config: CTPAccountConfig) -> object:
 
 def build_settlement_confirm(config: CTPAccountConfig) -> object:
     """构造结算确认请求。"""
+    validate_config(config)
     req = td.CThostFtdcSettlementInfoConfirmField()
     req.BrokerID, req.InvestorID = config.broker_id, config.investor_id
     return req
@@ -60,6 +66,7 @@ def build_settlement_confirm(config: CTPAccountConfig) -> object:
 
 def build_query_settlement_confirm(config: CTPAccountConfig) -> object:
     """构造结算确认状态查询请求。"""
+    validate_config(config)
     req = td.CThostFtdcQrySettlementInfoConfirmField()
     req.BrokerID, req.InvestorID = config.broker_id, config.investor_id
     return req
@@ -67,6 +74,7 @@ def build_query_settlement_confirm(config: CTPAccountConfig) -> object:
 
 def build_query_account(config: CTPAccountConfig) -> object:
     """构造资金查询请求。"""
+    validate_config(config)
     req = td.CThostFtdcQryTradingAccountField()
     req.BrokerID, req.InvestorID = config.broker_id, config.investor_id
     return req
@@ -74,6 +82,7 @@ def build_query_account(config: CTPAccountConfig) -> object:
 
 def build_query_positions(config: CTPAccountConfig) -> object:
     """构造持仓查询请求。"""
+    validate_config(config)
     req = td.CThostFtdcQryInvestorPositionField()
     req.BrokerID, req.InvestorID = config.broker_id, config.investor_id
     return req
@@ -81,6 +90,7 @@ def build_query_positions(config: CTPAccountConfig) -> object:
 
 def build_query_depth_market_data(symbol: str, exchange_id: str) -> object:
     """按合约构造交易柜台的行情快照查询。"""
+    validate_instrument(symbol)
     req = td.CThostFtdcQryDepthMarketDataField()
     req.InstrumentID, req.ExchangeID = symbol, exchange_id
     return req
@@ -88,6 +98,9 @@ def build_query_depth_market_data(symbol: str, exchange_id: str) -> object:
 
 def build_query_orders(config: CTPAccountConfig, symbol: str | None = None) -> object:
     """构造订单查询请求。"""
+    validate_config(config)
+    if symbol is not None:
+        validate_instrument(symbol, allow_all=True)
     req = td.CThostFtdcQryOrderField()
     req.BrokerID, req.InvestorID = config.broker_id, config.investor_id
     if symbol:
@@ -97,6 +110,8 @@ def build_query_orders(config: CTPAccountConfig, symbol: str | None = None) -> o
 
 def build_query_trades(config: CTPAccountConfig, symbol: str) -> object:
     """构造成交查询请求。"""
+    validate_config(config)
+    validate_instrument(symbol, allow_all=True)
     req = td.CThostFtdcQryTradeField()
     req.BrokerID, req.InvestorID, req.InstrumentID = config.broker_id, config.investor_id, symbol
     return req
@@ -114,12 +129,17 @@ def build_order_insert(
     offset: str,
 ) -> object:
     """构造普通报单请求。"""
+    direction, order_type = normalize_order_enums(direction, order_type)
+    validate_config(config)
     req = td.CThostFtdcInputOrderField()
     req.BrokerID, req.InvestorID, req.UserID = config.broker_id, config.investor_id, config.investor_id
     req.InstrumentID, req.OrderRef = symbol, order_ref
-    req.Direction = td.THOST_FTDC_D_Buy if direction == OrderDirection.BUY else td.THOST_FTDC_D_Sell
+    req.Direction = {OrderDirection.BUY: td.THOST_FTDC_D_Buy, OrderDirection.SELL: td.THOST_FTDC_D_Sell}[direction]
     req.CombOffsetFlag, req.CombHedgeFlag = offset, td.THOST_FTDC_HF_Speculation
-    req.OrderPriceType = td.THOST_FTDC_OPT_LimitPrice if order_type == OrderType.LIMIT else td.THOST_FTDC_OPT_AnyPrice
+    req.OrderPriceType = {
+        OrderType.LIMIT: td.THOST_FTDC_OPT_LimitPrice,
+        OrderType.MARKET: td.THOST_FTDC_OPT_AnyPrice,
+    }[order_type]
     req.LimitPrice, req.VolumeTotalOriginal = price, volume
     req.TimeCondition, req.VolumeCondition, req.MinVolume = td.THOST_FTDC_TC_GFD, td.THOST_FTDC_VC_AV, 1
     req.ContingentCondition, req.ForceCloseReason = td.THOST_FTDC_CC_Immediately, td.THOST_FTDC_FCC_NotForceClose
@@ -128,6 +148,7 @@ def build_order_insert(
 
 def build_order_cancel(config: CTPAccountConfig, *, symbol: str, key: dict[str, object]) -> object:
     """根据稳定订单键构造撤单请求。"""
+    validate_config(config)
     req = td.CThostFtdcInputOrderActionField()
     req.BrokerID, req.InvestorID, req.UserID = config.broker_id, config.investor_id, config.investor_id
     req.InstrumentID, req.ActionFlag = symbol, td.THOST_FTDC_AF_Delete

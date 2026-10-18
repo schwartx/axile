@@ -108,7 +108,7 @@ def test_validator_binds_effective_policy_and_releases_executor(monkeypatch):
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: executor)
     config = CTPAccountConfig(
         broker_id="9999",
-        investor_id="offline-test",
+        investor_id="offlinetest",
         password="secret",
         td_front="tcp://test.invalid:1234",
         md_front="tcp://test.invalid:5678",
@@ -137,7 +137,7 @@ def test_validator_releases_executor_when_preparation_fails(monkeypatch):
     monkeypatch.setattr(connection_validation, "CTPExecutor", lambda *_args: executor)
     config = CTPAccountConfig(
         broker_id="9999",
-        investor_id="offline-test",
+        investor_id="offlinetest",
         password="secret",
         td_front="tcp://test.invalid:1234",
         md_front="tcp://test.invalid:5678",

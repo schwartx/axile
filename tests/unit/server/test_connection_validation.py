@@ -12,12 +12,12 @@ from axile.server.connection_validation import ValidationService
 
 CONFIG = dict(
     broker_id="9999",
-    investor_id="test-account",
+    investor_id="testaccount",
     password="private-password",
     td_front="tcp://test.invalid:1234",
     md_front="tcp://test.invalid:5678",
     app_id="test-app",
-    auth_code="private-auth",
+    auth_code="privateauth",
 )
 
 
@@ -75,7 +75,7 @@ def test_details_reach_stage_snapshot(service, monkeypatch):
     monkeypatch.setattr(service, "_start", lambda *_args: None)
     job = service.create("ctp", CONFIG)
     service.apply_event(job, {"step": "trader_login", "status": "running"})
-    original = "CTP: 不合法的登录\n" + "柜台完整错误信息" * 1000 + "\nprivate-password private-auth test-account"
+    original = "CTP: 不合法的登录\n" + "柜台完整错误信息" * 1000 + "\nprivate-password privateauth testaccount"
     service.apply_event(
         job,
         {
@@ -192,9 +192,9 @@ def test_table_snapshot_is_lazy_and_survives_later_failure(client, service, monk
 @pytest.mark.parametrize(
     "draft, expected_password",
     [
-        ({"password": "", "auth_code": "", "investor_id": "draft-account"}, None),
-        ({"investor_id": "draft-account"}, CONFIG["password"]),
-        ({"password": "new-password", "investor_id": "draft-account"}, "new-password"),
+        ({"password": "", "auth_code": "", "investor_id": "draftaccount"}, None),
+        ({"investor_id": "draftaccount"}, CONFIG["password"]),
+        ({"password": "new-password", "investor_id": "draftaccount"}, "new-password"),
     ],
 )
 def test_existing_account_uses_draft_and_saved_secrets_without_saving(
@@ -225,7 +225,7 @@ def test_existing_account_uses_draft_and_saved_secrets_without_saving(
     config = spawn.call_args.args[1]
     assert config["password"] == expected_password
     assert config["auth_code"] == CONFIG["auth_code"]
-    assert config["investor_id"] == "draft-account"
+    assert config["investor_id"] == "draftaccount"
     assert stored.account_config == CONFIG
     session.commit.assert_not_called()
     assert "private-password" not in response.text

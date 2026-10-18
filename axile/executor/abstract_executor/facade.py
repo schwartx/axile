@@ -18,6 +18,7 @@ from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECOND
 from axile.executor.models.unified_input_support import as_timeout_int
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.executor.order_input_validation import normalize_order_enums
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
@@ -103,6 +104,7 @@ class AbstractExecutorFacadeMixin:
         executor = _executor(self)
         normalized_symbol = executor._normalize_symbol(symbol)
         try:
+            direction, order_type = normalize_order_enums(direction, order_type)
             order = executor._place_order_impl(normalized_symbol, direction, order_type, volume, price, **kwargs)
         except Exception as exc:
             executor.account_orders.activity.record_failure(

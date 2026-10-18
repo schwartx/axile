@@ -66,7 +66,7 @@ def config() -> CTPAccountConfig:
         td_front="tcp://td:10001",
         md_front="tcp://md:10002",
         app_id="app-id",
-        auth_code="auth-code",
+        auth_code="authcode",
     )
 
 
@@ -545,7 +545,7 @@ def test_cancel_with_missing_key_propagates_single_query_queue_rejection(config:
     executor._front_id = 1
     executor._session_id = 2
     with pytest.raises(CtpSessionRecoveryRequired, match="返回码=-2"):
-        executor._cancel_order_impl("rb2610", "missing-order")
+        executor._cancel_order_impl("rb2610", "20260824:1:2:999")
 
     request_ids = [call.args[1] for call in executor._trader_api.ReqQryOrder.call_args_list]
     assert request_ids == [1]

@@ -755,11 +755,11 @@ class OrderTracker:
                 self._logger.warning(f"订单 {order_id} 对账失败: {format_exception_message(exc)}")
                 continue
             if terminal_order is not None and terminal_order.is_completed():
-                # WS 未启用（UNKNOWN）时是设计内的纯 REST 路径，并非丢帧；WS 启用时才可能是回报缺失。
+                # REST确认只说明查询得到终态，不能区分WS缺失与回调/对账并发。
                 cause = (
                     "WS 未启用，纯 REST 对账"
                     if self._order_channel_health() == OrderChannelHealth.UNKNOWN
-                    else "WS 回报缺失"
+                    else "REST确认终态，可能与WS回调并发"
                 )
                 self._logger.info(f"对账发现订单 {order_id} 已终态（{cause}），收敛并补发终态")
                 self.on_order_update(terminal_order)

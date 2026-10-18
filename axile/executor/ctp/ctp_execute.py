@@ -76,6 +76,7 @@ from axile.executor.ctp.requests import (
     resolve_offset,
 )
 from axile.executor.ctp.spi import MarketSpi, TraderSpi
+from axile.executor.ctp_input_validation import validate_cancel_id, validate_config, validate_instrument
 from axile.executor.ctp_product_sessions import (
     decide_ctp_product_session,
     get_ctp_product_sessions,
@@ -92,6 +93,7 @@ from axile.executor.models.unified_callback import (
 )
 from axile.executor.models.unified_input import AccountConfig, CTPAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
+from axile.executor.order_input_validation import normalize_order_enums
 from axile.executor.order_insert_rejects import (
     insert_error_detail,
     rejected_order_update,
@@ -521,6 +523,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query_catalog(self, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
         """复用当前会话；全量发一次，按需由 CTP 逐个指定合约。"""
+        if symbols is not None:
+            for item in symbols:
+                exchange, separator, local = item.partition(".")
+                if separator:
+                    if exchange not in {"SHFE", "DCE", "CZCE", "CFFEX", "INE", "GFEX"}:
+                        raise ValueError("不支持的交易所代码")
+                    validate_instrument(local)
+                else:
+                    validate_instrument(item)
         state = self._catalog_query_state
         state.active = True
         state.deadline = catalog_deadline(timeout)
@@ -588,6 +599,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 runtime.handle_termination_checkpoint()
 
     def _initialize_connection(self, account_config):
+        validate_config(account_config)
         with self._lock:
             self._require_active_connection()
             if self._connection_started:
@@ -1253,7 +1265,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         from axile.executor.algorithms.utils.clock import clock_now_iso
         from axile.executor.futures_close_policy import CommissionRates
 
+        validate_instrument(symbol)
         config = self._config()
+        validate_config(config)
         req = td.CThostFtdcQryInstrumentCommissionRateField()
         req.BrokerID, req.InvestorID, req.InstrumentID = config.broker_id, config.investor_id, symbol
         req.ExchangeID = str(getattr(self._instruments.get(symbol), "ExchangeID", ""))
@@ -1466,6 +1480,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
+        direction, order_type = normalize_order_enums(direction, order_type)
         with self._lock:
             self._require_new_order_ready(symbol)
         self._ensure_instrument_symbols([symbol])
@@ -1700,6 +1715,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _cancel_order_impl(self, symbol, order_id):
+        validate_cancel_id(order_id)
         key = self._order_keys.get(order_id)
         if not key:
             self._get_pending_orders_impl(symbol)

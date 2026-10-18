@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.ctp_input_validation import validate_credential
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 _DOMAIN_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -183,7 +184,10 @@ class CTPAccountConfig(BaseAccountConfig):
     def validate_required_field(cls, value: str, info: object) -> str:
         """校验 CTP 凭据字段非空且为单行。"""
         field_name = getattr(info, "field_name", "CTP 字段")
-        return _validate_single_line(value, str(field_name))
+        value = _validate_single_line(value, str(field_name))
+        if field_name != "password":
+            return validate_credential(str(field_name), value)
+        return value
 
     @field_validator("td_front", "md_front")
     @classmethod
