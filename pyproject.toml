@@ -57,14 +57,9 @@ dev = [
 axile = "axile.cli.main:main"
 
 [[tool.uv.index]]
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
-default = true
-
-# 官方源：仅供显式绑定的包兜底
-[[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple/"
-explicit = true
+default = true
 
 [tool.uv.sources]
 shinny-calendar = { index = "pypi" }
