@@ -1,6 +1,6 @@
 # Axile 文档站
 
-使用 VitePress 构建，目标地址为 **https://zengbin93.github.io/axile/**。合并前的 PR 只构建和检查链接，不部署站点。
+使用 VitePress 构建，目标地址为 **https://schwartx.github.io/axile/**。合并前的 PR 只构建和检查链接，不部署站点。
 
 ## 本地运行
 

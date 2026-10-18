@@ -4,7 +4,7 @@
 
 Axile 是一个通过 Web 界面配置和运行的交易执行服务。输入投资组合的目标权重后，它根据账户权益和品种交易规则换算目标数量，并执行调仓。内置 CTP、天勤和掘金渠道，支持插件扩展。
 
-[使用文档](https://zengbin93.github.io/axile/) · [创建第一个组合](https://zengbin93.github.io/axile/guide/first-portfolio.html)
+[使用文档](https://schwartx.github.io/axile/) · [创建第一个组合](https://schwartx.github.io/axile/guide/first-portfolio.html)
 
 ## 功能
 
@@ -36,7 +36,7 @@ uv run axile
 
 打开 <http://127.0.0.1:8000>，按向导完成初始化，保存后重新运行 `uv run axile`。后续从同一目录启动。
 
-CTP 和掘金分别安装 `axile[ctp]`、`axile[gm]`，平台限制与账户模式见[渠道与配置](https://zengbin93.github.io/axile/reference/channels.html)。服务仅允许监听本机回环地址。
+CTP 和掘金分别安装 `axile[ctp]`、`axile[gm]`，平台限制与账户模式见[渠道与配置](https://schwartx.github.io/axile/reference/channels.html)。服务仅允许监听本机回环地址。
 
 ### 从源码运行
 
@@ -55,6 +55,6 @@ cd ..
 uv run axile
 ```
 
-初始化与配置见[安装与启动](https://zengbin93.github.io/axile/guide/install.html)，算法行为见[执行算法](https://zengbin93.github.io/axile/reference/algorithms.html)，结果核对见[查看执行结果](https://zengbin93.github.io/axile/guide/results.html)。
+初始化与配置见[安装与启动](https://schwartx.github.io/axile/guide/install.html)，算法行为见[执行算法](https://schwartx.github.io/axile/reference/algorithms.html)，结果核对见[查看执行结果](https://schwartx.github.io/axile/guide/results.html)。
 
 本项目采用 Apache-2.0 许可证。
