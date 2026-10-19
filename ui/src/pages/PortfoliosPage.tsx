@@ -208,7 +208,7 @@ function PortfolioCard({
   const nameVt = useViewTransitionState(to)
   return (
     <Card
-      className="h-full border px-6 py-4 transition-transform hover:-translate-y-px"
+      className="flex h-full min-w-0 flex-col border px-6 py-4 transition-transform hover:-translate-y-px"
       onClick={() => navigate(to)}
     >
       <div className="flex min-w-0 items-center gap-3">
@@ -219,6 +219,9 @@ function PortfolioCard({
           {p.name}
         </div>
         <Chip className="flex-none">{p.market}</Chip>
+        {accountsReady && !accountsError && followers.length === 0 && (
+          <span className="flex-none text-[12px] font-normal text-ink-3">未绑定</span>
+        )}
         <div className="ml-auto flex flex-none items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <Tooltip content="编辑组合">
             <button
@@ -247,19 +250,21 @@ function PortfolioCard({
       <TargetSummary state={targetState} />
       <div onClick={(event) => event.stopPropagation()}><ErrorNotice intent="read" title={`${p.name} 目标读取失败`} error={targetFetch?.error} hasData={targetFetch?.snapshot != null} evidence={[{ label: '组合 ID', value: String(p.id) }]} variant={targetFetch?.snapshot ? 'stale' : 'compact'} updatedAt={targetFetch?.updatedAt} onRetry={targetFetch?.refresh} contextKey={p.id ?? undefined} /></div>
 
-      <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3 border-t border-line pt-3 text-[13.5px] text-ink-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          {accountsError ? (
-            <span className="text-ink-3">绑定关系暂不可用</span>
-          ) : !accountsReady ? (
-            <Skeleton className="h-7 w-36" />
-          ) : followers.length > 0 ? (
-            followers.map((follower) => <PortfolioFollowerLink key={follower.account_id} account={follower} />)
-          ) : (
-            '未绑定账户'
-          )}
+      <div className="mt-auto min-w-0 pt-3">
+        <div className={`min-w-0 border-t border-line pt-3 text-[13.5px] text-ink-3 ${accountsReady && !accountsError && followers.length === 0 ? 'hidden' : ''}`}>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+            {accountsError ? (
+              <span>绑定关系暂不可用</span>
+            ) : !accountsReady ? (
+              <Skeleton className="h-7 w-36" />
+            ) : (
+              followers.map((follower) => <PortfolioFollowerLink key={follower.account_id} account={follower} />)
+            )}
+          </div>
         </div>
-        <TargetTimestamp state={targetState} snapshot={targetFetch?.snapshot} />
+        <div className={`min-w-0 ${accountsReady && !accountsError && followers.length === 0 ? 'border-t border-line pt-3' : 'pt-2.5'}`}>
+          <TargetTimestamp state={targetState} snapshot={targetFetch?.snapshot} />
+        </div>
       </div>
     </Card>
   )
@@ -281,12 +286,10 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
     )
   }
 
-  if (state.kind === 'unavailable' || state.kind === 'uncalculated' || state.kind === 'empty') {
+  if (state.kind === 'unavailable' || state.kind === 'uncalculated') {
     const text = state.kind === 'unavailable'
       ? '目标暂不可用'
-      : state.kind === 'uncalculated'
-        ? '尚无目标快照'
-        : '目标为空仓'
+      : '尚无目标快照'
     return (
       <div className="mt-3 flex min-h-[62px] items-center border-t border-line pt-3">
         <span className="text-[14px] text-ink-3">{text}</span>
@@ -294,7 +297,9 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
     )
   }
 
-  const { summary } = state
+  const summary = state.kind === 'empty'
+    ? { activeCount: 0, grossExposure: 0, netExposure: 0, entries: [] }
+    : state.summary
   return (
     <div className="mt-3 border-t border-line pt-3">
       <div className="grid grid-cols-3 gap-3">
@@ -302,7 +307,7 @@ function TargetSummary({ state }: { state: PortfolioTargetState }) {
         <Metric label="总敞口" value={formatTargetWeight(summary.grossExposure, false)} />
         <Metric label="净敞口" value={formatTargetWeight(summary.netExposure)} valueClass={targetDirectionClass(summary.netExposure)} />
       </div>
-      <TargetChips entries={summary.entries} />
+      {state.kind === 'ready' && <TargetChips entries={summary.entries} />}
     </div>
   )
 }
@@ -332,11 +337,13 @@ function TargetTimestamp({ state, snapshot }: {
 }) {
   const accounts = useDomainStore((store) => store.accounts)
   const contextId = snapshot?.context_account_id
-  const context = contextId == null ? '样例数据' : `账户 ${accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`}`
-  if (state.kind !== 'ready' && state.kind !== 'empty') return null
+  const context = contextId == null ? '样例数据' : `账户：${accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`}`
+  if (state.kind !== 'ready' && state.kind !== 'empty') {
+    return <span className="text-[12.5px] text-ink-3">{state.kind === 'loading' ? '正在读取目标…' : state.kind === 'unavailable' ? '目标暂不可用' : '尚未计算'}</span>
+  }
   return (
     <span className="max-w-full break-words text-[12.5px] text-ink-3">
-      {context} · 目标更新于{formatTargetUpdatedAt(state.calculatedAt)}
+      {context} · {formatTargetUpdatedAt(state.calculatedAt)}
     </span>
   )
 }
