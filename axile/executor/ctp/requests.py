@@ -129,6 +129,7 @@ def build_order_insert(
     offset: str,
 ) -> object:
     """构造普通报单请求。"""
+    validate_instrument(symbol)
     direction, order_type = normalize_order_enums(direction, order_type)
     validate_config(config)
     req = td.CThostFtdcInputOrderField()
@@ -148,6 +149,7 @@ def build_order_insert(
 
 def build_order_cancel(config: CTPAccountConfig, *, symbol: str, key: dict[str, object]) -> object:
     """根据稳定订单键构造撤单请求。"""
+    validate_instrument(symbol)
     validate_config(config)
     req = td.CThostFtdcInputOrderActionField()
     req.BrokerID, req.InvestorID, req.UserID = config.broker_id, config.investor_id, config.investor_id

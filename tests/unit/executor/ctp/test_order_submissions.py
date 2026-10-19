@@ -53,3 +53,22 @@ def test_public_and_direct_channel_calls_share_native_recording(config, monkeypa
     executor._control_order_result(None, "broker_rejected", {"error_id": 31}, order_id=facts[-1].order_id)
     assert facts[-1].broker_status == "rejected"
     assert facts[-1].return_code == code
+
+
+def test_native_cancel_recorded_once_without_overwriting_order_callback(config, monkeypatch):  # noqa: F811
+    executor = _submit_point_executor(config)
+    _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
+    executor.set_account_control_guard(make_guard(baseline_count=0))
+    facts = []
+    executor.order_submission_recorder = OrderSubmissionRecorder(1, facts.append)
+    order = executor.place_order("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, offset_flag="open")
+    executor._trader_api.ReqOrderAction.return_value = 0
+    executor.cancel_order("ag2612", order.order_id)
+    executor._control_order_result(None, "broker_rejected", {"error_id": 31}, order_id=order.order_id)
+    latest = {fact.submission_uid: fact for fact in facts}
+    assert len(latest) == 2
+    by_operation = {fact.operation: fact for fact in latest.values()}
+    assert by_operation["place_order"].broker_status == "rejected"
+    assert by_operation["cancel_order"].send_status == "accepted"
+    assert by_operation["cancel_order"].broker_status == "unknown"
+    executor._trader_api.ReqOrderAction.assert_called_once()

@@ -21,6 +21,7 @@ class OrderSubmissionFact(BaseModel):
     account_id: int
     channel: str = "ctp"
     source: str
+    operation: Literal["place_order", "cancel_order"] = "place_order"
     execution_id: str | None = None
     symbol: str
     order_id: str
@@ -60,12 +61,14 @@ class OrderSubmissionRecorder:
         request_id: int,
         execution_id: str | None = None,
         source: str | None = None,
+        operation: Literal["place_order", "cancel_order"] = "place_order",
     ) -> int:
         """在本地校验之后包装一次原生报单，记录同步返回并保留提前到达的回报。"""
         fact = OrderSubmissionFact(
             submission_uid=uuid4().hex,
             account_id=self.account_id,
             source=source or self.source,
+            operation=operation,
             execution_id=execution_id,
             symbol=symbol,
             order_id=order_id,
@@ -79,7 +82,8 @@ class OrderSubmissionRecorder:
             # 初始待确认事实先落盘；已知发送结果采用紧邻原生调用的时间，避免写盘跨日误归桶。
             fact = fact.model_copy(update={"occurred_at_ms": clock_now_ms()})
             self._requests[request_id] = fact
-            self._orders[order_id] = request_id
+            if operation == "place_order":
+                self._orders[order_id] = request_id
             while len(self._requests) > 4096:
                 _, old = self._requests.popitem(last=False)
                 if self._orders.get(old.order_id) == old.request_id:

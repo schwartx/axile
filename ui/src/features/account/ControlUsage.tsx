@@ -74,6 +74,6 @@ function OrderSubmissionUsage({ frame }: { frame: ControlFrame | undefined }) {
   const calls = frame?.order_submissions
   if (!calls) return null
   return <Tooltip content="仅统计接入记录器的 CTP 主程序和脚本，按账户时区自然日累计。API 返回成功不等于柜台已受理或成交；待确认包含调用中断或结果存储失败。未接入入口及启用前的历史不在统计范围内。">
-    <p tabIndex={0} className="mt-1 text-[12px] leading-5 text-ink-3">今日原生报单记录 {calls.recorded}（已接入入口） · API 返回成功 {calls.sync_accepted} · 同步拒绝 {calls.sync_rejected} · 待确认 {calls.unknown} · 柜台确认 {calls.broker_acknowledged} · 柜台拒绝 {calls.broker_rejected}{frame?.stale ? ' · 数据待更新' : ''}</p>
+    <p tabIndex={0} className="mt-1 text-[12px] leading-5 text-ink-3">今日原生报单记录 {calls.recorded}（已接入入口） · API 返回成功 {calls.sync_accepted} · 同步拒绝 {calls.sync_rejected} · 待确认 {calls.unknown} · 柜台确认 {calls.broker_acknowledged} · 柜台拒绝 {calls.broker_rejected} · 撤单调用 {(calls.cancel_sync_accepted ?? 0) + (calls.cancel_sync_rejected ?? 0)} · 撤单待确认 {calls.cancel_unknown ?? 0} · 报撤合计 {calls.sync_accepted + calls.sync_rejected + (calls.cancel_sync_accepted ?? 0) + (calls.cancel_sync_rejected ?? 0)}{frame?.stale ? ' · 数据待更新' : ''}</p>
   </Tooltip>
 }

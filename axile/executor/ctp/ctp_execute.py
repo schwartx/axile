@@ -302,6 +302,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _call_trader_request(self, name, req, *, before_send=None) -> int:
         """直接发送一次 TraderApi 请求，不附加账户控制或适配层重试。"""
+        if hasattr(req, "InstrumentID"):
+            validate_instrument(
+                req.InstrumentID,
+                allow_all=name in {"ReqQryInstrument", "ReqQryOrder", "ReqQryTrade", "ReqQryInvestorPosition"},
+            )
         guard = getattr(self._catalog_query_state, "guard", None) or self.get_account_control_guard()
         rid = self._next_id()
         # 账户控制可能等待很久，故门禁必须落在等待之后的原生请求发送点。
@@ -365,20 +370,23 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         raise error
 
     def _invoke_trader_request(self, name, req, rid, guard) -> int:
-        """本地校验完成后记录普通报单调用；其他请求不冒充报单。"""
+        """本地校验完成后记录报单与撤单调用；其他请求不计入报撤。"""
         from axile.executor.account_control.context import controlled_source
 
         recorder = getattr(self, "order_submission_recorder", None)
-        if name != "ReqOrderInsert" or recorder is None:
+        if name not in {"ReqOrderInsert", "ReqOrderAction"} or recorder is None:
             return int(getattr(self._trader_api, name)(req, rid))
         source = None if guard is None else controlled_source(guard, guard.source).value
+        front_id = self._front_id if name == "ReqOrderInsert" else int(req.FrontID)
+        session_id = self._session_id if name == "ReqOrderInsert" else int(req.SessionID)
         return recorder.submit(
             lambda: getattr(self._trader_api, name)(req, rid),
             symbol=str(req.InstrumentID),
-            order_id=stable_order_id(self._trading_day, self._front_id, self._session_id, str(req.OrderRef)),
+            order_id=stable_order_id(self._trading_day, front_id, session_id, str(req.OrderRef)),
             request_id=rid,
             execution_id=getattr(guard, "execution_id", None),
             source=source,
+            operation="cancel_order" if name == "ReqOrderAction" else "place_order",
         )
 
     def _link_control_request(self, guard, rid, name, req) -> None:
@@ -1393,6 +1401,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query_valuation_snapshot(self, symbol):
         """从交易柜台查询单合约快照；失败时保留已有估值行情。"""
+        validate_instrument(symbol)
         instrument = self._instruments[symbol]
         exchange_id = str(getattr(instrument, "ExchangeID", "") or "")
         try:
@@ -1509,6 +1518,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
+        validate_instrument(symbol)
         direction, order_type = normalize_order_enums(direction, order_type)
         for field in ("offset_flag", "offset"):
             if field in kwargs and kwargs[field] is None:
@@ -1731,6 +1741,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def reconcile_terminal_order(self, symbol: str, order_id: str):
         """查询单订单终态；查不到时返回 None，不把缺失当成已撤。"""
+        validate_instrument(symbol)
         r = build_query_orders(self._config(), symbol)
         matched = None
         for row in self._query("ReqQryOrder", r):
@@ -1747,6 +1758,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _cancel_order_impl(self, symbol, order_id):
+        validate_instrument(symbol)
         validate_cancel_id(order_id)
         key = self._order_keys.get(order_id)
         if not key:
@@ -1760,6 +1772,8 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _get_pending_orders_impl(self, symbol=None):
+        if symbol is not None:
+            validate_instrument(symbol, allow_all=True)
         r = build_query_orders(self._config(), symbol)
         orders = [self._remember_order(x) for x in self._query("ReqQryOrder", r)]
         self._replay_unassociated_trades()
@@ -1767,17 +1781,22 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _query_trades_impl(self, symbol, order_id):
+        validate_instrument(symbol, allow_all=True)
         r = build_query_trades(self._config(), symbol)
         ts = [self._convert_trade(x) for x in self._query("ReqQryTrade", r)]
         return [x for x in ts if x.order_id == order_id]
 
     def _query_recent_orders_impl(self, symbol=None):
         """查询当前交易日柜台委托，包含真实终态。"""
+        if symbol is not None:
+            validate_instrument(symbol, allow_all=True)
         rows = self._query("ReqQryOrder", build_query_orders(self._config(), symbol))
         return [self._remember_order(row) for row in rows]
 
     def _query_recent_trades_impl(self, symbol=None):
         """查询当前交易日柜台逐笔成交，沿用完整订单身份关联。"""
+        if symbol is not None:
+            validate_instrument(symbol, allow_all=True)
         rows = self._query("ReqQryTrade", build_query_trades(self._config(), symbol or ""))
         return [self._convert_trade(row) for row in rows]
 
@@ -2010,6 +2029,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def initialize_websocket(self, symbols=None):
         if not symbols:
             return
+        symbols = list(symbols)
+        for symbol in symbols:
+            validate_instrument(symbol)
         self._ensure_instrument_symbols(list(symbols))
         unknown = [x for x in symbols if x not in self._instruments]
         if unknown:

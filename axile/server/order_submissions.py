@@ -28,11 +28,16 @@ def create_order_submission_recorder(account_id: int, *, source: str = "script")
     """
     if account_id < 1:
         raise ValueError("account_id 必须为正整数")
+    database = submission_database()
+    return OrderSubmissionRecorder(account_id, lambda fact: _save_fact(database, fact), source=source)
+
+
+def submission_database() -> str:
+    """返回共用服务数据库；不允许静默写入另一份临时数据库。"""
     url = make_url(str(settings.sqlalchemy_database_uri))
     if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
         raise ValueError("原生报单记录需要持久化 SQLite 服务数据库")
-    database = url.database
-    return OrderSubmissionRecorder(account_id, lambda fact: _save_fact(database, fact), source=source)
+    return url.database
 
 
 def _save_fact(database: str, fact: OrderSubmissionFact) -> None:
@@ -48,6 +53,10 @@ def _save_fact(database: str, fact: OrderSubmissionFact) -> None:
             (fact.submission_uid, fact.account_id, fact.occurred_at_ms, fact.revision, fact.model_dump_json()),
         )
 
+        from axile.server.submission_monitor import record_submission_warnings
+
+        record_submission_warnings(connection, fact.account_id, fact.occurred_at_ms, fact=fact)
+
 
 class OrderSubmissionSummary(BaseModel):
     """仅汇总已接入入口的调用事实；不保证覆盖柜台全部订单。"""
@@ -59,6 +68,20 @@ class OrderSubmissionSummary(BaseModel):
     unknown: int = 0
     broker_acknowledged: int = 0
     broker_rejected: int = 0
+    cancel_recorded: int = 0
+    cancel_sync_accepted: int = 0
+    cancel_sync_rejected: int = 0
+    cancel_unknown: int = 0
+
+    @property
+    def order_calls(self) -> int:
+        """已确认调用次数，包含同步拒绝，不把待确认事实当作已发送。"""
+        return self.sync_accepted + self.sync_rejected
+
+    @property
+    def combined_calls(self) -> int:
+        """报单与撤单调用合计，不等于撤单成功数或柜台委托条数。"""
+        return self.order_calls + self.cancel_sync_accepted + self.cancel_sync_rejected
 
 
 class OrderSubmissionPage(BaseModel):
@@ -86,17 +109,27 @@ async def query_order_submission_summary(
     start, end = submission_window(control_date, timezone)
     send = col(OrderSubmission.data)["send_status"].as_string()
     broker = col(OrderSubmission.data)["broker_status"].as_string()
+    operation = func.coalesce(col(OrderSubmission.data)["operation"].as_string(), "place_order")
     statement = (
-        select(send, broker, func.count())
+        select(operation, send, broker, func.count())
         .where(
             OrderSubmission.account_id == account_id,
             OrderSubmission.occurred_at_ms >= start,
             OrderSubmission.occurred_at_ms < end,
         )
-        .group_by(send, broker)
+        .group_by(operation, send, broker)
     )
     summary = OrderSubmissionSummary()
-    for send_status, broker_status, count in (await session.execute(statement)).all():
+    for operation, send_status, broker_status, count in (await session.execute(statement)).all():
+        if operation == "cancel_order":
+            summary.cancel_recorded += count
+            if send_status == "accepted":
+                summary.cancel_sync_accepted += count
+            elif send_status == "rejected":
+                summary.cancel_sync_rejected += count
+            else:
+                summary.cancel_unknown += count
+            continue
         summary.recorded += count
         if send_status == "accepted":
             summary.sync_accepted += count

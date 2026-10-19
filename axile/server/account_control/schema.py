@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from axile.server.order_submissions import OrderSubmissionSummary
+from axile.server.submission_monitor import SubmissionMonitorPublic
 
 
 class ControlRulePublic(BaseModel):
@@ -81,3 +82,4 @@ class AccountControlMonitorPublic(BaseModel):
     waiting_total: int
     records: list[ControlRecordPublic]
     order_submissions: OrderSubmissionSummary | None = None
+    submission_monitor: SubmissionMonitorPublic | None = None

@@ -1,9 +1,11 @@
 """账户当前委托查询及逐笔撤单接口。"""
 
 from datetime import date
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
+from starlette.concurrency import run_in_threadpool
 
 from axile.server.account_orders import cancel_account_order, query_account_activity, query_account_orders
 from axile.server.api.deps import SessionDep
@@ -16,8 +18,45 @@ from axile.server.db.models.account_order import (
 )
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.order_submissions import OrderSubmissionPage, query_order_submission_summary, query_order_submissions
+from axile.server.submission_monitor import (
+    SubmissionMonitorPublic,
+    SubmissionMonitorUpdate,
+    query_submission_monitor,
+    save_submission_monitor,
+)
 
 router = APIRouter()
+
+
+@router.get("/{account_id}/orders/monitor", response_model=SubmissionMonitorPublic)
+async def submission_monitor(session: SessionDep, account_id: int) -> SubmissionMonitorPublic:
+    """读取今日原生报撤监测；不发送任何柜台请求。"""
+    from axile.executor.account_control.presets import resolve_account_control_policy
+    from axile.executor.algorithms.utils.clock import clock_now
+
+    account = await _get_account_or_404(session, account_id)
+    if str(account.trade_channel) != "ctp":
+        raise HTTPException(422, detail="当前仅支持 CTP 原生报撤监测")
+    policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
+    day = clock_now().astimezone(ZoneInfo(policy.timezone)).date().isoformat()
+    summary = await query_order_submission_summary(session, account_id, day, policy.timezone)
+    return await query_submission_monitor(session, account_id, day, policy.timezone, summary)
+
+
+@router.put("/{account_id}/orders/monitor", response_model=SubmissionMonitorPublic)
+async def update_submission_monitor(
+    session: SessionDep, account_id: int, payload: SubmissionMonitorUpdate
+) -> SubmissionMonitorPublic:
+    """立即保存并重评估监测阈值，不改变风控额度或触发交易。"""
+    from axile.executor.account_control.presets import resolve_account_control_policy
+
+    account = (await _get_account_or_404(session, account_id)).snapshot()
+    if str(account.trade_channel) != "ctp":
+        raise HTTPException(422, detail="当前仅支持 CTP 原生报撤监测")
+    policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
+    await session.close()
+    await run_in_threadpool(save_submission_monitor, account_id, payload, policy.timezone)
+    return await submission_monitor(session, account_id)
 
 
 @router.get("/{account_id}/orders/submissions", response_model=OrderSubmissionPage)

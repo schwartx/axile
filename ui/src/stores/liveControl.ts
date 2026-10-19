@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { SubmissionMonitorData } from '@/features/account/SubmissionMonitor'
 
 /** 监控中预警所需的策略投影；旧快照可缺少操作目录。 */
 export interface ControlWarningPolicy {
@@ -37,6 +38,7 @@ export interface ControlFrame {
   waiting_total: number
   waiting: { id: number; operation: string; symbol: string | null; priority: number; waited_ms: number; kind: string; estimated_wait_ms?: number; hits: Record<string, unknown>[] }[]
   records: { event_uid: string; occurred_at_ms: number; operation: string; symbol: string | null; decision: string; outcome: string; metadata: Record<string, unknown> }[]
+  submission_monitor?: SubmissionMonitorData | null
   order_submissions?: {
     scope: string
     recorded: number
@@ -45,6 +47,10 @@ export interface ControlFrame {
     unknown: number
     broker_acknowledged: number
     broker_rejected: number
+    cancel_recorded?: number
+    cancel_sync_accepted?: number
+    cancel_sync_rejected?: number
+    cancel_unknown?: number
   } | null
 }
 export interface ControlEnvelope {

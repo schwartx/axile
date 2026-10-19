@@ -19,6 +19,7 @@ import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
 import { quotaOperationName, quotaStageName } from '@/features/account/controlWarnings'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { SubmissionMonitor } from '@/features/account/SubmissionMonitor'
 import { ControlUsageNotice } from '@/features/account/ControlUsage'
 
 function metricRules(frame: ControlFrame | undefined): ControlRule[] {
@@ -79,6 +80,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
   >
     <div className="space-y-5">
       <ControlUsageNotice frame={frame} />
+      {frame?.order_submissions && <SubmissionMonitor key={accountId} accountId={accountId} live={frame.submission_monitor} />}
       {warnings.length > 0 && <section aria-label="额度预警" className="rounded-[10px] border border-warn/30 bg-warn/5 px-3 py-2">
         {warnings.map(warning => <div key={warning.id} className="py-1 text-[13px]">
           <p className="font-medium text-warn">今日{quotaOperationName(warning.operation)} · <InkRewrite text={quotaStageName(warning.stage)} /></p>
@@ -160,6 +162,7 @@ export function AccountControlSummary({ accountId }: { accountId: number }) {
 function AccountControlSummaryContent({ accountId }: { accountId: number }) {
   const frame = useLiveControl((state) => state.frames[accountId])
   const warnings = useControlQuotaWarnings(frame)
+  const submissionWarnings = frame?.submission_monitor?.metrics.filter(metric => metric.state === 'reached') ?? []
   const accountName = useDomainStore((state) => state.accounts?.find((account) => account.account_id === accountId)?.name)
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(() => readControlPreferences(accountId))
@@ -212,6 +215,7 @@ function AccountControlSummaryContent({ accountId }: { accountId: number }) {
         {selected.map((id) => `${metricLabel(id, true, names)} ${controlValue(rules.find((rule) => rule.id === id))}`).join(' · ')}
       </span>
       {warnings.length > 0 && <span className="min-w-0 text-warn"><InkRewrite overflow text={warnings.map(warning => `${quotaOperationName(warning.operation)}${quotaStageName(warning.stage)}${warning.stale ? '（待更新）' : ''}`).join(' · ')} /></span>}
+      {submissionWarnings.length > 0 && <span className="min-w-0 text-warn"><InkRewrite overflow text={submissionWarnings.map(metric => `${metric.metric === 'order_calls' ? '报单调用' : '报撤合计'}已达阈值${frame?.stale ? '（待更新）' : ''}`).join(' · ')} /></span>}
       {frame?.waiting_total ? <span className="flex-none text-warn">等待</span>
         : frame?.incomplete ? <span className="flex-none text-warn">不完整</span>
         : !stale && frame?.records.some((record) => record.decision === 'blocked') ? <span className="flex-none text-warn">部分请求阻断</span> : null}

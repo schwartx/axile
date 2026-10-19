@@ -351,3 +351,37 @@ test('page cancel also discards an invalid warning input', async ({ page }) => {
   await expect(page.getByText('请输入 1–99 的整数')).toBeHidden()
   expect(writes).toHaveLength(0)
 })
+
+test('原生报撤阈值独立保存并显示触发当笔数字', async ({ page }) => {
+  const update = snapshot()
+  Object.assign(update.data[0], { order_submissions: { scope: 'instrumented_ctp_calls', recorded: 2, sync_accepted: 1, sync_rejected: 1, unknown: 0, broker_acknowledged: 1, broker_rejected: 1, cancel_recorded: 1, cancel_sync_accepted: 1, cancel_sync_rejected: 0, cancel_unknown: 0 } })
+  let saved = { settings: { order_limit: null as number | null, combined_limit: null as number | null, timezone: 'Asia/Shanghai', revision: 0, updated_at_ms: null as number | null }, control_date: '2026-10-19', scope: 'instrumented_ctp_calls', metrics: [{ metric: 'order_calls', value: 2, unknown: 0, limit: null as number | null, state: 'disabled' }, { metric: 'combined_calls', value: 3, unknown: 0, limit: null as number | null, state: 'disabled' }], warnings: [] as { event_uid: string; metric: string; value: number; limit: number; occurred_at_ms: number; control_date: string; timezone: string }[] }
+  let writes = 0
+  await page.route('**/api/v1/account/1/orders/monitor', route => {
+    if (route.request().method() === 'PUT') {
+      writes++
+      const payload = route.request().postDataJSON()
+      saved = { ...saved, settings: { ...saved.settings, ...payload, revision: writes, updated_at_ms: Date.now() }, metrics: saved.metrics.map(metric => { const limit = metric.metric === 'order_calls' ? payload.order_limit : payload.combined_limit; return { ...metric, limit, state: limit == null ? 'disabled' : 'reached' } }), warnings: [{ event_uid: String(writes), metric: 'combined_calls', value: 3, limit: payload.combined_limit, occurred_at_ms: Date.now(), control_date: '2026-10-19', timezone: 'Asia/Shanghai' }] }
+    }
+    return route.fulfill({ json: saved })
+  })
+  await page.route('**/api/v1/events/stream', route => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: control.snapshot\ndata: ${JSON.stringify(update)}\n\n` }))
+  await page.reload()
+  await page.getByRole('button', { name: /^流控/ }).click()
+  const section = page.getByRole('region', { name: '原生报撤监测' })
+  await expect(section.getByLabel('报撤合计阈值')).toBeEnabled()
+  await section.getByLabel('报撤合计阈值').fill('0')
+  await section.getByRole('button', { name: '保存监测阈值' }).click()
+  await expect(section.getByRole('alert')).toContainText('阈值须为')
+  expect(writes).toBe(0)
+  await section.getByLabel('报撤合计阈值').fill('3')
+  await section.getByRole('button', { name: '保存监测阈值' }).click()
+  await expect(section.getByText(/报撤合计预警：触发时 3\/3/)).toBeVisible()
+  await expect(section.getByRole('button', { name: '保存监测阈值' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /^流控/ })).toContainText('报单额度 123/500')
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('button', { name: /^流控/ }).click()
+  await expect(page.getByLabel('报撤合计阈值')).toHaveValue('3')
+  expect(writes).toBe(1)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
