@@ -73,6 +73,7 @@ export function AccountActions(props: AccountActionsProps) {
       body: `把 ${props.name} 的所有持仓平掉、回到空仓。此操作不可撤销。`,
       okText: '确认清仓',
       danger: true,
+      primary: true,
       onConfirm: props.onClear,
     })
 
@@ -155,12 +156,12 @@ export function AccountActions(props: AccountActionsProps) {
       {/* 执行中禁用：disabled 会吞掉指针事件、气泡不触发，故保留原生 title 兜「为何不可点」。 */}
       <Tooltip content={clearTip} delay={ACTION_TIP_MS} arrow>
         <button
-          className={`${BTN} border-bad/40 text-bad hover:bg-bad/10 disabled:opacity-40`}
+          className={`${BTN} border-line text-ink-2 hover:border-ink-3/40 hover:bg-fill hover:text-ink-1 disabled:opacity-40`}
           onClick={askClear}
           disabled={props.executing}
           title={props.executing ? '执行中，无法清仓' : undefined}
         >
-          ⚠ 一键清仓
+          一键清仓
         </button>
       </Tooltip>
 

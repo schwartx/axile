@@ -7,6 +7,7 @@ export interface ConfirmSpec {
   okText: string
   /** 危险操作用琥珀色文字和边框提示。 */
   danger?: boolean
+  primary?: boolean
   onConfirm: () => void
 }
 
@@ -99,7 +100,9 @@ export function ConfirmModal({
               <button
                 ref={okRef}
                 className={`inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border px-[18px] py-2 text-sm font-[550] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-surface ${
-                  spec.danger
+                  spec.primary
+                    ? 'border-transparent bg-ink-1 text-surface focus-visible:ring-accent/55'
+                    : spec.danger
                     ? 'border-warn/55 bg-surface text-warn hover:bg-warn-soft focus-visible:ring-warn/60'
                     : 'border-transparent bg-ink-1 text-surface focus-visible:ring-accent/55'
                 }`}
