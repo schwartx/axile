@@ -72,6 +72,7 @@ from axile.server.db.models.execution import (
     Message,
 )
 from axile.server.db.models.execution_intent import ExecutionIntent
+from axile.server.db.models.order_submission import OrderSubmission
 from axile.server.db.models.portfolio import (
     Portfolio,
     PortfolioBase,
@@ -110,6 +111,7 @@ ExecuteRecord.model_rebuild()
 
 
 __all__ = [
+    "OrderSubmission",
     "AccountConnectionState",
     "NotificationEvent",
     "SupplementGroup",

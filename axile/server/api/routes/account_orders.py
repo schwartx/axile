@@ -1,5 +1,7 @@
 """账户当前委托查询及逐笔撤单接口。"""
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 
@@ -13,8 +15,29 @@ from axile.server.db.models.account_order import (
     OrderCancelRequest,
 )
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
+from axile.server.order_submissions import OrderSubmissionPage, query_order_submission_summary, query_order_submissions
 
 router = APIRouter()
+
+
+@router.get("/{account_id}/orders/submissions", response_model=OrderSubmissionPage)
+async def order_submissions(
+    session: SessionDep,
+    account_id: int,
+    control_date: date,
+    limit: int = Query(100, ge=1, le=500),
+) -> OrderSubmissionPage:
+    """读取已接入 CTP 入口的原生调用事实，不访问柜台、不以额度用量补算。"""
+    from axile.executor.account_control.presets import resolve_account_control_policy
+
+    account = await _get_account_or_404(session, account_id)
+    if str(account.trade_channel) != "ctp":
+        raise HTTPException(422, detail="当前仅支持已接入的 CTP 原生报单流水")
+    policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
+    day = control_date.isoformat()
+    summary = await query_order_submission_summary(session, account_id, day, policy.timezone)
+    rows = await query_order_submissions(session, account_id, day, policy.timezone, limit=limit)
+    return OrderSubmissionPage(control_date=day, timezone=policy.timezone, summary=summary, data=rows)
 
 
 @router.get("/{account_id}/orders/activity", response_model=AccountActivityPublic)

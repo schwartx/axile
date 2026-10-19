@@ -14,7 +14,8 @@ export function operationName(key: string, names: Record<string, string> = {}): 
 }
 export function metricLabel(id: string, compact = false, names: Record<string, string> = {}): string {
   const [, operation, window] = id.split(':')
-  return `${window === 'per_minute' ? '本分钟' : compact ? '' : '今日'}${operationName(operation, names)}`
+  const quota = ['place_order', 'cancel_order'].includes(operation) ? '额度' : ''
+  return `${window === 'per_minute' ? '本分钟' : compact ? '' : '今日'}${operationName(operation, names)}${quota}`
 }
 export function canAddMetric(draft: string[], id: string): boolean {
   return draft.length < 3 && !draft.includes(id)

@@ -29,6 +29,7 @@ from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_control import AccountControlEvent
 from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.order_submissions import query_order_submission_summary
 
 
 def _affected(session: AccountControlSession, control_date: str) -> bool:
@@ -309,6 +310,10 @@ class AccountControlMonitor:
         if not active:
             frame["actual_policy"] = None
             frame["actual_fingerprint"] = None
+        if str(account.trade_channel) == "ctp":
+            frame["order_submissions"] = (
+                await query_order_submission_summary(db, account.id, window.control_date, policy.timezone)
+            ).model_dump(mode="json")
         return frame
 
     async def _update_outcomes(self, db: Any, account_id: int, events: list[dict[str, Any]]) -> None:

@@ -56,7 +56,7 @@ export function ControlSymbolUsage({ frame, operation, expanded = false }: {
 }
 
 export function ControlUsageNotice({ frame, editing = false, inline = false }: { frame: ControlFrame | undefined; editing?: boolean; inline?: boolean }) {
-  const notes = [frame?.status === 'running' ? '当前实例用量' : '今日累计 · 暂无运行实例']
+  const notes = [frame?.status === 'running' ? '放行额度用量' : '今日放行额度累计 · 暂无运行实例']
   if (!frame) notes.splice(0, 1, '用量未知')
   else if (frame.status === 'unknown') notes.splice(0, 1, '运行状态未知 · 保留最后已知用量')
   else if (frame.status === 'incomplete') notes.splice(0, 1, '最后已知用量')
@@ -65,7 +65,15 @@ export function ControlUsageNotice({ frame, editing = false, inline = false }: {
   if (frame?.stale) notes.push('数据陈旧，保留最后已知值')
   if (frame?.incomplete) notes.push('统计可能不完整')
   if (frame?.sampled_at_ms) notes.push(`${new Date(frame.sampled_at_ms).toLocaleTimeString()} 更新`)
-  return <Tooltip content="统计本地放行并预占额度的尝试，下游拒绝仍计数。运行中按实例实际规则展示；无运行实例时按已保存规则展示历史累计。自然日与分钟窗口沿用账户时区。">
+  return <><Tooltip content="统计本地放行并预占额度的尝试，本地校验失败及下游拒绝仍计数。原生报单调用另行记录。运行中按实例实际规则展示；无运行实例时按已保存规则展示历史累计。自然日与分钟窗口沿用账户时区。">
     <p tabIndex={0} className={`${inline ? '' : 'mt-2'} text-[12px] leading-5 ${frame?.stale || frame?.incomplete || frame?.pending_policy ? 'text-warn' : 'text-ink-3'}`}>{notes.join(' · ')}</p>
+  </Tooltip><OrderSubmissionUsage frame={frame} /></>
+}
+
+function OrderSubmissionUsage({ frame }: { frame: ControlFrame | undefined }) {
+  const calls = frame?.order_submissions
+  if (!calls) return null
+  return <Tooltip content="仅统计接入记录器的 CTP 主程序和脚本，按账户时区自然日累计。API 返回成功不等于柜台已受理或成交；待确认包含调用中断或结果存储失败。未接入入口及启用前的历史不在统计范围内。">
+    <p tabIndex={0} className="mt-1 text-[12px] leading-5 text-ink-3">今日原生报单记录 {calls.recorded}（已接入入口） · API 返回成功 {calls.sync_accepted} · 同步拒绝 {calls.sync_rejected} · 待确认 {calls.unknown} · 柜台确认 {calls.broker_acknowledged} · 柜台拒绝 {calls.broker_rejected}{frame?.stale ? ' · 数据待更新' : ''}</p>
   </Tooltip>
 }

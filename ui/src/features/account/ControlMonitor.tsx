@@ -19,6 +19,7 @@ import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { useControlQuotaWarnings } from '@/features/account/useControlQuotaWarnings'
 import { quotaOperationName, quotaStageName } from '@/features/account/controlWarnings'
 import { InkRewrite } from '@/components/ui/InkRewrite'
+import { ControlUsageNotice } from '@/features/account/ControlUsage'
 
 function metricRules(frame: ControlFrame | undefined): ControlRule[] {
   // 旧数据只提供每日摘要时保留兼容；新快照从规则取固定分钟用量。
@@ -77,6 +78,7 @@ function ControlDialog({ open, frame, accountId, accountName, selected, draft, o
     </div>}
   >
     <div className="space-y-5">
+      <ControlUsageNotice frame={frame} />
       {warnings.length > 0 && <section aria-label="额度预警" className="rounded-[10px] border border-warn/30 bg-warn/5 px-3 py-2">
         {warnings.map(warning => <div key={warning.id} className="py-1 text-[13px]">
           <p className="font-medium text-warn">今日{quotaOperationName(warning.operation)} · <InkRewrite text={quotaStageName(warning.stage)} /></p>

@@ -127,9 +127,9 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
     metrics = [
         {
             **row,
-            "label": "今日报单"
+            "label": "今日报单额度用量"
             if row["operation"] == "place_order"
-            else "今日撤单"
+            else "今日撤单额度用量"
             if row["operation"] == "cancel_order"
             else row["operation"],
         }

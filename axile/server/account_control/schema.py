@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from axile.server.order_submissions import OrderSubmissionSummary
+
 
 class ControlRulePublic(BaseModel):
     """规则的实际用量；未知值与无限制分别由 value 和 limit 表达。"""
@@ -78,3 +80,4 @@ class AccountControlMonitorPublic(BaseModel):
     waiting: list[ControlWaitingPublic]
     waiting_total: int
     records: list[ControlRecordPublic]
+    order_submissions: OrderSubmissionSummary | None = None

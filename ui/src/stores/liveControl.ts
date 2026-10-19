@@ -37,6 +37,15 @@ export interface ControlFrame {
   waiting_total: number
   waiting: { id: number; operation: string; symbol: string | null; priority: number; waited_ms: number; kind: string; estimated_wait_ms?: number; hits: Record<string, unknown>[] }[]
   records: { event_uid: string; occurred_at_ms: number; operation: string; symbol: string | null; decision: string; outcome: string; metadata: Record<string, unknown> }[]
+  order_submissions?: {
+    scope: string
+    recorded: number
+    sync_accepted: number
+    sync_rejected: number
+    unknown: number
+    broker_acknowledged: number
+    broker_rejected: number
+  } | null
 }
 export interface ControlEnvelope {
   stream_id: string

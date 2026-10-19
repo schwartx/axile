@@ -2,6 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import { canAddMetric, controlCandidates, DEFAULT_CONTROL_METRICS, metricLabel, normalizeControlPreferences, searchControlCandidates } from './controlPreferences'
 
 describe('control summary preferences', () => {
+  test('order metrics explicitly describe allowance usage', () => {
+    expect(metricLabel('account:place_order:per_day')).toBe('今日报单额度')
+    expect(metricLabel('account:place_order:per_day', true)).toBe('报单额度')
+    expect(metricLabel('account:cancel_order:per_minute')).toBe('本分钟撤单额度')
+  })
   const operations = ['place_order', 'cancel_order', 'query_order', ...Array.from({ length: 12 }, (_, i) => `extension_${i}`)].map((key) => ({ key, display_name: key.startsWith('extension') ? `扩展${key.slice(10)}` : key, category: '查询' }))
   test('account union includes unlimited operations, excludes global and symbol-only operations', () => {
     const rows = controlCandidates(operations, operations.slice(0, 10).map((row) => row.key), [{ scope: 'account', operation: 'live_only' }, { scope: 'symbol', operation: 'symbol_only' }])

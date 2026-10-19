@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -23,6 +24,7 @@ from axile.channels import (
     registry,
 )
 from axile.executor.models.unified_input_accounts import BaseAccountConfig
+from axile.server.execution import factory as factory_module
 from axile.server.execution.factory import create_executor_instance
 
 
@@ -91,3 +93,25 @@ def test_create_executor_instance_uses_registered_plugin(monkeypatch: pytest.Mon
         executor.set_channel_calendar.assert_called_once_with("china")
     finally:
         registry._reset_registry_for_tests()
+
+
+def test_ctp_factory_installs_submission_recorder_before_connection(monkeypatch):
+    recorder = object()
+    calls = []
+
+    def connect(_config):
+        assert executor.order_submission_recorder is recorder
+        calls.append("connected")
+
+    executor = SimpleNamespace(_initialize_connection=connect, set_trading_calendar=MagicMock())
+    plugin = replace(_plugin(), requires_pre_connect_guard=True, create_executor=lambda _: executor)
+
+    def create_recorder(account_id, *, source):
+        calls.append((account_id, source))
+        return recorder
+
+    monkeypatch.setattr(factory_module, "get_channel", lambda _: plugin)
+    monkeypatch.setattr(factory_module, "create_order_submission_recorder", create_recorder)
+    executor = create_executor_instance(SimpleNamespace(id=7, trade_channel="ctp", account_config={"key": "secret"}))
+    assert executor.order_submission_recorder is recorder
+    assert calls == [(7, "main_program"), "connected"]

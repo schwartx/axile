@@ -7,6 +7,7 @@ from axile.server.connection_state import report_connection_for_account
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.notification_state import record_notification_result
 from axile.server.execution.resources import close_executor
+from axile.server.order_submissions import create_order_submission_recorder
 
 
 def create_executor_instance(account: AccountContext, *, initialize: bool = True) -> AbstractExecutor:
@@ -40,6 +41,12 @@ def create_executor_instance(account: AccountContext, *, initialize: bool = True
     try:
         account_id = getattr(account, "id", None)
         if account_id is not None:
+            if str(account.trade_channel) == "ctp":
+                setattr(
+                    executor,
+                    "order_submission_recorder",
+                    create_order_submission_recorder(account_id, source="main_program"),
+                )
 
             def notification_result(execution_id: str | None, finished_at: str, ok: bool, error: str | None) -> None:
                 record_notification_result(account_id, execution_id, finished_at, ok, error)

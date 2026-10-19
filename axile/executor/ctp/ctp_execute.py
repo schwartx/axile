@@ -318,7 +318,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if before_send is not None:
                 before_send(rid)
             self._link_control_request(guard, rid, name, req)
-            code = int(getattr(self._trader_api, name)(req, rid))
+            code = self._invoke_trader_request(name, req, rid, guard)
         if code == 0:
             return rid
         self._control_request_result(rid, "broker_sync_rejected", {"return_code": code})
@@ -364,6 +364,23 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             )
         raise error
 
+    def _invoke_trader_request(self, name, req, rid, guard) -> int:
+        """本地校验完成后记录普通报单调用；其他请求不冒充报单。"""
+        from axile.executor.account_control.context import controlled_source
+
+        recorder = getattr(self, "order_submission_recorder", None)
+        if name != "ReqOrderInsert" or recorder is None:
+            return int(getattr(self._trader_api, name)(req, rid))
+        source = None if guard is None else controlled_source(guard, guard.source).value
+        return recorder.submit(
+            lambda: getattr(self._trader_api, name)(req, rid),
+            symbol=str(req.InstrumentID),
+            order_id=stable_order_id(self._trading_day, self._front_id, self._session_id, str(req.OrderRef)),
+            request_id=rid,
+            execution_id=getattr(guard, "execution_id", None),
+            source=source,
+        )
+
     def _link_control_request(self, guard, rid, name, req) -> None:
         """在发送前登记有界关联，回调可先于同步调用返回。"""
         from collections import OrderedDict
@@ -391,6 +408,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 guard.update_event_outcome(index, outcome=outcome, metadata=metadata)
 
     def _control_order_result(self, row, outcome, metadata=None, *, order_id=None) -> None:
+        recorder = getattr(self, "order_submission_recorder", None)
+        if recorder is not None and order_id is not None:
+            recorder.broker_result(
+                order_id,
+                rejected=outcome == "broker_rejected",
+                error_id=(metadata or {}).get("error_id"),
+            )
         ref = str(getattr(row, "OrderRef", ""))
         if not ref:
             return
