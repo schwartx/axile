@@ -90,7 +90,7 @@ export function PythonSymbolTree({ symbols, activePath, onJump }: {
         {hasChildren ? <button type="button" tabIndex={-1} aria-label={`${open ? '收起' : '展开'} ${item.name}`} onClick={() => toggle(key)} className="grid size-6 shrink-0 place-items-center text-ink-3 hover:text-ink-1">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button>
           : <span className="size-6 shrink-0" />}
         <button type="button" data-symbol data-key={key} data-children={hasChildren} data-active={key === activeKey} title={item.name} onClick={() => onJump(item)} className={`flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pr-2 text-left focus-visible:outline-2 focus-visible:outline-accent ${key === activeKey ? 'text-accent' : ''}`}>
-          <SymbolIcon kind={item.kind} /><span className="min-w-0 flex-1 truncate">{item.name}</span><span className="shrink-0 text-ink-3">{start(item).line + 1}</span>
+          <SymbolIcon kind={item.kind} /><span className={`min-w-0 flex-1 truncate ${key === activeKey ? 'font-semibold' : ''}`}>{item.name}</span><span className="shrink-0 text-ink-3">{start(item).line + 1}</span>
         </button>
       </div>
       {hasChildren && open && <div role="group">{render(children, depth + 1)}</div>}

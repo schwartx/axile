@@ -1,4 +1,5 @@
 import { useId, useRef, type ReactElement } from 'react'
+import { Check } from 'lucide-react'
 
 export interface ChoiceOption<T extends string> {
   value: T
@@ -53,7 +54,10 @@ export function ChoiceGroup<T extends string>({
             onChange(options[target]!.value)
             refs.current[target]?.focus()
           }}>
-          <span className="block">{option.label}</span>
+          <span className="flex items-center justify-between gap-2">
+            <span>{option.label}</span>
+            <Check size={13} aria-hidden="true" className={`shrink-0 ${option.value === value ? '' : 'invisible'}`} />
+          </span>
           {option.description && <span id={`${id}-${index}`} className="mt-1 block text-xs leading-relaxed text-ink-3">{option.description}</span>}
         </button>
       ))}

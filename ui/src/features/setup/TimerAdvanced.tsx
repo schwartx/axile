@@ -311,11 +311,12 @@ export function TimerAdvanced({ market, rules, selectedId, onChangeRules }: Time
             return (
               <li key={r.id}>
                 <div
-                  className={`group flex items-start gap-0.5 px-2 py-2.5 ${CHIP_T} ${
+                  className={`group relative flex items-start gap-0.5 px-2 py-2.5 ${CHIP_T} ${
                     active ? 'bg-accent-soft' : 'hover:bg-bg-subtle'
                   }`}
                 >
-                  <button type="button" className="min-w-0 flex-1 px-1 text-left" onClick={() => selectRule(r.id)}>
+                  <span aria-hidden="true" className={`absolute inset-y-2 left-0 w-0.5 rounded-full bg-ink-2 ${active ? '' : 'invisible'}`} />
+                  <button type="button" aria-current={active ? 'true' : undefined} className="min-w-0 flex-1 px-1 text-left" onClick={() => selectRule(r.id)}>
                     <div className="flex min-w-0 items-baseline gap-1.5">
                       <span className="text-[11px] tabular-nums text-ink-3">{i + 1}</span>
                       <OverflowText

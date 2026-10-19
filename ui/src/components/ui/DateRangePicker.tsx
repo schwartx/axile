@@ -176,7 +176,7 @@ export function DateRangePicker({ value, onChange, maxDays = 31, describedBy, di
         const range = presetRange(today, option.days, option.offset)
         const selected = range.from === value.from && range.to === value.to
         return <button key={option.label} type="button" disabled={disabled || option.days > maxDays} aria-pressed={selected}
-          className={ACTION + (selected ? ' bg-accent-soft text-accent' : '')} onClick={() => preset(option.days, option.offset)}>{option.label}</button>
+          className={ACTION + (selected ? ' bg-accent-soft font-semibold text-accent' : '')} onClick={() => preset(option.days, option.offset)}>{option.label}</button>
       })}
     </div>
     <div inert={!expanded} aria-hidden={!expanded} className={'grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ' + (expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>

@@ -1,6 +1,6 @@
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { useCallback } from 'react'
-import { Code2 } from 'lucide-react'
+import { Check, Code2 } from 'lucide-react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { TargetChips } from '@/features/portfolio/TargetChips'
 import { formatTargetUpdatedAt, formatTargetWeight, portfolioTargetState, targetDirectionClass } from '@/features/portfolio/portfolioCardSummary'
@@ -35,7 +35,8 @@ export function PortfolioChoiceCard({ portfolio, selected, onSelect, onPreview }
         onClick={onSelect}
         className="block w-full cursor-pointer rounded-[14px] px-[18px] py-3.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-45"
       >
-        <span className="flex h-7 min-w-0 items-center gap-3 pr-[76px]">
+        <Check size={14} aria-hidden="true" className={`absolute right-[94px] top-5 text-ink-1 ${selected ? '' : 'invisible'}`} />
+        <span className="flex h-7 min-w-0 items-center gap-3 pr-[100px]">
           <OverflowText text={portfolio.name} className="min-w-0 max-w-[35%] text-[17px] font-[620]" />
           <span className="flex-none rounded-md bg-fill px-2 py-0.5 text-[12px] text-ink-2">{portfolio.market}</span>
           {summary && <span className="hidden flex-none items-center gap-3 text-[13px] text-ink-3 md:inline-flex">

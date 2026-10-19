@@ -816,6 +816,16 @@
 }
 
 
+/* 图形细斜纹：与实心段形成形状差异，辅助辨认翻向或待调整区域。 */
+.chart-hatch {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--color-ink-1) 30%, transparent) 3px 4px,
+    transparent 4px 6px
+  );
+}
+
 /* 同槽记录交接：仅切换视图播放，透明度与自然高度同轨，锚点不参与。 */
 .content-swap {
   --motion-content-swap-ms: 600;

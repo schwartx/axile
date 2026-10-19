@@ -48,7 +48,7 @@ function SegDetail({ row, turnover }: { row: RebalanceRow; turnover: number }) {
  * 故条**越长＝总换手越大**（挪 8% 只填 8%，全书重建≈填满），留出的空槽即「未动用容量」。
  * 填充内部按各段 ``amount`` 相对细分，仍一眼看出谁占大头。
  * 颜色守 theme.css 铁律：drift 属「偏离」域，主体软琥珀（``warn-mid``），翻向靠深琥珀
- * （``warn``）单独顶出。
+ * （``warn``）与细斜纹单独顶出，不依赖颜色辨认。
  *
  * 交互：光标压到哪段，哪段就从扁条里**向上长起**（``items-end`` 使抬升朝上）、点亮为实琥珀
  * 并投影浮出，其余段 ``group-has`` 压暗做 focus+context；该段头顶弹带箭头的通用悬浮卡，只讲
@@ -71,7 +71,7 @@ export function DriftBar({ rows }: { rows: RebalanceRow[] }) {
                 aria-label={`${r.symbol} ${ACTION_TAG[r.action].text} ${pct(r.cur)} 到 ${pct(r.tgt)}`}
                 style={{ width: `${((r.amount / inner) * 100).toFixed(2)}%` }}
                 className={`block h-2 cursor-help outline-none transition-[height,background-color,opacity,box-shadow] duration-150 ease-out first:rounded-l-full last:rounded-r-full [&+&]:border-l [&+&]:border-surface ${
-                  r.action === 'flip' ? 'bg-warn' : 'bg-warn-mid'
+                  r.action === 'flip' ? 'chart-hatch bg-warn' : 'bg-warn-mid'
                 } group-has-[:hover]/fill:opacity-40 group-has-[:focus-visible]/fill:opacity-40 hover:!opacity-100 hover:z-10 hover:h-[13px] hover:rounded-full hover:bg-warn hover:shadow-[0_4px_10px_rgba(0,0,0,0.28)] focus-visible:!opacity-100 focus-visible:z-10 focus-visible:h-[13px] focus-visible:rounded-full focus-visible:bg-warn focus-visible:shadow-[0_4px_10px_rgba(0,0,0,0.28)]`}
               />
             </Tooltip>

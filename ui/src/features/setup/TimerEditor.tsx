@@ -10,6 +10,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Check } from 'lucide-react'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 import { Segmented } from '@/components/ui/Segmented'
 import { SupplementControls } from '@/features/setup/SupplementControls'
@@ -490,6 +491,7 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
                   <button
                     key={p.id}
                     type="button"
+                    aria-pressed={on}
                     onClick={() => togglePreset(p.id)}
                     className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
                       on
@@ -497,7 +499,10 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
                         : 'border-line bg-surface'
                     }`}
                   >
-                    <div className="text-sm font-[640]">{p.label}</div>
+                    <div className="flex items-center justify-between gap-2 text-sm font-[640]">
+                      <span>{p.label}</span>
+                      <Check size={13} aria-hidden="true" className={`shrink-0 ${on ? '' : 'invisible'}`} />
+                    </div>
                     {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
                   </button>
                 )

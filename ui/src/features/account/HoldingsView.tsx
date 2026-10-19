@@ -26,7 +26,7 @@ function axisX(value: number, scale: number): number {
   return scale > 0 ? 50 + (value / scale) * 44 : 50
 }
 
-/** 零锚持仓标尺：深色是保留仓位，浅色是当前到目标之间需要调整的部分。 */
+/** 零锚持仓标尺：实心段配合斜纹调整段，翻向时分别表示目标侧与当前侧。 */
 function PositionRuler({ row, scale }: { row: RebalanceRow; scale: number }) {
   const zero = axisX(0, scale)
   const current = axisX(row.cur, scale)
@@ -65,7 +65,7 @@ function PositionRuler({ row, scale }: { row: RebalanceRow; scale: number }) {
         <div className="absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 overflow-hidden rounded-sm bg-fill">
           {light.hi - light.lo > 0.1 && (
             <div
-              className={`absolute inset-y-0 ${lightColor}`}
+              className={`chart-hatch absolute inset-y-0 ${lightColor}`}
               style={{ left: `${light.lo}%`, width: `${light.hi - light.lo}%` }}
             />
           )}
