@@ -12,9 +12,6 @@ export interface TimeCheckSettings {
 export interface ProbeResult {
   status: string
   error?: string
-  enabled?: boolean | null
-  synchronized?: boolean | null
-  evidence?: string
   offset_ms?: number
   delay_ms?: number
   samples?: number
@@ -32,7 +29,7 @@ export interface TimeCheckSnapshot {
     started_at?: string
     trigger?: string
     alerts?: Record<string, { message: string; checked_at: string; offset_ms?: number; threshold_ms?: number }>
-    result?: { finished_at: string; trigger: string; host: string; port: number; settings: TimeCheckSettings; ntp: ProbeResult; system: ProbeResult }
+    result?: { finished_at: string; trigger: string; host: string; port: number; settings: TimeCheckSettings; ntp: ProbeResult }
     last_success?: { checked_at: string; host: string; offset_ms: number; delay_ms: number }
   }
 }

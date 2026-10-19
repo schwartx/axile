@@ -18,6 +18,7 @@ const date = (value?: string | null) => value ? new Date(value).toLocaleString('
 export function TimeCheckButton() {
   const { snapshot, connected, error, refresh } = useTimeCheck()
   const [open, setOpen] = useState(false)
+  const [syncDelayed, setSyncDelayed] = useState(false)
   const [draft, setDraft] = useState<TimeCheckSettings | null>(null)
   const [timer, setTimer] = useState<TimerEditorState | null>(null)
   const [baseline, setBaseline] = useState('')
@@ -34,6 +35,13 @@ export function TimeCheckButton() {
   const state = snapshot?.status ?? 'disabled'
   const title = !snapshot ? '系统时间检查 · 状态尚未读取' : state === 'warning' ? `系统时间检查告警 · ${alerts.map(a => a.message).join('；')}`
     : state === 'enabled' ? `自动时间检查已开启 · 下次 ${date(snapshot.next_run_at)}` : '自动时间检查已关闭 · 点击手动检查'
+
+  useEffect(() => {
+    setSyncDelayed(false)
+    if (!open || connected) return
+    const timeout = window.setTimeout(() => setSyncDelayed(true), 5000)
+    return () => window.clearTimeout(timeout)
+  }, [open, connected])
 
   const loadDraft = () => {
     const config = useTimeCheck.getState().snapshot?.settings
@@ -88,6 +96,12 @@ export function TimeCheckButton() {
       </button>
     </Tooltip>
     <CenteredModal open={open} title="系统时间检查"
+      titleSuffix={syncDelayed && !connected ? <Tooltip content="实时更新暂不可用，当前为上次读取的检查结果。">
+        <span tabIndex={0} role="img" aria-label="实时更新暂不可用"
+          className="ml-2 inline-flex h-4 w-4 items-center justify-center rounded align-middle focus-visible:outline-2 focus-visible:outline-accent">
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warn" />
+        </span>
+      </Tooltip> : undefined}
       onClose={close} closeDisabled={busy || !!confirm} widthClassName="w-[960px] h-[min(720px,86dvh)]" scrollBody={false}
       footer={<div className="mt-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-line px-[22px] py-3.5">
         <div className="min-w-0 flex-1">
@@ -112,7 +126,6 @@ export function TimeCheckButton() {
         {(error || actionError) && <p role="alert" className="mb-4 shrink-0 break-words text-sm text-warn">
           {actionError ?? error}<button type="button" className="ml-2 cursor-pointer underline" onClick={() => void refresh().catch(() => {})}>重新读取</button>
         </p>}
-        {!connected && snapshot && <p className="mb-4 shrink-0 text-xs text-ink-3">实时状态连接中，当前显示最近读取的结果。</p>}
         <div className="grid min-h-0 flex-1 items-start gap-6 overflow-y-auto overscroll-contain md:grid-cols-[minmax(0,1fr)_minmax(0,1.65fr)] md:grid-rows-[minmax(0,1fr)] md:items-stretch md:gap-8 md:overflow-hidden">
           <div className="min-w-0 pb-2 md:min-h-0 md:overflow-y-auto md:overscroll-contain md:[scrollbar-gutter:stable]">
             <TimeCheckResult snapshot={snapshot} />

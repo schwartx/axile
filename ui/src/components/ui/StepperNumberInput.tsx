@@ -26,7 +26,7 @@ interface StepperNumberInputProps {
   max?: number
   exclusiveMin?: boolean
   exclusiveMax?: boolean
-  appearance?: 'boxed' | 'plain'
+  appearance?: 'boxed' | 'plain' | 'inline'
   decimal?: boolean
   disabled?: boolean
   /** 单位文案（如 次 / 毫秒 / 秒），缺省不显示。 */
@@ -80,6 +80,7 @@ export function StepperNumberInput({
 }: StepperNumberInputProps) {
   const sz = SIZE_CLASS[size]
   const plain = appearance === 'plain'
+  const inline = appearance === 'inline'
   const autoWidth = plain ? { width: `${Math.max(1, Math.min(18, value.length))}ch` } : undefined
   const inputWidth = plain ? '' : decimal ? 'w-[10ch]' : sz.inputW
   const innerRef = useRef<HTMLInputElement>(null)
@@ -133,15 +134,17 @@ export function StepperNumberInput({
 
   return (
     <div
-      className={plain ? `inline-flex items-center gap-2 ${disabled ? 'opacity-40' : ''}` : `flex overflow-hidden border bg-surface ${sz.box} ${
-        invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 contrast:border-border-strong focus-within:border-accent'
+      className={plain ? `inline-flex items-center gap-2 ${disabled ? 'opacity-40' : ''}` : `flex overflow-hidden border ${inline ? 'bg-transparent transition-colors hover:bg-fill focus-within:bg-fill' : 'bg-surface'} ${sz.box} ${
+        invalid ? 'border-warn focus-within:border-warn' : inline
+          ? 'border-transparent focus-within:border-accent'
+          : 'border-ink-3/30 contrast:border-border-strong focus-within:border-accent'
       }`}
     >
       <button
         type="button"
         aria-label={`减少 ${step}${unit ? ` ${unit}` : ''}`}
         title={`减少 ${step}${unit ? ` ${unit}` : ''}`}
-        className={plain ? plainButton : `${stepButton} ${sz.button} border-r border-r-line`}
+        className={plain ? plainButton : `${stepButton} ${sz.button} ${inline ? '' : 'border-r border-r-line'}`}
         disabled={disabled || decreaseDisabled}
         onClick={() => applyStep(decreaseValue)}
       >
@@ -205,7 +208,7 @@ export function StepperNumberInput({
         type="button"
         aria-label={`增加 ${step}${unit ? ` ${unit}` : ''}`}
         title={`增加 ${step}${unit ? ` ${unit}` : ''}`}
-        className={plain ? plainButton : `${stepButton} ${sz.button} border-l border-l-line`}
+        className={plain ? plainButton : `${stepButton} ${sz.button} ${inline ? '' : 'border-l border-l-line'}`}
         disabled={disabled || increaseDisabled}
         onClick={() => applyStep(increaseValue)}
       >

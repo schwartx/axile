@@ -14,7 +14,7 @@ from axile.server.core.scheduler import scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, parse_cron_expr
 from axile.server.db.models.time_check import TimeCheckSettingsRow, TimeCheckStateRow
 from axile.server.time_check.models import TimeCheckSettings
-from axile.server.time_check.probes import ntp_probe, platform_probe
+from axile.server.time_check.probes import ntp_probe
 
 _JOB = "system-time-check"
 
@@ -33,11 +33,9 @@ def preview(cron_expr: str, count: int = 5) -> list[str]:
     return result
 
 
-def update_alerts(
-    previous: dict[str, Any], ntp: dict[str, Any], system: dict[str, Any], threshold: int, checked_at: str
-) -> dict[str, Any]:
+def update_alerts(previous: dict[str, Any], ntp: dict[str, Any], threshold: int, checked_at: str) -> dict[str, Any]:
     """各项恢复需有对应正常证据；查询失败不会消除历史偏差异常。"""
-    alerts = dict(previous)
+    alerts = {key: value for key, value in previous.items() if key != "system"}
     if ntp["status"] == "ok":
         alerts.pop("reference", None)
         if abs(ntp["offset_ms"]) > threshold:
@@ -51,11 +49,6 @@ def update_alerts(
             alerts.pop("offset", None)
     else:
         alerts["reference"] = {"message": ntp.get("error", "参考时间不可用"), "checked_at": checked_at}
-    if system["status"] == "ok":
-        alerts.pop("system", None)
-    else:
-        message = system.get("error") or ("系统自动校时未开启" if not system.get("enabled") else "系统自动校时尚未同步")
-        alerts["system"] = {"message": message, "checked_at": checked_at}
     alerts.pop("interrupted", None)
     return alerts
 
@@ -84,7 +77,14 @@ class TimeCheckService:
                 session.add(TimeCheckSettingsRow(data=self.settings.model_dump(exclude={"version"})))
             state = await session.get(TimeCheckStateRow, 1)
             self.state = dict(state.data) if state else {"alerts": {}, "first_claimed": False}
-            if not state:
+            # 兼容已有 JSON 证据：退出使用操作系统自报状态，清除其旧结果和告警。
+            self.state["alerts"] = {key: value for key, value in self.state.get("alerts", {}).items() if key != "system"}
+            if self.state.get("result"):
+                self.state["result"] = {key: value for key, value in self.state["result"].items() if key != "system"}
+            if state:
+                state.data = dict(self.state)
+                session.add(state)
+            else:
                 session.add(TimeCheckStateRow(data=self.state))
             await session.commit()
         if self.state.get("running"):
@@ -205,10 +205,10 @@ class TimeCheckService:
     async def _check(self, config: TimeCheckSettings, reason: str) -> None:
         """保存当次配置；异常局限于诊断服务。"""
         try:
-            ntp, system = await asyncio.gather(ntp_probe(config.host, config.port), platform_probe())
+            ntp = await ntp_probe(config.host, config.port)
             finished = clock_now(tz=SCHEDULER_TIMEZONE).isoformat()
             previous = self.state.get("alerts", {})
-            alerts = update_alerts(previous, ntp, system, config.threshold_ms, finished)
+            alerts = update_alerts(previous, ntp, config.threshold_ms, finished)
             result = {
                 "finished_at": finished,
                 "trigger": reason,
@@ -216,13 +216,12 @@ class TimeCheckService:
                 "host": config.host,
                 "port": config.port,
                 "ntp": ntp,
-                "system": system,
             }
             self.state = {**self.state, "running": False, "result": result, "alerts": alerts}
             if ntp["status"] == "ok":
                 self.state["last_success"] = {"checked_at": finished, "host": config.host, **ntp}
             await self.persist()
-            logger.info("系统时间检查完成 trigger={} host={} ntp={} system={}", reason, config.host, ntp, system)
+            logger.info("系统时间检查完成 trigger={} host={} ntp={}", reason, config.host, ntp)
             # 每次检查的时间变化不构成新的告警类别，重复异常最多每小时提醒一次。
             signature = tuple(sorted(f"{key}:{value['message']}" for key, value in alerts.items()))
             now = clock_now().timestamp()

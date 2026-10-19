@@ -17,11 +17,8 @@ export function TimeCheckResult({ snapshot }: { snapshot: TimeCheckSnapshot | nu
   const running = !!snapshot?.state.running
   const alerts = Object.values(snapshot?.state.alerts ?? {})
   const ntp = result?.ntp
-  const system = result?.system
   const offset = ntp?.status === 'ok' ? ntp.offset_ms : undefined
   const exceeded = offset != null && result != null && Math.abs(offset) > result.settings.threshold_ms
-  const synchronized = system?.synchronized == null ? '同步状态未知' : system.synchronized ? '已同步' : '未同步'
-  const enabled = system?.enabled == null ? '无法确认' : system.enabled ? '已开启' : '未开启'
   const headline = offset != null ? `本机${offset >= 0 ? '快' : '慢'}` : running ? '正在检查…' : result ? '参考时间不可用' : '尚未检查'
 
   return <section aria-label="检查结果" aria-live="polite" className="min-w-0 space-y-6">
@@ -39,13 +36,6 @@ export function TimeCheckResult({ snapshot }: { snapshot: TimeCheckSnapshot | nu
       </div>
     </div>
 
-    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4 border-t border-line pt-4">
-      <p className="text-[13px] text-ink-3">系统自动校时</p>
-      <p className={`text-right text-[14px] ${system && system.status !== 'ok' ? 'text-warn' : 'text-ink-1'}`}>
-        {system ? `${enabled} · ${synchronized}` : '尚未检查'}
-      </p>
-    </div>
-
     {alerts.length > 0 && <ul className="space-y-3 border-l-2 border-warn/50 pl-3">
       {alerts.map((alert, index) => <li key={index} className="space-y-1 text-[13px]">
         <p className="break-words text-warn">{alert.message}</p>
@@ -53,7 +43,7 @@ export function TimeCheckResult({ snapshot }: { snapshot: TimeCheckSnapshot | nu
       </li>)}
     </ul>}
 
-    <dl className="space-y-3 text-[13px]">
+    <dl className="space-y-3 border-t border-line pt-4 text-[13px]">
       <div className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-4">
         <dt className="text-ink-3">参考时间源</dt>
         <dd className="break-all text-right text-ink-2">{result ? `${result.host}${result.port === 123 ? '' : `:${result.port}`}` : '—'}</dd>
@@ -79,8 +69,6 @@ export function TimeCheckResult({ snapshot }: { snapshot: TimeCheckSnapshot | nu
           {ntp?.delay_ms != null && <p>往返延迟 {ntp.delay_ms.toFixed(2)} ms · {ntp.samples} 个有效样本</p>}
           {ntp?.error && <p className="break-words">{ntp.error}</p>}
           {!!ntp?.sample_errors?.length && <p className="break-words">采样说明：{ntp.sample_errors.join('；')}</p>}
-          {system?.error && <p className="break-words">{system.error}</p>}
-          {system?.evidence && <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all leading-relaxed">{system.evidence}</pre>}
           {ntp?.status !== 'ok' && snapshot?.state.last_success && <p>
             历史成功结果：{offsetText(snapshot.state.last_success.offset_ms)} · {snapshot.state.last_success.host} · {date(snapshot.state.last_success.checked_at)}
           </p>}

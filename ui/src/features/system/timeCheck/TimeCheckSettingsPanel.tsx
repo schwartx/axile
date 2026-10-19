@@ -1,16 +1,19 @@
 import { useId, useState } from 'react'
+import { CircleHelp } from 'lucide-react'
 import { AccessibilitySwitch } from '@/components/ui/AccessibilitySwitch'
 import { ParameterNumberInput } from '@/components/ui/ParameterNumberInput'
 import { Select } from '@/components/ui/Select'
+import { StepperNumberInput } from '@/components/ui/StepperNumberInput'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { ScheduleFields } from '@/features/setup/ScheduleFields'
 import type { TimerEditorState } from '@/features/setup/cron'
 import type { TimeCheckSettings } from '@/lib/api/timeCheck'
 import { MOTION_LAYOUT } from '@/lib/viewTransition'
 
 const sourceOptions = [
-  { value: 'aliyun' as const, label: '阿里云', description: 'ntp.aliyun.com' },
-  { value: 'tencent' as const, label: '腾讯云', description: 'ntp.tencent.com' },
-  { value: 'tuna' as const, label: '清华 TUNA', description: 'ntp.tuna.tsinghua.edu.cn' },
+  { value: 'aliyun' as const, label: '阿里云', hint: 'ntp.aliyun.com' },
+  { value: 'tencent' as const, label: '腾讯云', hint: 'ntp.tencent.com' },
+  { value: 'tuna' as const, label: '清华 TUNA', hint: 'ntp.tuna.tsinghua.edu.cn' },
   { value: 'custom' as const, label: '自定义服务器' },
 ]
 
@@ -35,19 +38,19 @@ export function TimeCheckSettingsPanel({ draft, onChange, timer, onTimerChange, 
       设置已在其他窗口更新。
       <button type="button" className="ml-2 cursor-pointer underline" onClick={onReload}>载入最新设置并放弃本地修改</button>
     </p>}
-    <section className="space-y-4">
-      <div className="grid gap-2 sm:grid-cols-[100px_minmax(0,1fr)] sm:items-center">
+    <section>
+      <div className="flex min-h-10 items-center justify-between gap-4">
         <p id={`${id}-source`} className="text-[14px] font-medium text-ink-2">参考时间源</p>
-        <Select<TimeCheckSettings['source']> ariaLabel="参考时间源" value={draft.source} options={sourceOptions}
+        <Select<TimeCheckSettings['source']> appearance="inline" ariaLabel="参考时间源" value={draft.source} options={sourceOptions}
           onChange={source => {
             const custom_port = portError && source !== 'custom' ? 123 : draft.custom_port
             if (custom_port !== draft.custom_port) setPort(String(custom_port))
             onChange({ ...draft, source, custom_port })
-          }} className="w-full justify-between px-3 py-2.5 text-[14px]" />
+          }} className="h-10 max-w-full px-2.5 text-[14px]" />
       </div>
       <div className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${draft.source === 'custom' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} inert={draft.source !== 'custom'}>
         <div className="min-h-0 overflow-hidden">
-          <div className="space-y-4 pb-1">
+          <div className="space-y-4 pb-1 pt-3">
             <label className="block space-y-2 text-[14px] text-ink-2">
               <span>服务器域名或 IP</span>
               <input value={draft.custom_host} onChange={event => onChange({ ...draft, custom_host: event.target.value })}
@@ -63,14 +66,22 @@ export function TimeCheckSettingsPanel({ draft, onChange, timer, onTimerChange, 
           </div>
         </div>
       </div>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1 pt-2">
+      <div className="mt-2 flex min-h-10 items-start justify-between gap-4">
+        <div className="flex h-10 items-center gap-1.5">
           <p className="text-[14px] font-medium text-ink-2">允许偏差</p>
-          <p className="text-xs text-ink-3">超过此值时显示告警</p>
+          <Tooltip content="本机与参考时间源的绝对偏差超过此值时显示告警。">
+            <button type="button" aria-label="允许偏差说明" className="cursor-help rounded text-ink-3 hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent">
+              <CircleHelp size={13} aria-hidden />
+            </button>
+          </Tooltip>
         </div>
-        <ParameterNumberInput label="允许偏差" value={threshold} unit="ms" step={50} min={1} max={86400000}
-          error={thresholdError ? '请输入 1–86400000 的整数' : undefined}
-          onChange={value => { setThreshold(value); onChange({ ...draft, threshold_ms: value.trim() ? Number(value) : Number.NaN }) }} />
+        <div className="min-w-0 max-w-full space-y-2">
+          <StepperNumberInput appearance="inline" ariaLabel="允许偏差" value={threshold} unit="ms" step={50} min={1} max={86400000}
+            displayValue={Number.isFinite(draft.threshold_ms) ? draft.threshold_ms : undefined}
+            invalid={thresholdError} describedBy={thresholdError ? `${id}-threshold-error` : undefined}
+            onChange={value => { setThreshold(value); onChange({ ...draft, threshold_ms: value.trim() ? Number(value) : Number.NaN }) }} />
+          {thresholdError && <p id={`${id}-threshold-error`} role="alert" className="text-xs text-warn">请输入 1–86400000 的整数</p>}
+        </div>
       </div>
     </section>
     <section className="space-y-4 border-t border-line pt-5">

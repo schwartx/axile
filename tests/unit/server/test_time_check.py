@@ -86,13 +86,13 @@ def test_invalid_config(patch):
 
 def test_alerts_preserve_unverified_offset_and_recover_independently():
     alerts = runtime.update_alerts(
-        {}, {"status": "ok", "offset_ms": 501}, {"status": "unsupported", "error": "unknown"}, 500, "first"
+        {"system": {"message": "旧系统校时告警"}}, {"status": "ok", "offset_ms": 501}, 500, "first"
     )
-    assert set(alerts) == {"offset", "system"}
-    alerts = runtime.update_alerts(alerts, {"status": "error", "error": "timeout"}, {"status": "ok"}, 500, "second")
+    assert set(alerts) == {"offset"}
+    alerts = runtime.update_alerts(alerts, {"status": "error", "error": "timeout"}, 500, "second")
     assert set(alerts) == {"offset", "reference"}
     assert alerts["offset"]["checked_at"] == "first"
-    assert runtime.update_alerts(alerts, {"status": "ok", "offset_ms": -500}, {"status": "ok"}, 500, "third") == {}
+    assert runtime.update_alerts(alerts, {"status": "ok", "offset_ms": -500}, 500, "third") == {}
 
 
 @asynccontextmanager
@@ -116,7 +116,6 @@ def test_new_install_once_old_upgrade_and_restart(tmp_path, monkeypatch):
         async with database(tmp_path / "time.db", monkeypatch):
             ntp = AsyncMock(return_value={"status": "ok", "offset_ms": 0, "delay_ms": 1})
             monkeypatch.setattr(runtime, "ntp_probe", ntp)
-            monkeypatch.setattr(runtime, "platform_probe", AsyncMock(return_value={"status": "ok"}))
             old = runtime.TimeCheckService()
             await old.start()
             assert old.task is None
@@ -145,7 +144,6 @@ def test_overlap_config_conflict_scheduler_and_snapshot(tmp_path, monkeypatch):
                 return {"status": "ok", "offset_ms": 700, "delay_ms": 1}
 
             monkeypatch.setattr(runtime, "ntp_probe", ntp)
-            monkeypatch.setattr(runtime, "platform_probe", AsyncMock(return_value={"status": "ok"}))
             service = runtime.TimeCheckService()
             await service.start()
             frames = service.frames()
@@ -170,25 +168,6 @@ def test_overlap_config_conflict_scheduler_and_snapshot(tmp_path, monkeypatch):
             assert not service.subscribers
 
     asyncio.run(scenario())
-
-
-def test_platform_linux_fallback_and_unknown(monkeypatch):
-    monkeypatch.setattr(probes.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(probes, "command", AsyncMock(return_value="NTP=yes\nNTPSynchronized=yes"))
-    assert asyncio.run(probes.platform_probe())["status"] == "ok"
-    monkeypatch.setattr(probes, "command", AsyncMock(side_effect=RuntimeError("permission denied")))
-    monkeypatch.setattr(probes.shutil, "which", lambda name: None)
-    result = asyncio.run(probes.platform_probe())
-    assert result["status"] == "error"
-    assert "宿主机" in result["error"]
-
-
-def test_windows_localized_status(monkeypatch):
-    monkeypatch.setattr(probes.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        probes, "command", AsyncMock(side_effect=["Running", "跳跃指示符: 0\n层次: 3", "ntp.aliyun.com"])
-    )
-    assert asyncio.run(probes.platform_probe())["status"] == "ok"
 
 
 def test_schedule_preview_is_future_and_multiple_rules():
@@ -240,7 +219,6 @@ def test_shutdown_cancellation_recovers_as_warning(tmp_path, monkeypatch):
                 await asyncio.Event().wait()
 
             monkeypatch.setattr(runtime, "ntp_probe", waiting)
-            monkeypatch.setattr(runtime, "platform_probe", AsyncMock(return_value={"status": "ok"}))
             service = runtime.TimeCheckService()
             await service.start()
             await service.run("manual")
@@ -330,14 +308,3 @@ def test_sampling_selects_lowest_delay_without_source_fallback(monkeypatch):
         assert all(call.args[0] == ("127.0.0.1", 123) for call in sample.await_args_list)
 
     asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("system", ["Darwin", "Unknown"])
-def test_platform_unsupported_is_explicit_warning_evidence(monkeypatch, system):
-    monkeypatch.setattr(probes.platform, "system", lambda: system)
-    monkeypatch.setattr(
-        probes, "command", AsyncMock(side_effect=["Network Time: On", "Network Time Server: ntp.example.com"])
-    )
-    result = asyncio.run(probes.platform_probe())
-    assert result["status"] == "unsupported"
-    assert result["error"]

@@ -3,9 +3,10 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from 'react-dom'
 
 /** 居中弹窗共用外壳：遮罩、开关过渡、标题、关闭图标与焦点管理。 */
-export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = true, widthClassName = 'w-[480px]', scrollBody = true, footer, children }: {
+export function CenteredModal({ open, title, titleSuffix, subtitle, ariaLabel, onClose, closeDisabled = false, restoreFocus = true, widthClassName = 'w-[480px]', scrollBody = true, footer, children }: {
   open: boolean
   title: string
+  titleSuffix?: ReactNode
   subtitle?: ReactNode
   ariaLabel?: string
   onClose: () => void
@@ -89,7 +90,7 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
     >
       <div className="flex shrink-0 items-start justify-between px-[22px] pt-5 pb-3">
         <div className="min-w-0">
-          <h2 id={titleId} className="text-[18px] font-[640] [overflow-wrap:anywhere]">{title}</h2>
+          <h2 id={titleId} className="text-[18px] font-[640] [overflow-wrap:anywhere]">{title}{titleSuffix}</h2>
           {subtitle && <div className="mt-1 text-[14px] text-ink-2">{subtitle}</div>}
         </div>
         <button type="button" className="cursor-pointer text-[21px] leading-none text-ink-3 hover:text-ink-1 disabled:cursor-default" onClick={close} disabled={closeDisabled} aria-label="关闭">✕</button>
