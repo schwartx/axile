@@ -7,6 +7,7 @@ import pytest
 from openctp_ctp import thosttraderapi as td
 
 from axile.executor.ctp.requests import build_order_insert
+from axile.executor.ctp_input_validation import CTPInputValidationError
 from axile.executor.models.unified_input import CTPAccountConfig
 from axile.executor.models.unified_order import OrderDirection, OrderType
 from tests.unit.executor.ctp.test_requests import _SHANGHAI, _at_clock, _submit_point_executor
@@ -46,6 +47,48 @@ def test_invalid_order_intent_never_reaches_native_send(config, entry, field, in
     assert executor._order_keys == {}
     assert executor._order_ref == 1
     assert executor._request_id == 0
+
+
+@pytest.mark.parametrize("entry", ["public", "ctp"])
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        {"offset_flag": None},
+        {"offset": None},
+        {"offset_flag": None, "offset": "open"},
+        {"offset_flag": "open", "offset": None},
+    ],
+)
+def test_explicit_none_offset_never_reaches_native_send(config, entry, offsets):
+    """显式空值不能触发默认开仓，也不能被另一个别名掩盖。"""
+    executor = _submit_point_executor(config)
+    place = executor.place_order if entry == "public" else executor._place_order_impl
+
+    with pytest.raises(CTPInputValidationError, match="开平标志.*不能为 None"):
+        place("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, **offsets)
+
+    executor._trader_api.ReqOrderInsert.assert_not_called()
+    executor._ensure_instrument_symbols.assert_not_called()
+    assert executor._order_keys == {}
+    assert executor._order_ref == 1
+    assert executor._request_id == 0
+
+
+@pytest.mark.parametrize("entry", ["public", "ctp"])
+@pytest.mark.parametrize("offsets", [{}, {"offset_flag": "open"}, {"offset": "open"}, {"offset_flag": "close_today"}])
+def test_omitted_and_valid_offsets_keep_order_submission(config, monkeypatch, entry, offsets):
+    """未提供开平字段时继续推导，显式合法值保持原样发送。"""
+    executor = _submit_point_executor(config)
+    _at_clock(monkeypatch, datetime(2026, 8, 24, 21, 29, tzinfo=_SHANGHAI))
+    place = executor.place_order if entry == "public" else executor._place_order_impl
+
+    place("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000, **offsets)
+
+    executor._trader_api.ReqOrderInsert.assert_called_once()
+    request = executor._trader_api.ReqOrderInsert.call_args.args[0]
+    assert request.CombOffsetFlag == (
+        td.THOST_FTDC_OF_CloseToday if offsets.get("offset_flag") == "close_today" else td.THOST_FTDC_OF_Open
+    )
 
 
 @pytest.mark.parametrize("field", ["direction", "order_type"])

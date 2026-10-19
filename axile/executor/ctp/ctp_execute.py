@@ -76,7 +76,12 @@ from axile.executor.ctp.requests import (
     resolve_offset,
 )
 from axile.executor.ctp.spi import MarketSpi, TraderSpi
-from axile.executor.ctp_input_validation import validate_cancel_id, validate_config, validate_instrument
+from axile.executor.ctp_input_validation import (
+    CTPInputValidationError,
+    validate_cancel_id,
+    validate_config,
+    validate_instrument,
+)
 from axile.executor.ctp_product_sessions import (
     decide_ctp_product_session,
     get_ctp_product_sessions,
@@ -1481,6 +1486,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     @override
     def _place_order_impl(self, symbol, direction, order_type, volume, price=0, **kwargs):
         direction, order_type = normalize_order_enums(direction, order_type)
+        for field in ("offset_flag", "offset"):
+            if field in kwargs and kwargs[field] is None:
+                raise CTPInputValidationError(f"开平标志 {field} 不能为 None")
         with self._lock:
             self._require_new_order_ready(symbol)
         self._ensure_instrument_symbols([symbol])
