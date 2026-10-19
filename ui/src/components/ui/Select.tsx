@@ -28,7 +28,7 @@ const GAP = 6
 
 /** 触发器不变样式（边框/底色/焦点/圆角）；布局（内距/字号/宽度）由 layout 决定。 */
 const TRIGGER_BASE =
-  'inline-flex items-center gap-2 rounded-[9px] border border-ink-3/30 bg-surface ' +
+  'inline-flex items-center gap-2 rounded-[9px] border border-ink-3/30 contrast:border-border-strong bg-surface ' +
   'text-ink-1 cursor-pointer outline-none transition-colors focus:border-accent ' +
   'disabled:cursor-not-allowed disabled:opacity-45'
 
@@ -257,7 +257,7 @@ export function Select<T>({
         createPortal(
           <div
             ref={menuRef}
-            className={`${open ? 'select-pop-in' : 'select-pop-out'} fixed z-50 flex flex-col overflow-hidden rounded-[11px] border border-line bg-surface shadow-card`}
+            className={`${open ? 'select-pop-in' : 'select-pop-out'} fixed z-50 flex flex-col overflow-hidden rounded-[11px] border border-line contrast:border-border-strong bg-surface shadow-card`}
             onAnimationEnd={() => {
               if (!open) setMounted(false)
             }}
@@ -284,7 +284,7 @@ export function Select<T>({
                   placeholder="搜索…"
                   aria-label="搜索选项"
                   aria-activedescendant={activeDesc}
-                  className="w-full rounded-[7px] border border-ink-3/25 bg-bg-subtle px-2.5 py-1.5 text-[14px] outline-none focus:border-accent"
+                  className="w-full rounded-[7px] border border-ink-3/25 contrast:border-border-strong bg-bg-subtle px-2.5 py-1.5 text-[14px] outline-none focus:border-accent"
                 />
               </div>
             )}

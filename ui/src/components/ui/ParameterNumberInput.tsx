@@ -47,7 +47,7 @@ export function ParameterNumberInput({
             appearance={mode === 'numberflow' ? 'plain' : 'boxed'} exclusiveMin={exclusiveMin} exclusiveMax={exclusiveMax}
             displayValue={finite ? parsed : undefined} decimal={decimal} disabled={disabled} invalid={!!error} unit={unit} ariaLabel={label} describedBy={description} />
         ) : (
-          <div className={`flex items-center gap-2 rounded-[9px] border bg-surface px-3 py-2 ${error ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 focus-within:border-accent'}`}>
+          <div className={`flex items-center gap-2 rounded-[9px] border bg-surface px-3 py-2 ${error ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 contrast:border-border-strong focus-within:border-accent'}`}>
             <input aria-label={label} aria-describedby={description} aria-invalid={!!error || undefined}
               inputMode={decimal ? 'decimal' : 'numeric'} disabled={disabled} value={value}
               className="num w-28 min-w-0 bg-transparent text-right text-[15px] outline-none disabled:opacity-40"

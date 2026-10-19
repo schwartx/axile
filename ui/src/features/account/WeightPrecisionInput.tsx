@@ -66,7 +66,7 @@ export function WeightPrecisionInput({
     <div>
       <div
         className={`flex h-10 overflow-hidden rounded-[9px] border bg-surface ${
-          invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 focus-within:border-ink-2'
+          invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 contrast:border-border-strong focus-within:border-ink-2'
         }`}
       >
         <button

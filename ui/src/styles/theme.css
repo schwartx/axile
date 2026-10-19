@@ -2,6 +2,7 @@
 
 /* 深色模式用类名驱动（html.dark），由主题 store 切换。 */
 @custom-variant dark (&:where(.dark, .dark *));
+@custom-variant contrast (&:where(.contrast-more, .contrast-more *));
 
 /*
  * axile 设计 token —— 「交易驾驶舱」体系。
@@ -44,13 +45,18 @@
   --color-accent-mid: #7cc0cf;
   --color-warn-mid: #e7c78a;
 
-  /*
-   * 行情涨跌语义色（红涨绿跌，A股/期货惯例）。刻意与 ok/bad「状态色」解耦：
-   * up/down 只表达价格·盈亏方向，ok/bad 只表达好坏·成败，二者色相相同但语义不同，
-   * 混用正是「翻个色就出错」的根源。用 var 引用使其自动跟随明暗主题。
-   */
-  --color-up: var(--color-bad);
-  --color-down: var(--color-ok);
+  /* 方向色独立于状态色；预览也直接使用各套原色。 */
+  --color-market-red: #d9373e;
+  --color-market-green: #178a52;
+  --color-market-purple: #8050b4;
+  --color-market-blue: #2563b8;
+  --color-market-orange: #a74b00;
+  --color-market-cyan: #007681;
+  --color-market-mono: #34465a;
+  --color-up: var(--color-market-red);
+  --color-down: var(--color-market-green);
+  --color-distribution: #2563eb;
+  --color-equity-area: rgba(37, 99, 235, 0.07);
 
   --color-line: rgba(26, 36, 48, 0.1);
   --color-border-strong: #c2ccd6;
@@ -88,6 +94,13 @@
 
 /* 深色：夜航蓝黑（驾驶舱主场）。重写同名角色变量。 */
 .dark {
+  --color-market-red: #f06065;
+  --color-market-green: #35bd75;
+  --color-market-purple: #c5a3ff;
+  --color-market-blue: #7db4ff;
+  --color-market-orange: #ffb47a;
+  --color-market-cyan: #62d8dd;
+  --color-market-mono: #cbd6e2;
   --color-bg: #0d1117;
   --color-surface: #141a22;
 
@@ -125,6 +138,83 @@
   --color-code-selection: #264f78;
 
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+/* 明暗与无障碍偏好互相独立；在同一根节点上解析方向映射。 */
+:root.market-green-up {
+  --color-up: var(--color-market-green);
+  --color-down: var(--color-market-red);
+}
+:root.market-purple-up {
+  --color-up: var(--color-market-purple);
+  --color-down: var(--color-market-green);
+}
+/* 行情蓝／橙／青仅映射方向，不复用运行和警告 token。 */
+:root.market-blue-up {
+  --color-up: var(--color-market-blue);
+  --color-down: var(--color-market-orange);
+}
+:root.market-red-cyan {
+  --color-up: var(--color-market-red);
+  --color-down: var(--color-market-cyan);
+}
+:root.market-monochrome {
+  --color-up: var(--color-market-mono);
+  --color-down: var(--color-market-mono);
+}
+:root.contrast-more {
+  --color-market-red: #b4232c;
+  --color-market-green: #126637;
+  --color-market-purple: #6f36a8;
+  --color-market-blue: #164d99;
+  --color-market-orange: #873c00;
+  --color-market-cyan: #005f69;
+  --color-market-mono: #1a2430;
+  --color-ink-2: #34465a;
+  --color-ink-3: #4c5d70;
+  --color-line: #8b98a5;
+  --color-border-strong: #657588;
+  --color-accent: #086b80;
+  --color-accent-soft: #d5eaf0;
+  --color-accent-mid: #508a9a;
+  --color-warn: #805000;
+  --color-warn-soft: #f8e6c1;
+  --color-warn-mid: #98732d;
+  --color-warn-tint: var(--color-warn-soft);
+  --color-distribution: var(--color-accent);
+  --color-equity-area: var(--color-accent-soft);
+}
+:root.dark.contrast-more {
+  --color-market-red: #ff8c92;
+  --color-market-green: #63dfa0;
+  --color-market-purple: #d1b3ff;
+  --color-market-blue: #a4cbff;
+  --color-market-orange: #ffca9a;
+  --color-market-cyan: #96eff1;
+  --color-market-mono: #e3eaf2;
+  --color-ink-2: #cbd6e2;
+  --color-ink-3: #b5c4d4;
+  --color-line: #64768a;
+  --color-border-strong: #8497ac;
+  --color-accent: #67d6e9;
+  --color-accent-soft: #143d49;
+  --color-accent-mid: #4b91a2;
+  --color-warn: #f4c465;
+  --color-warn-soft: #40331d;
+  --color-warn-mid: #a28038;
+}
+
+/* 必需的输入边界收口；保留各组件的警告与焦点边框。 */
+.contrast-more :is(input, textarea):not([type='checkbox']):not([type='radio']):not(.border-0):not(.border-warn):not([aria-invalid='true']):not(:focus-visible) {
+  border-color: var(--color-border-strong);
+}
+.contrast-more :is(input, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.contrast-more .exposure-segment {
+  --exposure-segment-color: var(--color-distribution);
+  border-color: var(--color-surface);
 }
 
 @layer base {
@@ -830,4 +920,23 @@
 .content-swap {
   --motion-content-swap-ms: 600;
   --motion-content-swap-ease: cubic-bezier(.45, 0, .55, 1);
+}
+
+/* 方向标记只作用于行情语义，不改变运行、质量或警告状态。 */
+.direction-markers .text-up::before {
+  content: '↑ ' / '';
+}
+.direction-markers .text-down::before {
+  content: '↓ ' / '';
+}
+.market-down-pattern { display: none; }
+.direction-markers .market-down-pattern { display: inline; }
+.direction-markers .market-down-line { stroke-dasharray: 5 3; }
+.direction-markers .market-negative-weight {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--color-surface) 3px 4px,
+    transparent 4px 6px
+  );
 }

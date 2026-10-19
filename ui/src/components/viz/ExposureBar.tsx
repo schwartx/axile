@@ -11,8 +11,8 @@ export function ExposureBar({ weights }: { weights: number[] }) {
       {ws.map((w, i) => (
         <span
           key={i}
-          className="block h-full [&+&]:border-l [&+&]:border-surface"
-          style={{ width: `${((w / total) * 100).toFixed(2)}%`, background: barColor(i) }}
+          className="exposure-segment block h-full [&+&]:border-l [&+&]:border-surface"
+          style={{ width: `${((w / total) * 100).toFixed(2)}%`, background: `var(--exposure-segment-color, ${barColor(i)})` }}
         />
       ))}
     </div>

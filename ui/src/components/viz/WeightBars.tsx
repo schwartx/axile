@@ -34,7 +34,7 @@ export function WeightBars({ weights, format = 'percent', className = '' }: Weig
           <div aria-hidden className="h-1.5 min-w-0 flex-1">
             <div
               className={`h-full rounded-full transition-[width] duration-200 ease-[cubic-bezier(.4,0,.2,1)] motion-reduce:transition-none ${
-                w < 0 ? 'bg-ink-3/45' : 'bg-ink-2/65'
+                w < 0 ? 'market-negative-weight bg-ink-3/45 contrast:bg-ink-3' : 'bg-ink-2/65 contrast:bg-ink-2'
               }`}
               style={{ width: `${((Math.abs(w) / max) * 100).toFixed(2)}%` }}
             />

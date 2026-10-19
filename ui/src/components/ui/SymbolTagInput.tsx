@@ -84,7 +84,7 @@ export function SymbolTagInput({
   return (
     <div>
       <div
-        className="flex min-h-[88px] cursor-text flex-wrap content-start items-center gap-1.5 rounded-[9px] border border-ink-3/25 bg-surface px-3 py-2.5 focus-within:border-accent"
+        className="flex min-h-[88px] cursor-text flex-wrap content-start items-center gap-1.5 rounded-[9px] border border-ink-3/25 contrast:border-border-strong bg-surface px-3 py-2.5 focus-within:border-accent"
         onClick={() => inputRef.current?.focus()}
       >
         {value.map((symbol) => (

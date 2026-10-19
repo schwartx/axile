@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import '@/styles/theme.css'
+import '@/stores/accessibility'
 import '@/components/ui/pythonQuickFixMenu.css'
 import { commitFonts, prepareCachedFonts, warmFonts } from '@/fonts'
 

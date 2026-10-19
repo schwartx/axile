@@ -134,7 +134,7 @@ export function StepperNumberInput({
   return (
     <div
       className={plain ? `inline-flex items-center gap-2 ${disabled ? 'opacity-40' : ''}` : `flex overflow-hidden border bg-surface ${sz.box} ${
-        invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 focus-within:border-accent'
+        invalid ? 'border-warn focus-within:border-warn' : 'border-ink-3/30 contrast:border-border-strong focus-within:border-accent'
       }`}
     >
       <button

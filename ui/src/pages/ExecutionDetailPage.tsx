@@ -151,7 +151,7 @@ function Header({
         {h.durationSec != null && <span className="text-ink-3">{fmtDuration(h.durationSec)} · </span>}
         {assetLabel} {fmtEquity(h.equityBefore)} → {h.equityAfter == null ? '—' : <NumberTicker value={h.equityAfter} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} />}
         {h.equityBefore != null && h.equityAfter != null && (
-          <span className={`font-semibold ${h.equityAfter >= h.equityBefore ? 'text-up' : 'text-down'}`}>
+          <span className={`font-semibold ${h.equityAfter === h.equityBefore ? 'text-ink-2' : h.equityAfter > h.equityBefore ? 'text-up' : 'text-down'}`}>
             {' '}
             ({fmtDelta(h.equityBefore, h.equityAfter)}) {displayCurrencyUnit(currency)}
           </span>
@@ -463,7 +463,7 @@ function BookendRow({
       <span className="text-ink-3"> → </span>
       {after != null ? withCurrency(fmtMoney(after), currency) : '—'}
       {showDelta && before != null && after != null && (
-        <span className={`font-semibold ${after >= before ? 'text-up' : 'text-down'}`}> ({fmtDelta(before, after)})</span>
+        <span className={`font-semibold ${after === before ? 'text-ink-2' : after > before ? 'text-up' : 'text-down'}`}> ({fmtDelta(before, after)})</span>
       )}
     </span>
   )

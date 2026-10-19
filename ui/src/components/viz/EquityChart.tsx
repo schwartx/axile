@@ -107,7 +107,7 @@ export function EquityChart({
         const area = `${X(first).toFixed(1)},${H - padB} ${line} ${X(last).toFixed(1)},${H - padB}`
         return (
           <g key={`run-${ri}`}>
-            <polygon points={area} fill="rgba(37,99,235,.07)" />
+            <polygon points={area} fill="var(--color-equity-area)" />
             <polyline points={line} fill="none" stroke="var(--color-accent)" strokeWidth={1.8} strokeLinejoin="round" />
           </g>
         )

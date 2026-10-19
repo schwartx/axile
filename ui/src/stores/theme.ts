@@ -19,8 +19,10 @@ function apply(mode: ThemeMode) {
 }
 
 function readStored(): ThemeMode {
-  const v = localStorage.getItem(STORAGE_KEY)
-  return v === 'light' || v === 'dark' || v === 'system' ? v : 'system'
+  try {
+    const v = localStorage.getItem(STORAGE_KEY)
+    return v === 'light' || v === 'dark' || v === 'system' ? v : 'system'
+  } catch { return 'system' }
 }
 
 interface ThemeState {
@@ -41,7 +43,7 @@ export const useThemeStore = create<ThemeState>((set) => {
   return {
     mode: initial,
     setMode: (mode) => {
-      localStorage.setItem(STORAGE_KEY, mode)
+      try { localStorage.setItem(STORAGE_KEY, mode) } catch { /* 存储不可用时仍切换当前会话。 */ }
       apply(mode)
       set({ mode })
     },

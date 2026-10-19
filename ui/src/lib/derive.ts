@@ -138,7 +138,7 @@ export function stateVerdict(item: AccountDashboardItem, showOffCount = true): S
 
 /** 敞口条分段颜色：按序渐隐的品牌蓝。 */
 export function barColor(i: number): string {
-  return `rgba(37,99,235,${Math.max(0.22, 0.85 - i * 0.06).toFixed(2)})`
+  return `color-mix(in srgb, var(--color-distribution) ${(Math.max(0.22, 0.85 - i * 0.06) * 100).toFixed(0)}%, transparent)`
 }
 
 /** 金额格式化：按数量级选精度，保留千分位与等宽。 */

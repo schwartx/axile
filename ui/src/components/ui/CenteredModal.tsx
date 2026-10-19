@@ -53,7 +53,7 @@ export function CenteredModal({ open, title, subtitle, ariaLabel, onClose, close
       if (event.key !== 'Tab') return
       const panel = panelRef.current
       const items = [...(panel?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') ?? [])]
-        .filter((item) => !item.closest('[inert]') && item.getClientRects().length > 0)
+        .filter((item) => item.tabIndex >= 0 && !item.closest('[inert]') && item.getClientRects().length > 0)
       const first = items[0], last = items.at(-1)
       if (!first) { event.preventDefault(); panel?.focus(); return }
       const outside = !panel?.contains(document.activeElement) || document.activeElement === panel

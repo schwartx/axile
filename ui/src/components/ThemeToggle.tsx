@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import { AccessibilitySettings } from '@/components/AccessibilitySettings'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 
 const SunIcon = () => (
@@ -36,11 +37,13 @@ function effectiveDark(mode: ThemeMode): boolean {
   return mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 }
 
-/** 主题切换：单图标触发 + 三态下拉菜单（浅 / 深 / 跟随系统）。 */
+/** 主题切换及无障碍设置的唯一入口。 */
 export function ThemeToggle() {
   const mode = useThemeStore((s) => s.mode)
   const setMode = useThemeStore((s) => s.setMode)
   const [open, setOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -64,7 +67,9 @@ export function ThemeToggle() {
   return (
     <div className="relative" ref={ref}>
       <button
-        className="flex cursor-pointer items-center rounded-chip border border-line px-2.5 py-1.5 text-ink-2 hover:border-ink-3/40 hover:text-ink-1"
+        ref={triggerRef}
+        type="button"
+        className="flex cursor-pointer items-center rounded-chip border border-line px-2.5 py-1.5 text-ink-2 hover:border-ink-3/40 hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         onClick={(e) => {
           e.stopPropagation()
           setOpen((v) => !v)
@@ -104,8 +109,18 @@ export function ThemeToggle() {
               )}
             </button>
           ))}
+          <div role="separator" className="my-1 border-t border-line" />
+          <button type="button" role="menuitem"
+            className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[14.5px] text-ink-1 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent"
+            onClick={() => {
+              // 菜单项即将卸载，弹窗记录常驻主题按钮作为返回焦点。
+              triggerRef.current?.focus({ preventScroll: true })
+              setOpen(false)
+              setSettingsOpen(true)
+            }}>无障碍设置…</button>
         </div>
       )}
+      <AccessibilitySettings open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }

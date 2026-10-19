@@ -1,6 +1,6 @@
 /** 每日盈亏增量柱（纯 SVG）：把权益曲线的「累计视角」换成「每日增量视角」。 */
 
-import type { PointerEvent } from 'react'
+import { useId, type PointerEvent } from 'react'
 import type { DailyBar } from '@/features/history/derive'
 
 /** 相邻活跃日日历间隔超过该天数即在柱间插入「⋯」数据真空断点。 */
@@ -8,7 +8,7 @@ const VOID_GAP_DAYS = 3
 
 /** 柱色：交易盈亏走红涨绿跌；资金搬家走中性（不算盈亏）。 */
 function barColor(b: DailyBar): string {
-  if (b.kind === 'transfer') return 'var(--color-ink-3)'
+  if (b.kind === 'transfer' || !Number.isFinite(b.delta) || b.delta === 0) return 'var(--color-ink-3)'
   return b.delta >= 0 ? 'var(--color-up)' : 'var(--color-down)'
 }
 
@@ -29,6 +29,7 @@ export function DailyBars({
   /** 指针移到某柱槽位时回报其下标；离开时回报 null。 */
   onHover?: (index: number | null) => void
 }) {
+  const patternId = useId()
   if (bars.length === 0) {
     return <div className="py-8 text-center text-[14px] text-ink-3">数据点不足，无法绘制。</div>
   }
@@ -66,6 +67,11 @@ export function DailyBars({
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="block h-auto w-full">
+      <defs>
+        <pattern id={patternId} width="6" height="6" patternUnits="userSpaceOnUse">
+          <path d="M-1 1L1-1M0 6L6 0M5 7L7 5" stroke="var(--color-surface)" strokeWidth="1.5" />
+        </pattern>
+      </defs>
       {/* 零基线 */}
       <line x1={padL} y1={zeroY} x2={W - padR} y2={zeroY} stroke="var(--color-line)" strokeWidth={1} />
 
@@ -95,6 +101,9 @@ export function DailyBars({
               </g>
             )}
             <rect x={cx(i) - barW / 2} y={y} width={barW} height={Math.max(len, 0.8)} rx={2} fill={color} />
+            {b.kind !== 'transfer' && b.delta < 0 && <rect className="market-down-pattern"
+              x={cx(i) - barW / 2} y={y} width={barW} height={Math.max(len, 0.8)} rx={2}
+              fill={`url(#${patternId})`} />}
             {/* 增量数值（贴柱端） */}
             <text
               x={cx(i)}

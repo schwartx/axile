@@ -14,6 +14,25 @@
           document.documentElement.classList.toggle('dark', dark)
         } catch (e) {}
       })()
+      // 独立恢复无障碍偏好；校验与 stores/accessibility.ts 保持一致。
+      ;(function () {
+        var value = null
+        try {
+          var raw = localStorage.getItem('axile-accessibility')
+          localStorage.setItem('axile-accessibility-probe', '1')
+          localStorage.removeItem('axile-accessibility-probe')
+          try { value = JSON.parse(raw || 'null') } catch (e) {}
+        } catch (e) {}
+        var stored = value && typeof value === 'object' ? value : {}
+        var root = document.documentElement.classList
+        root.toggle('contrast-more', stored.enhancedContrast === true)
+        root.toggle('market-green-up', stored.marketPalette === 'green-up')
+        root.toggle('market-purple-up', stored.marketPalette === 'purple-up')
+        root.toggle('market-blue-up', stored.marketPalette === 'blue-up')
+        root.toggle('market-red-cyan', stored.marketPalette === 'red-cyan')
+        root.toggle('market-monochrome', stored.marketPalette === 'monochrome')
+        root.toggle('direction-markers', stored.directionMarkers === true || stored.marketPalette === 'monochrome')
+      })()
     </script>
   </head>
   <body>

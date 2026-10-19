@@ -61,7 +61,7 @@ function PositionRuler({ row, scale }: { row: RebalanceRow; scale: number }) {
         )}
       </div>
       <div className="relative h-4">
-        <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-ink-1/10" />
+        <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-ink-1/10 contrast:bg-ink-3" />
         <div className="absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 overflow-hidden rounded-sm bg-fill">
           {light.hi - light.lo > 0.1 && (
             <div
