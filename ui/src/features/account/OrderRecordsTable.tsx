@@ -16,6 +16,13 @@ export function OrderDetails({ order }: { order: CurrentOrder }) {
   </>
 }
 
+const identityLabels: Record<string, string> = {
+  order_ref: '报单引用', front_id: '前置编号', session_id: '会话编号',
+  exchange_id: '交易所', order_sys_id: '交易所委托编号', trading_day: '交易日',
+  client_order_id: '客户端订单编号', exchange_order_id: '交易所委托编号',
+  cl_ord_id: '客户端订单编号', order_id: '原生订单编号',
+}
+
 const detailGrid = 'grid grid-cols-1 gap-x-6 gap-y-2 @xl:grid-cols-2 @4xl:grid-cols-3'
 
 function DetailField({ label, children, wide = false }: { label: string; children: ReactNode; wide?: boolean }) {
@@ -29,7 +36,7 @@ function OrderDetailPanel({ order, channel, units, formatTime, copy, showAverage
   channel?: string
   units?: ChannelCapability['units']
   formatTime: Props['formatTime']
-  copy: () => Promise<void>
+  copy: (value?: string, label?: string) => Promise<void>
   showAverage: boolean
 }) {
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
@@ -38,6 +45,7 @@ function OrderDetailPanel({ order, channel, units, formatTime, copy, showAverage
   const columnKeys = new Set(orderColumns(channel).map(column => column.key))
   const common = fields.filter(field => commonKeys.has(field.key) && !columnKeys.has(field.key))
   const extra = fields.filter(field => !commonKeys.has(field.key) && !columnKeys.has(field.key))
+  const identities = Object.entries(order.native_identity).filter(([key, value]) => value != null && value !== '' && !columnKeys.has(key))
   return <div className="@container pb-4 text-xs text-ink-2">
     <dl className={detailGrid}>
       <DetailField label="订单编号"><span className="inline-flex max-w-full items-start gap-3"><span className="min-w-0 select-text break-all">{order.order_id}</span><button type="button" onClick={() => void copy()} className="shrink-0 cursor-pointer text-accent" aria-label="复制订单编号">复制</button></span></DetailField>
@@ -48,9 +56,26 @@ function OrderDetailPanel({ order, channel, units, formatTime, copy, showAverage
       {order.reason && <DetailField label="状态说明" wide>{order.reason}</DetailField>}
       <DetailField label="记录时间">{formatTime(order.create_time)}</DetailField>
       {showAverage && order.avg_price != null && <DetailField label="均价来源">{order.avg_price_source === 'trades' ? '逐笔成交计算' : '渠道返回'}</DetailField>}
-      {Object.entries(order.native_identity).map(([key, value]) => <DetailField key={key} label={key === 'client_order_id' ? '客户端订单编号' : key} wide>{value}</DetailField>)}
       {extra.map(field => <DetailField key={field.key} label={field.label}>{field.text}</DetailField>)}
     </dl>
+    {identities.length > 0 && <details className="group mt-3 border-t border-line pt-2">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-ink-3 hover:text-ink-2 [&::-webkit-details-marker]:hidden">
+        <ChevronDown size={13} aria-hidden className="transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" />
+        技术信息
+      </summary>
+      <dl className={`${detailGrid} mt-3`}>
+        {identities.map(([key, value]) => {
+          const label = identityLabels[key] ?? key
+          const text = key === 'trading_day' ? value.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3') : value
+          return <DetailField key={key} label={label}>
+            <span className="inline-flex max-w-full items-start gap-3">
+              <span className="min-w-0 select-text break-all">{text}</span>
+              <button type="button" onClick={() => void copy(value, label)} className="shrink-0 cursor-pointer text-accent" aria-label={`复制${label}`}>复制</button>
+            </span>
+          </DetailField>
+        })}
+      </dl>
+    </details>}
   </div>
 }
 
@@ -73,8 +98,8 @@ function Row({ order, channel, units, formatTime, action, statusText, showAverag
   const columns = orderColumns(channel)
   const status = statusText?.(order) ?? (order.uncertain ? '待确认' : order.status)
   const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 8 })
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(order.order_id); toast('订单编号已复制') }
+  const copy = async (value = order.order_id, label = '订单编号') => {
+    try { await navigator.clipboard.writeText(value); toast(`${label}已复制`) }
     catch { toast('复制失败，请选中编号手动复制') }
   }
   const price = ['MARKET', '市价'].includes(order.order_type) ? '市价' : number(order.price)
