@@ -14,7 +14,7 @@ export interface RecordColumn {
 
 type Props = {
   columns: RecordColumn[]
-  kind: 'trade' | 'order' | 'event'
+  kind: 'trade' | 'order' | 'event' | 'position'
   loading?: boolean
   empty: boolean
   emptyText: string
@@ -44,10 +44,10 @@ function SizedRecordTable({ columns, kind, loading, empty, emptyText, children }
   const [widths] = useState(() => columnWidths(columns))
   const minimumWidth = widths.reduce((sum, width) => sum + width, 0)
   const totalGrow = columns.reduce((sum, column) => sum + (column.grow ?? 0), 0)
-  return <div className="min-w-0" aria-busy={loading || undefined} aria-label={kind === 'trade' ? '成交记录' : kind === 'order' ? '委托记录' : '操作异常记录'}>
-    {loading && <span className="sr-only" role="status">正在读取近期记录…</span>}
+  return <div className="min-w-0" aria-busy={loading || undefined} aria-label={kind === 'trade' ? '成交记录' : kind === 'order' ? '委托记录' : kind === 'position' ? '持仓记录' : '操作异常记录'}>
+    {loading && <span className="sr-only" role="status">{kind === 'position' ? '正在读取持仓…' : '正在读取近期记录…'}</span>}
     <div className="overflow-x-auto" data-record-scroll>
-      <table className="table-fixed border-collapse text-left" style={{ width: '100%', minWidth: minimumWidth }} data-trade-table={kind === 'trade' || undefined} data-order-table={kind === 'order' || undefined} data-event-table={kind === 'event' || undefined}>
+      <table className="table-fixed border-collapse text-left" style={{ width: '100%', minWidth: minimumWidth }} data-position-table={kind === 'position' || undefined} data-trade-table={kind === 'trade' || undefined} data-order-table={kind === 'order' || undefined} data-event-table={kind === 'event' || undefined}>
         <colgroup>{columns.map((column, index) => {
           const share = totalGrow ? (column.grow ?? 0) / totalGrow : 0
           // CSS 按视口分配额外宽度；加载和轮询只替换内容，不重新测量或调整基础列宽。

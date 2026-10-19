@@ -5,6 +5,7 @@ export interface ActivityView {
   tab: ActivityTab
   symbol: string
   operationSymbol: string
+  positionSymbol: string
   limit: number
   operationLimit: number
   positions: Map<string, ActivityPosition>
@@ -15,7 +16,7 @@ const views = new Map<number, ActivityView>()
 export function activityView(accountId: number): ActivityView {
   let view = views.get(accountId)
   if (!view) {
-    view = { tab: 'pending', symbol: '', operationSymbol: '', limit: 100, operationLimit: 100, positions: new Map() }
+    view = { tab: 'pending', symbol: '', operationSymbol: '', positionSymbol: '', limit: 100, operationLimit: 100, positions: new Map() }
     views.set(accountId, view)
   }
   return view

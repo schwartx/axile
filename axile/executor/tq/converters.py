@@ -13,6 +13,7 @@ from axile.executor.instrument_catalog_records import EXCHANGES, normalize_catal
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.position_attributes import native_position_attributes
 from axile.executor.tq.symbols import TQSymbolResolver
 
 
@@ -217,6 +218,7 @@ def account_to_unified(
                     avg_price=_float(row, "open_price_long") or None,
                     extra={
                         **common_extra,
+                        "position_attributes": _position_attributes(row, "long"),
                         "frozen": frozen,
                         "position_cost": _float(row, "position_cost_long"),
                         "market_value_provenance": _valuation_provenance(price, multiplier, quote_time, reason, value),
@@ -236,6 +238,7 @@ def account_to_unified(
                     avg_price=_float(row, "open_price_short") or None,
                     extra={
                         **common_extra,
+                        "position_attributes": _position_attributes(row, "short"),
                         "frozen": frozen,
                         "position_cost": _float(row, "position_cost_short"),
                         "market_value_provenance": _valuation_provenance(price, multiplier, quote_time, reason, value),
@@ -248,6 +251,29 @@ def account_to_unified(
         market_value=_total_value(positions),
         positions=positions,
         extra={"account_id": str(_value(account, "account_id", "") or "")},
+    )
+
+
+def _position_attributes(row: object, side: str) -> dict[str, float | str]:
+    """保留本方向原生价格、盈亏和保证金；未知值不补零。"""
+    return native_position_attributes(
+        row,
+        {
+            "today_volume": f"pos_{side}_today",
+            "yesterday_volume": f"pos_{side}_his",
+            "open_price": f"open_price_{side}",
+            "position_price": f"position_price_{side}",
+            "open_cost": f"open_cost_{side}",
+            "position_cost": f"position_cost_{side}",
+            "float_profit": f"float_profit_{side}",
+            "position_profit": f"position_profit_{side}",
+            "margin": f"margin_{side}",
+            "frozen": f"volume_{side}_frozen",
+            "frozen_today": f"volume_{side}_frozen_today",
+            "frozen_yesterday": f"volume_{side}_frozen_his",
+            "option_market_value": f"market_value_{side}",
+        },
+        {"exchange_id": "exchange_id", "native_symbol": "instrument_id"},
     )
 
 
