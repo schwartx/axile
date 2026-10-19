@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { channelLabel } from '@/features/dashboard/display'
 import { useDomainStore } from '@/stores/domain'
 import { useNavigationStore } from '@/stores/ui'
@@ -391,10 +392,11 @@ export function AppSidebar({
                 /* 账户段：身份块头（账户名 + 渠道）+ 左缘贯通 hairline + 统一缩进——
                    整段条目属于这个账户。不用围合面板，层次靠线。 */
                 <div className={`${denseNav ? 'mt-3' : 'mt-4'} ml-1 border-l border-line pl-1 transition-[margin] duration-200 motion-reduce:transition-none`}>
-                  <div className="mb-1 flex min-w-0 items-center gap-1.5 px-2.5 pt-0.5" title={activeAccount?.name ?? '当前账户'}>
-                    <span className="truncate text-[14px] font-[620] text-ink-1">
-                      {activeAccount?.name ?? '当前账户'}
-                    </span>
+                  <div className="mb-1 flex min-w-0 items-center gap-1.5 px-2.5 pt-0.5">
+                    <OverflowText
+                      className="text-[14px] font-[620] text-ink-1"
+                      text={activeAccount?.name ?? '当前账户'}
+                    />
                     {activeAccount && (
                       <span className="flex-none rounded-chip bg-fill px-1.5 py-px text-[11.5px] text-ink-2">
                         {channelLabel(activeAccount.trade_channel, activeAccount.market)}
