@@ -77,6 +77,23 @@ def test_blocked_and_downstream_failure_keep_local_allowance_semantics():
     assert frame["records"][1]["outcome"] == "downstream_error"
 
 
+@pytest.mark.parametrize("integrity_unavailable", [False, True])
+def test_counter_integrity_is_a_warning_and_does_not_override_quota(integrity_unavailable):
+    guard = make_guard(limit=121)
+    guard.monitor_incomplete = True
+    guard.counter_integrity_unavailable = integrity_unavailable
+    if not integrity_unavailable:
+        guard.incomplete_control_dates = frozenset({guard.monitor_snapshot()["control_date"]})
+    for operation in ("place_order", "option_exercise", "option_abandon", "option_self_close"):
+        guard.begin_operation(operation).record_outcome("submitted")
+    frame = guard.monitor_snapshot()
+    assert frame["incomplete"]
+    assert not frame["risk_operations_blocked"]
+    assert used(frame) == 121
+    with pytest.raises(AccountControlBlockedError):
+        guard.begin_operation("place_order")
+
+
 def test_rebinding_same_execution_has_distinct_persistence_uids():
     first, second = make_guard(), make_guard()
     for guard in (first, second):

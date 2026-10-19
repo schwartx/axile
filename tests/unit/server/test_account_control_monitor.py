@@ -252,11 +252,11 @@ def test_crash_preserves_last_known_value_and_restart_marks_confirmed_history_in
             assert restarted.frames[1]["history_incomplete"]
             assert not restarted.frames[1]["snapshot_stale"]
             assert restarted.frames[1]["counter_integrity"] == "unknown"
+            assert not restarted.frames[1]["risk_operations_blocked"]
+            assert restarted.frames[1]["counter_recovery"] == "historical_gap_retained"
             assert restarted.frames[1]["incomplete_instances_total"] == 1
             next_guard = await persistence.build_account_control_guard(account, "after-crash")
-            with pytest.raises(AccountControlBlockedError) as caught:
-                next_guard.begin_operation("place_order")
-            assert caught.value.reason_code == "CONTROL.COUNTER_INCOMPLETE"
+            next_guard.begin_operation("place_order").record_outcome("submitted")
             next_guard.begin_operation("query_order").record_outcome("fetched")
             next_guard.begin_operation("cancel_order").record_outcome("submitted")
             await restarted.refresh()
@@ -356,8 +356,8 @@ def test_retired_worker_snapshot_cannot_replace_new_guard(monkeypatch):
 
 @pytest.mark.parametrize("status", ["active", "incomplete"])
 @pytest.mark.parametrize("outcome", ["allowed", "submitted"])
-def test_orphan_risk_session_blocks_new_native_risk_without_monitor_sampling(monkeypatch, status, outcome):
-    """未刷盘的限额一次放行后，重建 guard 不能再使用空基线报单。"""
+def test_orphan_session_warns_without_blocking_and_known_quota_still_applies(monkeypatch, status, outcome):
+    """中断缺口保留提示；重启可报单，已知计数达到限额后仍阻断。"""
     from axile.executor.account_control.models import AccountControlOverride
 
     async def scenario():
@@ -375,19 +375,20 @@ def test_orphan_risk_session_blocks_new_native_risk_without_monitor_sampling(mon
                 await monitor_module.recover_sessions()
             second = await persistence.build_account_control_guard(account, "restart")
             native_calls = []
-            with pytest.raises(AccountControlBlockedError) as caught:
-                second.begin_operation("place_order")
-                native_calls.append("new_order")
-            assert not native_calls
-            assert caught.value.reason_code == "CONTROL.COUNTER_INCOMPLETE"
+            second.begin_operation("place_order").record_outcome("submitted")
+            native_calls.append("new_order")
+            assert native_calls == ["new_order"]
             assert second.monitor_incomplete
+            assert not second.monitor_snapshot()["risk_operations_blocked"]
+            with pytest.raises(AccountControlBlockedError):
+                second.begin_operation("place_order")
             for operation in ("query_order", "cancel_order", "cancel_order_ctp"):
                 second.begin_operation(operation)
-            with pytest.raises(AccountControlBlockedError):
-                second.begin_operation("option_exercise")
+            for operation in ("option_exercise", "option_abandon", "option_self_close"):
+                second.begin_operation(operation)
             deltas, events = second.flush_records()
-            assert any(event.outcome == "counter_incomplete" and not event.counted for event in events)
-            assert not any(delta.operation == "place_order" for delta in deltas)
+            assert not any(event.outcome == "counter_incomplete" for event in events)
+            assert any(delta.operation == "place_order" for delta in deltas)
             async with factory() as db:
                 persisted = (await db.scalars(select(AccountControlCounterDelta))).all()
                 assert sum(row.delta_count for row in persisted) == 0  # 绝不伪造恢复出丢失的一次。

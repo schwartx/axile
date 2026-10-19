@@ -707,20 +707,12 @@ class AccountControlGuard:
     ) -> AccountControlResolvedAttempt:
         """返回当前时刻的一轮额度评估结果，不在此处执行等待。"""
         context = self._current_context()
-        if operation in {"place_order", "option_exercise", "option_abandon", "option_self_close"} and (
-            self.counter_integrity_unavailable or context.window.control_date in self.incomplete_control_dates
-        ):
-            decision = AccountControlEnforcementDecision(
-                kind="block",
-                message="当前控制窗口计数历史不完整，禁止新增风险操作；只读查询和撤单仍按原规则检查",
-                outcome="counter_incomplete",
-            )
-        else:
-            decision = self._evaluate_enforcement(
-                operation=operation,
-                symbol=symbol,
-                context=context,
-            )
+        # 计数历史缺口只用于审计提示，操作仍按已知计数和现有额度规则评估。
+        decision = self._evaluate_enforcement(
+            operation=operation,
+            symbol=symbol,
+            context=context,
+        )
         return AccountControlResolvedAttempt(context=context, decision=decision)
 
     def _record_blocked_attempt(
@@ -752,7 +744,6 @@ class AccountControlGuard:
         raise AccountControlBlockedError(
             decision.message,
             details=decision.details,
-            reason_code="CONTROL.COUNTER_INCOMPLETE" if decision.outcome == "counter_incomplete" else None,
             account_id=self.account_id,
             execution_id=self.execution_id,
             channel=self.channel,
