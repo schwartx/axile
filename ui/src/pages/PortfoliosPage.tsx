@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useViewTransitionState } from 'react-router'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { LoaderCircle, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { OverflowText } from '@/components/ui/OverflowText'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { CreatePortfolioModal } from '@/features/portfolio/CreatePortfolioModal'
@@ -16,7 +17,7 @@ import {
   PORTFOLIO_ROLLUP_ICON,
   PORTFOLIO_ROLLUP_TEXT_CLASS,
 } from '@/features/portfolio/portfolioRollup'
-import { deletePortfolio } from '@/lib/api/portfolios'
+import { deletePortfolio, refreshPortfolioTargetSnapshot } from '@/lib/api/portfolios'
 import {
   formatTargetWeight,
   formatTargetUpdatedAt,
@@ -203,6 +204,26 @@ function PortfolioCard({
   onDelete: (p: PortfolioLite) => void
 }) {
   const navigate = useNavigate()
+  const toast = useToastStore((s) => s.toast)
+  const [running, setRunning] = useState(false)
+  const [runError, setRunError] = useState<Error | null>(null)
+  const runLock = useRef(false)
+  const runPortfolio = async () => {
+    if (p.id == null || runLock.current) return
+    runLock.current = true
+    setRunning(true)
+    setRunError(null)
+    try {
+      await refreshPortfolioTargetSnapshot(p.id)
+      await targetFetch?.refresh()
+      toast(`「${p.name}」组合函数执行完成`)
+    } catch (cause) {
+      setRunError(cause instanceof Error ? cause : new Error(String(cause)))
+    } finally {
+      runLock.current = false
+      setRunning(false)
+    }
+  }
   const to = `/portfolios/${p.id}/edit`
   // 仅「正在跳去本组合工作台」时给组合名挂共享名，与工作台标题槽配对做平移放大。
   const nameVt = useViewTransitionState(to)
@@ -213,16 +234,28 @@ function PortfolioCard({
     >
       <div className="flex min-w-0 items-center gap-3">
         <div
-          className="min-w-0 truncate text-[16px] font-[620]"
+          className="min-w-0 text-[16px] font-[620]"
           style={nameVt && p.id != null ? { viewTransitionName: portfolioNameVtName(p.id) } : undefined}
         >
-          {p.name}
+          <OverflowText text={p.name} />
         </div>
         <Chip className="flex-none">{p.market}</Chip>
         {accountsReady && !accountsError && followers.length === 0 && (
           <span className="flex-none text-[12px] font-normal text-ink-3">未绑定</span>
         )}
         <div className="ml-auto flex flex-none items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          <Tooltip content={running ? '正在执行组合函数…' : '执行组合函数并更新目标快照'}>
+            <button
+              type="button"
+              aria-label={running ? '正在执行组合函数' : '执行组合函数'}
+              aria-busy={running}
+              disabled={running || p.id == null}
+              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 transition-colors duration-150 enabled:hover:border-ink-3/40 enabled:hover:text-ink-1 disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none"
+              onClick={() => void runPortfolio()}
+            >
+              {running ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" aria-hidden /> : <Play size={14} aria-hidden />}
+            </button>
+          </Tooltip>
           <Tooltip content="编辑组合">
             <button
               type="button"
@@ -248,6 +281,9 @@ function PortfolioCard({
       </div>
 
       <TargetSummary state={targetState} />
+      <div onClick={(event) => event.stopPropagation()}>
+        <ErrorNotice intent="mutation" title="组合函数执行失败" error={runError} variant="compact" contextKey={p.id ?? undefined} onRetry={running ? undefined : () => void runPortfolio()} />
+      </div>
       <div onClick={(event) => event.stopPropagation()}><ErrorNotice intent="read" title={`${p.name} 目标读取失败`} error={targetFetch?.error} hasData={targetFetch?.snapshot != null} evidence={[{ label: '组合 ID', value: String(p.id) }]} variant={targetFetch?.snapshot ? 'stale' : 'compact'} updatedAt={targetFetch?.updatedAt} onRetry={targetFetch?.refresh} contextKey={p.id ?? undefined} /></div>
 
       <div className="mt-auto min-w-0 pt-3">
