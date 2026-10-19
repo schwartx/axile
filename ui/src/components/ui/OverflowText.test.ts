@@ -30,7 +30,7 @@ describe('overflowTextDuration', () => {
   })
 
   it('长距离按固定速度播放', () => {
-    expect(overflowTextDuration(80)).toBe(2000)
+    expect(overflowTextDuration(80)).toBe(1333)
     expect(overflowTextDuration(80)).toBe(
       Math.round((80 / OVERFLOW_TEXT_SPEED_PX_PER_SECOND) * 1000),
     )

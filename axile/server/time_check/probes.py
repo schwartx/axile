@@ -98,4 +98,3 @@ async def ntp_probe(
         return {"status": "error", "error": "; ".join(errors) or "没有有效 NTP 样本"}
     best = min(samples, key=lambda sample: sample["delay_ms"])
     return {"status": "ok", **best, "samples": len(samples), "sample_errors": errors}
-

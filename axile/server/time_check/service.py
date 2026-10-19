@@ -78,7 +78,9 @@ class TimeCheckService:
             state = await session.get(TimeCheckStateRow, 1)
             self.state = dict(state.data) if state else {"alerts": {}, "first_claimed": False}
             # 兼容已有 JSON 证据：退出使用操作系统自报状态，清除其旧结果和告警。
-            self.state["alerts"] = {key: value for key, value in self.state.get("alerts", {}).items() if key != "system"}
+            self.state["alerts"] = {
+                key: value for key, value in self.state.get("alerts", {}).items() if key != "system"
+            }
             if self.state.get("result"):
                 self.state["result"] = {key: value for key, value in self.state["result"].items() if key != "system"}
             if state:

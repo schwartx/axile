@@ -199,7 +199,7 @@ def test_public_ctp_validation_hits_target_before_native_insert(case, expected):
     executor._call_trader_request = Mock(side_effect=AssertionError("非法输入不能到达原生边界"))
     symbol, volume, price = "rb2701", 1, 3500.0
     if case == "unknown":
-        symbol = "FT_UNKNOWN_CONTRACT"
+        symbol = "zz9999"
     elif case == "price":
         price = 3500.5
     else:
