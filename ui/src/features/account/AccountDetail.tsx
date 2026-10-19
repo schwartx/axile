@@ -428,12 +428,6 @@ export function AccountDetail({
             {gate.gate === 'paused' && <Chip>{gate.label}</Chip>}
             <AccountConnectionStatus accountId={accountId} />
           </div>
-          {remark && (
-            <OverflowText
-              className="order-last basis-full text-[14px] leading-5 text-ink-3 xl:order-none xl:min-w-0 xl:max-w-[520px] xl:flex-1 xl:basis-auto"
-              text={remark}
-            />
-          )}
           <AccountActions
             name={item.name}
             isStarted={isStarted}
@@ -451,11 +445,20 @@ export function AccountDetail({
             onDelete={onDelete}
           />
         </div>
-        {account.data?.copied_from_account_name && (
-          <div className="mt-2 text-sm text-ink-3">
-            复制自{account.data.copied_from_account_id && useDomainStore.getState().accounts?.some((a) => a.account_id === account.data?.copied_from_account_id) ? (
-              <Link className="ml-1 text-accent hover:underline" to={`/accounts/${account.data.copied_from_account_id}`}>{account.data.copied_from_account_name}</Link>
-            ) : <span className="ml-1">{account.data.copied_from_account_name}</span>}
+        {(remark || account.data?.copied_from_account_name) && (
+          <div className="mt-2 mb-2 flex min-w-0 items-center gap-2 leading-5">
+            {remark && <OverflowText className="max-w-[520px] text-[14px] text-ink-2" text={remark} />}
+            {remark && account.data?.copied_from_account_name && <span className="shrink-0 text-[12px] text-ink-3" aria-hidden>·</span>}
+            {account.data?.copied_from_account_name && (
+              <span className="inline-flex min-w-0 max-w-[40%] shrink-0 items-center gap-1 text-[12px] text-ink-3">
+                <span className="shrink-0">复制自</span>
+                {account.data.copied_from_account_id && useDomainStore.getState().accounts?.some((a) => a.account_id === account.data?.copied_from_account_id) ? (
+                  <Link className="min-w-0 hover:text-ink-2 hover:underline" to={`/accounts/${account.data.copied_from_account_id}`}>
+                    <OverflowText text={account.data.copied_from_account_name} />
+                  </Link>
+                ) : <OverflowText text={account.data.copied_from_account_name} />}
+              </span>
+            )}
           </div>
         )}
 
