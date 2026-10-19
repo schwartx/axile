@@ -396,6 +396,7 @@ def init_save(payload: InitSaveRequest, background_tasks: BackgroundTasks) -> Te
         "algorithm_modules": payload.algorithm_modules,
         "algorithm_directories": payload.algorithm_directories,
     }
+    values["time_check_first_run"] = not is_configured() or settings.time_check_first_run
     try:
         write_config_toml(values)
     except OSError as exc:

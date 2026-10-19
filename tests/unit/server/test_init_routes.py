@@ -157,3 +157,20 @@ def test_advanced_save_preserves_omitted_credentials(
     assert 'sqlalchemy_database_uri = "sqlite+aiosqlite:///custom.db"' in written
     assert 'exe_err_feishu_key = "existing-key"' in written
     assert 'app_log_dir = "./new-logs"' in written
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_time_check_first_run_marker_only_for_new_install(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, existing: bool
+) -> None:
+    """升级保存配置不补建首次待办；初次配置明确标记自动检查。"""
+    path = tmp_path / "config.toml"
+    if existing:
+        path.write_text('environment = "local"\n', encoding="utf-8")
+    monkeypatch.setattr(cfg, "CONFIG_TOML_PATH", path)
+    monkeypatch.setattr(cfg.settings, "time_check_first_run", False)
+    monkeypatch.setattr(init_module, "_restart_process", lambda: None)
+    response = client.post("/api/v1/init/save", json={"sqlalchemy_database_uri": "sqlite+aiosqlite:///./axile.db"})
+    assert response.status_code == 200
+    expected = "false" if existing else "true"
+    assert f"time_check_first_run = {expected}" in path.read_text(encoding="utf-8")

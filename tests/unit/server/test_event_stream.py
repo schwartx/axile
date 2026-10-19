@@ -29,6 +29,8 @@ def sources(monkeypatch, *, sampled=True):
 
     monkeypatch.setattr(event_stream, "connection_hub", ConnectionEventHub())
     monkeypatch.setattr(event_stream, "connection_frames", AsyncMock(return_value=[]))
+    monkeypatch.setattr(event_stream, "orders_hub", ConnectionEventHub())
+    monkeypatch.setattr(event_stream, "orders_frames", AsyncMock(return_value=[]))
     return hub, monitor
 
 
@@ -273,11 +275,13 @@ def test_default_stream_includes_connection_snapshot_without_periodic_reads(monk
     async def scenario():
         sources(monkeypatch)
         async with aclosing(event_stream.merge_events()) as events:
-            initial = [await next_event(events) for _ in range(3)]
+            initial = [await next_event(events) for _ in range(5)]
             assert {event.name for event in initial} == {
                 "execution.snapshot",
                 "control.snapshot",
                 "connection.snapshot",
+                "orders.snapshot",
+                "time_check.snapshot",
             }
             assert event_stream.connection_frames.await_count == 1
             event_stream.connection_hub.changed(7)

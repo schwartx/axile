@@ -1,3 +1,5 @@
+import { useTimeCheck } from '@/stores/timeCheck'
+import type { TimeCheckEnvelope } from '@/lib/api/timeCheck'
 import { useEffect } from 'react'
 import { useDomainStore } from '@/stores/domain'
 import { useLiveExecStore, type RunFrame } from '@/stores/liveExec'
@@ -40,6 +42,7 @@ export function startBusinessStream({
     useLiveControl.getState().disconnect()
     useLiveConnection.getState().disconnect()
     useLiveOrders.getState().disconnect()
+    useTimeCheck.getState().disconnect()
   }
   const close = () => {
     const previous = stream
@@ -56,6 +59,7 @@ export function startBusinessStream({
     useLiveControl.getState().beginReconnect()
     useLiveConnection.getState().disconnect()
     useLiveOrders.getState().disconnect()
+    useTimeCheck.getState().disconnect()
     const current = open(BUSINESS_STREAM_PATH)
     stream = current
     let executionCursor: StreamCursor | null = null
@@ -64,8 +68,9 @@ export function startBusinessStream({
     let connectionReady = false
     let ordersReady = false
 
-    const fail = (topic: 'execution' | 'control' | 'connection' | 'orders', message: string) => {
-      if (topic === 'execution') { executionReady = false; useLiveExecStore.getState().disconnect(message) }
+    const fail = (topic: 'execution' | 'control' | 'connection' | 'orders' | 'time_check', message: string) => {
+      if (topic === 'time_check') { useTimeCheck.getState().disconnect(message) }
+      else if (topic === 'execution') { executionReady = false; useLiveExecStore.getState().disconnect(message) }
       else if (topic === 'control') { controlReady = false; useLiveControl.getState().disconnect(undefined, message) }
       else if (topic === 'orders') { ordersReady = false; useLiveOrders.getState().disconnect() }
       else { connectionReady = false; useLiveConnection.getState().disconnect() }
@@ -77,7 +82,7 @@ export function startBusinessStream({
         catch (error) {
           // 无法应用的帧可能已造成缺口，重开连接取得全量；旧连接从此失效。
           disconnect()
-          fail(name.startsWith('execution.') ? 'execution' : name.startsWith('connection.') ? 'connection' : name.startsWith('orders.') ? 'orders' : 'control', error instanceof Error ? error.message : String(error))
+          fail(name.startsWith('time_check.') ? 'time_check' : name.startsWith('execution.') ? 'execution' : name.startsWith('connection.') ? 'connection' : name.startsWith('orders.') ? 'orders' : 'control', error instanceof Error ? error.message : String(error))
           close()
           cancelRetry = later(sync)
         }
@@ -134,7 +139,9 @@ export function startBusinessStream({
     }
     listen<OrdersEnvelope>('orders.snapshot', message => orders(message, true))
     listen<OrdersEnvelope>('orders.update', message => orders(message, false))
-    for (const topic of ['execution', 'control', 'connection', 'orders'] as const) {
+    listen<TimeCheckEnvelope>('time_check.snapshot', message => { cursor(message); useTimeCheck.getState().apply(message, true) })
+    listen<TimeCheckEnvelope>('time_check.update', message => { cursor(message); useTimeCheck.getState().apply(message) })
+    for (const topic of ['execution', 'control', 'connection', 'orders', 'time_check'] as const) {
       listen<{ message: string }>(`${topic}.error`, (message) => fail(topic, message.message))
     }
     current.onerror = () => {

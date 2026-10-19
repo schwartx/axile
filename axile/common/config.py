@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     )
     environment: Literal["local", "staging", "production"] = "local"
 
+    time_check_first_run: bool = False
+
     sqlalchemy_database_uri: SqliteDsn = MultiHostUrl("sqlite+aiosqlite:///./axile.db")
     exe_err_feishu_key: str = ""
     system_execution_notification_mode: Literal["default", "function"] = "default"

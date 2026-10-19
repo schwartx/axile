@@ -237,6 +237,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _load_configured_algorithm_modules()
     register_china_channel_jobs(scheduler)
     scheduler.start()
+    from axile.server.time_check.service import service as time_check_service
+
+    await time_check_service.start(first_run=settings.time_check_first_run)
     from axile.server.execution import notification_outbox
     from axile.server.execution.supplements import recover_supplements
 
@@ -265,6 +268,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         account_recovery.cancel()
         await asyncio.gather(account_recovery, return_exceptions=True)
         await validation_service.close()
+        await time_check_service.close()
         await monitor.close()
         scheduler.shutdown()
         await analysis.stop()

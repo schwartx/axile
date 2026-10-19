@@ -99,6 +99,7 @@ from axile.server.db.models.target_weight_snapshot import (
     TargetWeightSnapshotPublic,
     TargetWeightSnapshotSource,
 )
+from axile.server.db.models.time_check import TimeCheckSettingsRow, TimeCheckStateRow
 
 Portfolio.model_rebuild()
 Account.model_rebuild()
@@ -196,3 +197,5 @@ __all__ = [
     "ScheduleSkip",
     "ScheduleSkipActivity",
 ]
+
+__all__ += ["TimeCheckSettingsRow", "TimeCheckStateRow"]

@@ -1,3 +1,4 @@
+import { TimeCheckButton } from '@/features/system/timeCheck/TimeCheckButton'
 import { type RefObject } from 'react'
 import { Link } from '@/components/ui/nav'
 import { useDomainStore } from '@/stores/domain'
@@ -51,6 +52,7 @@ export function TopBar({
         </Link>
       )}
       <span className="flex-1" />
+      <TimeCheckButton />
       <ThemeToggle />
     </header>
   )

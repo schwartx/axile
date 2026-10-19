@@ -19,7 +19,7 @@ from axile.server.connection_events import connection_frames, connection_hub
 from axile.server.execution.live import live_hub
 from axile.server.orders_live import orders_frames, orders_hub
 
-Topic = Literal["execution", "control", "connection", "orders"]
+Topic = Literal["execution", "control", "connection", "orders", "time_check"]
 _QUEUE_SIZE = 32
 _CONTROL_TIMEOUT_SECONDS = 5.0
 
@@ -134,6 +134,17 @@ async def orders_events() -> AsyncGenerator[StreamEvent, None]:
             )
 
 
+async def time_check_events() -> AsyncGenerator[StreamEvent, None]:
+    """时间检查仅推送状态，订阅不触发检查。"""
+    from axile.server.time_check.service import service
+
+    first = True
+    async with aclosing(service.frames()) as frames:
+        async for frame in frames:
+            yield StreamEvent("time_check.snapshot" if first else "time_check.update", frame)
+            first = False
+
+
 async def _forward(
     topic: Topic,
     source: Callable[[], AsyncGenerator[StreamEvent, None]],
@@ -152,7 +163,9 @@ async def _forward(
 
 
 async def merge_events(
-    topics: tuple[Topic, ...] = ("execution", "control", "connection", "orders"), *, heartbeat_seconds: float = 15.0
+    topics: tuple[Topic, ...] = ("execution", "control", "connection", "orders", "time_check"),
+    *,
+    heartbeat_seconds: float = 15.0,
 ) -> AsyncGenerator[StreamEvent | None, None]:
     """并行转发各域；空闲返回心跳，退出时回收所有连接专属任务及订阅。"""
     sources = {
@@ -160,6 +173,7 @@ async def merge_events(
         "control": control_events,
         "connection": connection_events,
         "orders": orders_events,
+        "time_check": time_check_events,
     }
     queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=_QUEUE_SIZE)
     tasks = [asyncio.create_task(_forward(topic, sources[topic], queue)) for topic in topics]

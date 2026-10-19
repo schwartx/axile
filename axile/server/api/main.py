@@ -12,6 +12,7 @@ from axile.server.api.routes import (
     init,
     instrument_catalog,
     portfolio,
+    time_check,
     utils,
 )
 
@@ -27,3 +28,5 @@ api_router.include_router(account.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(editor.router)
 api_router.include_router(events.router)
+
+api_router.include_router(time_check.router)

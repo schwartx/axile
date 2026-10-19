@@ -10,9 +10,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check } from 'lucide-react'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
-import { Segmented } from '@/components/ui/Segmented'
 import { SupplementControls } from '@/features/setup/SupplementControls'
 import { SupplementPreviewSummary, type SupplementPreviewValue } from '@/features/setup/SupplementPreviewSummary'
 import { ScheduleTimeRow } from '@/components/ui/ScheduleTimeRow'
@@ -26,12 +24,11 @@ import {
   defaultNightOn,
   defaultScheduleRule,
   resolveCronList,
-  ruleFromPreset,
   type NightSchedule,
   type ScheduleKind,
   type TimerEditorState,
 } from '@/features/setup/cron'
-import { TimerAdvanced, TimerCustom } from '@/features/setup/TimerAdvanced'
+import { ScheduleFields } from '@/features/setup/ScheduleFields'
 import {
   appendSchedulePreview,
   isClosedPreviewDay,
@@ -425,118 +422,19 @@ export function TimerEditor({ tradeChannel, scheduleKind, nightSchedule, value, 
     previewAppendController.current?.abort()
   }, [])
 
-  const setTab = (tab: 'quick' | 'advanced' | 'custom') => {
-    if (tab === 'custom') {
-      const rawCron = v.rawCron.trim()
-        ? v.rawCron
-        : cronToExpr(resolveCronList(scheduleKind, { ...v, supN: 0 }, nightSchedule))
-      patch({ timerTab: 'custom', rawCron })
-      return
-    }
-    if (tab === 'advanced') {
-      if (v.scheduleRules.length >= 1) {
-        patch({
-          timerTab: 'advanced',
-          selectedRuleId: v.selectedRuleId || v.scheduleRules[0]!.id,
-        })
-        return
-      }
-      const rule = ruleFromPreset(scheduleKind, v.presetIds[0] ?? DEFAULT_PRESET[scheduleKind])
-      patch({ timerTab: 'advanced', scheduleRules: [rule], selectedRuleId: rule.id })
-      return
-    }
-    patch({ timerTab: 'quick' })
-  }
-
-  const togglePreset = (id: string) => {
-    if (v.scheduleRules.length >= 2) {
-      patch({ presetIds: [id] })
-      return
-    }
-    const rule = ruleFromPreset(scheduleKind, id)
-    patch({ presetIds: [id], scheduleRules: [rule], selectedRuleId: rule.id })
-  }
-
-  const presetCardT =
-    'transition-[border-color,background-color,box-shadow] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none'
   const summary = calendarSummary(schedulePreview)
   const visiblePreviewRows = layout === 'page' && previewWide ? previewRows : previewRows.slice(0, PREVIEW_MIN_ITEMS)
 
   /** 编辑区列：tabs + 当前 tab 内容 + 补发。 */
   const editorColumn = (
     <>
-      <div>
-        <Segmented<'quick' | 'advanced' | 'custom'>
-          size="sm"
-          value={v.timerTab}
-          onChange={setTab}
-          options={[
-            { value: 'quick', label: '快捷' },
-            { value: 'advanced', label: '高级' },
-            { value: 'custom', label: '自定义' },
-          ]}
-        />
-      </div>
-
-      <div key={v.timerTab} className={tabFade ? 'panel-fade-in' : undefined}>
-        {v.timerTab === 'quick' ? (
-          <div>
-            <div className="mb-2">
-              <label className="text-sm font-[640]">节奏</label>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {PRESETS[scheduleKind].map((p) => {
-                const on = v.presetIds.includes(p.id)
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => togglePreset(p.id)}
-                    className={`min-w-[92px] rounded-[11px] border p-2.5 text-left ${presetCardT} ${
-                      on
-                        ? 'border-accent bg-accent-soft shadow-[inset_0_0_0_1px_var(--color-accent)]'
-                        : 'border-line bg-surface'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 text-sm font-[640]">
-                      <span>{p.label}</span>
-                      <Check size={13} aria-hidden="true" className={`shrink-0 ${on ? '' : 'invisible'}`} />
-                    </div>
-                    {p.sub && <div className="text-xs text-ink-3">{p.sub}</div>}
-                  </button>
-                )
-              })}
-            </div>
-            {nightSchedule && (
-              <div className="mt-4 flex items-center gap-3">
-                <Switch
-                  ariaLabel={nightSchedule.label}
-                  on={v.nightOn}
-                  onClick={() => patch({ nightOn: !v.nightOn })}
-                />
-                <div className="min-w-0">
-                  <div className="text-sm font-[640]">{nightSchedule.label}</div>
-                  <div className="text-xs text-ink-3">{nightSchedule.range_label}</div>
-                </div>
-              </div>
-            )}
+      <ScheduleFields value={v} patch={patch} scheduleKind={scheduleKind} nightSchedule={nightSchedule}
+        rawErr={rawErr} tabFade={tabFade} nightControls={nightSchedule ? (
+          <div className="mt-4 flex items-center gap-3">
+            <Switch ariaLabel={nightSchedule.label} on={v.nightOn} onClick={() => patch({ nightOn: !v.nightOn })} />
+            <div><div className="text-sm font-[640]">{nightSchedule.label}</div><div className="text-xs text-ink-3">{nightSchedule.range_label}</div></div>
           </div>
-        ) : v.timerTab === 'advanced' ? (
-          <TimerAdvanced
-            market={scheduleKind}
-            rules={v.scheduleRules}
-            selectedId={v.selectedRuleId}
-            onChangeRules={(scheduleRules, selectedRuleId) => patch({ scheduleRules, selectedRuleId })}
-          />
-        ) : (
-          <TimerCustom
-            rawCron={v.rawCron}
-            rawErr={rawErr}
-            onRawCron={(rawCron) => patch({ rawCron })}
-          />
-        )}
-      </div>
+        ) : undefined} />
 
       <div
         className={`grid transition-[grid-template-rows] ${MOTION_LAYOUT} ${
