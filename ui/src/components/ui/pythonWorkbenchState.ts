@@ -63,13 +63,13 @@ export function usePythonRun<T>({ code, contextKey = '', enabled = true, execute
   const gate = useRef(createPythonOperationGate()).current
   const input = JSON.stringify([code, contextKey])
   const canRun = enabled && Boolean(code.trim()) && !running
-  const run = () => gate(canRun, async () => {
+  const run = (executeOverride?: (code: string) => Promise<T>) => gate(canRun, async () => {
     setRunning(true)
     try {
       let next: T
       let failure: unknown = null
       try {
-        next = await execute(code)
+        next = await (executeOverride ?? execute)(code)
       } catch (cause) {
         failure = cause
         next = failed(cause)

@@ -22,6 +22,7 @@ from axile.server.db.models import (
     ValidateCustomCalcResponse,
 )
 from axile.server.db.models.account import AccountContext
+from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 from axile.server.error_details import exception_details
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import clear_target_refresh, try_register_target_refresh
@@ -218,3 +219,40 @@ async def validate_custom_calc(session: SessionDep, payload: ValidateCustomCalcR
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     await session.close()
     return await _run_custom_calc_validation(account, payload.custom_calc_py_code)
+
+
+@router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)
+async def run_and_save_portfolio(
+    session: SessionDep, portfolio_id: int, payload: RunAndSavePortfolioRequest
+) -> ValidateCustomCalcResponse:
+    """只执行一次草稿；通过后在同一事务保存组合与原始快照。"""
+    portfolio = await session.get(Portfolio, portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="组合不存在")
+    update = PortfolioUpdate(name=payload.name, custom_calc_py_code=payload.custom_calc_py_code)
+    account = await session.get(Account, payload.account_id) if payload.account_id is not None else None
+    if payload.account_id is not None and account is None:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    if not try_register_target_refresh(portfolio_id, payload.account_id):
+        raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
+    try:
+        result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
+        if not result.valid:
+            return result
+        portfolio.sqlmodel_update(update.model_dump(exclude_unset=True))
+        session.add(portfolio)
+        # 试跑只保存组合原始结果，不更新账户执行口径目标。
+        await append_target_weight_snapshot(
+            session,
+            portfolio_id=portfolio_id,
+            account_id=payload.account_id,
+            raw_weights=result.target,
+            normalized_weights=None,
+            source="manual",
+        )
+        return result
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        clear_target_refresh(portfolio_id, payload.account_id)

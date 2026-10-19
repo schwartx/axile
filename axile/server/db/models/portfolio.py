@@ -103,6 +103,12 @@ class ValidateCustomCalcRequest(SQLModel):
     account_id: Optional[int] = None
 
 
+class RunAndSavePortfolioRequest(ValidateCustomCalcRequest):
+    """试跑成功后保存代码和原始目标快照。"""
+
+    name: str = Field(min_length=1)
+
+
 class ValidateCustomCalcResponse(SQLModel):
     """校验自定义组合脚本的响应载荷."""
 

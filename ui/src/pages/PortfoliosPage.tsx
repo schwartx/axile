@@ -234,7 +234,7 @@ function PortfolioCard({
             <button
               type="button"
               aria-label="删除组合"
-              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-warn/35 bg-warn-tint text-warn hover:border-warn/55 hover:bg-warn-soft disabled:cursor-not-allowed disabled:opacity-45"
+              className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-line text-ink-2 enabled:hover:border-warn/55 enabled:hover:bg-warn-soft enabled:hover:text-warn focus-visible:border-warn/55 focus-visible:bg-warn-soft focus-visible:text-warn disabled:cursor-not-allowed disabled:opacity-45"
               disabled={!accountsReady || Boolean(accountsError)}
               onClick={() => onDelete(p)}
             >
@@ -259,7 +259,7 @@ function PortfolioCard({
             '未绑定账户'
           )}
         </div>
-        <TargetTimestamp state={targetState} />
+        <TargetTimestamp state={targetState} snapshot={targetFetch?.snapshot} />
       </div>
     </Card>
   )
@@ -326,11 +326,17 @@ function Metric({
   )
 }
 
-function TargetTimestamp({ state }: { state: PortfolioTargetState }) {
+function TargetTimestamp({ state, snapshot }: {
+  state: PortfolioTargetState
+  snapshot?: import('@/types/api').TargetWeightSnapshot | null
+}) {
+  const accounts = useDomainStore((store) => store.accounts)
+  const contextId = snapshot?.context_account_id
+  const context = contextId == null ? '样例数据' : `账户 ${accounts?.find(account => account.account_id === contextId)?.name ?? `#${contextId}`}`
   if (state.kind !== 'ready' && state.kind !== 'empty') return null
   return (
-    <span className="flex-none text-[12.5px] text-ink-3">
-      目标更新于{formatTargetUpdatedAt(state.calculatedAt)}
+    <span className="max-w-full break-words text-[12.5px] text-ink-3">
+      {context} · 目标更新于{formatTargetUpdatedAt(state.calculatedAt)}
     </span>
   )
 }

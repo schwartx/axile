@@ -7,7 +7,7 @@ export function targetSnapshotText(snapshot: TargetWeightSnapshot | null, contex
   const context = contextName
     ? ` · 使用账户 ${contextName}`
     : snapshot.context_account_id == null
-      ? ' · 样例上下文'
-      : ''
+      ? ' · 样例数据'
+      : ` · 使用账户 #${snapshot.context_account_id}`
   return `目标计算于 ${snapshot.calculated_at.replace('T', ' ')} · ${source}${context}`
 }

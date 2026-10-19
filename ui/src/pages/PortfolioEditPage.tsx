@@ -33,6 +33,7 @@ import {
   getPortfolioTargetSnapshot,
   refreshPortfolioTargetSnapshot,
   updatePortfolio,
+  runAndSavePortfolio,
 } from '@/lib/api/portfolios'
 import { triggerExecute } from '@/lib/api/executions'
 import { useDomainStore } from '@/stores/domain'
@@ -174,7 +175,7 @@ export function PortfolioEditPage() {
     accounts?.find((account) => account.account_id === weights.data?.context_account_id)?.name
     ?? (weights.data?.context_account_id != null ? `#${weights.data.context_account_id}` : null)
   const snapshotStatusText = weights.data?.calculated_at
-    ? `目标更新于 ${weights.data.calculated_at.slice(11, 16)}`
+    ? `${weights.data.context_account_id == null ? '样例数据' : `账户 ${snapshotContextName}`} · 目标更新于 ${weights.data.calculated_at.slice(11, 16)}`
     : weights.error
       ? '目标不可用'
       : weights.loading
@@ -218,7 +219,7 @@ export function PortfolioEditPage() {
   const currentSyntaxError =
     !calc.stale && calc.editorResult?.valid === false && calc.editorResult.errorType === 'SyntaxError'
   const blocked =
-    !name.trim() || !code.trim() || currentSyntaxError
+    !name.trim() || !code.trim() || currentSyntaxError || calc.validating
 
   // 左列 split：从上顶（控制区底）量指针位置，panelSplit 是返回值占可用高度的份额；
   // 与右列的从底量法互成镜像。
@@ -260,9 +261,9 @@ export function PortfolioEditPage() {
   }`
 
   // 保存后留在原地：toast 确认、基线更新为已保存态，迭代循环不跳出工作台。
-  const publish = async (validated = false) => {
+  const publish = async () => {
     const saveBlocked = !name.trim() || !code.trim()
-    if (saveBlocked || (!validated && currentSyntaxError) || saving || !dirty) return
+    if (saveBlocked || currentSyntaxError || calc.validating || saving || !dirty) return
     await saveState.save(true, async () => {
       await updatePortfolio(portfolioId, { name: name.trim(), custom_calc_py_code: code })
       toast('组合已更新')
@@ -273,8 +274,16 @@ export function PortfolioEditPage() {
 
   const runAndPublish = async () => {
     if (saving) return
-    const result = await calc.run()
-    if (result?.valid) await publish(true)
+    const submitted = { name: name.trim(), code }
+    const result = await calc.run((draft) => runAndSavePortfolio(portfolioId, {
+      name: submitted.name, custom_calc_py_code: draft, account_id: calc.accountId,
+    }))
+    if (result?.valid) {
+      setOriginal(submitted)
+      toast('组合与目标快照已保存')
+      void refreshPortfolios()
+      void weights.reloadSnapshot()
+    }
   }
 
   const restore = () => {

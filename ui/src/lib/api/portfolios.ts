@@ -79,3 +79,12 @@ export function updatePortfolio(
 export function deletePortfolio(id: number): Promise<Message> {
   return apiSend<Message>('DELETE', `/portfolio/${id}`)
 }
+
+/** 试跑当前草稿，通过后同时保存代码与原始目标快照。 */
+export function runAndSavePortfolio(id: number, body: {
+  name: string
+  custom_calc_py_code: string
+  account_id: number | null
+}): Promise<ValidateCustomCalcResult> {
+  return apiSend<ValidateCustomCalcResult>('POST', `/portfolio/${id}/run_and_save`, body)
+}

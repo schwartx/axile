@@ -19,7 +19,7 @@ export interface CustomCalcValidation {
   setAccountId: (id: number | null) => void
   contextOptions: SelectOption<number | null>[]
   canRun: boolean
-  run: () => Promise<ValidateCustomCalcResult | null>
+  run: (execute?: (code: string) => Promise<ValidateCustomCalcResult>) => Promise<ValidateCustomCalcResult | null>
 }
 
 /**

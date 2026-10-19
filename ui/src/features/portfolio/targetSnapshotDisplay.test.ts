@@ -21,9 +21,9 @@ describe('targetSnapshotText', () => {
     )
   })
 
-  it('无账户上下文时明确标记样例上下文', () => {
+  it('无账户上下文时明确标记样例数据', () => {
     expect(targetSnapshotText({ ...snapshot, source: 'manual', context_account_id: null })).toBe(
-      '目标计算于 2026-08-25 14:32:18 · 主动刷新 · 样例上下文',
+      '目标计算于 2026-08-25 14:32:18 · 主动刷新 · 样例数据',
     )
   })
 })
