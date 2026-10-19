@@ -8,6 +8,7 @@ import { Link, useNavigate } from '@/components/ui/nav'
 import { Card } from '@/components/ui/Card'
 import { NumberTicker } from '@/components/ui/NumberTicker'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { IdentityHover } from '@/components/ui/IdentityHover'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { PerformanceCurveLink } from '@/features/history/PerformanceCurveLink'
 import { ExposureBar } from '@/components/viz/ExposureBar'
@@ -57,12 +58,15 @@ function FleetCard({
       onClick={() => navigate(to)}
     >
       <div className="flex flex-wrap items-center gap-3">
-        <span
-          className="text-[16px] font-[620]"
-          style={transitioning ? { viewTransitionName: `account-name-${item.account_id}` } : undefined}
-        >
-          {item.name}
-        </span>
+        <IdentityHover name={item.name} id={item.account_id} kind="账户">
+          <span
+            tabIndex={0}
+            className="text-[16px] font-[620] focus-visible:outline-2 focus-visible:outline-accent"
+            style={transitioning ? { viewTransitionName: `account-name-${item.account_id}` } : undefined}
+          >
+            {item.name}
+          </span>
+        </IdentityHover>
         {/* 渠道徽章与账户名同一逻辑单元：同门控挂名、同轨飞行，不与名字撕开。 */}
         <span
           className="rounded-chip bg-fill px-2 py-0.5 text-[12px] text-ink-2"

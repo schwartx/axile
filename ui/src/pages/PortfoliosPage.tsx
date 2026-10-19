@@ -5,6 +5,7 @@ import { Link, useNavigate } from '@/components/ui/nav'
 import { Card, Chip } from '@/components/ui/Card'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { IdentityHover } from '@/components/ui/IdentityHover'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
@@ -233,12 +234,15 @@ function PortfolioCard({
       onClick={() => navigate(to)}
     >
       <div className="flex min-w-0 items-center gap-3">
-        <div
-          className="min-w-0 text-[16px] font-[620]"
-          style={nameVt && p.id != null ? { viewTransitionName: portfolioNameVtName(p.id) } : undefined}
-        >
-          <OverflowText text={p.name} />
-        </div>
+        <IdentityHover name={p.name} id={p.id} kind="组合" createdAt={p.created_at}>
+          <div
+            tabIndex={0}
+            className="min-w-0 text-[16px] font-[620] focus-visible:outline-2 focus-visible:outline-accent"
+            style={nameVt && p.id != null ? { viewTransitionName: portfolioNameVtName(p.id) } : undefined}
+          >
+            <OverflowText text={p.name} />
+          </div>
+        </IdentityHover>
         <Chip className="flex-none">{p.market}</Chip>
         {accountsReady && !accountsError && followers.length === 0 && (
           <span className="flex-none text-[12px] font-normal text-ink-3">未绑定</span>

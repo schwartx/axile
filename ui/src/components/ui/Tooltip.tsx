@@ -33,7 +33,7 @@ const EDGE = 8
  * 下落，水平方向按视口边缘夹取避免溢出。锚点经 ``cloneElement`` 注入引用与事件、**不额外
  * 包裹 DOM**（可直接套在 flex 子项等布局敏感元素上）。样式仅取 ``theme.css`` 语义 token，
  * 明暗主题自动跟随；入场动效复用 ``select-pop-in``，``prefers-reduced-motion`` 由 CSS 兜底。
- * 卡片 ``pointer-events-none``，纯展示不夺取指针。
+ * 默认纯展示；interactive 模式允许移入操作，并提供 150ms 离开缓冲。
  *
  * Parameters
  * ----------
@@ -52,11 +52,14 @@ export function Tooltip({
   children,
   delay = 140,
   arrow = false,
+  interactive = false,
 }: {
   content: ReactNode
   children: ReactElement
   delay?: number
   arrow?: boolean
+  /** 允许进入浮层操作，离开后延迟关闭。 */
+  interactive?: boolean
 }): ReactElement {
   const id = useId()
   const anchorRef = useRef<HTMLElement | null>(null)
@@ -88,10 +91,23 @@ export function Tooltip({
 
   const hide = useCallback(() => {
     window.clearTimeout(timer.current)
-    setOpen(false)
-  }, [])
+    if (interactive) timer.current = window.setTimeout(() => setOpen(false), 150)
+    else setOpen(false)
+  }, [interactive])
 
   useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  useEffect(() => {
+    if (!open) return
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        window.clearTimeout(timer.current)
+        setOpen(false)
+      }
+    }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [open])
 
   // 打开时：定位随滚动/缩放实时重算（capture 捕获任意祖先滚动）。
   useLayoutEffect(() => {
@@ -158,7 +174,14 @@ export function Tooltip({
         pos &&
         createPortal(
           <div
-            className="pointer-events-none fixed z-[60] w-max max-w-[min(320px,90vw)]"
+            className={`${interactive ? 'pointer-events-auto' : 'pointer-events-none'} fixed z-[60] w-max max-w-[min(320px,90vw)]`}
+            onMouseEnter={() => window.clearTimeout(timer.current)}
+            onMouseLeave={hide}
+            onFocus={() => window.clearTimeout(timer.current)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) hide()
+            }}
+            onClick={interactive ? (event) => event.stopPropagation() : undefined}
             style={{
               left: pos.centerX,
               transform: `translateX(calc(-50% + ${dx}px))`,
@@ -170,7 +193,7 @@ export function Tooltip({
             <div
               ref={cardRef}
               id={id}
-              role="tooltip"
+              role={interactive ? "group" : "tooltip"}
               className="select-pop-in relative max-w-[min(320px,90vw)] rounded-[11px] border border-line bg-surface px-3 py-2.5 text-[13.5px] leading-relaxed shadow-[0_12px_32px_rgba(0,0,0,0.16)]"
             >
               {content}
