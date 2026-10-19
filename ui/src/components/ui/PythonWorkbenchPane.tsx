@@ -21,7 +21,7 @@ function storedSplit(storageKey: string): number | null {
 export function PythonWorkbenchPane({
   kind,
   code, onChange, running, runDisabled = false, stale, result, onRun, editorRef, statusTarget, storageKey,
-  title, docHref, onResizeChange,
+  title, dirty = false, docHref, onResizeChange,
 }: {
   kind: PythonEditorKind
   code: string
@@ -35,6 +35,7 @@ export function PythonWorkbenchPane({
   statusTarget: HTMLElement | null
   storageKey: string
   title: string
+  dirty?: boolean
   docHref?: string
   onResizeChange?: (resizing: boolean) => void
 }) {
@@ -146,6 +147,7 @@ export function PythonWorkbenchPane({
           result={result}
           onRun={run}
           workbenchTitle={title}
+          workbenchDirty={dirty}
           docHref={docHref}
         />
       </div>

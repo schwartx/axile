@@ -26,7 +26,7 @@ export function AccountEditNotificationPage() {
     intervalMs: 0,
   })
   const draftState = usePythonDraft<string | null>(null)
-  const { draft: code, setDraft: setCode, baseline: savedCode, setBaseline: setSavedCode } = draftState
+  const { draft: code, setDraft: setCode, setBaseline: setSavedCode } = draftState
   const saveState = usePythonSave()
   const clearSaveError = saveState.clearError
   useEffect(() => {
@@ -91,7 +91,7 @@ export function AccountEditNotificationPage() {
       header={<>
         <div className="flex flex-wrap items-center gap-3"><AccountPageTitle accountId={accountId} page="执行通知函数" name={acc.name} channel={acc.trade_channel} market={acc.market} /></div>
         <label className="mt-2 block text-[13px] text-ink-3">试跑事件 <select value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)} disabled={trial.running}><option value="execution.finished">执行完成</option><option value="supplement.cancelled">补发取消</option></select></label>
-        <p className="mt-2 text-[13px] text-ink-3">{savedNotificationStatus}{code !== savedCode ? ' · 当前草稿未保存' : ''}</p>
+        <p className="mt-2 text-[13px] text-ink-3">{savedNotificationStatus}</p>
       </>}
       code={code}
       onChange={(value) => { setCode(value); saveState.clearError() }}

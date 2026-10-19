@@ -568,6 +568,7 @@ export function PortfolioEditPage() {
           statusTarget={editorStatus}
           storageKey="axon.portfolioWorkbench.editorSplit"
           title="目标函数"
+          dirty={dirty}
           docHref="/docs/custom-calc"
           code={code}
           onChange={(value) => {

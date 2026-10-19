@@ -49,7 +49,7 @@ export function SystemEditNotificationPage() {
           <BackLink to="/settings" label="返回系统告警" />
           <h1 className="text-[18px] font-semibold">系统告警函数</h1>
         </div>
-        <p className="mt-2 text-[13px] text-ink-3">{systemAlertLabel(baseline, state.configured)}{state.dirty ? ' · 当前草稿未保存' : ''}</p>
+        <p className="mt-2 text-[13px] text-ink-3">{systemAlertLabel(baseline, state.configured)}</p>
       </>}
       controls={<div className="mt-4 space-y-4">
         <SystemAlertFields compact draft={draft} configured={state.configured} onChange={(patch) => { state.set(patch); state.saveState.clearError() }} disabled={busy} />

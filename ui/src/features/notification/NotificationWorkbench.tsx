@@ -65,7 +65,7 @@ export function NotificationWorkbench({ kind, storageKey, header, controls, code
         </div>
       )}
     >
-      <PythonWorkbenchPane kind={kind} editorRef={editorRef} statusTarget={editorStatus} storageKey={`${storageKey}.editorSplit`} title="通知函数" docHref={docHref} code={code} onChange={onChange} running={running} runDisabled={saveAction.saving || runDisabled} stale={stale} result={result} onRun={run} onResizeChange={setResizing} />
+      <PythonWorkbenchPane kind={kind} editorRef={editorRef} statusTarget={editorStatus} storageKey={`${storageKey}.editorSplit`} title="通知函数" dirty={saveAction.dirty} docHref={docHref} code={code} onChange={onChange} running={running} runDisabled={saveAction.saving || runDisabled} stale={stale} result={result} onRun={run} onResizeChange={setResizing} />
     </PythonWorkbench>
   )
 }

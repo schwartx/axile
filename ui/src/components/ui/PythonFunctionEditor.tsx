@@ -124,6 +124,7 @@ export function PythonFunctionEditor({
   resultContent,
   docHref,
   workbenchTitle = '目标函数',
+  workbenchDirty = false,
   height = '320px',
   minHeight,
   maxHeight,
@@ -152,6 +153,7 @@ export function PythonFunctionEditor({
   resultContent?: ReactNode
   docHref?: string
   workbenchTitle?: string
+  workbenchDirty?: boolean
   height?: string
   minHeight?: string
   maxHeight?: string
@@ -444,6 +446,9 @@ export function PythonFunctionEditor({
       </> : <>
       <div className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap">
         <button type="button" className="flex-none text-ink-1" aria-haspopup="tree" aria-expanded={menu?.kind === 'symbols'} onClick={(event) => openMenu('symbols', event.currentTarget)}>{workbenchTitle}</button>
+        <span role="status" className="ml-2 flex-none">
+          {workbenchDirty && <span className="inline-flex items-center rounded-full border border-warn/30 bg-warn/10 px-2 py-0.5 font-medium leading-none text-warn">未保存</span>}
+        </span>
         {(chain.length > 3 ? [chain[0], null, chain.at(-1)!] : chain).map((item) => <span key={item?.name ?? 'ellipsis'} className="flex min-w-0 items-center gap-1 pl-1">
           <span aria-hidden>›</span><button type="button" className="min-w-0 max-w-32" aria-haspopup="tree" aria-expanded={menu?.kind === 'symbols'} onClick={(event) => openMenu('symbols', event.currentTarget)}>{item ? <OverflowText text={item.name} /> : '…'}</button>
         </span>)}
