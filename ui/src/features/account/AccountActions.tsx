@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Pencil, Trash2 } from 'lucide-react'
+import { TerminateDialog } from '@/features/account/TerminateDialog'
+import type { ExecutionTerminateMode } from '@/lib/api/executions'
 import { ConfirmModal, type ConfirmSpec } from '@/components/ui/ConfirmModal'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -15,7 +17,7 @@ interface AccountActionsProps {
   terminating: boolean
   onExec: () => void
   onClear: () => void
-  onTerminate: () => void
+  onTerminate: (mode: ExecutionTerminateMode) => void
   toggling?: boolean
   onToggleStarted: () => void
   onEdit: () => void
@@ -32,7 +34,7 @@ const ACTION_TIP_MS = 2000
  * 账户操作。
  *
  * 主操作槽（立即执行↔终止）：同一按钮随 ``running`` 切壳/提示/动作，标签走日记式换字；
- *   两态均单击即行动（无弹窗），hover 2s 出说明气泡——终止那句「已成交不回滚」即点击前唯一提醒。
+ *   立即执行单击即行动；终止先弹窗确认挂单处理方式。
  * 启停：单击即行动（无弹窗），hover 2s 出说明；标签同走日记式换字。
  * 清仓：hover 2s 出说明气泡；点击走确认弹窗（不可逆）。执行中禁用，气泡不触发，改由原生 title 兜底。
  * 删除：菜单内确认弹窗（不可逆）。
@@ -45,6 +47,9 @@ export function AccountActions(props: AccountActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuMounted, setMenuMounted] = useState(false)
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null)
+  const [terminateOpen, setTerminateOpen] = useState(false)
+  const active = props.running || !!props.hasPendingSupplement
+  useEffect(() => { if (!active) setTerminateOpen(false) }, [active])
   const ref = useRef<HTMLDivElement>(null)
 
   const openMenu = () => {
@@ -124,10 +129,10 @@ export function AccountActions(props: AccountActionsProps) {
         <button
           className={
             (props.running || props.hasPendingSupplement)
-              ? `${BTN} border-bad/40 font-[550] text-bad hover:bg-bad/10 disabled:opacity-45 disabled:cursor-default disabled:hover:bg-transparent`
+              ? `${BTN} border-warn/40 font-[550] text-warn hover:bg-warn/10 disabled:opacity-45 disabled:cursor-default disabled:hover:bg-transparent`
               : `${BTN} border-ink-1 bg-ink-1 font-[550] text-surface`
           }
-          onClick={(props.running || props.hasPendingSupplement) ? props.onTerminate : props.onExec}
+          onClick={active ? () => setTerminateOpen(true) : props.onExec}
           // 终止在途禁用防连点；disabled 吞指针事件、气泡不触发，故补原生 title 兜「为何不可点」。
           disabled={props.terminating}
           title={props.terminating ? '终止请求已发出，正在停止…' : undefined}
@@ -214,6 +219,7 @@ export function AccountActions(props: AccountActionsProps) {
         )}
       </div>
 
+      <TerminateDialog open={terminateOpen && active} running={props.running} name={props.name} disabled={props.terminating} onClose={() => setTerminateOpen(false)} onConfirm={(mode) => { setTerminateOpen(false); props.onTerminate(mode) }} />
       <ConfirmModal spec={confirm} onClose={() => setConfirm(null)} />
     </div>
   )

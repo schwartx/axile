@@ -18,10 +18,12 @@ export function triggerEmptyPositions(accountId: number): Promise<ExecutionTrigg
   return apiSend<ExecutionTrigger>('POST', `/account/empty_positions/${accountId}`)
 }
 
+export type ExecutionTerminateMode = 'graceful' | 'cancel_pending'
+
 /** 终止账户当前执行。 */
 export function terminateExecution(
   accountId: number,
-  body: { reason?: string; mode?: 'graceful' | 'cancel_pending' } = {},
+  body: { reason?: string; mode?: ExecutionTerminateMode } = {},
 ): Promise<ExecutionTerminate> {
   return apiSend<ExecutionTerminate>('POST', `/account/${accountId}/terminate`, body)
 }

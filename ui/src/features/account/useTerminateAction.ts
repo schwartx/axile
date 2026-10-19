@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { terminateExecution } from '@/lib/api/executions'
+import { terminateExecution, type ExecutionTerminateMode } from '@/lib/api/executions'
 import { shortErrorReason } from '@/lib/errorInfo'
 import { useToastStore } from '@/stores/ui'
 
@@ -26,7 +26,7 @@ import { useToastStore } from '@/stores/ui'
  *
  * Returns
  * -------
- * { terminating: boolean; terminate: () => Promise<void> }
+ * { terminating: boolean; terminate: (mode: ExecutionTerminateMode) => Promise<void> }
  *     `terminating` 驱动按钮 pending 态；`terminate` 为带防连点守卫的触发函数。
  */
 export function useTerminateAction(accountId: number, isRunning: boolean, onRequested?: () => void) {
@@ -46,12 +46,12 @@ export function useTerminateAction(accountId: number, isRunning: boolean, onRequ
     }
   }, [isRunning])
 
-  const terminate = useCallback(async () => {
+  const terminate = useCallback(async (mode: ExecutionTerminateMode) => {
     if (pendingRef.current) return
     pendingRef.current = true
     setTerminating(true)
     try {
-      const result = await terminateExecution(accountId)
+      const result = await terminateExecution(accountId, { mode })
       toast(result.message)
       requestedRef.current?.()
     } catch (err) {
