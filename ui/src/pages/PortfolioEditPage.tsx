@@ -91,7 +91,7 @@ export function PortfolioEditPage() {
   const [followersOpen, setFollowersOpen] = useState(true)
   const [panelSplit, setPanelSplit] = useState(initialPanelSplit)
   const [resizingPanels, setResizingPanels] = useState(false)
-  const nameEditorRef = useRef<HTMLDivElement>(null)
+  const nameEditorRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<PythonEditorHandle>(null)
   const [editorStatus, setEditorStatus] = useState<HTMLDivElement | null>(null)
   const inspectorRef = useRef<HTMLDivElement>(null)
@@ -342,34 +342,25 @@ export function PortfolioEditPage() {
               className="min-w-0 flex-1 cursor-text border-b border-line/70 py-0.5 transition-colors duration-200 hover:border-ink-3 focus-within:border-accent"
               onClick={() => nameEditorRef.current?.focus()}
             >
-              <div
+              <input
                 ref={nameEditorRef}
-                role="textbox"
+                type="text"
                 aria-label="组合名称"
-                aria-multiline="false"
                 title="编辑组合名称"
-                contentEditable="plaintext-only"
-                suppressContentEditableWarning
+                value={name}
                 spellCheck={false}
-                className="w-fit max-w-full min-w-8 overflow-hidden whitespace-nowrap text-[15px] font-[640] leading-snug text-ink-1 outline-none"
+                className="block w-full min-w-0 bg-transparent text-[15px] font-[640] leading-snug text-ink-1 outline-none"
                 style={tDetail ? { viewTransitionName: portfolioNameVtName(portfolioId) } : undefined}
-                onBeforeInput={(event) => {
-                  if (event.nativeEvent.inputType === 'insertParagraph' || event.nativeEvent.inputType === 'insertLineBreak') {
-                    event.preventDefault()
-                  }
-                }}
-                onInput={(event) => {
-                  setName(event.currentTarget.textContent ?? '')
+                onChange={(event) => {
+                  setName(event.currentTarget.value)
                   saveState.clearError()
                 }}
                 onKeyDown={(event) => {
-                  if (event.key !== 'Enter') return
+                  if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
                   event.preventDefault()
                   event.currentTarget.blur()
                 }}
-              >
-                {name}
-              </div>
+              />
             </div>
             {/* 市场是身份元数据：只读中性胶囊，与列表卡同位（不做编辑入口，依赖缺口是已知问题）。 */}
             {head?.market && (
