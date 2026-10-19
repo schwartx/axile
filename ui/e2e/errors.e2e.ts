@@ -1148,7 +1148,7 @@ test('paused account stays offline until explicit connect then refreshes assets 
   })
   await page.goto('/e2e/errors.html?mode=account')
   await expect(page.getByRole('button', { name: '刷新账户资产', exact: true })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '当日委托与成交', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '持仓、委托与成交', exact: true })).toBeVisible()
   await page.clock.fastForward(60_000)
   expect({ connects, assets, orders }).toEqual({ connects: 0, assets: 0, orders: 0 })
   await page.getByRole('switch', { name: '账户连接' }).click()
