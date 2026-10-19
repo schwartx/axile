@@ -28,7 +28,7 @@ export function RouteWorkspace({ fullBleed, children }: { fullBleed: boolean; ch
   }, [location.key, navigation])
 
   return <main ref={ref}
-    className={`app-workspace h-full min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] ${fullBleed ? '' : 'px-4 md:px-10'}`}>
+    className={`app-workspace h-full min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] ${fullBleed ? '' : 'px-4 md:px-5'}`}>
     <div className={`mx-auto h-full w-full max-w-[2176px] ${fullBleed ? '' : 'pb-16 pt-5'}`}>
       {children}
     </div>

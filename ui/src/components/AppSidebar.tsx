@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronUp,
   CircleGauge,
-  Plus,
   Settings2,
   X,
 } from 'lucide-react'
@@ -429,11 +428,11 @@ export function AppSidebar({
 
       <div className="mt-3 border-t border-line pt-3">
         <div className="grid grid-cols-2 gap-1.5">
-          <Link to="/setup/acct/channel" className="flex items-center justify-center gap-1.5 rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
-            <Plus size={14} aria-hidden />新建账户
+          <Link to="/setup/acct/channel" className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
+            新建账户
           </Link>
-          <Link to="/portfolios?new=1" className="flex items-center justify-center gap-1.5 rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
-            <Plus size={14} aria-hidden />新建组合
+          <Link to="/portfolios?new=1" className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-chip border border-line px-2 py-1.5 text-[13px] text-ink-2 hover:border-border-strong hover:text-ink-1">
+            新建组合
           </Link>
         </div>
       </div>
