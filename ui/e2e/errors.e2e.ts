@@ -200,11 +200,11 @@ test('reconnect preserves an unsaved portfolio draft and never recomputes it', a
   offline = true
   await page.getByRole('button', { name: '刷新页面读取' }).click()
   await expect(page.getByRole('banner')).toContainText('与服务器失联')
-  await expect(name).toHaveText('仍未保存的组合草稿')
+  await expect(name).toHaveValue('仍未保存的组合草稿')
   offline = false
   await page.getByRole('button', { name: '重试连接服务器' }).click()
   await expect(page.getByRole('banner')).toContainText('服务正常')
-  await expect(name).toHaveText('仍未保存的组合草稿')
+  await expect(name).toHaveValue('仍未保存的组合草稿')
   expect(writes).toBe(0)
 })
 
@@ -418,6 +418,7 @@ test('pause feedback distinguishes pending sync and clearing, and hides while qu
   await expect(notice).toHaveText('暂停设置已保存，本次清仓仍在执行，仍可能下单和成交。')
   await expect(notice).toBeVisible()
   await page.getByRole('button', { name: '终止执行', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: '停止并撤单', exact: true }).click()
   await expect(notice).toHaveCount(0)
   await expect(page.getByRole('button', { name: '终止中', exact: true })).toBeVisible()
   await setLiveExecution(page, 'terminating', 'clear_positions')

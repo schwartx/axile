@@ -181,7 +181,7 @@ test('reopening the live stream does not flash a stale warning', async ({ page }
   current.data[0].pending_policy = false
   await page.route('**/api/v1/events/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: `event: control.snapshot\ndata: ${JSON.stringify(current)}\n\n` }))
   await page.reload()
-  const notice = page.getByText(/^当前实例用量/)
+  const notice = page.getByText(/^放行额度用量/)
   await expect(notice).toHaveClass(/text-ink-3/)
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
   await expect(notice).not.toContainText('数据陈旧')

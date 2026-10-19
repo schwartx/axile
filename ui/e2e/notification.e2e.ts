@@ -146,7 +146,7 @@ test('编辑页模板失败可重试，重置只修改草稿并使试跑过期',
   await page.getByRole('button', { name: '试跑函数' }).click()
   await expect(page.getByText('样例函数运行成功')).toBeVisible()
   await page.getByRole('button', { name: '重置为默认' }).click()
-  await expect(page.getByText(/当前草稿未保存/)).toBeVisible()
+  await expect(page.locator('footer').getByText('未保存', { exact: true }).last()).toBeVisible()
   await expect(page.getByText("代码已改 · 结果为上次试跑").last()).toBeVisible()
   expect(patches).toHaveLength(0)
 })
