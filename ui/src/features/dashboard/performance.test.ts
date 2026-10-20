@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { cardPerformance, currentEquity, openFullPerformance } from './performance'
 import { performanceViews, performanceViewports } from '@/features/history/viewState'
 import { performanceEntry } from '@/features/history/performanceCache'
+import { chartFixture, metadataFixture } from '@/features/history/analysisTestFixtures'
 import { sparklinePath } from '@/components/viz/sparklineGeometry'
 import type { PerformanceSummary, PerformancePoint } from '@/types/api'
 
@@ -28,22 +29,52 @@ test('迷你线按观测锚点等距绘制并保留空值断点', () => {
   expect(sparklinePath([], 106, 36)).toBe('')
 })
 
-test('小图入口清除旧区间和缩放，仅预取绩效快照', async () => {
+test('小图入口清除旧区间和缩放，先取状态再按固定版本预取轻图表', async () => {
   const original = globalThis.fetch
   const urls: string[] = []
   globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
     urls.push(String(input))
-    return Response.json({ snapshot_id: null, status: 'empty', result: null })
+    const url = new URL(String(input), 'http://fixture')
+    if (url.pathname.endsWith('/status')) return Response.json(metadataFixture('prefetched'))
+    if (url.pathname.endsWith('/chart')) return Response.json(chartFixture(991, 'prefetched'))
+    throw new Error(`unexpected prefetch ${url.pathname}`)
   }, { preconnect: original.preconnect })
   try {
     performanceViews.set(991, { range: '30', view: 'daily', selection: null })
     performanceViewports.set('991:all', { start: 1, end: 2 })
     openFullPerformance(991)
-    await performanceEntry(991, 'all').flight
+    const entry = performanceEntry(991, 'all')
+    await entry.flight
+    await entry.resultFlight
     expect(performanceViews.get(991)).toEqual({ range: 'all', view: 'cumulative', scale: 'observations', selection: null })
     expect(performanceViewports.has('991:all')).toBe(false)
-    expect(urls).toHaveLength(1)
-    expect(urls[0]).toContain('/account/performance/991/snapshot?range=all')
+    expect(urls).toHaveLength(2)
+    expect(urls[0]).toBe('/api/v1/account/performance/991/status')
+    const chart = new URL(urls[1], 'http://fixture')
+    expect(chart.pathname).toBe('/api/v1/account/performance/991/chart')
+    expect(chart.searchParams.get('snapshot_id')).toBe('prefetched')
+    expect(chart.searchParams.get('range')).toBe('all')
+    expect(entry.state.displayed?.snapshot_id).toBe('prefetched')
+    expect(entry.state.displayed?.result.points).toHaveLength(2)
+    expect(entry.state.resultError).toBeNull()
+  } finally { globalThis.fetch = original }
+})
+
+test('小图预取遇到空快照只读状态，不触发计算或执行详情请求', async () => {
+  const original = globalThis.fetch
+  const requests: { url: string; method: string }[] = []
+  globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), method: init?.method ?? 'GET' })
+    return Response.json(metadataFixture(null, { status: 'empty', snapshot_version: null, read_view_schema_version: 0 }))
+  }, { preconnect: original.preconnect })
+  try {
+    openFullPerformance(992)
+    const entry = performanceEntry(992, 'all')
+    await entry.flight
+    expect(requests).toEqual([{ url: '/api/v1/account/performance/992/status', method: 'GET' }])
+    expect(entry.state.metadata?.status).toBe('empty')
+    expect(entry.state.displayed).toBeNull()
+    expect(entry.state.statusError).toBeNull()
   } finally { globalThis.fetch = original }
 })
 

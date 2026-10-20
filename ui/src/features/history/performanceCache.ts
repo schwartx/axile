@@ -17,7 +17,6 @@ interface Entry {
   flight?: Promise<boolean>
   resultFlight?: Promise<void>
   failedResultId?: string
-  expiredResultId?: string
   epoch: number
   recheck: boolean
 }
@@ -75,6 +74,11 @@ function checkMetadata(id: number, range: PerformanceRange, entry: Entry): Promi
   })()
   return entry.flight
 }
+async function readChart(id: number, snapshotId: string, range: PerformanceRange): Promise<AnalysisDisplay> {
+  const response = await getAnalysisChart(id, snapshotId, range)
+  if (response.snapshot_id !== snapshotId || response.account_id !== id || response.range !== range) throw new Error('绩效图表版本或账户不匹配')
+  return decodeAnalysisChart(response)
+}
 function requestResult(id: number, range: PerformanceRange, entry: Entry, retryResult: boolean) {
   const snapshotId = readableId(entry.state.metadata)
   if (!snapshotId || entry.state.displayed?.snapshot_id === snapshotId || entry.resultFlight) return
@@ -83,19 +87,15 @@ function requestResult(id: number, range: PerformanceRange, entry: Entry, retryR
   let expired = false
   entry.resultFlight = (async () => {
     try {
-      const response = await getAnalysisChart(id, snapshotId, range)
-      if (response.snapshot_id !== snapshotId || response.account_id !== id || response.range !== range) throw new Error('绩效图表版本或账户不匹配')
-      const displayed = decodeAnalysisChart(response)
+      const displayed = await readChart(id, snapshotId, range)
       if (readableId(entry.state.metadata) !== snapshotId) return
       entry.failedResultId = undefined
-      entry.expiredResultId = undefined
       publish(entry, { displayed, resultError: null })
     } catch (error) {
       if (readableId(entry.state.metadata) !== snapshotId) return
       entry.failedResultId = snapshotId
       publish(entry, { resultError: errorOf(error) })
       expired = error instanceof ApiError && error.status === 410
-      if (expired) entry.expiredResultId = snapshotId
       // One immediate status read. A replacement chart waits for the next check.
       if (expired) await checkMetadata(id, range, entry)
     } finally {
@@ -141,7 +141,7 @@ export function requestPerformanceRefresh(id: number): Promise<boolean> {
 export const snapshotPending = (metadata: Pick<AnalysisMetadata, 'status' | 'retry_at'> | null) => metadata?.status === 'pending' || metadata?.status === 'stale' || (metadata?.status === 'failed' && metadata.retry_at != null)
 export function shouldPollPerformance(entry: Entry): boolean {
   const target = readableId(entry.state.metadata)
-  return snapshotPending(entry.state.metadata) || entry.state.loadingResult || !!(target && (entry.expiredResultId === target || target !== entry.state.displayed?.snapshot_id && target !== entry.failedResultId))
+  return snapshotPending(entry.state.metadata) || entry.state.loadingResult || !!(target && target !== entry.state.displayed?.snapshot_id)
 }
 /** Dashboard hints invalidate an in-flight status observation and schedule a fresh one. */
 export function reconcilePerformanceVersion(id: number, snapshotId: string | null) {

@@ -97,14 +97,14 @@ test('late S2 cannot replace S1 after metadata targets S3 or erase newer status'
   entry.listeners.delete(observe)
 })
 
-test('result, status and refresh failures remain separate and keep the last chart', async () => {
+test('ready-state result failure keeps status recovery, separates errors and preserves the last chart', async () => {
   let metadata = metadataFixture()
   serve(823, () => metadata)
   await checkPerformance(823, 'all'); await settle(823)
   const entry = performanceEntry(823, 'all')
   const old = entry.state.displayed
   let charts = 0
-  metadata = metadataFixture('S2', { status: 'pending' })
+  metadata = metadataFixture('S2')
   mockFetch(async input => {
     if (urlOf(input).pathname.endsWith('/status')) return Response.json(metadata)
     charts++; return new Response('chart unavailable', { status: 503 })
@@ -179,6 +179,25 @@ test('marker0 is explicit and does not start a ready-state chart retry loop', as
   expect(entry.state.metadata?.read_view_schema_version).toBe(0)
   expect(entry.state.displayed).toBeNull()
   expect(charts).toBe(0)
+  expect(shouldPollPerformance(entry)).toBe(false)
+})
+
+test('chart 409 clears loading and marker0 stops automatic reads while offering explicit rebuild', async () => {
+  let metadata = metadataFixture('unsupported')
+  let charts = 0
+  mockFetch(async input => {
+    if (urlOf(input).pathname.endsWith('/status')) return Response.json(metadata)
+    charts++; return Response.json({ detail: { code: 'ANALYSIS_READ_VIEW_UNAVAILABLE', message: '请重新计算' } }, { status: 409 })
+  })
+  await checkPerformance(831, 'all'); await settle(831)
+  const entry = performanceEntry(831, 'all')
+  expect(entry.state.loadingResult).toBe(false)
+  expect(entry.state.resultError).toMatchObject({ status: 409, code: 'ANALYSIS_READ_VIEW_UNAVAILABLE' })
+  expect(shouldPollPerformance(entry)).toBe(true)
+  metadata = metadataFixture('unsupported', { read_view_schema_version: 0 })
+  await checkPerformance(831, 'all', false)
+  expect(charts).toBe(1)
+  expect(entry.state.loadingResult).toBe(false)
   expect(shouldPollPerformance(entry)).toBe(false)
 })
 
