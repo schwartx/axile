@@ -655,3 +655,32 @@ def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(da
         asyncio.run(run())
     finally:
         manager.close()
+
+
+def test_logout_snapshot_preserves_evidence_without_manual_disconnect(database):
+    engine, account = database
+    binding = service.begin_connection_instance(account)
+    collector = service.ConnectionCollector(binding)
+    collector.observe_session(ConnectionObservation("ok", "ready"))
+    collector.observe(
+        ConnectionObservation(
+            "error",
+            "logout",
+            "CTP 交易会话已登出",
+            {"reason_code": "CTP_USER_LOGOUT", "technical_detail": "OnRspUserLogout request_id=42"},
+            "交易会话已登出",
+            {"title": "交易会话已登出", "summary": "当前账户会话已失效。"},
+        )
+    )
+    service.consume_connection_snapshot(collector.snapshot())
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, account.id)
+        assert not row.manually_disconnected
+        assert row.last_failure["error"]["reason_code"] == "CTP_USER_LOGOUT"
+        assert row.last_failure["presentation"]["title"] == "交易会话已登出"
+    collector.observe_session(ConnectionObservation("ok", "recovered"))
+    service.consume_connection_snapshot(collector.snapshot())
+    with Session(engine) as session:
+        row = session.get(AccountConnectionState, account.id)
+        assert row.error is None
+        assert row.last_failure["observed_at"] == "logout"

@@ -56,6 +56,13 @@ def build_market_login(config: CTPAccountConfig) -> object:
     return req
 
 
+def build_logout(config: CTPAccountConfig) -> object:
+    """构造交易登出字段；行情 API 暂不支持登出请求。"""
+    req = td.CThostFtdcUserLogoutField()
+    req.BrokerID, req.UserID = config.broker_id, config.investor_id
+    return req
+
+
 def build_settlement_confirm(config: CTPAccountConfig) -> object:
     """构造结算确认请求。"""
     validate_config(config)

@@ -75,3 +75,23 @@ test('display hides redundant facts and rounds times while copy preserves eviden
   expect(view.copy).toContain('最近访问成功：2026-10-15 16:49:37.823783')
   expect(view.copy).toContain('最近连接失败：2026-10-15 16:49:37.823783')
 })
+
+for (const kind of ['交易', '行情']) test(`${kind} logout uses supplied presentation and survives recovery as history`, () => {
+  const failure = {
+    observed_at: '2026-10-20T12:00:00', label: `${kind}会话已登出`, message: `CTP ${kind}会话已登出`,
+    error: { reason_code: 'CTP_USER_LOGOUT', technical_detail: 'OnRspUserLogout request_id=42 ErrorID=0' },
+    presentation: { title: `${kind}会话已登出`, summary: '当前账户会话已失效。', sections: [{ fields: [{ label: '请求编号', value: '42' }] }] },
+  }
+  const view = connectionProblem(4, { ...failure, status: 'unavailable' })
+  expect(view.title).toBe(`${kind}会话已登出`)
+  expect(view.summary).toBe('当前账户会话已失效。')
+  expect(view.copy).toContain('CTP_USER_LOGOUT')
+  expect(view.copy).toContain('42')
+  const recovered = connectionProblem(4, { status: 'ready', observed_at: null, message: null, error: null, last_failure: failure })
+  expect(recovered.title).toBe('已连接')
+  expect(recovered.technicalInfo).toBeNull()
+  expect(recovered.history?.message).toBe(failure.message)
+  const disconnected = connectionProblem(4, { status: 'disconnected', manually_disconnected: true, observed_at: null, message: null, error: null })
+  expect(disconnected.title).toBe('已断开')
+  expect(disconnected.history).toBeNull()
+})

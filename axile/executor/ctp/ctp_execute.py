@@ -62,6 +62,7 @@ from axile.executor.ctp.quote_validation import (
 )
 from axile.executor.ctp.requests import (
     build_authenticate,
+    build_logout,
     build_market_login,
     build_order_cancel,
     build_order_insert,
@@ -141,7 +142,7 @@ class _TradeAssociationPending(CtpRequestError):
 
 
 class CtpSessionRecoveryRequired(CtpRequestError):
-    """持续 ``-2`` 表明当前 CTP 会话应由 worker 重建。"""
+    """当前 CTP 会话失效，必须由宿主重建并重新核对。"""
 
     requires_session_recovery = True
 
@@ -238,6 +239,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._front_id = self._session_id = 0
         self._trader_connected = self._market_connected = False
         self._closed = False
+        self._logout_in_progress = False
+        self._logout_pending: dict[str, _Stage] = {}
+        self._logout_disconnect_reason: int | None = None
         # 一个实例只承载一轮连接；断线后由 worker 创建新实例，禁止原地复活。
         self._ready = False
         self._invalid_reason = None
@@ -721,7 +725,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _trader_connected_cb(self):
         with self._lock:
-            if self._closed or self._invalid_reason:
+            if self._logout_in_progress and not self._closed:
+                self.logger.info("主动登出期间收到 CTP 交易 OnFrontConnected，跳过认证和登录")
+                return
+            if self._closed or self._invalid_reason or self._logout_in_progress:
                 return
             if self._trader_connected:
                 return
@@ -799,7 +806,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _market_connected_cb(self):
         with self._lock:
-            if self._closed or self._invalid_reason or self._market_connected:
+            if self._logout_in_progress and not self._closed:
+                self.logger.info("主动登出期间收到 CTP 行情 OnFrontConnected，跳过登录")
+                return
+            if self._closed or self._invalid_reason or self._logout_in_progress or self._market_connected:
                 return
             self._market_connected = True
         req = build_market_login(self._config())
@@ -845,12 +855,124 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             ):
                 connection_monitor(self).succeeded()
 
+    def _user_logged_out(self, kind, row, info, request_id, is_last):
+        """区分匹配的主动登出应答与活跃会话的非预期登出。"""
+        with self._lock:
+            error_id = int(getattr(info, "ErrorID", 0) or 0)
+            message = str(getattr(info, "ErrorMsg", "") or "")
+            detail = (
+                f"CTP {kind} OnRspUserLogout request_id={request_id} "
+                f"is_last={is_last} ErrorID={error_id} ErrorMsg={message}"
+            )
+            if self._closed:
+                self.logger.debug("迟到登出应答: {}", detail)
+                return
+            pending = self._logout_pending.get(kind)
+            if self._logout_in_progress:
+                self.logger.info("收到主动登出应答: {}", detail)
+                if pending is None or pending.request_id != request_id or pending.done.is_set():
+                    self.logger.debug("未匹配或重复的主动登出应答: {}", detail)
+                    return
+                if error_id:
+                    pending.error = CtpRequestError(detail, error_id=error_id)
+                    self.logger.warning("主动登出失败: {}", detail)
+                    pending.done.set()
+                elif is_last:
+                    self.logger.info("主动登出成功: {}", detail)
+                    pending.done.set()
+                return
+            if self._invalid_reason:
+                self.logger.debug("失效会话登出应答: {}", detail)
+                return
+            if error_id:
+                self.logger.warning("登出失败应答: {}", detail)
+                return
+            self.logger.warning("会话意外登出: {}", detail)
+            label = f"{kind}会话已登出"
+            self._invalidate_connection(
+                CtpSessionRecoveryRequired(detail, execution_error=f"CTP {label}", reason_code="CTP_USER_LOGOUT"),
+                connection_failure=True,
+                label=label,
+                presentation=lambda: connection_problem(
+                    label,
+                    f"已收到 CTP {kind}登出成功应答，当前账户会话已失效。",
+                    facts={
+                        "登出对象": kind,
+                        "原生回调": "OnRspUserLogout",
+                        "请求编号": request_id,
+                        "应答结果": "成功（ErrorID=0）",
+                        "会话状态": "已失效，需重建",
+                    },
+                    steps=("重新连接账户，连接完成后核对资产与委托。",),
+                ),
+            )
+
+    def _logout_response_error(self, kind, info, request_id):
+        """保留通用错误应答，匹配登出请求时结束等待，绝不伪造登出成功。"""
+        with self._lock:
+            if self._closed:
+                return
+            error = self._error(info, f"{kind}请求")
+            if error is None:
+                return
+            self.logger.warning("CTP {} OnRspError request_id={} error={}", kind, request_id, error)
+            pending = self._logout_pending.get(kind)
+            if self._logout_in_progress and pending is not None and request_id == pending.request_id:
+                if not pending.done.is_set():
+                    pending.error = error
+                    pending.done.set()
+
+    def graceful_logout(self):
+        """仅请求交易登出，保留原生回调证据，最多等待五秒后交给宿主释放。"""
+        with self._lock:
+            if self._closed or self._invalid_reason or self._logout_in_progress:
+                self.logger.debug("跳过主动登出：会话已关闭、失效或正在登出")
+                return
+            self._logout_in_progress = True
+            self._ready = self._monitoring = False
+            # 主动关闭期间保留观察能力；预期回调在各入口单独处理，
+            # 不通过提前关闭 monitor 隐藏柜台实际发生的事件。
+            self._fail_waiters(ConnectionError("CTP 账户正在主动断开"))
+            deadline = clock_monotonic() + 5.0
+            api, login = self._trader_api, self._login
+            if api is None or not login.done.is_set() or login.error is not None:
+                self.logger.info("跳过 CTP 交易主动登出：没有已登录通路")
+                return
+            pending = _Stage(threading.Event(), request_id=self._next_id())
+            self._logout_pending["交易"] = pending
+            try:
+                self.logger.info("主动登出请求: CTP 交易 ReqUserLogout request_id={}", pending.request_id)
+                code = api.ReqUserLogout(build_logout(self._config()), pending.request_id)
+                self.logger.info("主动登出请求返回: CTP 交易 request_id={} return_code={}", pending.request_id, code)
+                self._check(code, "交易登出")
+            except Exception as exc:
+                pending.error = exc
+                pending.done.set()
+                self.logger.warning("主动登出请求未受理: CTP 交易 error={}", exc)
+        if not get_default_clock().event_wait(pending.done, max(0.0, deadline - clock_monotonic())):
+            with self._lock:
+                if not pending.done.is_set():
+                    pending.error = TimeoutError("CTP 交易未收到登出成功应答")
+                    pending.done.set()
+                    if self._logout_disconnect_reason is not None:
+                        self.logger.info(
+                            "主动登出结束: CTP 交易已收到 OnFrontDisconnected reason={}，未收到 OnRspUserLogout；即将释放 API",
+                            self._logout_disconnect_reason,
+                        )
+                    else:
+                        self.logger.warning("主动登出超时: CTP 交易 request_id={}", pending.request_id)
+
     def _disconnected(self, kind, reason):
         with self._lock:
             if kind == "交易":
                 self._trader_connected = False
             else:
                 self._market_connected = False
+            if self._logout_in_progress and not self._closed:
+                self.logger.info("主动登出期间收到 CTP {} OnFrontDisconnected reason={}", kind, reason)
+                if kind == "交易":
+                    self._logout_disconnect_reason = reason
+                return
             self._connection_error = f"{kind}前置已断开"
             self._invalidate_connection(
                 CtpSessionRecoveryRequired(
@@ -896,12 +1018,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _require_active_connection(self):
         """禁止失效实例继续访问原生 API，包括尚在排队的请求。"""
-        if self._closed or self._invalid_reason:
+        if self._closed or self._invalid_reason or self._logout_in_progress:
             failure = getattr(self, "_connection_failure", None)
             if failure is not None:
                 raise failure
             raise CtpSessionRecoveryRequired(
-                self._invalid_reason or "CTPExecutor 已关闭", execution_error=getattr(self, "_connection_error", None)
+                self._invalid_reason or "CTPExecutor 已关闭或正在主动断开",
+                execution_error=getattr(self, "_connection_error", None),
             )
 
     def _require_session_ready(self, symbol=None):
@@ -938,6 +1061,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         accepted = (
             not self._closed
             and not self._invalid_reason
+            and not self._logout_in_progress
             and request_id is not None
             and stage.request_id == request_id
             and not stage.done.is_set()
@@ -2226,6 +2350,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 try:
                     api.RegisterSpi(None)
                     api.Release()
+                    self.logger.info("CTP API 已释放: {}", name)
                 except Exception:
                     self.logger.exception("释放 OpenCTP API 失败")
                 setattr(self, name, None)

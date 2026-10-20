@@ -312,6 +312,7 @@ def _resolve_prepared_executor(
 def _configure_executor_resources(state: _WorkerBackendState, account: AccountSnapshot, executor: object) -> None:
     """交易和人工查询共用目录资源；只绑定能力，不启动连接。"""
     if account.trade_channel == TradeChannel.CTP:
+        setattr(executor, "logger", getattr(executor, "logger", logger).bind(account_id=account.id))
         from axile.server.execution.catalog_control import catalog_control_scope
 
         setattr(executor, "_catalog_control_factory", partial(catalog_control_scope, account))
