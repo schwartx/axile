@@ -1,11 +1,13 @@
 """Single-worker, durable performance queue and atomic snapshot publication."""
 
 import asyncio
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 import sqlalchemy as sa
 from loguru import logger
 from sqlalchemy.dialects.sqlite import insert
+from sqlmodel import col
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
@@ -17,7 +19,7 @@ from axile.server.db.models.analysis import cost_execution as executions
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.db.models.performance import PerformanceBinding, PerformanceSettings, PerformanceSummary
 from axile.server.execution.legacy_compat import normalize_legacy_result
-from axile.server.performance import calculate_performance, local_time, observation
+from axile.server.performance import Observation, calculate_performance, local_time, observation
 from axile.server.performance_costs import SHANGHAI, daily_costs, project_execution, summarize, timestamp
 from axile.server.performance_replay import ENGINE_VERSION
 
@@ -236,17 +238,26 @@ def _events(records, bindings, skips) -> list[dict]:
     return sorted(events, key=lambda event: timestamp(event["time"]), reverse=True)
 
 
-def compute_batch(
-    records, targets, bindings, skips, settings: PerformanceSettings, trade_channel: str | None = None
-) -> tuple[dict, list, list]:
-    """Read history once, independently rebase each range, and share daily/cumulative results."""
-    fallback = {item.execution_id: item.normalized_weights for item in targets if item.execution_id}
-    observations = [observation(record, fallback.get(record.execution_id or "")) for record in records]
-    projected, cost_rows, by_record = [], [], {}
+@dataclass
+class _PreparedHistory:
+    """跨批次保留计算必需的投影，不持有原始执行或 ORM 对象。"""
+
+    observations: list[Observation] = field(default_factory=list)
+    projected: list[dict] = field(default_factory=list)
+    cost_rows: list[dict] = field(default_factory=list)
+    by_record: dict[int | None, list[dict]] = field(default_factory=dict)
+    record_times: list[tuple[int | None, str]] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)
+
+
+def _prepare_records(prepared: _PreparedHistory, records, fallback: dict) -> None:
+    """沿用原转换与记录顺序；本批原始对象在返回后即可释放。"""
+    prepared.observations.extend(observation(record, fallback.get(record.execution_id or "")) for record in records)
     for record in records:
         payload, fills = project_execution(record)
-        by_record[record.id] = fills
-        projected.append(
+        prepared.by_record[record.id] = fills
+        prepared.record_times.append((record.id, record.created_at))
+        prepared.projected.append(
             {
                 "record_id": record.id,
                 "time": timestamp(record.created_at),
@@ -256,9 +267,9 @@ def compute_batch(
             }
         )
         for fill in fills:
-            cost_rows.append(
+            prepared.cost_rows.append(
                 {
-                    "id": len(cost_rows),
+                    "id": len(prepared.cost_rows),
                     "record_id": record.id,
                     "symbol": fill["symbol"],
                     "time": fill["time"],
@@ -272,7 +283,24 @@ def compute_batch(
                     "payload": fill,
                 }
             )
-    events = _events(records, bindings, skips)
+    prepared.events.extend(_events(records, [], []))
+
+
+def compute_batch(
+    records, targets, bindings, skips, settings: PerformanceSettings, trade_channel: str | None = None
+) -> tuple[dict, list, list]:
+    """Read history once, independently rebase each range, and share daily/cumulative results."""
+    if isinstance(records, _PreparedHistory):
+        prepared = records
+    else:
+        prepared = _PreparedHistory()
+        fallback = {item.execution_id: item.normalized_weights for item in targets if item.execution_id}
+        _prepare_records(prepared, records, fallback)
+    observations = prepared.observations
+    projected, cost_rows, by_record = prepared.projected, prepared.cost_rows, prepared.by_record
+    events = sorted(
+        _events([], bindings, skips) + prepared.events, key=lambda event: timestamp(event["time"]), reverse=True
+    )
     ranges = {}
     for range_key in ("30", "90", "all"):
         result = calculate_performance(observations, settings, range_key, trade_channel=trade_channel)
@@ -282,15 +310,17 @@ def compute_batch(
             for binding in sorted(bindings, key=lambda item: local_time(item.created_at))
             if start <= timestamp(binding.created_at) <= end
         ]
-        range_executions = [
-            item["payload"] | {"summary": summarize(by_record[item["record_id"]])}
-            for item in sorted(projected, key=lambda item: (item["time"], item["record_id"]))
-            if start <= item["time"] <= end
-        ]
         if range_key == "all":
-            result.executions = range_executions
+            result.executions = [
+                item["payload"] | {"summary": summarize(by_record[item["record_id"]])}
+                for item in sorted(projected, key=lambda item: (item["time"], item["record_id"]))
+                if start <= item["time"] <= end
+            ]
         selected_trades = [
-            fill for record in records if start <= timestamp(record.created_at) <= end for fill in by_record[record.id]
+            fill
+            for identity, when in prepared.record_times
+            if start <= timestamp(when) <= end
+            for fill in by_record[identity]
         ]
         selected_events = [event for event in events if start <= timestamp(event["time"]) <= end]
         performance = result.model_dump(mode="json")
@@ -399,11 +429,30 @@ class AnalysisManager:
                 return None
             settings = PerformanceSettings.model_validate(account, from_attributes=True)
             history = []
-            for model in (ExecuteRecord, TargetWeightSnapshot, PortfolioAccount, ScheduleSkip):
+            for model in (TargetWeightSnapshot, PortfolioAccount, ScheduleSkip):
                 history.append(
                     (await session.execute(sa.select(model).where(model.account_id == account_id))).scalars().all()
                 )
-            return (*history, settings, str(account.trade_channel))
+            prepared = _PreparedHistory()
+            fallback = {item.execution_id: item.normalized_weights for item in history[0] if item.execution_id}
+            rows = await session.stream(
+                sa.select(
+                    col(ExecuteRecord.id),
+                    col(ExecuteRecord.execution_id),
+                    col(ExecuteRecord.created_at),
+                    col(ExecuteRecord.is_success),
+                    col(ExecuteRecord.raw_input),
+                    col(ExecuteRecord.raw_result),
+                )
+                .where(ExecuteRecord.account_id == account_id)
+                .execution_options(yield_per=100)
+            )
+            try:
+                async for batch in rows.partitions(100):
+                    await run_in_threadpool(_prepare_records, prepared, batch, fallback)
+            finally:
+                await rows.close()
+            return (prepared, *history, settings, str(account.trade_channel))
 
     async def run_once(self) -> bool:
         """Claim one durable job, compute outside DB transactions, then compare-and-publish."""
@@ -477,8 +526,10 @@ class AnalysisManager:
                 )
                 await session.commit()
                 return
+            # 执行参数不进入 SQL 编译缓存；避免缓存持有整份历史快照。
             await session.execute(
-                snapshots.insert().values(
+                snapshots.insert(),
+                dict(
                     id=batch_id,
                     account_id=row["account_id"],
                     source_version=row["source_version"],
@@ -488,7 +539,7 @@ class AnalysisManager:
                     data_until=ranges["all"]["performance"]["end"],
                     settings=settings.model_dump(),
                     ranges=ranges,
-                )
+                ),
             )
             for table, values in ((executions, projected), (trades, cost_rows)):
                 for start in range(0, len(values), 500):
