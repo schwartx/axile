@@ -1,6 +1,7 @@
 import type { PerformancePoint } from '@/types/api'
 import { chartTime } from '@/features/history/performance'
 import { executionsOnDay, shanghaiTime, summarizeCosts, type CostExecution } from '@/features/history/costs'
+import type { AnalysisExecutionSummary } from '@/lib/api/performance'
 
 export type ChartSelection = { kind: 'day'; day: string; time: number }
   | { kind: 'execution'; recordId: number; time: number }
@@ -10,6 +11,11 @@ export const pointTime = (point: PerformancePoint) => point.observed_at ? shangh
 export const precisePoints = (points: PerformancePoint[]) => points.length >= 2 && points.every(p => p.observed_at && Number.isFinite(pointTime(p)))
 export const timeLabel = (time: number) => new Date(time + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ')
 export const selectionLabel = (selection: ChartSelection) => !selection ? '' : selection.kind === 'execution' ? timeLabel(selection.time) : selection.kind === 'day' ? selection.day : `${timeLabel(selection.start)} → ${timeLabel(selection.end)}`
+
+/** Navigation follows observed and execution times; transaction details load only after selection. */
+export function navigationTimes(points: PerformancePoint[], executions: AnalysisExecutionSummary[]): number[] {
+  return [...new Set([...points.map(pointTime), ...executions.map(row => row.time_ms)].filter(Number.isFinite))].sort((a, b) => a - b)
+}
 
 export function nearestIndex(times: number[], time: number): number {
   if (!times.length) return -1
@@ -56,9 +62,13 @@ export function bindingSelection(times: number[], start: number, end: number, in
   return inside.length < 2 ? null : intervalSelection(inside[0], inside[inside.length - 1])
 }
 
-export function reconcileSelection(selection: ChartSelection, points: PerformancePoint[]): ChartSelection {
+export function reconcileSelection(selection: ChartSelection, points: PerformancePoint[], executions?: AnalysisExecutionSummary[]): ChartSelection {
   if (!selection) return null
-  if (selection.kind === 'execution') return selection
+  if (selection.kind === 'execution') {
+    if (!executions) return selection
+    const row = executions.find(row => row.record_id === selection.recordId)
+    return !row ? null : row.time_ms === selection.time ? selection : { ...selection, time: row.time_ms }
+  }
   const times = points.map(pointTime)
   if (selection.kind === 'day') return points.some(p => p.date.slice(0, 10) === selection.day && pointTime(p) === selection.time) ? selection : null
   return precisePoints(points) && times.includes(selection.start) && times.includes(selection.end) ? selection : null

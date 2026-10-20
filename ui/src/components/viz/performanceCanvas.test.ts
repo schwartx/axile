@@ -3,12 +3,28 @@ import { bindingAtObservation, bindingObservationSpan, chartAxis, executionMarke
 import { pointTime } from '@/features/history/chartModel'
 import { shanghaiTime } from '@/features/history/costs'
 import type { AccountPerformance } from '@/types/api'
-import type { CostExecutionRow, TransactionPreview } from '@/lib/api/performance'
+import type { AnalysisExecutionSummary, CostExecutionRow, TransactionPreview } from '@/lib/api/performance'
 
 const summary = { value: 100, cost: 1, lossBp: 100, coverage: 1, covered: 1, count: 1, amountComplete: true, fees: {}, feeCovered: 0 }
 const record = (success = 1) => ({ id: 1, execution_id: 'exec-1', created_at: '1970-01-01T00:00:00Z', is_success: success, raw_result: {} })
 const trade = (time = 0): TransactionPreview => ({ symbol: 'A', side: 'buy', quantity: 1, price: 100, reference: 99, referenceSource: 'mid', time, endTime: time, timeEstimated: false, before: 0, target: 1, summary })
 const row = (over: Partial<CostExecutionRow> = {}): CostExecutionRow => ({ key: '1', record: record(), summary, noop: false, symbolCount: 1, transactions: [trade()], positions: [], ...over })
+const indexRow = (over: Partial<AnalysisExecutionSummary> = {}): AnalysisExecutionSummary => ({
+  record_id: 1, execution_id: 'exec-1', time_ms: 0, created_at: null,
+  is_success: 1, noop: false, has_transactions: true, duration_sec: null,
+  symbol_count: null, position_count: null, positions_present: false, reason: null, summary, ...over,
+})
+
+test('轻索引只认实际成交标志，摘要覆盖率和执行质量保留原语义', () => {
+  expect(hasExecutionMarker(indexRow({ has_transactions: false }))).toBe(false)
+  expect(hasExecutionMarker(indexRow({ summary: { ...summary, count: 0 } }))).toBe(true)
+  expect(executionMarkerTone(indexRow())).toBe('normal')
+  expect(executionMarkerTone(indexRow({ is_success: null }))).toBe('warn')
+  expect(executionMarkerTone(indexRow({ is_success: 0 }))).toBe('warn')
+  expect(executionMarkerTone(indexRow({ summary: { ...summary, coverage: null } }))).toBe('warn')
+  expect(executionMarkerTone(indexRow({ summary: { ...summary, count: 2 } }))).toBe('warn')
+  expect(executionMarkerTone(indexRow({ noop: true, summary: { ...summary, coverage: null } }))).toBe('normal')
+})
 
 test('失败或成交覆盖不全走琥珀，其余一律中性', () => {
   expect(executionMarkerTone(row())).toBe('normal')
@@ -94,4 +110,16 @@ test('区间首尾外侧的执行吸附到最近观测点取值，x 仍按真实
   const late = executionMarkerPoint(scene, row({ record: { ...record(), id: 902, created_at: '2026-01-05T04:00:00Z' } }))
   expect(late).not.toBeNull()
   expect(late!.y).toBeCloseTo(returnY(last.account_return!, axis), 10)
+})
+
+test('轻索引不依赖created_at或明细，标记保留真实执行时间和记录身份', () => {
+  const scene = markerScene([0.05, 0.1, -0.02])
+  const time = shanghaiTime('2026-01-02T04:00:00Z')
+  const light = indexRow({ record_id: 2, time_ms: time })
+  const point = executionMarkerPoint(scene, light)
+  expect(point).not.toBeNull()
+  expect(point!.y).toBeCloseTo(returnY(0.1, chartAxis(scene)), 10)
+  const legacy = executionMarkerPoint(scene, row({ record: { ...record(), id: 2, created_at: new Date(time).toISOString() } }))
+  expect(point).toEqual(legacy)
+  expect(executionMarkerPoint(scene, indexRow({ time_ms: scene.viewport.end + 1 }))).toBeNull()
 })

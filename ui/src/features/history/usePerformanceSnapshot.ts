@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import { checkPerformance, performanceEntry, requestPerformanceRefresh, snapshotPending } from './performanceCache'
+import { checkPerformance, performanceEntry, requestPerformanceRefresh, shouldPollPerformance } from '@/features/history/performanceCache'
 import type { PerformanceRange } from '@/lib/api/performance'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
@@ -11,23 +11,25 @@ export function usePerformanceSnapshot(id: number, range: PerformanceRange) {
   useEffect(() => {
     let disposed = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    const check = async () => {
+    const schedule = () => {
+      clearTimeout(timer)
+      if (!disposed && !document.hidden && shouldPollPerformance(entry)) timer = setTimeout(() => { void check(false) }, 2000)
+    }
+    const check = async (retryResult: boolean) => {
       clearTimeout(timer)
       if (disposed || document.hidden) return
-      await checkPerformance(id, range)
+      await checkPerformance(id, range, retryResult)
       if (disposed || document.hidden) return
-      if (entry.state.data?.status === 'empty' && !entry.state.error) await requestPerformanceRefresh(id)
-      if (!disposed && !document.hidden && snapshotPending(entry.state.data) && !entry.state.error) timer = setTimeout(check, 2000)
+      if (entry.state.metadata?.status === 'empty' && !entry.state.statusError && !entry.state.refreshError) await requestPerformanceRefresh(id)
+      schedule()
     }
-    const visibility = () => { clearTimeout(timer); if (!document.hidden) void check() }
+    const visibility = () => { clearTimeout(timer); if (!document.hidden) void check(true) }
     document.addEventListener('visibilitychange', visibility)
-    const unsubscribe = () => {
-      clearTimeout(timer)
-      if (!disposed && !document.hidden && snapshotPending(entry.state.data) && !entry.state.error) timer = setTimeout(check, 2000)
-    }
-    entry.listeners.add(unsubscribe)
-    void check()
-    return () => { disposed = true; clearTimeout(timer); entry.listeners.delete(unsubscribe); document.removeEventListener('visibilitychange', visibility) }
+    entry.listeners.add(schedule)
+    void check(true)
+    return () => { disposed = true; clearTimeout(timer); entry.listeners.delete(schedule); document.removeEventListener('visibilitychange', visibility) }
   }, [id, range, entry])
-  return { ...state, refresh: useCallback(async () => { await requestPerformanceRefresh(id) }, [id]), check: useCallback(() => checkPerformance(id, range), [id, range]) }
+  return { ...state, refresh: useCallback(() => requestPerformanceRefresh(id), [id]), check: useCallback(() => checkPerformance(id, range), [id, range]) }
 }
+
+export const useAnalysisSnapshot = usePerformanceSnapshot

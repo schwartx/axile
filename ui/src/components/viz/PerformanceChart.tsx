@@ -5,20 +5,20 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { X } from 'lucide-react'
 import { ChartTradingOverlay } from '@/features/history/ChartTradingOverlay'
 import { executionSelection } from '@/features/history/executionSelection'
-import { holdingAt } from '@/features/history/tradeAnnotations'
+import { executionAt } from '@/features/history/tradeAnnotations'
 import { useDomainStore } from '@/stores/domain'
 import { useChannelDescriptor } from '@/stores/channels'
 import { performanceViewports, type BacktestMode } from '@/features/history/viewState'
 import { cancelAccountCurveTransition, registerCurveEndpoint } from '@/features/history/curveTransition'
 import { performanceCoordinates } from '@/features/history/curveTransitionGeometry'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
-import type { AccountPerformance } from '@/types/api'
+import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performance'
 import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
 import { amount, feeText, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { returnText } from '@/features/history/performance'
-import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, pointTime, precisePoints, reconcileSelection, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
+import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
 import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
 import { closedDaysBetween, createTimeScale, type TimeScaleMode } from '@/features/history/timeScale'
 
@@ -26,7 +26,8 @@ interface Props {
   accountId: number
   snapshotId?: string | null
   viewKey?: string
-  data: AccountPerformance
+  data: AnalysisChart['result']
+  executionIndex: AnalysisExecutionSummary[]
   daily: boolean
   backtestMode: BacktestMode
   scaleMode: TimeScaleMode
@@ -52,13 +53,13 @@ export function PerformanceChart(props: Props) {
   return <CanvasPerformanceChart {...props} />
 }
 
-function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, intervalCost, selection, onSelect, portfolioNames, controls, viewKey, accountId, snapshotId, showExecutions }: Props) {
+function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, scaleMode, costs, intervalCost, selection, onSelect, portfolioNames, controls, viewKey, accountId, snapshotId, showExecutions }: Props) {
   const accountInfo = useDomainStore(s => s.accounts?.find(a => a.account_id === accountId))
   const descriptor = useChannelDescriptor(accountInfo?.trade_channel)
   const times = useMemo(() => data.points.map(pointTime), [data.points])
   const closedGapDays = useMemo(() => times.slice(0, -1).map((time, index) => closedDaysBetween(time, times[index + 1], data.calendar.closed_ranges)), [times, data.calendar.closed_ranges])
   const timeScale = useMemo(() => createTimeScale(scaleMode, times), [scaleMode, times])
-  const navigationTimes = useMemo(() => [...new Set([...times, ...(data.executions ?? []).flatMap(r => [shanghaiTime(r.record.created_at), ...(r.transactions ?? []).flatMap(t => [t.time, t.endTime])])])].sort((a, b) => a - b), [times, data.executions])
+  const navigationTimes = useMemo(() => chartNavigationTimes(data.points, executionIndex), [data.points, executionIndex])
   const full = useMemo(() => ({ start: navigationTimes[0], end: navigationTimes[navigationTimes.length - 1] }), [navigationTimes])
   const [viewport, setViewport] = useState<Viewport>(() => viewKey ? clampViewport(performanceViewports.get(viewKey) ?? full, navigationTimes) : full)
   const lastExecution = useRef(selection?.kind === 'execution' ? selection.recordId : null)
@@ -81,7 +82,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   const [bindingTime, setBindingTime] = useState<number | null>(null)
   const [draft, setDraft] = useState<ChartSelection>(null)
   const [size, setSize] = useState({ width: 900, revision: 0 })
-  const [cursor, setCursor] = useState<{ time: number; x: number; y: number } | null>(null)
+  const [cursor, setCursor] = useState<{ time: number; x: number; y: number; recordId?: number } | null>(null)
   const [magnet, setMagnet] = useState<number | null>(null)
   const cursorRef = useRef(cursor)
   cursorRef.current = cursor
@@ -104,10 +105,11 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   const executionPinned = selection?.kind === 'execution'
   const pointIndex = Math.min(data.points.length - 1, !executionPinned && hover != null ? hover : selection && selection.kind !== 'interval' ? nearestIndex(times, selection.time) : data.points.length - 1)
   const point = data.points[pointIndex]
-  const execution = data.executions?.find(row => row.record.id === point.record_id)
+  const execution = executionIndex.find(row => row.record_id === point.record_id)
   // 悬停读数优先用磁吸命中的执行，与点击固定的取数同源；观测点 record_id 可能绑定到同刻另一条执行。
-  const magnetExecution = magnet != null ? data.executions?.find(row => row.record.id === magnet) : null
-  const selectedExecution = executionPinned ? data.executions?.find(row => row.record.id === selection.recordId) : null
+  const magnetExecution = magnet != null ? executionIndex.find(row => row.record_id === magnet) : null
+  const selectedExecution = executionPinned ? executionIndex.find(row => row.record_id === selection.recordId) : null
+  const cursorExecution = cursor ? executionAt(executionIndex, cursor.time) : null
   const keys = seriesKeys(daily, backtestMode)
   const summary = draft ? null : intervalCost
   const estimated = summary?.estimated ?? 0
@@ -115,7 +117,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   const interval = shownSelection?.kind === 'interval'
   const account = interval ? intervalReturn(data.points, shownSelection, 'account_return') : point[keys[0]]
   const portfolio = interval ? intervalReturn(data.points, shownSelection, backtestMode === 'target' ? 'target_portfolio_return' : 'portfolio_return') : point[keys[1]]
-  const readingExecution = selectedExecution ?? magnetExecution ?? execution
+  const readingExecution = selectedExecution ?? magnetExecution ?? (cursor ? cursorExecution : execution)
   const readingCost = interval ? summary : selection?.kind === 'day' ? daySummary : readingExecution?.summary ?? daySummary
   const costReady = costs != null && (!interval || summary != null)
   const costScope = interval ? '区间' : readingExecution ? '本次执行' : '当日'
@@ -127,7 +129,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   const coverageNeedsAttention = costReady && readingCost != null && readingCost.count > 0 && (costIncomplete || readingCost.coverage == null)
   const binding = bindingAtObservation(data, times, bindingTime ?? times[pointIndex])
   const bindingName = !binding || binding.binding.portfolio_id == null ? '未绑定' : portfolioNames.get(binding.binding.portfolio_id) ?? `组合 #${binding.binding.portfolio_id}`
-  const tradingScene = useMemo<ChartScene>(() => ({ data, times, width: size.width, viewport, daily, backtestMode, returnRange, costs, portfolioNames, domain: full, scale: timeScale, showExecutions, closedGapDays, theme: container.current ? readCanvasTheme(container.current) : { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' } }), [data, times, size, viewport, daily, backtestMode, returnRange, costs, portfolioNames, full, timeScale, showExecutions, closedGapDays])
+  const tradingScene = useMemo<ChartScene>(() => ({ data, executionIndex, times, width: size.width, viewport, daily, backtestMode, returnRange, costs, portfolioNames, domain: full, scale: timeScale, showExecutions, closedGapDays, theme: container.current ? readCanvasTheme(container.current) : { bg: '', surface: '', ink: '', muted: '', line: '', accent: '', warn: '', fill: '', font: '' } }), [data, executionIndex, times, size, viewport, daily, backtestMode, returnRange, costs, portfolioNames, full, timeScale, showExecutions, closedGapDays])
 
   const paintOverlay = useCallback(() => {
     if (overlay.current && scene.current) drawOverlay(overlay.current, scene.current, hoverRef.current, selectionRef.current, bindingTimeRef.current, cursorRef.current, magnet)
@@ -159,15 +161,11 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
     return () => { disposed = true; resize.disconnect(); mutation.disconnect(); window.removeEventListener('resize', measure); document.fonts.removeEventListener('loadingdone', measure); cancelAnimationFrame(frame.current); frame.current = 0 }
   }, [])
 
-  const latestSelection = useRef({ selection, onSelect })
-  latestSelection.current = { selection, onSelect }
   useEffect(() => {
     setViewport(view => clampViewport(view, navigationTimes))
     setHover(null); hoverRef.current = null; setDraft(null); drag.current = null
-    const current = latestSelection.current
-    const next = reconcileSelection(current.selection, data.points)
-    if (next !== current.selection) current.onSelect(next)
-  }, [data.points, times, navigationTimes])
+    setCursor(null); setBindingTime(null); magnetRecordId.current = null; setMagnet(null)
+  }, [data.points, times, navigationTimes, executionIndex])
   useEffect(() => { setHover(null); hoverRef.current = null; setDraft(null); drag.current = null; setCursor(null); magnetRecordId.current = null; setMagnet(null) }, [scaleMode])
 
   useLayoutEffect(() => {
@@ -231,17 +229,17 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   const magneticExecution = (p: { x: number; y: number }) => {
     if (!showExecutions) { magnetRecordId.current = null; setMagnet(null); return null }
     if (p.y < PLOT.top || p.y > PLOT.bottom) { magnetRecordId.current = null; setMagnet(null); return null }
-    const visible = (data.executions ?? []).flatMap(row => {
-      const time = shanghaiTime(row.record.created_at)
+    const visible = executionIndex.flatMap(row => {
+      const time = row.time_ms
       if (!hasExecutionMarker(row) || time < viewport.start || time > viewport.end) return []
       return [{ row, time, distance: Math.abs(xPosition(time, size.width, viewport, timeScale) - p.x) }]
     })
-    const retained = visible.find(item => item.row.record.id === magnetRecordId.current)
-    if (retained && retained.distance <= 18) { setMagnet(retained.row.record.id); return retained }
+    const retained = visible.find(item => item.row.record_id === magnetRecordId.current)
+    if (retained && retained.distance <= 18) { setMagnet(retained.row.record_id); return retained }
     const nearest = visible.reduce<typeof visible[number] | null>((best, item) => !best || item.distance < best.distance ? item : best, null)
     if (!nearest || nearest.distance > 12) { magnetRecordId.current = null; setMagnet(null); return null }
-    magnetRecordId.current = nearest.row.record.id
-    setMagnet(nearest.row.record.id)
+    magnetRecordId.current = nearest.row.record_id
+    setMagnet(nearest.row.record_id)
     return nearest
   }
   const showHover = (index: number | null) => { hoverRef.current = index; setHover(previous => previous === index ? previous : index); schedule() }
@@ -272,7 +270,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
       const inside = p.x >= PLOT.left && p.x <= plotRight(size.width) && p.y >= PLOT.top && p.y <= PLOT.costBottom
       const snapped = inside ? magneticExecution(p) : null
       const time = snapped?.time ?? p.time
-      setCursor(inside && p.y <= PLOT.bottom ? { x: p.x, y: p.y, time } : null)
+      setCursor(inside && p.y <= PLOT.bottom ? { x: p.x, y: p.y, time, recordId: snapped?.row.record_id } : null)
       showHover(inside ? nearestIndex(times, time) : null)
       setBindingTime(inside && p.y >= PLOT.binding && p.y <= PLOT.binding + PLOT.bindingHeight ? p.time : null)
       return
@@ -295,7 +293,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
   }
   const selectPoint = (index: number) => {
     const time = times[index]
-    const row = data.executions?.find(row => row.record.id === data.points[index].record_id)
+    const row = executionIndex.find(row => row.record_id === data.points[index].record_id)
     onSelect(row ? executionSelection(row) : selection?.kind === 'day' && selection.time === time ? null : { kind: 'day', day: data.points[index].date.slice(0, 10), time })
   }
   const finish = (event: PointerEvent<HTMLElement>) => {
@@ -320,7 +318,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
     } else if (p.y >= PLOT.costTop && p.y <= PLOT.costBottom) onSelect({ kind: 'day', day: data.points[p.index].date.slice(0, 10), time: times[p.index] })
     else {
       const magnet = showExecutions ? magneticExecution(p) : null
-      const row = magnet?.row ?? holdingAt(data.executions ?? [], p.time)
+      const row = magnet?.row ?? executionAt(executionIndex, p.time)
       if (row) onSelect(executionSelection(row))
       else selectPoint(p.index)
     }
@@ -446,7 +444,7 @@ function CanvasPerformanceChart({ data, daily, backtestMode, scaleMode, costs, i
         {binding && <div className="mt-1 text-[11px] text-ink-3">{binding.binding.time.replace('T', ' ')}<br />→ {binding.end?.replace('T', ' ') ?? '当前'}</div>}
         </>}
       </div>
-      {data.executions && <ChartTradingOverlay scene={tradingScene} rows={data.executions} accountId={accountId} currency={accountInfo?.currency ?? ''} units={descriptor?.units} cursor={cursor} selection={selection} onSelect={onSelect} onInspect={setCursor} />}
+      {snapshotId && <ChartTradingOverlay scene={tradingScene} rows={executionIndex} snapshotId={snapshotId} accountId={accountId} currency={accountInfo?.currency ?? ''} units={descriptor?.units} cursor={cursor} selection={selection} onSelect={onSelect} onInspect={setCursor} />}
     </div>
 
     <p id="performance-keyboard-reading" className="sr-only" aria-live="polite">{pointLabel(point)}，账户 {returnText(point[keys[0]])}，回测 {returnText(point[keys[1]])}。方向键选点，回车确认，Escape 清除，加减号缩放，0 恢复范围。</p>

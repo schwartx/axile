@@ -1,10 +1,12 @@
 import { expect, test } from 'bun:test'
 import type { PerformancePoint, ExecuteRecord } from '@/types/api'
 import { costExecutions, shanghaiTime, summarizeCosts } from '@/features/history/costs'
-import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, pointTime, precisePoints, reconcileSelection, selectedExecutions, zoomViewport } from '@/features/history/chartModel'
+import { bindingSelection, clampViewport, intervalReturn, intervalSelection, navigationTimes, nearestIndex, pointTime, precisePoints, reconcileSelection, selectedExecutions, zoomViewport } from '@/features/history/chartModel'
 import { xPosition, xTime } from '@/components/viz/performanceCanvas'
+import type { AnalysisExecutionSummary } from '@/lib/api/performance'
 
 const point = (date: string, value: number | null, observed_at = `${date}T17:00:00`): PerformancePoint => ({ date, observed_at, account_return: value, portfolio_return: value, account_daily_return: null, portfolio_daily_return: null, difference: null })
+const indexedRow = (record_id: number, time_ms: number): AnalysisExecutionSummary => ({ record_id, execution_id: `exec-${record_id}`, time_ms, created_at: '', is_success: 1, noop: true, has_transactions: false, duration_sec: null, symbol_count: 0, position_count: null, positions_present: false, reason: null, summary: { value: null, cost: null, lossBp: null, coverage: null, count: 0, covered: 0, amountComplete: true, fees: {}, feeCovered: 0 } })
 
 test('绑定时段仅选择内部观测，切换时刻属于下一段，末段包含末次观测', () => {
   expect(bindingSelection([10, 20, 30, 40], 15, 40)).toEqual({ kind: 'interval', start: 20, end: 30 })
@@ -45,6 +47,26 @@ test('刷新按真实时间保留选择，失效端点与旧接口清除选择',
   expect(reconcileSelection(selection, [...points])).toBe(selection)
   expect(reconcileSelection(selection, points.slice(1))).toBeNull()
   expect(reconcileSelection(selection, points.map(p => ({ ...p, observed_at: undefined })))).toBeNull()
+})
+
+test('图表导航只需曲线和轻量执行时间，排序去重并排除非法时间', () => {
+  const points = [point('1970-01-01', 0, '1970-01-01T00:00:03Z'), point('1970-01-01', 0, '1970-01-01T00:00:01Z'), point('invalid', null, 'invalid')]
+  const executions = [indexedRow(4, 3000), indexedRow(2, 2000), indexedRow(1, 0), indexedRow(3, 2000), indexedRow(5, NaN), indexedRow(6, Infinity)]
+  expect(navigationTimes(points, executions)).toEqual([0, 1000, 2000, 3000])
+  expect(navigationTimes([], [])).toEqual([])
+})
+
+test('换快照后执行身份不存在就清除选择，同刻的其他执行不能替代', () => {
+  const selection = { kind: 'execution' as const, recordId: 7, time: 1234 }
+  expect(reconcileSelection(selection, [], [indexedRow(8, 1234)])).toBeNull()
+  expect(reconcileSelection(selection, [], [])).toBeNull()
+  expect(reconcileSelection(selection, [])).toBe(selection)
+})
+
+test('换快照保留同一执行身份并采用新索引真实时间，零时间有效', () => {
+  const selection = { kind: 'execution' as const, recordId: 7, time: 1234 }
+  expect(reconcileSelection(selection, [], [indexedRow(7, 2000)])).toEqual({ kind: 'execution', recordId: 7, time: 2000 })
+  expect(reconcileSelection(selection, [], [indexedRow(7, 0)])).toEqual({ kind: 'execution', recordId: 7, time: 0 })
 })
 
 test('二分命中最近点，空数组与域外指针有明确边界', () => {

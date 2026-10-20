@@ -1,4 +1,4 @@
-import type { CostExecutionRow, TransactionPreview } from '@/lib/api/performance'
+import type { AnalysisExecutionSummary, CostExecutionRow, TransactionPreview } from '@/lib/api/performance'
 import type { ChartScene } from '@/components/viz/performanceCanvas'
 import { chartAxis, PLOT, plotRight, returnY, xPosition } from '@/components/viz/performanceCanvas'
 import { shanghaiTime } from '@/features/history/costs'
@@ -90,6 +90,17 @@ export function holdingAt(rows: CostExecutionRow[], time: number): CostExecution
   while (low < high) {
     const mid = (low + high) >>> 1
     if (shanghaiTime(rows[mid].record.created_at) <= time) low = mid + 1
+    else high = mid
+  }
+  return rows[low - 1] ?? null
+}
+
+/** Latest summary at the cursor, including same-time records in their stable record-ID order. */
+export function executionAt(rows: AnalysisExecutionSummary[], time: number): AnalysisExecutionSummary | null {
+  let low = 0, high = rows.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if (rows[mid].time_ms <= time) low = mid + 1
     else high = mid
   }
   return rows[low - 1] ?? null

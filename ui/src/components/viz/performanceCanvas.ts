@@ -1,5 +1,5 @@
-import type { AccountPerformance, PerformancePoint } from '@/types/api'
-import type { CostExecutionRow } from '@/lib/api/performance'
+import type { PerformancePoint } from '@/types/api'
+import type { AnalysisChart, AnalysisExecutionSummary, CostExecutionRow } from '@/lib/api/performance'
 import { axisPercent, niceReturnAxis } from '@/features/history/performance'
 import { amount, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { pointTime, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
@@ -15,7 +15,8 @@ export type SeriesKey = 'account_return' | 'portfolio_return' | 'target_portfoli
 export interface CanvasTheme { bg: string; surface: string; ink: string; muted: string; line: string; accent: string; warn: string; fill: string; font: string }
 export interface ChartScene {
   domain?: Viewport
-  data: AccountPerformance
+  data: AnalysisChart['result']
+  executionIndex?: AnalysisExecutionSummary[]
   times: number[]
   width: number
   viewport: Viewport
@@ -40,23 +41,25 @@ export type ExecutionMarkerTone = 'normal' | 'warn'
  * 红绿只属于收益曲线本身；有利/不利的质量细节由成本面板三态承载，
  * 针脚不复述，颜色预算留给「偏离」。
  */
-export function executionMarkerTone(row: CostExecutionRow): ExecutionMarkerTone {
+export function executionMarkerTone(row: CostExecutionRow | AnalysisExecutionSummary): ExecutionMarkerTone {
   const { summary } = row
-  if (row.record.is_success !== 1 || (!row.noop && (summary.coverage == null || summary.covered < summary.count))) return 'warn'
+  const success = 'record_id' in row ? row.is_success : row.record.is_success
+  if (success !== 1 || (!row.noop && (summary.coverage == null || summary.covered < summary.count))) return 'warn'
   return 'normal'
 }
 
 /** 有真实成交才画点，部分成交也算；无成交的执行不留针脚、不参与磁吸。 */
-export function hasExecutionMarker(row: CostExecutionRow): boolean {
-  return (row.transactions?.length ?? 0) > 0
+export function hasExecutionMarker(row: CostExecutionRow | AnalysisExecutionSummary): boolean {
+  return 'record_id' in row ? row.has_transactions : (row.transactions?.length ?? 0) > 0
 }
 
-export function executionMarkerPoint(scene: ChartScene, row: CostExecutionRow): { x: number; y: number } | null {
-  const time = shanghaiTime(row.record.created_at)
+export function executionMarkerPoint(scene: ChartScene, row: CostExecutionRow | AnalysisExecutionSummary): { x: number; y: number } | null {
+  const time = 'record_id' in row ? row.time_ms : shanghaiTime(row.record.created_at)
+  const recordId = 'record_id' in row ? row.record_id : row.record.id
   const { times, data, width, viewport } = scene
   if (time < viewport.start || time > viewport.end) return null
   const key = seriesKeys(scene.daily, scene.backtestMode)[0]
-  const exact = data.points.findIndex(point => point.record_id === row.record.id)
+  const exact = data.points.findIndex(point => point.record_id === recordId)
   let before = exact, after = exact
   if (exact < 0) {
     // 早于首观测/晚于末观测的执行吸附到最近观测点取值，x 仍按真实时间投影。
@@ -150,7 +153,7 @@ function drawBindings(ctx: CanvasRenderingContext2D, scene: ChartScene) {
 }
 
 /** 将绑定区间映射到首个受其影响的收益观测点。 */
-export function bindingObservationSpan(data: AccountPerformance, times: number[], index: number): { start: number; end: number } | null {
+export function bindingObservationSpan(data: AnalysisChart['result'], times: number[], index: number): { start: number; end: number } | null {
   const binding = data.bindings[index]
   if (!binding || !times.length) return null
   const start = times.find(time => time >= shanghaiTime(binding.time))
@@ -196,7 +199,7 @@ function drawReturns(ctx: CanvasRenderingContext2D, scene: ChartScene) {
 }
 
 function drawExecutionMarkers(ctx: CanvasRenderingContext2D, scene: ChartScene) {
-  const rows = scene.data.executions ?? []
+  const rows = scene.executionIndex ?? []
   if (!rows.length) return
   const { theme } = scene
   ctx.save(); ctx.beginPath(); ctx.rect(PLOT.left, PLOT.top, plotRight(scene.width) - PLOT.left, PLOT.bottom - PLOT.top); ctx.clip()
@@ -367,7 +370,7 @@ export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover:
     }
   }
   if (magnetRecordId != null && selection?.kind !== 'execution') {
-    const row = data.executions?.find(value => value.record.id === magnetRecordId)
+    const row = scene.executionIndex?.find(value => value.record_id === magnetRecordId)
     if (row) {
       const point = executionMarkerPoint(scene, row)
       if (point) {
@@ -389,7 +392,7 @@ export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover:
     }
     ctx.restore()
     if (selection.kind === 'execution') {
-      const row = data.executions?.find(value => value.record.id === selection.recordId)
+      const row = scene.executionIndex?.find(value => value.record_id === selection.recordId)
       if (row) {
         const point = executionMarkerPoint(scene, row)
         if (point) {
@@ -437,13 +440,13 @@ export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover:
   ctx.fillStyle = theme.bg; ctx.fillText(label, labelX + 6, TIME_AXIS_Y + 2)
 }
 
-export function bindingAt(data: AccountPerformance, time: number) {
+export function bindingAt(data: AnalysisChart['result'], time: number) {
   const index = data.bindings.findLastIndex(b => shanghaiTime(b.time) <= time)
   return index < 0 ? null : { binding: data.bindings[index], end: data.bindings[index + 1]?.time ?? data.end }
 }
 
 /** 绑定行按最近一次已发生的收益观测来解释鼠标位置。 */
-export function bindingAtObservation(data: AccountPerformance, times: number[], time: number) {
+export function bindingAtObservation(data: AnalysisChart['result'], times: number[], time: number) {
   const observed = times.findLast(value => value <= time)
   return observed == null ? null : bindingAt(data, observed)
 }
