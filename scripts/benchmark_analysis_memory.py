@@ -92,7 +92,7 @@ def summarize(rows):
     return result
 
 
-def main():
+def main(*, worker_script=None, transport="asgi-in-process-client"):
     """Compare fresh baseline/candidate processes and preserve per-stage evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
@@ -128,7 +128,7 @@ def main():
                 args,
                 args.baseline if arm == "baseline" else args.root,
                 args.output / f"{repeat}-{arm}",
-                worker_script=Path(__file__).resolve(),
+                worker_script=worker_script or Path(__file__).resolve(),
             )
             results.append(
                 dict(
@@ -180,6 +180,7 @@ def main():
         source_sha256=digest,
         original_sha256=original_digest,
         data_kind="synthetic" if args.synthetic_records else args.data_kind,
+        transport=transport,
         synthetic_records=args.synthetic_records,
         synthetic_symbols=args.symbols if args.synthetic_records else None,
         api_results_equal=True,

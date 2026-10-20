@@ -312,8 +312,9 @@ def compute_batch(
             for binding in sorted(bindings, key=lambda item: local_time(item.created_at))
             if start <= timestamp(binding.created_at) <= end
         ]
+        range_executions = None
         if range_key == "all":
-            result.executions = [
+            range_executions = [
                 item["payload"] | {"summary": summarize(by_record[item["record_id"]])}
                 for item in sorted(projected, key=lambda item: (item["time"], item["record_id"]))
                 if start <= item["time"] <= end
@@ -325,8 +326,11 @@ def compute_batch(
             for fill in by_record[identity]
         ]
         selected_events = [event for event in events if start <= timestamp(event["time"]) <= end]
+        # 执行投影已由数据库 JSON 值和标量构成，避免再次深度复制整份历史。
         performance = result.model_dump(mode="json")
-        if range_key != "all":
+        if range_executions is not None:
+            performance["executions"] = range_executions
+        else:
             performance.pop("executions", None)
         ranges[range_key] = {
             "performance": performance,
