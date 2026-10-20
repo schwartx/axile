@@ -333,26 +333,26 @@ async def account_activity_symbols(
 ) -> ActivitySymbolListPublic:
     """实时按品种汇总；时间窗必填。"""
     await _get_account_or_404(session, account_id)
-    rows = (
-        (
-            await session.execute(
-                select(ExecuteRecord)
-                .where(
-                    col(ExecuteRecord.account_id) == account_id,
-                    *_time_clauses(col(ExecuteRecord.created_at), since, until),
-                )
-                .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)))
-            )
+    statement = (
+        select(ExecuteRecord)
+        .options(defer(cast("InstrumentedAttribute[dict]", col(ExecuteRecord.raw_input)), raiseload=True))
+        .where(
+            col(ExecuteRecord.account_id) == account_id,
+            *_time_clauses(col(ExecuteRecord.created_at), since, until),
         )
-        .scalars()
-        .all()
+        .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)))
+        .execution_options(yield_per=100)
     )
+    rows = await session.stream_scalars(statement)
     grouped: dict[str, list[dict]] = {}
-    for row in rows:
-        for trade in _projected_trades(row):
-            if not _matches_trade(trade, symbol, None):
-                continue
-            grouped.setdefault(str(trade["symbol"]), []).append(trade)
+    try:
+        async for row in rows:
+            for trade in _projected_trades(row):
+                if not _matches_trade(trade, symbol, None):
+                    continue
+                grouped.setdefault(str(trade["symbol"]), []).append(trade)
+    finally:
+        await rows.close()
     data = [
         ActivitySymbolRowPublic(
             symbol=name,

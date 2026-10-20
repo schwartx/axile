@@ -60,6 +60,7 @@ class _Result:
     def __init__(self, rows=None, count=None):
         self._rows = rows
         self._count = count
+        self.closed = False
 
     def scalar_one(self):
         return self._count
@@ -70,12 +71,25 @@ class _Result:
     def all(self):
         return self._rows
 
+    async def close(self):
+        self.closed = True
+
+    def __aiter__(self):
+        return self._iterate()
+
+    async def _iterate(self):
+        for row in self._rows:
+            yield row
+
 
 class _FakeSession:
     def __init__(self, plan):
         self._plan = list(plan)
 
     async def execute(self, _stmt):
+        return self._plan.pop(0)
+
+    async def stream_scalars(self, _stmt):
         return self._plan.pop(0)
 
     async def scalar(self, _stmt):
@@ -91,7 +105,8 @@ def _call(fn, **kwargs):
 
 def test_activity_symbols_include_fills_when_one_symbol_is_requested():
     """展开某个品种时，同一接口带上该品种成交。"""
-    session = _FakeSession([_Result(rows=[_record()])])
+    result = _Result(rows=[_record()])
+    session = _FakeSession([result])
     payload = _call(
         account_activity_symbols,
         session=session,
@@ -100,6 +115,7 @@ def test_activity_symbols_include_fills_when_one_symbol_is_requested():
         until="2026-09-02T00:00:00",
         symbol="rb2610",
     )
+    assert result.closed
     assert payload.count == 1
     row = payload.data[0]
     assert row.symbol == "rb2610"
