@@ -128,6 +128,64 @@ async def events(request: Request):
     return stream_response(request)
 
 
+def position_snapshot(account_id: int) -> dict:
+    """提供持仓页签的隔离快照，浏览器检查不连接任何交易渠道。"""
+    return {
+        "id": 1,
+        "account_id": account_id,
+        "source": "manual",
+        "execution_id": None,
+        "created_at": "2026-10-19T10:30:00+08:00",
+        "assets": {
+            "currency": "CNY",
+            "source": "real",
+            "update_time": "2026-10-19T10:30:00+08:00",
+            "positions": [
+                {
+                    "symbol": "rb2610",
+                    "direction": "多头",
+                    "volume": 3,
+                    "available_volume": 2,
+                    "market_value": 105000,
+                    "avg_price": 99999,
+                    "extra": {
+                        "tq_symbol": "SHFE.rb2610",
+                        "position_attributes": {
+                            "today_volume": 1,
+                            "yesterday_volume": 2,
+                            "open_price": 3400,
+                            "float_profit": 3000,
+                            "position_price": 3450,
+                            "position_profit": 1500,
+                            "margin": 12000,
+                            "frozen": 1,
+                        },
+                    },
+                },
+                {
+                    "symbol": "ag2612",
+                    "direction": "空头",
+                    "volume": 1,
+                    "available_volume": 1,
+                    "market_value": None,
+                    "avg_price": 0,
+                    "extra": {"position_attributes": {"today_volume": 0, "yesterday_volume": 1, "float_profit": 0}},
+                },
+            ],
+        },
+    }
+
+
+@app.get("/api/v1/account/{account_id}/asset_snapshots")
+async def saved_position_snapshots(account_id: int):
+    return {"data": [position_snapshot(account_id)], "count": 1}
+
+
+@app.post("/api/v1/account/{account_id}/assets/refresh")
+async def refresh_position_snapshot(account_id: int):
+    return position_snapshot(account_id)
+
+
 @app.post("/api/v1/test/orders/{action}")
 async def change(action: str):
     if action == "reset":

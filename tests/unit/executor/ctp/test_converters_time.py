@@ -3,6 +3,7 @@
 import os
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,54 @@ def test_position_valuation_uses_latest_price_and_true_multiplier():
     assert assets.positions[0].extra["last_price"] == 400
     assert assets.positions[0].extra["quote_timestamp"] == quote.timestamp
     assert assets.positions[0].extra["quote_update_time"] == quote.update_time
+
+
+def test_position_display_preserves_native_profit_and_subrows_without_deriving_average():
+    rows = [
+        dict(
+            InstrumentID="rb2610",
+            PosiDirection="2",
+            Position=2,
+            TodayPosition=1,
+            PositionCost=7000,
+            PositionProfit=0,
+            UseMargin=200,
+            HedgeFlag="1",
+            PositionDate="1",
+        ),
+        dict(
+            InstrumentID="rb2610",
+            PosiDirection="2",
+            Position=1,
+            TodayPosition=0,
+            PositionCost=3500,
+            PositionProfit=-12,
+            HedgeFlag="3",
+            PositionDate="2",
+        ),
+    ]
+    assets = account_to_unified(dict(Balance=10000), rows, {"rb2610": {"VolumeMultiple": 10}})
+    extra = assets.positions[0].extra
+    assert extra["position_attributes"]["position_profit"] == -12
+    assert "margin" not in extra["position_attributes"]  # 一条记录没返回，不能以部分金额充合计。
+    assert "position_price" not in extra["position_attributes"]  # 原生没有均价，不能除成本反推。
+    assert [row["hedge_flag"] for row in extra["native_positions"]] == ["1", "3"]
+
+
+def test_combination_money_is_not_presented_as_each_legs_native_profit():
+    row = SimpleNamespace(
+        InstrumentID="SP rb2610&rb2611",
+        PosiDirection="2",
+        Position=2,
+        TodayPosition=2,
+        PositionCost=10000,
+        PositionProfit=500,
+        UseMargin=100,
+    )
+    assets = account_to_unified(dict(Balance=10000), [row], {})
+    assert len(assets.positions) == 2
+    assert all("position_profit" not in position.extra["position_attributes"] for position in assets.positions)
+    assert all("margin" not in position.extra["position_attributes"] for position in assets.positions)
 
 
 @pytest.mark.parametrize("multiplier,reason", [(None, "missing_multiplier"), (10, "stale_exchange_time")])

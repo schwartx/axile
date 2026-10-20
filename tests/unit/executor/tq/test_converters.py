@@ -14,6 +14,30 @@ def _resolver() -> TQSymbolResolver:
     return TQSymbolResolver([TQInstrument("SHFE.rb2610", "rb2610", "SHFE", "FUTURE")])
 
 
+def test_position_display_keeps_native_side_and_unknown_values():
+    assets = account_to_unified(
+        {},
+        {
+            "SHFE.rb2610": {
+                "pos_long_today": 1,
+                "pos_short_his": 2,
+                "open_price_long": 3200,
+                "float_profit_long": 0,
+                "float_profit_short": -10,
+                "margin_short": float("nan"),
+            }
+        },
+        _resolver(),
+    )
+    long, short = [position.extra["position_attributes"] for position in assets.positions]
+    assert long["open_price"] == 3200
+    assert long["float_profit"] == 0
+    assert short["float_profit"] == -10
+    assert "open_price" not in short
+    assert "margin" not in short
+    assert "position_price" not in long
+
+
 @pytest.mark.parametrize("message", ["开仓资金不足", "平今仓手数不足", ""])
 def test_sdk_error_flag_identifies_rejected_orders_without_matching_message(message):
     order = order_to_unified(

@@ -71,6 +71,7 @@ from axile.executor.models.unified_callback import (
 from axile.executor.models.unified_input import AccountConfig, GMAccountConfig, UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
+from axile.executor.position_attributes import native_position_attributes
 
 __all__ = [
     "GMExecutor",
@@ -475,6 +476,33 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                 avg_price=0.0,
                 extra={
                     "channel_type": TradeChannel.GM,
+                    "position_attributes": native_position_attributes(
+                        pos_dict,
+                        {
+                            "position_price": "vwap",
+                            "diluted_price": "vwap_diluted",
+                            "open_price": "vwap_open",
+                            "float_profit": "fpnl",
+                            "open_profit": "fpnl_open",
+                            "diluted_profit": "fpnl_diluted",
+                            "today_volume": "volume_today",
+                            "frozen": "order_frozen",
+                            "frozen_today": "order_frozen_today",
+                            "available": "available",
+                            "available_today": "available_today",
+                            "available_now": "available_now",
+                            "volume": "volume",
+                            "market_value": "market_value",
+                            "last_price": "price",
+                            "position_cost": "cost",
+                            "amount": "amount",
+                            "last_trade_price": "last_price",
+                            "last_trade_volume": "last_volume",
+                            "change_reason": "change_reason",
+                            "credit_sellable_volume": "credit_position_sellable_volume",
+                        },
+                        {"created_at": "created_at", "updated_at": "updated_at", "change_event_id": "change_event_id"},
+                    ),
                     "gm_symbol": str(pos_dict.get("symbol", "")),
                     "raw_position_data": pos_dict,
                 },

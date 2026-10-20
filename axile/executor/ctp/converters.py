@@ -14,6 +14,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.ctp.combination import split_combination_position
+from axile.executor.ctp.position_attributes import ctp_position_fields, ctp_position_totals
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_price import UnifiedPriceData
@@ -233,8 +234,10 @@ def account_to_unified(
         if volume == 0:
             continue
         group = groups.setdefault(
-            key, {"volume": 0.0, "today": 0.0, "yesterday": 0.0, "frozen": 0.0, "cost": 0.0, "origin": None}
+            key,
+            {"volume": 0.0, "today": 0.0, "yesterday": 0.0, "frozen": 0.0, "cost": 0.0, "origin": None, "native": []},
         )
+        group["native"].append(ctp_position_fields(row))
         today = _position_quantity(row, "TodayPosition")
         if today > volume:
             raise ValueError(f"{symbol}: 今仓与总持仓不一致")
@@ -266,6 +269,8 @@ def account_to_unified(
         market_value = volume * quote.last_price * multiplier if reason is None and quote is not None else None
         avg_price = group["cost"] / (volume * multiplier) if volume and multiplier > 0 else None
         extra = {
+            "position_attributes": ctp_position_totals(group["native"]),
+            "native_positions": group["native"],
             "long_td" if direction == PositionDirection.LONG.value else "short_td": group["today"],
             "long_yd" if direction == PositionDirection.LONG.value else "short_yd": group["yesterday"],
             "frozen": group["frozen"],

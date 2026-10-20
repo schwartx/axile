@@ -1,8 +1,6 @@
 import { useId, useState } from 'react'
 import { ChevronDown, RefreshCw } from 'lucide-react'
 import { CenteredModal } from '@/components/ui/CenteredModal'
-import { ErrorDetailsModal } from '@/components/ui/ErrorDetailsModal'
-import { errorInfo } from '@/lib/errorInfo'
 import { InkRewrite } from '@/components/ui/InkRewrite'
 import { OverflowText } from '@/components/ui/OverflowText'
 import type { CancelReceipt, CurrentOrder } from '@/lib/api/orders'
@@ -11,12 +9,13 @@ import type { OrdersState } from '@/features/account/useCurrentOrders'
 import type { ChannelCapability } from '@/types/api'
 import { shanghaiTime } from '@/features/account/executionValues'
 import { OrderRecordsTable, OrderDetails } from '@/features/account/OrderRecordsTable'
-import { useErrorPresentation } from '@/lib/errorPresentation'
+import { ReadStatusDot } from '@/features/account/ReadStatusDot'
+import { useReadWarningDelay } from '@/features/account/useReadWarningDelay'
 import { AccountActivityContent } from '@/features/account/AccountActivity'
 
 export function CurrentOrdersButton({ state }: { state: OrdersState }) {
   const snapshot = state.query.data
-  const label = snapshot?.complete && snapshot.count != null ? `当日委托与成交 · 在途 ${snapshot.count}` : '当日委托与成交'
+  const label = snapshot?.complete && snapshot.count != null ? `持仓、委托与成交 · 在途 ${snapshot.count}` : '持仓、委托与成交'
   return <button type="button" aria-haspopup="dialog" onClick={state.show}
     className="inline-flex min-h-8 flex-none cursor-pointer items-center rounded-md border border-line px-2.5 text-[13px] whitespace-nowrap text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
     <InkRewrite text={label} tone="label" />
@@ -62,7 +61,7 @@ function OrderRow({ order: snapshotOrder, receipt, state, quantityLabel, compact
 }
 
 export function CurrentOrdersDialog({ state, units, channel }: { state: OrdersState; units?: ChannelCapability['units']; channel?: string }) {
-  return <CenteredModal open={state.open} title="当日委托与成交" onClose={state.close} widthClassName="w-[1440px] h-[min(760px,86dvh)]" scrollBody={false}
+  return <CenteredModal open={state.open} title="持仓、委托与成交" onClose={state.close} widthClassName="w-[1440px] h-[min(760px,86dvh)]" scrollBody={false}
     footer={<div className="flex justify-end border-t border-line px-[22px] py-3"><button type="button" onClick={state.close} className="min-h-9 cursor-pointer rounded-lg border border-line px-4 text-sm text-ink-2">关闭</button></div>}>
     <AccountActivityContent key={state.accountId} state={state} units={units} channel={channel} pendingContent={<CurrentOrdersContent state={state} units={units} channel={channel} />} />
   </CenteredModal>
@@ -83,16 +82,6 @@ function OrdersTable({ rows, state, units, compact, channel, loading, emptyText 
     <div className={`${orderColumns(compact)} py-2 text-[12px] text-ink-3`}><span>合约</span><span>{compact ? '买卖/开平' : '买卖 / 开平'}</span><span>委托价</span><span>委托 / 已成</span><span>状态</span><span>操作</span></div>
     {rows.map(order => <OrderRow key={currentOrderKey(order)} order={order} receipt={receiptOf(order)} state={state} quantityLabel={units?.quantity_label ?? ''} compact={compact} />)}
   </div></div>
-}
-
-function OrdersQueryFailure({ state }: { state: OrdersState }) {
-  const error = state.query.refreshError
-  const { local } = useErrorPresentation(error, { intent: 'mutation', networkFeedback: 'global-only' })
-  const [selectedError, setSelectedError] = useState<unknown>(null)
-  return <>
-    {local && <button type="button" className="min-h-8 cursor-pointer text-warn" onClick={() => setSelectedError(error)}>核对失败</button>}
-    <ErrorDetailsModal selection={local && selectedError === error ? { title: '核对失败', info: errorInfo(error) } : null} onClose={() => setSelectedError(null)} />
-  </>
 }
 
 function ReceiptResult({ receipt }: { receipt: CancelReceipt }) {
@@ -120,12 +109,17 @@ export function CurrentOrdersContent({ state, units, symbolFilter, channel, comp
   compact?: boolean
 }) {
   const data = state.query.data
+  const delayed = useReadWarningDelay(`${state.accountId}:${data?.instance_id ?? ''}`, state.query.stale || data?.complete === false)
+  const reconcileFailed = state.query.refreshError != null
+  const notice = `${reconcileFailed ? '本次核对未完成。' : '在途委托更新暂不可用。'}${data ? '当前显示上次读取结果。' : '尚未取得委托记录，请稍后重试。'}${state.query.error ? `原因：${state.query.error.message}` : ''}`
   const rows = data?.data.filter(order => !symbolFilter || symbolFilter(order.symbol)) ?? []
   const feedback = state.receipts.filter(r => (!symbolFilter || symbolFilter(r.symbol)) && !rows.some(order => currentOrderKey(order) === currentOrderKey(r)) && (r.state === 'terminal' || r.state === 'failed' || r.state === 'unknown')).slice(-5)
   return <>
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[12.5px] text-ink-3">
-      <span>{ordersSnapshotLabel(data, !!symbolFilter, rows.length)}</span>
-      <div className="flex items-center gap-3"><OrdersQueryFailure state={state} /><button type="button" aria-label={'核对在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
+      <span>{ordersSnapshotLabel(data, !!symbolFilter, rows.length)}
+        {(delayed || reconcileFailed) && <ReadStatusDot label={reconcileFailed ? '本次核对未完成' : '在途委托更新暂不可用'}>{notice}</ReadStatusDot>}
+      </span>
+      <div className="flex items-center gap-3"><button type="button" aria-label={'核对在途委托'} disabled={!state.connectionReady || state.query.loading || state.query.refreshing} onClick={() => void state.refresh()}
         className="flex min-h-8 cursor-pointer items-center gap-1.5 text-accent disabled:cursor-default disabled:text-ink-3"><RefreshCw size={14} aria-hidden />{state.query.refreshing ? '核对中' : '核对委托'}</button></div>
     </div>
     {compact && !data?.complete && rows.length === 0 && <div className="py-6 text-center text-ink-3">—</div>}

@@ -1,6 +1,6 @@
 import type { AccountActivity, CurrentOrder, OperationFailure } from '@/lib/api/orders'
 
-export type ActivityTab = 'trades' | 'orders' | 'pending' | 'failures' | 'operations'
+export type ActivityTab = 'positions' | 'trades' | 'orders' | 'pending' | 'failures' | 'operations'
 
 export interface ActivityEvent {
   key: string

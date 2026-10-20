@@ -16,4 +16,7 @@ test('view memory isolates accounts and keeps a scroll position for each tab and
   expect(activityPositionKey('orders', 'SHFE.ag2612')).not.toBe(key)
   expect(activityPositionKey('trades', 'SHFE.rb2610')).not.toBe(key)
   expect(activityPositionKey('pending', 'SHFE.rb2610')).toBe(activityPositionKey('pending', ''))
+  rememberActivityView(901, { ...activityView(901), tab: 'positions', positionSymbol: 'rb2610' })
+  expect(activityView(901)).toMatchObject({ positionSymbol: 'rb2610', symbol: 'SHFE.ag2612', operationSymbol: 'SHFE.rb2610' })
+  expect(activityPositionKey('positions', 'rb2610')).not.toBe(activityPositionKey('trades', 'rb2610'))
 })
