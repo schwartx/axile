@@ -55,4 +55,30 @@ Rust 不写原始执行、资产、目标权重或渠道配置，不执行数据
 
 部署新协调代码前，核对二进制 `capabilities` 的 `protocol=1`，以及 `commands` 和 `write_commands` 都包含 `publish_store`。旧版本字符串、可运行或旧查询成功不能替代此项核对。构建使用冻结源码和工作树之外的 target；服务运行时不执行 Cargo。构建、暂存与资源设置见[SQLite 结构化事实与 Rust 分析](rust-sqlite-analysis.md#开发构建)。
 
-已有测量文档记录的是之前的回放与发布路径。新版性能需要在同一冻结数据集上验证完整发布、Python 与 Rust 合计内存、首次图表读取、状态检查、详情分页及并发写入；本页不将设计变化折算成性能数字或生产验收结果。
+## 已发布结果读取测量
+
+2026-10-20 使用同一份 Python 源码、同一个 release Rust 二进制，对照旧完整 `/snapshot` 与新 `/status`、`/chart`、单次 `/execution-detail`。输入是已通过实际 `publish_store` 发布的冻结合成 SQLite：1000 次执行、每次 10 个品种，共 10000 笔成交；所选详情有 10 条成交事务，持仓和尝试均为空。三轮各读取五次，计时与内存采样使用不同服务进程；每次响应的共同字段语义均通过对照，新读取启动 Rust 子进程次数为 0。
+
+| 指标 | 旧完整快照 | 新读取 |
+| --- | ---: | ---: |
+| 首次 HTTP 耗时中位数 | 116.94 ms | 状态＋图表合计 65.03 ms |
+| 首屏响应字节 | 4,848,300 | 状态＋图表合计 202,133 |
+| Python＋Rust 同时 RSS 采样峰值 | 248.39 MiB | 161.42 MiB |
+
+测量使用真实 loopback HTTP、独立客户端和只挂性能路由的隔离服务（router-only），关闭应用 lifespan；客户端解析与绘制不计入上述 HTTP 耗时。RSS 每 2 ms 从外部合计 Python 服务与 Rust 后代，排除客户端和测量驱动；共享页可能重复计数，短峰值可能漏采。它比较同一代码中的两种读取入口，不是历史版本回归对照，也不代表完整服务驻留内存或真实账户性能。完整发布耗时、写入锁竞争、生产负载与生产验收均未在这组读取测量中验证。
+
+在 Axile 仓库根目录复现；先将 `AXILE_ANALYSIS_BENCH_BINARY` 指向已构建并冻结的 release `axile-analysis`。两个命令使用同一二进制，脚本会保存二进制副本、服务源码清单、输入哈希与只含汇总数据的 `report.json`：
+
+```bash
+: "${AXILE_ANALYSIS_BENCH_BINARY:?请设置已构建的 release axile-analysis 路径}"
+analysis_bench_dir="$(mktemp -d)"
+uv run --no-sync python scripts/benchmark_analysis_views.py prepare \
+  "$analysis_bench_dir/synthetic.sqlite" \
+  --binary "$AXILE_ANALYSIS_BENCH_BINARY" --observations 1000 --symbols 10
+uv run --no-sync python scripts/benchmark_analysis_views.py \
+  "$analysis_bench_dir/synthetic.sqlite" "$analysis_bench_dir/read-comparison" \
+  --binary "$AXILE_ANALYSIS_BENCH_BINARY" --account-id 1 --range all \
+  --data-kind synthetic --runs 3 --iterations 5
+```
+
+本次二进制 SHA256 为 `7c52f89b4299b13692ca7ed39250decd5f259eb92245a5657487cf438127e15a`，服务源码清单 SHA256 为 `989a3f4b49cb7746de6499219af5797f731340ca69e677709a8932be99fd7395`。本次 review 的完整报告另存于 `/private/tmp/axile-analysis-redesign-20261020/perf-fixture/read-comparison-3/report.json`；目录清理后仍可按上述命令重新生成报告，新构建应保留各自的实际哈希。
