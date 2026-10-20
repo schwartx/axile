@@ -8,6 +8,10 @@ from typing import Annotated, Literal, cast
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import AwareDatetime, BaseModel, Field
+from sqlalchemy import literal, union_all
+from sqlalchemy import select as sql_select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute, defer
 from sqlmodel import col, desc, func, select
 
 from axile.channels import get_channel
@@ -373,6 +377,21 @@ async def account_activity(
 ) -> AccountActivityListPublic:
     """合并执行与休市记录，按发生时间倒序分页。"""
     await _get_account_or_404(session, account_id)
+    # SQLite 的旧式事务模式下 SELECT 不会主动开启读事务；SAVEPOINT
+    # 让页头、总数和详情使用同一快照，同时保留调用者已有的事务。
+    async with session.begin_nested():
+        return await _read_activity_page(session, account_id, skip, limit, since, until)
+
+
+async def _read_activity_page(
+    session: AsyncSession,
+    account_id: int,
+    skip: int,
+    limit: int,
+    since: str | None,
+    until: str | None,
+) -> AccountActivityListPublic:
+    """只合并标量页头，随后读取当前页需要的执行与休市详情。"""
     execution_where = [
         col(ExecuteRecord.account_id) == account_id,
         *_time_clauses(col(ExecuteRecord.created_at), since, until),
@@ -383,56 +402,58 @@ async def account_activity(
     ]
     execution_count = await session.scalar(select(func.count()).select_from(ExecuteRecord).where(*execution_where))
     skip_count = await session.scalar(select(func.count()).select_from(ScheduleSkip).where(*skip_where))
-    window = skip + limit
+    headers = union_all(
+        select(
+            col(ExecuteRecord.created_at).label("occurred_at"),
+            col(ExecuteRecord.id).label("id"),
+            literal(0).label("kind"),
+        ).where(*execution_where),
+        select(col(ScheduleSkip.triggered_at), col(ScheduleSkip.id), literal(1)).where(*skip_where),
+    ).subquery()
+    # 原 Python 稳定排序在时间和 ID 都相同时先放执行记录。
+    page = (
+        await session.execute(
+            sql_select(headers)
+            .order_by(headers.c.occurred_at.desc(), headers.c.id.desc(), headers.c.kind)
+            .offset(skip)
+            .limit(limit)
+        )
+    ).all()
+    execution_ids = [row.id for row in page if row.kind == 0]
+    skip_ids = [row.id for row in page if row.kind == 1]
     execution_rows = (
         (
             await session.execute(
                 select(ExecuteRecord)
-                .where(*execution_where)
-                .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)))
-                .limit(window)
+                .options(defer(cast("InstrumentedAttribute[dict]", col(ExecuteRecord.raw_input)), raiseload=True))
+                .where(col(ExecuteRecord.id).in_(execution_ids))
             )
         )
         .scalars()
         .all()
     )
-    skip_rows = (
-        (
-            await session.execute(
-                select(ScheduleSkip)
-                .where(*skip_where)
-                .order_by(desc(col(ScheduleSkip.triggered_at)), desc(col(ScheduleSkip.id)))
-                .limit(window)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    skip_rows = (await session.execute(select(ScheduleSkip).where(col(ScheduleSkip.id).in_(skip_ids)))).scalars().all()
 
-    activities: list[ExecutionActivity | ScheduleSkipActivity] = [
-        _compact_execution_activity(row) for row in execution_rows
-    ]
-    activities.extend(
-        ScheduleSkipActivity(
-            occurred_at=row.triggered_at,
-            id=cast(int, row.id),
-            channel=row.channel,
-            calendar_id=row.calendar_id,
-            calendar_day=row.calendar_day,
-            calendar_label=row.calendar_label,
-            reason_code=cast("ScheduleSkipReason", row.reason_code),
+    activities: dict[tuple[int, int], ExecutionActivity | ScheduleSkipActivity] = {
+        (0, cast(int, row.id)): _compact_execution_activity(row) for row in execution_rows
+    }
+    activities.update(
+        (
+            (1, cast(int, row.id)),
+            ScheduleSkipActivity(
+                occurred_at=row.triggered_at,
+                id=cast(int, row.id),
+                channel=row.channel,
+                calendar_id=row.calendar_id,
+                calendar_day=row.calendar_day,
+                calendar_label=row.calendar_label,
+                reason_code=cast("ScheduleSkipReason", row.reason_code),
+            ),
         )
         for row in skip_rows
     )
-    activities.sort(
-        key=lambda item: (
-            item.occurred_at,
-            item.record.id if isinstance(item, ExecutionActivity) else item.id,
-        ),
-        reverse=True,
-    )
     return AccountActivityListPublic(
-        data=activities[skip:window],
+        data=[activities[(row.kind, row.id)] for row in page],
         count=int(execution_count or 0) + int(skip_count or 0),
     )
 
