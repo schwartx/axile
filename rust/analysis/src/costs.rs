@@ -401,7 +401,7 @@ fn cursor(request: &Value, account: i64) -> Result<(String, i64), String> {
         )
     };
     let mut offset = 0;
-    if let Some(encoded) = optional_string(request, "cursor") {
+    if let Some(encoded) = optional_string(request, "cursor").filter(|value| !value.is_empty()) {
         let invalid = || failure("INVALID_COST_CURSOR", "游标与查询条件不匹配");
         if encoded.len() > 1024 {
             return Err(invalid());
@@ -774,6 +774,21 @@ pub(crate) fn snapshot_executions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_cursor_matches_first_page() {
+        let first_page = json!({"snapshot_id": "v1", "cursor_scope": "known"});
+        let mut empty = first_page.clone();
+        empty["cursor"] = json!("");
+        assert_eq!(cursor(&empty, 2).unwrap(), ("known".to_owned(), 0));
+        assert_eq!(cursor(&empty, 2).unwrap(), cursor(&first_page, 2).unwrap());
+        empty["cursor"] = Value::Null;
+        assert_eq!(cursor(&empty, 2).unwrap(), cursor(&first_page, 2).unwrap());
+        empty["cursor"] = json!("invalid");
+        assert!(cursor(&empty, 2)
+            .unwrap_err()
+            .starts_with("INVALID_COST_CURSOR:"));
+    }
+
     #[test]
     fn cursor_scope_and_integer_offset_are_required() {
         let request = json!({"snapshot_id":"v1","cursor_scope":"known"});
