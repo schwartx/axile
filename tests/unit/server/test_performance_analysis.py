@@ -718,3 +718,72 @@ def test_version_8_projection_is_rebuilt_with_execution_evidence(tmp_path, schem
                 assert rebuilt["tradeCount"] == expected["tradeCount"] == 1
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("typed", [False, True], ids=["legacy", "typed"])
+def test_symbol_page_batches_queries_and_matches_individual_summaries(tmp_path, schema_template, typed):
+    """多品种分页按常数次查询读取，并保留逐品种数值、空值及手续费。"""
+    from axile.server.performance_details import _filters, summary
+
+    async def check():
+        async with database(tmp_path, schema_template, count=3) as (engine, sessions, manager):
+            await queue(sessions)
+            await manager.run_once()
+            initial = await snapshot(sessions)
+            identity = initial["snapshot_id"]
+            async with sessions() as session:
+                if not typed:
+                    await _restore_legacy_snapshot(session)
+                template = dict((await session.execute(sa.select(trades).limit(1))).mappings().one())
+                await session.execute(sa.delete(trades).where(trades.c.snapshot_id == identity))
+                rows = []
+                for symbol in range(25):
+                    for variant in range(4):
+                        payload = {"side": ("buy", "sell", "none", "buy")[variant]}
+                        if variant != 3:
+                            payload["quantity"] = (0, 0.3, None)[variant]
+                        rows.append(
+                            template
+                            | {
+                                "id": len(rows) + 1,
+                                "symbol": f"S{symbol:02d}",
+                                "value": (0, 0.1, None, 0.2)[variant],
+                                "cost": (0, -0.03, None, 0.01)[variant],
+                                "fee": (0, 0.07, None, 0.01)[variant],
+                                "fee_currency": ("CNY", "USD", None, "CNY")[variant],
+                                "side": payload["side"],
+                                "quantity": payload.get("quantity"),
+                                "payload": {} if typed else payload,
+                            }
+                        )
+                await session.execute(trades.insert(), rows)
+                await session.commit()
+            statements = []
+
+            def capture(conn, cursor, statement, parameters, context, executemany):
+                statements.append(statement)
+
+            sa.event.listen(engine.sync_engine, "before_cursor_execute", capture)
+            try:
+                async with sessions() as session:
+                    query = CostQuery(snapshot_id=identity, dimension="symbol")
+                    first = await read_costs(session, 2, query)
+                selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+                assert len(selects) == 9
+            finally:
+                sa.event.remove(engine.sync_engine, "before_cursor_execute", capture)
+            assert [row["symbol"] for row in first["data"]] == [f"S{i:02d}" for i in range(20)]
+            async with sessions() as session:
+                for row in first["data"]:
+                    bounds = {"baseline": initial["result"]["baseline"], "end": initial["result"]["end"]}
+                    _, filters = _filters(query.model_copy(update={"symbol": row["symbol"]}), bounds)
+                    assert row["summary"] == await summary(session, filters)
+                    assert row["buy"] == 0
+                    assert row["sell"] == 0.3
+                    assert row["quantityIncomplete"] is True
+                next_page = await read_costs(session, 2, query.model_copy(update={"cursor": first["next_cursor"]}))
+                assert [row["symbol"] for row in next_page["data"]] == [f"S{i:02d}" for i in range(20, 25)]
+                empty = await read_costs(session, 2, query.model_copy(update={"symbol_search": "missing"}))
+                assert empty["data"] == []
+
+    asyncio.run(check())
