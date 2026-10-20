@@ -1,0 +1,89 @@
+//! Native calculation, bounded disk staging and atomic SQLite publication.
+//!
+//! Only a small receipt crosses the process boundary. Python continues to own
+//! business facts and migrations; this command writes analysis-owned tables.
+
+mod copy;
+mod staging;
+mod task;
+mod writer;
+
+use std::{path::Path, time::Duration};
+
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{json, Value};
+
+use crate::{error::AnalysisError, publication, with_read_snapshot};
+
+use staging::Staging;
+use task::Task;
+
+/// Calculate outside the durable writer transaction, then compare-and-publish.
+pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
+    let task = Task::parse(request)?;
+    let connection = open_writer(database)?;
+    if let Some(receipt) = writer::already_published(&connection, &task)? {
+        return Ok(receipt);
+    }
+    let mut staged = Staging::new(&connection)?;
+    let reason = with_read_snapshot(database, |source| {
+        if let Some(reason) = writer::stale_reason(source, &task)? {
+            return Ok(Some(reason));
+        }
+        let mut calculation = request.clone();
+        calculation["include_execution_summaries"] = json!(true);
+        publication::write(source, &calculation, &mut |frame| {
+            staged
+                .accept(frame)
+                .map_err(|error| format!("{}:{}", error.code, error.error))
+        })
+        .map_err(AnalysisError::from)?;
+        Ok(None)
+    })?;
+    if let Some(reason) = reason {
+        // The staging transaction never wrote main. End it before obtaining
+        // main's writer slot so no old main reader is upgraded into a writer.
+        connection
+            .execute_batch("ROLLBACK;")
+            .map_err(|error| AnalysisError::new("PUBLICATION_STAGE", error.to_string()))?;
+        return writer::skip(&connection, &task, reason);
+    }
+    let complete = staged.finish(task.account_id, task.source_version)?;
+    writer::publish(&connection, &task, &complete)
+}
+
+fn open_writer(database: &Path) -> Result<Connection, AnalysisError> {
+    // Deliberately omit CREATE: an invalid path must never create a business DB.
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=ON;
+         PRAGMA cache_size=-4096;
+         PRAGMA mmap_size=0;
+         PRAGMA temp_store=FILE;",
+        )
+        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
+    Ok(connection)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_store_request_never_opens_database() {
+        let error = publish(
+            Path::new("/nonexistent.sqlite"),
+            &json!({"command":"publish_store"}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "INVALID_REQUEST");
+    }
+}

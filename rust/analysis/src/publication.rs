@@ -1,8 +1,8 @@
-//! Bounded read-only publication stream for Python-owned SQLite transactions.
+//! Bounded publication rows for native persistence and compatibility streaming.
 //!
 //! Rust keeps historical facts inside its read snapshot. Only scalar result
-//! rows cross the process boundary; Python stages these rows and atomically
-//! publishes them after checking the same source version again.
+//! rows are emitted to a native database staging callback. The compatibility
+//! command can still stream its original result rows to a Python publisher.
 
 use std::collections::BTreeMap;
 
@@ -48,8 +48,42 @@ fn sql_error(error: rusqlite::Error) -> String {
     format!("ANALYSIS_READ_ERROR:{error}")
 }
 
+fn string_bytes(value: &str) -> usize {
+    2 + value
+        .bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' | b'\x08' | b'\x0c' | b'\n' | b'\r' | b'\t' => 2,
+            0..=0x1f => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
+}
+
+/// Count JSON framing bytes without encoding or copying native result rows.
+fn value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(true) => 4,
+        Value::Bool(false) => 5,
+        Value::Number(number) => number.to_string().len(),
+        Value::String(text) => string_bytes(text),
+        Value::Array(values) => row_bytes(values),
+        Value::Object(values) => {
+            2 + values.len().saturating_sub(1)
+                + values
+                    .iter()
+                    .map(|(key, value)| string_bytes(key) + 1 + value_bytes(value))
+                    .sum::<usize>()
+        }
+    }
+}
+
+fn row_bytes(values: &[Value]) -> usize {
+    2 + values.len().saturating_sub(1) + values.iter().map(value_bytes).sum::<usize>()
+}
+
 /// At most one bounded batch is retained, including when a consumer is slow.
-fn rows(
+pub(crate) fn rows(
     table: &str,
     columns: &[&str],
     values: impl IntoIterator<Item = Result<Vec<Value>, String>>,
@@ -62,9 +96,7 @@ fn rows(
         if row.len() != columns.len() {
             return Err(format!("INVALID_RESULT_ROW:{table} column count mismatch"));
         }
-        let size = serde_json::to_vec(&row)
-            .map_err(|error| error.to_string())?
-            .len();
+        let size = row_bytes(&row);
         if size > MAX_ROW_BYTES {
             return Err(format!(
                 "RESULT_FRAME_TOO_LARGE:{table} contains an oversized row"
@@ -531,6 +563,15 @@ pub fn write(
             }
             range_rows(connection, account, key, performance, &mut counted_emit)?;
         }
+        // New native publication prepares one reusable execution index. The
+        // legacy stream retains exactly its original frame/table contract.
+        if request
+            .get("include_execution_summaries")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            crate::execution_summary::write(connection, account, &mut counted_emit)?;
+        }
     }
     emit(
         &json!({"type":"complete","account_id":account,"source_version":version,
@@ -541,6 +582,21 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_byte_count_matches_escaping_without_encoding_native_rows() {
+        let row = vec![
+            Value::Null,
+            json!(true),
+            json!(false),
+            json!(-123.45),
+            json!("中文\"\\\n\r\t\u{0008}\u{000c}\u{0001}"),
+            json!([]),
+            json!({"escaped\nkey": [1, null, "value"]}),
+        ];
+        assert_eq!(row_bytes(&row), serde_json::to_vec(&row).unwrap().len());
+        assert_eq!(row_bytes(&[]), 2);
+    }
 
     #[test]
     fn batches_bound_rows_and_preserve_order() {

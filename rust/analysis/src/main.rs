@@ -29,7 +29,8 @@ fn run() -> Result<(), AnalysisError> {
             "axile-analysis query --database PATH\n\
              axile-analysis capabilities\n\n\
              query reads one JSON request from stdin and writes its JSON result to stdout.\n\
-             Requests with command publish stream JSONL frames ending in a complete frame."
+             Requests with command publish stream JSONL frames ending in a complete frame.\n\
+             Requests with command publish_store atomically write analysis results and return a small receipt."
         );
         return Ok(());
     }

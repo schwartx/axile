@@ -1,12 +1,14 @@
 //! Bounded SQLite access for the native analysis process.
 //!
-//! Python owns source transactions and schema migrations. This worker opens a
-//! live database read-only and keeps a single consistent read snapshot for each
-//! request. No historical rows cross the Python/Rust process boundary.
+//! Python owns business facts and migrations. Queries use a consistent read
+//! snapshot; native publication stages and commits analysis-owned results.
+//! No historical rows cross the Python/Rust process boundary in publish_store.
 
 pub mod calendar;
 pub mod costs;
 pub mod error;
+pub(crate) mod execution_summary;
+pub mod native_publication;
 pub mod performance;
 pub mod publication;
 pub mod replay;
@@ -31,16 +33,20 @@ pub fn capabilities() -> Value {
     json!({
         "protocol": PROTOCOL_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
-        "commands": ["performance", "replay", "costs", "snapshot", "performance_result", "publish"],
+        "commands": ["performance", "replay", "costs", "snapshot", "performance_result", "publish", "publish_store"],
         "streaming_commands": ["publish"],
         "max_frame_bytes": MAX_FRAME_BYTES,
-        "read_only": true,
+        "read_only": false,
+        "write_commands": ["publish_store"],
     })
 }
 
 /// Execute one complete analysis task against a consistent SQLite read view.
 pub fn query(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
     let command = request_command(request)?;
+    if command == "publish_store" {
+        return native_publication::publish(database, request);
+    }
     if !matches!(
         command,
         "performance" | "replay" | "costs" | "snapshot" | "performance_result"
