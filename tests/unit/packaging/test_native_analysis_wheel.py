@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from types import ModuleType
@@ -40,14 +41,17 @@ def native_process(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 @pytest.fixture
 def wheel_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
+    repository = Path(__file__).resolve().parents[3]
+    production_config = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    artifacts = production_config["tool"]["hatch"]["build"]["targets"]["wheel"]["artifacts"]
     (project / "axile").mkdir(parents=True)
     (project / "axile" / "__init__.py").write_text("", encoding="utf-8")
-    shutil.copyfile(Path(__file__).resolve().parents[3] / "hatch_build.py", project / "hatch_build.py")
-    (project / ".gitignore").write_text("axile/server/_native/\n", encoding="utf-8")
+    shutil.copyfile(repository / "hatch_build.py", project / "hatch_build.py")
+    (project / ".gitignore").write_text("axile/server/_native/\naxile/server/_static/\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
         '[project]\nname = "axile"\nversion = "0.0.1"\nrequires-python = ">=3.12"\n'
         '[tool.hatch.build.targets.wheel]\npackages = ["axile"]\n'
-        'artifacts = ["axile/server/_native/axile-analysis", "axile/server/_native/axile-analysis.exe"]\n'
+        f"artifacts = {json.dumps(artifacts)}\n"
         '[tool.hatch.build.targets.wheel.hooks.custom]\npath = "hatch_build.py"\n',
         encoding="utf-8",
     )
@@ -84,6 +88,34 @@ def test_native_wheel_is_platform_tagged_and_preserves_executable(wheel_project:
         assert archive.read(member) == b"native build fixture"
         assert (member.external_attr >> 16) & 0o111
         assert "Root-Is-Purelib: false" in archive.read("axile-0.0.1.dist-info/WHEEL").decode()
+
+
+@pytest.mark.parametrize("include_native", [False, True])
+def test_built_frontend_resources_are_preserved_with_production_artifact_rules(
+    wheel_project: Path, include_native: bool
+) -> None:
+    static = wheel_project / "axile" / "server" / "_static"
+    (static / "assets").mkdir(parents=True)
+    resources = {
+        "index.html": b'<script src="/assets/main.js"></script>',
+        "assets/main.js": b'console.log("built UI")',
+        "assets/main.css": b"body { color: black; }",
+        "icons.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>',
+    }
+    for name, content in resources.items():
+        (static / name).write_bytes(content)
+    if include_native:
+        executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
+        binary = wheel_project / "axile" / "server" / "_native" / executable
+        binary.parent.mkdir()
+        binary.write_bytes(b"native build fixture")
+        binary.chmod(0o755)
+
+    wheel = build_wheel(wheel_project)
+
+    with zipfile.ZipFile(wheel) as archive:
+        for name, content in resources.items():
+            assert archive.read(f"axile/server/_static/{name}") == content
 
 
 def test_foreign_native_executable_is_rejected(wheel_project: Path) -> None:

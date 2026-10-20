@@ -72,7 +72,11 @@ artifacts = [
 ]
 
 [tool.hatch.build.targets.wheel]
-artifacts = ["axile/server/_native/axile-analysis", "axile/server/_native/axile-analysis.exe"]
+artifacts = [
+    "axile/server/_static/**",
+    "axile/server/_native/axile-analysis",
+    "axile/server/_native/axile-analysis.exe",
+]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
