@@ -103,36 +103,23 @@ def _filters(query: CostQuery, result: dict):
     return execution_filter, trade_filter
 
 
-async def summary(session, filters: list) -> dict:
-    """Aggregate projected numeric columns without loading per-trade JSON."""
+def _summary_columns():
+    """Share the existing aggregate expressions between totals and page groups."""
     valid = sa.and_(trades.c.cost.is_not(None), trades.c.value.is_not(None))
-    row = (
-        (
-            await session.execute(
-                sa.select(
-                    sa.func.count().label("count"),
-                    sa.func.count(trades.c.value).label("valued"),
-                    sa.func.sum(trades.c.value).label("value"),
-                    sa.func.sum(trades.c.cost).label("cost"),
-                    sa.func.count(sa.case((valid, 1))).label("covered"),
-                    sa.func.sum(sa.case((valid, trades.c.value), else_=0)).label("covered_value"),
-                    sa.func.sum(sa.case((valid, trades.c.loss_bp * trades.c.value), else_=0)).label("weighted_loss"),
-                    sa.func.sum(sa.cast(trades.c.estimated, sa.Integer)).label("estimated"),
-                )
-                .select_from(trades)
-                .where(*filters)
-            )
-        )
-        .mappings()
-        .one()
+    return (
+        sa.func.count().label("count"),
+        sa.func.count(trades.c.value).label("valued"),
+        sa.func.sum(trades.c.value).label("value"),
+        sa.func.sum(trades.c.cost).label("cost"),
+        sa.func.count(sa.case((valid, 1))).label("covered"),
+        sa.func.sum(sa.case((valid, trades.c.value), else_=0)).label("covered_value"),
+        sa.func.sum(sa.case((valid, trades.c.loss_bp * trades.c.value), else_=0)).label("weighted_loss"),
+        sa.func.sum(sa.cast(trades.c.estimated, sa.Integer)).label("estimated"),
     )
-    fee_rows = (
-        await session.execute(
-            sa.select(trades.c.fee_currency, sa.func.sum(trades.c.fee), sa.func.count())
-            .where(*filters, trades.c.fee.is_not(None), trades.c.fee_currency.is_not(None))
-            .group_by(trades.c.fee_currency)
-        )
-    ).all()
+
+
+def _summary_result(row, fee_rows):
+    """Keep null, completeness and fee semantics identical for totals and groups."""
     complete = row["count"] == row["valued"]
     return {
         "value": row["value"],
@@ -147,6 +134,19 @@ async def summary(session, filters: list) -> dict:
         "feeCovered": sum(count for _, _, count in fee_rows),
         "estimated": row["estimated"] or 0,
     }
+
+
+async def summary(session, filters: list) -> dict:
+    """Aggregate projected numeric columns without loading per-trade JSON."""
+    row = (await session.execute(sa.select(*_summary_columns()).select_from(trades).where(*filters))).mappings().one()
+    fee_rows = (
+        await session.execute(
+            sa.select(trades.c.fee_currency, sa.func.sum(trades.c.fee), sa.func.count())
+            .where(*filters, trades.c.fee.is_not(None), trades.c.fee_currency.is_not(None))
+            .group_by(trades.c.fee_currency)
+        )
+    ).all()
+    return _summary_result(row, fee_rows)
 
 
 async def _execution_page(session, filters, trade_filter, query, offset):
@@ -183,49 +183,50 @@ async def _symbol_page(session, filters, query, offset):
     stmt = sa.select(trades.c.symbol).where(*filters).group_by(trades.c.symbol)
     ordering = [cost.desc().nulls_last(), trades.c.symbol] if query.sort == "cost" else [trades.c.symbol]
     symbols = (await session.execute(stmt.order_by(*ordering).offset(offset).limit(query.limit))).scalars().all()
-    data = []
-    for symbol in symbols:
-        row_filter = [*filters, trades.c.symbol == symbol]
-        quantities = (
+    if not symbols:
+        return []
+    page_filter = [*filters, trades.c.symbol.in_(symbols)]
+    side, quantity = trades.c.payload["side"].as_string(), trades.c.payload["quantity"].as_float()
+    rows = (
+        (
             await session.execute(
                 sa.select(
-                    sa.func.sum(
-                        sa.case(
-                            (trades.c.payload["side"].as_string() == "buy", trades.c.payload["quantity"].as_float()),
-                            else_=0,
-                        )
-                    ),
-                    sa.func.sum(
-                        sa.case(
-                            (trades.c.payload["side"].as_string() == "sell", trades.c.payload["quantity"].as_float()),
-                            else_=0,
-                        )
-                    ),
-                    sa.func.count(
-                        sa.case(
-                            (
-                                sa.or_(
-                                    trades.c.payload["side"].as_string() == "none",
-                                    trades.c.payload["quantity"].as_float().is_(None),
-                                ),
-                                1,
-                            )
-                        )
-                    ),
-                ).where(*row_filter)
+                    trades.c.symbol,
+                    *_summary_columns(),
+                    sa.func.max(trades.c.time).label("last_time"),
+                    sa.func.sum(sa.case((side == "buy", quantity), else_=0)).label("buy"),
+                    sa.func.sum(sa.case((side == "sell", quantity), else_=0)).label("sell"),
+                    sa.func.count(sa.case((sa.or_(side == "none", quantity.is_(None)), 1))).label("incomplete"),
+                )
+                .where(*page_filter)
+                .group_by(trades.c.symbol)
             )
-        ).one()
-        data.append(
-            {
-                "symbol": symbol,
-                "lastTime": await session.scalar(sa.select(sa.func.max(trades.c.time)).where(*row_filter)),
-                "summary": await summary(session, row_filter),
-                "buy": quantities[0] or 0,
-                "sell": quantities[1] or 0,
-                "quantityIncomplete": bool(quantities[2]),
-            }
         )
-    return data
+        .mappings()
+        .all()
+    )
+    fees = {symbol: [] for symbol in symbols}
+    fee_rows = (
+        await session.execute(
+            sa.select(trades.c.symbol, trades.c.fee_currency, sa.func.sum(trades.c.fee), sa.func.count())
+            .where(*page_filter, trades.c.fee.is_not(None), trades.c.fee_currency.is_not(None))
+            .group_by(trades.c.symbol, trades.c.fee_currency)
+        )
+    ).all()
+    for symbol, currency, amount, count in fee_rows:
+        fees[symbol].append((currency, amount, count))
+    by_symbol = {
+        row["symbol"]: {
+            "symbol": row["symbol"],
+            "lastTime": row["last_time"],
+            "summary": _summary_result(row, fees[row["symbol"]]),
+            "buy": row["buy"] or 0,
+            "sell": row["sell"] or 0,
+            "quantityIncomplete": bool(row["incomplete"]),
+        }
+        for row in rows
+    }
+    return [by_symbol[symbol] for symbol in symbols]
 
 
 def _cost_bounds(batch):
