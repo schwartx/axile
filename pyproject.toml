@@ -15,7 +15,6 @@ dependencies = [
     "loguru>=0.7.3",
     "numpy==2.3.2",
     "pandas>=2.2.3",
-    "polars>=1.37.1",
     "pydantic-settings>=2.8.1",
     "python-dotenv>=1.1.0",
     "sqlalchemy>=2.0.46",
@@ -24,7 +23,6 @@ dependencies = [
     "streamlit>=1.41.0",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
-    "wbt==0.9.1",
     "ty>=0.0.83,<0.1",
     "ruff>=0.11,<1",
 ]
@@ -63,7 +61,6 @@ default = true
 
 [tool.uv.sources]
 shinny-calendar = { index = "pypi" }
-wbt = { index = "pypi" }
 
 [build-system]
 requires = ["hatchling"]

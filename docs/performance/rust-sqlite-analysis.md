@@ -22,6 +22,8 @@ Python 继续处理认证、参数校验、任务协调、数据库迁移和快�
 
 Python 桥接层的小请求和发布帧仍使用标准库 `json`，Rust 使用 `serde_json`，没有进行全局 `orjson` 替换。Rust 的最终响应组装仍有 `serde_json::Value` 对象树和增长数组，完整快照响应仍可能较大。当前实现没有实现全程零拷贝，也没有移除整个后端的 Pydantic 或 SQLAlchemy。
 
+Python 的 `wbt` 包和没有业务引用的 Polars 依赖已移除，锁文件同时裁剪它们独占引入的 Plotly、Polars runtime。Python 兼容计算使用独立权益账本，不依赖这些包；`build_wbt_input()` 保留原名称和 pandas DataFrame 返回契约。pandas、NumPy、Arrow 仍被渠道 SDK、数据接口或 Streamlit 使用，没有随 WBT 一并删除。该变更清理安装依赖，不代表 Python 服务驻留内存会按包安装体积等量下降。
+
 ## 运行边界
 
 原生部分是按任务启动的独立可执行程序 `axile-analysis`，通过 stdin/stdout 交换控制请求和 JSON 结果，不监听额外 HTTP 端口。已有 Python HTTP 入口保留认证和接口路径；适用的查询直接返回 Rust 编码的响应字节，避免再次构造完整 Pydantic 响应对象。后台发布协调仍由 Python 负责。
