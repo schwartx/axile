@@ -330,14 +330,16 @@ def participating_items(items: list[Observation]) -> list[Observation]:
 class BacktestInput:
     """回放输入与参与统计；保留权重表供诊断，收益由独立账本计算."""
 
-    frame: pd.DataFrame
+    frame: pd.DataFrame | None
     used: int
     skips: PerformanceSkips
     backtest_start: datetime | None
     participants: list[Observation]
 
 
-def build_wbt_input(items: list[Observation], target_weight: bool = False) -> BacktestInput:
+def build_wbt_input(
+    items: list[Observation], target_weight: bool = False, *, materialize_frame: bool = True
+) -> BacktestInput:
     """跳过缺目标或缺盘口的观测；跳过记录的持仓延续，目标回放不等于真实成交."""
     rows: list[dict[str, object]] = []
     previous: dict[str, float] = {}
@@ -361,19 +363,20 @@ def build_wbt_input(items: list[Observation], target_weight: bool = False) -> Ba
             continue
         assert target is not None and required is not None
         # 旧仓必须写入显式零权重退出行；其余有报价的零仓也保留供 WBT 建立历史。
-        symbols = required | (target.keys() & item.prices.keys())
-        rows.extend(
-            {"dt": item.time, "symbol": symbol, "weight": target.get(symbol, 0.0), "price": item.prices[symbol]}
-            for symbol in sorted(symbols)
-        )
+        if materialize_frame:
+            symbols = required | (target.keys() & item.prices.keys())
+            rows.extend(
+                {"dt": item.time, "symbol": symbol, "weight": target.get(symbol, 0.0), "price": item.prices[symbol]}
+                for symbol in sorted(symbols)
+            )
         backtest_start = backtest_start or item.time
         previous = target
         used += 1
         participants.append(item)
     skipped = missing_target + missing_ticks
-    frame = pd.DataFrame(rows, columns=["dt", "symbol", "weight", "price"])
+    frame = pd.DataFrame(rows, columns=["dt", "symbol", "weight", "price"]) if materialize_frame else None
     return BacktestInput(
-        frame=frame.astype({"weight": "float64", "price": "float64"}),
+        frame=frame.astype({"weight": "float64", "price": "float64"}) if frame is not None else None,
         used=used,
         skips=PerformanceSkips(
             count=skipped,
@@ -540,8 +543,9 @@ def calculate_performance(
     target_start: datetime | None = None
     fallback_days: set[str] = set()
     if include_backtest:
-        built = build_wbt_input(items)
-        target_built = build_wbt_input(items, target_weight=True)
+        # 权益账本只消费参与记录和统计，不需要旧 WBT 权重表。
+        built = build_wbt_input(items, materialize_frame=False)
+        target_built = build_wbt_input(items, target_weight=True, materialize_frame=False)
         result.used_record_count = built.used
         result.target_used_record_count = target_built.used
         result.skips = built.skips
