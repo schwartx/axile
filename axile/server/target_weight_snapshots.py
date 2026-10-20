@@ -8,7 +8,8 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, desc, select
 
-from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
+from axile.server.analysis_observations import write_observation_fact
+from axile.server.db.models import ExecuteRecord, TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
 
 
 async def append_target_weight_snapshot(
@@ -31,6 +32,16 @@ async def append_target_weight_snapshot(
         execution_id=execution_id,
     )
     session.add(snapshot)
+    if account_id is not None and execution_id is not None and normalized_weights is not None:
+        # 常规路径先写目标再执行；兼容目标晚于执行落库时，只刷新该次执行的回放事实。
+        record = await session.scalar(
+            select(ExecuteRecord).where(
+                ExecuteRecord.account_id == account_id,
+                ExecuteRecord.execution_id == execution_id,
+            )
+        )
+        if record is not None:
+            await write_observation_fact(session, record, fallback_weights=normalized_weights)
     await session.commit()
     await session.refresh(snapshot)
     return snapshot

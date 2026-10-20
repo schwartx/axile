@@ -1,6 +1,7 @@
 """Single-worker, durable performance queue and atomic snapshot publication."""
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any, cast
 from uuid import uuid4
@@ -13,14 +14,15 @@ from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.executor.session_closed import session_closed_scope
+from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION, COST_FACT_TABLES, iter_cost_fact_batches
 from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, ScheduleSkip, TargetWeightSnapshot
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
-from axile.server.db.models.analysis import cost_execution as executions
-from axile.server.db.models.analysis import cost_trade as trades
-from axile.server.db.models.performance import PerformanceBinding, PerformanceSettings, PerformanceSummary
+from axile.server.db.models.analysis import cost_execution as execution_facts
+from axile.server.db.models.analysis import cost_trade as trade_facts
+from axile.server.db.models.performance import PerformanceSettings, PerformanceSummary
 from axile.server.execution.legacy_compat import normalize_legacy_result
-from axile.server.performance import Observation, calculate_performance, local_time, observation
+from axile.server.performance import Observation, calculate_performance, local_time, observation, performance_calendar
 from axile.server.performance_costs import SHANGHAI, daily_costs, project_execution, summarize, timestamp
 from axile.server.performance_replay import ENGINE_VERSION
 
@@ -54,7 +56,14 @@ async def read_snapshot(session, account_id: int, range_key: str) -> dict:
     joined = (
         (
             await session.execute(
-                sa.select(states, *[column.label(f"snapshot_{column.name}") for column in snapshots.c])
+                sa.select(
+                    states,
+                    *[
+                        column.label(f"snapshot_{column.name}")
+                        for column in snapshots.c
+                        if column.name != "cost_schema_version"
+                    ],
+                )
                 .select_from(states.outerjoin(snapshots, states.c.current_snapshot == snapshots.c.id))
                 .where(states.c.account_id == account_id)
             )
@@ -63,6 +72,33 @@ async def read_snapshot(session, account_id: int, range_key: str) -> dict:
         .first()
     )
     return _snapshot_response(joined, range_key)
+
+
+async def read_snapshot_status(session, account_id: int) -> str:
+    """仅读取发布状态，等待计算时不反复展开完整绩效快照。"""
+    row = (
+        (
+            await session.execute(
+                sa.select(
+                    states,
+                    snapshots.c.id.label("snapshot_id"),
+                    snapshots.c.logic_version.label("snapshot_logic_version"),
+                    snapshots.c.engine_version.label("snapshot_engine_version"),
+                )
+                .select_from(states.outerjoin(snapshots, states.c.current_snapshot == snapshots.c.id))
+                .where(states.c.account_id == account_id)
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if (
+        row
+        and row["snapshot_id"] is not None
+        and (row["snapshot_logic_version"] != LOGIC_VERSION or row["snapshot_engine_version"] != ENGINE_VERSION)
+    ):
+        return "pending"
+    return _snapshot_status(row, row is not None and row["snapshot_id"] is not None)
 
 
 def _snapshot_status(row, has_snapshot: bool):
@@ -90,7 +126,11 @@ def _snapshot_response(joined, range_key: str) -> dict:
     """共用单账户与批量读取的快照状态语义。"""
     row = joined
     snapshot = (
-        {column.name: joined[f"snapshot_{column.name}"] for column in snapshots.c}
+        {
+            column.name: joined[f"snapshot_{column.name}"]
+            for column in snapshots.c
+            if f"snapshot_{column.name}" in joined
+        }
         if joined and joined["snapshot_id"]
         else None
     )
@@ -252,9 +292,10 @@ class _PreparedHistory:
     events: list[dict] = field(default_factory=list)
 
 
-def _prepare_records(prepared: _PreparedHistory, records, fallback: dict) -> None:
+def _prepare_records(prepared: _PreparedHistory, records, fallback: dict, include_observations: bool = True) -> None:
     """沿用原转换与记录顺序；本批原始对象在返回后即可释放。"""
-    prepared.observations.extend(observation(record, fallback.get(record.execution_id or "")) for record in records)
+    if include_observations:
+        prepared.observations.extend(observation(record, fallback.get(record.execution_id or "")) for record in records)
     for record in records:
         payload, fills = project_execution(record)
         prepared.by_record[record.id] = fills
@@ -289,7 +330,14 @@ def _prepare_records(prepared: _PreparedHistory, records, fallback: dict) -> Non
 
 
 def compute_batch(
-    records, targets, bindings, skips, settings: PerformanceSettings, trade_channel: str | None = None
+    records,
+    targets,
+    bindings,
+    skips,
+    settings: PerformanceSettings,
+    trade_channel: str | None = None,
+    *,
+    native_performance: dict | None = None,
 ) -> tuple[dict, list, list]:
     """Read history once, independently rebase each range, and share daily/cumulative results."""
     if isinstance(records, _PreparedHistory):
@@ -305,10 +353,18 @@ def compute_batch(
     )
     ranges = {}
     for range_key in ("30", "90", "all"):
-        result = calculate_performance(observations, settings, range_key, trade_channel=trade_channel)
-        start, end = timestamp(result.baseline) if result.baseline else 0, timestamp(result.end) if result.end else -1
-        result.bindings = [
-            PerformanceBinding(time=local_time(binding.created_at).isoformat(), portfolio_id=binding.portfolio_id)
+        if native_performance is None:
+            result = calculate_performance(observations, settings, range_key, trade_channel=trade_channel)
+            performance = result.model_dump(mode="json")
+        else:
+            performance = native_performance[range_key]
+            performance["calendar"] = performance_calendar(
+                trade_channel, performance["baseline"], performance["end"]
+            ).model_dump(mode="json")
+        start = timestamp(performance["baseline"]) if performance["baseline"] else 0
+        end = timestamp(performance["end"]) if performance["end"] else -1
+        performance["bindings"] = [
+            {"time": local_time(binding.created_at).isoformat(), "portfolio_id": binding.portfolio_id}
             for binding in sorted(bindings, key=lambda item: local_time(item.created_at))
             if start <= timestamp(binding.created_at) <= end
         ]
@@ -327,7 +383,6 @@ def compute_batch(
         ]
         selected_events = [event for event in events if start <= timestamp(event["time"]) <= end]
         # 执行投影已由数据库 JSON 值和标量构成，避免再次深度复制整份历史。
-        performance = result.model_dump(mode="json")
         if range_executions is not None:
             performance["executions"] = range_executions
         else:
@@ -426,7 +481,7 @@ class AnalysisManager:
                 await session.commit()
             return row
 
-    async def _load(self, account_id):
+    async def _load(self, account_id, *, include_observations: bool = True):
         async with self.sessions() as session:
             # SQLite legacy transaction mode does not begin a snapshot for SELECT.
             await session.execute(sa.text("BEGIN"))
@@ -436,6 +491,9 @@ class AnalysisManager:
             settings = PerformanceSettings.model_validate(account, from_attributes=True)
             history = []
             for model in (TargetWeightSnapshot, PortfolioAccount, ScheduleSkip):
+                if model is TargetWeightSnapshot and not include_observations:
+                    history.append([])
+                    continue
                 history.append(
                     (await session.execute(sa.select(model).where(model.account_id == account_id))).scalars().all()
                 )
@@ -447,7 +505,7 @@ class AnalysisManager:
                     col(ExecuteRecord.execution_id),
                     col(ExecuteRecord.created_at),
                     col(ExecuteRecord.is_success),
-                    col(ExecuteRecord.raw_input),
+                    col(ExecuteRecord.raw_input) if include_observations else sa.literal(None).label("raw_input"),
                     col(ExecuteRecord.raw_result),
                 )
                 .where(ExecuteRecord.account_id == account_id)
@@ -455,10 +513,37 @@ class AnalysisManager:
             )
             try:
                 async for batch in rows.partitions(100):
-                    await run_in_threadpool(_prepare_records, prepared, batch, fallback)
+                    if include_observations:
+                        await run_in_threadpool(_prepare_records, prepared, batch, fallback)
+                    else:
+                        await run_in_threadpool(_prepare_records, prepared, batch, fallback, False)
             finally:
                 await rows.close()
             return (prepared, *history, settings, str(account.trade_channel))
+
+    async def _native_performance(self, account_id: int) -> dict | None:
+        """通过只读 Rust 进程回放结构化事实，Python 不构造历史观测列表。"""
+        from axile.server.analysis_observations import ensure_observation_facts
+        from axile.server.native_analysis import get_native_analysis
+
+        async with self.sessions() as session:
+            native = get_native_analysis(session)
+            if native is None:
+                return None
+            account = await session.get(Account, account_id)
+            if account is None:
+                return None
+            settings = PerformanceSettings.model_validate(account, from_attributes=True).model_dump()
+            await session.rollback()
+            await ensure_observation_facts(session, account_id)
+        encoded = await native.query(
+            "performance",
+            account_id=account_id,
+            settings=settings,
+            logic_version=LOGIC_VERSION,
+            engine_version=ENGINE_VERSION,
+        )
+        return json.loads(encoded)
 
     async def run_once(self) -> bool:
         """Claim one durable job, compute outside DB transactions, then compare-and-publish."""
@@ -467,13 +552,16 @@ class AnalysisManager:
             if row is None:
                 return False
             try:
-                inputs = await self._load(row["account_id"])
+                native_performance = await self._native_performance(row["account_id"])
+                inputs = await self._load(row["account_id"], include_observations=native_performance is None)
                 if inputs is None:
                     return True
                 records, targets, bindings, skips, settings, trade_channel = inputs
-                result = await run_in_threadpool(
-                    compute_batch, records, targets, bindings, skips, settings, trade_channel
-                )
+                arguments = (records, targets, bindings, skips, settings, trade_channel)
+                if native_performance is None:
+                    result = await run_in_threadpool(compute_batch, *arguments)
+                else:
+                    result = await run_in_threadpool(compute_batch, *arguments, native_performance=native_performance)
                 await self._publish(row, settings, result)
             except Exception:
                 logger.exception("Performance calculation failed for account {}", row["account_id"])
@@ -545,18 +633,30 @@ class AnalysisManager:
                     data_until=ranges["all"]["performance"]["end"],
                     settings=settings.model_dump(),
                     ranges=ranges,
+                    cost_schema_version=COST_FACT_SCHEMA_VERSION,
                 ),
             )
-            for table, values in ((executions, projected), (trades, cost_rows)):
-                for start in range(0, len(values), 500):
-                    await session.execute(
-                        table.insert(), [{**value, "snapshot_id": batch_id} for value in values[start : start + 500]]
-                    )
+            try:
+                async with session.begin_nested():
+                    for table, values in iter_cost_fact_batches(batch_id, projected, cost_rows, ranges):
+                        await session.execute(table.insert(), values)
+            except (ValueError, TypeError, OverflowError):
+                # 旧历史可能含非标量身份或错误值；保留原始投影并显式标注
+                # 兼容版本，不能通过字符串强转改变现有公开语义。
+                await session.execute(
+                    snapshots.update().where(snapshots.c.id == batch_id).values(cost_schema_version=0)
+                )
+                for table, values in ((execution_facts, projected), (trade_facts, cost_rows)):
+                    for start in range(0, len(values), 500):
+                        await session.execute(
+                            table.insert(),
+                            [{**value, "snapshot_id": batch_id} for value in values[start : start + 500]],
+                        )
             obsolete = sa.select(snapshots.c.id).where(
                 snapshots.c.account_id == row["account_id"],
                 snapshots.c.id.not_in([value for value in (batch_id, previous[0]) if value]),
             )
-            for table in (trades, executions):
+            for table in COST_FACT_TABLES:
                 await session.execute(table.delete().where(table.c.snapshot_id.in_(obsolete)))
             await session.execute(snapshots.delete().where(snapshots.c.id.in_(obsolete)))
             await session.commit()

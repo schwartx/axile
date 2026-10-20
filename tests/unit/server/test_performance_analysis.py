@@ -15,12 +15,14 @@ from alembic.operations import Operations
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
+from starlette.responses import Response
 
 from axile.server.api.routes.account_performance import get_performance
 from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, TargetWeightSnapshot
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis import cost_trade as trades
+from axile.server.db.models.performance import AccountPerformance
 from axile.server.performance_analysis import (
     LOGIC_VERSION,
     AnalysisManager,
@@ -121,6 +123,8 @@ def _create_schema(connection):
     migration.install_triggers(connection)
     settings_migration = _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py")
     settings_migration.install_settings_trigger(connection)
+    facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
+    facts_migration.install_triggers(connection)
 
 
 @pytest.fixture(scope="module")
@@ -232,12 +236,19 @@ def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeyp
                 raise RuntimeError("WBT unavailable")
 
             monkeypatch.setattr("axile.server.performance._portfolio_daily", fail)
+
+            async def fail_native(*args):
+                raise RuntimeError("WBT unavailable")
+
             if state == "failed":
+                monkeypatch.setattr(manager, "_native_performance", fail_native)
                 await manager.run_once()
                 assert (await snapshot(sessions))["status"] == "failed"
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(analysis_manager=manager)))
             async with sessions() as session:
                 result = await get_performance(session, request, 2, include_backtest=False)
+                if isinstance(result, Response):
+                    result = AccountPerformance.model_validate_json(result.body)
                 assert result.settings.backtest_fee_rate == 0.001
                 assert result.points[-1].account_return == pytest.approx(103 / 101 - 1)
                 assert not result.backtest_included
@@ -292,11 +303,11 @@ def test_refresh_merges_and_inflight_source_change_discards_batch(tmp_path, monk
             entered, release = threading.Event(), threading.Event()
             calls = []
 
-            def blocked(*args):
+            def blocked(*args, **kwargs):
                 calls.append(1)
                 entered.set()
                 assert release.wait(10)
-                return compute_batch(*args)
+                return compute_batch(*args, **kwargs)
 
             monkeypatch.setattr("axile.server.performance_analysis.compute_batch", blocked)
             job = asyncio.create_task(manager.run_once())
@@ -330,7 +341,7 @@ def test_failed_batch_keeps_results_and_limits_retries_then_new_data_recovers(tm
             initial = await snapshot(sessions)
             await queue(sessions, True)
 
-            def fail(*args):
+            def fail(*args, **kwargs):
                 raise RuntimeError("secret broker configuration must not be sent to client")
 
             with monkeypatch.context() as patch:
@@ -587,6 +598,7 @@ def test_failed_execution_preview_exposes_plan_and_confirmed_zero_fills():
 
 def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template):
     migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
+    facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
 
     async def check():
         async with database(tmp_path, schema_template, fresh_schema=True) as (engine, sessions, manager):
@@ -594,8 +606,11 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
 
                 def roundtrip(connection):
                     migration.op = Operations(MigrationContext.configure(connection))
+                    facts_migration.op = migration.op
+                    facts_migration.downgrade()
                     migration.downgrade()
                     migration.upgrade()
+                    facts_migration.upgrade()
                     assert len(sa.inspect(connection).get_columns("account_analysis")) == len(states.columns)
 
                 await conn.run_sync(roundtrip)

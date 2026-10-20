@@ -11,10 +11,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
-
-import pandas as pd
 
 from axile.server.asset_observations import is_asset_observation
 from axile.server.db.models import ExecuteRecord, ExecuteRecordPublic
@@ -30,6 +28,9 @@ from axile.server.db.models.performance import (
 )
 from axile.server.performance_replay import ENGINE_VERSION, ReplayClose, replay_daily
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_day
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 _TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -374,7 +375,12 @@ def build_wbt_input(
         used += 1
         participants.append(item)
     skipped = missing_target + missing_ticks
-    frame = pd.DataFrame(rows, columns=["dt", "symbol", "weight", "price"]) if materialize_frame else None
+    frame = None
+    if materialize_frame:
+        # 写入回放事实和原生回放不需要 DataFrame，避免账户 worker 为此加载 pandas。
+        import pandas as pd
+
+        frame = pd.DataFrame(rows, columns=["dt", "symbol", "weight", "price"])
     return BacktestInput(
         frame=frame.astype({"weight": "float64", "price": "float64"}) if frame is not None else None,
         used=used,

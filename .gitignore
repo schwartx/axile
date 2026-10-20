@@ -211,3 +211,6 @@ start_local_server.ps1
 # Browser editor checks
 ui/test-results/
 ui/playwright-report/
+
+# Optional host-native analysis executable staged for platform wheels
+axile/server/_native/

@@ -1,0 +1,895 @@
+//! Stream structured SQLite observations through independent range ledgers.
+//!
+//! Selection remains in SQLite, while only one observation, current holdings,
+//! and daily output survive a scan. Historical JSON is never read here.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use chrono::{Duration, NaiveDateTime, Timelike};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use serde_json::{json, Value};
+
+use crate::replay::{Observation, ReplayClose, ReplayLedger};
+
+const ENGINE_VERSION: &str = "equity-ledger-1";
+const LATEST: &str = "NOT EXISTS (SELECT 1 FROM replay_observation newer \
+    WHERE newer.account_id=o.account_id AND newer.time=o.time \
+    AND newer.record_id>o.record_id)";
+const BASELINE: &str = "o.asset>0 AND o.target_present=1 AND NOT EXISTS \
+    (SELECT 1 FROM replay_observation_symbol s WHERE s.record_id=o.record_id \
+    AND s.target!=0 AND s.price IS NULL)";
+
+fn database_error(error: rusqlite::Error) -> String {
+    error.to_string()
+}
+
+fn parse_time(value: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+        .map_err(|error| format!("Invalid observation time {value:?}: {error}"))
+}
+
+fn canonical_time(value: NaiveDateTime) -> String {
+    value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
+}
+
+fn display_time(value: &str) -> Result<String, String> {
+    let parsed = parse_time(value)?;
+    Ok(if parsed.nanosecond() == 0 {
+        parsed.format("%Y-%m-%dT%H:%M:%S").to_string()
+    } else {
+        canonical_time(parsed)
+    })
+}
+
+fn select_start(connection: &Connection, account_id: i64, cutoff: &str) -> Result<String, String> {
+    for (comparison, direction) in [("<=", "DESC"), (">=", "ASC")] {
+        let query = format!(
+            "SELECT o.time FROM replay_observation o WHERE o.account_id=?1 \
+             AND o.time {comparison} ?2 AND {LATEST} AND {BASELINE} \
+             ORDER BY o.time {direction},o.record_id {direction} LIMIT 1"
+        );
+        let mut statement = connection.prepare(&query).map_err(database_error)?;
+        let mut rows = statement
+            .query(params![account_id, cutoff])
+            .map_err(database_error)?;
+        if let Some(row) = rows.next().map_err(database_error)? {
+            return row.get(0).map_err(database_error);
+        }
+    }
+    // No common baseline: preserve the independent account curve from cutoff.
+    Ok(cutoff.to_owned())
+}
+
+#[derive(Clone)]
+struct Sample {
+    time: String,
+    id: i64,
+    execution_id: Option<String>,
+    asset: Option<f64>,
+}
+
+impl Sample {
+    fn from_observation(item: &Observation) -> Self {
+        Self {
+            time: item.time.clone(),
+            id: item.id,
+            execution_id: item.execution_id.clone(),
+            asset: item.asset,
+        }
+    }
+}
+
+struct DaySamples {
+    last: Sample,
+    participant: Option<Sample>,
+}
+
+#[derive(Default, Serialize)]
+struct Skips {
+    count: usize,
+    missing_target: usize,
+    missing_ticks: usize,
+    first_time: Option<String>,
+    last_time: Option<String>,
+}
+
+/// Tracks the same carried target as build_wbt_input, without materializing bars.
+struct Participants {
+    previous_symbols: BTreeSet<String>,
+    used: usize,
+    start: Option<String>,
+    skips: Skips,
+    ledger: Option<ReplayLedger>,
+}
+
+impl Participants {
+    fn new(equity: Option<f64>, fee: f64, target_weight: bool) -> Result<Self, String> {
+        Ok(Self {
+            previous_symbols: BTreeSet::new(),
+            used: 0,
+            start: None,
+            skips: Skips::default(),
+            ledger: equity
+                .map(|amount| ReplayLedger::new(amount, fee, target_weight))
+                .transpose()?,
+        })
+    }
+
+    fn push(&mut self, item: &Observation, target_weight: bool) -> Result<bool, String> {
+        let target = if target_weight {
+            item.target_weight.as_ref()
+        } else {
+            item.target.as_ref()
+        };
+        let missing = target.is_some_and(|weights| {
+            self.previous_symbols
+                .iter()
+                .any(|symbol| !item.prices.contains_key(symbol))
+                || weights
+                    .iter()
+                    .any(|(symbol, weight)| *weight != 0.0 && !item.prices.contains_key(symbol))
+        });
+        if target.is_none() || missing {
+            self.skips.count += 1;
+            if target.is_none() {
+                self.skips.missing_target += 1;
+            } else {
+                self.skips.missing_ticks += 1;
+            }
+            self.skips
+                .first_time
+                .get_or_insert_with(|| item.time.clone());
+            self.skips.last_time = Some(item.time.clone());
+            return Ok(false);
+        }
+        self.previous_symbols = target
+            .expect("target checked above")
+            .iter()
+            .filter_map(|(symbol, weight)| (*weight != 0.0).then_some(symbol.clone()))
+            .collect();
+        self.used += 1;
+        self.start.get_or_insert_with(|| item.time.clone());
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.push(item)?;
+        }
+        Ok(true)
+    }
+}
+
+#[derive(Serialize)]
+struct FallbackRange {
+    start: String,
+    end: String,
+    count: usize,
+}
+
+struct RangeState {
+    key: &'static str,
+    start: String,
+    count: usize,
+    invalid_assets: usize,
+    end: Option<String>,
+    baseline: Option<Sample>,
+    days: BTreeMap<String, DaySamples>,
+    executable: Participants,
+    target: Participants,
+    fallback_days: BTreeSet<String>,
+    fallback_count: usize,
+    fallback_ranges: Vec<FallbackRange>,
+    in_fallback: bool,
+}
+
+impl RangeState {
+    fn push(&mut self, item: &Observation, include_backtest: bool) -> Result<(), String> {
+        if canonical_time(parse_time(&item.time)?) < self.start {
+            return Ok(());
+        }
+        self.count += 1;
+        self.invalid_assets += usize::from(item.asset.is_none());
+        self.end = Some(item.time.clone());
+        if self.baseline.is_none() && item.asset.is_some_and(|asset| asset > 0.0) {
+            self.baseline = Some(Sample::from_observation(item));
+        }
+        let participant = self.executable.push(item, false)?;
+        if include_backtest {
+            self.target.push(item, true)?;
+            if participant && item.sizing_fallback {
+                self.fallback_count += 1;
+                self.fallback_days.insert(item.time[..10].to_owned());
+                if self.in_fallback {
+                    let current = self
+                        .fallback_ranges
+                        .last_mut()
+                        .expect("open fallback range");
+                    current.end = item.time.clone();
+                    current.count += 1;
+                } else {
+                    self.fallback_ranges.push(FallbackRange {
+                        start: item.time.clone(),
+                        end: item.time.clone(),
+                        count: 1,
+                    });
+                }
+                self.in_fallback = true;
+            } else if participant {
+                // Skipped observations do not split participating fallback ranges.
+                self.in_fallback = false;
+            }
+        }
+        if self.baseline.is_some() {
+            let sample = Sample::from_observation(item);
+            let day = item.time[..10].to_owned();
+            let samples = self.days.entry(day).or_insert_with(|| DaySamples {
+                last: sample.clone(),
+                participant: None,
+            });
+            samples.last = sample.clone();
+            if participant {
+                samples.participant = Some(sample);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, settings: &Value, record_count: i64, include_backtest: bool) -> Value {
+        let executable_start = self.executable.start.clone();
+        let target_start = self.target.start.clone();
+        let executable_daily = self.executable.ledger.map(ReplayLedger::finish);
+        let target_daily = self.target.ledger.map(ReplayLedger::finish);
+        let points = merge_daily(
+            self.baseline.as_ref(),
+            &self.days,
+            executable_daily.as_ref(),
+            executable_start.as_deref(),
+            target_daily.as_ref(),
+            target_start.as_deref(),
+            &self.fallback_days,
+        );
+        let baseline = points.first().and_then(|point| point.get("date")).cloned();
+        json!({
+            "settings": settings,
+            "backtest_included": include_backtest,
+            "engine_version": ENGINE_VERSION,
+            "range": self.key,
+            "baseline": baseline,
+            "end": self.end,
+            "record_count": record_count,
+            "observation_count": self.count,
+            "used_record_count": if include_backtest { self.executable.used } else { 0 },
+            "target_used_record_count": if include_backtest { self.target.used } else { 0 },
+            "invalid_asset_count": self.invalid_assets,
+            "skips": if include_backtest && self.count > 0 { serde_json::to_value(&self.executable.skips).ok() } else { None },
+            "target_skips": if include_backtest && self.count > 0 { serde_json::to_value(&self.target.skips).ok() } else { None },
+            "sizing_fallback_count": if include_backtest && self.count > 0 { Some(self.fallback_count) } else { None },
+            "sizing_fallback_ranges": self.fallback_ranges,
+            "points": points,
+            "bindings": [],
+            "executions": [],
+            "calendar": {"status":"unavailable", "calendar_id":null, "label":null,
+                "closed_ranges":[], "unavailable_ranges":[]}
+        })
+    }
+}
+
+fn replay_close(
+    daily: Option<&BTreeMap<String, ReplayClose>>,
+    day: &str,
+    start: Option<&str>,
+    previous: f64,
+) -> Option<ReplayClose> {
+    let (daily, start) = (daily?, start?);
+    if day < &start[..10] {
+        return None;
+    }
+    Some(*daily.get(day).unwrap_or(&ReplayClose {
+        cumulative_return: previous,
+        daily_return: Some(0.0),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_daily(
+    baseline: Option<&Sample>,
+    days: &BTreeMap<String, DaySamples>,
+    daily: Option<&BTreeMap<String, ReplayClose>>,
+    start: Option<&str>,
+    target_daily: Option<&BTreeMap<String, ReplayClose>>,
+    target_start: Option<&str>,
+    fallback_days: &BTreeSet<String>,
+) -> Vec<Value> {
+    let Some(base) = baseline else {
+        return Vec::new();
+    };
+    let base_asset = base.asset.expect("positive baseline");
+    let from_backtest = daily.is_some() && start.is_some_and(|when| when <= base.time.as_str());
+    let from_target =
+        target_daily.is_some() && target_start.is_some_and(|when| when <= base.time.as_str());
+    let mut points = vec![json!({
+        "date":base.time, "observed_at":base.time, "record_id":base.id,
+        "execution_id":base.execution_id, "account_return":0.0, "account_equity":base_asset,
+        "portfolio_return":if from_backtest { Some(0.0) } else { None },
+        "account_daily_return":null, "portfolio_daily_return":null,
+        "target_portfolio_return":if from_target { Some(0.0) } else { None },
+        "target_portfolio_daily_return":null, "sizing_fallback":false,
+        "difference":if from_backtest { Some(0.0) } else { None }
+    })];
+    let mut previous_asset = Some(base_asset);
+    let (mut portfolio, mut target_portfolio) = (0.0, 0.0);
+    for (day, samples) in days {
+        let last = samples.participant.as_ref().unwrap_or(&samples.last);
+        let account = last.asset.map(|amount| amount / base_asset - 1.0);
+        let account_daily = last.asset.and_then(|amount| {
+            previous_asset
+                .filter(|previous| *previous > 0.0)
+                .map(|previous| amount / previous - 1.0)
+        });
+        previous_asset = last.asset;
+        let close = replay_close(daily, day, start, portfolio);
+        let target_close = replay_close(target_daily, day, target_start, target_portfolio);
+        if let Some(close) = close {
+            portfolio = close.cumulative_return;
+        }
+        if let Some(close) = target_close {
+            target_portfolio = close.cumulative_return;
+        }
+        points.push(json!({
+            "date":day, "observed_at":last.time, "record_id":last.id,
+            "execution_id":last.execution_id, "account_return":account, "account_equity":last.asset,
+            "portfolio_return":close.map(|value| value.cumulative_return),
+            "account_daily_return":account_daily,
+            "portfolio_daily_return":close.and_then(|value| value.daily_return),
+            "target_portfolio_return":target_close.map(|value| value.cumulative_return),
+            "target_portfolio_daily_return":target_close.and_then(|value| value.daily_return),
+            "sizing_fallback":fallback_days.contains(day),
+            "difference":account.and_then(|account| close.map(|value| account-value.cumulative_return))
+        }));
+    }
+    points
+}
+
+/// Group a joined cursor into one owned observation, releasing it after use.
+fn scan(
+    connection: &Connection,
+    account_id: i64,
+    start: &str,
+    mut consume: impl FnMut(&Observation) -> Result<(), String>,
+) -> Result<(), String> {
+    let query = format!(
+        "SELECT o.record_id,o.execution_id,o.time,o.asset,o.sizing_fallback,\
+         o.target_present,o.target_weight_present,o.target_units_present,o.target_quantities_present,\
+         s.symbol,s.target,s.price,s.target_weight,s.target_units,s.target_quantity \
+         FROM replay_observation o LEFT JOIN replay_observation_symbol s ON s.record_id=o.record_id \
+         WHERE o.account_id=?1 AND o.time>=?2 AND {LATEST} \
+         ORDER BY o.time,o.record_id,s.symbol"
+    );
+    let mut statement = connection.prepare(&query).map_err(database_error)?;
+    let mut rows = statement
+        .query(params![account_id, start])
+        .map_err(database_error)?;
+    let mut current: Option<Observation> = None;
+    while let Some(row) = rows.next().map_err(database_error)? {
+        let id: i64 = row.get(0).map_err(database_error)?;
+        if current.as_ref().is_some_and(|item| item.id != id) {
+            consume(current.as_ref().expect("current item"))?;
+            current = None;
+        }
+        if current.is_none() {
+            let map = |column| -> Result<Option<BTreeMap<String, f64>>, String> {
+                Ok(row
+                    .get::<_, bool>(column)
+                    .map_err(database_error)?
+                    .then(BTreeMap::new))
+            };
+            current = Some(Observation {
+                id,
+                execution_id: row.get(1).map_err(database_error)?,
+                time: display_time(&row.get::<_, String>(2).map_err(database_error)?)?,
+                asset: row.get(3).map_err(database_error)?,
+                sizing_fallback: row.get(4).map_err(database_error)?,
+                target: map(5)?,
+                target_weight: map(6)?,
+                target_units: map(7)?,
+                target_quantities: map(8)?,
+                prices: BTreeMap::new(),
+            });
+        }
+        if let Some(symbol) = row.get::<_, Option<String>>(9).map_err(database_error)? {
+            let item = current.as_mut().expect("current item");
+            for (column, map) in [
+                (10, item.target.as_mut()),
+                (11, Some(&mut item.prices)),
+                (12, item.target_weight.as_mut()),
+                (13, item.target_units.as_mut()),
+                (14, item.target_quantities.as_mut()),
+            ] {
+                if let (Some(map), Some(value)) = (
+                    map,
+                    row.get::<_, Option<f64>>(column).map_err(database_error)?,
+                ) {
+                    map.insert(symbol.clone(), value);
+                }
+            }
+        }
+    }
+    if let Some(item) = current {
+        consume(&item)?;
+    }
+    Ok(())
+}
+
+fn check_source_version(
+    connection: &Connection,
+    account_id: i64,
+    request: &Value,
+) -> Result<(), String> {
+    let Some(expected) = request.get("expected_source_version") else {
+        return Ok(());
+    };
+    let expected = if expected.is_null() {
+        None
+    } else {
+        Some(
+            expected
+                .as_i64()
+                .ok_or("expected_source_version must be an integer or null")?,
+        )
+    };
+    let actual: Option<i64> = connection
+        .query_row(
+            "SELECT source_version FROM account_analysis WHERE account_id=?1",
+            [account_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(database_error)?;
+    if actual != expected {
+        return Err(
+            "SOURCE_VERSION_CHANGED: analysis source changed before the read snapshot".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String> {
+    let account_id = request
+        .get("account_id")
+        .and_then(Value::as_i64)
+        .ok_or("account_id must be an integer")?;
+    check_source_version(connection, account_id, request)?;
+    let fee = request
+        .pointer("/settings/backtest_fee_rate")
+        .and_then(Value::as_f64)
+        .ok_or("settings.backtest_fee_rate must be a number")?;
+    if !fee.is_finite() || !(0.0..1.0).contains(&fee) {
+        return Err("backtest_fee_rate must be finite and in [0,1)".to_owned());
+    }
+    let weight_type = request
+        .pointer("/settings/backtest_weight_type")
+        .and_then(Value::as_str)
+        .ok_or("settings.backtest_weight_type must be cs or ts")?;
+    if !["cs", "ts"].contains(&weight_type) {
+        return Err("settings.backtest_weight_type must be cs or ts".to_owned());
+    }
+    let settings = json!({"backtest_weight_type":"cs", "backtest_fee_rate":fee});
+    let include_backtest = request
+        .get("include_backtest")
+        .or_else(|| request.get("backtest_included"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let (record_count, first, last): (i64, Option<String>, Option<String>) = connection
+        .query_row(
+            "SELECT count(*),min(time),max(time) FROM replay_observation WHERE account_id=?1",
+            [account_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(database_error)?;
+    let range_keys: &[&str] = match request.get("range") {
+        None => &["30", "90", "all"],
+        Some(Value::String(key)) if key == "30" => &["30"],
+        Some(Value::String(key)) if key == "90" => &["90"],
+        Some(Value::String(key)) if key == "all" => &["all"],
+        _ => return Err("range must be 30, 90 or all".to_owned()),
+    };
+    let mut states = Vec::new();
+    for &key in range_keys {
+        let start = if let (Some(first), Some(last)) = (&first, &last) {
+            let cutoff = if key == "all" {
+                first.clone()
+            } else {
+                canonical_time(
+                    parse_time(last)? - Duration::days(key.parse::<i64>().expect("range days")),
+                )
+            };
+            select_start(connection, account_id, &cutoff)?
+        } else {
+            String::new()
+        };
+        let initial_equity: Option<f64> = if record_count > 0 {
+            let query = format!(
+                "SELECT o.asset FROM replay_observation o WHERE o.account_id=?1 \
+                 AND o.time>=?2 AND o.asset>0 AND {LATEST} ORDER BY o.time,o.record_id LIMIT 1"
+            );
+            let mut statement = connection.prepare(&query).map_err(database_error)?;
+            let mut rows = statement
+                .query(params![account_id, start])
+                .map_err(database_error)?;
+            rows.next()
+                .map_err(database_error)?
+                .map(|row| row.get(0))
+                .transpose()
+                .map_err(database_error)?
+        } else {
+            None
+        };
+        let executable = Participants::new(
+            if include_backtest {
+                initial_equity
+            } else {
+                None
+            },
+            fee,
+            false,
+        )?;
+        let target = Participants::new(
+            if include_backtest {
+                initial_equity
+            } else {
+                None
+            },
+            fee,
+            true,
+        )?;
+        states.push(RangeState {
+            key,
+            start,
+            count: 0,
+            invalid_assets: 0,
+            end: None,
+            baseline: None,
+            days: BTreeMap::new(),
+            executable,
+            target,
+            fallback_days: BTreeSet::new(),
+            fallback_count: 0,
+            fallback_ranges: Vec::new(),
+            in_fallback: false,
+        });
+    }
+    if let Some(start) = states.iter().map(|state| state.start.clone()).min() {
+        scan(connection, account_id, &start, |item| {
+            for state in &mut states {
+                state.push(item, include_backtest)?;
+            }
+            Ok(())
+        })?;
+    }
+    if request.get("range").is_some() {
+        return Ok(states.pop().expect("one requested range").finish(
+            &settings,
+            record_count,
+            include_backtest,
+        ));
+    }
+    let mut result = serde_json::Map::new();
+    for state in states {
+        result.insert(
+            state.key.to_owned(),
+            state.finish(&settings, record_count, include_backtest),
+        );
+    }
+    Ok(Value::Object(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE replay_observation (record_id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
+             execution_id TEXT,time TEXT NOT NULL,asset REAL,sizing_fallback INTEGER NOT NULL,
+             target_present INTEGER NOT NULL,target_weight_present INTEGER NOT NULL,
+             target_units_present INTEGER NOT NULL,target_quantities_present INTEGER NOT NULL);
+             CREATE INDEX ix_replay_observation_account_time ON replay_observation(account_id,time,record_id);
+             CREATE TABLE replay_observation_symbol (record_id INTEGER NOT NULL,symbol TEXT NOT NULL,
+             target REAL,price REAL,target_weight REAL,target_units REAL,target_quantity REAL,
+             PRIMARY KEY(record_id,symbol));",
+        ).unwrap();
+        connection
+    }
+
+    fn insert(
+        connection: &Connection,
+        id: i64,
+        time: &str,
+        asset: Option<f64>,
+        target: bool,
+        price: Option<f64>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO replay_observation VALUES (?1,1,?2,?3,?4,0,?5,?5,0,0)",
+                params![
+                    id,
+                    format!("execution-{id}"),
+                    canonical_time(parse_time(time).unwrap()),
+                    asset,
+                    target
+                ],
+            )
+            .unwrap();
+        if target || price.is_some() {
+            connection
+                .execute(
+                    "INSERT INTO replay_observation_symbol VALUES (?1,'A',?2,?3,?2,NULL,NULL)",
+                    params![id, target.then_some(1.0), price],
+                )
+                .unwrap();
+        }
+    }
+
+    fn calculate(connection: &Connection, include: bool) -> Value {
+        handle(
+            connection,
+            &json!({"account_id":1,"include_backtest":include,
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn single_requested_range_matches_batched_result() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-02-15T10:00:00",
+            Some(120.0),
+            true,
+            Some(12.0),
+        );
+        let batched = calculate(&connection, false);
+        for key in ["30", "90", "all"] {
+            let single = handle(
+                &connection,
+                &json!({"account_id":1,"range":key,
+                "include_backtest":false,
+                "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+            )
+            .unwrap();
+            assert_eq!(single, batched[key]);
+        }
+        let invalid = handle(
+            &connection,
+            &json!({"account_id":1,"range":"7",
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+        );
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn expected_source_version_preserves_missing_row_and_rejects_changes() {
+        let connection = fixture();
+        connection.execute_batch(
+            "CREATE TABLE account_analysis (account_id INTEGER PRIMARY KEY,source_version INTEGER NOT NULL);"
+        ).unwrap();
+        let mut request = json!({"account_id":1,"expected_source_version":null,
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
+        assert!(handle(&connection, &request).is_ok());
+        connection
+            .execute("INSERT INTO account_analysis VALUES (1,4)", [])
+            .unwrap();
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_VERSION_CHANGED:"));
+        request["expected_source_version"] = json!(4);
+        assert!(handle(&connection, &request).is_ok());
+        request["expected_source_version"] = json!(3);
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_VERSION_CHANGED:"));
+        request["expected_source_version"] = json!(true);
+        assert!(handle(&connection, &request).is_err());
+    }
+
+    #[test]
+    fn empty_range_preserves_optional_defaults() {
+        let connection = fixture();
+        let result = calculate(&connection, true);
+        for key in ["30", "90", "all"] {
+            assert_eq!(result[key]["record_count"], 0);
+            assert!(result[key]["baseline"].is_null());
+            assert!(result[key]["skips"].is_null());
+            assert!(result[key]["sizing_fallback_count"].is_null());
+            assert_eq!(result[key]["points"], json!([]));
+        }
+    }
+
+    #[test]
+    fn duplicate_timestamp_replaces_previous_before_selecting_baseline() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-01T10:00:00",
+            None,
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            3,
+            "2026-01-02T10:00:00",
+            Some(110.0),
+            true,
+            Some(11.0),
+        );
+        let result = calculate(&connection, true);
+        assert_eq!(result["all"]["record_count"], 3);
+        assert_eq!(result["all"]["observation_count"], 1);
+        assert_eq!(result["all"]["baseline"], "2026-01-02T10:00:00");
+        assert_eq!(result["all"]["points"][0]["record_id"], 3);
+    }
+
+    #[test]
+    fn recent_range_rebases_at_last_valid_baseline_before_cutoff() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-10T10:00:00",
+            Some(120.0),
+            true,
+            Some(12.0),
+        );
+        insert(
+            &connection,
+            3,
+            "2026-01-15T10:00:00",
+            Some(125.0),
+            true,
+            None,
+        );
+        insert(
+            &connection,
+            4,
+            "2026-02-15T10:00:00",
+            Some(130.0),
+            true,
+            Some(13.0),
+        );
+        let result = calculate(&connection, true);
+        assert_eq!(result["30"]["baseline"], "2026-01-10T10:00:00");
+        assert_eq!(result["30"]["observation_count"], 3);
+        assert_eq!(result["30"]["skips"]["missing_ticks"], 1);
+        assert_eq!(result["all"]["baseline"], "2026-01-01T10:00:00");
+    }
+
+    #[test]
+    fn participating_sample_wins_over_later_intraday_heartbeat() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-02T10:00:00",
+            Some(110.0),
+            true,
+            Some(11.0),
+        );
+        insert(
+            &connection,
+            3,
+            "2026-01-02T18:00:00",
+            Some(150.0),
+            false,
+            None,
+        );
+        let full = calculate(&connection, true);
+        let quick = calculate(&connection, false);
+        let last = full["all"]["points"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["record_id"], 2);
+        assert_eq!(last["account_equity"], 110.0);
+        assert_eq!(full["all"]["end"], "2026-01-02T18:00:00");
+        assert_eq!(quick["all"]["points"][2]["record_id"], 2);
+        assert!(quick["all"]["points"][2]["portfolio_return"].is_null());
+        assert!(quick["all"]["skips"].is_null());
+    }
+
+    #[test]
+    fn missing_asset_does_not_fabricate_daily_equity() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-02T10:00:00",
+            None,
+            true,
+            Some(11.0),
+        );
+        insert(
+            &connection,
+            3,
+            "2026-01-03T10:00:00",
+            Some(120.0),
+            true,
+            Some(12.0),
+        );
+        let result = calculate(&connection, true);
+        assert!(result["all"]["points"][2]["account_return"].is_null());
+        assert!(result["all"]["points"][3]["account_daily_return"].is_null());
+        assert_eq!(result["all"]["invalid_asset_count"], 1);
+        let cumulative = result["all"]["points"][3]["account_return"]
+            .as_f64()
+            .unwrap();
+        assert!((cumulative - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn no_common_baseline_still_displays_account_curve() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T10:00:00.000001",
+            Some(100.0),
+            false,
+            None,
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-02T10:00:00",
+            Some(110.0),
+            false,
+            None,
+        );
+        let result = calculate(&connection, true);
+        assert_eq!(result["all"]["observation_count"], 2);
+        assert_eq!(result["all"]["baseline"], "2026-01-01T10:00:00.000001");
+        assert_eq!(result["all"]["skips"]["missing_target"], 2);
+        assert_eq!(result["all"]["points"][2]["account_equity"], 110.0);
+        assert!(result["all"]["points"][2]["portfolio_return"].is_null());
+    }
+}

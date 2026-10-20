@@ -49,7 +49,7 @@ def test_complete_ledger_matches_materialized_reference_without_dataframe(range_
     with patch.object(performance, "build_wbt_input", materialized):
         expected = performance.calculate_performance(items, settings, range_key)
     # Fails immediately if production starts constructing either frame again.
-    with patch.object(performance.pd, "DataFrame", side_effect=AssertionError("Unused frame allocated")):
+    with patch("pandas.DataFrame", side_effect=AssertionError("Unused frame allocated")):
         actual = performance.calculate_performance(items, settings, range_key)
     assert actual.model_dump_json() == expected.model_dump_json()
 

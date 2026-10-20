@@ -1,6 +1,7 @@
 """服务端通用工具函数测试。"""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -28,6 +29,9 @@ class _FakeWriteSession:
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
+
+    async def flush(self) -> None:
+        return None
 
     async def commit(self) -> None:
         self.committed = True
@@ -85,7 +89,8 @@ def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(tim
         AccountUpdate(execution_timeout=timeout)
 
 
-def test_append_error_execute_record_sanitizes_account_config() -> None:
+def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(
@@ -110,7 +115,8 @@ def test_append_error_execute_record_sanitizes_account_config() -> None:
     assert record.is_success == 0
 
 
-def test_append_terminated_execute_record_persists_termination_metadata() -> None:
+def test_append_terminated_execute_record_persists_termination_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(

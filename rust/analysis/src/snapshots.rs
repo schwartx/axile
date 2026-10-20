@@ -1,0 +1,541 @@
+//! Persisted performance wire results, read without Python model reconstruction.
+//!
+//! The `ranges` column remains a legacy serialized *result*, not raw execution
+//! input. SQLite extracts only the requested range and, when necessary, shared
+//! execution history. Unselected curves never become Rust/Python object trees.
+
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::{self, SeqAccess, Visitor};
+use serde_json::{json, Value};
+
+struct Request<'a> {
+    account_id: i64,
+    range: &'a str,
+    logic_version: &'a str,
+    engine_version: &'a str,
+}
+
+impl<'a> Request<'a> {
+    fn parse(value: &'a Value) -> Result<Self, String> {
+        let account_id = value
+            .get("account_id")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0)
+            .ok_or("INVALID_REQUEST: account_id must be a positive integer")?;
+        let range = value.get("range").and_then(Value::as_str).unwrap_or("all");
+        if !matches!(range, "all" | "30" | "90") {
+            return Err("INVALID_REQUEST: range must be all, 30 or 90".into());
+        }
+        let version = |field| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("INVALID_REQUEST: {field} must be a nonempty string"))
+        };
+        Ok(Self {
+            account_id,
+            range,
+            logic_version: version("logic_version")?,
+            engine_version: version("engine_version")?,
+        })
+    }
+}
+
+struct Snapshot {
+    source_version: i64,
+    published_version: i64,
+    requested: bool,
+    running_version: Option<i64>,
+    failures: i64,
+    retry_at: f64,
+    error: Option<String>,
+    id: Option<String>,
+    version: Option<i64>,
+    logic_version: Option<String>,
+    engine_version: Option<String>,
+    computed_at: Option<String>,
+    data_until: Option<String>,
+    settings: Option<String>,
+    selected: Option<String>,
+    executions: Option<String>,
+}
+
+impl Snapshot {
+    fn compatible(&self, request: &Request<'_>) -> bool {
+        self.has_snapshot()
+            && self.logic_version.as_deref() == Some(request.logic_version)
+            && self.engine_version.as_deref() == Some(request.engine_version)
+    }
+
+    fn has_snapshot(&self) -> bool {
+        self.id.as_deref().is_some_and(|id| !id.is_empty())
+    }
+
+    fn has_error(&self) -> bool {
+        self.error.as_deref().is_some_and(|error| !error.is_empty())
+    }
+
+    fn status(&self, request: &Request<'_>) -> &'static str {
+        let has_snapshot = self.compatible(request);
+        if self.has_snapshot() && !has_snapshot {
+            "pending"
+        } else if self.has_error() {
+            "failed"
+        } else if self.requested
+            || self.running_version.is_some()
+            || self.published_version != self.source_version
+        {
+            if has_snapshot {
+                "stale"
+            } else if self.requested || self.running_version.is_some() {
+                "pending"
+            } else {
+                "empty"
+            }
+        } else if has_snapshot {
+            "ready"
+        } else {
+            "empty"
+        }
+    }
+}
+
+fn read(
+    connection: &Connection,
+    request: &Request<'_>,
+    performance_only: bool,
+) -> Result<Option<Snapshot>, String> {
+    let path = format!("$.\"{}\"", request.range);
+    // CASE avoids parsing incompatible legacy JSON and limits materialization to
+    // the requested response. A single join observes one state/snapshot version.
+    connection
+        .query_row(
+            "SELECT a.source_version, a.published_version, a.requested,
+                    a.running_version, a.failures, a.retry_at, a.error,
+                    s.id, s.source_version, s.logic_version, s.engine_version,
+                    s.computed_at, s.data_until, s.settings,
+                    CASE WHEN s.logic_version = ?3 AND s.engine_version = ?4
+                         THEN json_extract(s.ranges,
+                             CASE WHEN ?5 THEN ?2 || '.performance' ELSE ?2 END)
+                         ELSE NULL END,
+                    CASE WHEN s.logic_version = ?3 AND s.engine_version = ?4
+                                   AND ?2 != '$.\"all\"'
+                                   AND json_type(s.ranges, ?2 || '.performance.executions') IS NULL
+                         THEN json_extract(s.ranges, '$.all.performance.executions')
+                         ELSE NULL END
+             FROM account_analysis a
+             LEFT JOIN performance_snapshot s ON a.current_snapshot = s.id
+             WHERE a.account_id = ?1",
+            params![
+                request.account_id,
+                path,
+                request.logic_version,
+                request.engine_version,
+                performance_only
+            ],
+            |row| {
+                Ok(Snapshot {
+                    source_version: row.get(0)?,
+                    published_version: row.get(1)?,
+                    requested: row.get(2)?,
+                    running_version: row.get(3)?,
+                    failures: row.get(4)?,
+                    retry_at: row.get(5)?,
+                    error: row.get(6)?,
+                    id: row.get(7)?,
+                    version: row.get(8)?,
+                    logic_version: row.get(9)?,
+                    engine_version: row.get(10)?,
+                    computed_at: row.get(11)?,
+                    data_until: row.get(12)?,
+                    settings: row.get(13)?,
+                    selected: row.get(14)?,
+                    executions: row.get(15)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))
+}
+
+fn parse_json(value: Option<&str>) -> Result<Value, String> {
+    value.map_or(Ok(Value::Null), |value| {
+        serde_json::from_str(value).map_err(|error| format!("SNAPSHOT_INVALID: {error}"))
+    })
+}
+
+/// Return the existing PerformanceSnapshot envelope, including stale results.
+pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
+    let request = Request::parse(value)?;
+    let row = read(connection, &request, false)?;
+    let status = row.as_ref().map_or("empty", |row| row.status(&request));
+    let snapshot = row.as_ref().filter(|row| row.compatible(&request));
+    let mut selected = match snapshot {
+        Some(row) => parse_json(row.selected.as_deref())?,
+        None => Value::Null,
+    };
+    if let Some(row) = snapshot {
+        if !selected.is_object() {
+            return Err("SNAPSHOT_INVALID: requested range is missing".into());
+        }
+        project_executions(&mut selected["performance"], row.executions.as_deref())?;
+    }
+    Ok(json!({
+        "status": status,
+        "source_version": row.as_ref().map_or(0, |row| row.source_version),
+        "snapshot_id": snapshot.and_then(|row| row.id.as_deref()),
+        "snapshot_version": snapshot.and_then(|row| row.version),
+        "logic_version": snapshot.and_then(|row| row.logic_version.as_deref()).unwrap_or(request.logic_version),
+        "engine_version": snapshot.and_then(|row| row.engine_version.as_deref()).unwrap_or(request.engine_version),
+        "computed_at": snapshot.and_then(|row| row.computed_at.as_deref()),
+        "data_until": snapshot.and_then(|row| row.data_until.as_deref()),
+        "settings": parse_json(snapshot.and_then(|row| row.settings.as_deref()))?,
+        "error": row.as_ref().and_then(|row| row.error.as_deref()),
+        "retry_at": row.as_ref().filter(|row| row.has_error() && row.failures <= 3).map(|row| row.retry_at),
+        "result": selected.get_mut("performance").map(Value::take).unwrap_or(Value::Null),
+        "daily_costs": selected.get_mut("daily_costs").map(Value::take).unwrap_or_else(|| json!({})),
+        "events": selected.get_mut("events").map(Value::take).unwrap_or_else(|| json!([])),
+        "event_count": selected.get("event_count").and_then(Value::as_u64).unwrap_or(0),
+    }))
+}
+
+/// Return a ready AccountPerformance directly, without encoding its envelope.
+pub fn performance_result(connection: &Connection, value: &Value) -> Result<Value, String> {
+    let request = Request::parse(value)?;
+    let row = read(connection, &request, true)?;
+    let status = row.as_ref().map_or("empty", |row| row.status(&request));
+    if status != "ready" {
+        return Err(format!("SNAPSHOT_NOT_READY: {status}"));
+    }
+    let row = row.expect("ready status requires a snapshot row");
+    let mut result = parse_json(row.selected.as_deref())?;
+    if !result.is_object() {
+        return Err("SNAPSHOT_INVALID: requested performance range is missing".into());
+    }
+    project_executions(&mut result, row.executions.as_deref())?;
+    if value.get("include_backtest").and_then(Value::as_bool) == Some(false) {
+        result["backtest_included"] = json!(false);
+        result["skips"] = Value::Null;
+        result["used_record_count"] = json!(0);
+        if let Some(points) = result.get_mut("points").and_then(Value::as_array_mut) {
+            for point in points {
+                if let Some(point) = point.as_object_mut() {
+                    for field in ["portfolio_return", "portfolio_daily_return", "difference"] {
+                        point.insert(field.into(), Value::Null);
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn project_executions(performance: &mut Value, executions: Option<&str>) -> Result<(), String> {
+    let Some(performance) = performance.as_object_mut() else {
+        return Err("SNAPSHOT_INVALID: performance must be an object".into());
+    };
+    if performance.contains_key("executions") {
+        return Ok(());
+    }
+    let bounds = || {
+        Some((
+            timestamp(performance.get("baseline")?.as_str()?)?,
+            timestamp(performance.get("end")?.as_str()?)?,
+        ))
+    };
+    let selected = match (bounds(), executions) {
+        (Some((start, end)), Some(executions)) if executions.trim_start().starts_with('[') => {
+            let mut decoder = serde_json::Deserializer::from_str(executions);
+            let selected =
+                serde::Deserializer::deserialize_seq(&mut decoder, ExecutionFilter { start, end })
+                    .map_err(|error| format!("SNAPSHOT_INVALID: {error}"))?;
+            decoder
+                .end()
+                .map_err(|error| format!("SNAPSHOT_INVALID: {error}"))?;
+            selected
+        }
+        _ => Vec::new(),
+    };
+    // Pydantic previously supplied this default for empty/legacy range results.
+    performance.insert("executions".into(), Value::Array(selected));
+    Ok(())
+}
+
+struct ExecutionFilter {
+    start: i64,
+    end: i64,
+}
+
+impl<'de> Visitor<'de> for ExecutionFilter {
+    type Value = Vec<Value>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an array of persisted execution projections")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        let mut selected = Vec::new();
+        // Decode one projection at a time. Unselected history is dropped before
+        // decoding the next row rather than building a second full object tree.
+        while let Some(execution) = sequence.next_element::<Value>()? {
+            let Some(created_at) = execution
+                .get("record")
+                .and_then(|record| record.get("created_at"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let when = timestamp(created_at)
+                .ok_or_else(|| de::Error::custom("execution timestamp is invalid"))?;
+            if self.start <= when && when <= self.end {
+                selected.push(execution);
+            }
+        }
+        Ok(selected)
+    }
+}
+
+fn timestamp(value: &str) -> Option<i64> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.timestamp_micros());
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
+            // Historical naive timestamps use Shanghai local time (+08:00).
+            return Some(parsed.and_utc().timestamp_micros() - 8 * 3600 * 1_000_000);
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+        .map(|parsed| parsed.and_utc().timestamp_micros() - 8 * 3600 * 1_000_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE account_analysis (
+                     account_id INTEGER PRIMARY KEY, source_version INTEGER NOT NULL DEFAULT 1,
+                     published_version INTEGER NOT NULL DEFAULT 0, requested INTEGER NOT NULL DEFAULT 0,
+                     current_snapshot TEXT, running_version INTEGER, failures INTEGER NOT NULL DEFAULT 0,
+                     retry_at REAL NOT NULL DEFAULT 0, error TEXT);
+                 CREATE TABLE performance_snapshot (
+                     id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
+                     logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT,
+                     settings TEXT, ranges TEXT);",
+            )
+            .unwrap();
+        connection
+    }
+
+    fn request(range: &str) -> Value {
+        json!({"account_id": 1, "range": range, "logic_version": "18", "engine_version": "equity-ledger-1"})
+    }
+
+    fn publish(connection: &Connection) {
+        let performance = |range: &str| {
+            json!({
+                "range": range, "baseline": "2026-10-01T00:00:00+08:00", "end": "2026-10-02T00:00:00+08:00",
+                "backtest_included": true, "used_record_count": 9, "skips": {"count": 1},
+                "points": [{"portfolio_return": 0.02, "portfolio_daily_return": 0.01, "difference": 0.01,
+                            "account_return": 0.03}]
+            })
+        };
+        let mut all = performance("all");
+        all["executions"] = json!([
+            {"record": {"id": 1, "created_at": "2026-09-30T15:59:59Z"}},
+            {"record": {"id": 2, "created_at": "2026-10-01T00:00:00"}},
+            {"record": {"id": 3, "created_at": "2026-10-01T16:00:00Z"}},
+            {"record": {"id": 4, "created_at": "2026-10-02T00:00:01+08:00"}},
+            {"record": null}
+        ]);
+        let ranges = json!({
+            "all": {"performance": all, "daily_costs": {}, "events": [], "event_count": 0},
+            "30": {"performance": performance("30"), "daily_costs": {}, "events": [], "event_count": 0},
+            "90": {"performance": performance("90"), "daily_costs": {}, "events": [], "event_count": 0}
+        });
+        connection.execute(
+            "INSERT INTO performance_snapshot VALUES ('s1', 1, 1, '18', 'equity-ledger-1', '2026-10-02', NULL, ?1, ?2)",
+            params![json!({"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}).to_string(), ranges.to_string()],
+        ).unwrap();
+        connection.execute("INSERT INTO account_analysis (account_id, published_version, current_snapshot) VALUES (1, 1, 's1')", []).unwrap();
+    }
+
+    #[test]
+    fn empty_pending_and_running_states_match_existing_contract() {
+        let connection = database();
+        let empty = query(&connection, &request("all")).unwrap();
+        assert_eq!(empty["status"], "empty");
+        assert_eq!(empty["source_version"], 0);
+        assert!(empty["result"].is_null());
+        assert_eq!(empty["daily_costs"], json!({}));
+        connection
+            .execute("INSERT INTO account_analysis (account_id) VALUES (1)", [])
+            .unwrap();
+        assert_eq!(
+            query(&connection, &request("all")).unwrap()["status"],
+            "empty"
+        );
+        connection
+            .execute("UPDATE account_analysis SET requested = 1", [])
+            .unwrap();
+        assert_eq!(
+            query(&connection, &request("all")).unwrap()["status"],
+            "pending"
+        );
+        connection
+            .execute(
+                "UPDATE account_analysis SET requested = 0, running_version = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            query(&connection, &request("all")).unwrap()["status"],
+            "pending"
+        );
+    }
+
+    #[test]
+    fn stale_and_failed_states_keep_published_result_and_retry_metadata() {
+        let connection = database();
+        publish(&connection);
+        assert_eq!(
+            query(&connection, &request("all")).unwrap()["status"],
+            "ready"
+        );
+        connection
+            .execute("UPDATE account_analysis SET source_version = 2", [])
+            .unwrap();
+        let stale = query(&connection, &request("all")).unwrap();
+        assert_eq!(stale["status"], "stale");
+        assert_eq!(stale["snapshot_version"], 1);
+        assert_eq!(stale["source_version"], 2);
+        assert!(stale["result"].is_object());
+        connection
+            .execute(
+                "UPDATE account_analysis SET error = 'failed', failures = 3, retry_at = 123",
+                [],
+            )
+            .unwrap();
+        let failed = query(&connection, &request("all")).unwrap();
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["retry_at"], 123.0);
+        connection
+            .execute("UPDATE account_analysis SET failures = 4", [])
+            .unwrap();
+        assert!(query(&connection, &request("all")).unwrap()["retry_at"].is_null());
+    }
+
+    #[test]
+    fn incompatible_versions_hide_old_result_even_when_failed() {
+        let connection = database();
+        publish(&connection);
+        connection
+            .execute(
+                "UPDATE account_analysis SET error = 'old error', failures = 1",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE performance_snapshot SET logic_version = '17', ranges = 'not JSON'",
+                [],
+            )
+            .unwrap();
+        let snapshot = query(&connection, &request("all")).unwrap();
+        assert_eq!(snapshot["status"], "pending");
+        assert!(snapshot["snapshot_id"].is_null());
+        assert!(snapshot["result"].is_null());
+        assert_eq!(snapshot["logic_version"], "18");
+        assert_eq!(snapshot["error"], "old error");
+    }
+
+    #[test]
+    fn range_projection_uses_inclusive_bounds_and_shanghai_naive_time() {
+        let connection = database();
+        publish(&connection);
+        for range in ["30", "90"] {
+            let snapshot = query(&connection, &request(range)).unwrap();
+            let ids: Vec<_> = snapshot["result"]["executions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["record"]["id"].as_i64().unwrap())
+                .collect();
+            assert_eq!(ids, vec![2, 3]);
+        }
+        assert_eq!(
+            query(&connection, &request("all")).unwrap()["result"]["executions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn explicitly_persisted_range_execution_lists_are_preserved() {
+        let connection = database();
+        publish(&connection);
+        connection.execute("UPDATE performance_snapshot SET ranges = json_set(ranges, '$.\"30\".performance.executions', json('[]'))", []).unwrap();
+        assert_eq!(
+            query(&connection, &request("30")).unwrap()["result"]["executions"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn ready_result_can_omit_backtest_without_changing_account_returns() {
+        let connection = database();
+        publish(&connection);
+        let mut input = request("30");
+        input["include_backtest"] = json!(false);
+        let result = performance_result(&connection, &input).unwrap();
+        assert_eq!(result["backtest_included"], false);
+        assert_eq!(result["used_record_count"], 0);
+        assert!(result["skips"].is_null());
+        assert!(result["points"][0]["portfolio_return"].is_null());
+        assert_eq!(result["points"][0]["account_return"], 0.03);
+        assert_eq!(result["executions"].as_array().unwrap().len(), 2);
+        connection
+            .execute("UPDATE account_analysis SET requested = 1", [])
+            .unwrap();
+        assert_eq!(
+            performance_result(&connection, &input).unwrap_err(),
+            "SNAPSHOT_NOT_READY: stale"
+        );
+    }
+
+    #[test]
+    fn empty_ranges_keep_public_execution_list_default() {
+        let connection = database();
+        publish(&connection);
+        connection.execute("UPDATE performance_snapshot SET ranges = json_set(ranges, '$.\"30\".performance.baseline', NULL)", []).unwrap();
+        let result = query(&connection, &request("30")).unwrap();
+        assert_eq!(result["result"]["executions"], json!([]));
+    }
+
+    #[test]
+    fn malformed_requests_are_rejected_before_reading() {
+        let connection = Connection::open_in_memory().unwrap();
+        assert!(query(&connection, &json!({"account_id": 0}))
+            .unwrap_err()
+            .starts_with("INVALID_REQUEST:"));
+        let mut input = request("invalid");
+        assert!(query(&connection, &input)
+            .unwrap_err()
+            .starts_with("INVALID_REQUEST:"));
+        input["range"] = json!("all");
+        input["logic_version"] = json!(null);
+        assert!(query(&connection, &input)
+            .unwrap_err()
+            .starts_with("INVALID_REQUEST:"));
+    }
+}

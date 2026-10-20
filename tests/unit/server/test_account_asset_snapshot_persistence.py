@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from types import TracebackType
+from unittest.mock import AsyncMock
+
+import pytest
 
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
+from axile.server.execution import records as execution_records
 from axile.server.execution.records import append_success_execute_record
 from tests.unit.server._execution_test_support import build_account
 
@@ -29,6 +33,9 @@ class _Session:
     def add(self, value: object) -> None:
         self.added.append(value)
 
+    async def flush(self) -> None:
+        return None
+
     async def commit(self) -> None:
         self.commits += 1
 
@@ -36,7 +43,8 @@ class _Session:
         return None
 
 
-def test_success_record_persists_matching_asset_snapshot() -> None:
+def test_success_record_persists_matching_asset_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
     session = _Session()
     account = build_account(id=51)
     result = {

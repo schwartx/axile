@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import loguru
 from sqlalchemy import select
@@ -17,10 +17,14 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, Execution
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
+from axile.server.analysis_observations import write_observation_fact
 from axile.server.asset_observations import is_asset_observation
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.db.models.account import AccountContext
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class _WriteSessionProtocol(Protocol):
@@ -34,6 +38,9 @@ class _WriteSessionProtocol(Protocol):
 
     def add(self, obj: object) -> None:
         """将对象加入当前会话."""
+
+    async def flush(self) -> None:
+        """写入待提交对象以取得执行记录 ID。"""
 
     async def commit(self) -> None:
         """提交当前事务."""
@@ -89,6 +96,9 @@ async def _persist_execute_record(
                 )
             )
         try:
+            # 分析事实与原始执行记录在同一事务提交，Rust 不会读到半份输入。
+            await session.flush()
+            await write_observation_fact(cast("AsyncSession", session), record)
             await session.commit()
         except IntegrityError:
             # 同一执行的两条收尾路径（如终止确认与脚本失败）可能并发落库，
