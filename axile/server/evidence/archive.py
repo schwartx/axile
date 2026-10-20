@@ -101,11 +101,22 @@ def _clean_item(item: ExecutionEvidence, redactor: EvidenceRedactor) -> Executio
         key=item.key,
         execution_id=item.execution_id,
         selection_reasons=item.selection_reasons,
+        input_id=item.input_id,
         context_kind=item.context_kind,
         sources=redactor.clean(item.sources, f"$contexts.{folder(item.key)}.sources"),
         **{
             field: redactor.clean(getattr(item, field), f"{group}.{folder(item.key)}.{field}")
-            for field in ("intent", "record", "events", "artifacts", "controls", "counters", "sessions")
+            for field in (
+                "input",
+                "asset_observations",
+                "intent",
+                "record",
+                "events",
+                "artifacts",
+                "controls",
+                "counters",
+                "sessions",
+            )
         },
     )
 
@@ -134,9 +145,27 @@ def _write_account_operations(writer: _Writer, snapshot: EvidenceSnapshot) -> di
 def _write_execution(writer: _Writer, item: ExecutionEvidence) -> dict[str, Any]:
     """每次执行使用相同包结构，单次与日期导出无需两套实现。"""
     prefix = f"executions/{folder(item.key)}"
+    writer.json(
+        f"{prefix}/input.json",
+        {"input_id": item.input_id, "input": item.input},
+        source="execution_input; canonical_business_facts_assembled_view",
+    )
+    writer.json(
+        f"{prefix}/asset-observations.json",
+        item.asset_observations,
+        source="business_asset_snapshot; business_asset_position; canonical_business_facts_assembled_view",
+    )
     writer.json(f"{prefix}/intent.json", item.intent, source="execution_intent")
-    writer.json(f"{prefix}/record.json", item.record, source="executerecord")
-    writer.json(f"{prefix}/artifacts.json", item.artifacts, source="execution_artifact")
+    writer.json(
+        f"{prefix}/record.json",
+        item.record,
+        source="executerecord; canonical_business_facts_assembled_view",
+    )
+    writer.json(
+        f"{prefix}/artifacts.json",
+        item.artifacts,
+        source="execution_artifact; canonical_business_facts_reference_views",
+    )
     writer.json(f"{prefix}/control-sessions.json", item.sessions, source="account_control_session")
     writer.jsonl(f"{prefix}/events.jsonl", item.events, source="execution_event")
     writer.jsonl(f"{prefix}/control-events.jsonl", item.controls, source="account_control_event")
@@ -280,7 +309,7 @@ def _build(
         if log_report and log_report["requested"]:
             writer.jsonl("logs.jsonl", redactor.clean(logs, "$logs"), source="application_log; independent_capture")
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "export_id": uuid4().hex,
             "exporter": {"axile_version": package_version("axile")},
             "account": account,

@@ -153,11 +153,13 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
     {poll.loading && <div aria-busy="true" aria-label="正在加载执行记录">{Array.from({ length: 7 }, (_, i) => <div key={i} className="flex min-h-20 items-center gap-6 border-b border-line"><Skeleton className="h-3 w-28" /><Skeleton className="h-3 w-1/3" /></div>)}</div>}
     {poll.data && !expired && <div key={view} className={fade ? 'panel-fade-in' : ''}>
       <div data-testid="journal-summary" className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 py-3 text-xs text-ink-3">
-        <span>{view === 'executions' ? `${filtered.length} 条记录` : `${symbols.length} 个品种`} · 成交 {summary.count} 笔</span>
+        <span>{view === 'executions' ? `${filtered.length} 条记录` : `${symbols.length} 个品种`}{summary ? ` · 成交 ${summary.count} 笔` : ' · 成交信息未获取'}</span>
+        {summary && <>
         <span>{summary.amountComplete ? '成交额' : '已知成交额'} {amount(summary.value)} {currency}</span>
         <span className={lossClass(summary.lossBp)}>滑点损耗 {amount(summary.lossBp)} BP</span>
         <span className={lossClass(summary.cost)}>{summary.covered < summary.count ? '已知滑点成本' : '滑点成本'} {amount(summary.cost)} {currency}</span>
         <span>{coverageText(summary)}</span>{!!summary.estimated && <span>{summary.estimated} 笔使用执行时间</span>}
+        </>}
         <span title="按有效成交额加权；参考价优先到达中间价，其次到达最新价。">正值为损耗，负值为改善</span>
       </div>
       {view === 'executions' ? <>

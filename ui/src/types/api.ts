@@ -604,7 +604,7 @@ export interface ValidateCustomCalcResult {
 
 /* ============================ 执行 ============================ */
 
-/** 账户资产快照，取自执行记录 `raw_result.account_assets`（容错、字段可缺）。 */
+/** 账户资产观测；执行后资产通过详情的 `result.account_assets` 按需读取。 */
 export interface AccountAssets {
   total_asset?: number
   currency?: string
@@ -641,32 +641,150 @@ export interface Position {
   [k: string]: unknown
 }
 
-/** 执行记录，对应 `ExecuteRecordPublic`。 */
-export interface ExecuteRecord {
+/** 执行记录的轻量主信息；列表不携带输入、持仓、订单或成交明细。 */
+export interface ExecuteRecordHead {
   id: number | null
+  account_id: number
   execution_id: string | null
-  raw_input: Record<string, unknown> & {
-    channel_type?: string
-    curr_target?: LatestWeights
-    last_target?: LatestWeights
-  }
-  raw_result: Record<string, unknown> & {
-    account_assets?: AccountAssets
-    /** 执行任务终态：``TERMINATED`` / ``SUCCEEDED`` 等（后端 records.py 写入）。用于把「终止」与「失败」区分开。 */
-    task_status?: string
-    /** 执行类型：``rebalance`` / ``clear_positions``。用于把成功「清仓」与「空跑」区分开。 */
-    execution_kind?: string
-    /** 执行器输出状态（SUCCEEDED/NOOP/BLOCKED/PARTIAL/FAILED）。 */
-    status?: string
-    error?: string
-  }
   is_success: number
   created_at: string
+  input_id?: string | null
+  result_input_id?: string | null
+  status?: string | null
+  /** 写入或迁移时确定的展示结论；原始状态与错误字段仍独立保留。 */
+  display_status?: string | null
+  display_error?: string | null
+  display_outcome?: string | null
+  display_outcome_reason?: string | null
+  task_status?: string | null
+  error?: string | null
+  outcome?: string | null
+  outcome_reason?: string | null
+  reason_code?: string | null
+  msg?: string | null
+  execution_kind?: string | null
+  channel_type?: string | null
+  execution_time?: number | null
+  success?: boolean | null
+  termination_reason?: string | null
+  termination_mode?: string | null
+  termination_trigger?: string | null
+  termination_requested_at?: string | null
+  termination_acked_at?: string | null
+  termination_finished_at?: string | null
+  termination_cancel_attempted?: boolean | null
+  termination_forced?: boolean | null
+  termination_cancel_unconfirmed?: boolean | null
+  /** 分析投影未就绪时为 null，不能推断成空集合或零。 */
+  symbol_results?: Record<string, ExecutionSymbolSummary> | null
+  symbol_count?: number | null
+  trade_count?: number | null
+}
+
+/** 列表使用的品种结论，不包含完整品种结果。 */
+export interface ExecutionSymbolSummary {
+  status?: string | null
+  error?: string | null
+  outcome?: string | null
+  outcome_reason?: string | null
+  reason_code?: string | null
+}
+
+/** 执行时冻结的输入；缺失、null 和空目标分别保留。 */
+export interface ExecutionInputFacts {
+  channel_type?: string | null
+  curr_target?: LatestWeights | null
+  last_target?: LatestWeights | null
+  strategy_weights?: LatestWeights | null
+  account_weights?: LatestWeights | null
+  execution_timeout?: number | null
+  forbidden_symbols?: string[] | null
+  risk_symbols?: string[] | null
+  algorithm?: Record<string, unknown> | null
+  symbol_algorithms?: Record<string, unknown> | null
+  trade_rules?: Record<string, unknown> | null
+  futures_close_policy?: Record<string, unknown> | null
+  extra?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+/** 原生订单观测；身份、数量、价格和时间不在前端补值。 */
+export interface ExecutionOrderFacts {
+  order_id?: string | null
+  client_order_id?: string | null
+  symbol?: string | null
+  direction?: string | null
+  order_type?: string | null
+  status?: string | null
+  volume?: number | null
+  price?: number | null
+  filled_volume?: number | null
+  avg_price?: number | null
+  create_time?: string | null
+  update_time?: string | null
+  value_conversion?: PriceValueConversion | null
+  extra?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+export interface ExecutionTradeFacts {
+  trade_id?: string | null
+  order_id?: string | null
+  symbol?: string | null
+  direction?: string | null
+  trade_time?: string | null
+  trade_price?: number | null
+  trade_volume?: number | null
+  trade_value?: number | null
+  value_conversion?: PriceValueConversion | null
+  extra?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+export interface ExecutionSymbolFacts extends ExecutionSymbolSummary {
+  symbol?: string | null
+  algorithm?: string | null
+  target_volume?: number | null
+  final_volume?: number | null
+  success?: boolean | null
+  sizing?: Partial<TargetSizingRow> | null
+  first_tick?: Record<string, unknown> | null
+  orders?: ExecutionOrderFacts[] | null
+  trades?: ExecutionTradeFacts[] | null
+  memory?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+/** 仅在打开执行详情或证据时读取的结果事实。 */
+export interface ExecutionResultFacts extends ExecutionSymbolSummary {
+  account_assets?: AccountAssets | null
+  inputs?: ExecutionInputRoot
+  symbol_results?: Record<string, ExecutionSymbolFacts> | null
+  orders?: ExecutionOrderFacts[] | null
+  trades?: ExecutionTradeFacts[] | null
+  task_status?: string | null
+  execution_kind?: string | null
+  execution_time?: number | null
+  channel_type?: string | null
+  success?: boolean | null
+  memory?: Record<string, unknown> | null
+  extra?: Record<string, unknown> | null
+  [key: string]: unknown
+}
+
+/** 历史畸形根值作为原始证据返回，不能在客户端改成空对象。 */
+export type ExecutionInputRoot = ExecutionInputFacts | string | number | boolean | unknown[] | null
+export type ExecutionResultRoot = ExecutionResultFacts | string | number | boolean | unknown[] | null
+
+/** 执行详情，对应显式冷路径 `ExecuteRecordDetailPublic`。 */
+export interface ExecuteRecord extends ExecuteRecordHead {
+  input: ExecutionInputRoot
+  result: ExecutionResultRoot
 }
 
 /** `GET /account/execute_records/{id}` 响应。 */
 export interface ExecuteRecordList {
-  data: ExecuteRecord[]
+  data: ExecuteRecordHead[]
   count: number
 }
 
@@ -783,8 +901,8 @@ export interface ExecTrade {
   price_currency?: string | null
   value_currency?: string | null
   time: string | null
-  /** 手续费（取自成交 extra.commission）。 */
-  fee: number
+  /** 手续费（取自成交 extra.commission）；渠道未提供时为 null。 */
+  fee: number | null
   fee_asset: string | null
 }
 

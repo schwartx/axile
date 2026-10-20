@@ -62,8 +62,10 @@ export interface CostSummary {
 
 const positive = (value: unknown) => { const n = number(value); return n != null && n > 0 ? n : null }
 
-export function costTrades(record: ExecuteRecord): CostTrade[] {
-  return Object.entries(dict(record.raw_result.symbol_results)).flatMap(([symbol, raw]) => {
+type CostRecord = Pick<ExecuteRecord, 'id' | 'execution_id' | 'created_at' | 'result'>
+
+export function costTrades(record: CostRecord): CostTrade[] {
+  return Object.entries(dict(dict(record.result).symbol_results)).flatMap(([symbol, raw]) => {
     const result = dict(raw)
     const tick = dict(result.first_tick)
     const bid = positive(tick.bid_price), ask = positive(tick.ask_price)
@@ -129,10 +131,10 @@ export function executionsOnDay(executions: CostExecution[], day: string | null)
 export function costExecutions(records: ExecuteRecord[]): CostExecution[] {
   return records.map(record => {
     const trades = costTrades(record)
-    const results = Object.values(dict(record.raw_result.symbol_results)).map(dict)
+    const results = Object.values(dict(dict(record.result).symbol_results)).map(dict)
     const hasOrderFill = results.some(r => (Array.isArray(r.orders) ? r.orders : []).some(o => (number(dict(o).filled_volume) ?? 0) > 0))
     const noop = record.is_success === 1 && !trades.length && !hasOrderFill &&
-      (record.raw_result.status === 'NOOP' || (results.length > 0 && results.every(r => r.status === 'NOOP')))
+      (dict(record.result).status === 'NOOP' || (results.length > 0 && results.every(r => r.status === 'NOOP')))
     return { key: String(record.id ?? record.execution_id), record, trades, summary: summarizeCosts(trades), noop }
   })
 }

@@ -5,9 +5,8 @@ from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert
-from sqlmodel import SQLModel, col
+from sqlmodel import SQLModel
 
-from axile.server.db.models import TargetWeightSnapshot
 from axile.server.db.models.analysis_replay import replay_observation as observations
 from axile.server.db.models.analysis_replay import replay_observation_symbol as symbols
 
@@ -87,21 +86,18 @@ async def write_observation_fact(session, record: Any, fallback_weights: dict[st
     session
         当前异步事务会话；此函数不提交、不刷新执行记录。
     record
-        已分配 ``id`` 的执行记录，包含原始输入、结果和账户编号。
+        已分配 ``id`` 的分析输入对象，包含规范输入、结果和账户编号。
     fallback_weights
         可选的冻结目标权重；显式空字典代表合法的空目标。
     """
     # 先让原始事实的 UPDATE 和失效触发器执行，避免提交时删掉刚生成的投影。
     await session.flush()
     if fallback_weights is None and record.execution_id:
-        fallback_weights = (
-            await session.execute(
-                sa.select(col(TargetWeightSnapshot.normalized_weights)).where(
-                    col(TargetWeightSnapshot.account_id) == record.account_id,
-                    col(TargetWeightSnapshot.execution_id) == record.execution_id,
-                )
-            )
-        ).scalar_one_or_none()
+        from axile.server.target_weight_snapshots import read_target_snapshot_weights
+
+        fallback_weights = await read_target_snapshot_weights(
+            session, account_id=record.account_id, execution_id=record.execution_id
+        )
     scalar, rows = observation_fact_values(record, fallback_weights)
     await _write_values(session, scalar, rows)
 
@@ -109,7 +105,7 @@ async def write_observation_fact(session, record: Any, fallback_weights: dict[st
 async def backfill_observation_facts(
     session, account_id: int, batch_size: int = 100, *, through_record_id: int | None = None
 ) -> BackfillProgress:
-    """补齐一批缺失历史事实；重复调用可恢复，内存不随总历史增长。
+    """从规范业务表补齐缺失事实；重复调用可恢复，内存不随总历史增长。
 
     Parameters
     ----------
@@ -119,7 +115,7 @@ async def backfill_observation_facts(
     account_id
         待补齐账户。
     batch_size
-        单批原始执行载荷数量，必须在 1 到 1000 之间。
+        单批执行数量，必须在 1 到 100 之间。
     through_record_id
         可选的执行编号上界，固定单次任务的历史读取范围。
 
@@ -128,37 +124,23 @@ async def backfill_observation_facts(
     BackfillProgress
         本批写入条数，以及当前事务视图中是否全部完成。
     """
-    if not 1 <= batch_size <= 1000:
-        raise ValueError("batch_size 必须在 1 到 1000 之间")
+    from axile.server.analysis_history import read_analysis_record
+    from axile.server.target_weight_snapshots import read_target_snapshot_weights
+
+    if not 1 <= batch_size <= 100:
+        raise ValueError("batch_size 必须在 1 到 100 之间")
     records = SQLModel.metadata.tables["executerecord"]
-    targets = SQLModel.metadata.tables["target_weight_snapshot"]
     missing = ~sa.exists(sa.select(1).where(observations.c.record_id == records.c.id))
     conditions = [records.c.account_id == account_id, missing]
     if through_record_id is not None:
         conditions.append(records.c.id <= through_record_id)
-    statement = (
-        sa.select(
-            records.c.id,
-            records.c.account_id,
-            records.c.execution_id,
-            records.c.created_at,
-            records.c.raw_input,
-            records.c.raw_result,
-            targets.c.normalized_weights.label("fallback_weights"),
-        )
-        .select_from(
-            records.outerjoin(
-                targets,
-                sa.and_(targets.c.account_id == records.c.account_id, targets.c.execution_id == records.c.execution_id),
-            )
-        )
-        .where(*conditions)
-        .order_by(records.c.id)
-        .limit(batch_size)
-    )
+    statement = sa.select(records).where(*conditions).order_by(records.c.id).limit(batch_size)
     batch = (await session.execute(statement)).all()
     for record in batch:
-        scalar, rows = observation_fact_values(record, record.fallback_weights)
+        fallback_weights = await read_target_snapshot_weights(
+            session, account_id=account_id, execution_id=record.execution_id
+        )
+        scalar, rows = observation_fact_values(await read_analysis_record(session, record), fallback_weights)
         await _write_values(session, scalar, rows)
     remaining = await session.scalar(sa.select(sa.exists().where(*conditions)))
     return BackfillProgress(processed=len(batch), complete=not remaining)
@@ -171,7 +153,7 @@ async def ensure_observation_facts(session, account_id: int, batch_size: int = 1
     -----
     此函数拥有传入会话的事务边界，应使用专门的短生命周期会话调用。
     先固定最大编号，避免持续新增执行导致初始补齐永远追赶写入端。
-    每批显式申请写事务，保证旧 JSON 读取和投影写入之间没有并发业务修改。
+    每批显式申请写事务，保证规范业务读取和投影写入之间没有并发业务修改。
     中途取消或崩溃只丢弃当前未提交批次，下次继续查找缺失事实。
     """
     records = SQLModel.metadata.tables["executerecord"]

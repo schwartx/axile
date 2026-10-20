@@ -7,8 +7,9 @@ from typing import Any
 import sqlalchemy as sa
 from sqlmodel import col
 
-from axile.executor.models.unified_account_assets import DEGRADED_SNAPSHOT_SOURCES, is_degraded_snapshot_source
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
+from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
+from axile.server.business_facts.assets import asset_snapshot
+from axile.server.db.models import AccountAssetSnapshot
 
 
 def is_legacy_placeholder(result: Mapping[str, Any]) -> bool:
@@ -124,21 +125,10 @@ def legacy_placeholder_condition(document):
 
 
 def valid_asset_snapshot_condition():
-    """在窗口排序、分页和计数前排除无效资产，关联执行不增加查询次数。"""
-    assets = col(AccountAssetSnapshot.assets)
-    value = _json_value(assets, "$.total_asset")
-    source = _json_value(assets, "$.source")
-    placeholder = sa.exists(
+    """在排序、分页前使用迁移或写入时冻结的资产有效性。"""
+    return sa.exists(
         sa.select(1).where(
-            col(ExecuteRecord.execution_id) == col(AccountAssetSnapshot.execution_id),
-            col(ExecuteRecord.account_id) == col(AccountAssetSnapshot.account_id),
-            legacy_placeholder_condition(col(ExecuteRecord.raw_result)),
+            asset_snapshot.c.asset_id == col(AccountAssetSnapshot.asset_fact_id),
+            asset_snapshot.c.observation_valid.is_(True),
         )
-    )
-    return sa.and_(
-        sa.or_(source.is_(None), source.not_in(sorted(DEGRADED_SNAPSHOT_SOURCES))),
-        _numeric(assets, "$.total_asset"),
-        value >= -sys.float_info.max,
-        value <= sys.float_info.max,
-        ~placeholder,
     )

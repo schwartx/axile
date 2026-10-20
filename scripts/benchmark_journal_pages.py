@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.benchmark_performance_frames import emit, observe
+from scripts.benchmark_performance_frames import emit, observe, require_legacy_fixture
 
 
 def scale_copy(source, target, count):
@@ -24,6 +24,7 @@ def scale_copy(source, target, count):
     changing only identity/time, and add a calendar skip every fifth new execution
     with identical time and ID to exercise stable cross-table ties.
     """
+    require_legacy_fixture(source)
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as original:
         with closing(sqlite3.connect(target)) as database, database:
             target.chmod(0o600)

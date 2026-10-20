@@ -138,6 +138,9 @@ class ExecutionEvidence:
     key: str
     execution_id: str | None
     selection_reasons: list[str] = field(default_factory=list)
+    input_id: str | None = None
+    input: Any = None
+    asset_observations: list[dict[str, Any]] = field(default_factory=list)
     intent: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
     events: list[dict[str, Any]] = field(default_factory=list)

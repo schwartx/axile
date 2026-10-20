@@ -5,6 +5,7 @@ only in disposable test databases; no production fault hook or fake publisher is
 used. A committed database is authoritative even when receipt delivery fails.
 """
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -16,15 +17,12 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from axile.server.analysis_observations import observation_fact_values
-from axile.server.analysis_source import source_fact_values
 from axile.server.db.models import ExecuteRecord
-from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
-from axile.server.db.models.analysis_source import source_execution
 from axile.server.performance_analysis import LOGIC_VERSION
 from axile.server.performance_replay import ENGINE_VERSION
+from tests.unit.server._business_analysis_support import persist_records
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 from tests.unit.server.test_native_analysis_contract import _cost_records
@@ -110,40 +108,37 @@ class Store:
 
 
 def _write_database(path):
-    engine = sa.create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            _create_schema(connection)
-            migration = _load_migration(_MIGRATIONS_DIR / "0036_analysis_read_views.py")
-            migration.install_triggers(connection)
-        with Session(engine) as session:
-            session.add(
-                build_account(
-                    id=7,
-                    portfolio_id=None,
-                    is_started=False,
-                    backtest_weight_type="cs",
-                    backtest_fee_rate=0.001,
+    async def write():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(_create_schema)
+                migration = _load_migration(_MIGRATIONS_DIR / "0036_analysis_read_views.py")
+                await connection.run_sync(migration.install_triggers)
+            async with sessions() as session:
+                session.add(
+                    build_account(
+                        id=7,
+                        portfolio_id=None,
+                        is_started=False,
+                        backtest_weight_type="cs",
+                        backtest_fee_rate=0.001,
+                    )
                 )
-            )
-            session.commit()
-            records = _cost_records()
-            records[0].raw_result["account_assets"]["positions"] = [{"symbol": "A", "volume": 2, "direction": "LONG"}]
-            for values in records:
-                record = ExecuteRecord(**vars(values))
-                session.add(record)
-                session.flush()
-                scalar, symbols = observation_fact_values(record)
-                session.execute(replay_observation.insert(), scalar)
-                if symbols:
-                    session.execute(replay_observation_symbol.insert(), symbols)
-                scalar, children = source_fact_values(record)
-                session.execute(source_execution.insert(), scalar)
-                for table, rows in children.items():
-                    session.execute(table.insert(), rows)
-            session.commit()
-    finally:
-        engine.dispose()
+                await session.commit()
+                records = _cost_records()
+                records[0].result["account_assets"]["positions"] = [{"symbol": "A", "volume": 2, "direction": "LONG"}]
+                await persist_records(session, records, project=True)
+                await session.commit()
+                heads = (await session.scalars(sa.select(ExecuteRecord))).all()
+                assert len(heads) == len(records)
+                assert all(head.input_id is not None for head in heads)
+                assert all(not hasattr(head, "raw_input") and not hasattr(head, "raw_result") for head in heads)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(write())
 
 
 @pytest.fixture(params=["wal", "delete"])

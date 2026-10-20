@@ -56,7 +56,7 @@ def _ranges():
 
 def _rich_projection():
     source = record()
-    raw = source.raw_result
+    raw = source.result
     raw.update(status="PARTIAL", error="未全部成交", reason_code=None, msg="")
     raw["account_assets"]["positions"] = [
         {"symbol": "A", "volume": -2, "direction": "SHORT"},

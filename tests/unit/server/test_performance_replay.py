@@ -15,8 +15,8 @@ def snapshot(index, price, quantity=1, *, asset=100, symbol="A", multiplier=1, w
             id=index,
             execution_id=f"exec-{index}",
             created_at=(datetime(2026, 1, 1, 9) + timedelta(hours=index)).isoformat(),
-            raw_input={"curr_target": {symbol: weight}},
-            raw_result={
+            input={"curr_target": {symbol: weight}},
+            result={
                 "account_assets": {"total_asset": asset},
                 "symbol_results": {
                     symbol: {

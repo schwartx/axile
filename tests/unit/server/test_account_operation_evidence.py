@@ -79,7 +79,7 @@ def test_thousands_of_operations_preserve_all_audits_and_only_one_execution(data
     _seed(database, *rows)
     archive = _zip(_client(database).get(_DATE_URL))
     manifest = _manifest(archive)
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert [item["key"] for item in manifest["executions"]] == ["exec-1"]
     assert manifest["account_operations"]["count"] == 1001
     index = _jsonl(archive, manifest["account_operations"]["index"])

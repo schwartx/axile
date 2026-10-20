@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.account_settings import SupplementSettings
@@ -270,10 +271,9 @@ def test_session_closed_completion_cancels_only_its_group(monkeypatch, schema_te
                     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
                 elif scope == "error":
                     raw["symbol_results"]["ag2612"] = {"status": "FAILED", "reason_code": "CHANNEL.QUERY_FAILED"}
-                record = ExecuteRecord(
-                    account_id=1, execution_id=execution.execution_id, raw_input={}, raw_result=raw, is_success=0
-                )
+                record = ExecuteRecord(account_id=1, execution_id=execution.execution_id, is_success=0)
                 session.add(record)
+                await store_execution_facts(session, record, {}, raw)
                 await session.commit()
             terminal = {
                 "all": ExecutionTaskStatus.SKIPPED,
@@ -341,15 +341,9 @@ def test_session_skip_preserves_manual_request_sharing_a_future_step(monkeypatch
                 running.status = ExecutionTaskStatus.RUNNING
                 running.started_at = BASE.isoformat()
                 session.add(running)
-                session.add(
-                    ExecuteRecord(
-                        account_id=1,
-                        execution_id=running.execution_id,
-                        raw_input={},
-                        raw_result=closed_result(),
-                        is_success=0,
-                    )
-                )
+                record = ExecuteRecord(account_id=1, execution_id=running.execution_id, is_success=0)
+                session.add(record)
+                await store_execution_facts(session, record, {}, closed_result())
                 await session.commit()
             clear_queued_execution(1, running.execution_id)
             manual = await intents.submit_intent(1, ExecutionKind.REBALANCE, "manual")

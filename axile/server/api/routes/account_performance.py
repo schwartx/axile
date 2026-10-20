@@ -9,9 +9,11 @@ from sqlmodel import col, select
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_async_sleep, clock_monotonic
+from axile.server.analysis_history import iter_analysis_observations
+from axile.server.analysis_observations import ensure_observation_facts
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.db.models import ExecuteRecord, PortfolioAccount, TargetWeightSnapshot
+from axile.server.db.models import PortfolioAccount
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.performance import (
     AccountPerformance,
@@ -22,7 +24,7 @@ from axile.server.db.models.performance import (
 )
 from axile.server.native_account_performance import native_account_performance
 from axile.server.native_analysis import NativeAnalysisError, get_native_analysis
-from axile.server.performance import calculate_performance, local_time, observation
+from axile.server.performance import calculate_performance, local_time
 from axile.server.performance_analysis import (
     ENGINE_VERSION,
     LOGIC_VERSION,
@@ -94,27 +96,17 @@ async def _account_performance(session, account_id: int, range_key: RangeKey) ->
     if body is not None:
         return Response(body, media_type="application/json")
     await session.rollback()
+    await ensure_observation_facts(session, account_id)
     await session.execute(text("BEGIN"))
     account = await _get_account_or_404(session, account_id)
     trade_channel = str(account.trade_channel)
     settings = PerformanceSettings.model_validate(account, from_attributes=True)
-    records = (
-        (await session.execute(select(ExecuteRecord).where(col(ExecuteRecord.account_id) == account_id)))
-        .scalars()
-        .all()
-    )
-    targets = (
-        (await session.execute(select(TargetWeightSnapshot).where(col(TargetWeightSnapshot.account_id) == account_id)))
-        .scalars()
-        .all()
-    )
     bindings = (
         (await session.execute(select(PortfolioAccount).where(col(PortfolioAccount.account_id) == account_id)))
         .scalars()
         .all()
     )
-    fallback = {item.execution_id: item.normalized_weights for item in targets if item.execution_id}
-    items = [observation(record, fallback.get(record.execution_id or "")) for record in records]
+    items = [item async for batch in iter_analysis_observations(session, account_id) for item in batch]
     binding_values = [(local_time(binding.created_at), binding.portfolio_id) for binding in bindings]
     await session.rollback()
     result = await run_in_threadpool(calculate_performance, items, settings, range_key, False, trade_channel)

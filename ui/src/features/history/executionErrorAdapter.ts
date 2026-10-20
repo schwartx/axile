@@ -33,7 +33,8 @@ export async function readEvidencePages<T extends { id: number | null }>(
   }
 }
 
-const dict = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+const isMapping = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object' && !Array.isArray(value)
+const dict = (value: unknown): Record<string, unknown> => isMapping(value) ? value : {}
 const knownFields = ['error', 'technical_detail', 'traceback', 'formatted_traceback', 'outcome_reason', 'reason_code', 'error_id', 'diagnostics']
 function errorFields(value: unknown, label: string, nested = false): ErrorEvidence[] {
   const source = dict(value)
@@ -74,11 +75,19 @@ export function buildExecutionErrorInfo(input: {
 }): ErrorInfo {
   const evidence: ErrorEvidence[] = [{ label: '账户', value: String(input.accountId) }]
   if (input.executionId) evidence.push({ label: 'execution_id', value: input.executionId })
-  if (input.record?.id ?? input.recordId) evidence.push({ label: '记录 ID', value: String(input.record?.id ?? input.recordId) })
+  const recordId = input.record?.id ?? input.recordId
+  if (recordId != null) evidence.push({ label: '记录 ID', value: String(recordId) })
   if (input.status) evidence.push({ label: '最后已知状态', value: input.status.status })
   evidence.push(...(input.scope ?? []))
   const details: ErrorEvidence[] = []
-  if (input.record) details.push(...errorFields(input.record.raw_result, `记录 ${input.record.id}`))
+  if (input.record) {
+    const label = `记录 ${input.record.id}`
+    details.push(...errorFields(input.record, `${label} · 主信息`))
+    for (const [name, value] of [['输入', input.record.input], ['结果', input.record.result]] as const) {
+      if (!isMapping(value)) details.push({ label: `${label} · ${name}根值（非对象）`, value: errorValueText(value) })
+    }
+    details.push(...errorFields(input.record.result, `${label} · 结果`))
+  }
   if (input.status?.error) details.push({ label: '执行状态 · 原因', value: input.status.error })
   for (const event of input.events ?? []) {
     const catalog = catalogEvidence(event)

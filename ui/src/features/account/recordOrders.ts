@@ -17,7 +17,7 @@ export function recordOrders(result: Record<string, unknown>): ExecOrder[] {
       client_order_id: typeof extra.client_order_id === 'string' && extra.client_order_id ? extra.client_order_id : typeof extra.cl_ord_id === 'string' ? extra.cl_ord_id : null,
       trades: associated.map(trade => ({ price: num(trade.trade_price), volume: num(trade.trade_volume),
         value: num(trade.trade_value), time: typeof trade.trade_time === 'string' ? trade.trade_time : null,
-        fee: num(dict(trade.extra).commission) ?? 0, fee_asset: typeof dict(trade.extra).commission_asset === 'string' ? String(dict(trade.extra).commission_asset) : null })),
+        fee: num(dict(trade.extra).commission), fee_asset: typeof dict(trade.extra).commission_asset === 'string' ? String(dict(trade.extra).commission_asset) : null })),
     }
   })
 }

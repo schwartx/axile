@@ -52,9 +52,9 @@ class ActivityExecutionRecord(SQLModel):
     execution_kind: str | None = None
     symbol_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
     total_asset: float | None = None
-    summary: CostSummary
+    summary: CostSummary | None
     duration_sec: float | None = None
-    trade_count: int = 0
+    trade_count: int | None = None
 
 
 class ExecutionActivity(SQLModel):

@@ -6,9 +6,12 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel, select
 
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.api.routes import account_assets as account_assets_routes
+from axile.server.business_facts.assets import read_snapshot_assets
 from axile.server.db.models import Account, AccountAssetSnapshot
 from tests.unit.server._execution_test_support import build_account
 
@@ -43,7 +46,6 @@ class _Session:
 
 def test_refresh_account_assets_persists_manual_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     account = build_account(id=41)
-    session = _Session(account)
 
     async def _query(_account: Account) -> UnifiedAccountAssets:
         return UnifiedAccountAssets(
@@ -54,16 +56,27 @@ def test_refresh_account_assets_persists_manual_snapshot(monkeypatch: pytest.Mon
         )
 
     monkeypatch.setattr(account_assets_routes, "query_account_assets", _query)
-    response = asyncio.run(
-        account_assets_routes.refresh_account_assets(session, 41)  # pyright: ignore[reportArgumentType]
-    )
 
-    assert response.account_id == 41
-    assert response.source == "manual"
-    assert response.assets["total_asset"] == 1000.0
-    assert session.commits == 1
-    assert len(session.added) == 1
-    assert isinstance(session.added[0], AccountAssetSnapshot)
+    async def scenario():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                session.add(account)
+                await session.commit()
+                response = await account_assets_routes.refresh_account_assets(session, 41)
+                assert response.account_id == 41
+                assert response.source == "manual"
+                assert response.assets["total_asset"] == 1000.0
+                snapshot = (await session.execute(select(AccountAssetSnapshot))).scalar_one()
+                assert snapshot.asset_fact_id is not None
+                assert (await read_snapshot_assets(session, snapshot))["total_asset"] == 1000.0
+                assert "assets" not in AccountAssetSnapshot.__table__.c
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
 
 
 def test_refresh_account_assets_rejects_account_operation_conflict(monkeypatch: pytest.MonkeyPatch) -> None:

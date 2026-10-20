@@ -616,8 +616,8 @@ export function AccountDetail({
           {latestRecord && latestOutcome ? (
             <div>
               {formatRecentExecution(latestRecord.created_at, Date.now())}
-              {latestOutcome.symbolCount > 0 ? ` · ${latestOutcome.symbolCount} 个品种` : ''}
-              {latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
+              {latestOutcome.symbolCount != null && latestOutcome.symbolCount > 0 ? ` · ${latestOutcome.symbolCount} 个品种` : ''}
+              {latestOutcome.tradeCount == null ? ' · 成交信息未获取' : latestOutcome.tradeCount > 0 ? ` · ${latestOutcome.tradeCount} 笔成交` : ' · 未记录成交'}
             </div>
           ) : <ScheduleSummary lastExecutedAt={null} nextRunAt={nextRun.data?.next_execution_times[0] ?? null} />}
           {acc && <NotificationIndicator account={acc} executionId={latestRecord?.execution_id ?? null} />}

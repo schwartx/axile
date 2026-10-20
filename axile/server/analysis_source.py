@@ -49,7 +49,7 @@ def _source_event(record: Any) -> tuple[str | None, str | None]:
     """Keep the existing execution event wording without holding historical records."""
     if record.is_success == 1:
         return None, None
-    raw = mapping(normalize_legacy_result(record.raw_result))
+    raw = mapping(normalize_legacy_result(record.result))
     status = raw.get("status")
     labels: dict[str | None, str] = {
         "SUCCEEDED": "调仓完成",
@@ -187,7 +187,7 @@ async def _replace_source(session, scalar: dict, children: dict[sa.Table, list[d
 
 
 async def write_source_facts(session, record: Any) -> bool:
-    """Write typed facts in the caller's transaction; unsupported legacy input gets a marker.
+    """Write typed facts in the caller's transaction; unsupported evidence gets a marker.
 
     Returns
     -------
@@ -228,29 +228,17 @@ async def _unsupported_count(session, account_id: int, through_record_id: int | 
 async def backfill_source_facts(
     session, account_id: int, batch_size: int = 100, *, through_record_id: int | None = None
 ) -> SourceBackfillProgress:
-    """Read at most 100 missing raw records; the caller controls this batch's transaction."""
+    """Read at most 100 missing canonical records in the caller's transaction."""
+    from axile.server.analysis_history import read_analysis_record
+
     if not 1 <= batch_size <= 100:
         raise ValueError("batch_size must be between 1 and 100")
     records = SQLModel.metadata.tables["executerecord"]
     missing = ~sa.exists(sa.select(1).where(source_execution.c.record_id == records.c.id))
     conditions = [*_record_scope(records, account_id, through_record_id), missing]
-    rows = (
-        await session.execute(
-            sa.select(
-                records.c.id,
-                records.c.account_id,
-                records.c.execution_id,
-                records.c.created_at,
-                records.c.is_success,
-                records.c.raw_result,
-            )
-            .where(*conditions)
-            .order_by(records.c.id)
-            .limit(batch_size)
-        )
-    ).all()
+    rows = (await session.execute(sa.select(records).where(*conditions).order_by(records.c.id).limit(batch_size))).all()
     for record in rows:
-        await write_source_facts(session, record)
+        await write_source_facts(session, await read_analysis_record(session, record))
     remaining = await session.scalar(sa.select(sa.exists().where(*conditions)))
     unsupported = await _unsupported_count(session, account_id, through_record_id)
     return SourceBackfillProgress(processed=len(rows), complete=not remaining, unsupported=unsupported)

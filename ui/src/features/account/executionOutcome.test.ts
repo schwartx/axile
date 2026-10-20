@@ -6,13 +6,13 @@ import { buildExecutionDetail, executionHeadline } from './executionDetail'
 import type { ExecutionArtifact } from '@/types/api'
 
 test('摘要只统计已有品种和成交，缺失证据不补零个品种或零笔成交', () => {
-  expect(executionRecordSummary({})).toBe('调仓 · 未记录成交')
+  expect(executionRecordSummary({})).toBe('调仓 · 成交信息未获取')
   expect(executionRecordSummary({ execution_kind: 'clear_positions', symbol_results: { A: { trades: [] }, B: {} } })).toBe('清仓 · 涉及 2 个品种 · 未记录成交')
   const symbol_results = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`symbol${i}`, { trades: i === 0 ? [{}, {}, {}, {}] : [] }]))
   expect(executionRecordSummary({ symbol_results })).toBe('调仓 · 涉及 30 个品种 · 4 笔成交')
 })
 
-test('只从旧结果字段生成受阻展示', () => {
+test('只从记录已有字段生成受阻展示', () => {
   const view = executionRecordView({
     status: 'BLOCKED', error: '当前不在交易时段',
     symbol_results: { rb2610: { status: 'BLOCKED', trades: [] }, ag2612: { status: 'BLOCKED', trades: [] } },
@@ -69,6 +69,41 @@ test('错误只按明确字段顺序回放，品种同因和不同因分别汇�
 
 test('终止优先，旧完成摘要不能覆盖生命周期终止', () => {
   expect(executionRecordView({ task_status: 'TERMINATED', raw_result: { status: 'SUCCEEDED' } }).title).toBe('执行已终止')
+})
+
+test('类型化执行详情使用主记录结论和结果中的品种证据', () => {
+  const record = {
+    status: 'FAILED', task_status: 'FAILED', execution_kind: 'clear_positions', error: '执行收尾失败',
+    result: { status: 'SUCCEEDED', error: '此前的结果', symbol_results: { A: { status: 'SUCCEEDED', trades: [{}] } } },
+  }
+  expect(executionRecordView(record)).toMatchObject({ title: '执行失败', reason: '执行收尾失败', symbolCount: 1, tradeCount: 1 })
+  expect(executionRecordSummary(record)).toBe('清仓 · 涉及 1 个品种 · 1 笔成交')
+  expect(executionRecordView({ task_status: 'TERMINATED', result: { status: 'SUCCEEDED' } }).title).toBe('执行已终止')
+})
+
+test('轻量记录使用明确计数，零值不被详情成交数量覆盖', () => {
+  expect(executionRecordSummary({ status: 'SUCCEEDED', symbol_count: 30, trade_count: 4 })).toBe('调仓 · 涉及 30 个品种 · 4 笔成交')
+  expect(executionRecordSummary({ status: 'NOOP', symbol_count: 0, trade_count: 0, result: { symbol_results: { A: { trades: [{}] } } } })).toBe('调仓 · 未记录成交')
+  expect(executionRecordView({ is_success: 1, symbol_count: null, trade_count: null, result: {} })).toMatchObject({ state: 'UNKNOWN', tone: 'neutral' })
+})
+
+test('主记录明确的空状态和空原因不被结果内旧值覆盖', () => {
+  expect(executionRecordView({ status: null, error: '', result: { status: 'SUCCEEDED', error: '旧错误' } }))
+    .toMatchObject({ state: 'UNKNOWN', reason: '' })
+  expect(executionRecordView({ status: 'BLOCKED', reason_code: null, result: { reason_code: 'COMMON.SESSION.CLOSED' } }).sessionScope).toBeNull()
+})
+
+test('使用持久化展示结论，原始状态和技术错误仍不改写', () => {
+  const record = { status: null, error: 'Traceback: source', display_status: 'FAILED', display_error: '渠道连接失败', result: null }
+  expect(executionRecordView(record)).toMatchObject({ state: 'FAILED', reason: '渠道连接失败', symbolCount: null, tradeCount: null })
+  expect(record.error).toBe('Traceback: source')
+  expect(executionRecordView({ display_status: null, status: 'NOOP', result: [] })).toHaveProperty('state', 'NOOP')
+})
+
+test('轻量活动未知成交数不写成零，显式零仍能辨认', () => {
+  expect(executionRecordSummary({ status: 'SUCCEEDED', symbol_results: {}, trade_count: null })).toBe('调仓 · 成交信息未获取')
+  expect(executionRecordSummary({ status: 'NOOP', symbol_results: {}, trade_count: 0 })).toBe('调仓 · 未记录成交')
+  expect(executionRecordSummary({ result: { symbol_results: { A: { trades: [{}] } } } }, null)).toBe('调仓 · 涉及 1 个品种 · 成交信息未获取')
 })
 
 test('全休市是中性跳过，部分休市保留未完成和品种证据', () => {

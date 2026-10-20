@@ -3,6 +3,12 @@ const SESSION_CLOSED = 'COMMON.SESSION.CLOSED'
 type Dict = Record<string, unknown>
 const dict = (value: unknown): Dict => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Dict : {}
 const text = (value: unknown): string => typeof value === 'string' ? value : ''
+const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+/** 业务详情与分析快照摘要使用各自接口；平铺活动摘要直接读取已有字段。 */
+const resultOf = (record: Dict): Dict => 'result' in record ? dict(record.result) : 'raw_result' in record ? dict(record.raw_result) : record
+/** 主记录的明确空值仍是事实，不能被结果内较早的状态或原因覆盖。 */
+const fieldOf = (record: Dict, result: Dict, key: string): unknown => Object.hasOwn(record, key) ? record[key] : result[key]
+const displayFieldOf = (record: Dict, result: Dict, key: string): unknown => record[`display_${key}`] ?? fieldOf(record, result, key)
 const affectedStates = new Set(['BLOCKED', 'PARTIAL', 'FAILED'])
 export type ViewState = 'SUCCEEDED' | 'NOOP' | 'BLOCKED' | 'PARTIAL' | 'FAILED' | 'TERMINATED' | 'UNKNOWN'
 export interface OutcomeView {
@@ -10,9 +16,9 @@ export interface OutcomeView {
   title: string
   tone: 'neutral' | 'warn'
   reason: string
-  symbolCount: number
+  symbolCount: number | null
   affectedCount: number
-  tradeCount: number
+  tradeCount: number | null
   symbols: string[]
   text: string
   warning: boolean
@@ -44,16 +50,16 @@ function sessionScopeOf(state: ViewState, reasonCode: string, taskStatus: unknow
 
 export function executionRecordView(value: unknown, clear = false): OutcomeView {
   const record = dict(value)
-  const raw = 'raw_result' in record ? dict(record.raw_result) : record
+  const raw = resultOf(record)
   const entries = Object.entries(dict(raw.symbol_results)).map(([symbol, result]) => [symbol, dict(result)] as const)
   const results = entries.map(([, result]) => result)
   const symbols = entries.filter(([, result]) => affectedStates.has(text(result.status))).map(([symbol]) => symbol)
   const affectedCount = symbols.length || entries.length
-  const taskStatus = record.task_status ?? raw.task_status
-  const status = text(raw.status)
+  const taskStatus = fieldOf(record, raw, 'task_status')
+  const status = text(displayFieldOf(record, raw, 'status'))
   const state: ViewState = taskStatus === 'TERMINATED' ? 'TERMINATED' : ['SUCCEEDED', 'NOOP', 'BLOCKED', 'PARTIAL', 'FAILED'].includes(status) ? status as ViewState : 'UNKNOWN'
-  const isClear = clear || raw.execution_kind === 'clear_positions'
-  const reasonCode = text(record.reason_code) || text(raw.reason_code)
+  const isClear = clear || fieldOf(record, raw, 'execution_kind') === 'clear_positions'
+  const reasonCode = text(fieldOf(record, raw, 'reason_code'))
   const sessionScope = sessionScopeOf(state, reasonCode, taskStatus, results)
   const blockedTitle = sessionScope === 'all'
     ? '休市跳过'
@@ -67,9 +73,11 @@ export function executionRecordView(value: unknown, clear = false): OutcomeView 
     FAILED: '执行失败', TERMINATED: '执行已终止', UNKNOWN: '执行状态未知',
   }[state]
   const warning = (affectedStates.has(state) && sessionScope !== 'all') || state === 'TERMINATED'
+  const symbolCount = count(record.symbol_count) ?? (raw.symbol_results != null && typeof raw.symbol_results === 'object' && !Array.isArray(raw.symbol_results) ? entries.length : null)
+  const observedTrades = results.filter(result => Array.isArray(result.trades))
+  const tradeCount = count(record.trade_count) ?? (observedTrades.length ? observedTrades.reduce((total, result) => total + (result.trades as unknown[]).length, 0) : null)
   return { state, title, text: title, tone: warning ? 'warn' : 'neutral', warning,
-    reason: recordedReason(raw, results), symbols, symbolCount: entries.length, affectedCount, sessionScope,
-    tradeCount: results.reduce((count, result) => count + (Array.isArray(result.trades) ? result.trades.length : 0), 0) }
+    reason: recordedReason({ ...raw, error: displayFieldOf(record, raw, 'error') }, results), symbols, symbolCount, affectedCount, sessionScope, tradeCount }
 }
 
 export const executionOutcome = executionRecordView
@@ -77,13 +85,13 @@ export const executionOutcome = executionRecordView
 /** 摘要描述执行规模；结论单独由状态列显示。 */
 export function executionRecordSummary(value: unknown, recordedTradeCount?: number | null): string {
   const record = dict(value)
-  const raw = 'raw_result' in record ? dict(record.raw_result) : record
+  const raw = resultOf(record)
   const view = executionRecordView(value)
-  const tradeCount = recordedTradeCount ?? view.tradeCount
+  const tradeCount = recordedTradeCount === undefined ? view.tradeCount : recordedTradeCount
   return [
-    raw.execution_kind === 'clear_positions' ? '清仓' : '调仓',
+    fieldOf(record, raw, 'execution_kind') === 'clear_positions' ? '清仓' : '调仓',
     view.symbolCount ? `涉及 ${view.symbolCount} 个品种` : '',
-    tradeCount ? `${tradeCount} 笔成交` : '未记录成交',
+    tradeCount == null ? '成交信息未获取' : tradeCount ? `${tradeCount} 笔成交` : '未记录成交',
   ].filter(Boolean).join(' · ')
 }
 

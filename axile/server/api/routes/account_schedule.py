@@ -11,13 +11,18 @@ from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import literal, union_all
 from sqlalchemy import select as sql_select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute, defer
 from sqlmodel import col, desc, func, select
 
 from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
+from axile.server.api.business_execution import (
+    ExecuteRecordSummaryPublic,
+    projected_trade,
+    read_execution_summaries,
+    read_projected_trades,
+)
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.cron import SCHEDULER_TIMEZONE, is_blank_cron_expr, parse_cron_expr
@@ -29,6 +34,7 @@ from axile.server.db.models import (
     ScheduleSkipActivity,
 )
 from axile.server.db.models.account_settings import SupplementSettings
+from axile.server.db.models.analysis_source import source_trade
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import (
     ActivityExecutionRecord,
@@ -36,7 +42,7 @@ from axile.server.db.models.schedule import (
     ActivitySymbolRowPublic,
     ScheduleSkipReason,
 )
-from axile.server.performance_costs import mapping, project_execution, summarize
+from axile.server.performance_costs import summarize
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,
@@ -62,14 +68,12 @@ def _text_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _compact_execution_activity(row: ExecuteRecord) -> ExecutionActivity:
-    """列表只发布状态、摘要数字和 total_asset。"""
-    payload, trades = project_execution(row)
-    raw = mapping(payload["record"].get("raw_result"))
-    total = mapping(mapping(row.raw_result).get("account_assets")).get("total_asset")
-    if isinstance(total, bool) or not isinstance(total, (int, float)):
-        total = None
-    duration = payload.get("durationSec")
+def _compact_execution_activity(
+    row: ExecuteRecord, summary: ExecuteRecordSummaryPublic, trades: list[dict], total: float | None
+) -> ExecutionActivity:
+    """列表只发布类型化头字段、摘要数字和结果权益。"""
+    duration = row.execution_time
+    costs = CostSummary.model_validate(summarize(trades)) if summary.trade_count is not None else None
     return ExecutionActivity(
         occurred_at=row.created_at,
         record=ActivityExecutionRecord(
@@ -77,34 +81,20 @@ def _compact_execution_activity(row: ExecuteRecord) -> ExecutionActivity:
             execution_id=row.execution_id,
             created_at=row.created_at,
             is_success=row.is_success,
-            status=_text_or_none(raw.get("status")),
-            task_status=_text_or_none(raw.get("task_status")),
-            error=_text_or_none(raw.get("error")),
-            outcome=_text_or_none(raw.get("outcome")),
-            outcome_reason=_text_or_none(raw.get("outcome_reason")),
-            reason_code=_text_or_none(raw.get("reason_code")),
-            execution_kind=_text_or_none(raw.get("execution_kind")),
-            symbol_results=mapping(raw.get("symbol_results")),
-            total_asset=float(total) if total is not None else None,
-            summary=CostSummary.model_validate(summarize(trades)),
-            duration_sec=duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None,
-            trade_count=len(trades),
+            status=_text_or_none(row.display_status),
+            task_status=_text_or_none(row.task_status),
+            error=_text_or_none(row.display_error),
+            outcome=_text_or_none(row.display_outcome),
+            outcome_reason=_text_or_none(row.display_outcome_reason),
+            reason_code=_text_or_none(row.reason_code),
+            execution_kind=_text_or_none(row.execution_kind),
+            symbol_results=summary.symbol_results or {},
+            total_asset=total,
+            summary=costs,
+            duration_sec=duration if duration is not None and duration >= 0 else None,
+            trade_count=summary.trade_count,
         ),
     )
-
-
-def _projected_trades(row: ExecuteRecord) -> list[dict]:
-    """把一次执行投影成带身份的成交行。"""
-    _, trades = project_execution(row)
-    return [{**trade, "record_id": row.id, "execution_id": row.execution_id} for trade in trades]
-
-
-def _matches_trade(trade: dict, symbol: str | None, side: str | None) -> bool:
-    if symbol and trade.get("symbol") != symbol:
-        return False
-    if side and trade.get("side") != side:
-        return False
-    return True
 
 
 class SchedulePreviewRequest(BaseModel):
@@ -334,23 +324,23 @@ async def account_activity_symbols(
     """实时按品种汇总；时间窗必填。"""
     await _get_account_or_404(session, account_id)
     statement = (
-        select(ExecuteRecord)
-        .options(defer(cast("InstrumentedAttribute[dict]", col(ExecuteRecord.raw_input)), raiseload=True))
+        sql_select(source_trade, col(ExecuteRecord.execution_id))
+        .join(ExecuteRecord, col(ExecuteRecord.id) == source_trade.c.record_id)
         .where(
             col(ExecuteRecord.account_id) == account_id,
             *_time_clauses(col(ExecuteRecord.created_at), since, until),
         )
-        .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)))
+        .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)), source_trade.c.trade_index)
         .execution_options(yield_per=100)
     )
-    rows = await session.stream_scalars(statement)
+    if symbol is not None:
+        statement = statement.where(source_trade.c.symbol == symbol)
+    rows = await session.stream(statement)
     grouped: dict[str, list[dict]] = {}
     try:
-        async for row in rows:
-            for trade in _projected_trades(row):
-                if not _matches_trade(trade, symbol, None):
-                    continue
-                grouped.setdefault(str(trade["symbol"]), []).append(trade)
+        async for row in rows.mappings():
+            trade = {**projected_trade(row), "record_id": row["record_id"], "execution_id": row["execution_id"]}
+            grouped.setdefault(str(trade["symbol"]), []).append(trade)
     finally:
         await rows.close()
     data = [
@@ -422,20 +412,20 @@ async def _read_activity_page(
     execution_ids = [row.id for row in page if row.kind == 0]
     skip_ids = [row.id for row in page if row.kind == 1]
     execution_rows = (
-        (
-            await session.execute(
-                select(ExecuteRecord)
-                .options(defer(cast("InstrumentedAttribute[dict]", col(ExecuteRecord.raw_input)), raiseload=True))
-                .where(col(ExecuteRecord.id).in_(execution_ids))
-            )
-        )
-        .scalars()
-        .all()
+        (await session.execute(select(ExecuteRecord).where(col(ExecuteRecord.id).in_(execution_ids)))).scalars().all()
     )
     skip_rows = (await session.execute(select(ScheduleSkip).where(col(ScheduleSkip.id).in_(skip_ids)))).scalars().all()
 
+    summaries = await read_execution_summaries(session, execution_rows)
+    trades = await read_projected_trades(session, execution_ids)
+    from axile.server.business_facts.assets import read_result_asset_totals
+
+    totals = await read_result_asset_totals(session, execution_ids)
     activities: dict[tuple[int, int], ExecutionActivity | ScheduleSkipActivity] = {
-        (0, cast(int, row.id)): _compact_execution_activity(row) for row in execution_rows
+        (0, cast(int, row.id)): _compact_execution_activity(
+            row, summaries[cast(int, row.id)], trades.get(cast(int, row.id), []), totals.get(cast(int, row.id))
+        )
+        for row in execution_rows
     }
     activities.update(
         (

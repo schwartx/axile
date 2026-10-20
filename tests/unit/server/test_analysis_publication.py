@@ -6,12 +6,14 @@ from contextlib import asynccontextmanager
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
 from axile.server.analysis_cost_facts import COST_FACT_TABLES
 from axile.server.analysis_publication import copy_source_cost_facts
+from axile.server.business_facts.repository import store_execution_facts
+from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_snapshot, cost_execution, cost_trade
 from axile.server.db.models.analysis_source import (
-    SOURCE_FACT_TABLES,
     source_attempt,
     source_execution,
     source_execution_symbol,
@@ -20,6 +22,7 @@ from axile.server.db.models.analysis_source import (
     source_transaction,
     source_transaction_fee,
 )
+from tests.unit.server._execution_test_support import build_account
 
 
 @asynccontextmanager
@@ -32,23 +35,14 @@ async def _database():
         statements.append(statement)
 
     async with engine.begin() as connection:
-        await connection.execute(sa.text("CREATE TABLE account (id INTEGER PRIMARY KEY)"))
-        await connection.execute(sa.text("INSERT INTO account VALUES (2), (3)"))
-        # Deliberately invalid legacy JSON must never be decoded by publication.
-        await connection.execute(
-            sa.text(
-                "CREATE TABLE executerecord (id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, "
-                "execution_id TEXT, created_at TEXT NOT NULL, is_success INTEGER NOT NULL, "
-                "raw_input TEXT DEFAULT 'invalid json', raw_result TEXT DEFAULT 'invalid json')"
-            )
-        )
-        await connection.run_sync(
-            lambda sync: analysis_snapshot.metadata.create_all(
-                sync, tables=[analysis_snapshot, *reversed(SOURCE_FACT_TABLES), *reversed(COST_FACT_TABLES)]
-            )
-        )
+        await connection.run_sync(SQLModel.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        session.add(build_account(id=2))
+        session.add(build_account(id=3))
+        await session.commit()
     try:
-        yield async_sessionmaker(engine, expire_on_commit=False), statements
+        yield sessions, statements
     finally:
         await engine.dispose()
 
@@ -76,13 +70,16 @@ def _header(record_id=1, account_id=2):
 
 async def _record(session, record_id=1, account_id=2):
     header = _header(record_id, account_id)
-    await session.execute(
-        sa.text(
-            "INSERT INTO executerecord (id,account_id,execution_id,created_at,is_success) "
-            "VALUES (:record_id,:account_id,:execution_id,:created_at,:is_success)"
-        ),
-        header,
+    record = ExecuteRecord(
+        id=record_id,
+        account_id=account_id,
+        execution_id=header["execution_id"],
+        created_at=header["created_at"],
+        is_success=header["is_success"],
     )
+    session.add(record)
+    await session.flush()
+    await store_execution_facts(session, record, raw_input={}, raw_result={"status": None, "symbol_results": {}})
     return header
 
 

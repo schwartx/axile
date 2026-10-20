@@ -5,7 +5,6 @@ import asyncio
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.server.analysis_cost_facts import COST_FACT_TABLES
 from axile.server.api.routes import account_performance as routes
@@ -15,8 +14,9 @@ from axile.server.db.models.analysis import cost_execution as executions
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance_analysis import AnalysisManager, compute_batch, enqueue, read_snapshot
 from axile.server.performance_details import CostQuery
+from tests.unit.server._business_analysis_support import load_record, persist_records
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server.test_performance_analysis import record
+from tests.unit.server.test_performance_analysis import _create_schema, record
 
 
 @pytest.mark.parametrize("malformed", ["key", "raw_error"])
@@ -34,13 +34,16 @@ def test_unsupported_projection_publishes_legacy_costs_and_rolls_back_typed_chil
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
             async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
+                await connection.run_sync(_create_schema)
             async with sessions() as session:
                 session.add(build_account(id=2, account_control_preset="default"))
                 await session.commit()
+                await persist_records(session, [record()])
+                await session.commit()
+                canonical = await load_record(session, 1)
                 await enqueue(session, 2)
             settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0.0)
-            ranges, projected, costs = compute_batch([record()], [], [], [], settings)
+            ranges, projected, costs = compute_batch([canonical], [], [], [], settings)
             template = projected[0]
             # Publication flushes 500 execution headers and their child rows
             # before reaching the malformed final execution.

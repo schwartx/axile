@@ -3,13 +3,31 @@ import { buildExecutionErrorInfo, readEvidencePages, catalogEvidence } from './e
 import type { ExecuteRecord, ExecutionEvent } from '@/types/api'
 
 const raw = 'long '.repeat(1000) + '\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因'
-const record: ExecuteRecord = { id: 1, execution_id: null, raw_input: {}, raw_result: { technical_detail: raw, traceback: 'Traceback\nline 123\n' + raw }, is_success: 0, created_at: '' }
+const record: ExecuteRecord = { account_id: 1, id: 1, execution_id: null, input: {}, result: { technical_detail: raw, traceback: 'Traceback\nline 123\n' + raw }, is_success: 0, created_at: '' }
 
-test('record-only legacy errors preserve complete raw text and existing traceback', () => {
+test('typed record detail preserves complete diagnostic text and existing traceback', () => {
   const info = buildExecutionErrorInfo({ accountId: 7, recordId: 1, record })
   expect(info.text).toContain(raw)
   expect(info.text).toContain('Traceback\nline 123\n')
   expect(info.evidence).toContainEqual({ label: '记录 ID', value: '1' })
+})
+test('zero record identity remains visible in error evidence', () => {
+  expect(buildExecutionErrorInfo({ accountId: 7, record: { ...record, id: 0 } }).evidence)
+    .toContainEqual({ label: '记录 ID', value: '0' })
+})
+test('non-object historical roots remain explicit evidence rather than empty mappings', () => {
+  const roots: [ExecuteRecord['result'], string][] = [[null, 'null'], ['原始字符串', '原始字符串'], [0, '0'], [false, 'false'], [[], '[]'], [['原始项'], '[\n  "原始项"\n]']]
+  for (const [value, expected] of roots) {
+    const info = buildExecutionErrorInfo({ accountId: 7, record: { ...record, input: value, result: value } })
+    expect(info.details).toContainEqual({ label: '记录 1 · 输入根值（非对象）', value: expected })
+    expect(info.details).toContainEqual({ label: '记录 1 · 结果根值（非对象）', value: expected })
+  }
+})
+test('canonical head and preserved result reasons keep separate provenance', () => {
+  const info = buildExecutionErrorInfo({ accountId: 7, record: { ...record, error: '主记录原因', outcome_reason: '主记录结论原因', result: { error: '结果原文' } } })
+  expect(info.details).toContainEqual({ label: '记录 1 · 主信息 · error', value: '主记录原因' })
+  expect(info.details).toContainEqual({ label: '记录 1 · 主信息 · outcome_reason', value: '主记录结论原因' })
+  expect(info.details).toContainEqual({ label: '记录 1 · 结果 · error', value: '结果原文' })
 })
 test('event-only catalog evidence preserves phase reason symbols and elapsed time', () => {
   const event = { id: 2, event_type: 'instruments_waiting', reason_code: 'CATALOG.PENDING', details: { message: raw, symbols: ['rb2701', 'au2701'], elapsed_seconds: 25 } } as unknown as ExecutionEvent
@@ -62,7 +80,7 @@ test('cancellation invalidates partial data and overlapping pages cannot claim c
 test('nested worker and event tracebacks keep actual lines as readable text', () => {
   const trace = 'Traceback\n  worker.py:123\n' + raw
   const event = { id: 3, event_type: 'execution_failed', details: { error: { message: raw, traceback: trace } } } as unknown as ExecutionEvent
-  const info = buildExecutionErrorInfo({ accountId: 7, record: { ...record, raw_result: { extra: { worker_error: { message: raw, traceback: trace } } } }, events: [event] })
+  const info = buildExecutionErrorInfo({ accountId: 7, record: { ...record, result: { extra: { worker_error: { message: raw, traceback: trace } } } }, events: [event] })
   expect(info.text).toContain(trace)
   expect(info.details.some(item => item.value === trace)).toBe(true)
 })

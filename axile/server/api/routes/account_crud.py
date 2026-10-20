@@ -8,6 +8,7 @@ from typing import Annotated, Any, cast
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import and_, col, delete, desc, func, select
 
 from axile.channels import get_channel
@@ -16,8 +17,14 @@ from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.server.api.business_execution import (
+    ExecuteRecordDetailPublic,
+    ExecuteRecordSummaryListPublic,
+    read_execution_summaries,
+)
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.business_facts.assets import read_snapshots_assets
 from axile.server.cron import SCHEDULER_TIMEZONE, parse_cron_expr
 from axile.server.db.models import (
     Account,
@@ -32,8 +39,6 @@ from axile.server.db.models import (
     AccountRuntimeSyncPublic,
     AccountUpdate,
     ExecuteRecord,
-    ExecuteRecordListPublic,
-    ExecuteRecordPublic,
     Message,
     PortfolioAccount,
     PortfolioAccountListPublic,
@@ -44,7 +49,6 @@ from axile.server.db.models.account_validation import _check_algorithm_channel_c
 from axile.server.db.models.performance import PerformanceSummary
 from axile.server.execution.account_runtime_sync import enqueue_account_runtime_sync, reconcile_account_runtime
 from axile.server.execution.ctp_channels import drop_account_worker
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
     execution_record_output_status,
@@ -486,6 +490,9 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
     performance_by_account = await read_performance_summaries(session, account_ids)
     recent_records_by_account = await get_recent_execute_records_for_accounts(session, account_ids, limit=1)
     recent_by_account = await get_recent_account_asset_snapshots_for_accounts(session, account_ids, limit=1)
+    assets_by_snapshot = await read_snapshots_assets(
+        session, [snapshot for snapshots in recent_by_account.values() for snapshot in snapshots]
+    )
     target_pairs = [
         (account_id, portfolio_id) for account_id, portfolio_id in bindings.items() if portfolio_id is not None
     ]
@@ -497,7 +504,7 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
         latest_snapshot = recent[0] if recent else None
         latest_records = recent_records_by_account.get(account_id, [])
         latest = latest_records[0] if latest_records else None
-        assets = latest_snapshot.assets if latest_snapshot is not None else {}
+        assets = assets_by_snapshot[cast("int", latest_snapshot.id)] if latest_snapshot is not None else {}
         raw_positions = assets.get("positions")
         positions: list[Any] = raw_positions if isinstance(raw_positions, list) else []
         holdings_count = len(positions)
@@ -552,7 +559,7 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
             running_status = "queued"
             running_phase = "queued"
 
-        last_output_status = None if latest is None else execution_record_output_status(latest.raw_result)
+        last_output_status = None if latest is None else execution_record_output_status(latest)
         performance = performance_by_account.get(account_id, PerformanceSummary())
         previous_close = (
             close_before(performance.points, local_time(latest_snapshot.created_at).date().isoformat())
@@ -612,6 +619,7 @@ async def delete_account(session: SessionDep, sched: SchedDep, account_id: int) 
     # 与对齐互斥，先等锁再读库，避免删除期间旧对齐把 worker 重新建立。
     async with account_runtime_lock(account_id):
         account = await _get_account_or_404(session, account_id)
+        await _detach_account_execution_summaries(session, account_id)
         await session.delete(account)
         await session.commit()
         await session.close()
@@ -892,18 +900,32 @@ async def _reconcile_committed_runtime(session: SessionDep, sched: SchedDep, acc
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在") from exc
 
 
-@router.get("/execute_records/{account_id}", response_model=ExecuteRecordListPublic)
+@router.get("/execute_records/{account_id}", response_model=ExecuteRecordSummaryListPublic)
 async def list_execute_records(
     session: SessionDep,
     account_id: int,
     pagination: HistoryPaginationDep,
     execution_id: str | None = None,
     record_id: int | None = None,
-) -> ExecuteRecordListPublic:
-    """获取账户的执行记录."""
-    db_account = await _get_account_or_404(session, account_id)
+) -> ExecuteRecordSummaryListPublic:
+    """分页读取执行摘要，输入、资产和逐单证据仅在详情接口读取。"""
+    await _get_account_or_404(session, account_id)
+    async with session.begin_nested():
+        return await _read_execute_record_page(
+            session, account_id, pagination.skip, pagination.limit, execution_id, record_id
+        )
 
-    filters = [ExecuteRecord.account_id == db_account.id]
+
+async def _read_execute_record_page(
+    session: AsyncSession,
+    account_id: int,
+    skip: int,
+    limit: int,
+    execution_id: str | None,
+    record_id: int | None,
+) -> ExecuteRecordSummaryListPublic:
+    """页头、计数和结论在同一事务读取，避免更新时混入另一版本。"""
+    filters = [ExecuteRecord.account_id == account_id]
     if execution_id is not None:
         filters.append(ExecuteRecord.execution_id == execution_id)
     if record_id is not None:
@@ -916,22 +938,39 @@ async def list_execute_records(
         .where(*filters)
         # execute_record 没有独立时间排序键时，按自增 id 倒序近似“最新在前”的时间线。
         .order_by(desc(ExecuteRecord.id))
-        .offset(pagination.skip)
-        .limit(pagination.limit)
+        .offset(skip)
+        .limit(limit)
     )
     records = (await session.execute(statement)).scalars().all()
 
-    data = [
-        # 旧记录读时归一：列表响应与新记录同形，前端不需要 legacy 分支。
-        ExecuteRecordPublic.model_validate(record).model_copy(
-            update={"raw_result": normalize_legacy_result(record.raw_result)}
-        )
-        for record in records
-    ]
-    return ExecuteRecordListPublic(
-        data=data,
+    summaries = await read_execution_summaries(session, records)
+    return ExecuteRecordSummaryListPublic(
+        data=[summaries[cast("int", record.id)] for record in records],
         count=count,
     )
+
+
+@router.get("/execute_records/{account_id}/{record_id}", response_model=ExecuteRecordDetailPublic)
+async def execute_record_detail(
+    session: SessionDep,
+    account_id: int,
+    record_id: int,
+) -> ExecuteRecordDetailPublic:
+    """显式读取账户内的一条执行，跨账户记录返回不存在。"""
+    from axile.server.business_facts.repository import read_execution_detail
+
+    await _get_account_or_404(session, account_id)
+    async with session.begin_nested():
+        record = (
+            await session.execute(
+                select(ExecuteRecord).where(ExecuteRecord.account_id == account_id, ExecuteRecord.id == record_id)
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
+        summaries = await read_execution_summaries(session, [record])
+        detail = await read_execution_detail(session, record)
+        return ExecuteRecordDetailPublic.model_validate({**summaries[record_id].model_dump(), **detail})
 
 
 @router.get("/portfolio_records/{account_id}", response_model=PortfolioAccountListPublic)
@@ -967,6 +1006,7 @@ async def list_portfolio_records(
 async def delete_execute_records(session: SessionDep, account_id: int) -> Message:
     """删除账户的执行记录."""
     await _get_account_or_404(session, account_id)
+    await _detach_account_execution_summaries(session, account_id)
 
     # 执行来源快照属于执行历史的一部分，随记录清理；人工刷新快照保持独立观测语义。
     await session.execute(
@@ -983,3 +1023,17 @@ async def delete_execute_records(session: SessionDep, account_id: int) -> Messag
     await session.commit()
 
     return Message(message="成功删除")
+
+
+async def _detach_account_execution_summaries(session: AsyncSession, account_id: int) -> None:
+    """在事实删除的同一事务中恢复独立审计日记，每批仅加载少量头记录。"""
+    from axile.server.business_facts.artifacts import detach_execution_summaries
+
+    records = await session.stream_scalars(
+        select(ExecuteRecord).where(ExecuteRecord.account_id == account_id).execution_options(yield_per=100)
+    )
+    try:
+        async for record in records:
+            await detach_execution_summaries(session, record)
+    finally:
+        await records.close()

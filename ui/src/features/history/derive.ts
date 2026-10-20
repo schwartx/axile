@@ -1,8 +1,8 @@
 /**
  * 回看/绩效页的数据派生。
  *
- * 全部基于真实执行记录与绑定记录：
- * - 权益序列取各成功记录 `raw_result.account_assets.total_asset`。
+ * 全部基于真实资产快照、执行记录与绑定记录：
+ * - 权益序列取资产快照 `assets.total_asset`。
  * - 分段按 `portfolio_records` 的绑定边界切。
  *
  * 口径说明（估值 vs 真盈亏）
@@ -16,6 +16,7 @@ import type { EquityPoint } from '@/components/viz/EquityChart'
 import type { ScheduleSkipActivity } from '@/lib/api/accounts'
 import type { AccountAssetSnapshot, ExecuteRecord, PortfolioAccountRecord } from '@/types/api'
 import { executionOutcome } from '@/features/account/executionOutcome'
+import { dict } from '@/features/account/executionValues'
 
 export type RangeKey = '30' | '90' | 'all'
 
@@ -30,10 +31,16 @@ function totalAsset(snapshot: AccountAssetSnapshot): number | null {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
 }
 
+function isWeights(value: unknown): value is Record<string, number> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    && Object.values(value).every(weight => typeof weight === 'number' && Number.isFinite(weight))
+}
+
 /** 判断记录是否空跑（目标未变）。 */
 function isNoop(r: ExecuteRecord): boolean {
-  const curr = r.raw_input?.curr_target ?? {}
-  const last = r.raw_input?.last_target ?? {}
+  const curr = dict(r.input).curr_target
+  const last = dict(r.input).last_target
+  if (!isWeights(curr) || !isWeights(last)) return false
   const keys = new Set([...Object.keys(curr), ...Object.keys(last)])
   for (const k of keys) if (Math.abs((curr[k] ?? 0) - (last[k] ?? 0)) > 1e-9) return false
   return true
@@ -142,17 +149,19 @@ export function aggregateStats(
   let terminated = 0
   let currency = ''
   for (const r of records) {
-    if (r.raw_result?.task_status === 'TERMINATED') {
+    const result = dict(r.result)
+    const view = executionOutcome(r)
+    if (view.state === 'TERMINATED') {
       // 终止 = 人工/系统提前收尾，非硬失败，单列不计入 fails（否则「失败 N 次」被终止灌水）。
       terminated++
     } else if (r.is_success === 1) {
       fills++
       // 成功清仓确有平仓成交，不按调仓口径算「空跑」（否则清仓被误当没发生）。
-      if (r.raw_result?.execution_kind !== 'clear_positions' && isNoop(r)) noops++
-    } else if (!executionOutcome(r).sessionScope) {
+      if ((Object.hasOwn(r, 'execution_kind') ? r.execution_kind : result.execution_kind) !== 'clear_positions' && isNoop(r)) noops++
+    } else if (!view.sessionScope) {
       fails++
     }
-    const c = r.raw_result?.account_assets?.currency
+    const c = dict(result.account_assets).currency
     if (typeof c === 'string' && c) currency = c
   }
   const eqFirst = points.length ? points[0].eq : null
@@ -283,7 +292,7 @@ export interface HistoryEvent {
 /** 逐条展开失败事件的上限，超出部分折叠成一条汇总提示，避免刷屏。 */
 const FAIL_EVENT_CAP = 8
 
-/** 从执行记录里取顶层失败原因（后端写在 raw_result.error）。 */
+/** 从执行记录里取顶层失败原因（后端写在 result.error）。 */
 /** 从绑定记录 + 失败执行构建账户时间线。 */
 export function buildEvents(
   bindings: PortfolioAccountRecord[],
@@ -304,10 +313,10 @@ export function buildEvents(
   // 失败逐条展开、每条可点开执行详情；超过上限的更早失败折叠成一条汇总。
   // 终止（task_status=TERMINATED）不是失败，排除在外，避免时间线把「提前收尾」渲染成「执行失败」。
   const failRecords = records
-    .filter((r) => executionOutcome(r.raw_result).state === 'FAILED')
+    .filter((r) => executionOutcome(r).state === 'FAILED')
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
   for (const r of failRecords.slice(0, FAIL_EVENT_CAP)) {
-    const view = executionOutcome(r.raw_result)
+    const view = executionOutcome(r)
     events.push({
       date: r.created_at.replace('T', ' ').slice(5, 16),
       kind: 'fail',

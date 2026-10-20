@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from sqlalchemy import JSON as SA_JSON
-from sqlalchemy import Column, ForeignKey, Index, Integer, Text
+from sqlalchemy import Column, Float, ForeignKey, Index, Integer, Table, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlmodel import Field, SQLModel
 
@@ -66,11 +66,24 @@ class TargetWeightSnapshot(AsyncAttrs, SQLModel, table=True):
         default=None,
         sa_column=Column(Integer, ForeignKey("account.id", ondelete="SET NULL"), nullable=True),
     )
-    raw_weights: Optional[dict[str, float]] = Field(default=None, sa_column=Column(SA_JSON, nullable=True))
-    normalized_weights: Optional[dict[str, float]] = Field(default=None, sa_column=Column(SA_JSON, nullable=True))
+    raw_weights_kind: str = Field(default="null", sa_column=Column(Text, nullable=False))
+    normalized_weights_kind: str = Field(default="null", sa_column=Column(Text, nullable=False))
+    weights_metadata: dict[str, object] = Field(default_factory=dict, sa_column=Column(SA_JSON, nullable=False))
     source: str = Field(sa_column=Column(Text, nullable=False))
     execution_id: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     calculated_at: str = Field(default_factory=now_str, sa_column=Column(Text, nullable=False))
+
+
+target_weight_snapshot_weight = Table(
+    "target_weight_snapshot_weight",
+    SQLModel.metadata,
+    Column("snapshot_id", Integer, ForeignKey("target_weight_snapshot.id", ondelete="CASCADE"), primary_key=True),
+    Column("role", Text, primary_key=True),
+    Column("map_key", Text, primary_key=True),
+    Column("value", Float),
+    Column("audit_evidence", SA_JSON, nullable=False),
+    sqlite_with_rowid=False,
+)
 
 
 class TargetWeightSnapshotPublic(SQLModel):

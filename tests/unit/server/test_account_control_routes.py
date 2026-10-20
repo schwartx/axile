@@ -624,6 +624,8 @@ def test_update_gm_keeps_session_until_connection_changes(monkeypatch, patch, re
 
 def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     """有历史的账户复制后，新账户的执行、资产和收益独立开始。"""
+    from axile.server.business_facts.assets import ensure_execution_asset_snapshot
+    from axile.server.business_facts.repository import read_execution_result, store_execution_facts
 
     async def no_sync(*args, **kwargs):
         return None
@@ -656,20 +658,16 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                 session.add(source)
                 await session.flush()
                 old_result = {"account_assets": {"total_asset": 100}, "orders": [{"order_id": "old-order"}]}
-                session.add(
-                    ExecuteRecord(
-                        account_id=1,
-                        execution_id="old",
-                        is_success=1,
-                        raw_result=old_result,
-                        created_at="2026-01-01T09:00:00",
-                    )
+                old_record = ExecuteRecord(
+                    account_id=1,
+                    execution_id="old",
+                    is_success=1,
+                    created_at="2026-01-01T09:00:00",
                 )
-                session.add(
-                    AccountAssetSnapshot(
-                        account_id=1, source="execution", execution_id="old", assets={"total_asset": 100}
-                    )
-                )
+                session.add(old_record)
+                await session.flush()
+                await store_execution_facts(session, old_record, {}, old_result)
+                assert await ensure_execution_asset_snapshot(session, old_record) is not None
                 session.add(
                     ExecutionEvent(
                         account_id=1,
@@ -718,26 +716,30 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                 empty = await _account_performance(session, copied_id, "all")
                 assert empty.baseline is None
                 assert empty.points == []
-                session.add(
-                    ExecuteRecord(
-                        account_id=copied_id,
-                        execution_id="new",
-                        is_success=1,
-                        raw_result={"account_assets": {"total_asset": 250}},
-                        created_at="2026-02-01T09:00:00",
-                    )
+                new_record = ExecuteRecord(
+                    account_id=copied_id,
+                    execution_id="new",
+                    is_success=1,
+                    created_at="2026-02-01T09:00:00",
                 )
+                session.add(new_record)
+                await session.flush()
+                await store_execution_facts(session, new_record, {}, {"account_assets": {"total_asset": 250}})
                 await session.commit()
                 history = await account_crud_routes.list_execute_records(session, copied_id, HistoryPagination())
                 assert history.count == 1
                 assert history.data[0].execution_id == "new"
                 original = await account_crud_routes.list_execute_records(session, 1, HistoryPagination())
                 assert original.count == 1
-                assert original.data[0].raw_result["orders"] == old_result["orders"]
+                original_detail = await account_crud_routes.execute_record_detail(session, 1, original.data[0].id)
+                assert original_detail.result["orders"] == old_result["orders"]
+                with pytest.raises(HTTPException) as cross_account:
+                    await account_crud_routes.execute_record_detail(session, copied_id, original.data[0].id)
+                assert cross_account.value.status_code == 404
                 stored = (
                     await session.execute(select(ExecuteRecord).where(ExecuteRecord.account_id == 1))
                 ).scalar_one()
-                assert stored.raw_result == old_result
+                assert await read_execution_result(session, stored) == old_result
                 events = (
                     (await session.execute(select(ExecutionEvent).where(ExecutionEvent.account_id == 1)))
                     .scalars()

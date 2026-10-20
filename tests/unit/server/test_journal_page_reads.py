@@ -9,7 +9,9 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server.api.routes import account_schedule
+from axile.server.business_facts.assets import read_result_asset_totals
 from axile.server.db.models import ExecuteRecord, ScheduleSkip
+from tests.unit.server._business_analysis_support import persist_records
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_performance_analysis import database, record
 from tests.unit.server.test_performance_analysis import schema_template as schema_template
@@ -34,7 +36,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                     )
                 other = record(7)
                 other.account_id = 3
-                session.add(other)
+                await persist_records(session, [other], project=True)
                 await session.commit()
             async with sessions() as session:
                 rows = (
@@ -42,7 +44,15 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                     .scalars()
                     .all()
                 )
-                expected = {row.id: account_schedule._compact_execution_activity(row).model_dump() for row in rows}
+                summaries = await account_schedule.read_execution_summaries(session, rows)
+                trades = await account_schedule.read_projected_trades(session, [row.id for row in rows])
+                totals = await read_result_asset_totals(session, [row.id for row in rows])
+                expected = {
+                    row.id: account_schedule._compact_execution_activity(
+                        row, summaries[row.id], trades[row.id], totals[row.id]
+                    ).model_dump()
+                    for row in rows
+                }
             order = [
                 ("execution", 6),
                 ("schedule_skip", 6),
@@ -84,7 +94,10 @@ def test_deep_page_never_decodes_raw_input_or_projects_discarded_results(tmp_pat
     async def check():
         async with database(tmp_path, schema_template, count=6) as (engine, sessions, _):
             async with sessions() as session:
-                await session.execute(sa.update(ExecuteRecord).values(raw_input={"unused": "x" * 2_000_000}))
+                rows = [record(index) for index in range(1, 7)]
+                for row in rows:
+                    row.input["algorithm"] = {"params": {"unused": "x" * 2_000_000}}
+                await persist_records(session, rows, project=True)
                 await session.commit()
             decoded = []
 

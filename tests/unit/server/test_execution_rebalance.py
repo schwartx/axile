@@ -13,7 +13,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.server.db.models import Account
+from axile.server.db.models import Account, ExecuteRecord
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
@@ -53,7 +53,7 @@ class _VolumeCalcStub:
 
 
 @pytest.fixture(autouse=True)
-def _worker_commands(monkeypatch):
+def _worker_commands(monkeypatch) -> dict[str, dict[str, object]]:
     """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
     manager = WorkerCommandHarness()
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
@@ -66,6 +66,15 @@ def _worker_commands(monkeypatch):
     monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
     monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
+    frozen_inputs: dict[str, dict[str, object]] = {}
+
+    def persist_input(**kwargs: object) -> str:
+        frozen_inputs[cast(str, kwargs["execution_id"])] = cast("dict[str, object]", kwargs["payload"])
+        return "input-test"
+
+    monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", persist_input)
+    monkeypatch.setattr(worker_audit, "persist_post_execute_assets_sync", lambda **kwargs: ("input-test", "asset-test"))
+    return frozen_inputs
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +87,65 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
 
     monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
     return calls
+
+
+@pytest.mark.parametrize(
+    ("present", "target", "expected"),
+    [
+        (False, None, {}),
+        (True, None, None),
+        (True, {}, {}),
+        (True, {"short": -0.25, "flat": 0}, {"short": -0.25, "flat": 0}),
+    ],
+)
+def test_last_target_reads_only_selected_input_target(
+    monkeypatch: pytest.MonkeyPatch,
+    present: bool,
+    target: object,
+    expected: object,
+) -> None:
+    """上次目标只读取成功记录关联的目标；缺失与显式空值保持不同。"""
+    account = build_account()
+    session = FakeSession()
+    record = SimpleNamespace(is_success=1, input_id="frozen-input", execution_id=None)
+    calls: list[tuple[object, str, str]] = []
+
+    async def latest(actual_session: object, account_id: int) -> SimpleNamespace:
+        assert actual_session is session
+        assert account_id == account.id
+        return record
+
+    async def load_target(actual_session: object, input_id: str, *, role: str) -> tuple[bool, object]:
+        calls.append((actual_session, input_id, role))
+        return present, target
+
+    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: session)
+    monkeypatch.setattr(rebalance_execution, "get_latest_success_execute_record_by_account_id", latest)
+    monkeypatch.setattr(rebalance_execution, "load_input_target", load_target)
+
+    actual = asyncio.run(rebalance_execution._load_last_target_snapshot(account))
+    assert actual == expected
+    assert calls == [(session, "frozen-input", "curr_target")]
+
+
+def test_last_target_missing_input_does_not_search_older_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """最新成功记录没有输入时返回缺失目标，不借用另一条历史记录。"""
+    calls = 0
+
+    async def latest(_session: object, _account_id: int) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(is_success=1, input_id=None)
+
+    async def unexpected_target(*_args: object, **_kwargs: object) -> tuple[bool, object]:
+        raise AssertionError("缺失输入不应触发目标读取")
+
+    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(rebalance_execution, "get_latest_success_execute_record_by_account_id", latest)
+    monkeypatch.setattr(rebalance_execution, "load_input_target", unexpected_target)
+
+    assert asyncio.run(rebalance_execution._load_last_target_snapshot(build_account())) == {}
+    assert calls == 1
 
 
 def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_target() -> None:
@@ -523,22 +591,38 @@ def test_execute_trade_rejects_overlapping_runs(
     account = build_account()
     started = asyncio.Event()
     release = asyncio.Event()
+    completed_record: ExecuteRecord | None = None
 
     async def fake_execute_trade_inner(
         account_id: int,
         execution_id: str | None = None,
         trigger_source: str = "scheduler",
         _logger: object | None = None,
-    ) -> SimpleNamespace:
+    ) -> ExecuteRecord:
+        nonlocal completed_record
         assert account_id == 1
         assert trigger_source == "scheduler"
         assert execution_id is not None
         started.set()
         _ = await release.wait()
-        return SimpleNamespace(id=107, is_success=1)
+        completed_record = ExecuteRecord(
+            id=107,
+            account_id=account_id,
+            execution_id=execution_id,
+            is_success=1,
+            task_status="SUCCEEDED",
+            display_status="SUCCEEDED",
+            display_outcome="completed",
+        )
+        return completed_record
+
+    async def read_outcome_symbols(record: ExecuteRecord) -> list[str]:
+        assert record is completed_record
+        return []
 
     monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: AccountSession(account))
     monkeypatch.setattr(rebalance_execution, "_run_account_rebalance", fake_execute_trade_inner)
+    monkeypatch.setattr(rebalance_execution.execution_lifecycle, "load_record_outcome_symbols", read_outcome_symbols)
 
     async def runner() -> None:
         first_task = asyncio.create_task(rebalance_execution.execute_trade(1))
@@ -548,7 +632,10 @@ def test_execute_trade_rejects_overlapping_runs(
             _ = await rebalance_execution.execute_trade(1)
 
         release.set()
-        await first_task
+        assert await first_task is completed_record
+        assert not any(
+            account_id == account.id for account_id, _ in execution_registry.iter_running_account_executions()
+        )
 
     try:
         asyncio.run(runner())
@@ -651,6 +738,7 @@ def test_trade_passes_execution_id_to_persisted_record(
 
 def test_trade_emits_execution_events_and_artifacts(
     monkeypatch: pytest.MonkeyPatch,
+    _worker_commands: dict[str, dict[str, object]],
 ) -> None:
     """成功执行交易时，应写入 execution 事件与附件。"""
     account = build_account(trade_rules={"ag2612": {"min_notional": 5.0}})
@@ -728,7 +816,7 @@ def test_trade_emits_execution_events_and_artifacts(
     assert "account_snapshot_before" in captured_artifacts
     assert "account_snapshot" in captured_artifacts
     assert "execution_summary" in captured_artifacts
-    assert artifact_versions["target_snapshot"] == 2
+    assert artifact_versions["target_snapshot"] == 3
     assert artifact_versions["execution_summary"] == 2
     assert execution_summary_content is not None
     assert execution_summary_content["summary"] == {
@@ -749,9 +837,13 @@ def test_trade_emits_execution_events_and_artifacts(
     assert ag_row["after"] == 0.0
     assert ag_row["reached"] is False
     assert target_snapshot_content is not None
-    assert target_snapshot_content["strategy_target"] == {"ag2612": 0.1}
-    assert target_snapshot_content["account_target"] == {"ag2612": 0.1}
-    assert target_snapshot_content["sizing_context"] == {
+    assert target_snapshot_content == {
+        "business_facts_ref": {"version": 1, "view": "targets", "input_id": "input-test"}
+    }
+    frozen_input = _worker_commands["exec-audit-1"]
+    assert frozen_input["strategy_target"] == {"ag2612": 0.1}
+    assert frozen_input["account_target"] == {"ag2612": 0.1}
+    assert frozen_input["sizing_context"] == {
         "long_leverage": 1.0,
         "short_leverage": 1.0,
         "weight_precision": 0.001,

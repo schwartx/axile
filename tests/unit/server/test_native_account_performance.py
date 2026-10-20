@@ -10,24 +10,26 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
 from axile.server import native_account_performance as module
-from axile.server.db.models import ExecuteRecord, PortfolioAccount
+from axile.server.db.models import PortfolioAccount
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis_replay import replay_observation as facts
 from axile.server.db.models.performance import AccountPerformance, PerformanceBinding, PerformanceSettings
 from axile.server.native_analysis import NativeAnalysisError
 from axile.server.performance import calculate_performance, observation
+from tests.unit.server._business_analysis_support import analysis_record, persist_records
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server.test_native_analysis_contract import native_binary as native_binary
 
 
 def records():
     return [
-        ExecuteRecord(
+        analysis_record(
             id=index,
             account_id=7,
             execution_id=f"account-{index}",
             created_at=f"2026-01-0{index}T09:00:00",
-            raw_input={"curr_target": {}},
-            raw_result={"account_assets": {"total_asset": asset, "positions": []}},
+            input={"curr_target": {}},
+            result={"account_assets": {"total_asset": asset, "positions": []}},
             is_success=1,
         )
         for index, asset in enumerate((100, 110, 121), 1)
@@ -41,7 +43,7 @@ async def database(tmp_path):
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session:
         session.add(build_account(id=7, backtest_fee_rate=0.003))
-        session.add_all(records())
+        await persist_records(session, records())
         session.add_all(
             [
                 PortfolioAccount(account_id=7, portfolio_id=None, created_at=when)
@@ -178,18 +180,12 @@ def test_non_version_native_failure_is_not_retried(tmp_path, monkeypatch):
     asyncio.run(check())
 
 
-def test_compiled_worker_computes_account_only_from_structured_facts(tmp_path, monkeypatch):
-    from pathlib import Path
-
+def test_compiled_worker_computes_account_only_from_structured_facts(tmp_path, monkeypatch, native_binary):
     from axile.server.native_analysis import NativeAnalysis
-
-    binary = Path(__file__).resolve().parents[3] / "rust" / "analysis" / "target" / "debug" / "axile-analysis"
-    if not binary.is_file():
-        pytest.skip("Build the native analysis worker to exercise the end-to-end contract")
 
     async def check():
         engine, sessions = await database(tmp_path)
-        bridge = NativeAnalysis(binary, tmp_path / "account.db")
+        bridge = NativeAnalysis(native_binary, tmp_path / "account.db")
         monkeypatch.setattr(module, "get_native_analysis", lambda session: bridge)
         settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0.003)
         expected = calculate_performance([observation(item) for item in records()], settings, "all", False, "ctp")

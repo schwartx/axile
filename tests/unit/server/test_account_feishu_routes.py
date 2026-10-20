@@ -17,10 +17,13 @@ def test_notification_preview_rebuilds_standard_output(monkeypatch) -> None:
     record = SimpleNamespace(
         execution_id="historical",
         created_at="2026-10-12T09:00:00",
-        raw_result=output.model_dump(mode="json"),
-        raw_input={},
     )
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[record]))
+    monkeypatch.setattr(
+        account_feishu,
+        "read_execution_detail",
+        AsyncMock(return_value={"input": {}, "result": output.model_dump(mode="json")}),
+    )
     context = asyncio.run(account_feishu._load_notification_preview_context(session, account))
     assert context["assets"]["total_assets"] == 100000
     assert context["positions"][0]["market_value"] == 35000
@@ -61,7 +64,6 @@ def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
     captured = []
     monkeypatch.setattr(account_feishu, "_get_account_or_404", AsyncMock(return_value=account))
     monkeypatch.setattr(account_feishu, "_load_notification_preview_context", AsyncMock(return_value={}))
-    monkeypatch.setattr(account_feishu, "build_execution_notification_context", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         account_feishu,
         "run_notification_function",

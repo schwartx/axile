@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
+from pydantic import ValidationError
 from sqlmodel import col, func, select
 
 from axile.channels import get_channel
@@ -18,10 +19,19 @@ from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.api.routes.portfolio import resolve_portfolio_target
 from axile.server.asset_observations import valid_asset_snapshot_condition
+from axile.server.business_facts.artifacts import (
+    read_artifact_input_id,
+    resolve_artifact_content,
+    resolve_event_details,
+)
+from axile.server.business_facts.assets import read_snapshot_assets
+from axile.server.business_facts.inputs import find_input_id, load_sizing_context
+from axile.server.business_facts.symbols import read_sizing_rows
 from axile.server.db.models import (
     AccountAssetSnapshot,
     AccountRebalancePlanPublic,
     AccountRebalancePlanRowPublic,
+    ExecuteRecord,
     ExecutionArtifact,
     ExecutionArtifactListPublic,
     ExecutionArtifactPublic,
@@ -35,7 +45,6 @@ from axile.server.db.models import (
     Portfolio,
     TargetSizingPublic,
     TargetSizingRowPublic,
-    TargetWeightSnapshot,
     TargetWeightSnapshotPublic,
 )
 from axile.server.error_details import exception_details
@@ -56,6 +65,7 @@ from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.repositories import get_latest_portfolio_id_by_account_id
 from axile.server.target_weight_snapshots import (
+    TargetWeightSnapshotData,
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
     get_previous_account_target_snapshots,
@@ -86,10 +96,16 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
             observed_at=None if assets_snapshot is None else assets_snapshot.created_at,
             target_calculated_at=None if snapshot is None else snapshot.calculated_at,
         )
-    assets = assets_snapshot.assets
+    assets = await read_snapshot_assets(session, assets_snapshot)
+    total_asset = assets.get("total_asset")
     raw_positions = assets.get("positions")
     positions = raw_positions if isinstance(raw_positions, list) else []
-    if any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions):
+    if (
+        isinstance(total_asset, bool)
+        or not isinstance(total_asset, (int, float))
+        or not math.isfinite(total_asset)
+        or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
+    ):
         return AccountRebalancePlanPublic(
             observed_at=assets_snapshot.created_at,
             target_calculated_at=snapshot.calculated_at,
@@ -98,7 +114,7 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
     plan = plan_executable_target(
         positions,
         snapshot.normalized_weights,
-        float(assets.get("total_asset") or 0.0),
+        float(total_asset),
         canonicalize_symbol=plugin.canonicalize_symbol,
         quantize_target_quantity=plugin.quantize_target_quantity,
     )
@@ -171,26 +187,18 @@ def _complete_quantities(
     return quantities
 
 
-def _sizing_rows_from_summary(
-    summary_artifact: ExecutionArtifact,
+def _sizing_rows_from_facts(
+    sizings: dict[str, dict[str, object]],
     *,
     canonicalize: _Canonicalize,
     strategy_weights: dict[str, float],
     account_weights: dict[str, float],
     target_context: dict[str, object],
 ) -> dict[str, TargetSizingRowPublic]:
-    reconciliation = summary_artifact.content.get("reconciliation")
-    symbols = reconciliation.get("symbols") if isinstance(reconciliation, dict) else None
-    if not isinstance(symbols, list):
-        return {}
+    """从冻结换算列构造展示，不读取审计附件内重复保存的结果。"""
     rows: dict[str, TargetSizingRowPublic] = {}
-    for item in symbols:
-        if not isinstance(item, dict) or not isinstance(item.get("symbol"), str):
-            continue
-        raw_sizing = item.get("sizing")
-        if not isinstance(raw_sizing, dict):
-            continue
-        symbol = canonicalize(item["symbol"])
+    for map_key, raw_sizing in sizings.items():
+        symbol = canonicalize(map_key)
         row = cast("dict[str, object]", dict(raw_sizing))
         row["symbol"] = symbol
         row["strategy_weight"] = strategy_weights.get(symbol)
@@ -201,31 +209,30 @@ def _sizing_rows_from_summary(
             account_weight / raw_weight if raw_weight not in (None, 0.0) and account_weight is not None else None
         )
         row["weight_precision"] = target_context.get("weight_precision")
-        rows[symbol] = TargetSizingRowPublic.model_validate(row)
+        try:
+            rows[symbol] = TargetSizingRowPublic.model_validate(row)
+        except ValidationError:
+            # 不完整历史证据保持不可用；不得套用当前规则补填历史换算。
+            continue
     return rows
 
 
-async def _load_execution_artifacts(session: SessionDep, execution_id: str) -> dict[str, ExecutionArtifact]:
-    artifacts = (
-        (
-            await session.execute(
-                select(ExecutionArtifact).where(
-                    ExecutionArtifact.execution_id == execution_id,
-                    col(ExecutionArtifact.artifact_type).in_(
-                        [ExecutionArtifactType.TARGET_SNAPSHOT, ExecutionArtifactType.EXECUTION_SUMMARY]
-                    ),
-                )
-            )
+async def _load_execution_artifact_versions(session: SessionDep, execution_id: str) -> dict[str, int]:
+    """只用协议版本判别历史缺失证据，不读取附件正文。"""
+    rows = await session.execute(
+        select(ExecutionArtifact.artifact_type, ExecutionArtifact.schema_version).where(
+            ExecutionArtifact.execution_id == execution_id,
+            col(ExecutionArtifact.artifact_type).in_(
+                [ExecutionArtifactType.TARGET_SNAPSHOT, ExecutionArtifactType.EXECUTION_SUMMARY]
+            ),
         )
-        .scalars()
-        .all()
     )
-    return {artifact.artifact_type: artifact for artifact in artifacts if artifact.execution_id == execution_id}
+    return {kind: version for kind, version in rows}
 
 
 async def _sizing_evidence_for_snapshot(
     session: SessionDep,
-    snapshot: TargetWeightSnapshot,
+    snapshot: TargetWeightSnapshotData,
     *,
     canonicalize: _Canonicalize,
     strategy_weights: dict[str, float],
@@ -236,26 +243,46 @@ async def _sizing_evidence_for_snapshot(
     null_target_quantity = False
     inflight = False
     if snapshot.execution_id:
-        by_type = await _load_execution_artifacts(session, snapshot.execution_id)
-        target_artifact = by_type.get(ExecutionArtifactType.TARGET_SNAPSHOT)
-        summary_artifact = by_type.get(ExecutionArtifactType.EXECUTION_SUMMARY)
+        versions = await _load_execution_artifact_versions(session, snapshot.execution_id)
+        record = (
+            await session.execute(
+                select(ExecuteRecord.id, ExecuteRecord.input_id).where(
+                    ExecuteRecord.execution_id == snapshot.execution_id,
+                    ExecuteRecord.account_id == snapshot.account_id,
+                )
+            )
+        ).first()
+        input_id = await read_artifact_input_id(
+            session, execution_id=snapshot.execution_id, view="targets", account_id=snapshot.account_id
+        )
+        if input_id is None and record is not None:
+            input_id = record.input_id
+        if input_id is None and snapshot.account_id is not None:
+            input_id = await find_input_id(session, account_id=snapshot.account_id, execution_id=snapshot.execution_id)
         target_context: dict[str, object] = {}
-        if target_artifact is not None:
-            raw_context = target_artifact.content.get("sizing_context")
+        if input_id is not None:
+            _, raw_context = await load_sizing_context(session, input_id)
             if isinstance(raw_context, dict):
                 target_context = cast("dict[str, object]", raw_context)
-        if summary_artifact is not None and summary_artifact.schema_version >= 2:
-            rows = _sizing_rows_from_summary(
-                summary_artifact,
+        if record is not None:
+            rows = _sizing_rows_from_facts(
+                await read_sizing_rows(session, record.id),
                 canonicalize=canonicalize,
                 strategy_weights=strategy_weights,
                 account_weights=account_weights,
                 target_context=target_context,
             )
             status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
-        elif summary_artifact is not None:
-            status = "legacy"
-        elif target_artifact is not None and target_artifact.schema_version >= 2:
+            if not rows and versions.get(ExecutionArtifactType.EXECUTION_SUMMARY, 1) < 2:
+                status = "legacy"
+        elif ExecutionArtifactType.EXECUTION_SUMMARY in versions:
+            status = (
+                "pending_execution"
+                if input_id is not None or versions[ExecutionArtifactType.EXECUTION_SUMMARY] >= 2
+                else "legacy"
+            )
+            inflight = status == "pending_execution"
+        elif input_id is not None or versions.get(ExecutionArtifactType.TARGET_SNAPSHOT, 0) >= 2:
             status = "pending_execution"
             inflight = True
         else:
@@ -286,7 +313,7 @@ async def _sizing_evidence_for_snapshot(
 async def _account_target_public(
     session: SessionDep,
     account: object,
-    snapshot: TargetWeightSnapshot | None,
+    snapshot: TargetWeightSnapshotData | None,
 ) -> TargetWeightSnapshotPublic:
     """返回账户权重与同权重最近一次完整数量换算证据."""
     if snapshot is None:
@@ -513,13 +540,15 @@ async def execution_events(
         .limit(pagination.limit)
     )
     rows = (await session.execute(stmt)).scalars().all()
-    data = [
-        # 旧事件的 debug.error 读时提升到公共层；技术原文不提升。
-        ExecutionEventPublic.model_validate(row).model_copy(
-            update={"details": normalize_execution_event_details(row.details)}
+    data = []
+    for row in rows:
+        details = await resolve_event_details(session, row)
+        data.append(
+            # 旧事件的 debug.error 读时提升到公共层；技术原文不提升。
+            ExecutionEventPublic.model_validate(row).model_copy(
+                update={"details": normalize_execution_event_details(details)}
+            )
         )
-        for row in rows
-    ]
     return ExecutionEventListPublic(
         data=data,
         count=total,
@@ -548,10 +577,11 @@ async def execution_artifacts(
     artifact_data: list[ExecutionArtifactPublic] = []
     for row in rows:
         item = ExecutionArtifactPublic.model_validate(row)
-        content = item.content
+        content = await resolve_artifact_content(session, row)
         # 旧执行摘要附件读时归一；其他附件形状不同，不做推断。
         if row.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY and isinstance(content, dict):
-            item = item.model_copy(update={"content": normalize_legacy_result(content)})
+            content = normalize_legacy_result(content)
+        item = item.model_copy(update={"content": content})
         artifact_data.append(item)
     return ExecutionArtifactListPublic(
         data=artifact_data,

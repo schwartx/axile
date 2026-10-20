@@ -19,7 +19,6 @@ from axile.executor.algorithms.utils import clock_now
 from axile.executor.feishu_notifications import (
     LoggerLike,
     build_execute_results_feishu_card,
-    build_execution_notification_context,
 )
 from axile.executor.models.execution_result import AlgorithmResult, ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -29,10 +28,11 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.account_assets import query_account_assets
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.supplement import NotificationEvent
 from axile.server.error_details import exception_details
-from axile.server.execution.legacy_compat import normalize_legacy_result
+from axile.server.execution.notification_records import build_persisted_notification_context
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.repositories import get_recent_execute_records_by_account_id
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
@@ -322,27 +322,27 @@ async def _load_notification_preview_context(
         if record.execution_id
         else None
     )
-    extra = record.raw_result.get("extra")
-    captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
     if event is not None and event.context:
         context = deepcopy(event.context)
-    elif isinstance(captured, dict) and captured:
-        context = deepcopy(captured)
     else:
-        raw = normalize_legacy_result(deepcopy(record.raw_result))
+        detail = await read_execution_detail(session, record)
+        raw = deepcopy(detail["result"])
         if not isinstance(raw, dict):
             raise ValueError("最近一次执行没有可用的通知快照")
-        inputs = raw.get("inputs") or deepcopy(record.raw_input)
-        if isinstance(inputs, dict):
-            raw["inputs"] = {**inputs, "account_config": account.account_config}
-        try:
-            output = UnifiedStandardOutput.model_validate(raw)
-        except ValueError as exc:
-            raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
-        context = build_execution_notification_context(_TestNotificationSource(account.name), output)
-        execution = context.get("execution")
-        if isinstance(execution, dict):
-            execution["notified_at"] = record.created_at
+        extra = raw.get("extra")
+        captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
+        if isinstance(captured, dict) and captured:
+            context = deepcopy(captured)
+        else:
+            try:
+                context = build_persisted_notification_context(
+                    _TestNotificationSource(account.name), raw, detail["input"], account.account_config
+                )
+            except ValueError as exc:
+                raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
+            execution = context.get("execution")
+            if isinstance(execution, dict):
+                execution["notified_at"] = record.created_at
     context["is_test"] = True
     context["event_type"] = "execution.finished"
     execution = context.get("execution")

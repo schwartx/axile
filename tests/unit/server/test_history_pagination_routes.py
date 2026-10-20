@@ -97,6 +97,70 @@ def test_history_routes_reject_out_of_range_pagination_before_database_access(
 def test_history_routes_accept_pagination_bounds_and_apply_limit(path: str) -> None:
     """允许最大页长，并把请求上限传递到每个端点的实际查询。"""
     limit = 500
+    if path == "/account/execute_records/1":
+        import asyncio
+
+        import httpx
+        import sqlalchemy as sa
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlmodel import SQLModel
+
+        from tests.unit.server._business_analysis_support import analysis_record, persist_records
+        from tests.unit.server._execution_test_support import build_account
+
+        async def check_execute_record_page() -> None:
+            engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(SQLModel.metadata.create_all)
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+                async with sessions() as session:
+                    session.add(build_account(id=1, portfolio_id=None))
+                    await session.flush()
+                    await persist_records(
+                        session,
+                        [
+                            analysis_record(
+                                id=identity,
+                                account_id=1,
+                                execution_id=f"pagination-{identity}",
+                                created_at="2026-10-20T09:00:00",
+                                is_success=1,
+                                input={"curr_target": {}},
+                                result={"status": "NOOP"},
+                            )
+                            for identity in range(1, limit + 2)
+                        ],
+                    )
+                    await session.commit()
+                    page_queries = []
+
+                    def track_query(_connection, _cursor, statement, _parameters, context, _executemany):
+                        if "FROM executerecord" in statement and "LIMIT" in statement:
+                            page_queries.append(context.compiled.params)
+
+                    sa.event.listen(engine.sync_engine, "before_cursor_execute", track_query)
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=_build_app(session)), base_url="http://testserver"
+                    ) as client:
+                        response = await client.get(path, params={"skip": 0, "limit": limit})
+                        assert response.status_code == 200
+                        payload = response.json()
+                        assert payload["count"] == limit + 1
+                        assert len(payload["data"]) == limit
+                        assert payload["data"][0]["id"] == limit + 1
+                        assert payload["data"][-1]["id"] == 2
+                        remainder = await client.get(path, params={"skip": limit, "limit": limit})
+                        assert remainder.status_code == 200
+                        assert remainder.json()["count"] == limit + 1
+                        assert [item["id"] for item in remainder.json()["data"]] == [1]
+                    assert len(page_queries) == 2
+                    assert all(limit in parameters.values() for parameters in page_queries)
+            finally:
+                await engine.dispose()
+
+        asyncio.run(check_execute_record_page())
+        return
     session = _PagingSession()
     response = TestClient(_build_app(session)).get(path, params={"skip": 0, "limit": limit})
 

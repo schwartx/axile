@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
+from axile.server.analysis_history import read_analysis_record
 from axile.server.api.routes.account_assets import list_account_asset_snapshots
 from axile.server.asset_observations import (
     is_asset_observation,
@@ -15,6 +16,8 @@ from axile.server.asset_observations import (
     legacy_placeholder_condition,
     valid_asset_snapshot_condition,
 )
+from axile.server.business_facts.assets import asset_fact_id, read_snapshots_assets, write_snapshot_assets
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.execution.records import _persist_execute_record
 from axile.server.performance import observation
@@ -102,22 +105,39 @@ def test_asset_validity(value, valid):
 
 
 def test_failed_placeholders_do_not_become_zero_observations():
-    records = [
-        ExecuteRecord(
-            id=i,
-            account_id=1,
-            execution_id=str(i),
-            created_at=f"2026-09-{i:02d}",
-            raw_input={},
-            raw_result=legacy(),
-            is_success=0,
-        )
-        for i in range(1, 5)
-    ]
-    records[0].raw_result = {"account_assets": {"total_asset": 100000}}
-    assert [observation(record).asset for record in records] == [100000, None, None, None]
-    records[1].raw_result["extra"] = {}
-    assert observation(records[1]).asset == 0
+    async def check():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            async with sessions() as session:
+                session.add(build_account(id=1))
+                records = []
+                for i in range(1, 5):
+                    record = ExecuteRecord(
+                        account_id=1,
+                        execution_id=str(i),
+                        created_at=f"2026-09-{i:02d}",
+                        is_success=0,
+                    )
+                    session.add(record)
+                    await session.flush()
+                    result = {"account_assets": {"total_asset": 100000}} if i == 1 else legacy()
+                    await store_execution_facts(session, record, {}, result)
+                    records.append(record)
+                await session.commit()
+                observations = [observation(await read_analysis_record(session, record)).asset for record in records]
+                assert observations == [100000, None, None, None]
+                real_zero = legacy()
+                real_zero["extra"] = {}
+                await store_execution_facts(session, records[1], {}, real_zero)
+                await session.commit()
+                assert observation(await read_analysis_record(session, records[1])).asset == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
 
 
 def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path):
@@ -130,33 +150,32 @@ def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path):
             session.add(build_account(id=1))
             session.add(build_account(id=2))
             for account in (1, 2):
-                session.add(
-                    AccountAssetSnapshot(
-                        account_id=account, assets={"total_asset": 100000, "positions": []}, source="manual"
-                    )
-                )
+                snapshot = AccountAssetSnapshot(account_id=account, source="manual")
+                await write_snapshot_assets(session, snapshot, {"total_asset": 100000, "positions": []})
                 for i in range(25):
                     execution_id = f"{account}-{i}"
-                    session.add(
-                        ExecuteRecord(
-                            account_id=account,
-                            execution_id=execution_id,
-                            raw_input={},
-                            raw_result=legacy(),
-                            is_success=0,
-                        )
+                    record = ExecuteRecord(
+                        account_id=account,
+                        execution_id=execution_id,
+                        is_success=0,
                     )
+                    session.add(record)
+                    await session.flush()
+                    await store_execution_facts(session, record, {}, legacy())
                     session.add(
                         AccountAssetSnapshot(
                             account_id=account,
                             execution_id=execution_id,
-                            assets=legacy()["account_assets"],
+                            asset_fact_id=asset_fact_id(record.id),
                             source="execution",
                         )
                     )
             await session.commit()
             latest = await get_recent_account_asset_snapshots_for_accounts(session, [1, 2], limit=1)
-            assert {a: rows[0].assets["total_asset"] for a, rows in latest.items()} == {1: 100000, 2: 100000}
+            latest_assets = await read_snapshots_assets(
+                session, [snapshot for rows in latest.values() for snapshot in rows]
+            )
+            assert {a: latest_assets[rows[0].id]["total_asset"] for a, rows in latest.items()} == {1: 100000, 2: 100000}
             page = await list_account_asset_snapshots(session, 1, skip=0, limit=1)
             assert page.count == 1 and page.data[0].assets["total_asset"] == 100000
             assert not (await list_account_asset_snapshots(session, 1, skip=1, limit=1)).data
@@ -180,15 +199,16 @@ def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path):
             rows = (
                 (
                     await session.execute(
-                        select(AccountAssetSnapshot).where(
-                            valid_asset_snapshot_condition(), AccountAssetSnapshot.account_id == 1
-                        )
+                        select(AccountAssetSnapshot)
+                        .where(valid_asset_snapshot_condition(), AccountAssetSnapshot.account_id == 1)
+                        .order_by(AccountAssetSnapshot.id)
                     )
                 )
                 .scalars()
                 .all()
             )
-            assert [r.assets["total_asset"] for r in rows] == [100000, 0, 500]
+            assets = await read_snapshots_assets(session, rows)
+            assert [assets[row.id]["total_asset"] for row in rows] == [100000, 0, 500]
             assert (await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord))) == 54
         await engine.dispose()
 

@@ -17,7 +17,7 @@ def test_frozen_downgrade_restores_full_execution_evidence_and_trade_json(monkey
     monkeypatch.setattr(restore, "_BATCH_SIZE", 1)
     projected, trades = _rich_projection()
     no_trades = record(2)
-    no_trades.raw_result.update(status="NOOP", symbol_results={})
+    no_trades.result.update(status="NOOP", symbol_results={})
     extra, _ = _project_rows([no_trades])
     projected.extend(extra)
     expected = {

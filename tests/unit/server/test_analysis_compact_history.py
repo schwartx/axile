@@ -5,13 +5,15 @@ import gc
 import json
 import weakref
 from datetime import date
+from types import SimpleNamespace
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server import performance_analysis as analysis
-from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, ScheduleSkip, TargetWeightSnapshot
+from axile.server.db.models import Account, PortfolioAccount, ScheduleSkip
 from axile.server.db.models.performance import PerformanceSettings
+from tests.unit.server._business_analysis_support import persist_records, persist_target
 from tests.unit.server.test_performance_analysis import database, queue, record
 from tests.unit.server.test_performance_analysis import schema_template as schema_template
 
@@ -27,19 +29,18 @@ def test_compact_batches_match_full_history_and_release_raw_values(tmp_path, sch
             for row in rows[:110]:
                 row.created_at = "2026-01-02T09:00:00"
                 row.is_success = 0
-                row.raw_result.update(status="PARTIAL", error="部分完成", execution_time=0, flag=False, missing=None)
-            rows[0].raw_input = {}
-            rows[1].raw_input = {"curr_target": {}}
+                row.result.update(status="PARTIAL", error="部分完成", execution_time=0, flag=False, missing=None)
+            rows[0].input = {}
+            rows[1].input = {"curr_target": {}}
             async with sessions() as session:
-                session.add_all(rows)
-                session.add(
-                    TargetWeightSnapshot(
-                        account_id=2,
-                        portfolio_id=1,
-                        source="manual",
-                        execution_id="exec-1",
-                        normalized_weights={"A": 0},
-                    )
+                await persist_records(session, rows)
+                await persist_target(
+                    session,
+                    account_id=2,
+                    portfolio_id=1,
+                    source="manual",
+                    execution_id="exec-1",
+                    normalized_weights={"A": 0},
                 )
                 session.add(PortfolioAccount(account_id=2, portfolio_id=None, created_at=rows[0].created_at))
                 session.add(
@@ -53,24 +54,45 @@ def test_compact_batches_match_full_history_and_release_raw_values(tmp_path, sch
                     )
                 )
                 await session.commit()
-                history = [
+                history = [rows, [SimpleNamespace(execution_id="exec-1", normalized_weights={"A": 0})]] + [
                     (await session.execute(sa.select(model).where(model.account_id == 2))).scalars().all()
-                    for model in (ExecuteRecord, TargetWeightSnapshot, PortfolioAccount, ScheduleSkip)
+                    for model in (PortfolioAccount, ScheduleSkip)
                 ]
                 account = await session.get(Account, 2)
                 settings = PerformanceSettings.model_validate(account, from_attributes=True)
                 channel = str(account.trade_channel)
             expected = analysis.compute_batch(*history, settings, channel)
-            original = analysis._prepare_records
+            # 缺失投影的冷补齐仍覆盖一次规范事实读取，随后正常批次只读标量事实。
+            async with sessions() as session:
+                from axile.server.analysis_observations import ensure_observation_facts
+                from axile.server.analysis_source import ensure_source_facts
+
+                await ensure_observation_facts(session, 2)
+                await ensure_source_facts(session, 2)
+            original = analysis._prepare_fact_batch
             references, batch_sizes = [], []
 
-            def prepare(prepared, records, fallback):
-                batch_sizes.append(len(records))
-                for row in records:
-                    references.extend([weakref.ref(row.raw_input), weakref.ref(row.raw_result)])
-                original(prepared, records, fallback)
+            def prepare(prepared, batch, include_observations=True):
+                batch_sizes.append(len(batch.headers))
+                headers, trades = [_WeakDict(row) for row in batch.headers], [_WeakDict(row) for row in batch.trades]
+                references.extend(weakref.ref(row) for row in (*headers, *trades))
+                original(
+                    prepared,
+                    SimpleNamespace(
+                        headers=headers,
+                        payloads=batch.payloads,
+                        trades=trades,
+                        observations=batch.observations,
+                    ),
+                    include_observations,
+                )
 
-            monkeypatch.setattr(analysis, "_prepare_records", prepare)
+            def no_business_documents(*_args, **_kwargs):
+                raise AssertionError("Frozen analysis history must not reconstruct canonical business documents")
+
+            monkeypatch.setattr(analysis, "_prepare_fact_batch", prepare)
+            monkeypatch.setattr(analysis, "_prepare_records", no_business_documents)
+            monkeypatch.setattr("axile.server.analysis_history.read_analysis_record", no_business_documents)
 
             def deserialize(raw):
                 value = json.loads(raw)
@@ -95,6 +117,8 @@ def test_compact_batches_match_full_history_and_release_raw_values(tmp_path, sch
 
 
 def test_published_snapshot_is_not_retained_by_compilation_cache(tmp_path, schema_template, monkeypatch):
+    monkeypatch.setenv("AXILE_ANALYSIS_MODE", "python")
+
     async def check():
         async with database(tmp_path, schema_template, count=2) as (_, sessions, manager):
             references = []
@@ -113,6 +137,7 @@ def test_published_snapshot_is_not_retained_by_compilation_cache(tmp_path, schem
                 await asyncio.sleep(0)
                 gc.collect()
                 assert all(reference() is None for reference in references)
+            assert len(references) == 2
             async with sessions() as session:
                 assert await session.scalar(sa.text("SELECT count(*) FROM performance_snapshot")) == 2
 

@@ -9,8 +9,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server.analysis_cost_facts import COST_FACT_TABLES
+from axile.server.analysis_history import read_analysis_record
 from axile.server.analysis_observations import write_observation_fact
 from axile.server.analysis_source import write_source_facts
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
@@ -22,6 +24,7 @@ from axile.server.native_analysis import NativeAnalysis, NativeAnalysisError, Na
 from axile.server.performance_analysis import LOGIC_VERSION, AnalysisManager, compute_batch, enqueue
 from axile.server.performance_replay import ENGINE_VERSION
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_native_analysis_contract import _cost_records, _same
 from tests.unit.server.test_native_analysis_contract import native_binary as native_binary
@@ -48,21 +51,32 @@ async def _database(tmp_path, binary, monkeypatch):
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(_create_schema)
-    records = _cost_records()
+    fixtures = _cost_records()
     # Python's timestamp()*1000 rounds this boundary differently from a direct
     # integer-microsecond / 1000 conversion. The final execution's estimated
     # trades and failure event must remain inside the inclusive range endpoint.
-    records[2].created_at = "2026-01-05T09:00:00.000003+08:00"
+    fixtures[2].created_at = "2026-01-05T09:00:00.000003+08:00"
+    records = []
     settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0.001)
     async with sessions() as session:
         session.add(build_account(id=7, backtest_weight_type="cs", backtest_fee_rate=0.001))
         await session.commit()
-        for record in records:
-            parent = ExecuteRecord(**vars(record))
+        for record in fixtures:
+            parent = ExecuteRecord(
+                **{
+                    name: getattr(record, name)
+                    for name in ("id", "account_id", "execution_id", "created_at", "is_success")
+                }
+            )
             session.add(parent)
             await session.flush()
-            await write_observation_fact(session, parent)
-            assert await write_source_facts(session, parent)
+            await store_execution_facts(session, parent, raw_input=record.input, raw_result=record.result)
+            canonical = await read_analysis_record(session, parent)
+            assert business_evidence(canonical.input) == business_evidence(record.input)
+            assert business_evidence(canonical.result) == business_evidence(record.result)
+            records.append(canonical)
+            await write_observation_fact(session, canonical)
+            assert await write_source_facts(session, canonical)
         await session.commit()
     try:
         yield path, engine, sessions, AnalysisManager(sessions), records, settings

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, func, select
 
 from axile.server.account_assets import query_account_assets
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.asset_observations import is_asset_observation, valid_asset_snapshot_condition
+from axile.server.business_facts.assets import read_snapshots_assets, write_snapshot_assets
 from axile.server.db.models import (
     AccountAssetSnapshot,
     AccountAssetSnapshotListPublic,
@@ -25,6 +27,18 @@ from axile.server.execution.registry import (
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
+
+
+def _snapshot_public(snapshot: AccountAssetSnapshot, assets: dict[str, Any]) -> AccountAssetSnapshotPublic:
+    """显式组装资产事实，不让 ORM 属性隐式重建整份观测。"""
+    return AccountAssetSnapshotPublic(
+        id=snapshot.id,
+        account_id=snapshot.account_id,
+        assets=assets,
+        source=cast("Any", snapshot.source),
+        execution_id=snapshot.execution_id,
+        created_at=snapshot.created_at,
+    )
 
 
 @router.post("/{account_id}/assets/refresh", response_model=AccountAssetSnapshotPublic)
@@ -45,13 +59,13 @@ async def refresh_account_assets(session: SessionDep, account_id: int) -> Accoun
             raise ValueError("渠道未返回可信账户资产")
         snapshot = AccountAssetSnapshot(
             account_id=account_id,
-            assets=cast("dict[str, object]", assets.model_dump(mode="json")),
             source="manual",
         )
-        session.add(snapshot)
+        payload = assets.model_dump(mode="json")
+        await write_snapshot_assets(session, snapshot, payload)
         await session.commit()
         await session.refresh(snapshot)
-        return AccountAssetSnapshotPublic.model_validate(snapshot)
+        return _snapshot_public(snapshot, payload)
     except AccountConnectionUnavailable as exc:
         await session.rollback()
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
@@ -89,6 +103,14 @@ async def list_account_asset_snapshots(
 ) -> AccountAssetSnapshotListPublic:
     """分页读取账户资产快照（最新在前）."""
     await _get_account_or_404(session, account_id)
+    async with session.begin_nested():
+        return await _read_asset_snapshot_page(session, account_id, skip, limit)
+
+
+async def _read_asset_snapshot_page(
+    session: AsyncSession, account_id: int, skip: int, limit: int
+) -> AccountAssetSnapshotListPublic:
+    """让快照页头和事实明细使用同一数据库读快照。"""
     count = await session.scalar(
         select(func.count())
         .select_from(AccountAssetSnapshot)
@@ -102,7 +124,8 @@ async def list_account_asset_snapshots(
         .limit(limit)
     )
     rows = (await session.execute(statement)).scalars().all()
+    assets = await read_snapshots_assets(session, rows)
     return AccountAssetSnapshotListPublic(
-        data=[AccountAssetSnapshotPublic.model_validate(row) for row in rows],
+        data=[_snapshot_public(row, assets[cast("int", row.id)]) for row in rows],
         count=int(count or 0),
     )

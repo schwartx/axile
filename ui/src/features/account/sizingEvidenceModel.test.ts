@@ -7,6 +7,7 @@ import {
   sizingAvailabilityText,
   sizingReasonText,
   sizingFormulas,
+  sizingNumber,
   targetQuantityText,
   weightText,
 } from './sizingEvidenceModel'
@@ -89,5 +90,36 @@ describe('sizing evidence copy', () => {
   it('按渠道原因后缀解释最小名义金额，不让公共核心依赖渠道名', () => {
     expect(sizingReasonText(row({ reason_code: 'EXTERNAL.SIZING.BELOW_MIN_NOTIONAL' }), '')).toBe('不足最小名义金额')
     expect(sizingReasonText(row({ reason_code: 'EXTERNAL.SIZING.PURE_REDUCE_BELOW_MIN_NOTIONAL' }), '')).toBe('纯减仓例外')
+  })
+
+  it('历史换算缺少或含异常原因码时保留未知，不推断为精确换算', () => {
+    expect(sizingReasonText({})).toBe('—')
+    expect(sizingReasonText(null)).toBe('—')
+    for (const reason_code of [undefined, null, 0, false, {}, []]) {
+      const evidence = { status: 'SIZED', reason_code } as unknown as TargetSizingRow
+      expect(sizingReasonText(evidence)).toBe('—')
+      expect(sizingReasonText({ ...evidence, status: 'UNAVAILABLE' })).toBe('换算不可用')
+    }
+    const reason_code = ' EXTERNAL.SIZING.UNKNOWN_REASON '
+    expect(sizingReasonText(row({ reason_code }))).toBe(reason_code)
+    expect(sizingReasonText(row({ reason_code: 'COMMON.SIZING.EXACT' }))).toBe('精确换算')
+  })
+
+  it('不完整数值与汇率不崩溃、不转换为零或 NaN，明确零仍显示零', () => {
+    for (const value of [undefined, null, '', '2', {}, [], NaN, Infinity]) {
+      expect(sizingNumber(value)).toBe('—')
+      expect(quantityText(value as number)).toBe('—')
+      expect(weightText(value as number)).toBe('—')
+      expect(targetQuantityText(value as number)).toBe('—')
+    }
+    expect(targetQuantityText(0, '手')).toBe('0手')
+    expect(sizingFormulas({}, '手', 'CNY')).toEqual([])
+    expect(sizingFormulas(null, '手', 'CNY')).toEqual([])
+    const evidence = { reference_price: 10, unit_notional: 20, value_conversion: { price_currency: {}, value_currency: 'CNY' } } as unknown as TargetSizingRow
+    const before = JSON.stringify(evidence)
+    const formulas = sizingFormulas(evidence, '手', 'CNY').join('\n')
+    expect(formulas).toContain('汇率 —')
+    expect(formulas).not.toContain('NaN')
+    expect(JSON.stringify(evidence)).toBe(before)
   })
 })

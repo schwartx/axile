@@ -319,7 +319,6 @@ def _handle_execute_trade(
             output=output,
             result=result,
             executor=executor,
-            include_trade_rule_snapshots=True,
             before_account_assets=before_account_assets,
         )
         return _build_result_response(
@@ -386,6 +385,7 @@ def _handle_empty_positions(
             execution_id=request.execution_id,
             algorithm_name=context.algorithm_name,
             executor=executor,
+            audit_input=context.audit_input,
             before_account_assets=before_account_assets,
         )
         empty_positions = getattr(executor, "empty_positions")
@@ -406,8 +406,6 @@ def _handle_empty_positions(
             output=output,
             result=result,
             executor=executor,
-            include_trade_rule_snapshots=False,
-            audit_input=context.audit_input,
             before_account_assets=before_account_assets,
         )
         return _build_result_response(request_id=request.request_id, result=result)

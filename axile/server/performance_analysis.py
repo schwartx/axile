@@ -1,8 +1,8 @@
 """Single-worker, durable performance queue and atomic snapshot publication."""
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -21,7 +21,7 @@ from axile.server.analysis_results import (
     read_result_range,
 )
 from axile.server.analysis_view_writer import prepare_read_views
-from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, ScheduleSkip, TargetWeightSnapshot
+from axile.server.db.models import Account, PortfolioAccount, ScheduleSkip
 from axile.server.db.models.account_settings import AccountSettings, BacktestSettings
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
@@ -359,8 +359,10 @@ def _events(records, bindings, skips) -> list[dict]:
     for record in records:
         if record.is_success == 1:
             continue
-        raw = cast("dict[str, Any]", normalize_legacy_result(record.raw_result))
-        status = raw.get("status") if isinstance(raw, dict) else None
+        raw = normalize_legacy_result(record.result)
+        if not isinstance(raw, Mapping):
+            raise ValueError("Execution event result must be a mapping")
+        status = raw.get("status")
         labels: dict[str | None, str] = {
             "SUCCEEDED": "调仓完成",
             "NOOP": "无需调仓",
@@ -436,6 +438,43 @@ def _prepare_records(prepared: _PreparedHistory, records, fallback: dict, includ
                 }
             )
     prepared.events.extend(_events(records, [], []))
+
+
+def _prepare_fact_batch(prepared: _PreparedHistory, batch, include_observations: bool = True) -> None:
+    """复用冻结的派生事实，Python 回退不再展开整个规范业务历史。"""
+    for row, payload in zip(batch.headers, batch.payloads, strict=True):
+        record_id = row["record_id"]
+        if include_observations:
+            prepared.observations.append(batch.observations[record_id])
+        prepared.by_record[record_id] = []
+        prepared.record_times.append((record_id, row["created_at"]))
+        prepared.projected.append(
+            {
+                "record_id": record_id,
+                "time": row["time"],
+                "success": row["success"],
+                "noop": row["noop"],
+                "payload": payload,
+            }
+        )
+        if row["event_tag"] is not None:
+            prepared.events.append(
+                {
+                    "time": row["created_at"],
+                    "tag": row["event_tag"],
+                    "text": row["event_text"],
+                    "executionId": row["execution_id"],
+                }
+            )
+    for trade in batch.trades:
+        prepared.by_record[trade["record_id"]].append(trade["payload"])
+        prepared.cost_rows.append(
+            {
+                key: value
+                for key, value in {**trade, "id": len(prepared.cost_rows)}.items()
+                if key not in {"trade_index", "side", "quantity", "price", "reference", "reference_source"}
+            }
+        )
 
 
 def compute_batch(
@@ -601,43 +640,29 @@ class AnalysisManager:
             return row
 
     async def _load(self, account_id, *, include_observations: bool = True):
+        from axile.server.analysis_history import iter_analysis_history
+        from axile.server.analysis_observations import ensure_observation_facts
+        from axile.server.analysis_source import ensure_source_facts
+
         async with self.sessions() as session:
+            # 冷补齐只读取缺失投影的单条规范事实；正常回退计算仍读取标量历史。
+            if include_observations:
+                await ensure_observation_facts(session, account_id)
+            await ensure_source_facts(session, account_id)
             # SQLite legacy transaction mode does not begin a snapshot for SELECT.
             await session.execute(sa.text("BEGIN"))
             account = await session.get(Account, account_id)
             if account is None:
                 return None
             settings = PerformanceSettings.model_validate(account, from_attributes=True)
-            history = []
-            for model in (TargetWeightSnapshot, PortfolioAccount, ScheduleSkip):
-                if model is TargetWeightSnapshot and not include_observations:
-                    history.append([])
-                    continue
+            history = [[]]
+            for model in (PortfolioAccount, ScheduleSkip):
                 history.append(
                     (await session.execute(sa.select(model).where(model.account_id == account_id))).scalars().all()
                 )
             prepared = _PreparedHistory()
-            fallback = {item.execution_id: item.normalized_weights for item in history[0] if item.execution_id}
-            rows = await session.stream(
-                sa.select(
-                    col(ExecuteRecord.id),
-                    col(ExecuteRecord.execution_id),
-                    col(ExecuteRecord.created_at),
-                    col(ExecuteRecord.is_success),
-                    col(ExecuteRecord.raw_input) if include_observations else sa.literal(None).label("raw_input"),
-                    col(ExecuteRecord.raw_result),
-                )
-                .where(ExecuteRecord.account_id == account_id)
-                .execution_options(yield_per=100)
-            )
-            try:
-                async for batch in rows.partitions(100):
-                    if include_observations:
-                        await run_in_threadpool(_prepare_records, prepared, batch, fallback)
-                    else:
-                        await run_in_threadpool(_prepare_records, prepared, batch, fallback, False)
-            finally:
-                await rows.close()
+            async for batch in iter_analysis_history(session, account_id, include_observations=include_observations):
+                _prepare_fact_batch(prepared, batch, include_observations)
             return (prepared, *history, settings, str(account.trade_channel))
 
     async def _run_native(self, row) -> bool:

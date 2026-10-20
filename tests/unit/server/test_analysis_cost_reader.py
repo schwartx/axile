@@ -22,9 +22,9 @@ def _history():
     projected, costs = _rich_projection()
     failed = record(3)
     failed.is_success = 0
-    failed.raw_result.update(status="FAILED", error="拒绝", symbol_results={"C": {"status": "REJECTED"}})
+    failed.result.update(status="FAILED", error="拒绝", symbol_results={"C": {"status": "REJECTED"}})
     noop = record(4)
-    noop.raw_result.update(status="NOOP", symbol_results={"D": {"status": "NOOP"}})
+    noop.result.update(status="NOOP", symbol_results={"D": {"status": "NOOP"}})
     extra, extra_costs = _project_rows([record(2, account_assets={"total_asset": 102, "positions": []}), failed, noop])
     projected.extend(extra)
     costs.extend(extra_costs)

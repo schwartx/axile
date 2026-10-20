@@ -105,6 +105,8 @@ def prepare(args) -> None:
     from axile.server.db.models.analysis_source import source_execution
     from axile.server.performance_analysis import AnalysisManager  # noqa: F401
 
+    if not {"raw_input", "raw_result"} <= set(ExecuteRecord.__table__.c.keys()):
+        raise ValueError("This legacy publication fixture requires an Axile <=0036 baseline checkout")
     engine = sa.create_engine(f"sqlite:///{args.prepare}")
     try:
         with engine.begin() as connection:

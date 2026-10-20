@@ -1,13 +1,15 @@
 """休市跳过保留未完成证据，并贯通落库、任务终态和审计回放。"""
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
+from axile.server.business_facts.head import execution_head_values
+from axile.server.business_facts.repository import decode_result_facts, encode_result_facts
+from axile.server.db.models import ExecuteRecord
 from axile.server.execution import lifecycle, records, registry
 
 
@@ -30,12 +32,24 @@ def closed_result():
     }
 
 
+def _record(result, *, execution_id="session-closed-record", is_success=0):
+    """通过正式头字段转换构造任务回放所读取的紧凑记录。"""
+    return ExecuteRecord(
+        id=4,
+        account_id=1,
+        execution_id=execution_id,
+        created_at="2026-10-16T10:15:07",
+        is_success=is_success,
+        **execution_head_values(result, is_success=is_success),
+    )
+
+
 @pytest.mark.parametrize("failure", ["FAILED", "PARTIAL", "BLOCKED"])
 def test_real_errors_alongside_closed_symbols_are_not_session_skips(failure):
     raw = closed_result()
     raw["symbol_results"]["ag2612"] = {"status": failure, "reason_code": "CHANNEL.QUERY_FAILED"}
     assert session_closed_scope(raw) is None
-    record = SimpleNamespace(is_success=0, raw_result=raw)
+    record = _record(raw)
     assert lifecycle._resolve_completion_status(record) == ExecutionTaskStatus.FAILED
 
 
@@ -87,10 +101,7 @@ def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target():
     raw["status"] = "PARTIAL"
     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "final_volume": -6, "target_volume": -6}
     assert session_closed_scope(raw) == "partial"
-    assert (
-        lifecycle._resolve_completion_status(SimpleNamespace(is_success=0, raw_result=raw))
-        == ExecutionTaskStatus.PARTIAL
-    )
+    assert lifecycle._resolve_completion_status(_record(raw)) == ExecutionTaskStatus.PARTIAL
 
 
 @pytest.mark.parametrize("partial", [False, True])
@@ -99,9 +110,9 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
 
     async def persist(**kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(
-            id=4, created_at="2026-10-16T10:15:07", **{k: v for k, v in kwargs.items() if k != "session_factory"}
-        )
+        batch = encode_result_facts(4, kwargs["raw_result"], is_success=kwargs["is_success"])
+        captured["result"] = decode_result_facts({table.name: rows for table, rows in batch.items()})
+        return _record(kwargs["raw_result"], execution_id=kwargs["execution_id"], is_success=kwargs["is_success"])
 
     monkeypatch.setattr(records, "_persist_execute_record", persist)
     logger = Mock()
@@ -122,10 +133,12 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
         )
     )
     assert captured["is_success"] == 0
-    assert record.raw_result["task_status"] == expected
-    assert record.raw_result["outcome_reason"] == "非交易时段"
-    assert record.raw_result["status"] == raw["status"]
-    assert record.raw_result["symbol_results"]["m2701"]["final_volume"] is None
+    result = captured["result"]
+    assert result["task_status"] == expected
+    assert result["outcome_reason"] == "非交易时段"
+    assert result["status"] == raw["status"]
+    assert result["symbol_results"]["m2701"]["final_volume"] is None
+    assert not hasattr(record, "raw_result")
     assert lifecycle._resolve_completion_status(record) == expected
     replay = registry._build_persisted_execution_status(record)
     assert replay["status"] == expected

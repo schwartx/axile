@@ -2,11 +2,11 @@ import { expect, test } from 'bun:test'
 import { costExecutions, costTrades, durationText, dailyCosts, executionsOnDay, loadPerformanceActivity, shanghaiDay, shanghaiTime, summarizeCosts } from './costs'
 import { loadJournal } from '@/features/account/executionJournal'
 import type { AccountActivity } from '@/lib/api/accounts'
-import type { ExecuteRecord } from '@/types/api'
+import type { ExecuteRecord, ExecutionResultFacts } from '@/types/api'
 
-function record(trades: Record<string, unknown>[], result: Record<string, unknown> = {}): ExecuteRecord {
-  return { id: 1, execution_id: 'test', created_at: '2026-01-01T09:00:00', is_success: 1, raw_input: {},
-    raw_result: { status: 'SUCCEEDED', symbol_results: { RB: { sizing: { unit_multiplier: 10 }, first_tick: { bid_price: 99, ask_price: 101 },
+function record(trades: Record<string, unknown>[], result: Record<string, unknown> = {}): ExecuteRecord & { result: ExecutionResultFacts } {
+  return { account_id: 1, id: 1, execution_id: 'test', created_at: '2026-01-01T09:00:00', is_success: 1, input: {},
+    result: { status: 'SUCCEEDED', symbol_results: { RB: { sizing: { unit_multiplier: 10 }, first_tick: { bid_price: 99, ask_price: 101 },
       trades, orders: [{ order_id: 'b', direction: 'buy' }, { order_id: 's', direction: 'sell' }], ...result } } } }
 }
 const trade = (price: number, side = 'b', extra: Record<string, unknown> = {}) => ({ trade_price: price, trade_volume: 2, order_id: side, extra })
@@ -62,15 +62,23 @@ test('BP 按有效成交额加权，缺方向降低覆盖，缺乘数不能伪�
 test('失败、终止和部分成交都计成本；同目标有成交不为空跑', () => {
   for (const status of ['FAILED', 'TERMINATED', 'PARTIAL', 'NOOP']) {
     const r = record([trade(101)])
-    r.raw_result.task_status = status
-    r.raw_result.status = status
+    r.result.task_status = status
+    r.result.status = status
     expect(costExecutions([r])[0].summary.cost).toBe(20)
     expect(costExecutions([r])[0].noop).toBe(false)
   }
-  const r = record([]); r.raw_result.status = 'NOOP'
+  const r = record([]); r.result.status = 'NOOP'
   expect(costExecutions([r])[0].noop).toBe(true)
-  const filled = record([], { orders: [{ filled_volume: 2 }] }); filled.raw_result.status = 'NOOP'
+  const filled = record([], { orders: [{ filled_volume: 2 }] }); filled.result.status = 'NOOP'
   expect(costExecutions([filled])[0].noop).toBe(false)
+})
+
+test('非对象历史结果没有可用成交，不从成功标志推断空跑', () => {
+  for (const result of [null, '原始结果', 0, false, []]) {
+    const saved: ExecuteRecord = { ...record([]), result }
+    expect(costTrades(saved)).toEqual([])
+    expect(costExecutions([saved])[0]).toMatchObject({ noop: false, summary: { value: null, cost: null } })
+  }
 })
 
 test('上海跨年日分组，逐日和逐执行及品种汇总一致，无成交日不存在', () => {

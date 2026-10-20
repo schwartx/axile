@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from axile.server.asset_observations import is_asset_observation
-from axile.server.db.models import ExecuteRecord, ExecuteRecordPublic
 from axile.server.db.models.performance import (
     AccountPerformance,
     PerformanceCalendar,
@@ -238,16 +237,16 @@ def _price_multiplier(sizing: dict[str, object]) -> float | None:
 
 
 def observation(
-    record: ExecuteRecord | ExecuteRecordPublic,
+    record,
     fallback_weights: dict[str, float] | None = None,
 ) -> Observation:
     """兼容历史行情结构；完整数量证据进入账本，快照仅补缺目标。"""
-    result = _mapping(record.raw_result)
+    result = _mapping(record.result)
     assets = _mapping(result.get("account_assets"))
     asset = _number(assets.get("total_asset"))
     if not is_asset_observation(assets, result):
         asset = None
-    target_weight = _target(record.raw_input.get("curr_target"))
+    target_weight = _target(_mapping(record.input).get("curr_target"))
     if target_weight is None:
         target_weight = _target(fallback_weights)
     executable = _executable_target(result)

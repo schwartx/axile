@@ -120,10 +120,10 @@ export function filterLiveExecutions(rows: JournalExecution[], keyword: string):
   if (!word) return rows
   return rows.filter(row => row.symbols.some(s => s.toLowerCase().includes(word)))
 }
-export function compareJournal(a: { summary: CostSummary; time?: string; lastTime?: number; key?: string; symbol?: string }, b: typeof a, sort: string): number {
+export function compareJournal(a: { summary: CostSummary | null; time?: string; lastTime?: number; key?: string; symbol?: string }, b: typeof a, sort: string): number {
   const field = sort === 'slippage' ? 'lossBp' : sort === 'cost' ? 'cost' : 'value'
-  const av = a.summary[field], bv = b.summary[field]
+  const av = a.summary?.[field], bv = b.summary?.[field]
   const metric = sort === 'time' ? 0 : av == null ? bv == null ? 0 : 1 : bv == null ? -1 : bv - av
   return metric || (b.time ? shanghaiTime(b.time) : b.lastTime ?? 0) - (a.time ? shanghaiTime(a.time) : a.lastTime ?? 0) || (a.key ?? a.symbol ?? '').localeCompare(b.key ?? b.symbol ?? '')
 }
-export const journalTotals = (rows: { summary: CostSummary }[]) => combineCosts(rows.map(r => r.summary))
+export const journalTotals = (rows: { summary: CostSummary | null }[]): CostSummary | null => rows.some(row => row.summary == null) ? null : combineCosts(rows.map(row => row.summary!))

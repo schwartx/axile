@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Protocol, cast
 
 import loguru
@@ -17,12 +17,17 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, Execution
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
+from axile.server.analysis_history import AnalysisRecord
 from axile.server.analysis_observations import write_observation_fact
 from axile.server.analysis_source import write_source_facts
-from axile.server.asset_observations import is_asset_observation
+from axile.server.business_facts.artifacts import compact_execution_summary
+from axile.server.business_facts.assets import ensure_execution_asset_snapshot
+from axile.server.business_facts.head import execution_head_values
+from axile.server.business_facts.repository import read_execution_input, store_execution_facts
 from axile.server.core.db import SessionLocal
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
+from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
+from axile.server.execution.input_persistence import sanitize_execution_input
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,13 +64,6 @@ class _WriteSessionProtocol(Protocol):
 type SessionFactory = Callable[[], _WriteSessionProtocol]
 
 
-def _sanitize_execute_record_input(raw_input: dict[str, object] | None) -> dict[str, object]:
-    """移除执行记录输入中的敏感账户配置."""
-    persisted_raw_input = dict(raw_input or {})
-    persisted_raw_input.pop("account_config", None)
-    return persisted_raw_input
-
-
 async def _persist_execute_record(
     *,
     account_id: int,
@@ -76,31 +74,46 @@ async def _persist_execute_record(
     session_factory: SessionFactory,
 ) -> ExecuteRecord:
     """将执行记录写入数据库并返回刷新后的记录对象."""
+    persisted_result = dict(raw_result)
+    result_input = persisted_result.get("inputs")
+    if isinstance(result_input, Mapping):
+        persisted_result["inputs"] = sanitize_execution_input(result_input)
     async with session_factory() as session:
         record = ExecuteRecord(
             account_id=account_id,
             execution_id=execution_id,
-            raw_input=_sanitize_execute_record_input(raw_input),
-            raw_result=raw_result,
             is_success=is_success,
+            **execution_head_values(persisted_result, is_success=is_success),
         )
         session.add(record)
-        assets = raw_result.get("account_assets")
-        if isinstance(assets, dict) and is_asset_observation(assets, raw_result):
-            session.add(
-                AccountAssetSnapshot(
-                    account_id=account_id,
-                    assets=assets,
-                    source="execution",
-                    execution_id=execution_id,
-                    created_at=record.created_at,
-                )
-            )
         try:
-            # 分析事实与原始执行记录在同一事务提交，Rust 不会读到半份输入。
+            # 业务明细与终态、分析事实同一事务提交，原生读取不会看到半份结果。
             await session.flush()
-            await write_observation_fact(cast("AsyncSession", session), record)
-            await write_source_facts(cast("AsyncSession", session), record)
+            await store_execution_facts(
+                cast("AsyncSession", session),
+                record,
+                raw_input=None if raw_input is None else sanitize_execution_input(raw_input),
+                raw_result=persisted_result,
+            )
+            await ensure_execution_asset_snapshot(cast("AsyncSession", session), record)
+            await compact_execution_summary(cast("AsyncSession", session), record, result=persisted_result)
+            await session.flush()
+            canonical_input = (
+                await read_execution_input(cast("AsyncSession", session), record.input_id)
+                if record.input_id is not None
+                else {}
+            )
+            analysis_record = AnalysisRecord(
+                id=cast("int", record.id),
+                account_id=record.account_id,
+                execution_id=record.execution_id,
+                created_at=record.created_at,
+                is_success=record.is_success,
+                input=canonical_input,
+                result=persisted_result,
+            )
+            await write_observation_fact(cast("AsyncSession", session), analysis_record)
+            await write_source_facts(cast("AsyncSession", session), analysis_record)
             await session.commit()
         except IntegrityError:
             # 同一执行的两条收尾路径（如终止确认与脚本失败）可能并发落库，
@@ -115,6 +128,8 @@ async def _persist_execute_record(
             )
             if existing is None:
                 raise
+            if existing.account_id != account_id:
+                raise ValueError("执行标识属于其他账户") from None
             loguru.logger.warning(
                 "执行记录已存在，保留首条 | execution_id={} record_id={}",
                 execution_id,
@@ -129,14 +144,9 @@ def resolve_record_task_status(record: ExecuteRecord | None) -> ExecutionTaskSta
     """从业务证据解析任务终态，休市未完成不能记作成功或异常失败。"""
     if record is None:
         return ExecutionTaskStatus.FAILED
-    if record.is_success == 1:
-        return ExecutionTaskStatus.SUCCEEDED
-    scope = session_closed_scope(record.raw_result)
-    if scope == "all":
-        return ExecutionTaskStatus.SKIPPED
-    if scope == "partial":
-        return ExecutionTaskStatus.PARTIAL
-    return ExecutionTaskStatus.FAILED
+    if record.task_status is not None:
+        return ExecutionTaskStatus(record.task_status)
+    return ExecutionTaskStatus.SUCCEEDED if record.is_success == 1 else ExecutionTaskStatus.FAILED
 
 
 async def append_error_execute_record(
@@ -189,6 +199,7 @@ async def append_error_execute_record(
         persisted_raw_result["outcome"] = "blocked" if session_scope == "all" else "not_reached"
         logger.info("{}", msg)
     else:
+        persisted_raw_result.setdefault("task_status", ExecutionTaskStatus.FAILED.value)
         logger.error("{}", msg)
     return await _persist_execute_record(
         account_id=cast("int", account_id),

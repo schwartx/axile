@@ -12,10 +12,10 @@ from axile.server.execution.worker_backend import worker_audit
 from tests.unit.server._execution_test_support import FakeExecutor, build_account
 
 
-def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
+def test_worker_target_reference_and_summary_keep_sizing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worker 的执行前后附件应保留完整的 v2 证据协议."""
+    """目标使用不可变引用，执行摘要保留完整的 v2 换算证据。"""
     account = build_account()
     standard_input = UnifiedStandardInput.from_dict(
         {
@@ -43,6 +43,8 @@ def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
     )
     result = cast("dict[str, object]", output.model_dump(mode="json"))
     artifacts: list[dict[str, object]] = []
+    frozen_inputs: list[dict[str, object]] = []
+    audit_variants: list[dict[str, object]] = []
 
     def capture_artifact(**kwargs: object) -> bool:
         artifacts.append(dict(kwargs))
@@ -50,6 +52,16 @@ def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
 
     monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", capture_artifact)
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **_kwargs: True)
+
+    def capture_input(**kwargs: object) -> tuple[str, str]:
+        frozen_inputs.append(cast("dict[str, object]", kwargs["payload"]))
+        audit_variants.append(cast("dict[str, object]", kwargs["audit_payload"]))
+        return "worker-sizing-input", "worker-sizing-audit"
+
+    monkeypatch.setattr(worker_audit, "persist_pre_execute_bundle_sync", capture_input)
+    monkeypatch.setattr(
+        worker_audit, "persist_post_execute_assets_sync", lambda **_kwargs: ("worker-sizing-input", "after-assets")
+    )
 
     worker_audit._append_trade_pre_execute_audit(
         account=account,
@@ -74,7 +86,6 @@ def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
         output=output,
         result=result,
         executor=executor,
-        include_trade_rule_snapshots=True,
     )
 
     target = next(
@@ -83,9 +94,14 @@ def test_worker_target_and_summary_artifacts_use_v2_and_keep_sizing(
     summary = next(
         artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY
     )
-    assert target["schema_version"] == 2
-    assert cast("dict[str, object]", target["content"])["strategy_target"] == {"m2701": -0.06}
-    assert cast("dict[str, object]", target["content"])["account_target"] == {"m2701": -0.18}
+    assert target["schema_version"] == 3
+    assert target["content"] == {
+        "business_facts_ref": {"version": 1, "view": "targets", "input_id": "worker-sizing-audit"}
+    }
+    assert frozen_inputs[0]["strategy_target"] == {"m2701": -0.06}
+    assert "account_target" not in frozen_inputs[0]
+    assert "curr_target" not in frozen_inputs[0]
+    assert audit_variants[0]["account_target"] == {"m2701": -0.18}
     assert summary["schema_version"] == 2
     reconciliation = cast("dict[str, object]", cast("dict[str, object]", summary["content"])["reconciliation"])
     symbols = cast("list[dict[str, object]]", reconciliation["symbols"])

@@ -15,23 +15,29 @@ from axile.server.analysis_observations import (
     observation_fact_values,
     write_observation_fact,
 )
-from axile.server.db.models import ExecuteRecord, Portfolio, TargetWeightSnapshot
+from axile.server.db.models import Portfolio
 from axile.server.db.models.analysis_replay import replay_observation as observations
 from axile.server.db.models.analysis_replay import replay_observation_symbol as symbols
 from axile.server.performance import observation
+from tests.unit.server._business_analysis_support import (
+    analysis_record,
+    install_analysis_triggers,
+    load_record,
+    persist_records,
+    persist_target,
+)
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 
 
 def record(index=1, *, raw_input=None, raw_result=None, created_at="2026-01-02T09:00:00"):
-    return ExecuteRecord(
+    return analysis_record(
         id=index,
         account_id=1,
         execution_id=f"exec-{index}",
         is_success=1,
         created_at=created_at,
-        raw_input={"curr_target": {"A": 1}} if raw_input is None else raw_input,
-        raw_result={
+        input={"curr_target": {"A": 1}} if raw_input is None else raw_input,
+        result={
             "account_assets": {"total_asset": 1000},
             "first_ticks": {"A": {"last_price": 100}},
         }
@@ -117,8 +123,7 @@ async def database(tmp_path):
 
     def create_schema(connection):
         SQLModel.metadata.create_all(connection)
-        migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
-        migration.install_triggers(connection)
+        install_analysis_triggers(connection)
 
     async with engine.begin() as connection:
         await connection.run_sync(create_schema)
@@ -135,21 +140,23 @@ def test_writer_replaces_symbol_rows_atomically_and_rolls_back(tmp_path):
         try:
             async with sessions() as session:
                 item = record()
-                session.add(item)
+                await persist_records(session, [item])
                 await session.flush()
                 await write_observation_fact(session, item)
                 await session.commit()
                 assert (await session.execute(sa.select(symbols.c.symbol))).scalars().all() == ["A"]
-                item.raw_input = {"curr_target": {}}
-                item.raw_result = {"execution_kind": "clear_positions"}
+                item.input = {"curr_target": {}}
+                item.result = {"execution_kind": "clear_positions"}
+                await persist_records(session, [item])
                 await write_observation_fact(session, item)
                 assert await session.scalar(sa.select(sa.func.count()).select_from(symbols)) == 0
                 await session.rollback()
             async with sessions() as session:
                 assert (await session.execute(sa.select(symbols.c.target))).scalar_one() == 1
-                item = await session.get(ExecuteRecord, 1)
-                item.raw_input = {"curr_target": {}}
-                item.raw_result = {"execution_kind": "clear_positions"}
+                item = await load_record(session, 1)
+                item.input = {"curr_target": {}}
+                item.result = {"execution_kind": "clear_positions"}
+                await persist_records(session, [item])
                 await write_observation_fact(session, item)
                 await session.commit()
                 scalar = (await session.execute(sa.select(observations))).mappings().one()
@@ -174,11 +181,14 @@ def test_backfill_one_batch_then_resume_with_late_fallback_and_upper_bound(tmp_p
                         custom_calc_py_code="def calculate_portfolio(context): return {}",
                     )
                 )
-                session.add_all([record(i, raw_input={}) for i in range(1, 6)])
-                session.add(
-                    TargetWeightSnapshot(
-                        portfolio_id=1, account_id=1, execution_id="exec-1", normalized_weights={}, source="execution"
-                    )
+                await persist_records(session, [record(i, raw_input={}) for i in range(1, 6)])
+                await persist_target(
+                    session,
+                    portfolio_id=1,
+                    account_id=1,
+                    execution_id="exec-1",
+                    normalized_weights={},
+                    source="execution",
                 )
                 await session.commit()
                 first = await backfill_observation_facts(session, 1, batch_size=2, through_record_id=4)
@@ -223,7 +233,7 @@ def test_cancelled_backfill_preserves_committed_batches_and_resumes(tmp_path, mo
 
         try:
             async with sessions() as session:
-                session.add_all([record(i) for i in range(1, 6)])
+                await persist_records(session, [record(i) for i in range(1, 6)])
                 await session.commit()
             monkeypatch.setattr(analysis_observations, "backfill_observation_facts", cancel_second_batch)
             with pytest.raises(asyncio.CancelledError):
@@ -246,7 +256,7 @@ def test_parent_and_fallback_mutations_invalidate_then_rebuild_facts(tmp_path):
         try:
             async with sessions() as session:
                 item = record(raw_input={})
-                session.add(item)
+                await persist_records(session, [item])
                 session.add(
                     Portfolio(
                         id=1,
@@ -255,17 +265,17 @@ def test_parent_and_fallback_mutations_invalidate_then_rebuild_facts(tmp_path):
                         custom_calc_py_code="def calculate_portfolio(context): return {}",
                     )
                 )
-                target = TargetWeightSnapshot(
+                target = await persist_target(
+                    session,
                     portfolio_id=1,
                     account_id=1,
                     execution_id="exec-1",
                     normalized_weights={"A": 1},
                     source="execution",
                 )
-                session.add(target)
                 await session.commit()
                 assert await ensure_observation_facts(session, 1) == 1
-                target.normalized_weights = {"B": 0.25}
+                await persist_target(session, snapshot=target, normalized_weights={"B": 0.25})
                 await session.commit()
                 assert await session.scalar(sa.select(sa.func.count()).select_from(observations)) == 0
                 await session.commit()
@@ -279,8 +289,9 @@ def test_parent_and_fallback_mutations_invalidate_then_rebuild_facts(tmp_path):
                 assert await ensure_observation_facts(session, 1) == 1
                 scalar = (await session.execute(sa.select(observations))).mappings().one()
                 assert not scalar["target_present"]
-                item.raw_input = {"curr_target": {}}
+                item.input = {"curr_target": {}}
                 item.created_at = "2026-01-03T01:00:00Z"
+                await persist_records(session, [item])
                 await session.commit()
                 assert await session.scalar(sa.select(sa.func.count()).select_from(observations)) == 0
                 await session.commit()

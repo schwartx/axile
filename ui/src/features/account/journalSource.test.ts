@@ -1,11 +1,11 @@
 import { expect, test } from 'bun:test'
-import { parseJournalScope, performanceJournalPath, loadCostGroups, compareJournal, snapshotExecution, filterLiveExecutions } from '@/features/account/journalSource'
+import { parseJournalScope, performanceJournalPath, loadCostGroups, compareJournal, journalTotals, snapshotExecution, filterLiveExecutions } from '@/features/account/journalSource'
 import { summarizeCosts } from '@/features/history/costs'
 import { journalExecutions } from '@/features/account/executionJournal'
 import type { CostPage } from '@/lib/api/performance'
 import type { ExecuteRecord } from '@/types/api'
 
-const record: ExecuteRecord = { id: 5, execution_id: 'e5', created_at: '2026-09-07T17:00:00', is_success: 1, raw_input: {}, raw_result: { symbol_results: {
+const record: ExecuteRecord = { id: 5, account_id: 2, execution_id: 'e5', created_at: '2026-09-07T17:00:00', is_success: 1, input: null, result: { symbol_results: {
   A: { sizing: { unit_multiplier: 10 }, first_tick: { bid_price: 99, ask_price: 101 }, orders: [{ order_id: '1', direction: 'buy' }], trades: [{ order_id: '1', trade_price: 101, trade_volume: 2 }] },
   B: { sizing: { unit_multiplier: 10 }, first_tick: { last_price: 100 }, trades: [{ trade_price: 99, trade_volume: 1, extra: { direction: 'sell' } }, { trade_price: 99, trade_volume: 1 }] },
   C: { trades: [{ trade_price: 10, trade_volume: 1 }] },
@@ -48,6 +48,21 @@ test('cost sorting puts unknown last, improvements after losses and ties in stab
   expect(rows.toSorted((a, b) => compareJournal(a, b, 'cost')).map(r => r.key)).toEqual(['worse', 'better', 'unknown'])
 })
 
+test('未知活动汇总保留 null，不当作无成交加入总计', () => {
+  const rows = journalExecutions([{
+    kind: 'execution', occurred_at: record.created_at, record: {
+      id: 6, execution_id: 'e6', created_at: record.created_at, is_success: 1, status: 'SUCCEEDED',
+      symbol_results: {}, summary: null, duration_sec: null, trade_count: null,
+    },
+  }])
+  expect(rows[0].summary).toBeNull()
+  expect(rows[0].description).toBe('调仓 · 成交信息未获取')
+  expect(journalTotals(rows)).toBeNull()
+  expect(journalTotals([])?.count).toBe(0)
+  const known = { key: 'known', summary: { ...summarizeCosts([]), value: 10 } }
+  expect([rows[0], known].toSorted((a, b) => compareJournal(a, b, 'value'))[0].key).toBe('known')
+})
+
 test('lightweight pagination completes beyond one page and fails closed on broken cursors', async () => {
   const base: CostPage<number> = { snapshot_id: 's', count: 3, summary: { ...summarizeCosts([]), estimated: 0 }, successful: 0, noop: 0, data: [], next_cursor: null }
   const query = { snapshot_id: 's', range: 'all' as const, dimension: 'execution' as const }
@@ -68,7 +83,7 @@ test('snapshot execution status preserves blocked and partial outcomes before is
 })
 
 test('裁剪后的绩效投影使用独立统计，成交分页不影响整次执行摘要', () => {
-  const row = snapshotExecution({ key: '5', record: { ...record, id: 5, raw_result: { status: 'SUCCEEDED', symbol_results: { A: { status: 'SUCCEEDED' }, B: { status: 'SUCCEEDED' } } } }, tradeCount: 1000, symbolCount: 1, noop: false, summary: summarizeCosts([]) })
+  const row = snapshotExecution({ key: '5', record: { id: 5, execution_id: record.execution_id, created_at: record.created_at, is_success: 1, raw_result: { status: 'SUCCEEDED', symbol_results: { A: { status: 'SUCCEEDED' }, B: { status: 'SUCCEEDED' } } } }, tradeCount: 1000, symbolCount: 1, noop: false, summary: summarizeCosts([]) })
   expect(row.description).toBe('调仓 · 涉及 2 个品种 · 1000 笔成交')
   expect(row.trades).toEqual([])
 })

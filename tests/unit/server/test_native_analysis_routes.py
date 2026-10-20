@@ -16,9 +16,11 @@ from sqlmodel import Session, SQLModel
 
 from axile.server import native_analysis
 from axile.server.analysis_cost_facts import iter_cost_fact_batches
+from axile.server.analysis_history import AnalysisRecord
 from axile.server.analysis_results import iter_result_fact_batches
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_performance as routes
+from axile.server.business_facts.repository import read_execution_detail, store_execution_facts
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
@@ -145,6 +147,35 @@ def mutate(database, statement, parameters=None):
             connection.execute(statement, parameters or {})
     finally:
         engine.dispose()
+
+
+async def canonical_record(database, *, input_payload, result_payload):
+    """Project an explicitly reconstructed record after canonical storage commits."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            record = ExecuteRecord(
+                id=1,
+                account_id=2,
+                execution_id="typed-1",
+                created_at="2026-10-01T12:00:00",
+                is_success=1,
+            )
+            session.add(record)
+            await session.flush()
+            await store_execution_facts(session, record, raw_input=input_payload, raw_result=result_payload)
+            await session.commit()
+        async with sessions() as session:
+            persisted = await session.get(ExecuteRecord, 1)
+            assert persisted is not None
+            assert not hasattr(persisted, "raw_input") and not hasattr(persisted, "raw_result")
+            detail = await read_execution_detail(session, persisted)
+            assert detail["input"] == input_payload
+            assert detail["result"] == result_payload
+            return AnalysisRecord.from_detail(detail)
+    finally:
+        await engine.dispose()
 
 
 @asynccontextmanager
@@ -360,31 +391,29 @@ def test_legacy_cost_schema_keeps_historical_identity_types_without_native_dispa
 
 
 def test_normalized_snapshot_and_ready_result_ignore_all_poisoned_legacy_json(binary, dataset):
-    record = ExecuteRecord(
-        id=1,
-        account_id=2,
-        execution_id="typed-1",
-        created_at="2026-10-01T12:00:00",
-        is_success=1,
-        raw_input={"curr_target": {"A": 1}},
-        raw_result={
-            "account_assets": {"total_asset": 100},
-            "symbol_results": {
-                "A": {
-                    "first_tick": {"bid_price": 100, "ask_price": 100},
-                    "sizing": {"unit_multiplier": 1},
-                    "orders": [{"order_id": "o", "direction": "BUY"}],
-                    "trades": [
-                        {
-                            "order_id": "o",
-                            "trade_price": 101,
-                            "trade_volume": 2,
-                            "extra": {"commission": 0.1, "commission_asset": "CNY"},
-                        }
-                    ],
-                }
+    record = asyncio.run(
+        canonical_record(
+            dataset,
+            input_payload={"curr_target": {"A": 1}},
+            result_payload={
+                "account_assets": {"total_asset": 100},
+                "symbol_results": {
+                    "A": {
+                        "first_tick": {"bid_price": 100, "ask_price": 100},
+                        "sizing": {"unit_multiplier": 1},
+                        "orders": [{"order_id": "o", "direction": "BUY"}],
+                        "trades": [
+                            {
+                                "order_id": "o",
+                                "trade_price": 101,
+                                "trade_volume": 2,
+                                "extra": {"commission": 0.1, "commission_asset": "CNY"},
+                            }
+                        ],
+                    }
+                },
             },
-        },
+        )
     )
     payload, fills = project_execution(record)
     preview = payload | {"summary": summarize(fills)}

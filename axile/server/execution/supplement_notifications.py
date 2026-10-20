@@ -1,5 +1,6 @@
 """服务端终态统一产生补发执行通知，包括未进入执行器的失败。"""
 
+from copy import deepcopy
 from typing import Any, cast
 
 import loguru
@@ -7,14 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
-from axile.executor.feishu_notifications import LoggerLike, build_execution_notification_context
+from axile.executor.feishu_notifications import LoggerLike
 from axile.executor.models.unified_order import OrderDirection, UnifiedOrder
-from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
+from axile.server.business_facts.notification_context import compact_record_notification_context
+from axile.server.business_facts.repository import read_execution_detail, read_execution_result
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
+from axile.server.execution.notification_records import build_persisted_notification_context
 from axile.server.execution.supplements import (
     cancel_groups_in_session,
     settle_groups,
@@ -77,18 +80,21 @@ async def _execution_context(session: AsyncSession, row: ExecutionIntent, accoun
     """优先沿用标准执行快照；早期失败仍有完整结构与空资产。"""
     record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == row.execution_id))
     context: dict[str, Any] = {}
-    if record is not None and record.raw_result:
-        extra = record.raw_result.get("extra")
+    detail = await read_execution_detail(session, record) if record is not None else None
+    result = detail["result"] if detail is not None else None
+    if isinstance(result, dict):
+        extra = result.get("extra")
         captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
         if isinstance(captured, dict):
-            context = dict(captured)
-    if not context and record is not None and record.raw_result:
+            context = deepcopy(captured)
+    if not context and isinstance(result, dict) and result:
         try:
-            raw = dict(record.raw_result)
-            if isinstance(raw.get("inputs"), dict):
-                raw["inputs"] = {**raw["inputs"], "account_config": account.account_config}
-            output = UnifiedStandardOutput.model_validate(raw)
-            context = build_execution_notification_context(NotificationView(account), output)
+            context = build_persisted_notification_context(
+                NotificationView(account),
+                result,
+                detail["input"] if detail is not None else None,
+                account.account_config,
+            )
         except ValueError:
             loguru.logger.debug("执行无完整标准输出 execution_id={}", row.execution_id)
     if not context:
@@ -172,21 +178,25 @@ async def finish_supplement_execution(session: AsyncSession, row: ExecutionInten
             group.status = "completed"
             session.add(group)
     if ran:
-        context = await _execution_context(session, row, account)
-        context["execution"]["supplements"] = [
-            supplement_context(groups[step.group_id], step) for step in steps if step.status != "cancelled"
-        ]
         event_id = f"execution:{row.execution_id}"
-        if await session.scalar(select(NotificationEvent).where(NotificationEvent.id == event_id)) is None:
-            session.add(
-                NotificationEvent(
-                    id=event_id, account_id=row.account_id, event_type="execution.finished", context=context
-                )
+        event = await session.scalar(select(NotificationEvent).where(NotificationEvent.id == event_id))
+        if event is None:
+            context = await _execution_context(session, row, account)
+            context["execution"]["supplements"] = [
+                supplement_context(groups[step.group_id], step) for step in steps if step.status != "cancelled"
+            ]
+            event = NotificationEvent(
+                id=event_id, account_id=row.account_id, event_type="execution.finished", context=context
             )
+            session.add(event)
+        await session.flush()
+        record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == row.execution_id))
+        if record is not None:
+            await compact_record_notification_context(session, record, event)
     await session.flush()
     if row.status == ExecutionTaskStatus.SKIPPED:
         record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == row.execution_id))
-        if record is not None and session_closed_scope(record.raw_result) == "all":
+        if record is not None and session_closed_scope(await read_execution_result(session, record)) == "all":
             for group in groups.values():
                 await cancel_groups_in_session(session, row.account_id, COMMON_SESSION_CLOSED, group_id=group.id)
     await settle_groups(session, row.account_id)

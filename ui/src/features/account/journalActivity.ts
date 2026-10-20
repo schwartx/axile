@@ -19,14 +19,12 @@ export function tradesFromArtifacts(
   record: { id?: number | null; execution_id?: string | null; created_at: string },
 ): CostTrade[] {
   const summary = artifacts.find((item) => item.artifact_type === 'execution_summary')
-  if (!summary || summary.content == null || typeof summary.content !== 'object') return []
+  if (!summary || summary.content == null || typeof summary.content !== 'object' || Array.isArray(summary.content)) return []
   return costTrades({
     id: record.id ?? null,
     execution_id: record.execution_id ?? null,
     created_at: record.created_at,
-    is_success: 1,
-    raw_input: {},
-    raw_result: summary.content as ExecuteRecord['raw_result'],
+    result: summary.content as ExecuteRecord['result'],
   })
 }
 

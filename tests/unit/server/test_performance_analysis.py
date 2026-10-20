@@ -18,7 +18,7 @@ from sqlmodel import SQLModel
 from starlette.responses import Response
 
 from axile.server.api.routes.account_performance import get_performance
-from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, TargetWeightSnapshot
+from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis import cost_trade as trades
@@ -33,8 +33,21 @@ from axile.server.performance_analysis import (
 )
 from axile.server.performance_costs import daily_costs, project_execution, summarize, timestamp
 from axile.server.performance_details import CostQuery, read_costs
+from tests.unit.server._business_analysis_support import (
+    analysis_record,
+    install_analysis_triggers,
+    load_record,
+    persist_records,
+    persist_target,
+)
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+
+
+@pytest.fixture(autouse=True)
+def _python_analysis_engine(monkeypatch):
+    """本模块检验 Python 计算及队列注入点，固定引擎使环境中打包的原生程序不改变测试路径。"""
+    monkeypatch.setenv("AXILE_ANALYSIS_MODE", "python")
 
 
 def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema_template):
@@ -44,18 +57,23 @@ def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema
         async with database(tmp_path, schema_template, count=0) as (_, sessions, manager):
             async with sessions() as session:
                 for i, price in enumerate([100, 110, 121]):
-                    session.add(
-                        ExecuteRecord(
-                            account_id=2,
-                            execution_id=f"intraday-{i}",
-                            created_at=f"2026-01-01T{9 + i:02d}:00:00",
-                            raw_input={"curr_target": {"A": 1}},
-                            raw_result={
-                                "account_assets": {"total_asset": price},
-                                "first_ticks": {"A": {"last_price": price}},
-                            },
-                            is_success=1,
-                        )
+                    await persist_records(
+                        session,
+                        [
+                            analysis_record(
+                                id=i + 1,
+                                account_id=2,
+                                execution_id=f"intraday-{i}",
+                                created_at=f"2026-01-01T{9 + i:02d}:00:00",
+                                input={"curr_target": {"A": 1}},
+                                result={
+                                    "account_assets": {"total_asset": price},
+                                    "first_ticks": {"A": {"last_price": price}},
+                                },
+                                is_success=1,
+                            )
+                        ],
+                        project=True,
                     )
                 await session.commit()
             await queue(sessions)
@@ -89,14 +107,14 @@ def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema
 
 
 def record(index=1, **kwargs):
-    return ExecuteRecord(
+    return analysis_record(
         account_id=2,
         id=index,
         execution_id=f"exec-{index}",
         is_success=1,
         created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1)).isoformat(),
-        raw_input={"curr_target": {"A": 1}},
-        raw_result={
+        input={"curr_target": {"A": 1}},
+        result={
             "account_assets": {"total_asset": 100 + index},
             "symbol_results": {
                 "A": {
@@ -120,14 +138,7 @@ def record(index=1, **kwargs):
 
 def _create_schema(connection):
     SQLModel.metadata.create_all(connection)
-    migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
-    migration.install_triggers(connection)
-    settings_migration = _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py")
-    settings_migration.install_settings_trigger(connection)
-    facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
-    facts_migration.install_triggers(connection)
-    structured = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
-    structured.install_triggers(connection)
+    install_analysis_triggers(connection)
 
 
 async def _restore_legacy_snapshot(session):
@@ -171,7 +182,7 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
     async with sessions() as session:
         session.add(build_account(id=2, account_control_preset="default"))
         await session.commit()
-        session.add_all([record(i + 1) for i in range(count)])
+        await persist_records(session, [record(i + 1) for i in range(count)], project=True)
         await session.commit()
     try:
         yield engine, sessions, AnalysisManager(sessions)
@@ -198,7 +209,7 @@ def test_dashboard_summary_matches_full_90_day_snapshot_in_bounded_queries(tmp_p
                 rows = [record(i + 1) for i in range(2160)]
                 for i, row in enumerate(rows):
                     row.created_at = (datetime(2026, 1, 1) + timedelta(hours=i)).isoformat()
-                session.add_all(rows)
+                await persist_records(session, rows, project=True)
                 await session.commit()
             await queue(sessions)
             await manager.run_once()
@@ -330,17 +341,16 @@ def test_refresh_merges_and_inflight_source_change_discards_batch(tmp_path, monk
 
             monkeypatch.setattr("axile.server.performance_analysis.compute_batch", blocked)
             job = asyncio.create_task(manager.run_once())
-            while not entered.is_set():
-                await asyncio.sleep(0.01)
-            async with sessions() as session:
-                await session.execute(
-                    sa.update(ExecuteRecord)
-                    .where(ExecuteRecord.id == 3)
-                    .values(raw_result={"account_assets": {"total_asset": 200}})
-                )
-                await session.commit()
-            release.set()
-            await job
+            try:
+                assert await asyncio.to_thread(entered.wait, 5), "Python 计算阶段未在 5 秒内启动"
+                async with sessions() as session:
+                    item = await load_record(session, 3)
+                    item.result = {"account_assets": {"total_asset": 200}}
+                    await persist_records(session, [item])
+                    await session.commit()
+            finally:
+                release.set()
+                await job
             stale = await snapshot(sessions)
             assert stale["snapshot_id"] is None
             assert stale["status"] == "pending"
@@ -396,12 +406,14 @@ def test_transactional_invalidation_and_bulk_delete(tmp_path, schema_template):
             await manager.run_once()
             initial = await snapshot(sessions)
             async with sessions() as session:
-                await session.execute(sa.update(ExecuteRecord).values(raw_input={"curr_target": {}}))
+                item = await load_record(session, 1)
+                item.input = {"curr_target": {}}
+                await persist_records(session, [item])
                 await session.rollback()
             assert await snapshot(sessions) == initial
             async with sessions() as session:
                 session.add(PortfolioAccount(account_id=2, portfolio_id=None))
-                session.add(TargetWeightSnapshot(account_id=2, portfolio_id=1, source="manual", normalized_weights={}))
+                await persist_target(session, account_id=2, portfolio_id=1, source="manual", normalized_weights={})
                 await session.commit()
             assert (await snapshot(sessions))["source_version"] > initial["source_version"]
             async with sessions() as session:
@@ -454,7 +466,7 @@ def test_cost_pages_bind_filter_sort_and_retained_versions(tmp_path, schema_temp
 
 def test_cost_cross_day_unknowns_fees_noop_and_interval_boundary(tmp_path, schema_template):
     item = record()
-    result = item.raw_result["symbol_results"]["A"]
+    result = item.result["symbol_results"]["A"]
     result["trades"] = [
         {
             "order_id": "buy",
@@ -490,8 +502,7 @@ def test_cost_cross_day_unknowns_fees_noop_and_interval_boundary(tmp_path, schem
     async def check():
         async with database(tmp_path, schema_template, count=0) as (_, sessions, manager):
             async with sessions() as session:
-                session.add(item)
-                session.add(record(2, status="NOOP", symbol_results={}))
+                await persist_records(session, [item, record(2, status="NOOP", symbol_results={})], project=True)
                 await session.commit()
             await queue(sessions)
             await manager.run_once()
@@ -626,6 +637,10 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
             async with engine.begin() as conn:
 
                 def roundtrip(connection):
+                    from axile.server.alembic.business0037_invalidation import drop_triggers
+
+                    # 单独回归旧分析迁移时先移除依赖这些派生表的新事实触发器。
+                    drop_triggers(connection)
                     migration.op = Operations(MigrationContext.configure(connection))
                     facts_migration.op = migration.op
                     structured_migration.op = migration.op
@@ -652,6 +667,7 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
                     facts_migration.upgrade()
                     structured_migration.upgrade()
                     read_views_migration.upgrade()
+                    install_analysis_triggers(connection)
 
                 await conn.run_sync(roundtrip)
             await queue(sessions)

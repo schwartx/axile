@@ -6,6 +6,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.records import append_error_execute_record, append_success_execute_record
 
 
@@ -24,12 +25,7 @@ def sanitize_standard_input_for_audit(raw_input: UnifiedStandardInput | dict[str
         已脱敏的审计输入内容。
     """
     payload = raw_input.to_dict() if isinstance(raw_input, UnifiedStandardInput) else raw_input
-    sanitized = dict(payload)
-    sanitized.pop("account_config", None)
-    sanitized.pop("execution_notification_code", None)
-    if sanitized.get("feishu_key"):
-        sanitized["feishu_key"] = "***"
-    return sanitized
+    return sanitize_execution_input(payload)
 
 
 def resolve_completion_event_status(output_status: ExecutionStatus) -> ExecutionEventStatus:

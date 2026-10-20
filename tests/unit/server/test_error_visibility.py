@@ -11,7 +11,8 @@ from sqlmodel import SQLModel
 
 from axile.server.api.deps import HistoryPagination
 from axile.server.api.routes import account_assets, account_execution
-from axile.server.api.routes.account_crud import list_execute_records
+from axile.server.api.routes.account_crud import execute_record_detail, list_execute_records
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
 from axile.server.execution.worker_backend.protocol import WorkerBackendResponse
@@ -95,30 +96,21 @@ def test_exact_record_filters_share_account_scope_count_and_pagination():
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
             session.add_all([build_account(id=1), build_account(id=2)])
-            session.add_all(
-                [
-                    ExecuteRecord(
-                        id=i,
-                        account_id=1,
-                        execution_id=f"exec-{i}",
-                        raw_input={},
-                        raw_result={"technical_detail": RAW},
-                        is_success=0,
-                    )
-                    for i in range(1, 603)
-                ]
-            )
-            session.add(
-                ExecuteRecord(
-                    id=1000, account_id=2, execution_id="other-account", raw_input={}, raw_result={}, is_success=0
-                )
-            )
+            records = [ExecuteRecord(id=i, account_id=1, execution_id=f"exec-{i}", is_success=0) for i in range(1, 603)]
+            other = ExecuteRecord(id=1000, account_id=2, execution_id="other-account", is_success=0)
+            session.add_all([*records, other])
+            await session.flush()
+            for record in records:
+                await store_execution_facts(session, record, raw_input={}, raw_result={"technical_detail": RAW})
+            await store_execution_facts(session, other, raw_input={}, raw_result={})
             await session.commit()
             page = HistoryPagination(skip=0, limit=1)
             result = await list_execute_records(session, 1, page, execution_id="exec-1", record_id=1)
             assert result.count == 1
             assert [row.id for row in result.data] == [1]
-            assert result.data[0].raw_result["technical_detail"] == RAW
+            assert "result" not in result.data[0].model_dump()
+            detail = await execute_record_detail(session, 1, 1)
+            assert detail.result["technical_detail"] == RAW
             for execution_id, record_id in [("exec-1", 2), ("other-account", None), (None, 1000)]:
                 result = await list_execute_records(session, 1, page, execution_id=execution_id, record_id=record_id)
                 assert result.count == 0

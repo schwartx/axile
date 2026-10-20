@@ -10,9 +10,20 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.termination import ExecutionTerminated
+from axile.server.db.models import ExecuteRecord
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.intents import IntentSnapshot
+
+
+@pytest.fixture(autouse=True)
+def _isolate_outcome_symbol_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """生命周期编排用例的品种名单由定向读取桩提供。"""
+
+    async def read_symbols(_record: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr(execution_lifecycle, "load_record_outcome_symbols", read_symbols)
 
 
 def test_handle_inline_execution_terminated_persists_record_and_updates_state(monkeypatch) -> None:
@@ -276,7 +287,9 @@ def test_run_execution_task_persists_intent_on_success(monkeypatch) -> None:
         marked.update(kwargs)
 
     async def fake_runner(_tracked: str) -> SimpleNamespace:
-        return SimpleNamespace(id=9, is_success=1, raw_result={"status": "SUCCEEDED"})
+        return ExecuteRecord(
+            id=9, account_id=1, is_success=1, status="SUCCEEDED", display_status="SUCCEEDED", task_status="SUCCEEDED"
+        )
 
     monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", fake_mark)
     monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda *_a, **_k: None)
@@ -328,7 +341,9 @@ def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch)
     async def fake_runner(tracked: str) -> SimpleNamespace:
         ran["id"] = tracked
         assert execution_registry.get_execution_task_state(tracked) is not None
-        return SimpleNamespace(id=1, is_success=1, raw_result={"status": "SUCCEEDED"})
+        return ExecuteRecord(
+            id=1, account_id=1, is_success=1, status="SUCCEEDED", display_status="SUCCEEDED", task_status="SUCCEEDED"
+        )
 
     async def fake_mark(eid: str, status: ExecutionTaskStatus, **kwargs: object) -> None:
         marked["execution_id"] = eid
@@ -384,7 +399,7 @@ def test_run_execution_task_missing_memory_skips_terminal_intent(monkeypatch) ->
     async def fake_runner(_tracked: str) -> SimpleNamespace:
         nonlocal ran
         ran = True
-        return SimpleNamespace(id=1, is_success=1, raw_result={})
+        return ExecuteRecord(id=1, account_id=1, is_success=1, task_status="SUCCEEDED")
 
     monkeypatch.setattr(execution_lifecycle, "get_intent", fake_get_intent)
     monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda *_a, **_k: None)
@@ -622,7 +637,7 @@ def test_timeout_termination_sends_alert(monkeypatch) -> None:
         execution_registry._clear_execution_task_state(execution_id)
 
 
-def test_mark_inline_execution_copies_blocked_output_error() -> None:
+def test_mark_inline_execution_copies_blocked_output_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """业务失败没有异常，完成态也必须把 output.error / status 写进轮询载荷。"""
     execution_id = "exec-blocked-inline-1"
     state = execution_registry.ExecutionTaskState(
@@ -633,11 +648,24 @@ def test_mark_inline_execution_copies_blocked_output_error() -> None:
         created_at="2026-08-26T20:34:24",
     )
     execution_registry.set_execution_task_state(execution_id, state)
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=6,
+        account_id=1,
         is_success=0,
-        raw_result={"status": "BLOCKED", "error": "5 个品种因交易时段不可执行"},
+        task_status="FAILED",
+        status="BLOCKED",
+        error="5 个品种因交易时段不可执行",
+        outcome="blocked",
+        display_status="BLOCKED",
+        display_error="5 个品种因交易时段不可执行",
+        display_outcome="blocked",
     )
+
+    async def read_symbols(actual: ExecuteRecord) -> list[str]:
+        assert actual is record
+        return ["ag2612", "m2701"]
+
+    monkeypatch.setattr(execution_lifecycle, "load_record_outcome_symbols", read_symbols)
 
     try:
         asyncio.run(execution_lifecycle.mark_inline_execution_succeeded(execution_id, record))
@@ -650,6 +678,8 @@ def test_mark_inline_execution_copies_blocked_output_error() -> None:
     assert current.is_success == 0
     assert current.error == "5 个品种因交易时段不可执行"
     assert current.output_status == "BLOCKED"
+    assert current.outcome == "blocked"
+    assert current.outcome_symbols == ["ag2612", "m2701"]
     assert current.record_id == 6
 
 
@@ -664,10 +694,15 @@ def test_mark_execution_finished_copies_record_error_unless_exception() -> None:
         created_at="2026-08-26T20:34:24",
     )
     execution_registry.set_execution_task_state(execution_id, state)
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=8,
+        account_id=1,
         is_success=0,
-        raw_result={"status": "BLOCKED", "error": "当前不在交易时间"},
+        task_status="FAILED",
+        status="BLOCKED",
+        error="当前不在交易时间",
+        display_status="BLOCKED",
+        display_error="当前不在交易时间",
     )
 
     try:

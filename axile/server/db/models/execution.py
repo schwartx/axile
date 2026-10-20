@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Sequence
 
 from sqlalchemy import JSON as SA_JSON
-from sqlalchemy import Column, ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Index, Integer, Text, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import relationship
@@ -36,13 +36,49 @@ class ExecuteRecordBase(SQLModel):
         sa_column=Column(Text, nullable=True),
         description="执行链路唯一标识, 用于关联执行事件与执行附件",
     )
-    raw_input: Dict[str, Any] = Field(default={}, sa_column=Column(SA_JSON, nullable=False), description="标准输入")
-    raw_result: Dict[str, Any] = Field(
-        default={},
-        sa_column=Column(SA_JSON, nullable=False),
-        description="如果成功: 标准输出; 如果失败: 错误信息/终止理由",
-    )
     is_success: int = Field(sa_column=Column(Integer, nullable=False))
+    input_id: str | None = Field(default=None, sa_column=Column(Text, ForeignKey("execution_input.id")))
+    result_input_id: str | None = Field(default=None, sa_column=Column(Text, ForeignKey("execution_input.id")))
+    status: str | None = Field(default=None, sa_column=Column(Text))
+    task_status: str | None = Field(default=None, sa_column=Column(Text))
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    outcome: str | None = Field(default=None, sa_column=Column(Text))
+    outcome_reason: str | None = Field(default=None, sa_column=Column(Text))
+    reason_code: str | None = Field(default=None, sa_column=Column(Text))
+    msg: str | None = Field(default=None, sa_column=Column(Text))
+    execution_kind: str | None = Field(default=None, sa_column=Column(Text))
+    channel_type: str | None = Field(default=None, sa_column=Column(Text))
+    execution_time: float | None = Field(default=None, sa_column=Column(Float))
+    success: bool | None = Field(default=None, sa_column=Column(Boolean))
+    facts_complete: bool = Field(
+        default=False, exclude=True, sa_column=Column(Boolean, nullable=False, server_default="0")
+    )
+    display_status: str | None = Field(default=None, sa_column=Column(Text))
+    display_error: str | None = Field(default=None, sa_column=Column(Text))
+    display_outcome: str | None = Field(default=None, sa_column=Column(Text))
+    display_outcome_reason: str | None = Field(default=None, sa_column=Column(Text))
+    termination_reason: str | None = Field(default=None, sa_column=Column(Text))
+    termination_mode: str | None = Field(default=None, sa_column=Column(Text))
+    termination_trigger: str | None = Field(default=None, sa_column=Column(Text))
+    termination_requested_at: str | None = Field(default=None, sa_column=Column(Text))
+    termination_acked_at: str | None = Field(default=None, sa_column=Column(Text))
+    termination_finished_at: str | None = Field(default=None, sa_column=Column(Text))
+    termination_cancel_attempted: bool | None = Field(default=None, sa_column=Column(Boolean))
+    termination_forced: bool | None = Field(default=None, sa_column=Column(Boolean))
+    termination_cancel_unconfirmed: bool | None = Field(default=None, sa_column=Column(Boolean))
+    result_input_kind: str = Field(default="absent", exclude=True, sa_column=Column(Text, nullable=False))
+    result_input_value: Any = Field(default=None, exclude=True, sa_column=Column(SA_JSON))
+    audit_evidence: dict[str, Any] = Field(
+        default_factory=dict, exclude=True, sa_column=Column(SA_JSON, nullable=False)
+    )
+    termination_evidence: dict[str, Any] = Field(
+        default_factory=dict, exclude=True, sa_column=Column(SA_JSON, nullable=False)
+    )
+    termination_kind: str = Field(default="absent", exclude=True, sa_column=Column(Text, nullable=False))
+    termination_cancel_ids_kind: str = Field(default="absent", exclude=True, sa_column=Column(Text, nullable=False))
+    symbol: str | None = Field(default=None, exclude=True, sa_column=Column(Text))
+    technical_detail: str | None = Field(default=None, exclude=True, sa_column=Column(Text))
+    termination_cancel_count: int | None = Field(default=None, exclude=True, sa_column=Column(Integer))
 
 
 class ExecuteRecord(ExecuteRecordBase, table=True):
@@ -63,7 +99,7 @@ class ExecuteRecord(ExecuteRecordBase, table=True):
       排序列在后，才能既走等值定位又免掉额外排序。
 
     没有这些复合索引时，上述查询只能靠 ``account_id`` 外键（SQLite 不自动为外键建
-    索引）退化为大范围扫描，并连带加载 ``raw_input``/``raw_result`` 这些 JSON 大列。
+    索引）退化为大范围扫描。列表与状态读取只加载本表的紧凑字段，明细按需查询。
     """
 
     __table_args__ = (
@@ -89,6 +125,7 @@ class ExecuteRecordPublic(ExecuteRecordBase):
     """执行记录的公开表示."""
 
     id: Optional[int]
+    account_id: int
     created_at: str
 
 

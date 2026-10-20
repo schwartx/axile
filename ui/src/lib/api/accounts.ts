@@ -11,7 +11,9 @@ import type {
   AccountControlPolicyEditorModel,
   AccountAssetSnapshot,
   AccountAssetSnapshotList,
+  ExecuteRecord,
   ExecuteRecordList,
+  ExecutionSymbolSummary,
   Message,
   PortfolioAccountList,
   TargetWeightSnapshot,
@@ -118,11 +120,12 @@ export interface ActivityExecutionRecord {
   outcome_reason?: string | null
   reason_code?: string | null
   execution_kind?: string | null
-  symbol_results?: Record<string, { status?: string; error?: string; outcome?: string; outcome_reason?: string; reason_code?: string }>
+  symbol_results?: Record<string, ExecutionSymbolSummary>
   total_asset?: number | null
-  summary: CostSummary
+  /** 分析投影未知时为 null；已知无成交仍返回明确的空汇总。 */
+  summary: CostSummary | null
   duration_sec: number | null
-  trade_count: number
+  trade_count: number | null
 }
 
 export interface ExecutionActivity {
@@ -254,20 +257,19 @@ export function refreshAccountTargetSnapshot(id: number): Promise<TargetWeightSn
 }
 
 /**
- * 绩效页「全量」执行记录缓存（limit=500 全量口径，按 account 键）。
+ * 账户最近一页的轻量执行主记录缓存（limit=500，按 account 键）。
  *
- * 用于「小卡 → 回看页」的即时跳转：hover 预取写入此缓存，绩效页首帧直接
- * 复用，避免落地即骨架屏，也让金额共享元素 FLIP 有真实落点。缓存随下一次成功取数刷新。
+ * 只缓存列表摘要，不缓存输入或结果明细；绩效图表使用独立的版本绑定接口。
  */
 const execRecordsCache = new Map<number, ExecuteRecordList>()
 const execRecordsInflight = new Map<number, Promise<ExecuteRecordList>>()
 
-/** 读取已缓存的全量执行记录（无则 ``undefined``）。 */
+/** 读取已缓存的执行主记录（无则 ``undefined``）。 */
 export function getCachedExecuteRecords(id: number): ExecuteRecordList | undefined {
   return execRecordsCache.get(id)
 }
 
-/** 预取账户全量执行记录进缓存（hover 时调用；已缓存或在途则跳过，失败静默）。 */
+/** 预取账户执行主记录（已缓存或在途则跳过，失败静默）。 */
 export function prefetchExecuteRecords(id: number): void {
   if (execRecordsCache.has(id) || execRecordsInflight.has(id)) return
   const p = getExecuteRecords(id, { limit: 500 })
@@ -275,7 +277,7 @@ export function prefetchExecuteRecords(id: number): void {
   p.finally(() => execRecordsInflight.delete(id)).catch(() => {})
 }
 
-/** 账户执行记录（分页，默认最近 100 条）。全量口径（limit=500）结果入缓存。 */
+/** 账户执行主记录（分页，默认最近 100 条）；不读取业务明细。 */
 export function getExecuteRecords(
   id: number,
   params: { skip?: number; limit?: number; execution_id?: string; record_id?: number } = {},
@@ -292,6 +294,15 @@ export function getExecuteRecords(
     promise.then((r) => execRecordsCache.set(id, r)).catch(() => {})
   }
   return promise
+}
+
+/** 显式读取单条执行的输入与结果事实；详情不进入账户列表缓存。 */
+export function getExecuteRecordDetail(
+  accountId: number,
+  recordId: number,
+  signal?: AbortSignal,
+): Promise<ExecuteRecord> {
+  return apiGet<ExecuteRecord>(`/account/execute_records/${accountId}/${recordId}`, signal)
 }
 
 /** 账户组合更换记录。 */

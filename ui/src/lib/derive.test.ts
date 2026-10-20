@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
-import { integrityOf, needsAdjustmentAttention, gateOf, observedTotalAsset, rebalancePlan, stateVerdict } from './derive'
-import type { AccountDashboardItem, Position } from '../types/api'
+import { integrityOf, needsAdjustmentAttention, gateOf, observedTotalAsset, positionsOf, rebalancePlan, stateVerdict } from './derive'
+import type { AccountDashboardItem, ExecuteRecord, Position } from '../types/api'
 
 /** 造一个仪表盘项；只填两轴关心的字段，其余给中性占位。 */
 function item(over: Partial<AccountDashboardItem>): AccountDashboardItem {
@@ -160,6 +160,19 @@ test('观测权益优先快照，0 也是有效值', () => {
   expect(observedTotalAsset({ positions: [] }, 995_215.24)).toBe(995_215.24)
   expect(observedTotalAsset(undefined, 995_215.24)).toBe(995_215.24)
   expect(observedTotalAsset(undefined, undefined)).toBe(0)
+})
+
+test('类型化执行结果跳过缺失持仓，明确空数组仍代表观测到的空仓', () => {
+  const record = (id: number, result: ExecuteRecord['result']): ExecuteRecord => ({
+    id, account_id: 1, execution_id: `execution-${id}`, created_at: '2026-10-20T09:00:00', is_success: 1, input: null, result,
+  })
+  const positions: Position[] = [{ symbol: 'rb2610', volume: 1, market_value: null }]
+  const older = record(1, { account_assets: { positions } })
+  expect(positionsOf([record(2, {}), older])).toEqual(positions)
+  for (const result of [null, [], '历史结果', 0, false]) expect(positionsOf([record(2, result), older])).toEqual(positions)
+  expect(positionsOf([record(2, { account_assets: { positions: [] } }), older])).toEqual([])
+  expect(positionsOf([record(2, {})])).toEqual([])
+  expect(positions[0].market_value).toBeNull()
 })
 
 test('调仓提醒随暂停和恢复切换，保留实际偏离事实', () => {

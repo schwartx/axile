@@ -8,7 +8,7 @@ import hashlib
 import io
 import json
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from zipfile import ZipFile
@@ -37,6 +37,7 @@ from axile.executor.account_control.models import (
 )
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_evidence
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.core.db import register_sqlite_concurrency_pragmas
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
 from axile.server.db.models.account_control_session import AccountControlSession
@@ -154,14 +155,30 @@ def _control(execution_id="exec-1", seq=1, **overrides):
     )
 
 
+@dataclass
+class _RecordFixture:
+    """保留可修改的测试输入，由种子入口写成真实结构化事实。"""
+
+    account_id: int
+    execution_id: str | None
+    is_success: int
+    created_at: str
+    raw_input: dict
+    raw_result: dict
+
+
 def _record(execution_id="exec-1", **overrides):
-    return ExecuteRecord(
+    return _RecordFixture(
         **{
             "account_id": 1,
             "execution_id": execution_id,
             "is_success": 1,
             "created_at": "2026-10-15T09:00:10+08:00",
-            "raw_input": {"account_config": {"password": "buried-password"}, "account_name": "private-account-1"},
+            "raw_input": {
+                "account_config": {"password": "buried-password"},
+                "account_name": "private-account-1",
+                "extra": {"api_secret": "input-extra-secret"},
+            },
             "raw_result": {
                 "status": "PARTIAL",
                 "outcome": "not_reached",
@@ -212,7 +229,19 @@ def _record(execution_id="exec-1", **overrides):
 def _seed(factory, *rows):
     async def seed():
         async with factory() as session:
-            session.add_all(rows)
+            for row in rows:
+                if not isinstance(row, _RecordFixture):
+                    session.add(row)
+                    continue
+                record = ExecuteRecord(
+                    account_id=row.account_id,
+                    execution_id=row.execution_id,
+                    is_success=row.is_success,
+                    created_at=row.created_at,
+                )
+                session.add(record)
+                await session.flush()
+                await store_execution_facts(session, record, row.raw_input, row.raw_result)
             await session.commit()
 
     asyncio.run(seed())
@@ -276,7 +305,14 @@ def test_single_execution_retains_partial_native_evidence_and_redacts(database):
     assert json.loads(orders[0]["extra"])["OrderSysID"] == "native-4"
     assert _csv(archive, "executions/exec-1/trades.csv")[0]["trade_id"] == "trade-1"
     data = b"\n".join(archive.read(name) for name in archive.namelist()).decode()
-    for secret in ("buried-password", "nested-secret", "live-credential", "private-account-1", "investor-private"):
+    for secret in (
+        "buried-password",
+        "input-extra-secret",
+        "nested-secret",
+        "live-credential",
+        "private-account-1",
+        "investor-private",
+    ):
         assert secret not in data
     for entry in manifest["files"]:
         raw = archive.read(entry["path"])
@@ -297,7 +333,14 @@ def test_internal_profile_keeps_identity_but_always_excludes_credentials(databas
     contents = b"\n".join(archive.read(name) for name in archive.namelist()).decode()
     assert "private-account-1" in contents
     assert "investor-private" in contents
-    for secret in ("plaintext", "url-secret", "/home/user/private", "buried-password", "nested-secret"):
+    for secret in (
+        "plaintext",
+        "url-secret",
+        "/home/user/private",
+        "buried-password",
+        "input-extra-secret",
+        "nested-secret",
+    ):
         assert secret not in contents
 
 
@@ -501,8 +544,9 @@ def test_execution_environment_is_frozen_before_trade_and_clear(monkeypatch):
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
     monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: calls.append(kwargs))
     monkeypatch.setattr(worker_audit, "execution_environment", lambda *args: {"axile_version": "at-execution"})
+    monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", lambda **_kwargs: "frozen-input")
     worker_audit._append_empty_positions_pre_execute_audit(
-        account=_account(), execution_id="frozen", algorithm_name="SINGLE-MAKER", executor=object()
+        account=_account(), execution_id="frozen", algorithm_name="SINGLE-MAKER", executor=object(), audit_input={}
     )
     environment_rows = [c for c in calls if c["artifact_type"] == ExecutionArtifactType.ENVIRONMENT_SNAPSHOT]
     assert environment_rows[0]["content"]["axile_version"] == "at-execution"
@@ -613,7 +657,7 @@ def test_csv_formulas_escaped_unknown_fields_excluded_and_nulls_remain_null(data
     assert _csv(archive, "executions/exec-1/orders.csv")[0]["order_id"] == "'=HYPERLINK(1)"
     raw = archive.read("executions/exec-1/record.json").decode()
     assert "not-for-sharing" not in raw
-    assert json.loads(raw)["raw_result"]["account_assets"]["positions"] is None
+    assert json.loads(raw)["result"]["account_assets"]["positions"] is None
     assert _csv(archive, "executions/exec-1/reconciliation.csv") == []
 
 
@@ -744,21 +788,21 @@ def test_openapi_describes_binary_download(database):
     assert operation["responses"]["200"]["content"]["application/zip"]["schema"]["format"] == "binary"
 
 
-def test_oversized_json_is_rejected_before_orm_decoding(database):
+@pytest.mark.parametrize(("table", "column"), [("executerecord", "audit_evidence"), ("execution_extension", "extra")])
+def test_oversized_json_is_rejected_before_orm_decoding(database, table, column):
     _seed(database, _intent(), _record())
 
     async def driver():
         async with database() as session:
-            await session.execute(
-                text("UPDATE executerecord SET raw_result=:payload"), {"payload": "invalid-json" * 10000}
-            )
+            await session.execute(text(f"UPDATE {table} SET {column}=:payload"), {"payload": "invalid-json" * 10000})
             await session.commit()
         async with database() as session:
             with pytest.raises(EvidenceError) as error:
                 await collect.collect_evidence(
-                    session, ExportBudget(limits=replace(EvidenceLimits(), bytes=2000)), execution_id="exec-1"
+                    session, ExportBudget(limits=replace(EvidenceLimits(), bytes=20_000)), execution_id="exec-1"
                 )
             assert error.value.status == 413
+            assert error.value.code == "EVIDENCE_TOO_LARGE"
 
     asyncio.run(driver())
 
@@ -799,10 +843,10 @@ def test_mixed_result_exports_each_order_and_trade_once(database, profile, neste
         rows = _csv(archive, path)
         assert len(rows) == 1
         assert rows[0]["symbol"] == "rb2610"
-        assert rows[0]["source_path"] == f"record.json#/raw_result/symbol_results/rb2610/{field}/0"
+        assert rows[0]["source_path"] == f"record.json#/result/symbol_results/rb2610/{field}/0"
         assert next(entry for entry in manifest["files"] if entry["path"] == path)["rows"] == 1
         assert _csv(archive, "executions.csv")[0][field] == "1"
-    raw = json.loads(archive.read("executions/exec-1/record.json"))["raw_result"]
+    raw = json.loads(archive.read("executions/exec-1/record.json"))["result"]
     assert len(raw["orders"]) == len(raw["trades"]) == 1
     assert ("symbol" in raw["symbol_results"]["rb2610"]["trades"][0]) is nested_symbol
 
@@ -825,7 +869,7 @@ def test_mixed_result_keeps_records_only_present_at_top_level(database):
     for field in ("orders", "trades"):
         rows = _csv(archive, f"executions/exec-1/{field}.csv")
         assert [row["symbol"] for row in rows] == ["rb2610", "hc2610"]
-        assert rows[1]["source_path"] == f"record.json#/raw_result/{field}/1"
+        assert rows[1]["source_path"] == f"record.json#/result/{field}/1"
 
 
 def test_mixed_result_retains_different_snapshots_without_counting_new_records(database):
@@ -876,7 +920,9 @@ def test_flat_result_inherits_contract_from_result_context(database, result_sour
         exported = _csv(archive, f"executions/exec-1/{field}.csv")
         assert len(exported) == 1
         assert exported[0]["symbol"] == "rb2610"
-        assert exported[0]["source_path"].startswith("record.json#" if result_source == "record" else "artifacts.json#")
+        assert exported[0]["source_path"].startswith(
+            "record.json#/result/" if result_source == "record" else "artifacts.json#"
+        )
 
 
 def test_mixed_result_without_stable_identity_keeps_every_snapshot(database):

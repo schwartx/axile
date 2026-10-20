@@ -19,7 +19,7 @@ from sqlmodel import SQLModel
 
 from axile.server.api.deps import get_db
 from axile.server.api.routes.account_performance import router
-from axile.server.db.models import ExecuteRecord, PortfolioAccount
+from axile.server.db.models import PortfolioAccount
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance import (
     Observation,
@@ -31,6 +31,7 @@ from axile.server.performance import (
 )
 from axile.server.performance_analysis import AnalysisManager
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.unit.server._business_analysis_support import analysis_record, install_analysis_triggers, persist_records
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 
@@ -308,8 +309,8 @@ def test_tick_formats_and_failed_records(layout):
         id=1,
         execution_id="x",
         created_at="2026-01-01T01:00:00Z",
-        raw_input={"curr_target": {"A": 1}},
-        raw_result=result,
+        input={"curr_target": {"A": 1}},
+        result=result,
         is_success=0,
     )
     item = observation(record)
@@ -317,9 +318,9 @@ def test_tick_formats_and_failed_records(layout):
     assert item.time.hour == 9
     tick["book_valid"] = False
     assert observation(record).prices == {}
-    record.raw_input = {}
+    record.input = {}
     assert observation(record, {"A": 0.5}).target == {"A": 0.5}
-    record.raw_result["execution_kind"] = "clear_positions"
+    record.result["execution_kind"] = "clear_positions"
     assert observation(record).target == {}
 
 
@@ -345,8 +346,8 @@ def test_mark_price_prefers_last_with_mid_fallback():
             id=1,
             execution_id="x",
             created_at="2026-01-01T01:00:00Z",
-            raw_input={},
-            raw_result={"account_assets": {"total_asset": 100}, "first_ticks": {"A": tick}},
+            input={},
+            result={"account_assets": {"total_asset": 100}, "first_ticks": {"A": tick}},
             is_success=1,
         )
 
@@ -374,8 +375,8 @@ def sized_record(symbol_results, curr_target=None, kind=None):
         id=1,
         execution_id="x",
         created_at="2026-01-01T01:00:00Z",
-        raw_input=raw_input,
-        raw_result=result,
+        input=raw_input,
+        result=result,
         is_success=1,
     )
 
@@ -398,7 +399,7 @@ def test_dual_weight_curves_keep_account_axis_and_zero_lot_is_not_fallback():
     second = sized_record({"X": {**sized(qty=0.0), "first_tick": {"last_price": 110}}}, {"X": 1.05})
     second.id = 2
     second.created_at = "2026-01-02T01:00:00Z"
-    second.raw_result["account_assets"]["total_asset"] = 110
+    second.result["account_assets"]["total_asset"] = 110
     result = run([observation(first), observation(second)])
     assert result.points[-1].account_return == pytest.approx(110 / 102335.888 - 1)
     assert result.points[-1].portfolio_return == 0
@@ -588,8 +589,8 @@ def test_only_explicit_degraded_asset_sources_are_excluded(source, expected):
         id=1,
         execution_id="x",
         created_at="2026-01-01",
-        raw_input={},
-        raw_result={"account_assets": {"total_asset": 100, "source": source}},
+        input={},
+        result={"account_assets": {"total_asset": 100, "source": source}},
     )
     assert observation(record).asset == expected
 
@@ -615,23 +616,28 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
     async def setup():
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
-            migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
-            await conn.run_sync(migration.install_triggers)
+            await conn.run_sync(install_analysis_triggers)
         async with sessions() as session:
             session.add(build_account(id=2, account_control_preset="default"))
             session.add(build_account(id=3, account_control_preset="default"))
             for i, price in enumerate([100, 110, 99]):
-                session.add(
-                    ExecuteRecord(
-                        account_id=2,
-                        is_success=1,
-                        created_at=f"2026-01-0{i + 1}T09:00:00",
-                        raw_input={"curr_target": {"A": 1}},
-                        raw_result={
-                            "account_assets": {"total_asset": price},
-                            "first_ticks": {"A": {"bid_price": price, "ask_price": price}},
-                        },
-                    )
+                await persist_records(
+                    session,
+                    [
+                        analysis_record(
+                            id=i + 1,
+                            execution_id=f"routes-{i}",
+                            account_id=2,
+                            is_success=1,
+                            created_at=f"2026-01-0{i + 1}T09:00:00",
+                            input={"curr_target": {"A": 1}},
+                            result={
+                                "account_assets": {"total_asset": price},
+                                "first_ticks": {"A": {"bid_price": price, "ask_price": price}},
+                            },
+                        )
+                    ],
+                    project=True,
                 )
             session.add(PortfolioAccount(account_id=2, portfolio_id=None, created_at="2026-01-02T09:00:00"))
             await session.commit()

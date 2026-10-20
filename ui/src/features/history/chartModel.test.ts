@@ -91,7 +91,7 @@ test('时间和像素映射互逆，缩放固定锚点且平移不越界', () =>
 
 test('区间逐笔采用左开右闭，保留跨日成交、替代时间与多币种收费', () => {
   const trade = (trade_time: string | undefined, currency: string, price = 101) => ({ trade_time, trade_price: price, trade_volume: 1, order_id: 'a', extra: { commission: 1, commission_asset: currency } })
-  const record: ExecuteRecord = { id: 1, execution_id: 'one', created_at: '2026-01-01T18:00:00', is_success: 1, raw_input: {}, raw_result: { symbol_results: { A: { sizing: { unit_multiplier: 1 }, first_tick: { last_price: 100 }, orders: [{ order_id: 'a', direction: 'buy' }], trades: [
+  const record: ExecuteRecord = { account_id: 1, id: 1, execution_id: 'one', created_at: '2026-01-01T18:00:00', is_success: 1, input: {}, result: { symbol_results: { A: { sizing: { unit_multiplier: 1 }, first_tick: { last_price: 100 }, orders: [{ order_id: 'a', direction: 'buy' }], trades: [
     trade('2026-01-01T17:00:00', 'CNY'), trade(undefined, 'USD'), trade('2026-01-01T16:30:00Z', 'CNY'), trade('2026-01-02T17:00:00', 'CNY'), trade('2026-01-02T17:00:01', 'CNY'),
   ] } } } }
   const executions = costExecutions([record])
@@ -106,7 +106,7 @@ test('区间逐笔采用左开右闭，保留跨日成交、替代时间与多�
 })
 
 test('无成交的执行仍按区间时间保留，缺失成本不补零', () => {
-  const record: ExecuteRecord = { id: 2, execution_id: null, created_at: '2026-01-02T10:00:00', is_success: 0, raw_input: {}, raw_result: {} }
+  const record: ExecuteRecord = { account_id: 1, id: 2, execution_id: null, created_at: '2026-01-02T10:00:00', is_success: 0, input: {}, result: {} }
   const executions = costExecutions([record])
   const filtered = selectedExecutions(executions, intervalSelection(shanghaiTime('2026-01-02T09:00:00'), shanghaiTime('2026-01-02T10:00:00')))
   expect(filtered).toHaveLength(1)

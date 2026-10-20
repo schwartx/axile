@@ -18,6 +18,7 @@ from axile.domain.execution import (
     ExecutionTerminateMode,
 )
 from axile.executor.termination import ExecutionTerminationController
+from axile.server.business_facts.symbols import read_outcome_symbols
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import (
     ExecuteRecord,
@@ -25,8 +26,6 @@ from axile.server.db.models import (
     now_str,
 )
 from axile.server.db.models.account import AccountContext
-from axile.server.execution.execution_summaries import build_execution_outcome_details
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
 from axile.server.execution_audit import append_execution_event
 
@@ -402,69 +401,63 @@ def _coerce_optional_text(value: object) -> str | None:
     return None
 
 
-def execution_record_outcome(raw_result: object) -> dict[str, object]:
-    """恒定返回展示结论三元组；status/error 由专门入参传递，避免关键字冲突。"""
-    raw = raw_result if isinstance(raw_result, dict) else {}
-    forwarded = build_execution_outcome_details(raw)
+def execution_record_outcome(
+    record: ExecuteRecord | None,
+    *,
+    outcome_symbols: list[str] | None = None,
+) -> dict[str, object]:
+    """读取类型化展示结论；品种名单由定向查询提供。"""
     return {
-        "outcome": forwarded.get("outcome"),
-        "outcome_reason": forwarded.get("outcome_reason"),
-        "outcome_symbols": forwarded.get("outcome_symbols", []),
+        "outcome": None if record is None else record.display_outcome,
+        "outcome_reason": None if record is None else record.display_outcome_reason,
+        "outcome_symbols": [] if outcome_symbols is None else outcome_symbols,
     }
 
 
-def execution_record_output_status(raw_result: object) -> str | None:
-    """从执行记录结果中读取执行器 ``status``；旧记录经读时归一回填。"""
-    normalized = normalize_legacy_result(raw_result)
-    if not isinstance(normalized, dict):
-        return None
-    return _coerce_optional_text(normalized.get("status"))
+def execution_record_output_status(record: ExecuteRecord | None) -> str | None:
+    """读取执行器状态，不混用任务状态与业务结论。"""
+    return None if record is None else _coerce_optional_text(record.display_status)
 
 
-def execution_record_output_error(raw_result: object) -> str | None:
-    """
-    从执行记录结果中读取人话错误.
-
-    新记录读 ``error``；旧记录经 :func:`normalize_legacy_result` 读时补齐：
-    说人话的遗留文案沿用，异常类名/SDK 原文只进 ``technical_detail``，
-    展示层拿固定人话，不再回退扫描 ``msg``/``memory.message``。
-    """
-    normalized = normalize_legacy_result(raw_result)
-    if not isinstance(normalized, dict):
-        return None
-    return _coerce_optional_text(normalized.get("error"))
+def execution_record_output_error(record: ExecuteRecord | None) -> str | None:
+    """读取已经在写入或迁移时规范化的人话错误。"""
+    return None if record is None else _coerce_optional_text(record.display_error)
 
 
-def _build_persisted_execution_status(record: ExecuteRecord) -> dict[str, object]:
-    """根据执行记录回放任务生命周期状态."""
-    normalized_raw = normalize_legacy_result(record.raw_result)
-    task_status = _coerce_execution_task_status(
-        normalized_raw.get("task_status") if isinstance(normalized_raw, dict) else None
-    )
+async def load_record_outcome_symbols(record: ExecuteRecord | None) -> list[str]:
+    """仅读取未到位或受阻的品种键，不组装完整执行结果。"""
+    if record is None or record.id is None:
+        return []
+    async with SessionLocal() as session:
+        return await read_outcome_symbols(session, record.id)
+
+
+def _build_persisted_execution_status(
+    record: ExecuteRecord,
+    *,
+    outcome_symbols: list[str] | None = None,
+) -> dict[str, object]:
+    """仅根据执行头与定向品种查询回放任务生命周期状态。"""
+    task_status = _coerce_execution_task_status(record.task_status)
     if task_status is None:
         task_status = resolve_record_task_status(record)
-
-    termination_raw = record.raw_result.get("termination")
-    termination = cast("dict[str, object]", termination_raw) if isinstance(termination_raw, dict) else {}
 
     return {
         "execution_id": cast("str", record.execution_id),
         "account_id": record.account_id,
-        "execution_kind": _coerce_execution_kind(record.raw_result.get("execution_kind")),
+        "execution_kind": _coerce_execution_kind(record.execution_kind),
         "status": task_status,
         "created_at": record.created_at,
         "started_at": None,
-        "finished_at": cast("str | None", termination.get("finished_at")) or record.created_at,
-        "error": (
-            None if task_status == ExecutionTaskStatus.TERMINATED else execution_record_output_error(record.raw_result)
-        ),
-        "output_status": execution_record_output_status(record.raw_result),
-        **execution_record_outcome(record.raw_result),
+        "finished_at": record.termination_finished_at or record.created_at,
+        "error": None if task_status == ExecutionTaskStatus.TERMINATED else execution_record_output_error(record),
+        "output_status": execution_record_output_status(record),
+        **execution_record_outcome(record, outcome_symbols=outcome_symbols),
         "record_id": record.id,
         "is_success": record.is_success,
-        "cancel_requested_at": cast("str | None", termination.get("requested_at")),
-        "cancel_reason": cast("str | None", termination.get("reason")),
-        "terminate_mode": _coerce_execution_terminate_mode(termination.get("mode")),
+        "cancel_requested_at": record.termination_requested_at,
+        "cancel_reason": record.termination_reason,
+        "terminate_mode": _coerce_execution_terminate_mode(record.termination_mode),
     }
 
 
@@ -578,11 +571,12 @@ async def get_execution_status(execution_id: str) -> dict[str, object] | None:
             .limit(1)
         )
         record = (await session.execute(statement)).scalar_one_or_none()
+        outcome_symbols = [] if record is None else await read_outcome_symbols(session, cast("int", record.id))
 
     if record is None:
         return serialize_intent(intent) if intent is not None else None
 
-    payload = _build_persisted_execution_status(record)
+    payload = _build_persisted_execution_status(record, outcome_symbols=outcome_symbols)
     # 业务记录写入后，任务收尾仍可能异常；重启不能用休市结果掩盖该异常。
     if (
         payload["status"] == ExecutionTaskStatus.PARTIAL

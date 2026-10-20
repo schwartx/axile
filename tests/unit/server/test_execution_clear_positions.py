@@ -8,6 +8,8 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType
+from axile.server.business_facts.artifacts import resolve_artifact_content
+from axile.server.core.db import SessionLocal
 from axile.server.db.models import Account
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import clear_positions as clear_positions_execution
@@ -469,7 +471,16 @@ def test_empty_positions_captures_before_account_snapshot(
     assert len(before_artifacts) == 1
     content = cast("dict[str, object]", before_artifacts[0]["content"])
     assert content["source"] == "real"
-    assert cast("dict[str, object]", content["account_assets"])["total_asset"] == 1000.0
+    assert before_artifacts[0]["schema_version"] == 3
+    assert "account_assets" not in content
+    assert content["business_facts_ref"]["view"] == "assets_before"
+
+    async def read_before_snapshot():
+        async with SessionLocal() as session:
+            return await resolve_artifact_content(session, before_artifacts[0], account_id=account.id)
+
+    resolved = asyncio.run(read_before_snapshot())
+    assert cast("dict[str, object]", resolved["account_assets"])["total_asset"] == 1000.0
     # 前基线确实穿进对账，source_before 不再恒为 unavailable
     summary = next(a["content"] for a in artifacts if a["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY)
     assert summary["reconciliation"]["account"]["source_before"] == "real"

@@ -18,6 +18,8 @@ from axile.domain.execution import (
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import session_closed_scope
+from axile.server.business_facts.artifacts import make_artifact_reference
+from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_records_output import resolve_completion_event_status
@@ -26,6 +28,10 @@ from axile.server.execution.execution_summaries import (
     build_execution_summary_from_symbol_results,
     build_symbol_reconciliation,
     count_orders_from_symbol_results,
+)
+from axile.server.execution.input_persistence import (
+    persist_post_execute_assets_sync,
+    persist_pre_execute_input_sync,
 )
 from axile.server.execution.worker_backend.protocol import WorkerBackendErrorPayload
 from axile.server.execution_audit import (
@@ -55,6 +61,7 @@ def _event_seq(executor: object) -> int:
 
 def _append_before_snapshot_artifact_sync(
     execution_id: str,
+    input_id: str,
     before_account_assets: dict[str, object] | None,
 ) -> None:
     """写入执行前账户快照附件，供对账取前基线与脊柱渲染.
@@ -72,10 +79,17 @@ def _append_before_snapshot_artifact_sync(
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE,
-        content={
-            "account_assets": before_account_assets or {},
-            "source": before_source,
-        },
+        schema_version=3 if before_account_assets is not None else 1,
+        content=(
+            {
+                **make_artifact_reference(
+                    view="assets_before", input_id=input_id, asset_id=input_asset_fact_id(input_id)
+                ),
+                "source": before_source,
+            }
+            if before_account_assets is not None
+            else {"account_assets": {}, "source": "unavailable"}
+        ),
     )
 
 
@@ -112,6 +126,13 @@ def _append_trade_pre_execute_audit(
     if not execution_id:
         return
 
+    input_id = persist_pre_execute_input_sync(
+        account_id=cast(int, account.id),
+        execution_id=execution_id,
+        payload=audit_input,
+        before_account_assets=before_account_assets,
+    )
+    audit_id = input_id
     _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
     append_execution_event_sync(
         execution_id=execution_id,
@@ -133,29 +154,22 @@ def _append_trade_pre_execute_audit(
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.STANDARD_INPUT,
-        content={"input": audit_input},
+        schema_version=3,
+        content=make_artifact_reference(view="input", input_id=input_id),
     )
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.TARGET_SNAPSHOT,
-        schema_version=2,
-        content={
-            "curr_target": standard_input.curr_target,
-            "strategy_target": audit_input.get("strategy_target", {}),
-            "account_target": standard_input.curr_target,
-            "sizing_context": audit_input.get("sizing_context", {}),
-            "last_target": standard_input.last_target,
-        },
+        schema_version=3,
+        content=make_artifact_reference(view="targets", input_id=audit_id),
     )
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.TRADE_RULES_SNAPSHOT,
-        content={
-            "trade_rules": standard_input.trade_rules,
-            "futures_close_policy": standard_input.futures_close_policy.model_dump(),
-        },
+        schema_version=3,
+        content=make_artifact_reference(view="rules", input_id=audit_id),
     )
-    _append_before_snapshot_artifact_sync(execution_id, before_account_assets)
+    _append_before_snapshot_artifact_sync(execution_id, input_id, before_account_assets)
     append_execution_event_sync(
         execution_id=execution_id,
         account_id=cast(int, account.id),
@@ -182,7 +196,11 @@ def _append_trade_pre_execute_audit(
         reason_family=ExecutionReasonFamily.INPUT,
         reason_code="COMMON.TARGET_COMPUTED",
         seq=_event_seq(executor),
-        details={"decision": {"curr_target": standard_input.curr_target}},
+        details={
+            "decision": {
+                **make_artifact_reference(view="targets", input_id=audit_id, select_fields=["curr_target"]),
+            }
+        },
     )
 
 
@@ -192,12 +210,25 @@ def _append_empty_positions_pre_execute_audit(
     execution_id: str | None,
     algorithm_name: str,
     executor: object,
+    audit_input: dict[str, object],
     before_account_assets: dict[str, object] | None = None,
 ) -> None:
     """补写清仓命令的开始审计事件与执行前账户快照."""
     if not execution_id:
         return
 
+    input_id = persist_pre_execute_input_sync(
+        account_id=cast(int, account.id),
+        execution_id=execution_id,
+        payload=audit_input,
+        before_account_assets=before_account_assets,
+    )
+    append_execution_artifact_sync(
+        execution_id=execution_id,
+        artifact_type=ExecutionArtifactType.STANDARD_INPUT,
+        schema_version=3,
+        content=make_artifact_reference(view="input", input_id=input_id),
+    )
     _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
     append_execution_event_sync(
         execution_id=execution_id,
@@ -216,7 +247,7 @@ def _append_empty_positions_pre_execute_audit(
             }
         },
     )
-    _append_before_snapshot_artifact_sync(execution_id, before_account_assets)
+    _append_before_snapshot_artifact_sync(execution_id, input_id, before_account_assets)
 
 
 def _append_success_audit(
@@ -227,8 +258,6 @@ def _append_success_audit(
     output: UnifiedStandardOutput,
     result: dict[str, object],
     executor: object,
-    include_trade_rule_snapshots: bool,
-    audit_input: dict[str, object] | None = None,
     before_account_assets: dict[str, object] | None = None,
 ) -> None:
     """补写成功结果相关的摘要、账户快照、逐只对账与完成事件.
@@ -242,22 +271,20 @@ def _append_success_audit(
     if not execution_id:
         return
 
-    # 清仓路径不会像调仓路径那样提前写完整输入快照，所以这里补回标准输入附件。
-    if audit_input is not None and not include_trade_rule_snapshots:
+    after_reference = persist_post_execute_assets_sync(
+        account_id=cast(int, account.id), execution_id=execution_id, payload=result
+    )
+    if after_reference is not None:
+        input_id, asset_id = after_reference
         append_execution_artifact_sync(
             execution_id=execution_id,
-            artifact_type=ExecutionArtifactType.STANDARD_INPUT,
-            content={"input": audit_input},
+            artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
+            schema_version=3,
+            content={
+                **make_artifact_reference(view="assets_after", input_id=input_id, asset_id=asset_id),
+                "orders_count": count_orders_from_symbol_results(result),
+            },
         )
-
-    append_execution_artifact_sync(
-        execution_id=execution_id,
-        artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
-        content={
-            "account_assets": result.get("account_assets", {}),
-            "orders_count": count_orders_from_symbol_results(result),
-        },
-    )
     append_execution_artifact_sync(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,

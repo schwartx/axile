@@ -29,12 +29,12 @@ type DetailLink = (id: string | null) => ReactNode
 export function Field({ label, children }: { label: string; children: ReactNode }) {
   return <span className="block min-w-0 break-words xl:text-right"><span className="mr-2 text-xs text-ink-3 xl:hidden">{label}</span>{children}</span>
 }
-export function Slip({ summary }: { summary: CostSummary }) {
-  return <span className={`num ${lossClass(summary.lossBp)}`}>{amount(summary.lossBp)}</span>
+export function Slip({ summary }: { summary: CostSummary | null }) {
+  return <span className={`num ${lossClass(summary?.lossBp ?? null)}`}>{amount(summary?.lossBp ?? null)}</span>
 }
-export function Cost({ summary }: { summary: CostSummary }) {
-  return <span className="inline-flex flex-col items-start xl:items-end"><span className={`num ${lossClass(summary.cost)}`}>{amount(summary.cost)}</span>
-    {summary.count > 0 && (summary.covered < summary.count || !summary.amountComplete) && <span className="text-[11px] text-ink-3">已知成本 · {coverageText(summary)}</span>}</span>
+export function Cost({ summary }: { summary: CostSummary | null }) {
+  return <span className="inline-flex flex-col items-start xl:items-end"><span className={`num ${lossClass(summary?.cost ?? null)}`}>{amount(summary?.cost ?? null)}</span>
+    {summary != null && summary.count > 0 && (summary.covered < summary.count || !summary.amountComplete) && <span className="text-[11px] text-ink-3">已知成本 · {coverageText(summary)}</span>}</span>
 }
 
 // Immutable snapshot pages and terminal execution evidence survive collapse and detail navigation.
@@ -123,7 +123,7 @@ export function ExecutionGroup(props: RowProps) {
       <span className="flex min-w-0 items-center gap-1 num text-xs text-ink-3">{expandable && <ChevronDown size={14} className={`shrink-0 transition-transform motion-reduce:transition-none ${expansion.open ? 'rotate-180' : ''}`} />}{shanghaiLabel(row.time)}</span>
       <span className="col-span-2 min-w-0 break-words text-ink-2 xl:col-span-1">{row.description}{scope && (scope.start != null || scope.day) && <small className="block text-ink-3">区间内成交</small>}</span>
       <span className={row.warning ? 'text-warn' : 'text-ink-2'}>{row.status}</span>
-      <Field label="成交额"><span className="num">{amount(row.summary.value)}</span></Field><Field label="滑点损耗 BP"><Slip summary={row.summary} /></Field><Field label="滑点成本"><Cost summary={row.summary} /></Field><Field label="耗时"><span className="num">{durationText(row.durationSec)}</span></Field>
+      <Field label="成交额"><span className="num">{amount(row.summary?.value ?? null)}</span></Field><Field label="滑点损耗 BP"><Slip summary={row.summary} /></Field><Field label="滑点成本"><Cost summary={row.summary} /></Field><Field label="耗时"><span className="num">{durationText(row.durationSec)}</span></Field>
     </button>
     <div id={panel} inert={!expansion.open} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expansion.open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden"><ExecutionExpansion {...props} /></div></div>
   </div>

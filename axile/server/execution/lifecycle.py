@@ -46,6 +46,7 @@ from axile.server.execution.registry import (
     execution_record_output_status,
     finalize_execution_task_state,
     get_execution_task_state,
+    load_record_outcome_symbols,
     update_execution_task_state,
 )
 from axile.server.execution_audit import append_execution_event
@@ -187,9 +188,9 @@ def _mark_execution_finished(
     finished_at: str,
     record: ExecuteRecord | None = None,
     error: Exception | None = None,
+    outcome_symbols: list[str] | None = None,
 ) -> None:
     """统一更新后台任务的完成态字段。"""
-    raw_result = None if record is None else getattr(record, "raw_result", None)
     update_execution_task_state(
         execution_id,
         status=status,
@@ -198,12 +199,12 @@ def _mark_execution_finished(
         is_success=0 if error is not None else None if record is None else record.is_success,
         # 异常优先；业务失败（如全员 BLOCKED）没有异常，必须从记录里把原因带出来。
         # 任务状态保留具体原因；完整 traceback 另存执行记录。
-        error=str(error) if error is not None else execution_record_output_error(raw_result),
-        output_status="FAILED" if error is not None else execution_record_output_status(raw_result),
+        error=str(error) if error is not None else execution_record_output_error(record),
+        output_status="FAILED" if error is not None else execution_record_output_status(record),
         **(
             {"outcome": "error", "outcome_reason": str(error)}
             if error is not None
-            else execution_record_outcome(raw_result)
+            else execution_record_outcome(record, outcome_symbols=outcome_symbols)
         ),
     )
 
@@ -371,16 +372,16 @@ async def mark_inline_execution_succeeded(execution_id: str, record: ExecuteReco
     None
         该函数仅更新内存状态，不返回结果。
     """
-    raw_result = getattr(record, "raw_result", None)
+    outcome_symbols = await load_record_outcome_symbols(record)
     update_execution_task_state(
         execution_id,
         status=_resolve_completion_status(record),
         finished_at=now_str(),
         record_id=record.id,
         is_success=record.is_success,
-        error=execution_record_output_error(raw_result),
-        output_status=execution_record_output_status(raw_result),
-        **execution_record_outcome(raw_result),
+        error=execution_record_output_error(record),
+        output_status=execution_record_output_status(record),
+        **execution_record_outcome(record, outcome_symbols=outcome_symbols),
     )
 
 
@@ -534,6 +535,7 @@ async def _run_execution_task(
             status=status,
             finished_at=finished_at,
             record=record,
+            outcome_symbols=await load_record_outcome_symbols(record),
         )
         await mark_intent_finished(execution_id, status, finished_at=finished_at)
     except IntentNotRunnable as exc:

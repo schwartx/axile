@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import LargeBinary, and_, cast, func, or_, text
+from sqlalchemy import LargeBinary, and_, case, cast, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from axile.executor.account_control.context import control_context_kind, legacy_operation_source
 from axile.executor.account_control.models import AccountControlContextKind
+from axile.server.business_facts.artifacts import (
+    BusinessFactReferenceError,
+    parse_artifact_reference,
+    resolve_artifact_content,
+    resolve_event_details,
+)
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
 from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
@@ -281,7 +287,12 @@ async def _load_context_batch(
 def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) -> None:
     """真实业务材料优先于保留前缀，单次按 ID 导出也采用相同分类。"""
     for item in list(snapshot.iter_contexts()):
-        business = item.intent is not None or item.record is not None or bool(item.events or item.artifacts)
+        business = (
+            item.intent is not None
+            or item.record is not None
+            or item.input_id is not None
+            or bool(item.events or item.artifacts)
+        )
         rows = [*item.controls, *item.counters, *item.sessions]
         kinds = {control_context_kind(row.get("context_kind", "unknown"), item.key) for row in rows}
         operation = not business and kinds == {AccountControlContextKind.ACCOUNT_OPERATION}
@@ -309,6 +320,177 @@ def _classify_loaded_contexts(snapshot: EvidenceSnapshot, budget: ExportBudget) 
             code="EVIDENCE_TOO_MANY_EXECUTIONS",
             status=413,
         )
+
+
+async def _preflight_fact_sources(
+    session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget, sources: tuple[tuple[Any, Any], ...]
+) -> None:
+    """在解码任一事实 JSON 前，对完整关系图的物理行数和原始字节计费。"""
+    for table, predicate in sources:
+        if table.name == str(ExecuteRecord.__tablename__):
+            # 执行头已经由 _pages 读取并计费；事实表注册表也包含这个头。
+            continue
+        budget.check()
+        raw_size: Any = sum(func.coalesce(func.length(cast(column, LargeBinary)), 0) for column in table.columns)
+        statement = select(func.count(), func.coalesce(func.sum(raw_size), 0)).select_from(table).where(predicate)
+        rows, size = (await session.execute(statement)).one()
+        budget.check(rows=rows, size=size)
+        snapshot.source_counts[table.name] = snapshot.source_counts.get(table.name, 0) + rows
+
+
+def _charge_assembled(budget: ExportBudget, data: Any) -> None:
+    """组装视图也占用内存；重复引用的展开不能绕开全局字节预算。"""
+    budget.check(size=len(json.dumps(data, ensure_ascii=False, allow_nan=False).encode()))
+
+
+def _fact_references(item: ExecutionEvidence) -> Iterator[Mapping[str, object]]:
+    """只枚举声明过的附件和事件引用位置，不猜测未知扩展中的内容。"""
+    for artifact in item.artifacts:
+        reference = parse_artifact_reference(artifact["content"])
+        if reference is not None:
+            yield reference
+    for event in item.events:
+        details = event.get("details")
+        decision = details.get("decision") if isinstance(details, dict) else None
+        if isinstance(decision, dict):
+            reference = parse_artifact_reference(decision)
+            if reference is not None:
+                yield reference
+
+
+async def _hydrate_context_views(
+    session: AsyncSession, item: ExecutionEvidence, records: dict[int, Any], account_id: int, budget: ExportBudget
+) -> None:
+    from axile.server.business_facts.assets import read_input_asset_observations
+    from axile.server.business_facts.repository import read_execution_detail, read_execution_input
+
+    if item.record is not None:
+        item.record = await read_execution_detail(session, records[item.record["id"]])
+        _charge_assembled(budget, item.record)
+        item.input = item.record["input"]
+    elif item.input_id is not None:
+        item.input = await read_execution_input(session, item.input_id)
+        _charge_assembled(budget, item.input)
+    if item.input_id is not None:
+        item.asset_observations = [
+            {
+                "input_id": item.input_id,
+                "fact_path": row["path"],
+                **{key: value for key, value in row.items() if key != "path"},
+            }
+            for row in await read_input_asset_observations(session, item.input_id)
+        ]
+        _charge_assembled(budget, item.asset_observations)
+    for artifact in item.artifacts:
+        if parse_artifact_reference(artifact["content"]) is not None:
+            artifact["content"] = await resolve_artifact_content(session, artifact, account_id=account_id)
+            _charge_assembled(budget, artifact["content"])
+    for event in item.events:
+        resolved = await resolve_event_details(session, event, account_id=account_id)
+        if resolved is not event["details"]:
+            event["details"] = resolved
+            _charge_assembled(budget, resolved)
+
+
+async def _validate_asset_sources(
+    session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget, record_ids: tuple[int, ...]
+) -> str | None:
+    """先计费绑定身份行，再沿标量所有权链验证，之后才允许跟随资产引用。"""
+    from axile.server.business_facts.assets import asset_binding, validate_result_asset_ownership
+
+    if not record_ids:
+        return None
+    await _preflight_fact_sources(
+        session, snapshot, budget, ((asset_binding, asset_binding.c.record_id.in_(record_ids)),)
+    )
+    for record_id in record_ids:
+        await validate_result_asset_ownership(session, record_id)
+    return asset_binding.name
+
+
+async def _preflight_notification_contexts(
+    session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget, records: dict[int, Any]
+) -> None:
+    """通知捕获去重后，冷读所引用的 outbox 同样必须先按物理体积计费。"""
+    from axile.server.business_facts.extensions import execution_extension
+    from axile.server.db.models.supplement import NotificationEvent
+
+    if not records:
+        return
+    extra = execution_extension.c.extra
+    marker_exists = case(
+        (
+            func.json_valid(extra) == 1,
+            func.json_type(extra, '$.server_notification_context."$axile_notification_context"').is_not(None),
+        ),
+        else_=False,
+    )
+    referenced_ids = (
+        (
+            await session.execute(
+                select(execution_extension.c.record_id).where(
+                    execution_extension.c.record_id.in_(tuple(records)), marker_exists
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    event_ids = tuple(
+        f"execution:{records[record_id].execution_id}"
+        for record_id in referenced_ids
+        if records[record_id].execution_id is not None
+    )
+    if event_ids:
+        table: Any = getattr(NotificationEvent, "__table__")
+        owners = await session.execute(select(table.c.account_id, table.c.event_type).where(table.c.id.in_(event_ids)))
+        if any(account_id != snapshot.account["id"] or kind != "execution.finished" for account_id, kind in owners):
+            raise BusinessFactReferenceError("冻结通知引用与执行账户不一致")
+        await _preflight_fact_sources(session, snapshot, budget, ((table, table.c.id.in_(event_ids)),))
+
+
+async def _hydrate_business_facts(session: AsyncSession, snapshot: EvidenceSnapshot, budget: ExportBudget) -> None:
+    """在同一读事务内解析完整事实及不可变附件引用，不创建缺失的审计材料。"""
+    from axile.server.business_facts.repository import (
+        execution_fact_sources,
+        find_execution_input,
+    )
+
+    records: dict[int, Any] = {}
+    inputs: set[str] = set()
+    assets: set[str] = set()
+    for item in snapshot.iter_contexts():
+        if item.record is not None:
+            record = await session.get(ExecuteRecord, item.record["id"])
+            if record is None or record.id is None or record.account_id != snapshot.account["id"]:
+                raise BusinessFactReferenceError("执行业务事实的账户归属冲突")
+            records[record.id] = record
+            item.input_id = record.input_id
+            inputs.update(value for value in (record.input_id, record.result_input_id) if value is not None)
+        elif item.execution_id is not None:
+            item.input_id = await find_execution_input(
+                session, account_id=snapshot.account["id"], execution_id=item.execution_id
+            )
+            if item.input_id is not None:
+                inputs.add(item.input_id)
+        for reference in _fact_references(item):
+            if "input_id" in reference:
+                inputs.add(str(reference["input_id"]))
+            if "asset_id" in reference:
+                assets.add(str(reference["asset_id"]))
+    record_ids = tuple(records)
+    charged_bindings = await _validate_asset_sources(session, snapshot, budget, record_ids)
+    sources = tuple(
+        (table, and_(predicate, table.c.record_id.not_in(record_ids)) if table.name == charged_bindings else predicate)
+        for table, predicate in execution_fact_sources(
+            record_ids=record_ids, input_ids=tuple(inputs), asset_ids=tuple(assets)
+        )
+    )
+    await _preflight_fact_sources(session, snapshot, budget, sources)
+    await _preflight_notification_contexts(session, snapshot, budget, records)
+    for item in snapshot.iter_contexts():
+        await _hydrate_context_views(session, item, records, snapshot.account["id"], budget)
+    _classify_loaded_contexts(snapshot, budget)
 
 
 async def collect_evidence(
@@ -366,6 +548,10 @@ async def collect_evidence(
                 record = await session.get(ExecuteRecord, record_id)
                 item.record = record.model_dump(mode="json", warnings=False) if record is not None else None
                 snapshot.source_counts["executerecord"] = snapshot.source_counts.get("executerecord", 0) + 1
+        try:
+            await _hydrate_business_facts(session, snapshot, budget)
+        except (BusinessFactReferenceError, ValueError, TypeError) as exc:
+            raise EvidenceError("执行业务事实不完整或引用冲突", code="EVIDENCE_INVALID_DATA", status=409) from exc
         budget.check()
         return snapshot
     finally:

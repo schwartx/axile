@@ -3,7 +3,7 @@ import { CenteredModal } from '@/components/ui/CenteredModal'
 import { ErrorCopyButton, ErrorDetailsContent } from '@/components/ui/ErrorDetailsContent'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { errorInfo, shortErrorReason } from '@/lib/errorInfo'
-import { getExecuteRecords } from '@/lib/api/accounts'
+import { readExecutionRecordEvidence } from '@/features/history/executionRecordEvidence'
 import { getExecutionArtifacts, getExecutionEvents, getExecutionStatus } from '@/lib/api/executions'
 import { buildExecutionErrorInfo, readEvidencePages, catalogEvidence, type EvidencePage } from '@/features/history/executionErrorAdapter'
 import type { ExecuteRecord, ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
@@ -63,8 +63,7 @@ export function ExecutionErrorEvidence(props: Context & { events?: ExecutionEven
       if (source === 'record') {
         if (context.record) patch.record = context.record
         else if (context.executionId || context.recordId != null) {
-          const page = await getExecuteRecords(context.accountId, { execution_id: context.executionId ?? undefined, record_id: context.recordId ?? undefined, limit: 1 }, controller.signal)
-          patch.record = page.data[0] ?? null
+          patch.record = await readExecutionRecordEvidence(context.accountId, { executionId: context.executionId, recordId: context.recordId }, controller.signal)
         }
       } else if (source === 'status') patch.status = await getExecutionStatus(context.executionId!, controller.signal)
       else if (source === 'events') {

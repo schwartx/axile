@@ -7,10 +7,11 @@ import type { ExecuteRecord, PortfolioAccountRecord } from '@/types/api'
 /** 造一条执行记录。 */
 function rec(id: number, ok: boolean, at: string, error?: string): ExecuteRecord {
   return {
+    account_id: 1,
     id,
     execution_id: `exec-${id}`,
-    raw_input: {},
-    raw_result: { status: ok ? 'SUCCEEDED' : 'FAILED', error: error },
+    input: {},
+    result: { status: ok ? 'SUCCEEDED' : 'FAILED', error: error },
     is_success: ok ? 1 : 0,
     created_at: at,
   } as ExecuteRecord

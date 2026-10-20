@@ -12,7 +12,7 @@ from typing import Any
 
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
-from axile.server.evidence.models import EvidenceSnapshot, ExecutionEvidence
+from axile.server.evidence.models import EvidenceError, EvidenceSnapshot, ExecutionEvidence
 from axile.server.evidence.records import normalize_result_records
 from axile.server.evidence.timing import context_time_known, counter_time_evidence, selection_time_evidence
 from axile.server.execution.legacy_compat import normalize_legacy_result
@@ -68,14 +68,15 @@ def csv_bytes(rows: list[dict[str, Any]], fields: list[str]) -> bytes:
 
 
 def result_payload(item: ExecutionEvidence) -> tuple[dict[str, Any], str]:
-    """优先取结果账；结果缺失时保留摘要附件，并标注来源。"""
+    """读取结构化事实组装视图；仅无结果账时使用已持久化的摘要附件。"""
     if item.record is not None:
-        raw = item.record.get("raw_result")
-        if isinstance(raw, dict) and raw:
-            return as_dict(normalize_legacy_result(raw)), "record.json#/raw_result"
-    for artifact in item.artifacts:
+        if "result" not in item.record:
+            raise EvidenceError("执行结果事实不完整", code="EVIDENCE_INVALID_DATA", status=409)
+        # 历史 null、标量与空数组仍保存在 record.json，不能据此补造任务或成交。
+        return as_dict(item.record["result"]), "record.json#/result"
+    for index, artifact in enumerate(item.artifacts):
         if artifact["artifact_type"] == "execution_summary":
-            return as_dict(normalize_legacy_result(artifact["content"])), f"artifacts.json#id={artifact['id']}/content"
+            return as_dict(normalize_legacy_result(artifact["content"])), f"artifacts.json#/{index}/content"
     return {}, "unavailable"
 
 
@@ -85,11 +86,13 @@ def _artifact(item: ExecutionEvidence, kind: str) -> dict[str, Any]:
 
 def reconciliation(item: ExecutionEvidence, result: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """只消费已经持久化的权威对账；旧记录缺失时不补造前后持仓。"""
-    artifact = _artifact(item, "execution_summary")
-    if isinstance(artifact.get("reconciliation"), dict):
-        return artifact["reconciliation"], "artifacts.json#execution_summary/reconciliation"
+    for index, artifact in enumerate(item.artifacts):
+        content = as_dict(artifact.get("content"))
+        if artifact["artifact_type"] == "execution_summary" and isinstance(content.get("reconciliation"), dict):
+            return content["reconciliation"], f"artifacts.json#/{index}/content/reconciliation"
     if isinstance(result.get("reconciliation"), dict):
-        return result["reconciliation"], "record.json#/raw_result/reconciliation"
+        _, source = result_payload(item)
+        return result["reconciliation"], f"{source}/reconciliation"
     return {}, "unavailable"
 
 

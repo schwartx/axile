@@ -14,7 +14,7 @@ export interface JournalExecution {
   record?: ExecuteRecord
   key: string; recordId: number | null; time: string; executionId: string | null
   status: string; warning: boolean; description: string; symbols: string[]
-  trades: JournalTrade[]; summary: CostSummary; durationSec: number | null
+  trades: JournalTrade[]; summary: CostSummary | null; durationSec: number | null
 }
 export interface JournalSymbol extends Quality { symbol: string; lastTime: number; trades: JournalTrade[]; summary: CostSummary }
 export const journalAmount = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
@@ -58,7 +58,7 @@ export function journalExecutions(activity: AccountActivity[]): JournalExecution
       time: a.occurred_at, executionId: record?.execution_id ?? null, status,
       warning: view?.warning ?? false,
       description: record ? executionRecordSummary(record, record.trade_count) : recentRowText(recent),
-      symbols, trades: [], summary: record?.summary ?? summarizeCosts([]), recordId: record?.id ?? null, durationSec: record?.duration_sec ?? null,
+      symbols, trades: [], summary: record ? record.summary : summarizeCosts([]), recordId: record?.id ?? null, durationSec: record?.duration_sec ?? null,
     }
   })
 }

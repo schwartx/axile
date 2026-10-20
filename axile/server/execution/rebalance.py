@@ -16,6 +16,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
+from axile.server.business_facts.inputs import load_input_target
 from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
 from axile.server.db.models import Account, ExecuteRecord, Portfolio
@@ -222,13 +223,14 @@ async def _load_last_target_snapshot(account: AccountContext) -> dict[str, objec
     try:
         async with SessionLocal() as session:
             last_record = await get_latest_success_execute_record_by_account_id(session, account.id)
+            if last_record is None or last_record.is_success != 1 or last_record.input_id is None:
+                return {}
+            present, target = await load_input_target(session, last_record.input_id, role="curr_target")
     except Exception as e:
         loguru.logger.opt(exception=e).error("{}", e)
         raise
 
-    if last_record is None or last_record.is_success != 1:
-        return {}
-    return cast("dict[str, object]", last_record.raw_input.get("curr_target", {}))
+    return cast("dict[str, object]", target) if present else {}
 
 
 def _build_rebalance_standard_input(

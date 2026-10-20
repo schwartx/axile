@@ -120,7 +120,7 @@ export function ChartTradingOverlay({ scene, rows, snapshotId, accountId, curren
     if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus({ preventScroll: true })
     onInspect(null); onSelect(null)
   }
-  const title = pinned ? `${timeLabel(pinned.time_ms)} · ${detail?.symbolsComplete ? executionRecordView({ raw_result: detail.rawResult }).text : stateLabel(pinned)}` : cursor ? timeLabel(cursor.time) : ''
+  const title = pinned ? `${timeLabel(pinned.time_ms)} · ${detail?.symbolsComplete ? executionRecordView(detail.rawResult).text : stateLabel(pinned)}` : cursor ? timeLabel(cursor.time) : ''
   const executionId = detail?.executionId ?? pinned?.execution_id
   return <div className="pointer-events-none absolute inset-0" data-testid="chart-trading-overlay">
     {visible && <div ref={cardRef} data-testid="chart-trade-card" role={pinned ? 'dialog' : 'tooltip'} aria-label={pinned ? '成交与持仓详情' : '执行摘要预览'} aria-modal={pinned ? false : undefined} className={`${pinned ? 'pointer-events-auto' : 'pointer-events-none'} absolute z-20 overflow-y-auto overscroll-contain rounded-md border border-line bg-surface px-3 py-2.5 text-xs text-ink-1 shadow-md`} style={{ left, top: Math.max(8, Math.min(90, anchor.y - 55)), width, maxHeight: pinned ? 400 : 340 }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); close() } }}>

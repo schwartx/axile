@@ -131,9 +131,9 @@ def execution_list_payload(payload: dict) -> dict:
 
 
 def project_execution(record) -> tuple[dict, list[dict]]:
-    """Strip large raw JSON after extracting costs, status and record identity."""
+    """Project one explicitly supplied canonical result into compact analysis facts."""
     # 旧记录读时归一：投影层拿到的一律是带 status/error 的契约形状。
-    raw = mapping(normalize_legacy_result(record.raw_result))
+    raw = mapping(normalize_legacy_result(record.result))
     results = {symbol: mapping(value) for symbol, value in mapping(raw.get("symbol_results")).items()}
     trades = []
     has_fill = False

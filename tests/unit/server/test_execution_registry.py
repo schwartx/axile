@@ -14,8 +14,19 @@ from axile.domain.execution import (
     ExecutionTaskStatus,
     ExecutionTerminateMode,
 )
+from axile.server.db.models import ExecuteRecord
 from axile.server.execution import registry as execution_registry
 from tests.unit.server._execution_test_support import FakeSession, build_account
+
+
+@pytest.fixture(autouse=True)
+def _isolate_persisted_symbol_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """状态编排用例不访问真实品种表；定向读取另有数据库测试。"""
+
+    async def read_symbols(_session: object, _record_id: int) -> list[str]:
+        return []
+
+    monkeypatch.setattr(execution_registry, "read_outcome_symbols", read_symbols)
 
 
 def test_get_execution_status_prefers_in_memory_task_state() -> None:
@@ -46,13 +57,13 @@ def test_get_execution_status_falls_back_to_execute_record(
 ) -> None:
     """当内存状态不存在时，应回退到已持久化的执行记录。"""
     execution_id = "exec-record-1"
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=999,
         execution_id=execution_id,
         account_id=1,
         is_success=1,
         created_at="2026-03-12T13:05:00",
-        raw_result={},
+        task_status="SUCCEEDED",
     )
 
     monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
@@ -69,22 +80,18 @@ def test_get_execution_status_uses_persisted_task_status_and_termination_metadat
 ) -> None:
     """持久化回放应优先使用 task_status，并带回 terminate 元信息。"""
     execution_id = "exec-record-terminated-1"
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=1001,
         execution_id=execution_id,
         account_id=1,
         is_success=0,
         created_at="2026-03-12T13:05:00",
-        raw_result={
-            "task_status": "TERMINATED",
-            "execution_kind": "rebalance",
-            "termination": {
-                "requested_at": "2026-03-12T13:05:01",
-                "reason": "manual stop",
-                "mode": "cancel_pending",
-                "finished_at": "2026-03-12T13:05:03",
-            },
-        },
+        task_status="TERMINATED",
+        execution_kind="rebalance",
+        termination_requested_at="2026-03-12T13:05:01",
+        termination_reason="manual stop",
+        termination_mode="cancel_pending",
+        termination_finished_at="2026-03-12T13:05:03",
     )
 
     monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
@@ -214,10 +221,10 @@ def test_registry_helper_functions_cover_status_serialization_and_registration(
     )
     assert execution_registry._coerce_execution_terminate_mode("bad") is None
 
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         execution_id="persisted-exec",
         account_id=1,
-        raw_result={},
+        task_status="FAILED",
         is_success=0,
         created_at="2026-03-22T17:00:00",
         id=501,
@@ -558,36 +565,90 @@ def test_finalize_execution_task_state_ignores_non_terminal() -> None:
 
 
 @pytest.mark.parametrize(
-    ("raw_result", "expected_error"),
+    ("output_status", "expected_error"),
     [
-        ({"status": "BLOCKED", "error": "5 个品种因交易时段不可执行"}, "5 个品种因交易时段不可执行"),
-        ({"status": "FAILED", "msg": "调仓执行失败"}, "调仓执行失败"),
-        ({"status": "BLOCKED", "memory": {"message": "当前不在交易时间"}}, "当前不在交易时间"),
+        ("BLOCKED", "5 个品种因交易时段不可执行"),
+        ("FAILED", "调仓执行失败"),
+        ("BLOCKED", "当前不在交易时间"),
     ],
 )
 def test_persisted_execution_status_reads_output_error_and_status(
-    raw_result: dict[str, object],
+    output_status: str,
     expected_error: str,
 ) -> None:
-    """回放应读 output.status，错误句按 error → msg → memory.message 回退。"""
-    record = SimpleNamespace(
+    """回放直接读取已迁移的执行器状态和错误。"""
+    record = ExecuteRecord(
         execution_id="exec-blocked-1",
         account_id=1,
-        raw_result=raw_result,
+        status=output_status,
+        error=expected_error,
+        display_status=output_status,
+        display_error=expected_error,
+        task_status="FAILED",
         is_success=0,
         created_at="2026-08-26T20:34:30",
         id=6,
     )
     payload = execution_registry._build_persisted_execution_status(record)
     assert payload["error"] == expected_error
-    assert payload["output_status"] == raw_result["status"]
+    assert payload["output_status"] == output_status
 
 
-def test_execution_record_output_error_prefers_error_over_msg() -> None:
-    """标准输出落库字段是 error；msg 只作旧记录兜底。"""
-    raw_result = {"error": "5 个品种因交易时段不可执行", "msg": "执行未成功完成", "status": "BLOCKED"}
-    assert execution_registry.execution_record_output_error(raw_result) == "5 个品种因交易时段不可执行"
-    assert execution_registry.execution_record_output_status(raw_result) == "BLOCKED"
+def test_execution_record_output_error_reads_typed_field() -> None:
+    """展示直接读取 error，其他过程文案不覆盖它。"""
+    record = ExecuteRecord(
+        account_id=1,
+        is_success=0,
+        error="5 个品种因交易时段不可执行",
+        msg="执行未成功完成",
+        status="BLOCKED",
+        display_status="BLOCKED",
+        display_error="5 个品种因交易时段不可执行",
+    )
+    assert execution_registry.execution_record_output_error(record) == "5 个品种因交易时段不可执行"
+    assert execution_registry.execution_record_output_status(record) == "BLOCKED"
+
+
+def test_persisted_status_keeps_task_output_and_outcome_separate() -> None:
+    """任务休市跳过、执行器受阻和业务展示结论分别保留。"""
+    record = ExecuteRecord(
+        id=42,
+        account_id=1,
+        execution_id="three-status-domains",
+        is_success=0,
+        task_status="SKIPPED",
+        status="BLOCKED",
+        outcome="blocked",
+        outcome_reason="非交易时段",
+        error="非交易时段",
+        display_status="BLOCKED",
+        display_outcome="blocked",
+        display_outcome_reason="非交易时段",
+        display_error="非交易时段",
+    )
+    payload = execution_registry._build_persisted_execution_status(record, outcome_symbols=["second", "first"])
+    assert payload["status"] == ExecutionTaskStatus.SKIPPED
+    assert payload["output_status"] == "BLOCKED"
+    assert payload["outcome"] == "blocked"
+    assert payload["outcome_symbols"] == ["second", "first"]
+    assert not hasattr(record, "raw_result")
+
+
+def test_status_uses_persisted_display_fields_without_exposing_technical_error() -> None:
+    """状态读取保留已冻结的展示语义，原始异常文案只留在证据列。"""
+    record = ExecuteRecord(
+        account_id=1,
+        is_success=0,
+        task_status="FAILED",
+        status="FAILED",
+        error="RuntimeError: channel query failed",
+        display_status="FAILED",
+        display_error="执行失败，具体原因见执行证据",
+        display_outcome="error",
+    )
+    assert execution_registry.execution_record_output_error(record) == "执行失败，具体原因见执行证据"
+    assert execution_registry.execution_record_outcome(record)["outcome"] == "error"
+    assert record.error == "RuntimeError: channel query failed"
 
 
 def test_terminal_intent_does_not_hide_persisted_outcome(monkeypatch):
@@ -597,17 +658,19 @@ def test_terminal_intent_does_not_hide_persisted_outcome(monkeypatch):
     async def get_intent(_execution_id):
         return SimpleNamespace(status=ExecutionTaskStatus.FAILED)
 
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=1000,
         execution_id="restart-shortfall",
         account_id=1,
         is_success=0,
         created_at="2026-09-14T14:00:00",
-        raw_result={
-            "status": "PARTIAL",
-            "error": "目标尚未到位",
-            "symbol_results": {"m2701": {"status": "PARTIAL"}},
-        },
+        status="PARTIAL",
+        error="目标尚未到位",
+        outcome="not_reached",
+        task_status="FAILED",
+        display_status="PARTIAL",
+        display_error="目标尚未到位",
+        display_outcome="not_reached",
     )
     monkeypatch.setattr(intents, "get_intent", get_intent)
     monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
@@ -615,27 +678,28 @@ def test_terminal_intent_does_not_hide_persisted_outcome(monkeypatch):
     assert payload["record_id"] == 1000
     assert payload["output_status"] == "PARTIAL"
     assert payload["error"] == "目标尚未到位"
-    # 柔和版读时归一：status 反向补齐展示结论，不再有 legacy 空洞。
     assert payload["outcome"] == "not_reached"
 
 
 def test_partial_session_replay_preserves_later_task_exception(monkeypatch):
     from axile.server.execution import intents
-    from tests.unit.server.test_session_closed_execution import closed_result
 
     async def get_intent(_execution_id):
         return SimpleNamespace(status=ExecutionTaskStatus.FAILED, error="收尾异常")
 
-    raw = closed_result()
-    raw.update(status="PARTIAL", task_status="PARTIAL")
-    raw["symbol_results"]["ag2612"] = {"status": "NOOP"}
-    record = SimpleNamespace(
+    record = ExecuteRecord(
         id=1001,
         execution_id="partial-worker-error",
         account_id=1,
         is_success=0,
         created_at="2026-10-17T01:00:00",
-        raw_result=raw,
+        status="PARTIAL",
+        task_status="PARTIAL",
+        outcome="not_reached",
+        error="非交易时段",
+        display_status="PARTIAL",
+        display_error="非交易时段",
+        display_outcome="not_reached",
     )
     monkeypatch.setattr(intents, "get_intent", get_intent)
     monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))

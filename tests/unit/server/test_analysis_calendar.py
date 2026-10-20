@@ -11,11 +11,11 @@ from sqlmodel import SQLModel
 
 from axile.server import analysis_calendar
 from axile.server.analysis_calendar import ensure_calendar_facts
-from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_state
 from axile.server.db.models.analysis_calendar import analysis_calendar_day as calendar_days
 from axile.server.db.models.analysis_replay import replay_observation as observations
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.unit.server._business_analysis_support import analysis_record, persist_records
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -29,15 +29,19 @@ async def database(tmp_path, dates=()):
         session.add_all([build_account(id=1), build_account(id=2)])
         await session.flush()
         for record_id, (account_id, timestamp) in enumerate(dates, 1):
-            session.add(
-                ExecuteRecord(
-                    id=record_id,
-                    account_id=account_id,
-                    is_success=1,
-                    created_at=timestamp,
-                    raw_input={},
-                    raw_result={},
-                )
+            await persist_records(
+                session,
+                [
+                    analysis_record(
+                        id=record_id,
+                        account_id=account_id,
+                        execution_id=None,
+                        is_success=1,
+                        created_at=timestamp,
+                        input={},
+                        result={},
+                    )
+                ],
             )
             await session.flush()
             await session.execute(

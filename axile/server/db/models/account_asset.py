@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
-from sqlalchemy import JSON as SA_JSON
 from sqlalchemy import Column, ForeignKey, Index, Integer, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import relationship
@@ -30,7 +29,10 @@ class AccountAssetSnapshot(AsyncAttrs, SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     account_id: int = Field(sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), nullable=False))
-    assets: dict[str, Any] = Field(default_factory=dict, sa_column=Column(SA_JSON, nullable=False))
+    asset_fact_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, ForeignKey("business_asset_snapshot.asset_id", ondelete="SET NULL"), nullable=True),
+    )
     source: str = Field(sa_column=Column(Text, nullable=False))
     execution_id: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: str = Field(default_factory=now_str, sa_column=Column(Text, nullable=False))

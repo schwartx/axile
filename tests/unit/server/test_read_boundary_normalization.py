@@ -1,13 +1,18 @@
-"""读时归一的 API 边界回归：旧记录经记录列表 / 活动流 / 附件端点必须带契约字段。"""
+"""迁移后的 API 边界回归：旧记录摘要与独立附件保留既有展示语义。"""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
 
 from axile.server.api.deps import HistoryPagination
 from axile.server.api.routes.account_execution import execution_artifacts
 from axile.server.api.routes.account_schedule import account_activity
+from axile.server.business_facts.repository import read_execution_result, store_execution_facts
+from axile.server.db.models import ExecuteRecord
+from tests.unit.server._execution_test_support import build_account
 
 _LEGACY_RAW = {
     "outcome": "error",
@@ -15,18 +20,6 @@ _LEGACY_RAW = {
     "symbol_results": {"rb2610": {"outcome": "not_reached", "final_volume": 2}},
     "memory": {"message": "RuntimeError: 下单通道断开"},
 }
-
-
-def _legacy_record() -> SimpleNamespace:
-    return SimpleNamespace(
-        id=7,
-        execution_id="legacy-exec",
-        account_id=1,
-        raw_input={},
-        raw_result=dict(_LEGACY_RAW),
-        is_success=0,
-        created_at="2026-09-01T09:00:00",
-    )
 
 
 class _Result:
@@ -66,16 +59,30 @@ def pagination():
 
 
 def test_account_activity_normalizes_legacy():
-    """活动流端点：内嵌执行记录同样读时归一。"""
-    session = _FakeSession(
-        [
-            _Result(None, 1),  # execution count
-            _Result(None, 0),  # skip count
-            _Result([_legacy_record()], None),  # execution rows
-            _Result([], None),  # skip rows
-        ]
-    )
-    payload = asyncio.run(_call(account_activity, session=session, account_id=1, skip=0, limit=20))
+    """真实活动页读取类型化展示列，完整证据仍保留迁移前的原字段。"""
+
+    async def scenario():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                session.add(build_account(id=1))
+                record = ExecuteRecord(
+                    id=7, execution_id="legacy-exec", account_id=1, is_success=0, created_at="2026-09-01T09:00:00"
+                )
+                session.add(record)
+                await session.flush()
+                await store_execution_facts(session, record, raw_input={}, raw_result=_LEGACY_RAW)
+                await session.commit()
+                assert await read_execution_result(session, record) == _LEGACY_RAW
+                return await account_activity(session=session, account_id=1, skip=0, limit=20)
+        finally:
+            await engine.dispose()
+
+    payload = asyncio.run(scenario())
+    assert payload.count == 1
     activity = payload.data[0]
     assert activity.record.status == "FAILED"
     assert activity.record.error == "执行失败，具体原因见执行证据"

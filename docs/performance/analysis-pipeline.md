@@ -4,7 +4,7 @@ Python 负责业务事实、HTTP 和任务协调；Rust 的 `publish_store` 负�
 
 ## 领取、计算与发布
 
-1. Python 通过 CAS 领取账户当前源版本，写入 `running_version` 和独立的 `running_token`，并准备观测、成本源事实与日历。原始业务 JSON 和这些源投影继续由 Python 维护。
+1. Python 通过 CAS 领取账户当前源版本，写入 `running_version` 和独立的 `running_token`，并准备观测、成本源事实与日历。0037 后，Python 维护类型化业务事实及其分析源投影，执行输入、结果、资产和目标权重不再整份追加到旧 JSON 列；存储与迁移边界见[执行业务事实的结构化存储](business-facts.md)。
 2. Python 给 Rust 发送账户、预期源版本、token、设置和渠道等控制字段；`snapshot_id` 与本次 token 相同。业务库路径由服务端解析。
 3. Rust 在一致的只读源事务内计算三个绩效区间，通过进程内回调校验类型化结果行，并写入磁盘暂存 SQLite。结果行不经 Python，也不通过 stdout 返回。
 4. 暂存完整后结束源读事务，再开启主库 `BEGIN IMMEDIATE` 发布事务。这里再次检查源版本、领取版本/token、账户设置与渠道；不会把旧读事务直接升级成写事务。

@@ -10,7 +10,10 @@ from typing import cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
+from axile.server.business_facts.repository import read_execution_result
+from axile.server.db.models import ExecuteRecord
 from axile.server.execution.records import SessionFactory, _persist_execute_record
+from tests.unit.server._execution_test_support import build_account
 
 
 @asynccontextmanager
@@ -19,7 +22,11 @@ async def _session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
-        yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as session:
+            session.add(build_account(id=1))
+            await session.commit()
+        yield factory
     finally:
         await engine.dispose()
 
@@ -27,7 +34,7 @@ async def _session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 def test_duplicate_execution_record_returns_first() -> None:
     """同一执行的两条收尾路径并发落库时保留首条，不向调用方抛 IntegrityError。"""
 
-    async def scenario() -> tuple[int, dict[str, object]]:
+    async def scenario() -> tuple[int | None, ExecuteRecord, object]:
         async with _session_factory() as factory:
             session_factory = cast("SessionFactory", factory)
             first = await _persist_execute_record(
@@ -46,12 +53,17 @@ def test_duplicate_execution_record_returns_first() -> None:
                 is_success=0,
                 session_factory=session_factory,
             )
-            return first.id, second
+            async with factory() as session:
+                result = await read_execution_result(session, second)
+            return first.id, second, result
 
-    first_id, second = asyncio.run(scenario())
+    first_id, second, result = asyncio.run(scenario())
     assert first_id == second.id
     # 首条记录原样保留，未被第二条覆盖。
-    assert "finalized" not in second.raw_result
+    assert isinstance(result, dict)
+    assert result == {"task_status": "TERMINATED"}
+    assert "finalized" not in result
+    assert second.task_status == "TERMINATED"
 
 
 def test_unique_id_conflict_without_execution_id_still_raises() -> None:

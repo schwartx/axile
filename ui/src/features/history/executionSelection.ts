@@ -10,5 +10,5 @@ export function executionSelection(row: CostExecutionRow | AnalysisExecutionSumm
 }
 
 export function executionState(row: CostExecutionRow): string {
-  return executionOutcome(row.record).text
+  return executionOutcome(row.record.raw_result).text
 }

@@ -12,6 +12,50 @@ from axile.server.execution.legacy_compat import normalize_legacy_result
 _QTY_EPS = 1e-9
 # 判定「到位」的相对带宽：``|after - target| <= |target| * 该比例`` 视为到位。
 _ATTAINED_TOLERANCE = 0.01
+_SYMBOL_SUMMARY_FIELDS = frozenset(
+    {
+        "symbol",
+        "algorithm",
+        "status",
+        "error",
+        "reason_code",
+        "outcome",
+        "outcome_reason",
+        "target_volume",
+        "final_volume",
+        "success",
+    }
+)
+
+
+def compact_execution_summary_content(content: Mapping[str, object]) -> dict[str, object]:
+    """在规范结果可供引用后保留小摘要和冻结指标，移除稳定事实副本。
+
+    此函数只裁剪正文；调用方必须在同一事务核验规范结果、添加不可变引用。
+    独立 worker 尚无终态结果时继续保存原始 journal，不调用此函数。
+    """
+    compact = dict(content)
+    symbol_results = compact.get("symbol_results")
+    if isinstance(symbol_results, dict):
+        compact["symbol_results"] = {
+            symbol: {key: field for key, field in value.items() if key in _SYMBOL_SUMMARY_FIELDS}
+            if isinstance(value, dict)
+            else value
+            for symbol, value in symbol_results.items()
+        }
+    reconciliation = compact.get("reconciliation")
+    if isinstance(reconciliation, dict):
+        compact_reconciliation = dict(reconciliation)
+        symbols = reconciliation.get("symbols")
+        if isinstance(symbols, list):
+            compact_reconciliation["symbols"] = [
+                {key: value for key, value in row.items() if key not in {"orders", "sizing"}}
+                if isinstance(row, dict)
+                else row
+                for row in symbols
+            ]
+        compact["reconciliation"] = compact_reconciliation
+    return compact
 
 
 def build_execution_outcome_details(result: Mapping[str, object]) -> dict[str, object]:

@@ -186,8 +186,17 @@ def summarize(rows):
     )
 
 
+def require_legacy_fixture(source: Path) -> None:
+    """Reject typed databases before a historical JSON fixture creates any output."""
+    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(executerecord)")}
+    if not {"raw_input", "raw_result"} <= columns:
+        raise ValueError("Legacy synthetic fixtures require an Axile <=0036 baseline checkout and database")
+
+
 def synthetic_source(source, output, count, symbols):
     """Build an explicitly synthetic multi-symbol load, preserving the original."""
+    require_legacy_fixture(source)
     with (
         closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as original,
         closing(sqlite3.connect(output)) as writer,

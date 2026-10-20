@@ -34,7 +34,7 @@ pytestmark = pytest.mark.contract
 
 @pytest.fixture(scope="module")
 def native_binary():
-    explicit = os.environ.get("AXILE_ANALYSIS_BINARY")
+    explicit = os.environ.get("AXILE_ANALYSIS_TEST_BINARY") or os.environ.get("AXILE_ANALYSIS_BINARY")
     if explicit:
         path = Path(explicit)
         assert path.is_file() and os.access(path, os.X_OK), f"Native analysis binary is not executable: {path}"
@@ -86,8 +86,8 @@ def _record(index, *, day=None, price=100, quantity=1, asset=100, weight=1, mult
         execution_id=f"exec-{index}",
         is_success=1,
         created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1 if day is None else day)).isoformat(),
-        raw_input={"curr_target": {"A": weight}},
-        raw_result={
+        input={"curr_target": {"A": weight}},
+        result={
             "status": "SUCCEEDED",
             "account_assets": {"total_asset": asset, "positions": []},
             "symbol_results": {
@@ -134,20 +134,20 @@ def _replay_records(scenario):
         ]
     records = [_record(i + 1, price=100 + i * 10, asset=100 + i * 10) for i in range(5)]
     if scenario == "missing_target":
-        records[1].raw_input = {}
-        records[1].raw_result["symbol_results"] = {}
-        records[2].raw_input = {}
-        records[2].raw_result["symbol_results"] = {}
+        records[1].input = {}
+        records[1].result["symbol_results"] = {}
+        records[2].input = {}
+        records[2].result["symbol_results"] = {}
     elif scenario == "missing_exit_price":
-        records[1].raw_result["symbol_results"]["A"]["first_tick"] = {}
-        records[1].raw_input["curr_target"] = {}
-        records[1].raw_result["symbol_results"]["A"]["sizing"]["target_quantity"] = 0
+        records[1].result["symbol_results"]["A"]["first_tick"] = {}
+        records[1].input["curr_target"] = {}
+        records[1].result["symbol_results"]["A"]["sizing"]["target_quantity"] = 0
     elif scenario == "sizing_fallback":
         for record in records[1:3]:
-            record.raw_result["symbol_results"]["A"]["sizing"] = {}
+            record.result["symbol_results"]["A"]["sizing"] = {}
     elif scenario == "unknown_asset_day":
-        records[1].raw_result["account_assets"]["total_asset"] = None
-        records[2].raw_result["account_assets"]["total_asset"] = 0
+        records[1].result["account_assets"]["total_asset"] = None
+        records[2].result["account_assets"]["total_asset"] = 0
     else:
         raise AssertionError(scenario)
     return records
@@ -266,8 +266,8 @@ def test_native_performance_rejects_changed_source_version(native_binary, tmp_pa
 
 def _cost_records():
     records = [_record(i, price=100 + i, day=i - 1) for i in range(1, 5)]
-    records[0].raw_result["execution_time"] = 0
-    records[0].raw_result["symbol_results"]["A"].update(
+    records[0].result["execution_time"] = 0
+    records[0].result["symbol_results"]["A"].update(
         orders=[{"order_id": "buy", "direction": "BUY", "filled_volume": 2}],
         trades=[
             {
@@ -286,10 +286,10 @@ def _cost_records():
             {"trade_price": 100, "trade_volume": 2, "trade_time": "bad"},
         ],
     )
-    records[1].raw_result.update(status="NOOP", symbol_results={})
+    records[1].result.update(status="NOOP", symbol_results={})
     records[2].is_success = 0
-    records[2].raw_result.update(status="PARTIAL", error="partial execution", task_status="TERMINATED")
-    records[2].raw_result["symbol_results"]["A"].update(
+    records[2].result.update(status="PARTIAL", error="partial execution", task_status="TERMINATED")
+    records[2].result["symbol_results"]["A"].update(
         status="FAILED",
         error=None,
         orders=[{"order_id": "sell", "direction": "SELL", "filled_volume": None}],
@@ -299,7 +299,7 @@ def _cost_records():
         ],
     )
     records[3].execution_id = None
-    records[3].raw_result["symbol_results"] = {
+    records[3].result["symbol_results"] = {
         "Z_%": {
             "status": "SUCCEEDED",
             "first_tick": {"last_price": 100},

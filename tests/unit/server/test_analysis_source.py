@@ -14,6 +14,7 @@ from axile.server.analysis_cost_facts import iter_cost_fact_batches
 from axile.server.db.models import ExecuteRecord
 from axile.server.performance_analysis import _events
 from axile.server.performance_costs import project_execution, timestamp
+from tests.unit.server._business_analysis_support import persist_records
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_performance_analysis import record
 
@@ -21,7 +22,7 @@ from tests.unit.server.test_performance_analysis import record
 def _rich_record():
     source = record()
     source.is_success = 0
-    raw = source.raw_result
+    raw = source.result
     raw.update(status="PARTIAL", error="未全部成交", reason_code=None, msg="")
     raw["account_assets"]["positions"] = [
         {"symbol": "A", "volume": -2, "direction": "SHORT"},
@@ -127,8 +128,8 @@ def test_source_writer_marks_unsupported_records_without_losing_business_write(t
         async with _database(tmp_path) as (_, sessions):
             async with sessions() as session:
                 source = record()
-                source.raw_result = raw_result
-                session.add(source)
+                source.result = raw_result
+                await persist_records(session, [source])
                 await session.flush()
                 assert await analysis_source.write_source_facts(session, source) is False
                 await session.commit()
@@ -160,7 +161,7 @@ def test_source_writer_projects_once_and_preserves_caller_transaction(tmp_path, 
         async with _database(tmp_path) as (_, sessions):
             async with sessions() as session:
                 source = _rich_record()
-                session.add(source)
+                await persist_records(session, [source])
                 await session.flush()
                 assert await analysis_source.write_source_facts(session, source) is True
                 assert calls == [source.id]
@@ -181,12 +182,13 @@ def test_source_rewrite_removes_obsolete_children_and_keeps_explicit_flat(tmp_pa
         async with _database(tmp_path) as (_, sessions):
             async with sessions() as session:
                 source = _rich_record()
-                session.add(source)
+                await persist_records(session, [source])
                 await session.flush()
                 assert await analysis_source.write_source_facts(session, source)
                 await session.commit()
                 source.is_success = 1
-                source.raw_result = {"status": "NOOP", "account_assets": {"positions": []}, "symbol_results": {}}
+                source.result = {"status": "NOOP", "account_assets": {"positions": []}, "symbol_results": {}}
+                await persist_records(session, [source])
                 assert await analysis_source.write_source_facts(session, source)
                 await session.commit()
             async with sessions() as session:
@@ -219,8 +221,8 @@ def test_source_backfill_is_bounded_resumable_and_does_not_repeat_unsupported(tm
         async with _database(tmp_path) as (_, sessions):
             async with sessions() as session:
                 rows = [record(index) for index in range(1, 6)]
-                rows[2].raw_result = {"status": {"legacy": "shape"}}
-                session.add_all(rows)
+                rows[2].result = {"status": {"legacy": "shape"}}
+                await persist_records(session, rows)
                 await session.commit()
             async with sessions() as session:
                 first = await analysis_source.backfill_source_facts(session, 2, batch_size=2, through_record_id=4)
@@ -270,7 +272,7 @@ def test_source_ensure_commits_bounded_batches_at_a_fixed_record_horizon(tmp_pat
         progress = await original(session, account_id, batch_size, **kwargs)
         observed_batches.append((kwargs["through_record_id"], progress.processed))
         if len(observed_batches) == 1:
-            session.add(record(5))
+            await persist_records(session, [record(5)])
         return progress
 
     monkeypatch.setattr(analysis_source, "backfill_source_facts", observed)
@@ -278,7 +280,7 @@ def test_source_ensure_commits_bounded_batches_at_a_fixed_record_horizon(tmp_pat
     async def check():
         async with _database(tmp_path) as (engine, sessions):
             async with sessions() as session:
-                session.add_all([record(index) for index in range(1, 5)])
+                await persist_records(session, [record(index) for index in range(1, 5)])
                 await session.commit()
             statements = []
 
@@ -294,9 +296,13 @@ def test_source_ensure_commits_bounded_batches_at_a_fixed_record_horizon(tmp_pat
             assert (result.processed, result.complete, result.unsupported) == (4, True, 0)
             assert observed_batches == [(4, 2), (4, 2)]
             assert sum(statement.upper() == "BEGIN IMMEDIATE" for statement in statements) == 2
-            raw_reads = [statement.lower() for statement in statements if "executerecord.raw_result" in statement]
-            assert len(raw_reads) == 2
-            assert all("limit" in statement and "raw_input" not in statement for statement in raw_reads)
+            header_reads = [
+                statement.lower()
+                for statement in statements
+                if "from executerecord" in statement.lower() and "limit" in statement.lower()
+            ]
+            assert len(header_reads) == 2
+            assert all("raw_input" not in statement and "raw_result" not in statement for statement in statements)
             async with sessions() as session:
                 assert await session.get(ExecuteRecord, 5) is not None
                 assert set((await session.execute(sa.select(_table("execution").c.record_id))).scalars()) == {

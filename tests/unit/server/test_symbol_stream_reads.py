@@ -2,17 +2,17 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server.api.routes import account_schedule
 from axile.server.db.models import ExecuteRecord
-from axile.server.performance_costs import summarize
-from tests.unit.server.test_account_activity_projection import _FakeSession, _record, _Result
-from tests.unit.server.test_performance_analysis import database
+from axile.server.performance_costs import project_execution, summarize
+from tests.unit.server._business_analysis_support import persist_records
+from tests.unit.server.test_performance_analysis import database, record
 from tests.unit.server.test_performance_analysis import schema_template as schema_template
 
 
@@ -20,19 +20,15 @@ def test_stream_preserves_all_fills_and_summary_and_bounds_live_records(tmp_path
     async def check():
         async with database(tmp_path, schema_template, count=205) as (engine, sessions, _):
             async with sessions() as session:
-                rows = (
-                    (
-                        await session.execute(
-                            sa.select(ExecuteRecord).order_by(ExecuteRecord.created_at.desc(), ExecuteRecord.id.desc())
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                expected = [trade for row in rows for trade in account_schedule._projected_trades(row)]
-                await session.execute(
-                    sa.update(ExecuteRecord).where(ExecuteRecord.id == 1).values(raw_input={"unused": "x" * 2_000_000})
-                )
+                rows = [record(index) for index in range(205, 0, -1)]
+                expected = [
+                    {**trade, "record_id": row.id, "execution_id": row.execution_id}
+                    for row in rows
+                    for trade in project_execution(row)[1]
+                ]
+                bulky = record(1)
+                bulky.input["algorithm"] = {"params": {"unused": "x" * 2_000_000}}
+                await persist_records(session, [bulky], project=True)
                 await session.commit()
             decoded = []
 
@@ -44,7 +40,14 @@ def test_stream_preserves_all_fills_and_summary_and_bounds_live_records(tmp_path
             try:
                 async with async_sessionmaker(selected)() as session:
                     live_records = []
-                    projector = account_schedule._projected_trades
+                    projector = account_schedule.projected_trade
+                    stream = session.stream
+                    streamed_statements = []
+
+                    async def bounded_stream(statement):
+                        streamed_statements.append(statement)
+                        assert statement.get_execution_options()["yield_per"] == 100
+                        return await stream(statement)
 
                     def project(row):
                         live_records.append(
@@ -52,12 +55,16 @@ def test_stream_preserves_all_fills_and_summary_and_bounds_live_records(tmp_path
                         )
                         return projector(row)
 
-                    with patch.object(account_schedule, "_projected_trades", new=project):
+                    with (
+                        patch.object(account_schedule, "projected_trade", new=project),
+                        patch.object(session, "stream", new=bounded_stream),
+                    ):
                         expanded = await account_schedule.account_activity_symbols(
                             session, 2, "2020", "2030", symbol="A"
                         )
                     assert len(live_records) == 205
-                    assert max(live_records) <= 101
+                    assert max(live_records) == 0, "成交标量流不应创建执行记录 ORM 实例"
+                    assert len(streamed_statements) == 1
                     assert expanded.count == 1
                     assert expanded.data[0].trades == expected
                     assert expanded.data[0].summary.model_dump() == summarize(expected)
@@ -80,12 +87,37 @@ def test_stream_preserves_all_fills_and_summary_and_bounds_live_records(tmp_path
 
 @pytest.mark.parametrize("error", [RuntimeError("projection failed"), asyncio.CancelledError()])
 def test_projection_failure_or_cancellation_closes_stream(error):
-    result = _Result(rows=[_record()])
-    session = _FakeSession([result])
+    class Result:
+        closed = False
+
+        def mappings(self):
+            return self
+
+        async def __aiter__(self):
+            yield {}
+
+        async def close(self):
+            self.closed = True
+
+    result = Result()
+
+    class Session:
+        async def stream(self, statement):
+            assert statement.get_execution_options()["yield_per"] == 100
+            return result
+
+    session = Session()
+
+    async def account_exists(_session, account_id):
+        return SimpleNamespace(id=account_id)
 
     def fail(_row):
         raise error
 
-    with patch.object(account_schedule, "_projected_trades", new=fail), pytest.raises(type(error)):
+    with (
+        patch.object(account_schedule, "_get_account_or_404", new=account_exists),
+        patch.object(account_schedule, "projected_trade", new=fail),
+        pytest.raises(type(error)),
+    ):
         asyncio.run(account_schedule.account_activity_symbols(session, 2, "2020", "2030", symbol=None))
     assert result.closed

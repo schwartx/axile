@@ -177,7 +177,10 @@ export function holdingText(count: number, weights: number[]): string {
  */
 export function positionsOf(records: ExecuteRecord[]): Position[] {
   for (const rec of records) {
-    const positions = rec?.raw_result?.account_assets?.positions
+    const result = rec.result
+    if (result == null || typeof result !== 'object' || Array.isArray(result)) continue
+    const assets = result.account_assets
+    const positions = assets?.positions
     if (Array.isArray(positions)) return positions
   }
   return []

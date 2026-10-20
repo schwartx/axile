@@ -63,19 +63,14 @@
       },
       "list_result": {
         "status": "SUCCEEDED",
-        "error": null,
+        "task_status": "SUCCEEDED",
         "outcome": "completed",
-        "outcome_reason": null,
         "symbol_results": {
           "A": {
             "status": "SUCCEEDED",
-            "error": null,
-            "outcome": "completed",
-            "outcome_reason": null,
-            "reason_code": null
+            "outcome": "completed"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": null
     }
@@ -141,19 +136,14 @@
       },
       "list_result": {
         "status": "NOOP",
-        "error": null,
+        "task_status": "SUCCEEDED",
         "outcome": "completed",
-        "outcome_reason": null,
         "symbol_results": {
           "A": {
             "status": "NOOP",
-            "error": null,
-            "outcome": "completed",
-            "outcome_reason": null,
-            "reason_code": null
+            "outcome": "completed"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": null
     }
@@ -220,9 +210,11 @@
       },
       "list_result": {
         "status": "BLOCKED",
+        "task_status": "SKIPPED",
         "error": "当前不在交易时段",
         "outcome": "blocked",
         "outcome_reason": "当前不在交易时段",
+        "reason_code": "COMMON.SESSION.CLOSED",
         "symbol_results": {
           "A": {
             "status": "BLOCKED",
@@ -231,8 +223,7 @@
             "outcome_reason": "当前不在交易时段",
             "reason_code": "COMMON.SESSION.CLOSED"
           }
-        },
-        "reason_code": "COMMON.SESSION.CLOSED"
+        }
       },
       "event_label": "休市跳过"
     }
@@ -298,6 +289,7 @@
       },
       "list_result": {
         "status": "FAILED",
+        "task_status": "FAILED",
         "error": "最终持仓尚未确认",
         "outcome": "error",
         "outcome_reason": "最终持仓尚未确认",
@@ -306,11 +298,9 @@
             "status": "FAILED",
             "error": "最终持仓尚未确认",
             "outcome": "error",
-            "outcome_reason": "最终持仓尚未确认",
-            "reason_code": null
+            "outcome_reason": "最终持仓尚未确认"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": "执行失败"
     }
@@ -376,6 +366,7 @@
       },
       "list_result": {
         "status": "FAILED",
+        "task_status": "FAILED",
         "error": "最终持仓查询失败，具体原因未确认",
         "outcome": "error",
         "outcome_reason": "最终持仓查询失败，具体原因未确认",
@@ -384,11 +375,9 @@
             "status": "FAILED",
             "error": "最终持仓查询失败，具体原因未确认",
             "outcome": "error",
-            "outcome_reason": "最终持仓查询失败，具体原因未确认",
-            "reason_code": null
+            "outcome_reason": "最终持仓查询失败，具体原因未确认"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": "执行失败"
     }
@@ -457,6 +446,7 @@
       },
       "list_result": {
         "status": "PARTIAL",
+        "task_status": "FAILED",
         "error": "最终持仓查询失败，具体原因未确认",
         "outcome": "not_reached",
         "outcome_reason": "最终持仓查询失败，具体原因未确认",
@@ -465,11 +455,9 @@
             "status": "PARTIAL",
             "error": "最终持仓查询失败，具体原因未确认",
             "outcome": "not_reached",
-            "outcome_reason": "最终持仓查询失败，具体原因未确认",
-            "reason_code": null
+            "outcome_reason": "最终持仓查询失败，具体原因未确认"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": "执行未全部完成"
     }
@@ -538,19 +526,15 @@
       },
       "list_result": {
         "status": "PARTIAL",
+        "task_status": "FAILED",
         "error": "最终持仓尚未确认",
         "outcome": "not_reached",
-        "outcome_reason": null,
         "symbol_results": {
           "A": {
             "status": "SUCCEEDED",
-            "error": null,
-            "outcome": "completed",
-            "outcome_reason": null,
-            "reason_code": null
+            "outcome": "completed"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": "执行未全部完成"
     }
@@ -617,9 +601,11 @@
       },
       "list_result": {
         "status": "BLOCKED",
+        "task_status": "SKIPPED",
         "error": "当前不在交易时段",
         "outcome": "blocked",
         "outcome_reason": "当前不在交易时段",
+        "reason_code": "COMMON.SESSION.CLOSED",
         "symbol_results": {
           "A": {
             "status": "BLOCKED",
@@ -628,8 +614,7 @@
             "outcome_reason": "当前不在交易时段",
             "reason_code": "COMMON.SESSION.CLOSED"
           }
-        },
-        "reason_code": "COMMON.SESSION.CLOSED"
+        }
       },
       "event_label": "休市跳过"
     }
@@ -698,6 +683,7 @@
       },
       "list_result": {
         "status": "PARTIAL",
+        "task_status": "FAILED",
         "error": "目标未完成: 当前持仓=1.0，目标持仓=2",
         "outcome": "not_reached",
         "outcome_reason": "目标未完成: 当前持仓=1.0，目标持仓=2",
@@ -706,11 +692,9 @@
             "status": "PARTIAL",
             "error": "目标未完成: 当前持仓=1.0，目标持仓=2",
             "outcome": "not_reached",
-            "outcome_reason": "目标未完成: 当前持仓=1.0，目标持仓=2",
-            "reason_code": null
+            "outcome_reason": "目标未完成: 当前持仓=1.0，目标持仓=2"
           }
-        },
-        "reason_code": null
+        }
       },
       "event_label": "执行未全部完成"
     }

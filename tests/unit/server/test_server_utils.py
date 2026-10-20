@@ -92,6 +92,10 @@ def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(tim
 def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
     monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
+    monkeypatch.setattr(execution_records, "ensure_execution_asset_snapshot", AsyncMock())
+    monkeypatch.setattr(execution_records, "compact_execution_summary", AsyncMock())
+    store_facts = AsyncMock()
+    monkeypatch.setattr(execution_records, "store_execution_facts", store_facts)
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(
@@ -104,21 +108,28 @@ def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytes
     )
 
     assert fake_session.committed is True
-    assert record.raw_input == {"symbol": "rb2610"}
-    assert record.raw_result == {
+    assert store_facts.await_args.kwargs["raw_input"] == {"symbol": "rb2610"}
+    assert store_facts.await_args.kwargs["raw_result"] == {
         "msg": "boom",
         "status": "FAILED",
         "error": "boom",
         # 柔和版保留展示结论字段，与 status/error 同写。
         "outcome": "error",
         "outcome_reason": "boom",
+        "task_status": "FAILED",
     }
+    assert record.status == "FAILED"
+    assert record.error == "boom"
     assert record.is_success == 0
 
 
 def test_append_terminated_execute_record_persists_termination_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
     monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
+    monkeypatch.setattr(execution_records, "ensure_execution_asset_snapshot", AsyncMock())
+    monkeypatch.setattr(execution_records, "compact_execution_summary", AsyncMock())
+    store_facts = AsyncMock()
+    monkeypatch.setattr(execution_records, "store_execution_facts", store_facts)
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(
@@ -140,10 +151,13 @@ def test_append_terminated_execute_record_persists_termination_metadata(monkeypa
     )
 
     assert fake_session.committed is True
-    assert record.raw_input == {"symbol": "ag2612"}
-    assert record.raw_result["task_status"] == ExecutionTaskStatus.TERMINATED.value
-    assert record.raw_result["execution_kind"] == ExecutionKind.CLEAR_POSITIONS.value
-    assert record.raw_result["termination"]["cancel_failed_order_ids"] == ["oid-1"]
+    assert store_facts.await_args.kwargs["raw_input"] == {"symbol": "ag2612"}
+    result = store_facts.await_args.kwargs["raw_result"]
+    assert result["task_status"] == ExecutionTaskStatus.TERMINATED.value
+    assert result["execution_kind"] == ExecutionKind.CLEAR_POSITIONS.value
+    assert result["termination"]["cancel_failed_order_ids"] == ["oid-1"]
+    assert record.task_status == ExecutionTaskStatus.TERMINATED.value
+    assert record.termination_reason == "manual stop"
 
 
 def test_trade_channel_check_records_error_when_dependency_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
