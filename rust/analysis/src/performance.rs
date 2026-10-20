@@ -451,12 +451,81 @@ fn check_source_version(
     Ok(())
 }
 
+fn flag(request: &Value, name: &str) -> Result<bool, String> {
+    match request.get(name) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{name} must be a boolean")),
+    }
+}
+
+/// Verify the replay snapshot is complete without reading raw JSON payloads.
+fn check_observation_facts(connection: &Connection, account_id: i64) -> Result<(), String> {
+    let mut statement = connection.prepare(
+        "SELECT e.id,e.created_at,e.execution_id,o.record_id,o.account_id,o.time,o.execution_id \
+         FROM executerecord e LEFT JOIN replay_observation o ON o.record_id=e.id \
+         WHERE e.account_id=?1 ORDER BY e.id"
+    ).map_err(database_error)?;
+    let mut rows = statement.query([account_id]).map_err(database_error)?;
+    while let Some(row) = rows.next().map_err(database_error)? {
+        let record_id: i64 = row.get(0).map_err(database_error)?;
+        let observed_id: Option<i64> = row.get(3).map_err(database_error)?;
+        let observed_account: Option<i64> = row.get(4).map_err(database_error)?;
+        let created_at: String = row.get(1).map_err(database_error)?;
+        let observed_time: Option<String> = row.get(5).map_err(database_error)?;
+        let execution_id: Option<String> = row.get(2).map_err(database_error)?;
+        let observed_execution: Option<String> = row.get(6).map_err(database_error)?;
+        let matches_time = observed_time
+            .as_deref()
+            .map(|when| {
+                Ok::<bool, String>(crate::calendar::local_time(&created_at)? == parse_time(when)?)
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if observed_id != Some(record_id)
+            || observed_account != Some(account_id)
+            || execution_id != observed_execution
+            || !matches_time
+        {
+            return Err(format!(
+                "SOURCE_FACTS_INCOMPLETE: observation {record_id} is missing or stale"
+            ));
+        }
+    }
+    let orphan: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM replay_observation o WHERE o.account_id=?1 AND NOT EXISTS \
+         (SELECT 1 FROM executerecord e WHERE e.id=o.record_id AND e.account_id=o.account_id))",
+        [account_id], |row| row.get(0),
+    ).map_err(database_error)?;
+    if orphan {
+        return Err("SOURCE_FACTS_INCOMPLETE: orphaned observation".to_owned());
+    }
+    Ok(())
+}
+
+/// Reuse native metadata assembly when emitting normalized publication rows.
+pub fn enrich_metadata(
+    connection: &Connection,
+    account_id: i64,
+    performance: &mut Value,
+) -> Result<(), String> {
+    crate::calendar::enrich(connection, account_id, performance)
+}
+
 pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String> {
     let account_id = request
         .get("account_id")
         .and_then(Value::as_i64)
         .ok_or("account_id must be an integer")?;
     check_source_version(connection, account_id, request)?;
+    let require_source = flag(request, "require_source_facts")?;
+    if require_source || flag(request, "require_observation_facts")? {
+        check_observation_facts(connection, account_id)?;
+    }
+    if require_source {
+        crate::source::validate(connection, account_id)?;
+    }
+    let include_metadata = flag(request, "include_metadata")?;
     let fee = request
         .pointer("/settings/backtest_fee_rate")
         .and_then(Value::as_f64)
@@ -565,18 +634,24 @@ pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String>
         })?;
     }
     if request.get("range").is_some() {
-        return Ok(states.pop().expect("one requested range").finish(
+        let mut result = states.pop().expect("one requested range").finish(
             &settings,
             record_count,
             include_backtest,
-        ));
+        );
+        if include_metadata {
+            enrich_metadata(connection, account_id, &mut result)?;
+        }
+        return Ok(result);
     }
     let mut result = serde_json::Map::new();
     for state in states {
-        result.insert(
-            state.key.to_owned(),
-            state.finish(&settings, record_count, include_backtest),
-        );
+        let key = state.key;
+        let mut performance = state.finish(&settings, record_count, include_backtest);
+        if include_metadata {
+            enrich_metadata(connection, account_id, &mut performance)?;
+        }
+        result.insert(key.to_owned(), performance);
     }
     Ok(Value::Object(result))
 }
@@ -700,6 +775,108 @@ mod tests {
             .starts_with("SOURCE_VERSION_CHANGED:"));
         request["expected_source_version"] = json!(true);
         assert!(handle(&connection, &request).is_err());
+    }
+
+    #[test]
+    fn observation_readiness_rejects_missing_stale_and_orphaned_rows() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T09:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        connection
+            .execute_batch(
+                "CREATE TABLE executerecord (id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
+             execution_id TEXT,created_at TEXT NOT NULL);
+             INSERT INTO executerecord VALUES (1,1,'execution-1','2026-01-01T01:00:00Z');",
+            )
+            .unwrap();
+        let request = json!({"account_id":1,"require_observation_facts":true,
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
+        assert!(handle(&connection, &request).is_ok());
+        connection
+            .execute("UPDATE executerecord SET execution_id='changed'", [])
+            .unwrap();
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
+        connection
+            .execute("UPDATE executerecord SET execution_id='execution-1'", [])
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE executerecord SET created_at='2026-01-02T01:00:00Z'",
+                [],
+            )
+            .unwrap();
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
+        connection
+            .execute(
+                "UPDATE executerecord SET created_at='2026-01-01T01:00:00Z'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM replay_observation WHERE record_id=1", [])
+            .unwrap();
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
+        connection.execute("DELETE FROM executerecord", []).unwrap();
+        insert(
+            &connection,
+            2,
+            "2026-01-02T09:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        assert!(handle(&connection, &request)
+            .unwrap_err()
+            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
+    }
+
+    #[test]
+    fn metadata_flag_enriches_bindings_and_channel_calendar() {
+        let connection = fixture();
+        insert(
+            &connection,
+            1,
+            "2026-01-01T09:00:00",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        connection.execute_batch(
+            "CREATE TABLE account (id INTEGER PRIMARY KEY,trade_channel TEXT NOT NULL);
+             INSERT INTO account VALUES (1,'ctp');
+             CREATE TABLE portfolioaccount (id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at TEXT);
+             INSERT INTO portfolioaccount VALUES (1,1,3,'2026-01-01T01:00:00Z');
+             CREATE TABLE analysis_calendar_day (channel TEXT,day TEXT,status TEXT,calendar_id TEXT,label TEXT,PRIMARY KEY(channel,day));
+             INSERT INTO analysis_calendar_day VALUES ('ctp','2026-01-01','available_closed','china','中国');"
+        ).unwrap();
+        let request = json!({"account_id":1,"include_metadata":true,"range":"all",
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
+        let actual = handle(&connection, &request).unwrap();
+        assert_eq!(actual["calendar"]["status"], "available");
+        assert_eq!(
+            actual["calendar"]["closed_ranges"],
+            json!([{"start":"2026-01-01","end":"2026-01-01"}])
+        );
+        assert_eq!(
+            actual["bindings"],
+            json!([{"time":"2026-01-01T09:00:00","portfolio_id":3}])
+        );
+        assert_eq!(
+            calculate(&connection, true)["all"]["calendar"]["status"],
+            "unavailable"
+        );
     }
 
     #[test]

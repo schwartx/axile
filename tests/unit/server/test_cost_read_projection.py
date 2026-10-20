@@ -7,11 +7,27 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from axile.server.alembic.analysis0035_cost_restore import restore_cost_payloads
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import cost_execution as executions
 from axile.server.performance_details import CostQuery, read_costs
+from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 from tests.unit.server.test_performance_analysis import database, queue, snapshot
 from tests.unit.server.test_performance_analysis import schema_template as schema_template
+
+
+async def _legacy_snapshot(session) -> None:
+    """Restore a real legacy publication before exercising old JSON-only contracts."""
+    migration = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
+
+    def restore(connection):
+        restore_cost_payloads(connection)
+        migration._restore_results(connection)
+
+    connection = await session.connection()
+    await connection.run_sync(restore)
+    await session.execute(snapshots.update().values(cost_schema_version=0, result_schema_version=0))
+    await session.commit()
 
 
 @pytest.mark.parametrize("token", ["null", "false", "0", "-0.0", '"中文-id"', "5.346525073723255485091955e-135"])
@@ -23,6 +39,7 @@ def test_trade_execution_identifier_preserves_original_json_type_and_precision(t
             batch = await snapshot(sessions)
             raw = '{"record":{"id":1,"execution_id":' + token + "}}"
             async with sessions() as session:
+                await _legacy_snapshot(session)
                 await session.execute(sa.text("UPDATE performance_cost_execution SET payload=:raw"), {"raw": raw})
                 await session.commit()
                 page = await read_costs(session, 2, CostQuery(snapshot_id=batch["snapshot_id"], dimension="trade"))
@@ -44,6 +61,7 @@ def test_cost_pages_never_decode_unrelated_large_json_fields(tmp_path, schema_te
             batch = await snapshot(sessions)
             query = CostQuery(snapshot_id=batch["snapshot_id"], dimension="trade")
             async with sessions() as session:
+                await _legacy_snapshot(session)
                 expected = await read_costs(session, 2, query)
                 ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
                 ranges["unrelated"] = "x" * 2_000_000
@@ -81,6 +99,7 @@ def test_missing_keys_remain_distinct_from_explicit_null(tmp_path, schema_templa
             batch = await snapshot(sessions)
             query = CostQuery(snapshot_id=batch["snapshot_id"], dimension="trade")
             async with sessions() as session:
+                await _legacy_snapshot(session)
                 ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
                 ranges["all"]["performance"].pop("baseline")
                 await session.execute(snapshots.update().values(ranges=ranges))

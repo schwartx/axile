@@ -45,6 +45,7 @@ class _Session:
 
 def test_success_record_persists_matching_asset_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
+    monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
     session = _Session()
     account = build_account(id=51)
     result = {

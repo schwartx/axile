@@ -13,7 +13,7 @@ from axile.server import native_account_performance as module
 from axile.server.db.models import ExecuteRecord, PortfolioAccount
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis_replay import replay_observation as facts
-from axile.server.db.models.performance import AccountPerformance, PerformanceSettings
+from axile.server.db.models.performance import AccountPerformance, PerformanceBinding, PerformanceSettings
 from axile.server.native_analysis import NativeAnalysisError
 from axile.server.performance import calculate_performance, observation
 from tests.unit.server._execution_test_support import build_account
@@ -60,6 +60,8 @@ def test_native_account_returns_keep_curve_and_metadata_without_point_models(tmp
         engine, sessions = await database(tmp_path)
         settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0.003)
         expected = calculate_performance([observation(item) for item in records()], settings, range_key, False, "ctp")
+        expected.bindings = [PerformanceBinding(time="2026-01-02T09:00:00", portfolio_id=None)]
+        encoded = b"\n" + expected.model_dump_json().encode() + b" \n"
         calls = []
         prepared = []
         ensure = module.ensure_observation_facts
@@ -73,10 +75,12 @@ def test_native_account_returns_keep_curve_and_metadata_without_point_models(tmp
             assert fields["account_id"] == 7 and fields["range"] == range_key
             assert fields["settings"] == settings.model_dump()
             assert fields["include_backtest"] is False
+            assert fields["include_metadata"] is True
+            assert fields["require_observation_facts"] is True
             assert fields["expected_source_version"] == 1
             assert not prepared[-1].in_transaction()
             calls.append(fields)
-            return expected.model_dump_json().encode()
+            return encoded
 
         def reject_models(*args, **kwargs):
             raise AssertionError("native curve must not be rebuilt as point models")
@@ -88,7 +92,9 @@ def test_native_account_returns_keep_curve_and_metadata_without_point_models(tmp
             async with sessions() as session:
                 # The existing read transaction must close before bounded backfill writes.
                 await session.execute(sa.text("BEGIN"))
-                actual = json.loads(await module.native_account_performance(session, 7, range_key))
+                returned = await module.native_account_performance(session, 7, range_key)
+                assert returned is encoded
+                actual = json.loads(returned)
                 assert prepared[0] is not session
                 assert not session.in_transaction()
             assert actual["points"] == expected.model_dump()["points"]

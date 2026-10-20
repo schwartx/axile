@@ -9,8 +9,11 @@ import sqlalchemy as sa
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION
+from axile.server.analysis_cost_reader import read_execution_payloads, scalar_columns, trade_payload
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import cost_execution as executions
+from axile.server.db.models.analysis import cost_range as ranges
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.db.models.performance import RangeKey
 from axile.server.performance_costs import execution_list_payload, timestamp
@@ -68,9 +71,11 @@ def _cursor(query: CostQuery, account_id: int) -> tuple[str, int]:
     return digest, offset
 
 
-def _filters(query: CostQuery, result: dict):
-    start = timestamp(result["baseline"]) if result["baseline"] else 0
-    end = timestamp(result["end"]) if result["end"] else -1
+def _filters(query: CostQuery, result: dict, typed: bool = False):
+    start = result["baseline"] if typed else timestamp(result["baseline"]) if result["baseline"] else None
+    end = result["end"] if typed else timestamp(result["end"]) if result["end"] else None
+    start = start if start is not None else 0
+    end = end if end is not None else -1
     execution_filter = [
         executions.c.snapshot_id == query.snapshot_id,
         executions.c.time >= start,
@@ -91,7 +96,7 @@ def _filters(query: CostQuery, result: dict):
     if query.symbol is not None:
         trade_filter.append(trades.c.symbol == query.symbol)
     if query.side is not None:
-        trade_filter.append(trades.c.payload["side"].as_string() == query.side)
+        trade_filter.append(_side_column(typed) == query.side)
     if query.symbol_search:
         trade_filter.append(trades.c.symbol.icontains(query.symbol_search, autoescape=True))
     has_symbol = query.symbol is not None or bool(query.symbol_search) or query.side is not None
@@ -149,7 +154,15 @@ async def summary(session, filters: list) -> dict:
     }
 
 
-async def _execution_page(session, filters, trade_filter, query, offset):
+def _side_column(typed: bool):
+    return trades.c.side if typed else trades.c.payload["side"].as_string()
+
+
+def _quantity_column(typed: bool):
+    return trades.c.quantity if typed else trades.c.payload["quantity"].as_float()
+
+
+async def _execution_page(session, filters, trade_filter, query, offset, typed=False):
     cost = (
         sa.select(trades.c.record_id, sa.func.sum(trades.c.cost).label("cost"))
         .where(*trade_filter)
@@ -157,28 +170,31 @@ async def _execution_page(session, filters, trade_filter, query, offset):
         .subquery()
     )
     stmt = (
-        sa.select(executions.c.payload, cost.c.cost)
+        sa.select(*(scalar_columns(executions) if typed else [executions.c.payload]), cost.c.cost)
         .select_from(executions.outerjoin(cost, executions.c.record_id == cost.c.record_id))
         .where(*filters)
     )
     ordering = [executions.c.time.desc(), executions.c.record_id.desc()]
     if query.sort == "cost":
         ordering.insert(0, cost.c.cost.desc().nulls_last())
-    rows = (await session.execute(stmt.order_by(*ordering).offset(offset).limit(query.limit))).all()
+    rows = (await session.execute(stmt.order_by(*ordering).offset(offset).limit(query.limit))).mappings().all()
+    payloads = (
+        await read_execution_payloads(session, query.snapshot_id, rows) if typed else [row["payload"] for row in rows]
+    )
     data = []
-    for payload, _ in rows:
+    for payload in payloads:
         row_filter = [*trade_filter, trades.c.record_id == payload["record"]["id"]]
         row_summary = await summary(session, row_filter)
         symbol_count = await session.scalar(
             sa.select(sa.func.count(sa.distinct(trades.c.symbol))).where(
-                *row_filter, trades.c.payload["quantity"].as_float().is_not(None)
+                *row_filter, _quantity_column(typed).is_not(None)
             )
         )
         data.append({**execution_list_payload(payload), "symbolCount": symbol_count, "summary": row_summary})
     return data
 
 
-async def _symbol_page(session, filters, query, offset):
+async def _symbol_page(session, filters, query, offset, typed=False):
     cost = sa.func.sum(trades.c.cost)
     stmt = sa.select(trades.c.symbol).where(*filters).group_by(trades.c.symbol)
     ordering = [cost.desc().nulls_last(), trades.c.symbol] if query.sort == "cost" else [trades.c.symbol]
@@ -191,13 +207,13 @@ async def _symbol_page(session, filters, query, offset):
                 sa.select(
                     sa.func.sum(
                         sa.case(
-                            (trades.c.payload["side"].as_string() == "buy", trades.c.payload["quantity"].as_float()),
+                            (_side_column(typed) == "buy", _quantity_column(typed)),
                             else_=0,
                         )
                     ),
                     sa.func.sum(
                         sa.case(
-                            (trades.c.payload["side"].as_string() == "sell", trades.c.payload["quantity"].as_float()),
+                            (_side_column(typed) == "sell", _quantity_column(typed)),
                             else_=0,
                         )
                     ),
@@ -205,8 +221,8 @@ async def _symbol_page(session, filters, query, offset):
                         sa.case(
                             (
                                 sa.or_(
-                                    trades.c.payload["side"].as_string() == "none",
-                                    trades.c.payload["quantity"].as_float().is_(None),
+                                    _side_column(typed) == "none",
+                                    _quantity_column(typed).is_(None),
                                 ),
                                 1,
                             )
@@ -245,14 +261,78 @@ def _execution_identifier(identity, kind):
     return identity[0]
 
 
+async def _legacy_bounds(session, query: CostQuery) -> dict:
+    """Keep exact JSON numeric tokens and missing-key behavior for schema zero."""
+    path = f'$."{query.range}".performance'
+    batch = (
+        (
+            await session.execute(
+                sa.select(
+                    sa.func.json_extract(snapshots.c.ranges, path + ".baseline", path + ".end", type_=sa.JSON()).label(
+                        "bounds"
+                    ),
+                    sa.func.json_type(snapshots.c.ranges, path + ".baseline").label("baseline_kind"),
+                    sa.func.json_type(snapshots.c.ranges, path + ".end").label("end_kind"),
+                ).where(snapshots.c.id == query.snapshot_id)
+            )
+        )
+        .mappings()
+        .one()
+    )
+    return _cost_bounds(batch)
+
+
+async def _trade_page(session, filters, ordering, query, offset, typed):
+    columns = (
+        [*scalar_columns(trades), executions.c.execution_id]
+        if typed
+        else [
+            trades.c.payload,
+            trades.c.id,
+            trades.c.record_id,
+            sa.func.json_extract(executions.c.payload, "$.record.execution_id", "$.record.id", type_=sa.JSON()).label(
+                "identity"
+            ),
+            sa.func.json_type(executions.c.payload, "$.record.execution_id").label("kind"),
+        ]
+    )
+    rows = (
+        await session.execute(
+            sa.select(*columns)
+            .select_from(
+                trades.join(
+                    executions,
+                    sa.and_(
+                        trades.c.snapshot_id == executions.c.snapshot_id, trades.c.record_id == executions.c.record_id
+                    ),
+                )
+            )
+            .where(*filters)
+            .order_by(*ordering)
+            .offset(offset)
+            .limit(query.limit)
+        )
+    ).mappings()
+    return [
+        {
+            **(trade_payload(row) if typed else row["payload"]),
+            "trade_id": row["id"],
+            "record_id": row["record_id"],
+            "execution_id": row["execution_id"] if typed else _execution_identifier(row["identity"], row["kind"]),
+        }
+        for row in rows
+    ]
+
+
 async def read_costs(session, account_id: int, query: CostQuery) -> dict:
+    """Keep all page reads in one SQLite snapshot without discarding caller work."""
+    async with session.begin_nested():
+        return await _read_costs(session, account_id, query)
+
+
+async def _read_costs(session, account_id: int, query: CostQuery) -> dict:
     """Read a stable page or explicitly reject an evicted snapshot version."""
     digest, offset = _cursor(query, account_id)
-    # Keep version existence, aggregates and page rows in the same read transaction.
-    if session.in_transaction():
-        await session.rollback()
-    await session.execute(sa.text("BEGIN"))
-    path = f'$."{query.range}".performance'
     batch = (
         (
             await session.execute(
@@ -260,13 +340,7 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
                     snapshots.c.data_until,
                     snapshots.c.logic_version,
                     snapshots.c.engine_version,
-                    # Multi-path extraction returns JSON text. Decode it once in
-                    # Python, retaining scalar kinds and original numeric tokens.
-                    sa.func.json_extract(snapshots.c.ranges, path + ".baseline", path + ".end", type_=sa.JSON()).label(
-                        "bounds"
-                    ),
-                    sa.func.json_type(snapshots.c.ranges, path + ".baseline").label("baseline_kind"),
-                    sa.func.json_type(snapshots.c.ranges, path + ".end").label("end_kind"),
+                    snapshots.c.cost_schema_version,
                 ).where(snapshots.c.id == query.snapshot_id, snapshots.c.account_id == account_id)
             )
         )
@@ -277,7 +351,24 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
 
     if batch is None or batch["logic_version"] != LOGIC_VERSION or batch["engine_version"] != ENGINE_VERSION:
         raise HTTPException(410, detail={"code": "SNAPSHOT_EXPIRED", "message": "快照版本已失效，请重新读取绩效"})
-    execution_filter, trade_filter = _filters(query, _cost_bounds(batch))
+    typed = batch["cost_schema_version"] == COST_FACT_SCHEMA_VERSION
+    if typed:
+        bounds = (
+            (
+                await session.execute(
+                    sa.select(ranges.c.baseline, ranges.c.end).where(
+                        ranges.c.snapshot_id == query.snapshot_id, ranges.c.range_key == query.range
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    elif batch["cost_schema_version"] == 0:
+        bounds = await _legacy_bounds(session, query)
+    else:
+        raise HTTPException(410, detail={"code": "SNAPSHOT_EXPIRED", "message": "快照版本已失效，请重新读取绩效"})
+    execution_filter, trade_filter = _filters(query, bounds, typed)
     totals = await summary(session, trade_filter)
     execution_counts = (
         await session.execute(
@@ -292,48 +383,16 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
         count, data = 0, []
     elif query.dimension == "execution":
         count = execution_counts[0]
-        data = await _execution_page(session, execution_filter, trade_filter, query, offset)
+        data = await _execution_page(session, execution_filter, trade_filter, query, offset, typed)
     elif query.dimension == "symbol":
         count = await session.scalar(sa.select(sa.func.count(sa.distinct(trades.c.symbol))).where(*trade_filter))
-        data = await _symbol_page(session, trade_filter, query, offset)
+        data = await _symbol_page(session, trade_filter, query, offset, typed)
     else:
         count = totals["count"]
         ordering = [trades.c.time.desc(), trades.c.id]
         if query.sort == "cost":
             ordering.insert(0, trades.c.cost.desc().nulls_last())
-        rows = (
-            await session.execute(
-                sa.select(
-                    trades.c.payload,
-                    trades.c.id,
-                    trades.c.record_id,
-                    sa.func.json_extract(executions.c.payload, "$.record.execution_id", "$.record.id", type_=sa.JSON()),
-                    sa.func.json_type(executions.c.payload, "$.record.execution_id"),
-                )
-                .select_from(
-                    trades.join(
-                        executions,
-                        sa.and_(
-                            trades.c.snapshot_id == executions.c.snapshot_id,
-                            trades.c.record_id == executions.c.record_id,
-                        ),
-                    )
-                )
-                .where(*trade_filter)
-                .order_by(*ordering)
-                .offset(offset)
-                .limit(query.limit)
-            )
-        ).all()
-        data = [
-            {
-                **payload,
-                "trade_id": trade_id,
-                "record_id": record_id,
-                "execution_id": _execution_identifier(identity, kind),
-            }
-            for payload, trade_id, record_id, identity, kind in rows
-        ]
+        data = await _trade_page(session, trade_filter, ordering, query, offset, typed)
     next_cursor = (
         base64.urlsafe_b64encode(json.dumps({"scope": digest, "offset": offset + query.limit}).encode()).decode()
         if offset + query.limit < count

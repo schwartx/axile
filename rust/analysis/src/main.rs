@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use axile_analysis::error::AnalysisError;
-use axile_analysis::{capabilities, query, MAX_REQUEST_BYTES};
+use axile_analysis::{capabilities, query, query_stream, MAX_REQUEST_BYTES};
 
 fn main() -> ExitCode {
     match run() {
@@ -28,7 +28,8 @@ fn run() -> Result<(), AnalysisError> {
         println!(
             "axile-analysis query --database PATH\n\
              axile-analysis capabilities\n\n\
-             query reads one JSON request from stdin and writes one JSON result to stdout."
+             query reads one JSON request from stdin and writes its JSON result to stdout.\n\
+             Requests with command publish stream JSONL frames ending in a complete frame."
         );
         return Ok(());
     }
@@ -69,9 +70,14 @@ fn run() -> Result<(), AnalysisError> {
             "request exceeds 1 MiB",
         ));
     }
-    let request = serde_json::from_slice(&input)
+    let request: serde_json::Value = serde_json::from_slice(&input)
         .map_err(|error| AnalysisError::new("INVALID_REQUEST", error.to_string()))?;
-    write_result(&query(&database, &request)?)
+    if request.get("command").and_then(serde_json::Value::as_str) == Some("publish") {
+        let mut stdout = io::BufWriter::new(io::stdout().lock());
+        query_stream(&database, &request, &mut stdout)
+    } else {
+        write_result(&query(&database, &request)?)
+    }
 }
 
 fn write_result(result: &serde_json::Value) -> Result<(), AnalysisError> {

@@ -12,10 +12,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from axile.server import analysis_observations
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord, Portfolio
 from axile.server.db.models.analysis_replay import replay_observation as observations
 from axile.server.db.models.analysis_replay import replay_observation_symbol as symbols
+from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES, source_execution
 from axile.server.execution import records
 from axile.server.target_weight_snapshots import append_target_weight_snapshot
 from tests.unit.server._execution_test_support import build_account
@@ -83,17 +83,25 @@ def test_record_fact_freezes_final_sizing_and_commits_with_record() -> None:
                 assert symbol["target_units"] == 6.0
                 assert symbol["target_quantity"] == 2.0
                 assert (await session.scalar(sa.select(sa.func.count()).select_from(AccountAssetSnapshot))) == 1
+                source = (await session.execute(sa.select(source_execution))).mappings().one()
+                assert source["projection_version"] == 1
+                assert source["account_id"] == 1
+                assert source["record_id"] == record.id
+                assert source["execution_id"] == "sized"
             assert "account_config" not in record.raw_input
 
     asyncio.run(scenario())
 
 
-def test_fact_failure_rolls_back_record_assets_and_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("writer", ["write_observation_fact", "write_source_facts"])
+def test_fact_failure_rolls_back_record_assets_and_facts(monkeypatch: pytest.MonkeyPatch, writer: str) -> None:
+    original = getattr(records, writer)
+
     async def fail_after_write(session: AsyncSession, record: ExecuteRecord) -> None:
-        await analysis_observations.write_observation_fact(session, record)
+        await original(session, record)
         raise RuntimeError("projection failed")
 
-    monkeypatch.setattr(records, "write_observation_fact", fail_after_write)
+    monkeypatch.setattr(records, writer, fail_after_write)
 
     async def scenario() -> None:
         async with _database() as sessions:
@@ -107,7 +115,7 @@ def test_fact_failure_rolls_back_record_assets_and_facts(monkeypatch: pytest.Mon
                     session_factory=cast("records.SessionFactory", sessions),
                 )
             async with sessions() as session:
-                for table in (ExecuteRecord, AccountAssetSnapshot, observations, symbols):
+                for table in (ExecuteRecord, AccountAssetSnapshot, observations, symbols, *SOURCE_FACT_TABLES):
                     assert (await session.scalar(sa.select(sa.func.count()).select_from(table))) == 0
 
     asyncio.run(scenario())
@@ -149,5 +157,69 @@ def test_late_target_refreshes_only_matching_execution_fact() -> None:
                 )
                 assert symbol["target"] == 0.6
                 assert symbol["target_weight"] == 0.6
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_record_retains_first_source_facts_and_projects_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = records.write_source_facts
+    calls: list[str] = []
+
+    async def track_write(session: AsyncSession, record: ExecuteRecord) -> bool:
+        calls.append(record.raw_result["status"])
+        return await original(session, record)
+
+    monkeypatch.setattr(records, "write_source_facts", track_write)
+
+    async def scenario() -> None:
+        async with _database() as sessions:
+            first = await records._persist_execute_record(
+                account_id=1,
+                execution_id="duplicate-source",
+                raw_input={},
+                raw_result={"status": "NOOP"},
+                is_success=1,
+                session_factory=cast("records.SessionFactory", sessions),
+            )
+            second = await records._persist_execute_record(
+                account_id=1,
+                execution_id="duplicate-source",
+                raw_input={},
+                raw_result={"status": "FAILED", "error": "late failure"},
+                is_success=0,
+                session_factory=cast("records.SessionFactory", sessions),
+            )
+            assert first.id == second.id
+            assert second.raw_result["status"] == "NOOP"
+            assert calls == ["NOOP"]
+            async with sessions() as session:
+                source = (await session.execute(sa.select(source_execution))).mappings().one()
+                assert source["projection_version"] == 1
+                assert source["noop"] is True
+                assert source["success"] is True
+
+    asyncio.run(scenario())
+
+
+def test_unsupported_source_shape_preserves_business_record_and_marks_fact() -> None:
+    async def scenario() -> None:
+        async with _database() as sessions:
+            record = await records._persist_execute_record(
+                account_id=1,
+                execution_id="unsupported-source",
+                raw_input={},
+                raw_result={"status": 123, "account_assets": {"total_asset": 101}, "symbol_results": {}},
+                is_success=0,
+                session_factory=cast("records.SessionFactory", sessions),
+            )
+            async with sessions() as session:
+                source = (await session.execute(sa.select(source_execution))).mappings().one()
+                assert source["record_id"] == record.id
+                assert source["projection_version"] == 0
+                assert source["projection_error"]
+                persisted = await session.get(ExecuteRecord, record.id)
+                assert persisted is not None
+                assert persisted.raw_result["status"] == 123
+                assert (await session.scalar(sa.select(sa.func.count()).select_from(observations))) == 1
 
     asyncio.run(scenario())

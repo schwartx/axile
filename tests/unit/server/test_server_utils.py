@@ -91,6 +91,7 @@ def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(tim
 
 def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
+    monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(
@@ -117,6 +118,7 @@ def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytes
 
 def test_append_terminated_execute_record_persists_termination_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
+    monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
     fake_session = _FakeWriteSession()
 
     record = asyncio.run(

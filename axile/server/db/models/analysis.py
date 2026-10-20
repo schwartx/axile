@@ -3,8 +3,11 @@
 import sqlalchemy as sa
 from sqlmodel import SQLModel
 
+from axile.server.db.models.analysis_calendar import analysis_calendar_day as analysis_calendar_day
 from axile.server.db.models.analysis_replay import replay_observation as replay_observation
 from axile.server.db.models.analysis_replay import replay_observation_symbol as replay_observation_symbol
+from axile.server.db.models.analysis_result import RESULT_TABLES as RESULT_TABLES
+from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES as SOURCE_FACT_TABLES
 
 metadata = SQLModel.metadata
 analysis_state = sa.Table(
@@ -36,6 +39,9 @@ analysis_snapshot = sa.Table(
     sa.Column("settings", sa.JSON, nullable=False),
     sa.Column("ranges", sa.JSON, nullable=False),
     sa.Column("cost_schema_version", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("result_schema_version", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("backtest_weight_type", sa.Text),
+    sa.Column("backtest_fee_rate", sa.Float),
 )
 cost_execution = sa.Table(
     "performance_cost_execution",

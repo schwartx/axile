@@ -18,6 +18,7 @@ from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 from axile.server.analysis_observations import write_observation_fact
+from axile.server.analysis_source import write_source_facts
 from axile.server.asset_observations import is_asset_observation
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
@@ -99,6 +100,7 @@ async def _persist_execute_record(
             # 分析事实与原始执行记录在同一事务提交，Rust 不会读到半份输入。
             await session.flush()
             await write_observation_fact(cast("AsyncSession", session), record)
+            await write_source_facts(cast("AsyncSession", session), record)
             await session.commit()
         except IntegrityError:
             # 同一执行的两条收尾路径（如终止确认与脚本失败）可能并发落库，

@@ -62,6 +62,7 @@ def test_version_16_returns_are_rebuilt_from_independent_equity(tmp_path, schema
             await manager.run_once()
             original = await snapshot(sessions)
             async with sessions() as session:
+                await _restore_legacy_snapshot(session)
                 ranges = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
                 for value in ranges.values():
                     value["performance"]["points"][-1]["portfolio_return"] = 0.2
@@ -125,6 +126,24 @@ def _create_schema(connection):
     settings_migration.install_settings_trigger(connection)
     facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
     facts_migration.install_triggers(connection)
+    structured = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
+    structured.install_triggers(connection)
+
+
+async def _restore_legacy_snapshot(session):
+    """将真实结构化结果恢复为旧格式，用于验证旧快照的迁移与读取。"""
+    from axile.server.alembic.analysis0035_cost_restore import restore_cost_payloads
+
+    migration = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
+
+    def restore(connection):
+        restore_cost_payloads(connection)
+        migration._restore_results(connection)
+
+    connection = await session.connection()
+    await connection.run_sync(restore)
+    await session.execute(snapshots.update().values(cost_schema_version=0, result_schema_version=0))
+    await session.commit()
 
 
 @pytest.fixture(scope="module")
@@ -170,7 +189,7 @@ async def snapshot(sessions):
         return await read_snapshot(session, 2, "all")
 
 
-def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, schema_template):
+def test_dashboard_summary_matches_full_90_day_snapshot_in_bounded_queries(tmp_path, schema_template):
     """2160 条小时观测完整进入同版卡片，不再取最近 200 条。"""
 
     async def check():
@@ -195,9 +214,9 @@ def test_dashboard_summary_matches_full_90_day_snapshot_in_one_query(tmp_path, s
                     summaries = await read_performance_summaries(session, [2, 999])
             finally:
                 sa.event.remove(engine.sync_engine, "before_cursor_execute", capture)
-            assert len(statements) == 1
-            assert "executerecord" not in statements[0].lower()
-            assert "json_extract" in statements[0].lower()
+            selects = [statement.lower() for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+            assert len(selects) == 2
+            assert all("executerecord" not in statement and "json_extract" not in statement for statement in selects)
             summary = summaries[2]
             assert summary.snapshot_id == full["snapshot_id"]
             assert len(summary.points) == 91
@@ -241,7 +260,7 @@ def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeyp
                 raise RuntimeError("WBT unavailable")
 
             if state == "failed":
-                monkeypatch.setattr(manager, "_native_performance", fail_native)
+                monkeypatch.setattr(manager, "_run_native", fail_native)
                 await manager.run_once()
                 assert (await snapshot(sessions))["status"] == "failed"
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(analysis_manager=manager)))
@@ -540,7 +559,7 @@ def test_execution_strip_preserves_intraday_failed_and_empty_records():
 
 
 def test_short_range_execution_history_is_read_from_all_snapshot(tmp_path, schema_template):
-    """新快照只保存全量执行列表，旧快照仍可读已保存的范围列表。"""
+    """新结果按范围读取结构化执行；旧快照仍保留原先的范围副本语义。"""
 
     async def check():
         async with database(tmp_path, schema_template, count=120) as (_, sessions, manager):
@@ -548,10 +567,8 @@ def test_short_range_execution_history_is_read_from_all_snapshot(tmp_path, schem
             await manager.run_once()
             async with sessions() as session:
                 stored = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
-                assert "executions" in stored["all"]["performance"]
-                assert "executions" not in stored["30"]["performance"]
-                assert "executions" not in stored["90"]["performance"]
-                all_rows = stored["all"]["performance"]["executions"]
+                assert stored == {}
+                all_rows = (await read_snapshot(session, 2, "all"))["result"]["executions"]
                 current = await read_snapshot(session, 2, "30")
                 expected = [
                     row
@@ -563,6 +580,8 @@ def test_short_range_execution_history_is_read_from_all_snapshot(tmp_path, schem
                 assert current["result"]["executions"] == expected
 
                 # 升级前的同一范围副本读取结果与新快照的读时投影完全一致。
+                await _restore_legacy_snapshot(session)
+                stored = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
                 stored["30"]["performance"]["executions"] = expected
                 await session.execute(snapshots.update().values(ranges=stored))
                 await session.commit()
@@ -599,6 +618,7 @@ def test_failed_execution_preview_exposes_plan_and_confirmed_zero_fills():
 def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template):
     migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
     facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
+    structured_migration = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
 
     async def check():
         async with database(tmp_path, schema_template, fresh_schema=True) as (engine, sessions, manager):
@@ -607,10 +627,13 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
                 def roundtrip(connection):
                     migration.op = Operations(MigrationContext.configure(connection))
                     facts_migration.op = migration.op
+                    structured_migration.op = migration.op
+                    structured_migration.downgrade()
                     facts_migration.downgrade()
                     migration.downgrade()
                     migration.upgrade()
                     facts_migration.upgrade()
+                    structured_migration.upgrade()
                     assert len(sa.inspect(connection).get_columns("account_analysis")) == len(states.columns)
 
                 await conn.run_sync(roundtrip)
@@ -670,6 +693,7 @@ def test_version_8_projection_is_rebuilt_with_execution_evidence(tmp_path, schem
             await manager.run_once()
             initial = await snapshot(sessions)
             async with sessions() as session:
+                await _restore_legacy_snapshot(session)
                 payload = (await session.execute(sa.select(executions.c.payload))).scalar_one()
                 payload["record"]["raw_result"] = {"status": "PARTIAL", "outcome": "not_reached"}
                 payload.pop("tradeCount", None)

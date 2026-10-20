@@ -266,3 +266,160 @@ def test_uncommitted_orm_write_never_starts_a_native_read(tmp_path, monkeypatch)
     with pytest.raises(native.NativeAnalysisUnavailable) as caught:
         native.get_native_analysis(session)
     assert caught.value.code == "UNCOMMITTED_NATIVE_INPUT"
+
+
+def stream_executable(tmp_path: Path, output: bytes, *, status: int = 0, stderr: bytes = b"") -> Path:
+    return executable(
+        tmp_path,
+        "import sys\nsys.stdin.buffer.read()\n"
+        f"sys.stdout.buffer.write({output!r})\nsys.stdout.buffer.flush()\n"
+        f"sys.stderr.buffer.write({stderr!r})\nsys.exit({status})\n",
+    )
+
+
+async def streamed(bridge):
+    async with bridge.query_stream("publish", account_id=7) as frames:
+        return [frame async for frame in frames]
+
+
+def test_stream_yields_frames_before_child_finishes_and_never_buffers_stdout(tmp_path, monkeypatch):
+    binary = executable(
+        tmp_path,
+        "import asyncio, sys\nsys.stdin.buffer.read()\n"
+        'sys.stdout.write(\'{"type":"rows","rows":[[1]]}\\n\')\nsys.stdout.flush()\n'
+        "asyncio.run(asyncio.sleep(0.1))\n"
+        'sys.stdout.write(\'{"type":"complete","source_version":1}\\n\')\n',
+    )
+    spawned = []
+    create = asyncio.create_subprocess_exec
+    read_limited = native._read_limited
+
+    async def track(*args, **kwargs):
+        process = await create(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    async def forbid_stdout(stream, limit):
+        assert stream is spawned[0].stderr
+        return await read_limited(stream, limit)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", track)
+    monkeypatch.setattr(native, "_read_limited", forbid_stdout)
+
+    async def check():
+        bridge = native.NativeAnalysis(binary, tmp_path / "db")
+        async with bridge.query_stream("publish") as frames:
+            first = await anext(frames)
+            assert first == {"type": "rows", "rows": [[1]]}
+            assert spawned[0].returncode is None
+            remaining = [frame async for frame in frames]
+            assert remaining == [{"type": "complete", "source_version": 1}]
+        assert spawned[0].returncode == 0
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("output", "code"),
+    [
+        (b'{"type":"rows"}\n', "NATIVE_INCOMPLETE_STREAM"),
+        (b'{"type":"complete"}\n{"type":"rows"}\n', "NATIVE_TRAILING_FRAME"),
+        (b'{"type":"complete"}', "NATIVE_UNTERMINATED_FRAME"),
+        (b"not-json\n", "NATIVE_INVALID_FRAME"),
+        (b"[]\n", "NATIVE_INVALID_FRAME"),
+        (b"\n", "NATIVE_INVALID_FRAME"),
+        (b'{"type":"rows","bad":NaN}\n', "NATIVE_INVALID_FRAME"),
+        (b"", "NATIVE_INCOMPLETE_STREAM"),
+    ],
+)
+def test_stream_rejects_invalid_or_incomplete_protocol(tmp_path, output, code):
+    binary = stream_executable(tmp_path, output)
+    with pytest.raises(native.NativeAnalysisProtocolError) as caught:
+        asyncio.run(streamed(native.NativeAnalysis(binary, tmp_path / "db")))
+    assert caught.value.code == code
+
+
+def test_stream_nonzero_exit_after_complete_never_reports_success(tmp_path):
+    binary = stream_executable(
+        tmp_path,
+        b'{"type":"rows","rows":[[1]]}\n{"type":"complete"}\n',
+        status=2,
+        stderr=b'{"error":"source changed","code":"SOURCE_VERSION_CHANGED"}',
+    )
+    with pytest.raises(native.NativeAnalysisError) as caught:
+        asyncio.run(streamed(native.NativeAnalysis(binary, tmp_path / "db")))
+    assert caught.value.code == "SOURCE_VERSION_CHANGED"
+
+
+@pytest.mark.parametrize(
+    ("frame_budget", "total_budget", "code"), [(10, 1000, "NATIVE_FRAME_LIMIT"), (1000, 20, "NATIVE_OUTPUT_LIMIT")]
+)
+def test_stream_checks_frame_and_total_byte_budgets(tmp_path, frame_budget, total_budget, code):
+    binary = stream_executable(tmp_path, b'{"type":"rows","rows":[[1]]}\n{"type":"complete"}\n')
+    bridge = native.NativeAnalysis(binary, tmp_path / "db", max_frame_bytes=frame_budget, max_output_bytes=total_budget)
+    with pytest.raises(native.NativeAnalysisProtocolError) as caught:
+        asyncio.run(streamed(bridge))
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize("action", ["break", "cancel", "timeout"])
+def test_stream_early_exit_cancel_and_timeout_reap_child_and_release_gate(tmp_path, monkeypatch, action):
+    binary = executable(
+        tmp_path,
+        "import asyncio, sys\nsys.stdin.buffer.read()\n"
+        'sys.stdout.write(\'{"type":"rows"}\\n\')\nsys.stdout.flush()\n'
+        "asyncio.run(asyncio.sleep(10))\n",
+    )
+    children = []
+    create = asyncio.create_subprocess_exec
+
+    async def track(*args, **kwargs):
+        process = await create(*args, **kwargs)
+        children.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", track)
+
+    async def check():
+        bridge = native.NativeAnalysis(
+            binary, tmp_path / "db", timeout=0.1 if action == "timeout" else 2, max_concurrency=1
+        )
+        reached = asyncio.Event()
+
+        async def consume():
+            async with bridge.query_stream("publish") as frames:
+                async for frame in frames:
+                    assert frame == {"type": "rows"}
+                    reached.set()
+                    if action == "break":
+                        break
+
+        task = asyncio.create_task(consume())
+        await reached.wait()
+        if action == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            expected = native.NativeAnalysisTimeout if action == "timeout" else native.NativeAnalysisProtocolError
+            with pytest.raises(expected):
+                await task
+        assert children[0].returncode is not None
+        assert await children[0].wait() != 0
+        # Cancellation/error must release the shared process slot for the next request.
+        async with native._gate(1):
+            pass
+
+    asyncio.run(check())
+
+
+def test_stream_rejects_unbounded_stderr_without_waiting_for_stdout(tmp_path):
+    binary = executable(
+        tmp_path,
+        "import asyncio, sys\nsys.stdin.buffer.read()\n"
+        "sys.stderr.buffer.write(b'x'*100000)\nsys.stderr.flush()\nasyncio.run(asyncio.sleep(10))\n",
+    )
+    bridge = native.NativeAnalysis(binary, tmp_path / "db", timeout=2)
+    with pytest.raises(native.NativeAnalysisProtocolError) as caught:
+        asyncio.run(streamed(bridge))
+    assert caught.value.code == "NATIVE_OUTPUT_LIMIT"

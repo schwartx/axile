@@ -6,9 +6,11 @@ import asyncio
 import json
 import os
 import weakref
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import unquote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _REQUEST_LIMIT = 1024 * 1024
 _STDERR_LIMIT = 64 * 1024
 _DEFAULT_OUTPUT_LIMIT = 64 * 1024 * 1024
+_DEFAULT_FRAME_LIMIT = 1024 * 1024
 _DEFAULT_TIMEOUT = 120.0
 _DEFAULT_CONCURRENCY = 2
 _GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Semaphore]] = weakref.WeakKeyDictionary()
@@ -141,6 +144,7 @@ def get_native_analysis(session: AsyncSession, *, required: bool = False) -> Nat
         timeout=float(_positive_setting("AXILE_ANALYSIS_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT)),
         max_concurrency=int(_positive_setting("AXILE_ANALYSIS_MAX_CONCURRENCY", _DEFAULT_CONCURRENCY, integer=True)),
         max_output_bytes=int(_positive_setting("AXILE_ANALYSIS_MAX_OUTPUT_BYTES", _DEFAULT_OUTPUT_LIMIT, integer=True)),
+        max_frame_bytes=int(_positive_setting("AXILE_ANALYSIS_MAX_FRAME_BYTES", _DEFAULT_FRAME_LIMIT, integer=True)),
     )
 
 
@@ -157,6 +161,74 @@ async def _read_limited(stream: asyncio.StreamReader, limit: int) -> bytes:
         if len(chunks) > limit:
             raise NativeAnalysisProtocolError("原生分析输出超过字节预算", code="NATIVE_OUTPUT_LIMIT")
     return bytes(chunks)
+
+
+def _encode_request(command: str, request_fields: dict[str, Any]) -> bytes:
+    request = json.dumps({**request_fields, "command": command}, ensure_ascii=False, allow_nan=False).encode()
+    if len(request) > _REQUEST_LIMIT:
+        raise NativeAnalysisProtocolError("原生分析只接收小型控制请求", code="NATIVE_REQUEST_LIMIT")
+    return request
+
+
+async def _write_request(process: asyncio.subprocess.Process, request: bytes) -> None:
+    assert process.stdin is not None
+    try:
+        process.stdin.write(request)
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        # 提前拒绝请求的进程仍通过 stderr 返回稳定错误码。
+        pass
+    finally:
+        process.stdin.close()
+
+
+async def _stream_chunk(stream: asyncio.StreamReader, errors: asyncio.Task[bytes]) -> bytes:
+    pending = asyncio.create_task(stream.read(64 * 1024))
+    try:
+        if not errors.done():
+            await asyncio.wait((pending, errors), return_when=asyncio.FIRST_COMPLETED)
+        if errors.done():
+            errors.result()
+        return await pending
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+def _reject_nonfinite(value: str) -> NoReturn:
+    raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _decode_frame(line: bytes) -> dict[str, Any]:
+    try:
+        frame = json.loads(line, parse_constant=_reject_nonfinite)
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise NativeAnalysisProtocolError("发布帧必须为有效 JSON", code="NATIVE_INVALID_FRAME") from exc
+    if not isinstance(frame, dict):
+        raise NativeAnalysisProtocolError("发布帧必须为 JSON 对象", code="NATIVE_INVALID_FRAME")
+    return frame
+
+
+async def _read_frames(
+    stream: asyncio.StreamReader, errors: asyncio.Task[bytes], frame_limit: int, output_limit: int
+) -> AsyncIterator[dict[str, Any]]:
+    pending = bytearray()
+    total = 0
+    while chunk := await _stream_chunk(stream, errors):
+        total += len(chunk)
+        if total > output_limit:
+            raise NativeAnalysisProtocolError("原生分析输出超过字节预算", code="NATIVE_OUTPUT_LIMIT")
+        pending.extend(chunk)
+        while (newline := pending.find(b"\n")) >= 0:
+            if newline + 1 > frame_limit:
+                raise NativeAnalysisProtocolError("发布帧超过字节预算", code="NATIVE_FRAME_LIMIT")
+            line = bytes(pending[:newline])
+            del pending[: newline + 1]
+            yield _decode_frame(line)
+        if len(pending) > frame_limit:
+            raise NativeAnalysisProtocolError("发布帧超过字节预算", code="NATIVE_FRAME_LIMIT")
+    if pending:
+        raise NativeAnalysisProtocolError("发布帧缺少行结束符", code="NATIVE_UNTERMINATED_FRAME")
 
 
 async def _kill_and_reap(process: asyncio.subprocess.Process) -> None:
@@ -190,6 +262,7 @@ class NativeAnalysis:
     timeout: float = _DEFAULT_TIMEOUT
     max_concurrency: int = _DEFAULT_CONCURRENCY
     max_output_bytes: int = _DEFAULT_OUTPUT_LIMIT
+    max_frame_bytes: int = _DEFAULT_FRAME_LIMIT
 
     async def query(self, command: str, **request_fields: Any) -> bytes:
         """一次性交接查询参数，直接返回 Rust 编码的 JSON 字节.
@@ -199,10 +272,66 @@ class NativeAnalysis:
         已提交事实由 Rust 自行扫描；不能把历史数据作为请求字段传入。
         超时包含等待并发名额的时间，取消后先回收子进程再释放名额。
         """
-        request = json.dumps({**request_fields, "command": command}, ensure_ascii=False, allow_nan=False).encode()
-        if len(request) > _REQUEST_LIMIT:
-            raise NativeAnalysisProtocolError("原生分析只接收小型控制请求", code="NATIVE_REQUEST_LIMIT")
+        request = _encode_request(command, request_fields)
         return await self._invoke(("query", "--database", str(self.database)), request)
+
+    @asynccontextmanager
+    async def query_stream(self, command: str, **request_fields: Any) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
+        """逐帧读取发布结果，只有完整消费且进程成功退出才允许发布.
+
+        Notes
+        -----
+        调用方应先把有界帧暂存到文件，在上下文成功退出后执行发布事务。
+        最后一帧必须为 ``type=complete``；提前退出会终止子进程并报错。
+        不缓存整份 stdout；帧字节上限与任务总输出上限分别检查。
+        """
+        request = _encode_request(command, request_fields)
+        deadline = asyncio.timeout(self.timeout)
+        try:
+            async with deadline:
+                async with _gate(self.max_concurrency):
+                    async with self._stream_process(request) as frames:
+                        yield frames
+        except TimeoutError as exc:
+            if not deadline.expired():
+                raise
+            raise NativeAnalysisTimeout("原生分析超时，子进程已终止", code="NATIVE_ANALYSIS_TIMEOUT") from exc
+
+    @asynccontextmanager
+    async def _stream_process(self, request: bytes) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
+        process = await self._start_process(("query", "--database", str(self.database)))
+        output = process.stdout
+        assert output is not None and process.stderr is not None
+        errors = asyncio.create_task(_read_limited(process.stderr, _STDERR_LIMIT))
+        finished = False
+
+        async def frames() -> AsyncGenerator[dict[str, Any], None]:
+            nonlocal finished
+            complete = False
+            async for frame in _read_frames(output, errors, self.max_frame_bytes, self.max_output_bytes):
+                if complete:
+                    raise NativeAnalysisProtocolError("完成标记后仍有输出帧", code="NATIVE_TRAILING_FRAME")
+                complete = frame.get("type") == "complete"
+                yield frame
+            stderr = await errors
+            returncode = await process.wait()
+            if returncode:
+                raise _process_error(stderr, returncode)
+            if not complete:
+                raise NativeAnalysisProtocolError("发布流缺少最终完成标记", code="NATIVE_INCOMPLETE_STREAM")
+            finished = True
+
+        iterator = frames()
+        try:
+            await _write_request(process, request)
+            yield iterator
+            if not finished:
+                raise NativeAnalysisProtocolError("发布流必须完整消费后才能提交", code="NATIVE_INCOMPLETE_STREAM")
+        finally:
+            await iterator.aclose()
+            errors.cancel()
+            await asyncio.gather(errors, return_exceptions=True)
+            await asyncio.shield(_kill_and_reap(process))
 
     async def capabilities(self) -> dict[str, Any]:
         """读取小型能力声明；仅能力响应在 Python 中解码."""
@@ -222,9 +351,9 @@ class NativeAnalysis:
         except TimeoutError as exc:
             raise NativeAnalysisTimeout("原生分析超时，子进程已终止", code="NATIVE_ANALYSIS_TIMEOUT") from exc
 
-    async def _run_process(self, args: tuple[str, ...], request: bytes) -> bytes:
+    async def _start_process(self, args: tuple[str, ...]) -> asyncio.subprocess.Process:
         try:
-            process = await asyncio.create_subprocess_exec(
+            return await asyncio.create_subprocess_exec(
                 str(self.binary),
                 *args,
                 stdin=asyncio.subprocess.PIPE,
@@ -233,20 +362,16 @@ class NativeAnalysis:
             )
         except OSError as exc:
             raise NativeAnalysisUnavailable("无法启动原生分析程序", code="NATIVE_BINARY_START_FAILED") from exc
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+
+    async def _run_process(self, args: tuple[str, ...], request: bytes) -> bytes:
+        process = await self._start_process(args)
+        assert process.stdout is not None and process.stderr is not None
         readers = [
             asyncio.create_task(_read_limited(process.stdout, self.max_output_bytes)),
             asyncio.create_task(_read_limited(process.stderr, _STDERR_LIMIT)),
         ]
         try:
-            try:
-                process.stdin.write(request)
-                await process.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                # 提前拒绝请求的进程仍通过 stderr 返回稳定错误码。
-                pass
-            finally:
-                process.stdin.close()
+            await _write_request(process, request)
             stdout, stderr = await asyncio.gather(*readers)
             returncode = await process.wait()
             if returncode:

@@ -1,8 +1,8 @@
 //! Persisted performance wire results, read without Python model reconstruction.
 //!
-//! The `ranges` column remains a legacy serialized *result*, not raw execution
-//! input. SQLite extracts only the requested range and, when necessary, shared
-//! execution history. Unselected curves never become Rust/Python object trees.
+//! Current snapshots use typed result tables and scalar settings, with no JSON
+//! reads. Marker-zero snapshots retain an explicit legacy result decoder; this
+//! compatibility path never reads raw execution input or trade payloads.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -57,8 +57,9 @@ struct Snapshot {
     engine_version: Option<String>,
     computed_at: Option<String>,
     data_until: Option<String>,
-    settings: Option<String>,
-    selected: Option<String>,
+    result_schema_version: i64,
+    settings: Value,
+    selected: Value,
     executions: Option<String>,
 }
 
@@ -107,34 +108,18 @@ fn read(
     request: &Request<'_>,
     performance_only: bool,
 ) -> Result<Option<Snapshot>, String> {
-    let path = format!("$.\"{}\"", request.range);
-    // CASE avoids parsing incompatible legacy JSON and limits materialization to
-    // the requested response. A single join observes one state/snapshot version.
-    connection
+    // Read the marker first. The typed path never selects legacy ranges,
+    // settings or payload columns, including when those contain poisoned JSON.
+    let mut snapshot = connection
         .query_row(
             "SELECT a.source_version, a.published_version, a.requested,
                     a.running_version, a.failures, a.retry_at, a.error,
                     s.id, s.source_version, s.logic_version, s.engine_version,
-                    s.computed_at, s.data_until, s.settings,
-                    CASE WHEN s.logic_version = ?3 AND s.engine_version = ?4
-                         THEN json_extract(s.ranges,
-                             CASE WHEN ?5 THEN ?2 || '.performance' ELSE ?2 END)
-                         ELSE NULL END,
-                    CASE WHEN s.logic_version = ?3 AND s.engine_version = ?4
-                                   AND ?2 != '$.\"all\"'
-                                   AND json_type(s.ranges, ?2 || '.performance.executions') IS NULL
-                         THEN json_extract(s.ranges, '$.all.performance.executions')
-                         ELSE NULL END
+                    s.computed_at, s.data_until, s.result_schema_version
              FROM account_analysis a
              LEFT JOIN performance_snapshot s ON a.current_snapshot = s.id
              WHERE a.account_id = ?1",
-            params![
-                request.account_id,
-                path,
-                request.logic_version,
-                request.engine_version,
-                performance_only
-            ],
+            params![request.account_id],
             |row| {
                 Ok(Snapshot {
                     source_version: row.get(0)?,
@@ -150,14 +135,70 @@ fn read(
                     engine_version: row.get(10)?,
                     computed_at: row.get(11)?,
                     data_until: row.get(12)?,
-                    settings: row.get(13)?,
-                    selected: row.get(14)?,
-                    executions: row.get(15)?,
+                    result_schema_version: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
+                    settings: Value::Null,
+                    selected: Value::Null,
+                    executions: None,
                 })
             },
         )
         .optional()
-        .map_err(|error| format!("SNAPSHOT_READ: {error}"))
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    if let Some(row) = snapshot.as_mut().filter(|row| row.compatible(request)) {
+        match row.result_schema_version {
+            0 => read_legacy(connection, row, request, performance_only)?,
+            2 => {
+                row.selected = crate::result_reader::read(
+                    connection,
+                    row.id.as_deref().expect("compatible snapshots have an id"),
+                    request.range,
+                    performance_only,
+                )?;
+                // Settings are two scalar fields; copying them does not duplicate
+                // the growing result arrays or execution history.
+                row.settings = row.selected["performance"]["settings"].clone();
+            }
+            version => {
+                return Err(format!(
+                    "SNAPSHOT_SCHEMA_UNSUPPORTED: result schema {version}"
+                ))
+            }
+        }
+    }
+    Ok(snapshot)
+}
+
+fn read_legacy(
+    connection: &Connection,
+    snapshot: &mut Snapshot,
+    request: &Request<'_>,
+    performance_only: bool,
+) -> Result<(), String> {
+    let path = format!("$.\"{}\"", request.range);
+    let (settings, selected, executions): (String, Option<String>, Option<String>) = connection
+        .query_row(
+            "SELECT settings,
+                    json_extract(ranges,
+                        CASE WHEN ?3 THEN ?2 || '.performance' ELSE ?2 END),
+                    CASE WHEN ?2 != '$.\"all\"'
+                                   AND json_type(ranges, ?2 || '.performance.executions') IS NULL
+                         THEN json_extract(ranges, '$.all.performance.executions')
+                         ELSE NULL END
+             FROM performance_snapshot WHERE id = ?1",
+            params![snapshot.id, path, performance_only],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    snapshot.settings = parse_json(Some(&settings))?;
+    snapshot.selected = if performance_only {
+        let mut wrapper = json!({});
+        wrapper["performance"] = parse_json(selected.as_deref())?;
+        wrapper
+    } else {
+        parse_json(selected.as_deref())?
+    };
+    snapshot.executions = executions;
+    Ok(())
 }
 
 fn parse_json(value: Option<&str>) -> Result<Value, String> {
@@ -169,20 +210,23 @@ fn parse_json(value: Option<&str>) -> Result<Value, String> {
 /// Return the existing PerformanceSnapshot envelope, including stale results.
 pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
     let request = Request::parse(value)?;
-    let row = read(connection, &request, false)?;
+    let mut row = read(connection, &request, false)?;
     let status = row.as_ref().map_or("empty", |row| row.status(&request));
+    let mut selected = row
+        .as_mut()
+        .filter(|row| row.compatible(&request))
+        .map(|row| row.selected.take())
+        .unwrap_or(Value::Null);
     let snapshot = row.as_ref().filter(|row| row.compatible(&request));
-    let mut selected = match snapshot {
-        Some(row) => parse_json(row.selected.as_deref())?,
-        None => Value::Null,
-    };
     if let Some(row) = snapshot {
         if !selected.is_object() {
             return Err("SNAPSHOT_INVALID: requested range is missing".into());
         }
-        project_executions(&mut selected["performance"], row.executions.as_deref())?;
+        if row.result_schema_version == 0 {
+            project_executions(&mut selected["performance"], row.executions.as_deref())?;
+        }
     }
-    Ok(json!({
+    let mut response = json!({
         "status": status,
         "source_version": row.as_ref().map_or(0, |row| row.source_version),
         "snapshot_id": snapshot.and_then(|row| row.id.as_deref()),
@@ -191,14 +235,26 @@ pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
         "engine_version": snapshot.and_then(|row| row.engine_version.as_deref()).unwrap_or(request.engine_version),
         "computed_at": snapshot.and_then(|row| row.computed_at.as_deref()),
         "data_until": snapshot.and_then(|row| row.data_until.as_deref()),
-        "settings": parse_json(snapshot.and_then(|row| row.settings.as_deref()))?,
+        "settings": snapshot.map(|row| &row.settings),
         "error": row.as_ref().and_then(|row| row.error.as_deref()),
         "retry_at": row.as_ref().filter(|row| row.has_error() && row.failures <= 3).map(|row| row.retry_at),
-        "result": selected.get_mut("performance").map(Value::take).unwrap_or(Value::Null),
-        "daily_costs": selected.get_mut("daily_costs").map(Value::take).unwrap_or_else(|| json!({})),
-        "events": selected.get_mut("events").map(Value::take).unwrap_or_else(|| json!([])),
         "event_count": selected.get("event_count").and_then(Value::as_u64).unwrap_or(0),
-    }))
+    });
+    // Move the potentially large arrays into the envelope. json! on these
+    // values would serialize by reference and create a second complete tree.
+    response["result"] = selected
+        .get_mut("performance")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    response["daily_costs"] = selected
+        .get_mut("daily_costs")
+        .map(Value::take)
+        .unwrap_or_else(|| json!({}));
+    response["events"] = selected
+        .get_mut("events")
+        .map(Value::take)
+        .unwrap_or_else(|| json!([]));
+    Ok(response)
 }
 
 /// Return a ready AccountPerformance directly, without encoding its envelope.
@@ -209,12 +265,18 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
     if status != "ready" {
         return Err(format!("SNAPSHOT_NOT_READY: {status}"));
     }
-    let row = row.expect("ready status requires a snapshot row");
-    let mut result = parse_json(row.selected.as_deref())?;
+    let mut row = row.expect("ready status requires a snapshot row");
+    let mut result = row
+        .selected
+        .get_mut("performance")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
     if !result.is_object() {
         return Err("SNAPSHOT_INVALID: requested performance range is missing".into());
     }
-    project_executions(&mut result, row.executions.as_deref())?;
+    if row.result_schema_version == 0 {
+        project_executions(&mut result, row.executions.as_deref())?;
+    }
     if value.get("include_backtest").and_then(Value::as_bool) == Some(false) {
         result["backtest_included"] = json!(false);
         result["skips"] = Value::Null;
@@ -329,7 +391,7 @@ mod tests {
                  CREATE TABLE performance_snapshot (
                      id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
                      logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT,
-                     settings TEXT, ranges TEXT);",
+                     settings TEXT, ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);",
             )
             .unwrap();
         connection
@@ -362,7 +424,7 @@ mod tests {
             "90": {"performance": performance("90"), "daily_costs": {}, "events": [], "event_count": 0}
         });
         connection.execute(
-            "INSERT INTO performance_snapshot VALUES ('s1', 1, 1, '18', 'equity-ledger-1', '2026-10-02', NULL, ?1, ?2)",
+            "INSERT INTO performance_snapshot (id, account_id, source_version, logic_version, engine_version, computed_at, data_until, settings, ranges) VALUES ('s1', 1, 1, '18', 'equity-ledger-1', '2026-10-02', NULL, ?1, ?2)",
             params![json!({"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}).to_string(), ranges.to_string()],
         ).unwrap();
         connection.execute("INSERT INTO account_analysis (account_id, published_version, current_snapshot) VALUES (1, 1, 's1')", []).unwrap();

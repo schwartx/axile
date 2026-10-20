@@ -15,8 +15,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import Session, SQLModel
 
 from axile.server import native_analysis
+from axile.server.analysis_cost_facts import iter_cost_fact_batches
+from axile.server.analysis_results import iter_result_fact_batches
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_performance as routes
+from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis import cost_execution as executions
@@ -29,7 +32,7 @@ from axile.server.db.models.performance import (
     PerformanceSnapshot,
 )
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION, read_snapshot
-from axile.server.performance_costs import timestamp
+from axile.server.performance_costs import daily_costs, project_execution, summarize, timestamp
 from axile.server.performance_details import CostQuery, read_costs
 from tests.unit.server._execution_test_support import build_account
 
@@ -352,5 +355,162 @@ def test_legacy_cost_schema_keeps_historical_identity_types_without_native_dispa
                 if isinstance(original, float):
                     assert actual_id.hex() == original.hex()
             assert all(row["legacy"] == "preserved" for row in actual["data"])
+
+    asyncio.run(check())
+
+
+def test_normalized_snapshot_and_ready_result_ignore_all_poisoned_legacy_json(binary, dataset):
+    record = ExecuteRecord(
+        id=1,
+        account_id=2,
+        execution_id="typed-1",
+        created_at="2026-10-01T12:00:00",
+        is_success=1,
+        raw_input={"curr_target": {"A": 1}},
+        raw_result={
+            "account_assets": {"total_asset": 100},
+            "symbol_results": {
+                "A": {
+                    "first_tick": {"bid_price": 100, "ask_price": 100},
+                    "sizing": {"unit_multiplier": 1},
+                    "orders": [{"order_id": "o", "direction": "BUY"}],
+                    "trades": [
+                        {
+                            "order_id": "o",
+                            "trade_price": 101,
+                            "trade_volume": 2,
+                            "extra": {"commission": 0.1, "commission_asset": "CNY"},
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    payload, fills = project_execution(record)
+    preview = payload | {"summary": summarize(fills)}
+    projected = [
+        {
+            "record_id": record.id,
+            "time": timestamp(record.created_at),
+            "success": True,
+            "noop": payload["noop"],
+            "payload": payload,
+        }
+    ]
+    cost_rows = [
+        {
+            "id": index,
+            "record_id": record.id,
+            "symbol": fill["symbol"],
+            "time": fill["time"],
+            "day": fill["day"],
+            "value": fill["value"],
+            "cost": fill["cost"],
+            "loss_bp": fill["lossBp"],
+            "fee": fill["fee"],
+            "fee_currency": fill["feeCurrency"],
+            "estimated": fill["timeEstimated"],
+            "payload": fill,
+        }
+        for index, fill in enumerate(fills)
+    ]
+    expected = {}
+    engine = sa.create_engine(f"sqlite:///{dataset}")
+    try:
+        with engine.begin() as connection:
+            snapshot = connection.execute(sa.select(snapshots)).mappings().one()
+            ranges = snapshot["ranges"]
+            for range_key, selected in ranges.items():
+                performance = selected["performance"]
+                performance["executions"] = [preview]
+                performance["skips"] = {
+                    "count": 2,
+                    "missing_target": 1,
+                    "missing_ticks": 1,
+                    "first_time": record.created_at,
+                    "last_time": record.created_at,
+                }
+                performance["target_skips"] = {
+                    "count": 0,
+                    "missing_target": 0,
+                    "missing_ticks": 0,
+                    "first_time": None,
+                    "last_time": None,
+                }
+                performance["sizing_fallback_count"] = 1
+                performance["sizing_fallback_ranges"] = [
+                    {"start": record.created_at, "end": record.created_at, "count": 1}
+                ]
+                performance["bindings"] = [{"time": record.created_at, "portfolio_id": None}]
+                performance["calendar"] = {
+                    "status": "partial",
+                    "calendar_id": "test-calendar",
+                    "label": "测试交易日历",
+                    "closed_ranges": [{"start": "2026-10-01", "end": "2026-10-01"}],
+                    "unavailable_ranges": [{"start": "2026-10-02", "end": "2026-10-02"}],
+                }
+                selected["daily_costs"] = daily_costs(fills)
+                selected["events"] = [
+                    {"time": record.created_at, "tag": "执行", "text": "已完成", "executionId": "typed-1"}
+                ]
+                selected["event_count"] = 103
+                expected[range_key] = PerformanceSnapshot.model_validate(
+                    {
+                        "status": "ready",
+                        "source_version": 1,
+                        "snapshot_id": "published",
+                        "snapshot_version": 1,
+                        "logic_version": LOGIC_VERSION,
+                        "engine_version": ENGINE_VERSION,
+                        "computed_at": snapshot["computed_at"],
+                        "data_until": snapshot["data_until"],
+                        "settings": snapshot["settings"],
+                        "error": None,
+                        "retry_at": None,
+                        "result": performance,
+                        "daily_costs": selected["daily_costs"],
+                        "events": selected["events"],
+                        "event_count": selected["event_count"],
+                    }
+                ).model_dump(mode="json")
+            for table, rows in iter_result_fact_batches("published", ranges):
+                connection.execute(table.insert(), rows)
+            for table, rows in iter_cost_fact_batches("published", projected, cost_rows, ranges):
+                connection.execute(table.insert(), rows)
+            connection.execute(
+                snapshots.update().values(
+                    result_schema_version=2,
+                    cost_schema_version=1,
+                    backtest_weight_type="ts",
+                    backtest_fee_rate=snapshot["settings"]["backtest_fee_rate"],
+                )
+            )
+            for table, column in (
+                ("performance_snapshot", "ranges"),
+                ("performance_snapshot", "settings"),
+                ("performance_cost_execution", "payload"),
+                ("performance_cost_trade", "payload"),
+            ):
+                connection.execute(sa.text(f"UPDATE {table} SET {column} = :poison"), {"poison": "not JSON"})
+    finally:
+        engine.dispose()
+
+    async def check():
+        async with http_client(dataset) as (client, _):
+            for range_key in ("all", "30", "90"):
+                snapshot = await client.get(f"/api/v1/account/performance/2/snapshot?range={range_key}")
+                assert snapshot.status_code == 200
+                assert snapshot.json() == expected[range_key]
+                result = await client.get(f"/api/v1/account/performance/2?range={range_key}")
+                assert result.status_code == 200
+                assert result.json() == expected[range_key]["result"]
+            without_backtest = await client.get("/api/v1/account/performance/2?range=30&include_backtest=false")
+            assert without_backtest.status_code == 200
+            stripped = without_backtest.json()
+            assert stripped["backtest_included"] is False
+            assert stripped["skips"] is None
+            assert stripped["used_record_count"] == 0
+            assert stripped["points"][0]["portfolio_return"] is None
+            assert stripped["points"][0]["account_return"] == 0.03
 
     asyncio.run(check())
