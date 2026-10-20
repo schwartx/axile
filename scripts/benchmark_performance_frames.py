@@ -112,7 +112,7 @@ async def worker(args):
         await engine.dispose()
 
 
-def observe(args, root, directory):
+def observe(args, root, directory, *, worker_script=None, phase_names=("load", "compute", "publish", "worker", "api")):
     """Sample total process RSS while retaining private diagnostic output."""
     import psutil
 
@@ -136,7 +136,14 @@ def observe(args, root, directory):
     with (directory / "process.log").open("w") as stream:
         started = time.monotonic()
         process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), str(root), str(args.database), str(directory), "--worker"],
+            [
+                sys.executable,
+                str(worker_script or Path(__file__).resolve()),
+                str(root),
+                str(args.database),
+                str(directory),
+                "--worker",
+            ],
             env=environment,
             stdout=stream,
             stderr=subprocess.STDOUT,
@@ -159,7 +166,7 @@ def observe(args, root, directory):
         if line.startswith('{"phase":'):
             row = json.loads(line)
             phases[row["phase"]] = row
-    for name in ("load", "compute", "publish", "worker", "api"):
+    for name in phase_names:
         start, finish = phases[name + "_start"]["when"], phases[name + "_end"]["when"]
         phases[name + "_end"].update(
             seconds=finish - start, peak_bytes=max((rss for when, rss in samples if start <= when <= finish), default=0)

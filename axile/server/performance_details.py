@@ -228,6 +228,23 @@ async def _symbol_page(session, filters, query, offset):
     return data
 
 
+def _cost_bounds(batch):
+    """Keep missing boundaries distinct from explicitly null historical values."""
+    values = {}
+    for index, name in enumerate(("baseline", "end")):
+        if batch[name + "_kind"] is None:
+            raise KeyError(name)
+        values[name] = batch["bounds"][index]
+    return values
+
+
+def _execution_identifier(identity, kind):
+    """Retain the original missing-key error instead of manufacturing null."""
+    if kind is None:
+        raise KeyError("execution_id")
+    return identity[0]
+
+
 async def read_costs(session, account_id: int, query: CostQuery) -> dict:
     """Read a stable page or explicitly reject an evicted snapshot version."""
     digest, offset = _cursor(query, account_id)
@@ -235,10 +252,22 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
     if session.in_transaction():
         await session.rollback()
     await session.execute(sa.text("BEGIN"))
+    path = f'$."{query.range}".performance'
     batch = (
         (
             await session.execute(
-                sa.select(snapshots).where(snapshots.c.id == query.snapshot_id, snapshots.c.account_id == account_id)
+                sa.select(
+                    snapshots.c.data_until,
+                    snapshots.c.logic_version,
+                    snapshots.c.engine_version,
+                    # Multi-path extraction returns JSON text. Decode it once in
+                    # Python, retaining scalar kinds and original numeric tokens.
+                    sa.func.json_extract(snapshots.c.ranges, path + ".baseline", path + ".end", type_=sa.JSON()).label(
+                        "bounds"
+                    ),
+                    sa.func.json_type(snapshots.c.ranges, path + ".baseline").label("baseline_kind"),
+                    sa.func.json_type(snapshots.c.ranges, path + ".end").label("end_kind"),
+                ).where(snapshots.c.id == query.snapshot_id, snapshots.c.account_id == account_id)
             )
         )
         .mappings()
@@ -248,7 +277,7 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
 
     if batch is None or batch["logic_version"] != LOGIC_VERSION or batch["engine_version"] != ENGINE_VERSION:
         raise HTTPException(410, detail={"code": "SNAPSHOT_EXPIRED", "message": "快照版本已失效，请重新读取绩效"})
-    execution_filter, trade_filter = _filters(query, batch["ranges"][query.range]["performance"])
+    execution_filter, trade_filter = _filters(query, _cost_bounds(batch))
     totals = await summary(session, trade_filter)
     execution_counts = (
         await session.execute(
@@ -274,7 +303,13 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
             ordering.insert(0, trades.c.cost.desc().nulls_last())
         rows = (
             await session.execute(
-                sa.select(trades.c.payload, trades.c.id, trades.c.record_id, executions.c.payload)
+                sa.select(
+                    trades.c.payload,
+                    trades.c.id,
+                    trades.c.record_id,
+                    sa.func.json_extract(executions.c.payload, "$.record.execution_id", "$.record.id", type_=sa.JSON()),
+                    sa.func.json_type(executions.c.payload, "$.record.execution_id"),
+                )
                 .select_from(
                     trades.join(
                         executions,
@@ -295,9 +330,9 @@ async def read_costs(session, account_id: int, query: CostQuery) -> dict:
                 **payload,
                 "trade_id": trade_id,
                 "record_id": record_id,
-                "execution_id": execution["record"]["execution_id"],
+                "execution_id": _execution_identifier(identity, kind),
             }
-            for payload, trade_id, record_id, execution in rows
+            for payload, trade_id, record_id, identity, kind in rows
         ]
     next_cursor = (
         base64.urlsafe_b64encode(json.dumps({"scope": digest, "offset": offset + query.limit}).encode()).decode()
