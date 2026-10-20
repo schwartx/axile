@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def verify_capabilities(source: Path) -> None:
+    """Reject executables that cannot publish the current native store protocol."""
+    output = subprocess.run(
+        [str(source), "capabilities"], check=True, capture_output=True, text=True, timeout=20
+    ).stdout
+    try:
+        capabilities = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Native analysis executable returned invalid capabilities") from error
+    if (
+        not isinstance(capabilities, dict)
+        or type(capabilities.get("protocol")) is not int
+        or capabilities["protocol"] != 1
+        or not isinstance(capabilities.get("commands"), list)
+        or "publish_store" not in capabilities["commands"]
+    ):
+        raise RuntimeError("Native analysis executable requires protocol 1 and command publish_store")
 
 
 def stage_binary(source: Path, destination: Path) -> str:
@@ -28,6 +48,7 @@ def stage_binary(source: Path, destination: Path) -> str:
     """
     if not source.is_file():
         raise FileNotFoundError(f"Native executable not found: {source}")
+    verify_capabilities(source)
     version = subprocess.run(
         [str(source), "--version"], check=True, capture_output=True, text=True, timeout=20
     ).stdout.strip()
@@ -46,12 +67,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--debug", action="store_true", help="Build the debug profile instead of release")
     parser.add_argument("--no-build", action="store_true", help="Only stage an already built host executable")
+    parser.add_argument(
+        "--target-dir",
+        type=Path,
+        default=os.environ.get("CARGO_TARGET_DIR"),
+        help="Cargo output directory (defaults to CARGO_TARGET_DIR or the crate target directory)",
+    )
     parser.add_argument("--timeout", type=int, default=180, help="Cargo build time limit in seconds (default: 180)")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     manifest = ROOT / "rust" / "analysis" / "Cargo.toml"
-    target_dir = manifest.parent / "target"
+    target_dir = args.target_dir or manifest.parent / "target"
+    target_dir = target_dir.expanduser()
+    if not target_dir.is_absolute():
+        target_dir = ROOT / target_dir
     if not args.no_build:
         command = ["cargo", "build", "--locked", "--manifest-path", str(manifest), "--target-dir", str(target_dir)]
         if not args.debug:
