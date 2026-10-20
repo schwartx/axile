@@ -311,6 +311,43 @@ def test_status_is_small_and_reports_legacy_view_explicitly(dataset):
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("version_column", ["logic_version", "engine_version"])
+@pytest.mark.parametrize("error", ["analysis retries exhausted", None], ids=["failed", "pending"])
+def test_incompatible_status_preserves_exhausted_failure_and_pending_without_error(dataset, version_column, error):
+    """An incompatible prior snapshot cannot hide a terminal computation error."""
+
+    async def check():
+        async with http_client(dataset) as (client, sessions, _):
+            async with sessions() as session:
+                await session.execute(
+                    snapshots.update().where(snapshots.c.id == "s1").values(**{version_column: "old-version"})
+                )
+                await session.execute(
+                    states.update()
+                    .where(states.c.account_id == 2)
+                    .values(
+                        error=error,
+                        failures=4,
+                        requested=False,
+                        running_version=None,
+                        running_token=None,
+                        retry_at=12345.678,
+                    )
+                )
+                await session.commit()
+            response = await client.get(f"{BASE_URL}/status")
+            assert response.status_code == 200, response.text
+            status = response.json()
+            assert status["status"] == ("failed" if error else "pending")
+            assert status["error"] == error
+            assert status["retry_at"] is None
+            assert status["snapshot_id"] is None
+            assert status["snapshot_version"] is None
+            assert status["read_view_schema_version"] == 0
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("endpoint", ["chart", "execution-summary", "execution-detail"])
 @pytest.mark.parametrize(("snapshot_id", "expected"), [("foreign", 404), ("missing", 410), ("legacy", 409)])
 def test_version_validation_never_falls_back_or_crosses_accounts(dataset, endpoint, snapshot_id, expected):

@@ -179,7 +179,9 @@ async def read_status(session, account_id: int) -> dict:
             and row["snapshot_engine_version"] == ENGINE_VERSION
         )
         has_snapshot = bool(row and row["snapshot_id"])
-        state = "pending" if has_snapshot and not compatible else _status(row, compatible)
+        state = _status(row, compatible)
+        if has_snapshot and not compatible and state != "failed":
+            state = "pending"
         return {
             "schema_version": SCHEMA_VERSION,
             "status": state,
