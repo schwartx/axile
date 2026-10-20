@@ -1,6 +1,7 @@
 """通过实际 SPI 和执行器回放连接边界，不连接柜台、不发送真实订单。"""
 
 from datetime import datetime
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
@@ -804,3 +805,139 @@ def test_missing_configuration_names_fields_without_values(broker):
     assert observations[-1].label == "连接配置不完整"
     assert "password" in str(observations[-1].presentation)
     assert "test" not in str(observations[-1].presentation)
+
+
+@pytest.mark.parametrize("kind", ["交易", "行情"])
+def test_unexpected_logout_invalidates_session(broker, kind):
+    from axile.executor.connection_state import connection_monitor
+
+    executor = broker.start()
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    spi = broker.trader_spi if kind == "交易" else broker.market_spi
+    waiting = SimpleNamespace(done=Event(), error=None)
+    executor._pending_queries[999] = waiting
+    spi.OnRspUserLogout(None, None, 0, True)
+    assert not executor._verify_connection()
+    assert observations[-1].label == f"{kind}会话已登出"
+    assert observations[-1].error["reason_code"] == "CTP_USER_LOGOUT"
+    assert waiting.done.is_set()
+    assert isinstance(waiting.error, CtpSessionRecoveryRequired)
+    assert executor._trader_connected and executor._market_connected
+    first = observations[-1]
+    spi.OnRspUserLogout(None, None, 0, True)
+    assert observations[-1] is first
+    with pytest.raises(CtpSessionRecoveryRequired):
+        executor._require_active_connection()
+    broker.trader_spi.OnFrontConnected()
+    broker.market_spi.OnFrontConnected()
+    assert not executor._verify_connection()
+
+
+def test_rejected_logout_does_not_invalidate_session(broker):
+    executor = broker.start()
+    executor.logger = Mock(wraps=executor.logger)
+    broker.trader_spi.OnRspUserLogout(None, SimpleNamespace(ErrorID=3, ErrorMsg="拒绝"), 1, True)
+    assert executor._verify_connection()
+
+
+@pytest.mark.parametrize("result", ["success", "rejected", "not_sent", "timeout", "generic_error"])
+def test_graceful_logout_matches_callbacks_before_release(broker, monkeypatch, result):
+    from axile.executor.algorithms.utils.clock import get_default_clock
+    from axile.executor.connection_state import connection_monitor
+
+    executor = broker.start()
+    observations = []
+    executor.logger = Mock(wraps=executor.logger)
+    connection_monitor(executor).bind(observations.append)
+    calls = []
+
+    def response(kind, spi):
+        def respond(row, rid):
+            assert row.BrokerID == "9999"
+            assert row.UserID == "100001"
+            calls.append((kind, rid))
+            if result == "not_sent":
+                return -1
+            if result == "generic_error":
+                spi.OnRspError(SimpleNamespace(ErrorID=77, ErrorMsg="CTP:无此功能"), rid, True)
+                return 0
+            if result != "timeout":
+                spi.OnRspUserLogout(None, None, rid + 100, True)
+                assert not executor._logout_pending[kind].done.is_set()
+                spi.OnRspUserLogout(None, None, rid, False)
+                assert not executor._logout_pending[kind].done.is_set()
+                info = SimpleNamespace(ErrorID=3, ErrorMsg="拒绝") if result == "rejected" else None
+                spi.OnRspUserLogout(None, info, rid, True)
+            return 0
+
+        return respond
+
+    broker.market.ReqUserLogout.side_effect = response("行情", broker.market_spi)
+    broker.trader.ReqUserLogout.side_effect = response("交易", broker.trader_spi)
+    if result == "timeout":
+        waits = []
+
+        def wait(event, timeout):
+            waits.append(timeout)
+            return False
+
+        monkeypatch.setattr(get_default_clock(), "event_wait", wait)
+    count = len(observations)
+    executor.graceful_logout()
+    assert [kind for kind, _ in calls] == ["交易"]
+    broker.market.ReqUserLogout.assert_not_called()
+    assert len(observations) == count
+    successes = [call for call in executor.logger.info.call_args_list if call.args[0].startswith("主动登出成功")]
+    assert len(successes) == (1 if result == "success" else 0)
+    assert not executor._verify_connection()
+    assert all(p.done.is_set() for p in executor._logout_pending.values())
+    assert all((p.error is None) == (result == "success") for p in executor._logout_pending.values())
+    broker.market.Release.assert_not_called()
+    broker.trader.Release.assert_not_called()
+    executor.graceful_logout()
+    assert len(calls) == 1
+    executor.close()
+    broker.market.Release.assert_called_once()
+    broker.trader.Release.assert_called_once()
+    broker.trader_spi.OnRspUserLogout(None, None, calls[0][1], True)
+    assert len(observations) == count
+    if result == "timeout":
+        assert len(waits) == 1
+        assert 0 <= waits[0] <= 5
+
+
+@pytest.mark.parametrize("acknowledged", [False, True])
+def test_expected_logout_disconnect_is_visible_without_connection_failure(broker, monkeypatch, acknowledged):
+    from axile.executor.algorithms.utils.clock import get_default_clock
+    from axile.executor.connection_state import connection_monitor
+
+    executor = broker.start()
+    executor.logger = Mock(wraps=executor.logger)
+    observations = []
+    connection_monitor(executor).bind(observations.append)
+    count = len(observations)
+    auth_count = broker.trader.ReqAuthenticate.call_count
+
+    def respond(_row, rid):
+        broker.trader_spi.OnFrontDisconnected(4097)
+        broker.trader_spi.OnFrontConnected()
+        if acknowledged:
+            broker.trader_spi.OnRspUserLogout(None, None, rid, True)
+        return 0
+
+    broker.trader.ReqUserLogout.side_effect = respond
+    monkeypatch.setattr(get_default_clock(), "event_wait", lambda event, _timeout: event.is_set())
+    executor.graceful_logout()
+    assert executor._logout_disconnect_reason == 4097
+    assert not executor._trader_connected
+    assert executor._invalid_reason is None
+    assert len(observations) == count
+    assert broker.trader.ReqAuthenticate.call_count == auth_count
+    broker.market.ReqUserLogout.assert_not_called()
+    assert any("OnFrontDisconnected" in call.args[0] for call in executor.logger.info.call_args_list)
+    assert any("OnFrontConnected" in call.args[0] for call in executor.logger.info.call_args_list)
+    success = [call for call in executor.logger.info.call_args_list if call.args[0].startswith("主动登出成功")]
+    assert len(success) == int(acknowledged)
+    assert not any("主动登出超时" in call.args[0] for call in executor.logger.warning.call_args_list)
+    executor.close()

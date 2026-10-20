@@ -354,9 +354,15 @@ def _confirm_ready(state: ResidentConnectionState, executor: object, reconcile: 
 def disconnect_resident_executor(state: ResidentConnectionState, *, close: Callable[[object], None]) -> None:
     """主动断开后禁止读请求重连；显式重连和配置变化可以解除此状态。"""
     with state.resource_lock:
+        state.disconnected = True
         if state.executor is not None:
             try:
-                close(state.executor)
+                try:
+                    logout = getattr(state.executor, "graceful_logout", None)
+                    if callable(logout):
+                        logout()
+                finally:
+                    close(state.executor)
             except Exception as exc:
                 _failed(state, exc)
                 raise

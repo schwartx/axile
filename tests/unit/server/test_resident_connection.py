@@ -323,3 +323,28 @@ def test_read_only_reuse_keeps_session_and_never_recovers_disconnect(monkeypatch
             resident.reuse_resident_connection(state, account())
     assert executor.calls.count("initialize") == before
     assert len(created) == 1 and not closed
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_manual_disconnect_logs_out_before_close_and_always_releases(monkeypatch, fails):
+    _, state, _, closed, observations, ensure = harness(monkeypatch)
+    executor = ensure()
+    calls = []
+
+    def logout():
+        assert state.disconnected
+        assert not closed
+        calls.append("logout")
+        if fails:
+            raise RuntimeError("登出失败")
+
+    executor.graceful_logout = logout
+    if fails:
+        with pytest.raises(RuntimeError, match="登出失败"):
+            resident.disconnect_resident_executor(state, close=closed.append)
+    else:
+        resident.disconnect_resident_executor(state, close=closed.append)
+        assert observations[-1].status == "disconnected"
+        assert state.executor is None
+    assert calls == ["logout"]
+    assert closed == [executor]

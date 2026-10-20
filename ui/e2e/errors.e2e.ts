@@ -1432,3 +1432,28 @@ test('connection step failure retains completed progress and a lost stream stops
   await expect(dialog.getByRole('alert')).toContainText('事件泵退出')
   await expect(dialog.getByRole('list', { name: '连接检查步骤' })).toHaveAttribute('aria-busy', 'false')
 })
+
+for (const kind of ['交易', '行情']) test(`CTP ${kind} logout updates an open connection dialog and preserves history`, async ({ page }) => {
+  await defaults(page)
+  const ready = { status: 'ready', observed_at: null, message: null, error: null }
+  await mockConnectionSnapshot(page, ready)
+  await page.goto('/e2e/errors.html?mode=connection')
+  await page.getByRole('button', { name: /连接详情/ }).click()
+  const dialog = page.getByRole('dialog', { name: '账户连接详情' })
+  const failure = {
+    observed_at: '2026-10-20T12:00:00', label: `${kind}会话已登出`, message: `CTP ${kind}会话已登出`,
+    error: { reason_code: 'CTP_USER_LOGOUT', technical_detail: 'OnRspUserLogout request_id=42 ErrorID=0' },
+    presentation: { title: `${kind}会话已登出`, summary: '当前账户会话已失效。', sections: [{ fields: [{ label: '请求编号', value: '42' }] }] },
+  }
+  await pushConnection(page, { ...failure, status: 'unavailable' })
+  await expect(page.getByRole('switch', { name: '账户连接' })).toHaveAttribute('aria-checked', 'false')
+  await expect(dialog).toContainText(`${kind}会话已登出`)
+  await expect(dialog).toContainText('42')
+  await dialog.getByRole('button', { name: '复制连接详情' }).click()
+  expect(await copied(page)).toContain('CTP_USER_LOGOUT')
+  await pushConnection(page, { ...ready, last_failure: failure })
+  await expect(page.getByRole('switch', { name: '账户连接' })).toHaveAttribute('aria-checked', 'true')
+  await expect(dialog.getByRole('button', { name: /历史连接失败/ })).toBeVisible()
+  await pushConnection(page, { status: 'disconnected', manually_disconnected: true, observed_at: null, message: null, error: null })
+  await expect(dialog).toContainText('账户会话已主动断开')
+})
