@@ -20,7 +20,7 @@ from axile.server.analysis_results import (
     read_result_points,
     read_result_range,
 )
-from axile.server.analysis_staging import stage_publication
+from axile.server.analysis_view_writer import prepare_read_views
 from axile.server.db.models import Account, ExecuteRecord, PortfolioAccount, ScheduleSkip, TargetWeightSnapshot
 from axile.server.db.models.account_settings import AccountSettings, BacktestSettings
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
@@ -29,6 +29,7 @@ from axile.server.db.models.analysis import cost_execution as execution_facts
 from axile.server.db.models.analysis import cost_range as cost_ranges
 from axile.server.db.models.analysis import cost_trade as trade_facts
 from axile.server.db.models.analysis_result import RESULT_TABLES
+from axile.server.db.models.analysis_view import READ_VIEW_TABLES
 from axile.server.db.models.performance import PerformanceSettings, PerformanceSummary
 from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.performance import Observation, calculate_performance, local_time, observation, performance_calendar
@@ -520,7 +521,7 @@ class AnalysisManager:
             await session.execute(
                 states.update()
                 .where(states.c.running_version.is_not(None))
-                .values(running_version=None, requested=True)
+                .values(running_version=None, running_token=None, requested=True)
             )
             await session.execute(
                 states.update()
@@ -581,12 +582,22 @@ class AnalysisManager:
                 .first()
             )
             if row:
-                await session.execute(
+                token = uuid4().hex
+                claimed = await session.execute(
                     states.update()
-                    .where(states.c.account_id == row["account_id"])
-                    .values(running_version=states.c.source_version, requested=False)
+                    .where(
+                        states.c.account_id == row["account_id"],
+                        states.c.source_version == row["source_version"],
+                        states.c.running_version.is_(None),
+                    )
+                    .values(running_version=states.c.source_version, running_token=token, requested=False)
+                    .returning(states.c.account_id)
                 )
+                if claimed.scalar_one_or_none() is None:
+                    await session.rollback()
+                    return None
                 await session.commit()
+                return {**row, "running_version": row["source_version"], "running_token": token}
             return row
 
     async def _load(self, account_id, *, include_observations: bool = True):
@@ -630,7 +641,7 @@ class AnalysisManager:
             return (prepared, *history, settings, str(account.trade_channel))
 
     async def _run_native(self, row) -> bool:
-        """只读 Rust 分批计算；Python 仅补齐事实并以源版本原子发布。"""
+        """Python 仅准备源事实；Rust 负责计算、结果暂存及成功发布事务。"""
         from axile.server.analysis_calendar import ensure_calendar_facts
         from axile.server.analysis_observations import ensure_observation_facts
         from axile.server.analysis_source import ensure_source_facts
@@ -660,18 +671,45 @@ class AnalysisManager:
                 # 无法无损投影的历史明确选择兼容计算，不在原生出错后重跑。
                 return False
             await ensure_calendar_facts(session, row["account_id"], channel)
-        staged = await stage_publication(
-            native,
+        receipt = await native.publish_store(
             account_id=row["account_id"],
-            source_version=row["source_version"],
+            expected_source_version=row["source_version"],
+            snapshot_id=row["running_token"],
+            logic_version=LOGIC_VERSION,
+            engine_version=ENGINE_VERSION,
+            computed_at=clock_now_iso(tz=SHANGHAI),
             settings=settings.model_dump(),
             trade_channel=channel,
         )
-        try:
-            await self._publish_structured(row, settings, staged)
-        finally:
-            staged.close()
+        if receipt["published"]:
+            if not await self._native_publication_committed(row):
+                from axile.server.native_analysis import NativeAnalysisProtocolError
+
+                raise NativeAnalysisProtocolError("原生发布回执没有对应已提交快照", code="NATIVE_PUBLICATION_MISSING")
+        elif receipt["reason"] == "source_changed":
+            await self._release_claim(row)
         return True
+
+    async def _native_publication_committed(self, row) -> bool:
+        """回执、进程退出或取消不决定提交结果，按本次 token 核对持久化快照。"""
+        token = row.get("running_token")
+        if token is None:
+            return False
+        async with self.sessions() as session:
+            return bool(
+                await session.scalar(
+                    sa.select(
+                        sa.exists().where(
+                            snapshots.c.id == token,
+                            snapshots.c.account_id == row["account_id"],
+                            snapshots.c.source_version == row["source_version"],
+                            snapshots.c.logic_version == LOGIC_VERSION,
+                            snapshots.c.engine_version == ENGINE_VERSION,
+                            snapshots.c.read_view_schema_version == 1,
+                        )
+                    )
+                )
+            )
 
     async def run_once(self) -> bool:
         """Claim one durable job, compute outside DB transactions, then compare-and-publish."""
@@ -690,18 +728,31 @@ class AnalysisManager:
                 result = await run_in_threadpool(compute_batch, *arguments)
                 await self._publish(row, settings, result)
             except asyncio.CancelledError:
-                await asyncio.shield(self._release_claim(row["account_id"]))
+                await asyncio.shield(self._release_claim(row))
                 raise
             except Exception:
-                logger.exception("Performance calculation failed for account {}", row["account_id"])
-                await self._fail(row)
+                if await self._native_publication_committed(row):
+                    logger.info(
+                        "Native performance publication committed before receipt loss for account {}", row["account_id"]
+                    )
+                else:
+                    logger.exception("Performance calculation failed for account {}", row["account_id"])
+                    await self._fail(row)
             return True
 
-    async def _release_claim(self, account_id: int) -> None:
-        """取消只读计算时恢复待办状态，不将取消记为业务计算失败。"""
+    async def _release_claim(self, row) -> None:
+        """只释放本次仍占有的任务；已提交发布或较新任务的状态保持不变。"""
+        if await self._native_publication_committed(row):
+            return
         async with self.sessions() as session:
             await session.execute(
-                states.update().where(states.c.account_id == account_id).values(running_version=None, requested=True)
+                states.update()
+                .where(
+                    states.c.account_id == row["account_id"],
+                    states.c.running_version == row["source_version"],
+                    states.c.running_token == row["running_token"],
+                )
+                .values(running_version=None, running_token=None, requested=True)
             )
             await session.commit()
 
@@ -709,7 +760,7 @@ class AnalysisManager:
         """全部流已成功收齐后写入规范化结果，数据库写入始终由 Python 完成。"""
         from axile.server.analysis_publication import copy_source_cost_facts
 
-        batch_id = uuid4().hex
+        batch_id = row["running_token"]
         table_by_name = {table.name: table for table in RESULT_TABLES}
         async with self.sessions() as session:
             previous = await self._claim_publication(session, row, batch_id)
@@ -750,6 +801,7 @@ class AnalysisManager:
                     )
             await session.execute(cost_ranges.insert(), range_headers)
             await copy_source_cost_facts(session, batch_id, row["account_id"])
+            await prepare_read_views(session, batch_id)
             await self._delete_obsolete(session, row["account_id"], batch_id, previous[0])
             await session.commit()
 
@@ -757,12 +809,18 @@ class AnalysisManager:
         """比较源版本并取得写入槽；后续任一步失败均随事务整体回滚。"""
         result = await session.execute(
             states.update()
-            .where(states.c.account_id == row["account_id"], states.c.source_version == row["source_version"])
+            .where(
+                states.c.account_id == row["account_id"],
+                states.c.source_version == row["source_version"],
+                states.c.running_version == row["source_version"],
+                states.c.running_token == row["running_token"],
+            )
             .values(
                 previous_snapshot=states.c.current_snapshot,
                 current_snapshot=batch_id,
                 published_version=row["source_version"],
                 running_version=None,
+                running_token=None,
                 requested=False,
                 failures=0,
                 retry_at=0,
@@ -776,8 +834,12 @@ class AnalysisManager:
         if previous is None:
             await session.execute(
                 states.update()
-                .where(states.c.account_id == row["account_id"])
-                .values(running_version=None, requested=True)
+                .where(
+                    states.c.account_id == row["account_id"],
+                    states.c.running_version == row["source_version"],
+                    states.c.running_token == row["running_token"],
+                )
+                .values(running_version=None, running_token=None, requested=True)
             )
         return previous
 
@@ -787,18 +849,27 @@ class AnalysisManager:
             snapshots.c.account_id == account_id,
             snapshots.c.id.not_in([value for value in (batch_id, previous) if value]),
         )
-        for table in (*RESULT_TABLES, *COST_FACT_TABLES):
+        for table in (*READ_VIEW_TABLES, *RESULT_TABLES, *COST_FACT_TABLES):
             await session.execute(table.delete().where(table.c.snapshot_id.in_(obsolete)))
         await session.execute(snapshots.delete().where(snapshots.c.id.in_(obsolete)))
 
     async def _fail(self, row) -> None:
+        """仅本次仍持有的任务记失败，已经提交的原生发布保持成功。"""
+        if await self._native_publication_committed(row):
+            return
         async with self.sessions() as session:
             failures = row["failures"] + 1
             await session.execute(
                 states.update()
-                .where(states.c.account_id == row["account_id"], states.c.source_version == row["source_version"])
+                .where(
+                    states.c.account_id == row["account_id"],
+                    states.c.source_version == row["source_version"],
+                    states.c.running_version == row["source_version"],
+                    states.c.running_token == row["running_token"],
+                )
                 .values(
                     running_version=None,
+                    running_token=None,
                     requested=True if failures <= len(RETRY_DELAYS) else False,
                     failures=failures,
                     retry_at=get_default_clock().time() + RETRY_DELAYS[min(failures - 1, len(RETRY_DELAYS) - 1)],
@@ -807,13 +878,18 @@ class AnalysisManager:
             )
             await session.execute(
                 states.update()
-                .where(states.c.account_id == row["account_id"], states.c.source_version != row["source_version"])
-                .values(running_version=None, requested=True)
+                .where(
+                    states.c.account_id == row["account_id"],
+                    states.c.source_version != row["source_version"],
+                    states.c.running_version == row["source_version"],
+                    states.c.running_token == row["running_token"],
+                )
+                .values(running_version=None, running_token=None, requested=True)
             )
             await session.commit()
 
     async def _publish(self, row, settings, result) -> None:
-        batch_id = uuid4().hex
+        batch_id = row["running_token"]
         ranges, projected, cost_rows = result
         async with self.sessions() as session:
             previous = await self._claim_publication(session, row, batch_id)
@@ -863,5 +939,6 @@ class AnalysisManager:
                             table.insert(),
                             [{**value, "snapshot_id": batch_id} for value in values[start : start + 500]],
                         )
+            await prepare_read_views(session, batch_id)
             await self._delete_obsolete(session, row["account_id"], batch_id, previous[0])
             await session.commit()

@@ -1,4 +1,4 @@
-"""以小请求调用只读 Rust 分析进程，保持历史与响应位于 Python 对象边界之外."""
+"""以小任务调用 Rust 分析进程，历史结果由原生进程独立发布。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import weakref
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import unquote, urlsplit
@@ -19,6 +19,7 @@ _REQUEST_LIMIT = 1024 * 1024
 _STDERR_LIMIT = 64 * 1024
 _DEFAULT_OUTPUT_LIMIT = 64 * 1024 * 1024
 _DEFAULT_FRAME_LIMIT = 1024 * 1024
+_PUBLICATION_RECEIPT_LIMIT = 64 * 1024
 _DEFAULT_TIMEOUT = 120.0
 _DEFAULT_CONCURRENCY = 2
 _GATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[int, asyncio.Semaphore]] = weakref.WeakKeyDictionary()
@@ -253,9 +254,50 @@ def _process_error(stderr: bytes, returncode: int) -> NativeAnalysisError:
     return NativeAnalysisError(detail or f"原生分析进程退出，状态 {returncode}")
 
 
+def _invalid_receipt(message: str) -> NativeAnalysisProtocolError:
+    return NativeAnalysisProtocolError(message, code="NATIVE_INVALID_RECEIPT")
+
+
+def _publication_receipt(output: bytes, account_id: int, source_version: int, snapshot_id: str) -> dict[str, Any]:
+    """只解码有界控制回执，严格核对任务身份和发布结果。"""
+    try:
+        receipt = json.loads(output, parse_constant=_reject_nonfinite)
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+        raise _invalid_receipt("原生发布回执不是有效 JSON") from exc
+    fields = {"protocol", "command", "published", "snapshot_id", "account_id", "source_version", "data_until", "reason"}
+    if not isinstance(receipt, dict) or not fields <= receipt.keys() <= fields | {"row_counts"}:
+        raise _invalid_receipt("原生发布回执字段不完整或包含结果载荷")
+    identity = {"protocol": 1, "account_id": account_id, "source_version": source_version}
+    if any(type(receipt[key]) is not int or receipt[key] != value for key, value in identity.items()):
+        raise _invalid_receipt("原生发布回执版本或账户不匹配")
+    if receipt["command"] != "publish_store" or receipt["snapshot_id"] != snapshot_id:
+        raise _invalid_receipt("原生发布回执任务身份不匹配")
+    _validate_publication_outcome(receipt)
+    return receipt
+
+
+def _validate_publication_outcome(receipt: dict[str, Any]) -> None:
+    """校验小回执状态与可选计数，不接收计算结果行。"""
+    if type(receipt["published"]) is not bool:
+        raise _invalid_receipt("原生发布回执缺少布尔发布状态")
+    reason = receipt["reason"]
+    reasons = ("source_changed", "claim_lost", "account_missing")
+    if (receipt["published"] and reason is not None) or (not receipt["published"] and reason not in reasons):
+        raise _invalid_receipt("原生发布回执原因与状态不一致")
+    if receipt["data_until"] is not None and not isinstance(receipt["data_until"], str):
+        raise _invalid_receipt("原生发布回执数据时间不合法")
+    if "row_counts" not in receipt:
+        return
+    counts = receipt["row_counts"]
+    if not isinstance(counts, dict) or any(
+        not isinstance(name, str) or not name or type(count) is not int or count < 0 for name, count in counts.items()
+    ):
+        raise _invalid_receipt("原生发布回执行数不合法")
+
+
 @dataclass(frozen=True, slots=True)
 class NativeAnalysis:
-    """每次调用持有一个受限只读子进程，最终响应保持编码后的字节形式."""
+    """每次调用持有一个受限子进程；新发布只返回有界控制回执。"""
 
     binary: Path
     database: Path
@@ -274,6 +316,41 @@ class NativeAnalysis:
         """
         request = _encode_request(command, request_fields)
         return await self._invoke(("query", "--database", str(self.database)), request)
+
+    async def publish_store(
+        self,
+        *,
+        account_id: int,
+        expected_source_version: int,
+        snapshot_id: str,
+        logic_version: str,
+        engine_version: str,
+        computed_at: str,
+        settings: dict[str, Any],
+        trade_channel: str,
+    ) -> dict[str, Any]:
+        """提交小型发布任务，Rust 自行读取事实并原子写入结果表。
+
+        Notes
+        -----
+        回执与旧查询使用同一超时、并发和进程回收协议，但输出上限为 64 KiB。
+        回执丢失不能推断事务失败；协调器需按 snapshot_id 核对已提交数据库。
+        """
+        worker = replace(self, max_output_bytes=min(self.max_output_bytes, _PUBLICATION_RECEIPT_LIMIT))
+        output = await worker.query(
+            "publish_store",
+            protocol=1,
+            account_id=account_id,
+            expected_source_version=expected_source_version,
+            snapshot_id=snapshot_id,
+            claim_token=snapshot_id,
+            logic_version=logic_version,
+            engine_version=engine_version,
+            computed_at=computed_at,
+            settings=settings,
+            trade_channel=trade_channel,
+        )
+        return _publication_receipt(output, account_id, expected_source_version, snapshot_id)
 
     @asynccontextmanager
     async def query_stream(self, command: str, **request_fields: Any) -> AsyncIterator[AsyncIterator[dict[str, Any]]]:
@@ -376,7 +453,7 @@ class NativeAnalysis:
             returncode = await process.wait()
             if returncode:
                 raise _process_error(stderr, returncode)
-            if not stdout.strip():
+            if not stdout or stdout.isspace():
                 raise NativeAnalysisProtocolError("原生分析未返回 JSON", code="NATIVE_EMPTY_RESPONSE")
             return stdout
         finally:

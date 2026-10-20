@@ -8,6 +8,7 @@ from axile.server.db.models.analysis_replay import replay_observation as replay_
 from axile.server.db.models.analysis_replay import replay_observation_symbol as replay_observation_symbol
 from axile.server.db.models.analysis_result import RESULT_TABLES as RESULT_TABLES
 from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES as SOURCE_FACT_TABLES
+from axile.server.db.models.analysis_view import READ_VIEW_TABLES as READ_VIEW_TABLES
 
 metadata = SQLModel.metadata
 analysis_state = sa.Table(
@@ -20,6 +21,7 @@ analysis_state = sa.Table(
     sa.Column("previous_snapshot", sa.Text),
     sa.Column("requested", sa.Boolean, nullable=False, server_default="0"),
     sa.Column("running_version", sa.Integer),
+    sa.Column("running_token", sa.Text),
     sa.Column("failures", sa.Integer, nullable=False, server_default="0"),
     sa.Column("retry_at", sa.Float, nullable=False, server_default="0"),
     sa.Column("error", sa.Text),
@@ -40,6 +42,7 @@ analysis_snapshot = sa.Table(
     sa.Column("ranges", sa.JSON, nullable=False),
     sa.Column("cost_schema_version", sa.Integer, nullable=False, server_default="0"),
     sa.Column("result_schema_version", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("read_view_schema_version", sa.Integer, nullable=False, server_default="0"),
     sa.Column("backtest_weight_type", sa.Text),
     sa.Column("backtest_fee_rate", sa.Float),
 )

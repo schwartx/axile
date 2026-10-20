@@ -619,6 +619,7 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
     migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
     facts_migration = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")
     structured_migration = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
+    read_views_migration = _load_migration(_MIGRATIONS_DIR / "0036_analysis_read_views.py")
 
     async def check():
         async with database(tmp_path, schema_template, fresh_schema=True) as (engine, sessions, manager):
@@ -628,13 +629,29 @@ def test_migration_roundtrip_and_restart_running_state(tmp_path, schema_template
                     migration.op = Operations(MigrationContext.configure(connection))
                     facts_migration.op = migration.op
                     structured_migration.op = migration.op
+                    read_views_migration.op = migration.op
+                    read_views_migration.downgrade()
                     structured_migration.downgrade()
                     facts_migration.downgrade()
                     migration.downgrade()
                     migration.upgrade()
+                    assert {column["name"] for column in sa.inspect(connection).get_columns("account_analysis")} == {
+                        "account_id",
+                        "source_version",
+                        "published_version",
+                        "current_snapshot",
+                        "previous_snapshot",
+                        "requested",
+                        "running_version",
+                        "failures",
+                        "retry_at",
+                        "error",
+                        "logic_version",
+                        "engine_version",
+                    }
                     facts_migration.upgrade()
                     structured_migration.upgrade()
-                    assert len(sa.inspect(connection).get_columns("account_analysis")) == len(states.columns)
+                    read_views_migration.upgrade()
 
                 await conn.run_sync(roundtrip)
             await queue(sessions)
