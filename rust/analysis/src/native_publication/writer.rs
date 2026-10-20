@@ -329,6 +329,77 @@ mod tests {
     }
 
     #[test]
+    fn publish_rechecks_source_after_computation_without_releasing_another_token() {
+        for replacement_token in [None, Some("other")] {
+            let connection = fixture();
+            let task = task();
+            connection
+                .execute(
+                    "INSERT INTO performance_snapshot(id,account_id) VALUES('old',1)",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(stale_reason(&connection, &task).unwrap(), None);
+            let complete = json!({"data_until":"2026-10-20T09:00:00","row_counts":{}});
+
+            // A fact commits after calculation finishes, before the publisher
+            // obtains its final writer transaction. Another worker may also
+            // have replaced this claim with a distinct token meanwhile.
+            connection
+                .execute(
+                    "UPDATE account_analysis SET source_version=3,requested=0",
+                    [],
+                )
+                .unwrap();
+            if let Some(token) = replacement_token {
+                connection
+                    .execute("UPDATE account_analysis SET running_token=?1", [token])
+                    .unwrap();
+            }
+            let receipt = publish(&connection, &task, &complete).unwrap();
+            assert_eq!(receipt["published"], false);
+            assert_eq!(receipt["reason"], "source_changed");
+            let state: (String, Option<i64>, Option<String>, bool) = connection
+                .query_row(
+                    "SELECT current_snapshot,running_version,running_token,requested FROM account_analysis",
+                    [],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(state.0, "old");
+            if let Some(token) = replacement_token {
+                assert_eq!(state.1, Some(2));
+                assert_eq!(state.2.as_deref(), Some(token));
+                assert!(!state.3);
+            } else {
+                assert_eq!(state.1, None);
+                assert_eq!(state.2, None);
+                assert!(state.3);
+            }
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM performance_snapshot", [], |row| row
+                        .get::<_, i64>(
+                        0
+                    ))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM performance_snapshot WHERE id='next'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            assert!(connection.is_autocommit());
+        }
+    }
+
+    #[test]
     fn settings_channel_account_and_claim_are_checked() {
         let connection = fixture();
         assert_eq!(stale_reason(&connection, &task()).unwrap(), None);

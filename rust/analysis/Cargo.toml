@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 publish = false
-description = "Read-only SQLite performance and cost analysis worker for Axile"
+description = "Bounded SQLite analysis and publication worker for Axile"
 
 [dependencies]
 base64 = "0.22"

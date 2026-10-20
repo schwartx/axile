@@ -1,7 +1,7 @@
 //! Bounded SQLite access for the native analysis process.
 //!
 //! Python owns business facts and migrations. Queries use a consistent read
-//! snapshot; native publication stages and commits analysis-owned results.
+//! snapshot; publish_store stages and atomically writes analysis-owned results.
 //! No historical rows cross the Python/Rust process boundary in publish_store.
 
 pub mod calendar;
