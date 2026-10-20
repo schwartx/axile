@@ -395,7 +395,8 @@ def test_stream_early_exit_cancel_and_timeout_reap_child_and_release_gate(tmp_pa
                         break
 
         task = asyncio.create_task(consume())
-        await reached.wait()
+        if action != "timeout":
+            await reached.wait()
         if action == "cancel":
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -1,4 +1,4 @@
-"""Real Rust publication, atomic Python persistence and JSON-free result reads."""
+"""Real Rust publication, atomic native persistence and JSON-free result reads."""
 
 import asyncio
 import json
@@ -16,6 +16,7 @@ from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.db.models.analysis_result import RESULT_TABLES
 from axile.server.db.models.analysis_source import source_execution
+from axile.server.db.models.analysis_view import READ_VIEW_TABLES
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.native_analysis import NativeAnalysis, NativeAnalysisError, NativeAnalysisProtocolError
 from axile.server.performance_analysis import LOGIC_VERSION, AnalysisManager, compute_batch, enqueue
@@ -83,7 +84,7 @@ async def _counts(sessions):
     async with sessions() as session:
         return {
             table.name: await session.scalar(sa.select(sa.func.count()).select_from(table))
-            for table in (snapshots, *RESULT_TABLES, *COST_FACT_TABLES)
+            for table in (snapshots, *RESULT_TABLES, *COST_FACT_TABLES, *READ_VIEW_TABLES)
         }
 
 
@@ -120,6 +121,7 @@ def test_native_publication_matches_oracle_without_reparsing_history(native_bina
             async with sessions() as session:
                 row = (await session.execute(sa.select(snapshots))).mappings().one()
                 assert row["result_schema_version"] == 2
+                assert row["read_view_schema_version"] == 1
                 assert row["ranges"] == row["settings"] == {}
                 assert row["backtest_weight_type"] == "cs"
                 assert row["backtest_fee_rate"] == 0.001
@@ -166,84 +168,169 @@ def test_native_published_results_ignore_poisoned_legacy_json(native_binary, tmp
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("interruption", ["process_error", "invalid_columns", "cancelled", "wrong_complete_version"])
+@pytest.mark.parametrize("interruption", ["process_error", "invalid_columns", "cancelled"])
 def test_failed_publication_never_exposes_partial_results(native_binary, tmp_path, monkeypatch, interruption):
+    import axile.server.native_analysis as native_module
+
     async def check():
         async with _database(tmp_path, native_binary, monkeypatch) as (_, _, sessions, manager, _, _):
             await _queue(sessions)
             assert await manager.run_once()
             previous = await _state(sessions)
             counts = await _counts(sessions)
-            original = NativeAnalysis.query_stream
+            processes = []
+            errors = []
+            query = NativeAnalysis.query
 
-            @asynccontextmanager
-            async def interrupted(self, command, **request):
-                async with original(self, command, **request) as frames:
+            async def capture_error(self, command, **request):
+                assert command == "publish_store", "The manager must use the new native writer"
+                try:
+                    return await query(self, command, **request)
+                except NativeAnalysisError as error:
+                    errors.append(error.code)
+                    raise
 
-                    async def corrupt():
-                        async for frame in frames:
-                            if interruption == "wrong_complete_version":
-                                if frame.get("type") == "complete":
-                                    frame = {**frame, "source_version": frame["source_version"] + 1}
-                                yield frame
-                                continue
-                            if interruption == "invalid_columns":
-                                yield {
-                                    "type": "rows",
-                                    "table": "performance_result_point",
-                                    "columns": ["invalid"],
-                                    "rows": [[0]],
-                                }
-                                return
-                            yield frame
-                            if frame.get("type") == "rows":
-                                if interruption == "cancelled":
-                                    raise asyncio.CancelledError
-                                raise NativeAnalysisProtocolError("synthetic interrupted native stream")
+            monkeypatch.setattr(NativeAnalysis, "query", capture_error)
+            if interruption == "cancelled":
+                write_request = native_module._write_request
 
-                    yield corrupt()
+                async def cancel_before_input(process, request):
+                    if json.loads(request)["command"] == "publish_store":
+                        # The real worker exists, but has not received a task.
+                        # Cancellation must reap it before releasing this claim.
+                        processes.append(process)
+                        raise asyncio.CancelledError
+                    await write_request(process, request)
 
-            monkeypatch.setattr(NativeAnalysis, "query_stream", interrupted)
+                monkeypatch.setattr(native_module, "_write_request", cancel_before_input)
+            else:
+                async with sessions() as session:
+                    if interruption == "invalid_columns":
+                        # Rust validates the actual migrated schema before staging.
+                        await session.execute(sa.text("ALTER TABLE performance_result_point ADD COLUMN invalid JSON"))
+                    else:
+                        await session.execute(
+                            sa.text("""
+                            CREATE TRIGGER reject_result_insert BEFORE INSERT ON performance_result_point
+                            BEGIN SELECT RAISE(ABORT, 'synthetic native result write failure'); END
+                        """)
+                        )
+                    await session.commit()
             await _queue(sessions)
             if interruption == "cancelled":
                 with pytest.raises(asyncio.CancelledError):
                     await manager.run_once()
+                assert len(processes) == 1 and processes[0].returncode is not None
             else:
                 assert await manager.run_once()
+                assert errors == [
+                    "INVALID_NATIVE_PUBLICATION" if interruption == "invalid_columns" else "PUBLICATION_STAGE"
+                ]
             current = await _state(sessions)
             assert current["current_snapshot"] == previous["current_snapshot"]
-            assert current["running_version"] is None and current["requested"]
+            assert current["published_version"] == previous["published_version"]
+            assert current["running_version"] is None and current["running_token"] is None
+            assert current["requested"]
             assert await _counts(sessions) == counts
 
     asyncio.run(check())
 
 
-def test_source_change_after_staging_discards_publication(native_binary, tmp_path, monkeypatch):
+def test_wrong_receipt_version_recovers_the_committed_native_publication(native_binary, tmp_path, monkeypatch):
+    async def check():
+        async with _database(tmp_path, native_binary, monkeypatch) as (_, _, sessions, manager, _, _):
+            await _queue(sessions)
+            assert await manager.run_once()
+            previous = await _state(sessions)
+            query = NativeAnalysis.query
+            publish_store = NativeAnalysis.publish_store
+            published = []
+            errors = []
+
+            async def capture_invalid_receipt(self, **request):
+                try:
+                    return await publish_store(self, **request)
+                except NativeAnalysisProtocolError as error:
+                    errors.append(error.code)
+                    raise
+
+            async def must_recover_committed_task(_row):
+                raise AssertionError("A rejected receipt must recover the committed snapshot before failing a task")
+
+            async def corrupt_receipt(self, command, **request):
+                assert command == "publish_store"
+                receipt = json.loads(await query(self, command, **request))
+                assert receipt["published"] is True
+                published.append(receipt["snapshot_id"])
+                # Unlike old result frames, this control receipt follows COMMIT.
+                # Its corruption cannot undo an authoritative durable snapshot.
+                receipt["source_version"] += 1
+                return json.dumps(receipt).encode()
+
+            monkeypatch.setattr(NativeAnalysis, "query", corrupt_receipt)
+            monkeypatch.setattr(NativeAnalysis, "publish_store", capture_invalid_receipt)
+            monkeypatch.setattr(manager, "_fail", must_recover_committed_task)
+            await _queue(sessions)
+            assert await manager.run_once()
+            assert errors == ["NATIVE_INVALID_RECEIPT"]
+            current = await _state(sessions)
+            assert published == [current["current_snapshot"]]
+            assert current["current_snapshot"] != previous["current_snapshot"]
+            assert current["previous_snapshot"] == previous["current_snapshot"]
+            assert current["published_version"] == current["source_version"]
+            assert current["running_version"] is None and current["running_token"] is None
+            assert current["requested"] is False and current["failures"] == 0 and current["error"] is None
+            async with sessions() as session:
+                row = (
+                    (await session.execute(sa.select(snapshots).where(snapshots.c.id == published[0]))).mappings().one()
+                )
+                assert row["read_view_schema_version"] == 1
+
+    asyncio.run(check())
+
+
+def test_source_change_inside_writer_fails_final_cas_and_rolls_back_publication(native_binary, tmp_path, monkeypatch):
     async def check():
         async with _database(tmp_path, native_binary, monkeypatch) as (_, _, sessions, manager, _, _):
             await _queue(sessions)
             assert await manager.run_once()
             previous = await _state(sessions)
             counts = await _counts(sessions)
-            publish = manager._publish_structured
+            async with sessions() as session:
+                # The main snapshot INSERT runs after native staging. Perturb
+                # the source inside that writer transaction, so the final
+                # pointer CAS must reject every staged/result/cost insert.
+                await session.execute(
+                    sa.text("""
+                    CREATE TRIGGER change_source_inside_publication AFTER INSERT ON performance_snapshot
+                    BEGIN
+                        UPDATE account_analysis SET source_version=source_version+1 WHERE account_id=NEW.account_id;
+                    END
+                """)
+                )
+                await session.commit()
+            errors = []
+            query = NativeAnalysis.query
 
-            async def change_source(row, settings, staged):
-                async with sessions() as session:
-                    await session.execute(
-                        states.update()
-                        .where(states.c.account_id == 7)
-                        .values(source_version=states.c.source_version + 1)
-                    )
-                    await session.commit()
-                await publish(row, settings, staged)
+            async def capture_error(self, command, **request):
+                assert command == "publish_store"
+                try:
+                    return await query(self, command, **request)
+                except NativeAnalysisError as error:
+                    errors.append(error.code)
+                    raise
 
-            monkeypatch.setattr(manager, "_publish_structured", change_source)
+            monkeypatch.setattr(NativeAnalysis, "query", capture_error)
             await _queue(sessions)
+            queued = await _state(sessions)
             assert await manager.run_once()
+            assert errors == ["CLAIM_LOST"]
             current = await _state(sessions)
             assert current["current_snapshot"] == previous["current_snapshot"]
             assert current["published_version"] == previous["published_version"]
-            assert current["running_version"] is None and current["requested"]
+            assert current["source_version"] == queued["source_version"]
+            assert current["running_version"] is None and current["running_token"] is None
+            assert current["requested"]
             assert await _counts(sessions) == counts
 
     asyncio.run(check())
@@ -256,10 +343,11 @@ def test_source_change_before_rust_snapshot_is_rejected(native_binary, tmp_path,
             assert await manager.run_once()
             previous = await _state(sessions)
             counts = await _counts(sessions)
-            original = NativeAnalysis.query_stream
+            original = NativeAnalysis.query
+            receipts = []
 
-            @asynccontextmanager
             async def change_source(self, command, **request):
+                assert command == "publish_store"
                 async with sessions() as session:
                     await session.execute(
                         states.update()
@@ -267,45 +355,70 @@ def test_source_change_before_rust_snapshot_is_rejected(native_binary, tmp_path,
                         .values(source_version=states.c.source_version + 1)
                     )
                     await session.commit()
-                async with original(self, command, **request) as frames:
-                    yield frames
+                output = await original(self, command, **request)
+                receipts.append(json.loads(output))
+                return output
 
-            monkeypatch.setattr(NativeAnalysis, "query_stream", change_source)
+            monkeypatch.setattr(NativeAnalysis, "query", change_source)
             await _queue(sessions)
             assert await manager.run_once()
+            assert len(receipts) == 1
+            assert receipts[0]["published"] is False and receipts[0]["reason"] == "source_changed"
             current = await _state(sessions)
             assert current["current_snapshot"] == previous["current_snapshot"]
             assert current["published_version"] == previous["published_version"]
-            assert current["running_version"] is None and current["requested"]
+            assert current["source_version"] == receipts[0]["source_version"] + 1
+            assert current["running_version"] is None and current["running_token"] is None
+            assert current["requested"] and current["failures"] == 0
             assert await _counts(sessions) == counts
 
     asyncio.run(check())
 
 
 def test_transaction_failure_after_cost_copy_rolls_back_every_published_row(native_binary, tmp_path, monkeypatch):
-    import axile.server.analysis_publication as publication
-    import axile.server.performance_analysis as analysis
-
     async def check():
         async with _database(tmp_path, native_binary, monkeypatch) as (_, _, sessions, manager, _, _):
             await _queue(sessions)
             assert await manager.run_once()
             previous = await _state(sessions)
             counts = await _counts(sessions)
-            original = publication.copy_source_cost_facts
+            errors = []
+            query = NativeAnalysis.query
+            async with sessions() as session:
+                # This pointer UPDATE follows all source-cost and result INSERTs.
+                # Distinct error messages prove we reached that copy boundary.
+                await session.execute(
+                    sa.text("""
+                    CREATE TRIGGER fail_after_cost_copy BEFORE UPDATE OF current_snapshot ON account_analysis
+                    WHEN NEW.current_snapshot != OLD.current_snapshot
+                    BEGIN
+                        SELECT CASE WHEN
+                            (SELECT COUNT(*) FROM performance_cost_trade WHERE snapshot_id=NEW.current_snapshot)=0
+                            THEN RAISE(ABORT, 'source cost facts were not copied') END;
+                        SELECT RAISE(ABORT, 'synthetic failure after immutable costs were copied');
+                    END
+                """)
+                )
+                await session.commit()
 
-            async def fail_after_copy(session, snapshot_id, account_id):
-                await original(session, snapshot_id, account_id)
-                raise RuntimeError("synthetic failure after all immutable costs were copied")
+            async def capture_error(self, command, **request):
+                assert command == "publish_store"
+                try:
+                    return await query(self, command, **request)
+                except NativeAnalysisError as error:
+                    errors.append((error.code, str(error)))
+                    raise
 
-            monkeypatch.setattr(publication, "copy_source_cost_facts", fail_after_copy)
-            if hasattr(analysis, "copy_source_cost_facts"):
-                monkeypatch.setattr(analysis, "copy_source_cost_facts", fail_after_copy)
+            monkeypatch.setattr(NativeAnalysis, "query", capture_error)
             await _queue(sessions)
             assert await manager.run_once()
+            assert len(errors) == 1 and errors[0][0] == "PUBLICATION_WRITE"
+            assert "synthetic failure after immutable costs were copied" in errors[0][1]
             current = await _state(sessions)
             assert current["current_snapshot"] == previous["current_snapshot"]
             assert current["published_version"] == previous["published_version"]
+            assert current["running_version"] is None and current["running_token"] is None
+            assert current["requested"]
             assert await _counts(sessions) == counts
 
     asyncio.run(check())
