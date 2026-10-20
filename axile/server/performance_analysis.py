@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -100,7 +101,7 @@ def _snapshot_response(joined, range_key: str) -> dict:
         snapshot = None
     status = "pending" if incompatible else _snapshot_status(row, snapshot is not None)
     result = snapshot["ranges"][range_key] if snapshot else None
-    if result:
+    if result and snapshot is not None:
         result = {**result, "performance": _range_performance(snapshot["ranges"], range_key)}
     return {
         "status": status,
@@ -209,15 +210,16 @@ def _events(records, bindings, skips) -> list[dict]:
     for record in records:
         if record.is_success == 1:
             continue
-        raw = normalize_legacy_result(record.raw_result)
+        raw = cast("dict[str, Any]", normalize_legacy_result(record.raw_result))
         status = raw.get("status") if isinstance(raw, dict) else None
-        label = {
+        labels: dict[str | None, str] = {
             "SUCCEEDED": "调仓完成",
             "NOOP": "无需调仓",
             "PARTIAL": "执行未全部完成",
             "FAILED": "执行失败",
             "BLOCKED": "未执行",
-        }.get(status, "执行状态未知")
+        }
+        label = labels.get(status, "执行状态未知")
         scope = session_closed_scope(raw)
         if scope == "all":
             label = "休市跳过"
