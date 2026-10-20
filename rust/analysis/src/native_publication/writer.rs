@@ -20,12 +20,13 @@ pub(super) fn already_published(
     task: &Task,
 ) -> Result<Option<Value>, AnalysisError> {
     let existing = connection.query_row(
-        "SELECT account_id,source_version,logic_version,engine_version,data_until,read_view_schema_version
+        "SELECT account_id,source_version,logic_version,engine_version,data_until,read_view_schema_version,
+                backtest_weight_type,backtest_fee_rate
          FROM main.performance_snapshot WHERE id=?1",
         [&task.snapshot_id],
-        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)?)),
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)?,row.get::<_,Option<String>>(6)?,row.get::<_,Option<f64>>(7)?)),
     ).optional().map_err(sql)?;
-    let Some((account, version, logic, engine, until, view)) = existing else {
+    let Some((account, version, logic, engine, until, view, weight, fee)) = existing else {
         return Ok(None);
     };
     if account != task.account_id
@@ -33,6 +34,8 @@ pub(super) fn already_published(
         || logic != task.logic_version
         || engine != task.engine_version
         || view != 1
+        || !matches!(weight.as_deref(), Some("cs" | "ts"))
+        || fee != Some(task.fee_rate)
     {
         return Err(AnalysisError::new(
             "SNAPSHOT_CONFLICT",
@@ -74,7 +77,7 @@ pub(super) fn stale_reason(
     if running != Some(task.source_version) || token.as_deref() != Some(task.claim_token.as_str()) {
         return Ok(Some("claim_lost"));
     }
-    let current_settings = match raw_settings {
+    let mut current_settings = match raw_settings {
         Some(value) => serde_json::from_str::<Value>(&value).map_err(|_| {
             AnalysisError::new(
                 "INVALID_ACCOUNT_SETTINGS",
@@ -83,6 +86,20 @@ pub(super) fn stale_reason(
         })?,
         None => json!({"backtest_weight_type":"ts","backtest_fee_rate":0.0}),
     };
+    // Pydantic fills omitted stored BacktestSettings fields with these same
+    // defaults before the Python caller constructs its canonical request.
+    let current = current_settings.as_object_mut().ok_or_else(|| {
+        AnalysisError::new(
+            "INVALID_ACCOUNT_SETTINGS",
+            "stored backtest settings must be an object",
+        )
+    })?;
+    current
+        .entry("backtest_weight_type")
+        .or_insert_with(|| json!("ts"));
+    current
+        .entry("backtest_fee_rate")
+        .or_insert_with(|| json!(0.0));
     let (weight, fee) = settings(&current_settings)?;
     if channel != task.trade_channel || weight != task.weight_type || fee != task.fee_rate {
         return Ok(Some("source_changed"));
@@ -255,7 +272,7 @@ mod tests {
             "expected_source_version":2,"snapshot_id":"next","claim_token":"next",
             "logic_version":"18","engine_version":"equity-ledger-1",
             "computed_at":"2026-10-20T10:00:00+08:00","trade_channel":"gm",
-            "settings":{"backtest_weight_type":"ts","backtest_fee_rate":0.0}}),
+            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
         )
         .unwrap()
     }
@@ -316,6 +333,10 @@ mod tests {
         let connection = fixture();
         assert_eq!(stale_reason(&connection, &task()).unwrap(), None);
         connection
+            .execute("UPDATE account_settings SET backtest='{}'", [])
+            .unwrap();
+        assert_eq!(stale_reason(&connection, &task()).unwrap(), None);
+        connection
             .execute("UPDATE account SET trade_channel='ctp'", [])
             .unwrap();
         assert_eq!(
@@ -325,7 +346,7 @@ mod tests {
         connection
             .execute("UPDATE account SET trade_channel='gm'", [])
             .unwrap();
-        connection.execute("UPDATE account_settings SET backtest='{\"backtest_weight_type\":\"cs\",\"backtest_fee_rate\":0}'", []).unwrap();
+        connection.execute("UPDATE account_settings SET backtest='{\"backtest_weight_type\":\"cs\",\"backtest_fee_rate\":0.01}'", []).unwrap();
         assert_eq!(
             stale_reason(&connection, &task()).unwrap(),
             Some("source_changed")
@@ -421,6 +442,12 @@ mod tests {
             })
             .unwrap();
         assert_eq!(token, "newer");
+        let mut changed = task();
+        changed.fee_rate = 0.01;
+        assert_eq!(
+            already_published(&connection, &changed).unwrap_err().code,
+            "SNAPSHOT_CONFLICT"
+        );
     }
 
     #[test]

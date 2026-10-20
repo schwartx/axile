@@ -86,7 +86,7 @@ impl Task {
 }
 
 pub(super) fn settings(value: &Value) -> Result<(String, f64), AnalysisError> {
-    let weight = value["backtest_weight_type"]
+    value["backtest_weight_type"]
         .as_str()
         .filter(|value| matches!(*value, "cs" | "ts"))
         .ok_or_else(|| invalid("settings.backtest_weight_type must be cs or ts"))?;
@@ -94,7 +94,9 @@ pub(super) fn settings(value: &Value) -> Result<(String, f64), AnalysisError> {
         .as_f64()
         .filter(|value| value.is_finite() && (0.0..1.0).contains(value))
         .ok_or_else(|| invalid("settings.backtest_fee_rate must be finite and in [0,1)"))?;
-    Ok((weight.to_owned(), fee))
+    // Match PerformanceSettings.account_weight_mode and performance::handle:
+    // historical ts is accepted, but account funds are always summed as cs.
+    Ok(("cs".to_owned(), fee))
 }
 
 #[cfg(test)]
@@ -111,7 +113,7 @@ mod tests {
 
     #[test]
     fn identity_and_types_are_checked_before_database_access() {
-        Task::parse(&request()).unwrap();
+        assert_eq!(Task::parse(&request()).unwrap().weight_type, "cs");
         let mut value = request();
         value["claim_token"] = json!("another");
         assert_eq!(Task::parse(&value).unwrap_err().code, "INVALID_REQUEST");

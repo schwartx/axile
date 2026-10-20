@@ -100,3 +100,20 @@ fn timestamp(value: &str) -> Result<f64, AnalysisError> {
         .map_err(|_| AnalysisError::new("INVALID_RESULT_TIME", "invalid range timestamp"))?;
     Ok((parsed.and_utc().timestamp_micros() - 28_800_000_000) as f64 / 1_000_000.0 * 1000.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_boundaries_match_historical_microsecond_precision() {
+        let expected = 1767229200000.0032;
+        assert_eq!(timestamp("2026-01-01T09:00:00.000003").unwrap(), expected);
+        assert_eq!(
+            timestamp("2026-01-01T09:00:00.000003+08:00").unwrap(),
+            expected
+        );
+        assert_eq!(timestamp("2026-01-01T01:00:00.000003Z").unwrap(), expected);
+        assert!(timestamp("invalid").is_err());
+    }
+}
