@@ -89,6 +89,7 @@ export function ChartTradingOverlay({ scene, rows, snapshotId, accountId, curren
   const detail = details.data
   const cardRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(null)
   const selectedKey = pinned ? `${snapshotId}:${pinned.record_id}` : null
   const recoveredVersions = useRef(new Set<string>())
   useEffect(() => {
@@ -101,16 +102,24 @@ export function ChartTradingOverlay({ scene, rows, snapshotId, accountId, curren
     if (!selectedKey) return
     const previousFocus = document.activeElement
     const card = cardRef.current
+    const chart = card?.parentElement?.parentElement?.querySelector<HTMLElement>('canvas[tabindex="0"]') ?? null
+    if (!card?.contains(previousFocus)) returnFocusRef.current = previousFocus instanceof HTMLElement && previousFocus !== document.body ? previousFocus : chart
+    const returnFocus = returnFocusRef.current
     closeRef.current?.focus({ preventScroll: true })
     return () => {
-      if (card?.contains(document.activeElement) && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus({ preventScroll: true })
+      // React may detach the focused card before its parent's layout cleanup.
+      if ((card?.contains(document.activeElement) || document.activeElement === document.body) && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true })
     }
   }, [selectedKey])
   const visible = !!pinned || !!cursor
   const anchor = pinned && selection?.kind === 'execution' ? { x: xPosition(selection.time, scene.width, scene.viewport, scene.scale), y: 70 } : cursor ?? { x: 20, y: 20 }
   const width = Math.max(0, Math.min(370, scene.width - 16))
   const left = Math.max(8, Math.min(scene.width - width - 8, anchor.x > scene.width / 2 ? anchor.x - width - 20 : anchor.x + 20))
-  const close = () => { onInspect(null); onSelect(null) }
+  const close = () => {
+    // Restore before removing the focused button; otherwise the browser focuses body.
+    if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus({ preventScroll: true })
+    onInspect(null); onSelect(null)
+  }
   const title = pinned ? `${timeLabel(pinned.time_ms)} · ${detail?.symbolsComplete ? executionRecordView({ raw_result: detail.rawResult }).text : stateLabel(pinned)}` : cursor ? timeLabel(cursor.time) : ''
   const executionId = detail?.executionId ?? pinned?.execution_id
   return <div className="pointer-events-none absolute inset-0" data-testid="chart-trading-overlay">
