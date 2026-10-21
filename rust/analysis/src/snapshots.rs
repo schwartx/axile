@@ -61,6 +61,7 @@ struct Snapshot {
     settings: Value,
     selected: Value,
     executions: Option<String>,
+    typed_points: Option<Vec<crate::result_reader::Point>>,
 }
 
 impl Snapshot {
@@ -107,6 +108,7 @@ fn read(
     connection: &Connection,
     request: &Request<'_>,
     performance_only: bool,
+    typed_points: bool,
 ) -> Result<Option<Snapshot>, String> {
     // Read the marker first. The typed path never selects legacy ranges,
     // settings or payload columns, including when those contain poisoned JSON.
@@ -139,6 +141,7 @@ fn read(
                     settings: Value::Null,
                     selected: Value::Null,
                     executions: None,
+                    typed_points: None,
                 })
             },
         )
@@ -148,12 +151,19 @@ fn read(
         match row.result_schema_version {
             0 => read_legacy(connection, row, request, performance_only)?,
             2 => {
-                row.selected = crate::result_reader::read(
-                    connection,
-                    row.id.as_deref().expect("compatible snapshots have an id"),
-                    request.range,
-                    performance_only,
-                )?;
+                let id = row.id.as_deref().expect("compatible snapshots have an id");
+                row.selected = if typed_points {
+                    let (selected, points) = crate::result_reader::read_typed(
+                        connection,
+                        id,
+                        request.range,
+                        performance_only,
+                    )?;
+                    row.typed_points = Some(points);
+                    selected
+                } else {
+                    crate::result_reader::read(connection, id, request.range, performance_only)?
+                };
                 // Settings are two scalar fields; copying them does not duplicate
                 // the growing result arrays or execution history.
                 row.settings = row.selected["performance"]["settings"].clone();
@@ -209,8 +219,24 @@ fn parse_json(value: Option<&str>) -> Result<Value, String> {
 
 /// Return the existing PerformanceSnapshot envelope, including stale results.
 pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
+    Ok(query_mode(connection, value, false)?.value)
+}
+
+pub(crate) fn query_wire(
+    connection: &Connection,
+    value: &Value,
+) -> Result<crate::wire_result::WireResult, String> {
+    query_mode(connection, value, true)
+}
+
+fn query_mode(
+    connection: &Connection,
+    value: &Value,
+    typed: bool,
+) -> Result<crate::wire_result::WireResult, String> {
     let request = Request::parse(value)?;
-    let mut row = read(connection, &request, false)?;
+    let mut row = read(connection, &request, false, typed)?;
+    let points = row.as_mut().and_then(|row| row.typed_points.take());
     let status = row.as_ref().map_or("empty", |row| row.status(&request));
     let mut selected = row
         .as_mut()
@@ -254,18 +280,38 @@ pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
         .get_mut("events")
         .map(Value::take)
         .unwrap_or_else(|| json!([]));
-    Ok(response)
+    Ok(crate::wire_result::WireResult {
+        value: response,
+        points,
+        performance_only: false,
+    })
 }
 
 /// Return a ready AccountPerformance directly, without encoding its envelope.
 pub fn performance_result(connection: &Connection, value: &Value) -> Result<Value, String> {
+    Ok(performance_result_mode(connection, value, false)?.value)
+}
+
+pub(crate) fn performance_result_wire(
+    connection: &Connection,
+    value: &Value,
+) -> Result<crate::wire_result::WireResult, String> {
+    performance_result_mode(connection, value, true)
+}
+
+fn performance_result_mode(
+    connection: &Connection,
+    value: &Value,
+    typed: bool,
+) -> Result<crate::wire_result::WireResult, String> {
     let request = Request::parse(value)?;
-    let row = read(connection, &request, true)?;
+    let row = read(connection, &request, true, typed)?;
     let status = row.as_ref().map_or("empty", |row| row.status(&request));
     if status != "ready" {
         return Err(format!("SNAPSHOT_NOT_READY: {status}"));
     }
     let mut row = row.expect("ready status requires a snapshot row");
+    let mut typed_points = row.typed_points.take();
     let mut result = row
         .selected
         .get_mut("performance")
@@ -281,6 +327,13 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
         result["backtest_included"] = json!(false);
         result["skips"] = Value::Null;
         result["used_record_count"] = json!(0);
+        if let Some(points) = typed_points.as_mut() {
+            for point in points {
+                point.portfolio_return = None;
+                point.portfolio_daily_return = None;
+                point.difference = None;
+            }
+        }
         if let Some(points) = result.get_mut("points").and_then(Value::as_array_mut) {
             for point in points {
                 if let Some(point) = point.as_object_mut() {
@@ -291,7 +344,11 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
             }
         }
     }
-    Ok(result)
+    Ok(crate::wire_result::WireResult {
+        value: result,
+        points: typed_points,
+        performance_only: true,
+    })
 }
 
 fn project_executions(performance: &mut Value, executions: Option<&str>) -> Result<(), String> {

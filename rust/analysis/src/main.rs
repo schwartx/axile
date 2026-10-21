@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use axile_analysis::error::AnalysisError;
-use axile_analysis::{capabilities, query, query_stream, MAX_REQUEST_BYTES};
+use axile_analysis::{capabilities, query_stream, query_wire, MAX_REQUEST_BYTES};
 
 fn main() -> ExitCode {
     match run() {
@@ -77,11 +77,11 @@ fn run() -> Result<(), AnalysisError> {
         let mut stdout = io::BufWriter::new(io::stdout().lock());
         query_stream(&database, &request, &mut stdout)
     } else {
-        write_result(&query(&database, &request)?)
+        write_result(&query_wire(&database, &request)?)
     }
 }
 
-fn write_result(result: &serde_json::Value) -> Result<(), AnalysisError> {
+fn write_result(result: &impl serde::Serialize) -> Result<(), AnalysisError> {
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     serde_json::to_writer(&mut stdout, result)
         .map_err(|error| AnalysisError::new("RESULT_WRITE", error.to_string()))?;

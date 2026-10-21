@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 fn sql_error(error: rusqlite::Error) -> String {
@@ -99,33 +100,72 @@ fn header(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Hea
         .map_err(sql_error)
 }
 
-fn points(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Vec<Value>, String> {
-    rows(
-        connection,
-        "SELECT date,observed_at,record_id,execution_id,account_return,account_equity,
+// Field order matches serde_json::Map's sorted wire order, including nulls.
+#[derive(Serialize)]
+pub(crate) struct Point {
+    pub(crate) account_daily_return: Option<f64>,
+    pub(crate) account_equity: Option<f64>,
+    pub(crate) account_return: Option<f64>,
+    pub(crate) date: String,
+    pub(crate) difference: Option<f64>,
+    pub(crate) execution_id: Option<String>,
+    pub(crate) observed_at: String,
+    pub(crate) portfolio_daily_return: Option<f64>,
+    pub(crate) portfolio_return: Option<f64>,
+    pub(crate) record_id: Option<i64>,
+    pub(crate) sizing_fallback: bool,
+    pub(crate) target_portfolio_daily_return: Option<f64>,
+    pub(crate) target_portfolio_return: Option<f64>,
+}
+
+impl Point {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            date: row.get(0)?,
+            observed_at: row.get(1)?,
+            record_id: row.get(2)?,
+            execution_id: row.get(3)?,
+            account_return: row.get(4)?,
+            account_equity: row.get(5)?,
+            portfolio_return: row.get(6)?,
+            account_daily_return: row.get(7)?,
+            portfolio_daily_return: row.get(8)?,
+            target_portfolio_return: row.get(9)?,
+            target_portfolio_daily_return: row.get(10)?,
+            difference: row.get(11)?,
+            sizing_fallback: row.get(12)?,
+        })
+    }
+}
+
+pub(crate) fn typed_points(
+    connection: &Connection,
+    snapshot_id: &str,
+    range: &str,
+) -> Result<Vec<Point>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT date,observed_at,record_id,execution_id,account_return,account_equity,
                 portfolio_return,account_daily_return,portfolio_daily_return,
                 target_portfolio_return,target_portfolio_daily_return,difference,sizing_fallback
          FROM performance_result_point WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
-        snapshot_id,
-        range,
-        |row| {
-            Ok(json!({
-                "date": row.get::<_, String>(0)?,
-                "observed_at": row.get::<_, String>(1)?,
-                "record_id": row.get::<_, Option<i64>>(2)?,
-                "execution_id": row.get::<_, Option<String>>(3)?,
-                "account_return": row.get::<_, Option<f64>>(4)?,
-                "account_equity": row.get::<_, Option<f64>>(5)?,
-                "portfolio_return": row.get::<_, Option<f64>>(6)?,
-                "account_daily_return": row.get::<_, Option<f64>>(7)?,
-                "portfolio_daily_return": row.get::<_, Option<f64>>(8)?,
-                "target_portfolio_return": row.get::<_, Option<f64>>(9)?,
-                "target_portfolio_daily_return": row.get::<_, Option<f64>>(10)?,
-                "difference": row.get::<_, Option<f64>>(11)?,
-                "sizing_fallback": row.get::<_, bool>(12)?,
-            }))
-        },
-    )
+        )
+        .map_err(sql_error)?;
+    let mut cursor = statement
+        .query(params![snapshot_id, range])
+        .map_err(sql_error)?;
+    let mut result = Vec::new();
+    while let Some(row) = cursor.next().map_err(sql_error)? {
+        result.push(Point::from_row(row).map_err(sql_error)?);
+    }
+    Ok(result)
+}
+
+fn points(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Vec<Value>, String> {
+    typed_points(connection, snapshot_id, range)?
+        .into_iter()
+        .map(|point| serde_json::to_value(point).map_err(|error| format!("SNAPSHOT_READ: {error}")))
+        .collect()
 }
 
 fn attach_skips(
@@ -289,6 +329,33 @@ pub(crate) fn read(
     range: &str,
     performance_only: bool,
 ) -> Result<Value, String> {
+    read_mode(connection, snapshot_id, range, performance_only, None)
+}
+
+pub(crate) fn read_typed(
+    connection: &Connection,
+    snapshot_id: &str,
+    range: &str,
+    performance_only: bool,
+) -> Result<(Value, Vec<Point>), String> {
+    let mut points = Vec::new();
+    let value = read_mode(
+        connection,
+        snapshot_id,
+        range,
+        performance_only,
+        Some(&mut points),
+    )?;
+    Ok((value, points))
+}
+
+fn read_mode(
+    connection: &Connection,
+    snapshot_id: &str,
+    range: &str,
+    performance_only: bool,
+    typed: Option<&mut Vec<Point>>,
+) -> Result<Value, String> {
     let Header {
         mut performance,
         baseline,
@@ -296,7 +363,13 @@ pub(crate) fn read(
         event_count,
     } = header(connection, snapshot_id, range)?;
     performance["settings"] = settings(connection, snapshot_id)?;
-    performance["points"] = Value::Array(points(connection, snapshot_id, range)?);
+    performance["points"] = match typed {
+        Some(output) => {
+            *output = typed_points(connection, snapshot_id, range)?;
+            json!([])
+        }
+        None => Value::Array(points(connection, snapshot_id, range)?),
+    };
     attach_skips(connection, snapshot_id, range, &mut performance)?;
     attach_calendar(connection, snapshot_id, range, &mut performance)?;
     performance["sizing_fallback_ranges"] = Value::Array(rows(
@@ -463,6 +536,31 @@ mod tests {
         let result = read(&connection, "s", "all", true).unwrap();
         assert!(result["performance"].is_object());
         assert_eq!(result.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn typed_wire_points_preserve_exact_bytes_and_close_sqlite_before_output() {
+        let connection = database();
+        connection.execute(
+            "UPDATE performance_result_point SET date=?1,observed_at=?2,account_return=?3 WHERE idx=1",
+            params!["上海\"\\\n", "time\tvalue", -0.0_f64],
+        ).unwrap();
+        let expected = read(&connection, "s", "all", false).unwrap()["performance"].take();
+        let (mut value, points) = read_typed(&connection, "s", "all", false).unwrap();
+        let wire = crate::wire_result::WireResult {
+            value: value["performance"].take(),
+            points: Some(points),
+            performance_only: true,
+        };
+        drop(connection);
+        assert_eq!(
+            serde_json::to_vec(&wire).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        let mut empty = wire;
+        empty.points.as_mut().unwrap().clear();
+        let parsed: Value = serde_json::from_slice(&serde_json::to_vec(&empty).unwrap()).unwrap();
+        assert_eq!(parsed["points"], json!([]));
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
 pub(crate) mod source;
+pub mod wire_result;
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -65,6 +66,28 @@ pub fn query(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
             _ => performance::handle(connection, request),
         }
         .map_err(AnalysisError::from)
+    })
+}
+
+/// Preserve typed curve storage until serialization, after the read view closes.
+pub fn query_wire(
+    database: &Path,
+    request: &Value,
+) -> Result<wire_result::WireResult, AnalysisError> {
+    let command = request_command(request)?;
+    if matches!(command, "snapshot" | "performance_result") {
+        return with_read_snapshot(database, |connection| {
+            match command {
+                "snapshot" => snapshots::query_wire(connection, request),
+                _ => snapshots::performance_result_wire(connection, request),
+            }
+            .map_err(AnalysisError::from)
+        });
+    }
+    query(database, request).map(|value| wire_result::WireResult {
+        value,
+        points: None,
+        performance_only: false,
     })
 }
 
