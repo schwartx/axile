@@ -213,6 +213,9 @@ def test_source_backfill_is_bounded_resumable_and_does_not_repeat_unsupported(tm
 
     def observed(source):
         calls.append(source.id)
+        if source.id == 3:
+            # Cold reads normalize malformed business scalars; inject an actual unsupported projection.
+            raise ValueError("synthetic unsupported historical projection")
         return original(source)
 
     monkeypatch.setattr(analysis_source, "project_execution", observed)
@@ -221,7 +224,6 @@ def test_source_backfill_is_bounded_resumable_and_does_not_repeat_unsupported(tm
         async with _database(tmp_path) as (_, sessions):
             async with sessions() as session:
                 rows = [record(index) for index in range(1, 6)]
-                rows[2].result = {"status": {"legacy": "shape"}}
                 await persist_records(session, rows)
                 await session.commit()
             async with sessions() as session:

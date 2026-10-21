@@ -477,6 +477,19 @@ def _prepare_fact_batch(prepared: _PreparedHistory, batch, include_observations:
         )
 
 
+async def _prepare_unsupported_history(session, account_id: int, include_observations: bool) -> _PreparedHistory:
+    """显式不支持时使用规范 DTO；审计异常不重注入业务值，观测沿用冻结事实。"""
+    from axile.server.analysis_history import iter_analysis_observations, iter_analysis_records
+
+    prepared = _PreparedHistory()
+    async for records in iter_analysis_records(session, account_id):
+        _prepare_records(prepared, records, {}, include_observations=False)
+    if include_observations:
+        async for observations in iter_analysis_observations(session, account_id):
+            prepared.observations.extend(observations)
+    return prepared
+
+
 def compute_batch(
     records,
     targets,
@@ -640,7 +653,7 @@ class AnalysisManager:
             return row
 
     async def _load(self, account_id, *, include_observations: bool = True):
-        from axile.server.analysis_history import iter_analysis_history
+        from axile.server.analysis_history import has_unsupported_analysis_history, iter_analysis_history
         from axile.server.analysis_observations import ensure_observation_facts
         from axile.server.analysis_source import ensure_source_facts
 
@@ -660,9 +673,14 @@ class AnalysisManager:
                 history.append(
                     (await session.execute(sa.select(model).where(model.account_id == account_id))).scalars().all()
                 )
-            prepared = _PreparedHistory()
-            async for batch in iter_analysis_history(session, account_id, include_observations=include_observations):
-                _prepare_fact_batch(prepared, batch, include_observations)
+            if await has_unsupported_analysis_history(session, account_id):
+                prepared = await _prepare_unsupported_history(session, account_id, include_observations)
+            else:
+                prepared = _PreparedHistory()
+                async for batch in iter_analysis_history(
+                    session, account_id, include_observations=include_observations
+                ):
+                    _prepare_fact_batch(prepared, batch, include_observations)
             return (prepared, *history, settings, str(account.trade_channel))
 
     async def _run_native(self, row) -> bool:

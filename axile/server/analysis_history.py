@@ -41,10 +41,79 @@ class AnalysisRecord:
 
 
 async def read_analysis_record(session, record: Any) -> AnalysisRecord:
-    """仅在缺失派生事实时，显式组装一条规范业务记录。"""
+    """为冷补齐或显式不支持的兼容计算，组装一条规范业务记录。"""
     from axile.server.business_facts.repository import read_execution_detail
 
     return AnalysisRecord.from_detail(await read_execution_detail(session, record))
+
+
+async def has_unsupported_analysis_history(session, account_id: int) -> bool:
+    """在调用方读快照内区分明确不支持与缺失、过期或损坏的源事实。"""
+    records = SQLModel.metadata.tables["executerecord"]
+    unsupported = source_execution.c.projection_version == 0
+    mismatch = sa.or_(
+        source_execution.c.record_id.is_(None),
+        source_execution.c.projection_version.not_in((0, 1)),
+        source_execution.c.account_id.is_distinct_from(records.c.account_id),
+        source_execution.c.execution_id.is_distinct_from(records.c.execution_id),
+        source_execution.c.created_at.is_distinct_from(records.c.created_at),
+        sa.and_(~unsupported, source_execution.c.is_success.is_distinct_from(records.c.is_success)),
+        sa.and_(
+            unsupported,
+            sa.or_(source_execution.c.projection_error.is_(None), source_execution.c.projection_error == ""),
+        ),
+    )
+    invalid, has_unsupported = (
+        await session.execute(
+            sa.select(
+                sa.func.max(sa.case((mismatch, 1), else_=0)),
+                sa.func.max(sa.case((unsupported, 1), else_=0)),
+            )
+            .select_from(records.outerjoin(source_execution, source_execution.c.record_id == records.c.id))
+            .where(records.c.account_id == account_id)
+        )
+    ).one()
+    if invalid:
+        raise ValueError("Canonical execution analysis facts are missing, unsupported or stale")
+    return bool(has_unsupported)
+
+
+async def iter_analysis_records(
+    session, account_id: int, *, batch_size: int = 100
+) -> AsyncIterator[list[AnalysisRecord]]:
+    """仅供显式不支持投影的兼容计算，分批读取完整规范事实而非恢复旧 JSON。"""
+    if not 1 <= batch_size <= 100:
+        raise ValueError("batch_size must be between 1 and 100")
+    records = SQLModel.metadata.tables["executerecord"]
+    after = -1
+    while True:
+        headers = (
+            await session.execute(
+                sa.select(records, source_execution.c.projection_version, source_execution.c.trade_count)
+                .join(source_execution, source_execution.c.record_id == records.c.id)
+                .where(records.c.account_id == account_id, records.c.id > after)
+                .order_by(records.c.id)
+                .limit(batch_size)
+            )
+        ).all()
+        if not headers:
+            return
+        counts = dict(
+            (
+                await session.execute(
+                    sa.select(source_trade.c.record_id, sa.func.count())
+                    .where(source_trade.c.record_id.in_([header.id for header in headers]))
+                    .group_by(source_trade.c.record_id)
+                )
+            ).all()
+        )
+        if any(
+            counts.get(header.id, 0) != (header.trade_count if header.projection_version == 1 else 0)
+            for header in headers
+        ):
+            raise ValueError("Execution trade facts changed during analysis preparation")
+        yield [await read_analysis_record(session, header) for header in headers]
+        after = headers[-1].id
 
 
 async def _children(session, record_ids: list[int]) -> dict[int, dict[str, list]]:

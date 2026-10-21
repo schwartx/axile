@@ -20,7 +20,7 @@ from axile.server.analysis_history import AnalysisRecord
 from axile.server.analysis_results import iter_result_fact_batches
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_performance as routes
-from axile.server.business_facts.repository import read_execution_detail, store_execution_facts
+from axile.server.business_facts.repository import business_result, read_execution_detail, store_execution_facts
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
@@ -172,7 +172,7 @@ async def canonical_record(database, *, input_payload, result_payload):
             assert not hasattr(persisted, "raw_input") and not hasattr(persisted, "raw_result")
             detail = await read_execution_detail(session, persisted)
             assert detail["input"] == input_payload
-            assert detail["result"] == result_payload
+            assert detail["result"] == business_result(result_payload, is_success=record.is_success)
             return AnalysisRecord.from_detail(detail)
     finally:
         await engine.dispose()

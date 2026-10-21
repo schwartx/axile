@@ -225,7 +225,9 @@ async def store_execution_facts(
     record.facts_complete = False
     await _attach_inputs(session, record, raw_input, raw_result)
     root_asset_id = None
-    if record.input_id is not None:
+    # 失败收尾可能先于 worker 成功回包；后观测仍属输入证据，不能据此补造结果资产。
+    # 成功结果缺字段仍须拒绝，显式携带的任何后观测也必须与已冻结证据一致。
+    if record.input_id is not None and ("account_assets" in raw_result or record.is_success == 1):
         root_asset_id = await assets.find_matching_after_asset(session, record.input_id, raw_result)
     batch = encode_result_facts(record.id, raw_result, is_success=record.is_success, root_asset_id=root_asset_id)
     for name, value in batch.pop(head.execution_head)[0].items():

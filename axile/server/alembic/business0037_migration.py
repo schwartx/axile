@@ -606,7 +606,7 @@ def verify_conversion(connection) -> None:
 
 def _verify_target_snapshots(connection) -> None:
     from axile.server.db.models.target_weight_snapshot import TargetWeightSnapshot, target_weight_snapshot_weight
-    from axile.server.target_weight_snapshots import decode_snapshot_weights
+    from axile.server.target_weight_snapshots import decode_snapshot_weights, encode_snapshot_weights
 
     for batch in _batches(connection, "target_weight_snapshot"):
         for row in batch:
@@ -626,10 +626,12 @@ def _verify_target_snapshots(connection) -> None:
                 .mappings()
                 .all()
             )
-            expected = {
+            original = {
                 role: _json(row[role], table="target_weight_snapshot", row_id=row["id"], path="/" + role)
                 for role in ("raw_weights", "normalized_weights")
             }
+            expected_head, expected_facts = encode_snapshot_weights(row["id"], original)
+            expected = decode_snapshot_weights(expected_head, expected_facts[target_weight_snapshot_weight])
             if not _same(expected, decode_snapshot_weights(parent, children)):
                 raise ValueError(f"Conversion mismatch target_weight_snapshot id={row['id']} path=/weights")
 
@@ -775,6 +777,10 @@ def restore_target_snapshots(connection) -> None:
                 .all()
             )
             payload = decode_snapshot_weights(parent, children)
+            invalid = payload.get("audit_evidence", {}).get("invalid_target_values", {})
+            for role in ("raw_weights", "normalized_weights"):
+                for key, evidence in invalid.get(role, {}).items():
+                    payload[role][key] = evidence["invalid_fields"]["value"]
             connection.execute(
                 sa.text(
                     "UPDATE target_weight_snapshot SET raw_weights=:raw,normalized_weights=:normalized WHERE id=:id"
