@@ -12,6 +12,8 @@ from typing import cast
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
@@ -64,6 +66,13 @@ def _create_schema(connection) -> None:
         ("0037_business_execution_facts.py", "install_revision_triggers"),
     ):
         getattr(_load_migration(_MIGRATIONS_DIR / name), installer)(connection)
+    summary_migration = _load_migration(_MIGRATIONS_DIR / "0038_summary_guard_prefilter.py")
+    summary_migration.op = Operations(MigrationContext.configure(connection))
+    summary_migration.upgrade()
+    guard_sql = connection.scalar(
+        sa.text("SELECT sql FROM sqlite_master WHERE name='business_facts_0037_execution_order_summary_insert'")
+    )
+    assert "GLOB" in guard_sql
     columns = {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
     assert not columns.intersection({"raw_input", "raw_result"})
     assert connection.scalar(

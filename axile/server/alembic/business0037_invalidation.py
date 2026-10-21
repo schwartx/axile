@@ -233,12 +233,20 @@ def _result_record_scope(table: sa.Table, ref: str, tables: dict[str, sa.Table])
     return " UNION ".join(queries) or "SELECT NULL WHERE 0"
 
 
-def _summary_reference_exists(record_scope: str, dependency: str = "1") -> str:
+def _summary_reference_exists(record_scope: str, dependency: str = "1", *, optimize: bool = True) -> str:
+    reference = f"""CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.view') END='result'
+        AND CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.record_id') END IN ({record_scope})
+        AND ({dependency})"""
+    if optimize:
+        # ASCII keys are either literal or contain a JSON \\u00 escape. Keep the
+        # complete old predicate in ELSE so SQLite never parses unrelated TEXT.
+        reference = (
+            "CASE WHEN typeof(content)='text' AND content NOT GLOB '*business_facts_ref*' "
+            r"AND content NOT GLOB '*\u00*' THEN 0 ELSE (" + reference + ") END"
+        )
     return f"""EXISTS(SELECT 1 FROM execution_artifact WHERE
         execution_id IN (SELECT execution_id FROM executerecord WHERE id IN ({record_scope}))
-        AND CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.view') END='result'
-        AND CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.record_id') END IN ({record_scope})
-        AND ({dependency}))"""
+        AND {reference})"""
 
 
 def _summary_dependency(table: sa.Table, ref: str) -> str | None:
@@ -267,25 +275,43 @@ def _summary_sensitive_update(table: sa.Table) -> str:
     return " OR ".join(f"{_column('OLD', key)} IS NOT {_column('NEW', key)}" for key in fields) if fields else "1"
 
 
-def _install_summary_guards(connection, tables: dict[str, sa.Table]) -> None:
+def _install_summary_guards(connection, tables: dict[str, sa.Table], *, optimize: bool = True) -> None:
     """Require materialization before changing a result referenced by a frozen journal."""
+    empty = "SELECT NULL WHERE 0"
     for table in tables.values():
         for action in ("INSERT", "UPDATE", "DELETE"):
             ref = "NEW" if action == "INSERT" else "OLD"
             dependency = _summary_dependency(table, ref)
             if dependency is None:
                 continue
-            scope = _result_record_scope(table, ref, tables)
+            scopes = [_result_record_scope(table, ref, tables)]
             if action == "UPDATE":
-                scope += " UNION " + _result_record_scope(table, "NEW", tables)
+                scopes.append(_result_record_scope(table, "NEW", tables))
                 dependency = f"(({dependency}) OR ({_summary_dependency(table, 'NEW')}))"
                 dependency += f" AND ({_summary_sensitive_update(table)})"
+            if optimize and all(scope == empty for scope in scopes):
+                continue
+            scope = " UNION ".join(scopes)
             name = _PREFIX + table.name + "_summary_" + action.lower()
+            reference = _summary_reference_exists(scope, dependency, optimize=optimize and action == "INSERT")
             connection.exec_driver_sql(
                 f"CREATE TRIGGER IF NOT EXISTS {_quote(name)} BEFORE {action} ON {_quote(table.name)} BEGIN "
                 "SELECT RAISE(ABORT,'Execution summary must be materialized before changing its result') "
-                f"WHERE {_summary_reference_exists(scope, dependency)}; END"
+                f"WHERE {reference}; END"
             )
+
+
+def install_summary_guards(connection, tables: Sequence[sa.Table], *, optimize: bool = True) -> None:
+    """只安装摘要引用保护，供后续迁移原子替换，不触碰其他业务保护。"""
+    _install_summary_guards(connection, {table.name: table for table in tables}, optimize=optimize)
+
+
+def drop_summary_guards(connection) -> None:
+    """只删除本修订命名空间内的摘要保护；保留所有权、失效及清理触发器。"""
+    names = connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars().all()
+    for name in names:
+        if name.startswith(_PREFIX) and name.endswith(("_summary_insert", "_summary_update", "_summary_delete")):
+            connection.exec_driver_sql(f"DROP TRIGGER {_quote(name)}")
 
 
 def _install_outbox_guards(connection, tables: dict[str, sa.Table]) -> None:
@@ -424,7 +450,7 @@ def _install_cleanup(connection, tables: dict[str, sa.Table]) -> None:
         )
 
 
-def install_triggers(connection, tables: Sequence[sa.Table]) -> None:
+def install_triggers(connection, tables: Sequence[sa.Table], *, optimize_summary: bool = True) -> None:
     """Install canonical ownership/invalidation after the upgrade backfill completes.
 
     Parameters
@@ -439,7 +465,7 @@ def install_triggers(connection, tables: Sequence[sa.Table]) -> None:
     _install_invalidation(connection, registry)
     _install_input_guards(connection)
     _install_parent_guards(connection, registry)
-    _install_summary_guards(connection, registry)
+    _install_summary_guards(connection, registry, optimize=optimize_summary)
     _install_outbox_guards(connection, registry)
     _install_asset_guards(connection, registry)
     _install_cleanup(connection, registry)

@@ -45,7 +45,7 @@ def _registry(connection) -> tuple[sa.Table, ...]:
 
 def install_revision_triggers(connection) -> None:
     """Expose the frozen registry for schema-created tests and explicit initialization."""
-    install_triggers(connection, _registry(connection))
+    install_triggers(connection, _registry(connection), optimize_summary=False)
 
 
 def upgrade() -> None:
