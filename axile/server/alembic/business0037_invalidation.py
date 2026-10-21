@@ -277,7 +277,6 @@ def _summary_sensitive_update(table: sa.Table) -> str:
 
 def _install_summary_guards(connection, tables: dict[str, sa.Table], *, optimize: bool = True) -> None:
     """Require materialization before changing a result referenced by a frozen journal."""
-    empty = "SELECT NULL WHERE 0"
     for table in tables.values():
         for action in ("INSERT", "UPDATE", "DELETE"):
             ref = "NEW" if action == "INSERT" else "OLD"
@@ -289,8 +288,6 @@ def _install_summary_guards(connection, tables: dict[str, sa.Table], *, optimize
                 scopes.append(_result_record_scope(table, "NEW", tables))
                 dependency = f"(({dependency}) OR ({_summary_dependency(table, 'NEW')}))"
                 dependency += f" AND ({_summary_sensitive_update(table)})"
-            if optimize and all(scope == empty for scope in scopes):
-                continue
             scope = " UNION ".join(scopes)
             name = _PREFIX + table.name + "_summary_" + action.lower()
             reference = _summary_reference_exists(scope, dependency, optimize=optimize and action == "INSERT")

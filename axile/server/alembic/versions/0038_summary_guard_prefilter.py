@@ -1,4 +1,4 @@
-"""Prefilter summary references and remove guards with an always-empty result scope."""
+"""Prefilter INSERT summary references while retaining every existing guard."""
 
 import sqlalchemy as sa
 from alembic import op

@@ -157,8 +157,8 @@ def test_0037_to_0038_roundtrip_preserves_everything_except_summary_guards(histo
 
     migration.upgrade()
     optimized = _summary_guards(connection)
-    assert optimized.keys() < original.keys()
-    assert empty_name not in optimized
+    assert optimized.keys() == original.keys()
+    assert empty_name in optimized
     for name, sql in optimized.items():
         if name.endswith("_summary_insert"):
             assert "GLOB" in sql
