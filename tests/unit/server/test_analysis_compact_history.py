@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server import performance_analysis as analysis
+from axile.server.business_facts.repository import business_result
 from axile.server.db.models import Account, PortfolioAccount, ScheduleSkip
 from axile.server.db.models.performance import PerformanceSettings
 from tests.unit.server._business_analysis_support import persist_records, persist_target
@@ -32,8 +33,10 @@ def test_compact_batches_match_full_history_and_release_raw_values(tmp_path, sch
                 row.result.update(status="PARTIAL", error="部分完成", execution_time=0, flag=False, missing=None)
             rows[0].input = {}
             rows[1].input = {"curr_target": {}}
+            for row in rows:
+                row.result = business_result(row.result, is_success=row.is_success)
             async with sessions() as session:
-                await persist_records(session, rows)
+                await persist_records(session, rows, project=True)
                 await persist_target(
                     session,
                     account_id=2,
