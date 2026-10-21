@@ -18,6 +18,7 @@ from loguru import logger
 from axile.common.config import API_V1_STR, PROJECT_NAME, is_configured, settings
 from axile.executor.algorithms.core.loader import load_algorithm_modules
 from axile.server.api.main import api_router
+from axile.server.compression import CompressionMiddleware
 from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import scheduler
 from axile.server.core.single_worker import ensure_single_worker
@@ -305,6 +306,8 @@ _app = FastAPI(
     generate_unique_id_function=custom_generate_unique_id,
     lifespan=lifespan,
 )
+
+_app.add_middleware(CompressionMiddleware, minimum_size=4096)
 
 
 _app.include_router(api_router, prefix=API_V1_STR)
