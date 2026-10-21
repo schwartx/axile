@@ -1,12 +1,11 @@
 //! Bounded cost pages over typed SQLite facts. Historical JSON is never read.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use chrono::NaiveDate;
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Row};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
 const AGGREGATES: &str = "COUNT(*), COUNT(value), SUM(value), SUM(cost), \
     COUNT(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN 1 END), \
@@ -255,7 +254,7 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
     let snapshot = string(request, "snapshot_id", "");
     let expected_logic = string(request, "logic_version", "18");
     let expected_engine = string(request, "engine_version", "equity-ledger-1");
-    let (digest, offset) = cursor(request, account)?;
+    let (digest, offset) = cursor(request)?;
     let mut stmt = conn.prepare("SELECT data_until,logic_version,engine_version,cost_schema_version FROM performance_snapshot WHERE id=?1 AND account_id=?2").map_err(sql_error)?;
     let mut rows = stmt.query((snapshot, account)).map_err(sql_error)?;
     let row = rows
@@ -365,41 +364,16 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
     )
 }
 
-fn cursor(request: &Value, account: i64) -> Result<(String, i64), String> {
-    let digest = if let Some(scope) = optional_string(request, "cursor_scope") {
-        scope.to_owned()
-    } else {
-        let mut scope = BTreeMap::new();
-        for key in [
-            "snapshot_id",
-            "range",
-            "dimension",
-            "sort",
-            "day",
-            "start",
-            "end",
-            "record_id",
-            "symbol",
-            "symbol_search",
-            "side",
-            "limit",
-        ] {
-            let default = match key {
-                "range" => json!("all"),
-                "dimension" => json!("execution"),
-                "sort" => json!("time"),
-                "limit" => json!(20),
-                _ => Value::Null,
-            };
-            scope.insert(key.to_owned(), request.get(key).cloned().unwrap_or(default));
-        }
-        scope.insert("account_id".to_owned(), json!(account));
-        // Python supplies cursor_scope for byte-identical legacy cursor support.
-        format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&scope).map_err(|error| error.to_string())?)
-        )
-    };
+fn cursor(request: &Value) -> Result<(String, i64), String> {
+    let digest = optional_string(request, "cursor_scope")
+        .filter(|scope| !scope.is_empty())
+        .ok_or_else(|| {
+            failure(
+                "INVALID_COST_QUERY",
+                "cursor_scope must be a nonempty string",
+            )
+        })?
+        .to_owned();
     let mut offset = 0;
     if let Some(encoded) = optional_string(request, "cursor").filter(|value| !value.is_empty()) {
         let invalid = || failure("INVALID_COST_CURSOR", "游标与查询条件不匹配");
@@ -779,20 +753,35 @@ mod tests {
         let first_page = json!({"snapshot_id": "v1", "cursor_scope": "known"});
         let mut empty = first_page.clone();
         empty["cursor"] = json!("");
-        assert_eq!(cursor(&empty, 2).unwrap(), ("known".to_owned(), 0));
-        assert_eq!(cursor(&empty, 2).unwrap(), cursor(&first_page, 2).unwrap());
+        assert_eq!(cursor(&empty).unwrap(), ("known".to_owned(), 0));
+        assert_eq!(cursor(&empty).unwrap(), cursor(&first_page).unwrap());
         empty["cursor"] = Value::Null;
-        assert_eq!(cursor(&empty, 2).unwrap(), cursor(&first_page, 2).unwrap());
+        assert_eq!(cursor(&empty).unwrap(), cursor(&first_page).unwrap());
         empty["cursor"] = json!("invalid");
-        assert!(cursor(&empty, 2)
+        assert!(cursor(&empty)
             .unwrap_err()
             .starts_with("INVALID_COST_CURSOR:"));
     }
 
     #[test]
+    fn cursor_requires_supplied_scope() {
+        for request in [
+            json!({"snapshot_id": "v1"}),
+            json!({"cursor_scope": null}),
+            json!({"cursor_scope": 42}),
+            json!({"cursor_scope": ""}),
+        ] {
+            assert_eq!(
+                cursor(&request).unwrap_err(),
+                "INVALID_COST_QUERY:cursor_scope must be a nonempty string"
+            );
+        }
+    }
+
+    #[test]
     fn cursor_scope_and_integer_offset_are_required() {
         let request = json!({"snapshot_id":"v1","cursor_scope":"known"});
-        assert_eq!(cursor(&request, 2).unwrap(), ("known".to_owned(), 0));
+        assert_eq!(cursor(&request).unwrap(), ("known".to_owned(), 0));
         for payload in [
             json!({"scope":"other","offset":1}),
             json!({"scope":"known","offset":true}),
@@ -801,13 +790,13 @@ mod tests {
         ] {
             let mut invalid = request.clone();
             invalid["cursor"] = json!(URL_SAFE.encode(serde_json::to_vec(&payload).unwrap()));
-            assert!(cursor(&invalid, 2)
+            assert!(cursor(&invalid)
                 .unwrap_err()
                 .starts_with("INVALID_COST_CURSOR:"));
         }
         let mut valid = request;
         valid["cursor"] = json!(URL_SAFE.encode(br#"{"scope":"known","offset":20}"#));
-        assert_eq!(cursor(&valid, 2).unwrap().1, 20);
+        assert_eq!(cursor(&valid).unwrap().1, 20);
     }
     #[test]
     fn snapshot_execution_batches_preserve_order_and_ignore_json_payloads() {
