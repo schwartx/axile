@@ -25,13 +25,25 @@ def test_nonempty_result_root_array_is_rejected_before_writing():
 
 
 @pytest.mark.parametrize("foreign_after_asset", [False, True])
-def test_final_result_reuses_durable_normalized_input_and_after_asset(tmp_path, foreign_after_asset):
+@pytest.mark.parametrize("attached_input", [False, True])
+@pytest.mark.parametrize("result_inputs", [False, True])
+def test_final_result_reuses_durable_normalized_input_and_after_asset(
+    tmp_path, foreign_after_asset, attached_input, result_inputs
+):
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'facts.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         frozen = {"curr_target": {"normalized": 0}, "channel_type": "tq"}
         observed = {"total_asset": 0.0, "positions": [], "extra": {}}
-        output = {"status": "NOOP", "inputs": frozen, "account_assets": observed, "symbol_results": {}}
+        output = {"status": "NOOP", "account_assets": observed, "symbol_results": {}}
+        if result_inputs:
+            output["inputs"] = frozen
+        input_reads = []
+
+        def track_input_reads(_connection, _cursor, statement, _parameters, _context, _executemany):
+            if statement.lstrip().upper().startswith("SELECT"):
+                input_reads.extend(table.name for table in inputs.TABLES if f"FROM {table.name} \n" in statement)
+
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(SQLModel.metadata.create_all)
@@ -46,12 +58,18 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(tmp_path, 
                     session, account_id=2, execution_id="frozen", payload=output
                 )
                 await session.commit()
-                record = ExecuteRecord(account_id=2, execution_id="frozen", is_success=1)
+                record = ExecuteRecord(
+                    account_id=2, execution_id="frozen", is_success=1, input_id=input_id if attached_input else None
+                )
                 session.add(record)
                 await session.flush()
-                await repository.store_execution_facts(
+                sa.event.listen(engine.sync_engine, "before_cursor_execute", track_input_reads)
+                canonical_input = await repository.store_execution_facts(
                     session, record, raw_input={"curr_target": {"stale": 1}}, raw_result=output
                 )
+                sa.event.remove(engine.sync_engine, "before_cursor_execute", track_input_reads)
+                assert business_evidence(canonical_input) == business_evidence(frozen)
+                assert input_reads == [table.name for table in inputs.TABLES]
                 await session.commit()
                 detail = await repository.read_execution_detail(session, record)
                 assert business_evidence(detail["input"]) == business_evidence(frozen)
@@ -63,7 +81,8 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(tmp_path, 
                     assert business_evidence(
                         await connection.run_sync(repository.read_execution_input_sync, input_id)
                     ) == business_evidence(frozen)
-                assert record.input_id == record.result_input_id == input_id
+                assert record.input_id == input_id
+                assert record.result_input_id == (input_id if result_inputs else None)
                 assert business_evidence(after_ref) == business_evidence(
                     (input_id, assets.input_after_asset_fact_id(input_id))
                 )
@@ -103,8 +122,59 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(tmp_path, 
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("is_success", [0, 1])
+@pytest.mark.parametrize("result_assets", ["absent", "matching", "different"])
+def test_input_reuse_preserves_failure_finalization_after_assets(tmp_path, is_success, result_assets):
+    async def check():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'after-assets.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        frozen = {"curr_target": {"A": 0}, "last_target": None}
+        observed = {"total_asset": 0, "positions": []}
+        output = {"status": "SUCCEEDED" if is_success else "FAILED"}
+        if result_assets != "absent":
+            output["account_assets"] = observed if result_assets == "matching" else {"total_asset": 1}
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with sessions() as session:
+                session.add(build_account(id=2, account_control_preset="default"))
+                await session.commit()
+                await repository.persist_execution_input(
+                    session, account_id=2, execution_id="after-assets", payload=frozen, created_at="2026-10-20"
+                )
+                await repository.persist_execution_after_assets(
+                    session, account_id=2, execution_id="after-assets", payload={"account_assets": observed}
+                )
+                await session.commit()
+                record = ExecuteRecord(account_id=2, execution_id="after-assets", is_success=is_success)
+                session.add(record)
+                await session.flush()
+                if result_assets == "different" or (is_success and result_assets == "absent"):
+                    with pytest.raises(ValueError, match="终态结果"):
+                        await repository.store_execution_facts(session, record, raw_input=None, raw_result=output)
+                    await session.rollback()
+                    assert await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord)) == 0
+                    return
+                canonical_input = await repository.store_execution_facts(
+                    session, record, raw_input=None, raw_result=output
+                )
+                assert canonical_input == frozen
+                await session.commit()
+                result = await repository.read_execution_result(session, record)
+                assert business_evidence(result) == business_evidence(output)
+                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_snapshot)) == 1
+                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_binding)) == (
+                    1 if result_assets == "matching" else 0
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("reference", ["input_id", "result_input_id"])
-def test_same_account_input_from_another_execution_is_rejected_on_read(tmp_path, reference):
+@pytest.mark.parametrize("input_account", [2, 3])
+def test_foreign_input_is_rejected_on_read_and_write(tmp_path, reference, input_account):
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'owners.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -114,8 +184,14 @@ def test_same_account_input_from_another_execution_is_rejected_on_read(tmp_path,
             async with sessions() as session:
                 session.add(build_account(id=2, account_control_preset="default"))
                 await session.commit()
+                session.add(build_account(id=3, account_control_preset="default"))
+                await session.commit()
                 unrelated = await repository.persist_execution_input(
-                    session, account_id=2, execution_id="other", payload={}, created_at="2026-10-20T09:00:00"
+                    session,
+                    account_id=input_account,
+                    execution_id="other",
+                    payload={},
+                    created_at="2026-10-20T09:00:00",
                 )
                 record = ExecuteRecord(account_id=2, execution_id="own", is_success=1)
                 session.add(record)
@@ -129,11 +205,22 @@ def test_same_account_input_from_another_execution_is_rejected_on_read(tmp_path,
                 )
                 await session.commit()
                 await session.refresh(record)
-                with pytest.raises(ValueError, match="其他执行"):
+                message = "其他执行" if input_account == 2 else "其他账户"
+                with pytest.raises(ValueError, match=message):
                     await repository.read_execution_detail(session, record)
                 async with engine.connect() as connection:
-                    with pytest.raises(ValueError, match="其他执行"):
+                    with pytest.raises(ValueError, match=message):
                         await connection.run_sync(repository.read_execution_result_sync, record.id)
+                with pytest.raises(ValueError, match=message):
+                    await repository.store_execution_facts(session, record, raw_input=None, raw_result={})
+                await session.rollback()
+                await session.execute(
+                    inputs.execution_input.update()
+                    .where(inputs.execution_input.c.id == unrelated)
+                    .values(owner_execution_id="another-execution")
+                )
+                with pytest.raises(ValueError, match=message):
+                    await repository.find_execution_input(session, account_id=2, execution_id="other")
         finally:
             await engine.dispose()
 

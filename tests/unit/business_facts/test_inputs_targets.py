@@ -1,6 +1,8 @@
 """冻结输入与历史目标的存储契约。"""
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import sqlalchemy as sa
@@ -69,6 +71,50 @@ def test_inputs_keep_native_identity_targets_and_scoped_configuration():
 )
 def test_input_missing_null_empty_malformed_and_root_evidence(payload):
     assert business_evidence(_roundtrip(payload)[0]) == business_evidence(payload)
+
+
+@pytest.mark.parametrize("payload", [{}, {"curr_target": None}, {"curr_target": {}}, {"curr_target": {"A": 0}}])
+def test_read_input_reuses_header_without_changing_collection_states(payload):
+    expected, facts = _roundtrip(payload)
+    results = [
+        SimpleNamespace(mappings=lambda rows=rows: rows)
+        for table, rows in facts.items()
+        if table is not execution_input
+    ]
+    session = SimpleNamespace(execute=AsyncMock(side_effect=results))
+    decoded = asyncio.run(read_input(session, "input-1", head_row=facts[execution_input][0]))
+    assert decoded == expected
+    assert session.execute.await_count == len(TABLES) - 1
+    assert [call.args[0].get_final_froms()[0] for call in session.execute.await_args_list] == list(TABLES[1:])
+
+
+def test_read_input_rejects_mismatched_header_before_querying():
+    _, facts = _roundtrip({})
+    session = SimpleNamespace(execute=AsyncMock())
+    with pytest.raises(ValueError, match="header identity differs"):
+        asyncio.run(read_input(session, "another-input", head_row=facts[execution_input][0]))
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "payload, missing_table, message",
+    [
+        ({"curr_target": {"A": 0}}, TABLES[1], "Incomplete frozen target facts"),
+        ({"risk_symbols": ["A"]}, TABLES[2], "Incomplete frozen risk symbol facts"),
+        ({"quantities": {"A": 0}}, TABLES[3], "Incomplete frozen quantity plan"),
+    ],
+)
+def test_read_input_with_header_still_rejects_incomplete_children(payload, missing_table, message):
+    _, facts = _roundtrip(payload)
+    facts[missing_table] = []
+    results = [
+        SimpleNamespace(mappings=lambda rows=rows: rows)
+        for table, rows in facts.items()
+        if table is not execution_input
+    ]
+    session = SimpleNamespace(execute=AsyncMock(side_effect=results))
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(read_input(session, "input-1", head_row=facts[execution_input][0]))
 
 
 def test_sanitation_is_identical_for_live_and_migration_and_does_not_mutate_input():

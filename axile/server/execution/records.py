@@ -23,7 +23,7 @@ from axile.server.analysis_source import write_source_facts
 from axile.server.business_facts.artifacts import compact_execution_summary
 from axile.server.business_facts.assets import ensure_execution_asset_snapshot
 from axile.server.business_facts.head import execution_head_values
-from axile.server.business_facts.repository import read_execution_input, store_execution_facts
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.core.db import SessionLocal
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
@@ -89,7 +89,7 @@ async def _persist_execute_record(
         try:
             # 业务明细与终态、分析事实同一事务提交，原生读取不会看到半份结果。
             await session.flush()
-            await store_execution_facts(
+            canonical_input = await store_execution_facts(
                 cast("AsyncSession", session),
                 record,
                 raw_input=None if raw_input is None else sanitize_execution_input(raw_input),
@@ -98,11 +98,6 @@ async def _persist_execute_record(
             await ensure_execution_asset_snapshot(cast("AsyncSession", session), record)
             await compact_execution_summary(cast("AsyncSession", session), record, result=persisted_result)
             await session.flush()
-            canonical_input = (
-                await read_execution_input(cast("AsyncSession", session), record.input_id)
-                if record.input_id is not None
-                else {}
-            )
             analysis_record = AnalysisRecord(
                 id=cast("int", record.id),
                 account_id=record.account_id,

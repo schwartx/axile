@@ -1,6 +1,7 @@
 """服务端 execution 测试的共享伪对象与辅助函数。"""
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
 
@@ -9,7 +10,24 @@ from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
-from axile.server.db.models import Account
+from axile.server.db.models import Account, ExecutionArtifact
+from axile.server.execution.audit_batch import ExecutionAuditBatch
+
+
+def capture_worker_audit_batch(
+    *,
+    artifact: Callable[..., object] = lambda **_kwargs: None,
+    event: Callable[..., object] = lambda **_kwargs: None,
+) -> Callable[[ExecutionAuditBatch], int]:
+    """在显式批次提交边界捕获 worker 审计，不触碰数据库或生产写入函数。"""
+
+    def capture(batch: ExecutionAuditBatch) -> int:
+        for entry in batch:
+            callback = artifact if isinstance(entry, ExecutionArtifact) else event
+            callback(**entry.model_dump())
+        return len(batch)
+
+    return capture
 
 
 class FakeSession:

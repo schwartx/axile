@@ -168,7 +168,7 @@ def _is_duplicate_integrity_error(exc: IntegrityError, *tokens: str) -> bool:
     return any(token.lower() in message for token in tokens)
 
 
-async def append_execution_event(
+def build_execution_event(
     *,
     execution_id: str,
     account_id: int,
@@ -187,12 +187,9 @@ async def append_execution_event(
     seq: int = 0,
     details: dict[str, object] | None = None,
     schema_version: int = 1,
-    logger: loguru.Logger = loguru.logger,
-    raise_on_error: bool = False,
-    publish_live: bool = True,
-) -> bool:
-    """持久化一条 execution 事件记录，并按事件 UID 去重."""
-    event = ExecutionEvent(
+) -> ExecutionEvent:
+    """构造单条与批次共用的事件模型，不执行持久化或广播。"""
+    return ExecutionEvent(
         execution_id=execution_id,
         account_id=account_id,
         channel=channel,
@@ -218,7 +215,52 @@ async def append_execution_event(
         ts_exchange=ts_exchange,
         ts_persisted=now_str(),
         seq=seq,
-        details=details or {},
+        details=details if details is not None else {},
+    )
+
+
+async def append_execution_event(
+    *,
+    execution_id: str,
+    account_id: int,
+    channel: TradeChannel,
+    algorithm: str,
+    event_type: ExecutionEventType,
+    status: ExecutionEventStatus,
+    reason_family: ExecutionReasonFamily,
+    reason_code: str,
+    symbol: str | None = None,
+    intent_id: str | None = None,
+    order_id: str | None = None,
+    client_order_id: str | None = None,
+    ts_local_created: str | None = None,
+    ts_exchange: str | None = None,
+    seq: int = 0,
+    details: dict[str, object] | None = None,
+    schema_version: int = 1,
+    logger: loguru.Logger = loguru.logger,
+    raise_on_error: bool = False,
+    publish_live: bool = True,
+) -> bool:
+    """持久化一条 execution 事件记录，并按事件 UID 去重."""
+    event = build_execution_event(
+        execution_id=execution_id,
+        account_id=account_id,
+        channel=channel,
+        algorithm=algorithm,
+        event_type=event_type,
+        status=status,
+        reason_family=reason_family,
+        reason_code=reason_code,
+        symbol=symbol,
+        intent_id=intent_id,
+        order_id=order_id,
+        client_order_id=client_order_id,
+        ts_local_created=ts_local_created,
+        ts_exchange=ts_exchange,
+        seq=seq,
+        details=details,
+        schema_version=schema_version,
     )
 
     async with SessionLocal() as session:

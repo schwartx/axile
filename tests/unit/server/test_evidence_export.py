@@ -56,6 +56,7 @@ from axile.server.evidence.models import (
 )
 from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.execution.worker_backend import worker_audit
+from tests.unit.server._execution_test_support import capture_worker_audit_batch
 
 
 @pytest.fixture
@@ -542,7 +543,11 @@ def test_archive_failure_and_asgi_disconnect_cleanup(tmp_path):
 def test_execution_environment_is_frozen_before_trade_and_clear(monkeypatch):
     calls = []
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(artifact=lambda **kwargs: calls.append(kwargs)),
+    )
     monkeypatch.setattr(worker_audit, "execution_environment", lambda *args: {"axile_version": "at-execution"})
     monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", lambda **_kwargs: "frozen-input")
     worker_audit._append_empty_positions_pre_execute_audit(
@@ -718,22 +723,17 @@ def test_core_read_failure_does_not_return_success_zip(database, monkeypatch):
 
 
 def test_worker_freezes_environment_and_metadata_failure_is_nonfatal(monkeypatch):
-    calls = []
-
-    def artifact(**kwargs):
-        calls.append(kwargs)
-
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", artifact)
+    batch = worker_audit.ExecutionAuditBatch(max_entries=8)
     monkeypatch.setattr(worker_audit, "execution_environment", lambda *args: {"axile_version": "frozen-worker"})
-    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
-    assert calls[0]["content"]["axile_version"] == "frozen-worker"
+    worker_audit._add_environment(batch, "worker", object(), "ctp", "SINGLE-MAKER")
+    assert next(iter(batch)).content["axile_version"] == "frozen-worker"
 
     def fail(*args):
         raise RuntimeError("metadata unavailable")
 
     monkeypatch.setattr(worker_audit, "execution_environment", fail)
-    worker_audit._append_environment("worker", object(), "ctp", "SINGLE-MAKER")
-    assert len(calls) == 1
+    worker_audit._add_environment(batch, "worker", object(), "ctp", "SINGLE-MAKER")
+    assert len(batch) == 1
 
 
 def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets():

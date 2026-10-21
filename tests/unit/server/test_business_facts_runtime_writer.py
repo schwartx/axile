@@ -89,7 +89,7 @@ def test_clear_pre_order_failure_prevents_later_audit_and_submit(monkeypatch):
         raise RuntimeError("cannot commit input")
 
     monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", fail_required_input)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **_kwargs: reached.append("artifact"))
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", lambda _batch: reached.append("batch"))
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **_kwargs: reached.append("event"))
     with pytest.raises(RuntimeError, match="cannot commit input"):
         worker_audit._append_empty_positions_pre_execute_audit(
@@ -121,19 +121,23 @@ def test_post_order_assets_commit_is_required(monkeypatch):
 def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
     session = _WriteSession()
     seen: dict[str, object] = {}
+    frozen_input = {"curr_target": {"EXCHANGE.A": 0.1}}
 
     async def store(_session, record, *, raw_input, raw_result):
         session.events.append("facts")
         record.input_id = "durable-normalized-input"
         seen.update(input=raw_input, result=raw_result)
+        return frozen_input
 
     async def observation(_session, record):
         session.events.append("observation")
+        assert record.input is frozen_input
         assert business_evidence(record.input) == business_evidence({"curr_target": {"EXCHANGE.A": 0.1}})
         assert business_evidence(record.result["inputs"]) == business_evidence({"curr_target": {}, "feishu_key": "***"})
 
-    async def source(_session, _record):
+    async def source(_session, record):
         session.events.append("source")
+        assert record.input is frozen_input
 
     async def asset_history(_session, _record):
         session.events.append("asset_history")
@@ -143,7 +147,6 @@ def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
         session.events.append("compact_journal")
 
     monkeypatch.setattr(records, "store_execution_facts", store)
-    monkeypatch.setattr(records, "read_execution_input", AsyncMock(return_value={"curr_target": {"EXCHANGE.A": 0.1}}))
     monkeypatch.setattr(records, "write_observation_fact", observation)
     monkeypatch.setattr(records, "write_source_facts", source)
     monkeypatch.setattr(records, "ensure_execution_asset_snapshot", asset_history)

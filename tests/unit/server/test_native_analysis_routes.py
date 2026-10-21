@@ -297,6 +297,271 @@ def test_account_existence_gate_runs_before_native_dispatch(binary, dataset, mon
     asyncio.run(check())
 
 
+def test_native_performance_not_ready_race_resumes_small_status_wait(dataset, monkeypatch):
+    async def check():
+        trace = []
+        statuses = iter(("ready", "stale", "pending", "pending", "ready"))
+        encoded = b'\n{"result":"native bytes"} \n'
+        attempts = 0
+        active_session = None
+
+        async def status(session, account_id):
+            nonlocal active_session
+            active_session = session
+            assert account_id == 2
+            value = next(statuses)
+            trace.append(value)
+            return value
+
+        async def query(command, **fields):
+            nonlocal attempts
+            assert command == "performance_result"
+            assert fields == {
+                "account_id": 2,
+                "range": "30",
+                "include_backtest": True,
+                "logic_version": LOGIC_VERSION,
+                "engine_version": ENGINE_VERSION,
+            }
+            assert not active_session.in_transaction()
+            attempts += 1
+            trace.append("query")
+            if attempts == 1:
+                raise native_analysis.NativeAnalysisError("stale", code="SNAPSHOT_NOT_READY")
+            return encoded
+
+        async def enqueue(session, account_id):
+            assert account_id == 2
+            trace.append("enqueue")
+
+        async def sleep(delay):
+            assert delay == pytest.approx(0.1)
+            trace.append("sleep")
+
+        async def reject_large_read(*args, **kwargs):
+            raise AssertionError("waiting must not load results or compute account returns")
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "enqueue", enqueue)
+        monkeypatch.setattr(routes, "clock_async_sleep", sleep)
+        monkeypatch.setattr(routes, "read_snapshot", reject_large_read)
+        monkeypatch.setattr(routes, "_account_performance", reject_large_read)
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2?range=30")
+        assert response.status_code == 200
+        assert response.content == encoded
+        assert trace == [
+            "ready",
+            "query",
+            "sleep",
+            "stale",
+            "enqueue",
+            "pending",
+            "sleep",
+            "pending",
+            "sleep",
+            "ready",
+            "query",
+        ]
+
+    asyncio.run(check())
+
+
+def test_native_performance_repeated_races_keep_original_deadline(dataset, monkeypatch):
+    async def check():
+        now = 10.0
+        attempts = []
+        enqueued = []
+        statuses = iter(("pending", "ready"))
+        sleeps = []
+        budgets = []
+        timeout = asyncio.timeout
+
+        def record_timeout(delay):
+            budgets.append(delay)
+            return timeout(delay)
+
+        async def status(session, account_id):
+            return next(statuses, "ready")
+
+        async def query(command, **fields):
+            attempts.append(now)
+            raise native_analysis.NativeAnalysisError("stale", code="SNAPSHOT_NOT_READY")
+
+        async def enqueue(session, account_id):
+            enqueued.append(account_id)
+
+        async def sleep(delay):
+            nonlocal now
+            sleeps.append(delay)
+            # Scheduling delay consumes the request's original budget too.
+            now += 40
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "enqueue", enqueue)
+        monkeypatch.setattr(routes, "clock_async_sleep", sleep)
+        monkeypatch.setattr(routes, "clock_monotonic", lambda: now)
+        monkeypatch.setattr(routes, "asyncio", SimpleNamespace(timeout=record_timeout))
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "绩效尚未就绪，请读取快照状态或稍后重试"
+        assert attempts == [10.0, 50.0, 90.0]
+        assert enqueued == [2]
+        assert sleeps == pytest.approx([0.1, 0.1, 0.1])
+        assert budgets == [120.0, 80.0, 40.0]
+
+    asyncio.run(check())
+
+
+def test_native_performance_inflight_read_uses_remaining_deadline(dataset, monkeypatch):
+    async def check():
+        attempts = []
+        cancelled = []
+        budgets = []
+
+        async def status(session, account_id):
+            return "ready"
+
+        async def query(command, **fields):
+            attempts.append(command)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(command)
+
+        def short_timeout(remaining):
+            budgets.append(remaining)
+            return asyncio.timeout(0.01)
+
+        async def reject_retry(*args, **kwargs):
+            raise AssertionError("an in-flight timeout must not enqueue or retry")
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "asyncio", SimpleNamespace(timeout=short_timeout))
+        monkeypatch.setattr(routes, "enqueue", reject_retry)
+        monkeypatch.setattr(routes, "clock_async_sleep", reject_retry)
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "绩效尚未就绪，请读取快照状态或稍后重试"
+        assert attempts == cancelled == ["performance_result"]
+        assert len(budgets) == 1 and 0 < budgets[0] <= 120
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_native_performance_wait_stops_on_failure_or_deadline(dataset, monkeypatch, failed):
+    async def check():
+        now = 0.0
+        statuses = iter(("ready", "stale"))
+        attempts = []
+        enqueued = []
+
+        async def status(session, account_id):
+            return next(statuses, "failed" if failed else "pending")
+
+        async def query(command, **fields):
+            attempts.append(command)
+            raise native_analysis.NativeAnalysisError("stale", code="SNAPSHOT_NOT_READY")
+
+        async def enqueue(session, account_id):
+            enqueued.append(account_id)
+
+        async def sleep(delay):
+            nonlocal now
+            now += 60
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "enqueue", enqueue)
+        monkeypatch.setattr(routes, "clock_async_sleep", sleep)
+        monkeypatch.setattr(routes, "clock_monotonic", lambda: now)
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "绩效尚未就绪，请读取快照状态或稍后重试"
+        assert attempts == ["performance_result"]
+        assert enqueued == [2]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("state", ["stale", "failed", "empty", "pending", "ready_race"])
+def test_native_account_only_unready_uses_independent_path(dataset, monkeypatch, state):
+    async def check():
+        attempts = []
+        independent = []
+        encoded = b'{"backtest_included":false}'
+
+        async def status(session, account_id):
+            return "ready" if state == "ready_race" else state
+
+        async def query(command, **fields):
+            assert fields["include_backtest"] is False
+            attempts.append(command)
+            raise native_analysis.NativeAnalysisError("stale", code="SNAPSHOT_NOT_READY")
+
+        async def account_only(session, account_id, range_key):
+            independent.append((account_id, range_key))
+            return routes.Response(encoded, media_type="application/json")
+
+        async def reject_wait(*args, **kwargs):
+            raise AssertionError("account-only requests must not wait, enqueue, or read full snapshots")
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "_account_performance", account_only)
+        monkeypatch.setattr(routes, "enqueue", reject_wait)
+        monkeypatch.setattr(routes, "clock_async_sleep", reject_wait)
+        monkeypatch.setattr(routes, "read_snapshot", reject_wait)
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2?range=30&include_backtest=false")
+        assert response.status_code == 200
+        assert response.content == encoded
+        assert independent == [(2, "30")]
+        assert attempts == (["performance_result"] if state == "ready_race" else [])
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "code, status_code",
+    [("SNAPSHOT_READ", 503), ("SNAPSHOT_INVALID", 503), ("NATIVE_ANALYSIS_TIMEOUT", 503), ("INVALID_REQUEST", 422)],
+)
+def test_native_performance_other_errors_are_not_retried(dataset, monkeypatch, code, status_code):
+    async def check():
+        attempts = []
+
+        async def status(session, account_id):
+            return "ready"
+
+        async def query(command, **fields):
+            attempts.append(command)
+            raise native_analysis.NativeAnalysisError("failed", code=code)
+
+        async def reject_retry(*args, **kwargs):
+            raise AssertionError("only SNAPSHOT_NOT_READY may resume waiting")
+
+        monkeypatch.setattr(routes, "get_native_analysis", lambda session: SimpleNamespace(query=query))
+        monkeypatch.setattr(routes, "read_snapshot_status", status)
+        monkeypatch.setattr(routes, "enqueue", reject_retry)
+        monkeypatch.setattr(routes, "clock_async_sleep", reject_retry)
+        monkeypatch.setattr(routes, "read_snapshot", reject_retry)
+        monkeypatch.setattr(routes, "_account_performance", reject_retry)
+        async with http_client(dataset) as (client, _):
+            response = await client.get("/api/v1/account/performance/2")
+        assert response.status_code == status_code
+        assert response.json()["detail"] == {"code": code, "message": "failed"}
+        assert attempts == ["performance_result"]
+
+    asyncio.run(check())
+
+
 def test_cost_cursor_and_expired_snapshot_keep_http_error_codes(binary, dataset):
     async def check():
         async with http_client(dataset) as (client, _):

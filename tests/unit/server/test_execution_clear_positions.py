@@ -21,8 +21,8 @@ from tests.unit.server._execution_test_support import (
     FakeWorkerBackendManager,
     WorkerCommandHarness,
     build_account,
+    capture_worker_audit_batch,
     noop_account_control_guard,
-    noop_append_execution_artifact,
     noop_append_execution_event,
 )
 
@@ -40,7 +40,7 @@ def _worker_commands(monkeypatch):
 
     monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +185,9 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", unexpected_append_execution_artifact)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_audit_batch_sync", lambda _batch: unexpected_append_execution_artifact()
+    )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-gm-worker-empty-1"))
@@ -362,9 +364,7 @@ def test_empty_positions_binds_account_control_guard(
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
     )
-    monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
-    )
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
 
     _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-bind-1"))
 
@@ -462,7 +462,9 @@ def test_empty_positions_captures_before_account_snapshot(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
     )
     monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(capture_artifact(**kw))
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(artifact=lambda **kw: asyncio.run(capture_artifact(**kw))),
     )
 
     asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-before-1"))

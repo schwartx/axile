@@ -9,7 +9,7 @@ from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.execution.worker_backend import worker_audit
-from tests.unit.server._execution_test_support import FakeExecutor, build_account
+from tests.unit.server._execution_test_support import FakeExecutor, build_account, capture_worker_audit_batch
 
 
 def test_worker_target_reference_and_summary_keep_sizing(
@@ -50,7 +50,9 @@ def test_worker_target_reference_and_summary_keep_sizing(
         artifacts.append(dict(kwargs))
         return True
 
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", capture_artifact)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch(artifact=capture_artifact)
+    )
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **_kwargs: True)
 
     def capture_input(**kwargs: object) -> tuple[str, str]:

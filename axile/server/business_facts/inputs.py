@@ -413,17 +413,24 @@ def canonical_input(payload: object) -> object:
     return decode_inputs({table.name: rows for table, rows in batch.items()})
 
 
-async def _load_rows(session: Any, input_id: str) -> dict[str, list[Mapping[str, object]]]:
+async def _load_rows(
+    session: Any, input_id: str, *, head_row: Mapping[str, object] | None = None
+) -> dict[str, list[Mapping[str, object]]]:
     loaded = {}
     for table in TABLES:
+        if table is execution_input and head_row is not None:
+            if head_row["id"] != input_id:
+                raise ValueError("Execution input header identity differs")
+            loaded[table.name] = [head_row]
+            continue
         key = table.c.id if table is execution_input else table.c.input_id
         loaded[table.name] = list((await session.execute(sa.select(table).where(key == input_id))).mappings())
     return loaded
 
 
-async def read_input(session: Any, input_id: str) -> object:
-    """显式加载冻结输入；热路径使用目标或换算上下文窄查询。"""
-    return decode_inputs(await _load_rows(session, input_id))
+async def read_input(session: Any, input_id: str, *, head_row: Mapping[str, object] | None = None) -> object:
+    """显式加载冻结输入，可复用同一事务内已验证的头行；子行仍完整读取并校验。"""
+    return decode_inputs(await _load_rows(session, input_id, head_row=head_row))
 
 
 def _same_payload(left: object, right: object) -> bool:

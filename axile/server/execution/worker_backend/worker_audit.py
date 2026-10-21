@@ -21,6 +21,12 @@ from axile.executor.session_closed import session_closed_scope
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models.account import AccountContext
+from axile.server.execution.audit_batch import (
+    POST_EXECUTE_AUDIT_LIMIT,
+    PRE_EXECUTE_AUDIT_LIMIT,
+    ExecutionAuditBatch,
+    append_execution_audit_batch_sync,
+)
 from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_records_output import resolve_completion_event_status
 from axile.server.execution.execution_summaries import (
@@ -34,10 +40,7 @@ from axile.server.execution.input_persistence import (
     persist_pre_execute_input_sync,
 )
 from axile.server.execution.worker_backend.protocol import WorkerBackendErrorPayload
-from axile.server.execution_audit import (
-    append_execution_artifact_sync,
-    append_execution_event_sync,
-)
+from axile.server.execution_audit import append_execution_event_sync, build_execution_event
 
 
 def _event_seq(executor: object) -> int:
@@ -59,7 +62,8 @@ def _event_seq(executor: object) -> int:
     return 0
 
 
-def _append_before_snapshot_artifact_sync(
+def _add_before_snapshot_artifact(
+    batch: ExecutionAuditBatch,
     execution_id: str,
     input_id: str,
     before_account_assets: dict[str, object] | None,
@@ -76,7 +80,7 @@ def _append_before_snapshot_artifact_sync(
     before_source = (
         cast(str, before_account_assets.get("source", "real")) if before_account_assets is not None else "unavailable"
     )
-    append_execution_artifact_sync(
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE,
         schema_version=3 if before_account_assets is not None else 1,
@@ -93,12 +97,14 @@ def _append_before_snapshot_artifact_sync(
     )
 
 
-def _append_environment(execution_id: str, executor: object, channel: str, algorithm: str) -> None:
-    """在真实执行前保存环境；元数据采集失败不阻断交易。"""
+def _add_environment(
+    batch: ExecutionAuditBatch, execution_id: str, executor: object, channel: str, algorithm: str
+) -> None:
+    """在写事务外采集环境并入批；元数据采集失败不阻断交易。"""
     from loguru import logger
 
     try:
-        append_execution_artifact_sync(
+        batch.add_artifact(
             execution_id=execution_id,
             artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
             content=execution_environment(executor, channel, algorithm),
@@ -133,75 +139,83 @@ def _append_trade_pre_execute_audit(
         before_account_assets=before_account_assets,
     )
     audit_id = input_id
-    _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
-    append_execution_event_sync(
-        execution_id=execution_id,
-        account_id=cast(int, account.id),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        event_type=ExecutionEventType.EXECUTION_STARTED,
-        status=ExecutionEventStatus.INFO,
-        reason_family=ExecutionReasonFamily.SYSTEM,
-        reason_code="COMMON.EXECUTION_STARTED",
-        seq=_event_seq(executor),
-        details={
-            "debug": {
-                "trigger_source": trigger_source,
-                "execution_kind": "rebalance",
-            }
-        },
+    batch = ExecutionAuditBatch(max_entries=PRE_EXECUTE_AUDIT_LIMIT)
+    _add_environment(batch, execution_id, executor, account.trade_channel.value, algorithm_name)
+    batch.add_event(
+        build_execution_event(
+            execution_id=execution_id,
+            account_id=cast(int, account.id),
+            channel=account.trade_channel,
+            algorithm=algorithm_name,
+            event_type=ExecutionEventType.EXECUTION_STARTED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.SYSTEM,
+            reason_code="COMMON.EXECUTION_STARTED",
+            seq=_event_seq(executor),
+            details={
+                "debug": {
+                    "trigger_source": trigger_source,
+                    "execution_kind": "rebalance",
+                }
+            },
+        )
     )
-    append_execution_artifact_sync(
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.STANDARD_INPUT,
         schema_version=3,
         content=make_artifact_reference(view="input", input_id=input_id),
     )
-    append_execution_artifact_sync(
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.TARGET_SNAPSHOT,
         schema_version=3,
         content=make_artifact_reference(view="targets", input_id=audit_id),
     )
-    append_execution_artifact_sync(
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.TRADE_RULES_SNAPSHOT,
         schema_version=3,
         content=make_artifact_reference(view="rules", input_id=audit_id),
     )
-    _append_before_snapshot_artifact_sync(execution_id, input_id, before_account_assets)
-    append_execution_event_sync(
-        execution_id=execution_id,
-        account_id=cast(int, account.id),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        event_type=ExecutionEventType.INPUT_SNAPSHOTTED,
-        status=ExecutionEventStatus.INFO,
-        reason_family=ExecutionReasonFamily.INPUT,
-        reason_code="COMMON.INPUT_SNAPSHOTTED",
-        seq=_event_seq(executor),
-        details={
-            "debug": {
-                "symbol_count": len(standard_input.curr_target),
-            }
-        },
+    _add_before_snapshot_artifact(batch, execution_id, input_id, before_account_assets)
+    batch.add_event(
+        build_execution_event(
+            execution_id=execution_id,
+            account_id=cast(int, account.id),
+            channel=account.trade_channel,
+            algorithm=algorithm_name,
+            event_type=ExecutionEventType.INPUT_SNAPSHOTTED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.INPUT,
+            reason_code="COMMON.INPUT_SNAPSHOTTED",
+            seq=_event_seq(executor),
+            details={
+                "debug": {
+                    "symbol_count": len(standard_input.curr_target),
+                }
+            },
+        )
     )
-    append_execution_event_sync(
-        execution_id=execution_id,
-        account_id=cast(int, account.id),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        event_type=ExecutionEventType.TARGET_COMPUTED,
-        status=ExecutionEventStatus.INFO,
-        reason_family=ExecutionReasonFamily.INPUT,
-        reason_code="COMMON.TARGET_COMPUTED",
-        seq=_event_seq(executor),
-        details={
-            "decision": {
-                **make_artifact_reference(view="targets", input_id=audit_id, select_fields=["curr_target"]),
-            }
-        },
+    batch.add_event(
+        build_execution_event(
+            execution_id=execution_id,
+            account_id=cast(int, account.id),
+            channel=account.trade_channel,
+            algorithm=algorithm_name,
+            event_type=ExecutionEventType.TARGET_COMPUTED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.INPUT,
+            reason_code="COMMON.TARGET_COMPUTED",
+            seq=_event_seq(executor),
+            details={
+                "decision": {
+                    **make_artifact_reference(view="targets", input_id=audit_id, select_fields=["curr_target"]),
+                }
+            },
+        )
     )
+    append_execution_audit_batch_sync(batch)
 
 
 def _append_empty_positions_pre_execute_audit(
@@ -223,31 +237,35 @@ def _append_empty_positions_pre_execute_audit(
         payload=audit_input,
         before_account_assets=before_account_assets,
     )
-    append_execution_artifact_sync(
+    batch = ExecutionAuditBatch(max_entries=PRE_EXECUTE_AUDIT_LIMIT)
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.STANDARD_INPUT,
         schema_version=3,
         content=make_artifact_reference(view="input", input_id=input_id),
     )
-    _append_environment(execution_id, executor, account.trade_channel.value, algorithm_name)
-    append_execution_event_sync(
-        execution_id=execution_id,
-        account_id=cast(int, account.id),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        event_type=ExecutionEventType.EXECUTION_STARTED,
-        status=ExecutionEventStatus.INFO,
-        reason_family=ExecutionReasonFamily.SYSTEM,
-        reason_code="COMMON.EXECUTION_STARTED",
-        seq=_event_seq(executor),
-        details={
-            "debug": {
-                "trigger_source": "empty_positions",
-                "execution_kind": "clear_positions",
-            }
-        },
+    _add_environment(batch, execution_id, executor, account.trade_channel.value, algorithm_name)
+    batch.add_event(
+        build_execution_event(
+            execution_id=execution_id,
+            account_id=cast(int, account.id),
+            channel=account.trade_channel,
+            algorithm=algorithm_name,
+            event_type=ExecutionEventType.EXECUTION_STARTED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.SYSTEM,
+            reason_code="COMMON.EXECUTION_STARTED",
+            seq=_event_seq(executor),
+            details={
+                "debug": {
+                    "trigger_source": "empty_positions",
+                    "execution_kind": "clear_positions",
+                }
+            },
+        )
     )
-    _append_before_snapshot_artifact_sync(execution_id, input_id, before_account_assets)
+    _add_before_snapshot_artifact(batch, execution_id, input_id, before_account_assets)
+    append_execution_audit_batch_sync(batch)
 
 
 def _append_success_audit(
@@ -274,9 +292,10 @@ def _append_success_audit(
     after_reference = persist_post_execute_assets_sync(
         account_id=cast(int, account.id), execution_id=execution_id, payload=result
     )
+    batch = ExecutionAuditBatch(max_entries=POST_EXECUTE_AUDIT_LIMIT)
     if after_reference is not None:
         input_id, asset_id = after_reference
-        append_execution_artifact_sync(
+        batch.add_artifact(
             execution_id=execution_id,
             artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
             schema_version=3,
@@ -285,7 +304,7 @@ def _append_success_audit(
                 "orders_count": count_orders_from_symbol_results(result),
             },
         )
-    append_execution_artifact_sync(
+    batch.add_artifact(
         execution_id=execution_id,
         artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
         schema_version=2,
@@ -297,30 +316,33 @@ def _append_success_audit(
             "reconciliation": build_symbol_reconciliation(result, before_account_assets),
         },
     )
-    append_execution_event_sync(
-        execution_id=execution_id,
-        account_id=cast(int, account.id),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        event_type=ExecutionEventType.EXECUTION_COMPLETED,
-        status=(
-            ExecutionEventStatus.INFO
-            if session_closed_scope(result) == "all"
-            else resolve_completion_event_status(output.status)
-        ),
-        reason_family=ExecutionReasonFamily.SYSTEM,
-        reason_code="COMMON.EXECUTION_COMPLETED",
-        seq=_event_seq(executor),
-        details={
-            "debug": {
-                "success": output.success,
-                "execution_status": output.status.value,
+    batch.add_event(
+        build_execution_event(
+            execution_id=execution_id,
+            account_id=cast(int, account.id),
+            channel=account.trade_channel,
+            algorithm=algorithm_name,
+            event_type=ExecutionEventType.EXECUTION_COMPLETED,
+            status=(
+                ExecutionEventStatus.INFO
+                if session_closed_scope(result) == "all"
+                else resolve_completion_event_status(output.status)
+            ),
+            reason_family=ExecutionReasonFamily.SYSTEM,
+            reason_code="COMMON.EXECUTION_COMPLETED",
+            seq=_event_seq(executor),
+            details={
+                "debug": {
+                    "success": output.success,
+                    "execution_status": output.status.value,
+                },
+                "order": {
+                    "orders_count": count_orders_from_symbol_results(result),
+                },
             },
-            "order": {
-                "orders_count": count_orders_from_symbol_results(result),
-            },
-        },
+        )
     )
+    append_execution_audit_batch_sync(batch)
 
 
 def _append_failed_audit(

@@ -1,7 +1,7 @@
 """类型化执行事实的事务编排与显式明细读取。"""
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import sqlalchemy as sa
 
@@ -115,21 +115,25 @@ async def _input_row(
     return row
 
 
-async def find_execution_input(session: Any, *, account_id: int, execution_id: str) -> str | None:
-    """按执行标识定位下单前已持久化输入，同时拒绝跨账户关联。"""
+async def _find_execution_input_row(session: Any, *, account_id: int, execution_id: str) -> Mapping[str, object] | None:
     row = (
-        await session.execute(
-            sa.select(inputs.execution_input.c.id, inputs.execution_input.c.account_id).where(
-                inputs.execution_input.c.execution_id == execution_id
+        (
+            await session.execute(
+                sa.select(inputs.execution_input).where(inputs.execution_input.c.execution_id == execution_id)
             )
         )
-    ).first()
-    if row is None:
-        return None
-    if row.account_id != account_id:
-        raise ValueError("执行输入属于其他账户")
-    await _input_row(session, row.id, account_id, execution_id)
-    return row.id
+        .mappings()
+        .first()
+    )
+    if row is not None:
+        _validate_input_owner(row, account_id, execution_id)
+    return row
+
+
+async def find_execution_input(session: Any, *, account_id: int, execution_id: str) -> str | None:
+    """按执行标识定位下单前已持久化输入，同时拒绝跨账户关联。"""
+    row = await _find_execution_input_row(session, account_id=account_id, execution_id=execution_id)
+    return cast(str, row["id"]) if row is not None else None
 
 
 async def persist_execution_input(
@@ -164,8 +168,8 @@ async def persist_execution_input(
 
 async def read_execution_input(session: Any, input_id: str) -> object:
     """显式读取冻结输入，缺失的关联行视为完整性错误。"""
-    await _input_row(session, input_id)
-    return await inputs.read_input(session, input_id)
+    row = await _input_row(session, input_id)
+    return await inputs.read_input(session, input_id, head_row=row)
 
 
 def _same_input(left: object, right: object) -> bool:
@@ -174,12 +178,12 @@ def _same_input(left: object, right: object) -> bool:
 
 async def _attach_inputs(
     session: Any, record: Any, raw_input: Mapping[str, object] | None, raw_result: Mapping[str, object]
-) -> None:
+) -> object:
     input_id = getattr(record, "input_id", None)
-    if input_id is not None:
-        await _input_row(session, input_id, record.account_id, record.execution_id, record.id)
-    elif record.execution_id is not None:
-        input_id = await find_execution_input(session, account_id=record.account_id, execution_id=record.execution_id)
+    row = None
+    if input_id is None and record.execution_id is not None:
+        row = await _find_execution_input_row(session, account_id=record.account_id, execution_id=record.execution_id)
+        input_id = cast(str, row["id"]) if row is not None else None
     if input_id is None and raw_input is not None:
         input_id = await persist_execution_input(
             session,
@@ -188,8 +192,9 @@ async def _attach_inputs(
             payload=raw_input,
             created_at=record.created_at,
         )
-    if input_id is not None:
-        await _input_row(session, input_id, record.account_id, record.execution_id, record.id)
+    if input_id is not None and row is None:
+        row = await _input_row(session, input_id, record.account_id, record.execution_id, record.id)
+    canonical_input = await inputs.read_input(session, input_id, head_row=row) if input_id is not None else {}
     record.input_id = input_id
     result_input = raw_result.get("inputs")
     if getattr(record, "result_input_id", None) is not None:
@@ -197,7 +202,7 @@ async def _attach_inputs(
     record.result_input_id = None
     if isinstance(result_input, Mapping):
         sanitized = extensions.sanitize_input(result_input)
-        if input_id is not None and _same_input(await read_execution_input(session, input_id), sanitized):
+        if input_id is not None and _same_input(canonical_input, sanitized):
             record.result_input_id = input_id
         else:
             record.result_input_id = await persist_execution_input(
@@ -208,6 +213,7 @@ async def _attach_inputs(
                 payload=sanitized,
                 created_at=record.created_at,
             )
+    return canonical_input
 
 
 async def store_execution_facts(
@@ -215,15 +221,15 @@ async def store_execution_facts(
     record: Any,
     raw_input: Mapping[str, object] | None,
     raw_result: Mapping[str, object],
-) -> None:
-    """在调用方事务内保存完整结果事实，不提交且不保存整份输入输出。"""
+) -> object:
+    """在调用方事务内保存完整结果事实但不提交，返回已读取的冻结输入供复用。"""
     if record.id is None:
         await session.flush()
     if record.id is None:
         raise ValueError("执行记录必须先取得主键")
     replacing = bool(getattr(record, "facts_complete", False))
     record.facts_complete = False
-    await _attach_inputs(session, record, raw_input, raw_result)
+    canonical_input = await _attach_inputs(session, record, raw_input, raw_result)
     root_asset_id = None
     # 失败收尾可能先于 worker 成功回包；后观测仍属输入证据，不能据此补造结果资产。
     # 成功结果缺字段仍须拒绝，显式携带的任何后观测也必须与已冻结证据一致。
@@ -245,6 +251,7 @@ async def store_execution_facts(
     await _write_batch(session, batch)
     record.facts_complete = True
     await session.flush()
+    return canonical_input
 
 
 async def _delete_result_assets(session: Any, record_id: int) -> None:

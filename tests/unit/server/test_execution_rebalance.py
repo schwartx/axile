@@ -27,8 +27,8 @@ from tests.unit.server._execution_test_support import (
     WarningLogger,
     WorkerCommandHarness,
     build_account,
+    capture_worker_audit_batch,
     noop_account_control_guard,
-    noop_append_execution_artifact,
     noop_append_execution_event,
 )
 
@@ -65,7 +65,7 @@ def _worker_commands(monkeypatch) -> dict[str, dict[str, object]]:
 
     monkeypatch.setattr(worker_state, "flush_account_control_records", flush)
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: True)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: True)
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
     frozen_inputs: dict[str, dict[str, object]] = {}
 
     def persist_input(**kwargs: object) -> str:
@@ -414,7 +414,9 @@ def test_trade_routes_gm_account_to_worker_manager(
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", unexpected_append_execution_artifact)
+    monkeypatch.setattr(
+        worker_audit, "append_execution_audit_batch_sync", lambda _batch: unexpected_append_execution_artifact()
+    )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     _ = asyncio.run(
@@ -721,9 +723,7 @@ def test_trade_passes_execution_id_to_persisted_record(
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
     )
-    monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
-    )
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -793,7 +793,12 @@ def test_trade_emits_execution_events_and_artifacts(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
     )
     monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(
+            artifact=lambda **kw: asyncio.run(fake_append_execution_artifact(**kw)),
+            event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
+        ),
     )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -926,7 +931,12 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
     )
     monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(
+            artifact=lambda **kw: asyncio.run(fake_append_execution_artifact(**kw)),
+            event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
+        ),
     )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -1033,7 +1043,12 @@ def test_trade_completion_event_matches_output_status(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
     )
     monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(fake_append_execution_artifact(**kw))
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(
+            artifact=lambda **kw: asyncio.run(fake_append_execution_artifact(**kw)),
+            event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
+        ),
     )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -1110,9 +1125,7 @@ def test_trade_binds_account_control_guard(
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
     )
-    monkeypatch.setattr(
-        worker_audit, "append_execution_artifact_sync", lambda **kw: asyncio.run(noop_append_execution_artifact(**kw))
-    )
+    monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
 
     _ = asyncio.run(
         rebalance_execution.trade(

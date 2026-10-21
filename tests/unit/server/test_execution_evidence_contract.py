@@ -36,6 +36,7 @@ from axile.server.performance_analysis import _events
 from axile.server.performance_costs import project_execution
 from scripts.business_facts_contract import business_evidence
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
+from tests.unit.server._execution_test_support import capture_worker_audit_batch
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "execution_evidence_contract.json"
 
@@ -145,8 +146,8 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             with monkeypatch.context() as patch:
                 patch.setattr(
                     worker_audit,
-                    "append_execution_artifact_sync",
-                    lambda **values: artifacts.append(ExecutionArtifact(**values)),
+                    "append_execution_audit_batch_sync",
+                    capture_worker_audit_batch(artifact=lambda **values: artifacts.append(ExecutionArtifact(**values))),
                 )
                 patch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
                 patch.setattr(worker_audit, "persist_post_execute_assets_sync", post_writer)
@@ -283,8 +284,11 @@ def test_pre_execute_audit_references_committed_input_and_preserves_missing_asse
         events.append(values)
 
     monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", persist_input)
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", append_artifact)
-    monkeypatch.setattr(worker_audit, "append_execution_event_sync", append_event)
+    monkeypatch.setattr(
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(artifact=append_artifact, event=append_event),
+    )
     monkeypatch.setattr(worker_audit, "execution_environment", lambda *_args: {"synthetic": True})
     common = {
         "account": SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),

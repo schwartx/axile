@@ -7,7 +7,7 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.server.execution.execution_summaries import compact_execution_summary_content
 from axile.server.execution.worker_backend import worker_audit
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._execution_test_support import build_account, capture_worker_audit_batch
 
 
 def test_compact_summary_keeps_outcomes_and_metrics_without_stable_subtrees():
@@ -94,7 +94,11 @@ def test_worker_journal_keeps_native_orders_until_terminal_facts_commit(monkeypa
         },
     }
     monkeypatch.setattr(worker_audit, "persist_post_execute_assets_sync", lambda **_kwargs: ("input-1", "asset-1"))
-    monkeypatch.setattr(worker_audit, "append_execution_artifact_sync", lambda **kwargs: artifacts.append(kwargs))
+    monkeypatch.setattr(
+        worker_audit,
+        "append_execution_audit_batch_sync",
+        capture_worker_audit_batch(artifact=lambda **kwargs: artifacts.append(kwargs)),
+    )
     monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **_kwargs: None)
     worker_audit._append_success_audit(
         account=build_account(),

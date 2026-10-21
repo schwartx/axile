@@ -147,6 +147,14 @@ fn read(
         )
         .optional()
         .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    if performance_only {
+        // The caller already owns a SQLite read snapshot. Reject before reading
+        // any result rows or legacy JSON, in that same view as the ready check.
+        let status = snapshot.as_ref().map_or("empty", |row| row.status(request));
+        if status != "ready" {
+            return Err(format!("SNAPSHOT_NOT_READY: {status}"));
+        }
+    }
     if let Some(row) = snapshot.as_mut().filter(|row| row.compatible(request)) {
         match row.result_schema_version {
             0 => read_legacy(connection, row, request, performance_only)?,
@@ -306,10 +314,6 @@ fn performance_result_mode(
 ) -> Result<crate::wire_result::WireResult, String> {
     let request = Request::parse(value)?;
     let row = read(connection, &request, true, typed)?;
-    let status = row.as_ref().map_or("empty", |row| row.status(&request));
-    if status != "ready" {
-        return Err(format!("SNAPSHOT_NOT_READY: {status}"));
-    }
     let mut row = row.expect("ready status requires a snapshot row");
     let mut typed_points = row.typed_points.take();
     let mut result = row
@@ -630,6 +634,111 @@ mod tests {
             performance_result(&connection, &input).unwrap_err(),
             "SNAPSHOT_NOT_READY: stale"
         );
+    }
+
+    #[test]
+    fn unready_performance_never_reads_legacy_or_typed_results() {
+        for schema in [0, 2, 99] {
+            let connection = database();
+            publish(&connection);
+            // Typed tables deliberately do not exist. Legacy JSON is poisoned.
+            connection
+                .execute(
+                    "UPDATE performance_snapshot SET result_schema_version = ?1,
+                         settings = 'invalid JSON', ranges = 'invalid JSON'",
+                    params![schema],
+                )
+                .unwrap();
+            for (mutation, status) in [
+                ("source_version = 2", "stale"),
+                ("published_version = 0", "stale"),
+                ("requested = 1", "stale"),
+                ("running_version = 1", "stale"),
+                ("error = 'failed'", "failed"),
+                ("current_snapshot = NULL, requested = 1", "pending"),
+                ("current_snapshot = NULL", "empty"),
+            ] {
+                connection
+                    .execute_batch(&format!(
+                        "UPDATE account_analysis SET source_version = 1,
+                             published_version = 1, requested = 0,
+                             running_version = NULL, error = NULL, current_snapshot = 's1';
+                         UPDATE account_analysis SET {mutation};"
+                    ))
+                    .unwrap();
+                let expected = format!("SNAPSHOT_NOT_READY: {status}");
+                assert_eq!(
+                    performance_result(&connection, &request("all")).unwrap_err(),
+                    expected
+                );
+                match performance_result_wire(&connection, &request("all")) {
+                    Err(error) => assert_eq!(error, expected),
+                    Ok(_) => panic!("unready wire result must be rejected"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ready_performance_still_reports_corrupt_results() {
+        let connection = database();
+        publish(&connection);
+        connection
+            .execute(
+                "UPDATE performance_snapshot SET ranges = 'invalid JSON'",
+                [],
+            )
+            .unwrap();
+        assert!(performance_result(&connection, &request("all"))
+            .unwrap_err()
+            .starts_with("SNAPSHOT_READ:"));
+    }
+
+    #[test]
+    fn performance_readiness_and_result_share_one_sqlite_view() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "axile-performance-read-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        let writer = database();
+        // Copy the small fixture to a file without needing another test dependency.
+        writer
+            .execute("VACUUM INTO ?1", params![path.to_str().unwrap()])
+            .unwrap();
+        drop(writer);
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+        publish(&writer);
+        let reader = Connection::open(&path).unwrap();
+        reader.execute_batch("BEGIN DEFERRED;").unwrap();
+        let source: i64 = reader
+            .query_row("SELECT source_version FROM account_analysis", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(source, 1);
+        writer
+            .execute_batch(
+                "UPDATE account_analysis SET source_version = 2;
+                 UPDATE performance_snapshot SET ranges = 'invalid JSON';",
+            )
+            .unwrap();
+        assert_eq!(
+            performance_result(&reader, &request("30")).unwrap()["points"][0]["account_return"],
+            0.03
+        );
+        reader.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(
+            performance_result(&reader, &request("30")).unwrap_err(),
+            "SNAPSHOT_NOT_READY: stale"
+        );
+        drop(reader);
+        drop(writer);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

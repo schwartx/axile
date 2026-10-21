@@ -1,5 +1,6 @@
 """账户绩效设置和 WBT 收益对比接口，不操作执行与调度."""
 
+import asyncio
 from typing import Annotated
 
 import sqlalchemy as sa
@@ -60,31 +61,67 @@ async def _native_response(session, command: str, **fields) -> Response | None:
     return Response(body, media_type="application/json")
 
 
+async def _wait_ready_performance(session, account_id: int, deadline: float) -> None:
+    """只轮询小状态，不重排队或加载结果，期限由整次请求共享。"""
+    while True:
+        await session.rollback()
+        status = await read_snapshot_status(session, account_id)
+        if status == "failed" or clock_monotonic() >= deadline:
+            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
+        if status == "ready":
+            return
+        await clock_async_sleep(0.1)
+
+
 async def _native_ready_performance(session, request: Request, account_id: int, range_key: str, include_backtest: bool):
-    """等待小型发布状态，再由 Rust 直接读取已发布结果。"""
+    """仅对原生未就绪恢复小状态等待，所有尝试共用同一期限。"""
     try:
         native = get_native_analysis(session)
     except NativeAnalysisError as error:
         raise _native_http_error(error) from error
     if native is None:
         return None
-    status = await read_snapshot_status(session, account_id)
-    if status != "ready" and not include_backtest:
-        return None
-    if status != "ready":
-        await enqueue(session, account_id)
-        request.app.state.analysis_manager.wake.set()
-        deadline = clock_monotonic() + 120
-        while status != "ready":
-            await session.rollback()
-            status = await read_snapshot_status(session, account_id)
-            if status == "failed" or clock_monotonic() > deadline:
+    deadline = clock_monotonic() + 120
+    enqueued = False
+    while True:
+        await session.rollback()
+        status = await read_snapshot_status(session, account_id)
+        if status != "ready":
+            if not include_backtest:
+                return await _account_performance(session, account_id, range_key)
+            if clock_monotonic() >= deadline:
                 raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
-            if status != "ready":
-                await clock_async_sleep(0.1)
-    return await _native_response(
-        session, "performance_result", account_id=account_id, range=range_key, include_backtest=include_backtest
-    )
+            if not enqueued:
+                await enqueue(session, account_id)
+                request.app.state.analysis_manager.wake.set()
+                enqueued = True
+            await _wait_ready_performance(session, account_id, deadline)
+        remaining = deadline - clock_monotonic()
+        if remaining <= 0:
+            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
+        # 不跨子进程等待持有 Python 读事务；最终 ready 判断与结果读取由 Rust 原子完成。
+        await session.rollback()
+        try:
+            async with asyncio.timeout(remaining):
+                body = await native.query(
+                    "performance_result",
+                    logic_version=LOGIC_VERSION,
+                    engine_version=ENGINE_VERSION,
+                    account_id=account_id,
+                    range=range_key,
+                    include_backtest=include_backtest,
+                )
+        except NativeAnalysisError as error:
+            if error.code != "SNAPSHOT_NOT_READY":
+                raise _native_http_error(error) from error
+            if not include_backtest:
+                return await _account_performance(session, account_id, range_key)
+        except TimeoutError as error:
+            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试") from error
+        else:
+            return Response(body, media_type="application/json")
+        # Python 观察到 ready 后仍可能失效；让出执行权后重新轮询，避免紧密启动子进程。
+        await clock_async_sleep(min(0.1, max(0, deadline - clock_monotonic())))
 
 
 async def _account_performance(session, account_id: int, range_key: RangeKey) -> AccountPerformance | Response:
