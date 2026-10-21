@@ -11,8 +11,8 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "typecheck": "tsc -b --noEmit",
+    "build": "bun run typecheck && vite build",
+    "typecheck": "tsrs -b --noEmit",
     "test": "bun test",
     "test:e2e": "playwright test",
     "lint": "oxlint",
@@ -50,6 +50,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
     "tailwindcss": "^4.3.2",
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "~7.0.2",
     "vite": "^8.1.1"
   }
