@@ -1,12 +1,14 @@
-"""Build and stage the host-native SQLite analysis executable for a wheel."""
+"""Build and stage the host-native SQLite publishing CLI and PyO3 extension."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import runpy
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +68,7 @@ def main() -> None:
     """Compile with the checked-in lockfile, then stage and verify the binary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--debug", action="store_true", help="Build the debug profile instead of release")
-    parser.add_argument("--no-build", action="store_true", help="Only stage an already built host executable")
+    parser.add_argument("--no-build", action="store_true", help="Only stage the already built host executable and extension")
     parser.add_argument(
         "--target-dir",
         type=Path,
@@ -87,6 +89,23 @@ def main() -> None:
         if not args.debug:
             command.append("--release")
         subprocess.run(command, check=True, cwd=ROOT, timeout=args.timeout)
+        extension_command = command + ["--lib", "--features", "python"]
+        subprocess.run(extension_command, check=True, cwd=ROOT, timeout=args.timeout)
+    library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
+        sys.platform, "libaxile_analysis.so"
+    )
+    extension_source = target_dir / ("debug" if args.debug else "release") / library
+    extension = ROOT / "axile" / "server" / "_native" / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
+    extension.parent.mkdir(parents=True, exist_ok=True)
+    temporary_dir = extension.parent / f".stage-{os.getpid()}"
+    temporary_dir.mkdir()
+    try:
+        staged_extension = temporary_dir / extension.name
+        shutil.copy2(extension_source, staged_extension)
+        runpy.run_path(str(ROOT / "hatch_build.py"))["verify_native_extension"](staged_extension)
+        staged_extension.replace(extension)
+    finally:
+        shutil.rmtree(temporary_dir)
     executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
     source = target_dir / ("debug" if args.debug else "release") / executable
     destination = ROOT / "axile" / "server" / "_native" / executable
