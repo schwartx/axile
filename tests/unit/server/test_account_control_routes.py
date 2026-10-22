@@ -735,11 +735,11 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                 assert history["count"] == 1
                 assert history["data"][0]["execution_id"] == "new"
                 original = await account_crud_routes.list_execute_records(1, HistoryPagination())
-                assert original.count == 1
-                original_detail = await account_crud_routes.execute_record_detail(session, 1, original["data"][0]["id"])
-                assert original_detail.result["orders"] == old_result["orders"]
+                assert original["count"] == 1
+                original_detail = await account_crud_routes.execute_record_detail(1, original["data"][0]["id"])
+                assert original_detail["result"]["orders"] == old_result["orders"]
                 with pytest.raises(HTTPException) as cross_account:
-                    await account_crud_routes.execute_record_detail(session, copied_id, original["data"][0]["id"])
+                    await account_crud_routes.execute_record_detail(copied_id, original["data"][0]["id"])
                 assert cross_account.value.status_code == 404
                 stored = (
                     await session.execute(select(ExecuteRecord).where(ExecuteRecord.account_id == 1))

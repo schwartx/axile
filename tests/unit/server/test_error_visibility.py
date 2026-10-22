@@ -114,8 +114,8 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
             assert result["count"] == 1
             assert [row["id"] for row in result["data"]] == [1]
             assert "result" not in result["data"][0]
-            detail = await execute_record_detail(session, 1, 1)
-            assert detail.result["technical_detail"] == RAW
+            detail = await execute_record_detail(1, 1)
+            assert detail["result"]["technical_detail"] == RAW
             for execution_id, record_id in [("exec-1", 2), ("other-account", None), (None, 1000)]:
                 result = await list_execute_records(1, page, execution_id=execution_id, record_id=record_id)
                 assert result["count"] == 0

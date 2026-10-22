@@ -7,19 +7,17 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from axile.server.api.business_execution import (
-    ExecuteRecordDetailPublic,
-    ExecuteRecordSummaryPublic,
-    read_execution_summaries,
-)
 from axile.server.api.routes import account_crud, account_execution, account_schedule
 from axile.server.db.models.analysis_source import source_execution, source_execution_symbol, source_trade
 from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._execution_read_oracle import (
+    ExecuteRecordSummaryPublic,
+    read_execution_summaries,
+)
 from tests.unit.server._journal_oracle import _compact_execution_activity
 
 
@@ -101,54 +99,6 @@ def test_activity_distinguishes_unknown_from_explicit_no_trades(known):
         assert activity.record.summary.count == 0
     else:
         assert activity.record.summary is None
-
-
-def test_detail_rejects_record_from_other_account_before_fact_loading(monkeypatch):
-    """通过别的账户路径访问记录时，不重建或泄露任何明细。"""
-
-    async def account_exists(_session, account_id):
-        return SimpleNamespace(id=account_id)
-
-    monkeypatch.setattr(account_crud, "_get_account_or_404", account_exists)
-
-    async def scenario():
-        async with _session() as session:
-            record = ExecuteRecord(account_id=2, is_success=1)
-            session.add(record)
-            await session.flush()
-            with pytest.raises(HTTPException) as error:
-                await account_crud.execute_record_detail(session, account_id=1, record_id=record.id)
-            assert error.value.status_code == 404
-
-    asyncio.run(scenario())
-
-
-def test_detail_reads_canonical_facts_without_legacy_documents(monkeypatch):
-    """单条详情使用规范仓库，稳定字段与冻结输入保留原语义。"""
-    from axile.server.business_facts.repository import store_execution_facts
-
-    async def account_exists(_session, account_id):
-        return SimpleNamespace(id=account_id)
-
-    monkeypatch.setattr(account_crud, "_get_account_or_404", account_exists)
-
-    async def scenario():
-        async with _session() as session:
-            record = ExecuteRecord(account_id=1, execution_id="canonical-detail", is_success=1)
-            session.add(record)
-            await session.flush()
-            source_input = {"channel_type": "ctp", "curr_target": {}, "last_target": None}
-            source_result = {"status": "NOOP", "execution_time": 0.0, "symbol_results": {}}
-            await store_execution_facts(session, record, source_input, source_result)
-            payload = await account_crud.execute_record_detail(session, account_id=1, record_id=record.id)
-            assert payload.input == source_input
-            assert business_evidence(payload.result) == business_evidence(source_result)
-            assert payload.result["task_status"] == "SUCCEEDED"
-            assert payload.status == "NOOP"
-            assert payload.execution_time == 0.0
-            assert not {"raw_input", "raw_result"}.intersection(payload.model_dump())
-
-    asyncio.run(scenario())
 
 
 def test_activity_symbol_query_uses_projected_columns_and_account_scope(monkeypatch, tmp_path):
@@ -371,21 +321,3 @@ def test_delete_execution_records_preserves_independent_summary_journal(monkeypa
             await engine.dispose()
 
     asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("input_value,result_value", [(None, []), (False, "invalid"), ({}, {})])
-def test_detail_keeps_historical_root_shapes(input_value, result_value):
-    """畸形历史根值保持原始证据，不被模型改写为空对象。"""
-    detail = ExecuteRecordDetailPublic.model_validate(
-        {
-            "id": 1,
-            "account_id": 1,
-            "execution_id": None,
-            "created_at": "2026-10-20T09:00:00",
-            "is_success": 0,
-            "input": input_value,
-            "result": result_value,
-        }
-    )
-    assert detail.input == input_value
-    assert detail.result == result_value

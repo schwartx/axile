@@ -312,6 +312,23 @@ fn execution_records(
 }
 
 #[pyfunction]
+fn execution_record_detail(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    record_id: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::executions::detail(connection, account_id, record_id)
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
 #[pyo3(signature = (store, account_id, skip, limit, since=None, until=None))]
 fn journal(
     py: Python<'_>,
@@ -371,6 +388,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_record_detail, m)?)?;
     m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;

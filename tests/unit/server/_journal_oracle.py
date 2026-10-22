@@ -1,10 +1,10 @@
 """迁移前 journal 展示语义，仅用于对照测试。"""
 
-from axile.server.api.business_execution import ExecuteRecordSummaryPublic
 from axile.server.db.models import ExecuteRecord, ExecutionActivity
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import ActivityExecutionRecord
 from axile.server.performance_costs import summarize
+from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 
 
 def _text_or_none(value: object) -> str | None:

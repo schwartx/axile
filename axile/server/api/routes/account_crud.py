@@ -19,10 +19,6 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
-from axile.server.api.business_execution import (
-    ExecuteRecordDetailPublic,
-    read_execution_summaries,
-)
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.business_facts.assets import read_snapshots_assets
@@ -934,27 +930,17 @@ async def list_execute_records(
         raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
-@router.get("/execute_records/{account_id}/{record_id}", response_model=ExecuteRecordDetailPublic)
-async def execute_record_detail(
-    session: SessionDep,
-    account_id: int,
-    record_id: int,
-) -> ExecuteRecordDetailPublic:
-    """显式读取账户内的一条执行，跨账户记录返回不存在。"""
-    from axile.server.business_facts.repository import read_execution_detail
-
-    await _get_account_or_404(session, account_id)
-    async with session.begin_nested():
-        record = (
-            await session.execute(
-                select(ExecuteRecord).where(ExecuteRecord.account_id == account_id, ExecuteRecord.id == record_id)
-            )
-        ).scalar_one_or_none()
-        if record is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="执行记录不存在")
-        summaries = await read_execution_summaries(session, [record])
-        detail = await read_execution_detail(session, record)
-        return ExecuteRecordDetailPublic.model_validate({**summaries[record_id].model_dump(), **detail})
+@router.get("/execute_records/{account_id}/{record_id}")
+async def execute_record_detail(account_id: int, record_id: int) -> dict:
+    """从同一原生读快照返回账户内执行的完整业务证据。"""
+    try:
+        return await run_in_threadpool(_core.execution_record_detail, analysis_store(), account_id, record_id)
+    except _core.NativeError as error:
+        if error.args[0] == "ACCOUNT_NOT_FOUND":
+            raise HTTPException(404, detail="账户不存在") from error
+        if error.args[0] == "RECORD_NOT_FOUND":
+            raise HTTPException(404, detail="执行记录不存在") from error
+        raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
 @router.get("/portfolio_records/{account_id}", response_model=PortfolioAccountListPublic)

@@ -189,6 +189,25 @@ pub fn page(
     Ok(json!({"data":data,"count":count}))
 }
 
+/// Read one account-owned execution and its complete cold business evidence.
+pub fn detail(connection: &Connection, account_id: i64, record_id: i64) -> Result<Value, String> {
+    let mut page = page(connection, account_id, 0, 1, None, Some(record_id))?;
+    let mut record = page["data"]
+        .as_array_mut()
+        .expect("execution page")
+        .pop()
+        .ok_or_else(|| "RECORD_NOT_FOUND: execution record does not exist".to_owned())?;
+    let facts = crate::business_detail::read(connection, account_id, record_id)?;
+    let Value::Object(facts) = facts else {
+        return Err("EXECUTION_READ_ERROR: invalid execution detail shape".into());
+    };
+    record
+        .as_object_mut()
+        .expect("execution header")
+        .extend(facts);
+    Ok(record)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

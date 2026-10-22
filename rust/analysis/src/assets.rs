@@ -100,7 +100,7 @@ fn availability(
     Ok(())
 }
 
-fn position(row: &Row<'_>) -> Result<Value, String> {
+pub(crate) fn position(row: &Row<'_>) -> Result<Value, String> {
     if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
         return cell(row, "payload_value");
     }
@@ -122,7 +122,7 @@ fn position(row: &Row<'_>) -> Result<Value, String> {
     Ok(Value::Object(view))
 }
 
-fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<Value, String> {
+pub(crate) fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<Value, String> {
     if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
         return Err(invalid("account asset observation is not an object"));
     }
