@@ -73,6 +73,8 @@ pub fn page(
     let mut statement = connection.prepare(&format!("{cte}
         SELECT s.record_id,s.symbol,s.present,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
         FROM analysis_source_execution_symbol s JOIN selected p ON p.id=s.record_id
+        JOIN analysis_source_execution e ON e.record_id=s.record_id
+        WHERE e.projection_error IS NULL AND e.has_symbol_results
         ORDER BY s.record_id,s.symbol")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
@@ -98,7 +100,8 @@ pub fn page(
             "{cte}
         SELECT t.record_id,t.fee_currency,SUM(t.fee),COUNT(*) FROM analysis_source_trade t
         JOIN selected p ON p.id=t.record_id
-        WHERE t.fee IS NOT NULL AND t.fee_currency IS NOT NULL AND t.fee_currency!=''
+        JOIN analysis_source_execution e ON e.record_id=t.record_id
+        WHERE e.projection_error IS NULL AND e.trade_count IS NOT NULL AND t.fee IS NOT NULL AND t.fee_currency IS NOT NULL AND t.fee_currency!=''
         GROUP BY t.record_id,t.fee_currency"
         ))
         .map_err(database)?;
@@ -118,7 +121,9 @@ pub fn page(
             "{cte},
         trades AS (SELECT t.record_id,t.value,
             CASE WHEN t.value IS NOT NULL THEN t.cost END AS cost,t.loss_bp,t.estimated
-            FROM analysis_source_trade t JOIN selected p ON p.id=t.record_id)
+            FROM analysis_source_trade t JOIN selected p ON p.id=t.record_id
+            JOIN analysis_source_execution e ON e.record_id=t.record_id
+            WHERE e.projection_error IS NULL AND e.trade_count IS NOT NULL)
         SELECT record_id,{AGGREGATES} FROM trades GROUP BY record_id"
         ))
         .map_err(database)?;
@@ -158,19 +163,34 @@ pub fn page(
         totals.insert(row.get::<_, i64>(0).map_err(database)?, total);
     }
 
-    let mut activities = HashMap::new();
+    let mut data = Vec::new();
     let mut statement = connection
         .prepare(&format!(
             "{cte}
         SELECT r.id,r.execution_id,r.created_at,r.is_success,r.display_status,r.task_status,
         r.display_error,r.display_outcome,r.display_outcome_reason,r.reason_code,r.execution_kind,
-        r.execution_time,s.record_id,s.projection_error,s.has_symbol_results,s.trade_count
-        FROM selected p JOIN executerecord r ON r.id=p.id
-        LEFT JOIN analysis_source_execution s ON s.record_id=r.id"
+        r.execution_time,s.record_id,s.projection_error,s.has_symbol_results,s.trade_count,
+        p.kind,k.id,k.triggered_at,k.channel,k.calendar_id,k.calendar_day,k.calendar_label,k.reason_code
+        FROM page p LEFT JOIN executerecord r ON p.kind=0 AND r.id=p.id
+        LEFT JOIN schedule_skip k ON p.kind=1 AND k.id=p.id
+        LEFT JOIN analysis_source_execution s ON s.record_id=r.id
+        ORDER BY p.occurred_at DESC,p.id DESC,p.kind"
         ))
         .map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
+        if row.get::<_, i64>(16).map_err(database)? == 1 {
+            data.push(
+                json!({"kind":"schedule_skip","id":row.get::<_, i64>(17).map_err(database)?,
+                "occurred_at":row.get::<_, String>(18).map_err(database)?,
+                "channel":row.get::<_, String>(19).map_err(database)?,
+                "calendar_id":row.get::<_, String>(20).map_err(database)?,
+                "calendar_day":row.get::<_, String>(21).map_err(database)?,
+                "calendar_label":row.get::<_, String>(22).map_err(database)?,
+                "reason_code":row.get::<_, String>(23).map_err(database)?}),
+            );
+            continue;
+        }
         let id: i64 = row.get(0).map_err(database)?;
         let created: String = row.get(2).map_err(database)?;
         let projected = row.get::<_, Option<i64>>(12).map_err(database)?.is_some()
@@ -215,45 +235,7 @@ pub fn page(
                 .filter(|value| !value.is_empty());
             record[*name] = json!(value);
         }
-        activities.insert(
-            (0, id),
-            json!({"kind":"execution","occurred_at":created,"record":record}),
-        );
-    }
-    let mut statement = connection.prepare(&format!("{cte}
-        SELECT s.id,s.triggered_at,s.channel,s.calendar_id,s.calendar_day,s.calendar_label,s.reason_code
-        FROM page p JOIN schedule_skip s ON p.kind=1 AND s.id=p.id")).map_err(database)?;
-    let mut rows = statement.query(args).map_err(database)?;
-    while let Some(row) = rows.next().map_err(database)? {
-        let id: i64 = row.get(0).map_err(database)?;
-        activities.insert(
-            (1, id),
-            json!({"kind":"schedule_skip","id":id,
-            "occurred_at":row.get::<_, String>(1).map_err(database)?,
-            "channel":row.get::<_, String>(2).map_err(database)?,
-            "calendar_id":row.get::<_, String>(3).map_err(database)?,
-            "calendar_day":row.get::<_, String>(4).map_err(database)?,
-            "calendar_label":row.get::<_, String>(5).map_err(database)?,
-            "reason_code":row.get::<_, String>(6).map_err(database)?}),
-        );
-    }
-    let mut statement = connection
-        .prepare(&format!(
-            "{cte} SELECT kind,id FROM page ORDER BY occurred_at DESC,id DESC,kind"
-        ))
-        .map_err(database)?;
-    let mut rows = statement.query(args).map_err(database)?;
-    let mut data = Vec::new();
-    while let Some(row) = rows.next().map_err(database)? {
-        let key = (
-            row.get::<_, i64>(0).map_err(database)?,
-            row.get::<_, i64>(1).map_err(database)?,
-        );
-        data.push(
-            activities
-                .remove(&key)
-                .ok_or("JOURNAL_READ_ERROR: missing selected activity")?,
-        );
+        data.push(json!({"kind":"execution","occurred_at":created,"record":record}));
     }
     Ok(json!({"data":data,"count":count}))
 }
