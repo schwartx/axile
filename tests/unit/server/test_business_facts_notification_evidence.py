@@ -289,6 +289,16 @@ def test_real_persisted_preview_context_is_deeply_detached(facts_database, conte
     async def inspect_preview():
         async with facts_database() as session:
             context = await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
+            if context_source == "captured":
+                record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == _EXECUTION))
+                native = await account_feishu.run_in_threadpool(
+                    account_feishu._core.execution_business_detail, account_feishu.analysis_store(), 1, record.id
+                )
+                captured = native["result"]["extra"]["server_notification_context"]
+                assert list(captured) == list(saved)
+                assert list(captured["execution"]) == list(saved["execution"])
+                assert list(captured["assets"]) == list(saved["assets"])
+                assert list(captured["orders"][0]) == list(saved["orders"][0])
             context["orders"][0]["extra"]["marker"] = "changed"
             context["execution"]["supplements"][0]["is_last"] = False
             await session.flush()

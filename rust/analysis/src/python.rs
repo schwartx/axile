@@ -117,7 +117,7 @@ fn json_to_py(py: Python<'_>, value: &Value) -> Py<PyAny> {
                 result.set_item(key, json_to_py(py, item)).unwrap();
             }
             result.into_any().unbind()
-        },
+        }
     }
 }
 
@@ -349,9 +349,11 @@ fn execution_business_detail(
     record_id: i64,
 ) -> PyResult<Py<PyAny>> {
     let result = py
-        .detach(|| store.with_snapshot(|connection| {
-            crate::business_detail::read(connection, account_id, record_id)
-        }))
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::business_detail::read(connection, account_id, record_id)
+            })
+        })
         .map_err(raise)?;
     Ok(json_to_py(py, &result))
 }

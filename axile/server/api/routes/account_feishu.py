@@ -327,7 +327,10 @@ async def _load_notification_preview_context(
     if event is not None and event.context:
         context = deepcopy(event.context)
     else:
-        detail = await run_in_threadpool(_core.execution_business_detail, analysis_store(), account.id, record.id)
+        try:
+            detail = await run_in_threadpool(_core.execution_business_detail, analysis_store(), account.id, record.id)
+        except _core.NativeError as exc:
+            raise ValueError(str(exc.args[1])) from exc
         raw = deepcopy(detail["result"])
         if not isinstance(raw, dict):
             raise ValueError("最近一次执行没有可用的通知快照")

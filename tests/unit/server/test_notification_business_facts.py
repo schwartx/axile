@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
+from axile.server._native import _core
 from axile.server.api.routes import account_feishu
 from axile.server.execution import supplement_notifications
 from axile.server.execution.notification_records import build_persisted_notification_context
@@ -17,7 +18,9 @@ from tests.unit.server._execution_test_support import build_account
 @pytest.fixture(autouse=True)
 def preview_native_boundary(monkeypatch):
     """单元测试隔离原生边界；文件数据库集成另行覆盖真实 Store。"""
-    monkeypatch.setattr(account_feishu, "_core", SimpleNamespace(execution_business_detail=object()))
+    monkeypatch.setattr(
+        account_feishu, "_core", SimpleNamespace(execution_business_detail=object(), NativeError=_core.NativeError)
+    )
     monkeypatch.setattr(account_feishu, "analysis_store", lambda: "preview-store")
 
 
@@ -93,6 +96,9 @@ def test_preview_reads_captured_context_from_business_facts(monkeypatch) -> None
     context = asyncio.run(account_feishu._load_notification_preview_context(session, build_account()))
 
     assert captured == original
+    assert list(context)[: len(original)] == list(original)
+    assert list(context["execution"])[: len(original["execution"])] == list(original["execution"])
+    assert list(context["assets"]) == list(original["assets"])
     assert context["positions"] is None
     assert context["execution"]["execution_time"] == 0.0
     assert context["execution"]["error"] == "部分成交"
@@ -101,6 +107,19 @@ def test_preview_reads_captured_context_from_business_facts(monkeypatch) -> None
         account_feishu._core.execution_business_detail, account_feishu.analysis_store(), 1, record.id
     )
     assets.assert_not_awaited()
+
+
+def test_preview_converts_native_error_to_value_error(monkeypatch) -> None:
+    """原生事实校验失败沿用预览可展示的错误边界。"""
+    error = _core.NativeError("INVALID_DATA", "execution facts are not complete")
+    monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[_record()]))
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", AsyncMock(side_effect=error))
+    session = SimpleNamespace(scalar=AsyncMock(return_value=None))
+
+    with pytest.raises(ValueError, match="^execution facts are not complete$") as caught:
+        asyncio.run(account_feishu._load_notification_preview_context(session, build_account()))
+
+    assert caught.value.__cause__ is error
 
 
 def test_preview_rejects_incomplete_canonical_output_without_channel_query(monkeypatch) -> None:
