@@ -352,6 +352,19 @@ fn activity_symbols(
     Ok(json_to_py(py, &result))
 }
 
+/// Classify scalars read in the caller's SQLAlchemy transaction.
+#[pyfunction]
+#[pyo3(signature = (snapshot_id, compatible, error, active, versions_match))]
+fn publication_status(
+    snapshot_id: Option<&str>,
+    compatible: bool,
+    error: Option<&str>,
+    active: bool,
+    versions_match: bool,
+) -> &'static str {
+    snapshots::publication_status(snapshot_id, compatible, error, active, versions_match)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
@@ -365,6 +378,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(summaries, m)?)?;
     m.add_function(wrap_pyfunction!(performance_result, m)?)?;
     m.add_function(wrap_pyfunction!(status, m)?)?;
+    m.add_function(wrap_pyfunction!(publication_status, m)?)?;
     m.add_function(wrap_pyfunction!(chart, m)?)?;
     m.add_function(wrap_pyfunction!(execution_summary, m)?)?;
     m.add_function(wrap_pyfunction!(execution_detail, m)?)?;

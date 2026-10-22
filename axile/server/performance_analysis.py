@@ -3,6 +3,7 @@
 import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert
 
+from axile.server._native import _core
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
 from axile.server.performance_replay import ENGINE_VERSION
@@ -50,31 +51,12 @@ async def read_snapshot_status(session, account_id: int) -> str:
         .mappings()
         .first()
     )
-    if (
-        row
-        and row["snapshot_id"] is not None
-        and (row["snapshot_logic_version"] != LOGIC_VERSION or row["snapshot_engine_version"] != ENGINE_VERSION)
-    ):
-        return "pending"
-    return _snapshot_status(row, row is not None and row["snapshot_id"] is not None)
-
-
-def _snapshot_status(row, has_snapshot: bool):
-    """共享卡片和绩效页的发布状态。"""
-    status = "empty"
-    if row:
-        if row["error"]:
-            status = "failed"
-        elif (
-            row["requested"] or row["running_version"] is not None or row["published_version"] != row["source_version"]
-        ):
-            status = (
-                "stale"
-                if has_snapshot
-                else "pending"
-                if row["requested"] or row["running_version"] is not None
-                else "empty"
-            )
-        elif has_snapshot:
-            status = "ready"
-    return status
+    if row is None:
+        return "empty"
+    return _core.publication_status(
+        row["snapshot_id"],
+        row["snapshot_logic_version"] == LOGIC_VERSION and row["snapshot_engine_version"] == ENGINE_VERSION,
+        row["error"],
+        bool(row["requested"] or row["running_version"] is not None),
+        row["published_version"] == row["source_version"],
+    )

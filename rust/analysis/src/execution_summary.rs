@@ -129,7 +129,7 @@ impl Summary {
 pub(crate) fn write(
     connection: &Connection,
     account: i64,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut crate::publication::RowEmitter<'_>,
 ) -> Result<(), String> {
     let mut statement = connection.prepare(AGGREGATE_SQL).map_err(sql_error)?;
     let mut cursor = statement.query([account]).map_err(sql_error)?;
@@ -289,8 +289,8 @@ mod tests {
     fn emitted_rows_are_flat_version_independent_and_preserve_unknown_symbols() {
         let connection = fixture();
         let mut frames = Vec::new();
-        write(&connection, 2, &mut |frame| {
-            frames.push(frame.clone());
+        write(&connection, 2, &mut |table, columns, rows| {
+            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
             Ok(())
         })
         .unwrap();
@@ -321,8 +321,8 @@ mod tests {
             )
             .unwrap();
         let mut frames = Vec::new();
-        write(&connection, 2, &mut |frame| {
-            frames.push(frame.clone());
+        write(&connection, 2, &mut |table, columns, rows| {
+            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
             Ok(())
         })
         .unwrap();
@@ -351,8 +351,8 @@ mod tests {
             )
             .unwrap();
         let mut frames = Vec::new();
-        write(&connection, 2, &mut |frame| {
-            frames.push(frame.clone());
+        write(&connection, 2, &mut |table, columns, rows| {
+            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
             Ok(())
         })
         .unwrap();
@@ -369,7 +369,7 @@ mod tests {
     fn an_account_without_executions_emits_no_phantom_rows() {
         let connection = fixture();
         let mut count = 0;
-        write(&connection, 99, &mut |_| {
+        write(&connection, 99, &mut |_, _, _| {
             count += 1;
             Ok(())
         })

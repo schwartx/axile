@@ -26,29 +26,32 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
         return Ok(receipt);
     }
     let mut staged = Staging::new(&connection)?;
-    let reason = with_read_snapshot(database, |source| {
+    let result = with_read_snapshot(database, |source| {
         if let Some(reason) = writer::stale_reason(source, &task)? {
-            return Ok(Some(reason));
+            return Ok(Err(reason));
         }
         let mut calculation = request.clone();
         calculation["include_execution_summaries"] = json!(true);
-        publication::write(source, &calculation, &mut |frame| {
+        let complete = publication::write(source, &calculation, &mut |table, columns, rows| {
             staged
-                .accept(frame)
+                .insert_rows(table, columns, rows)
                 .map_err(|error| format!("{}:{}", error.code, error.error))
         })
         .map_err(AnalysisError::from)?;
-        Ok(None)
+        Ok(Ok(complete))
     })?;
-    if let Some(reason) = reason {
-        // The staging transaction never wrote main. End it before obtaining
-        // main's writer slot so no old main reader is upgraded into a writer.
-        connection
-            .execute_batch("ROLLBACK;")
-            .map_err(|error| AnalysisError::new("PUBLICATION_STAGE", error.to_string()))?;
-        return writer::skip(&connection, &task, reason);
-    }
-    let complete = staged.finish(task.account_id, task.source_version)?;
+    let complete = match result {
+        Ok(complete) => complete,
+        Err(reason) => {
+            // The staging transaction never wrote main. End it before obtaining
+            // main's writer slot so no old main reader is upgraded into a writer.
+            connection
+                .execute_batch("ROLLBACK;")
+                .map_err(|error| AnalysisError::new("PUBLICATION_STAGE", error.to_string()))?;
+            return writer::skip(&connection, &task, reason);
+        }
+    };
+    let complete = staged.finish(complete, task.account_id, task.source_version)?;
     writer::publish(&connection, &task, &complete)
 }
 

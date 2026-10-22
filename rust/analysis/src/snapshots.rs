@@ -9,6 +9,34 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::{self, SeqAccess, Visitor};
 use serde_json::{json, Value};
 
+/// Publication state shared by snapshot, card, view and Python wait readers.
+pub fn publication_status(
+    snapshot_id: Option<&str>,
+    compatible: bool,
+    error: Option<&str>,
+    active: bool,
+    versions_match: bool,
+) -> &'static str {
+    let has_snapshot = snapshot_id.is_some_and(|id| !id.is_empty());
+    if has_snapshot && !compatible {
+        "pending"
+    } else if error.is_some_and(|error| !error.is_empty()) {
+        "failed"
+    } else if active || !versions_match {
+        if has_snapshot {
+            "stale"
+        } else if active {
+            "pending"
+        } else {
+            "empty"
+        }
+    } else if has_snapshot {
+        "ready"
+    } else {
+        "empty"
+    }
+}
+
 struct Request<'a> {
     account_id: i64,
     range: &'a str,
@@ -80,27 +108,13 @@ impl Snapshot {
     }
 
     fn status(&self, request: &Request<'_>) -> &'static str {
-        let has_snapshot = self.compatible(request);
-        if self.has_snapshot() && !has_snapshot {
-            "pending"
-        } else if self.has_error() {
-            "failed"
-        } else if self.requested
-            || self.running_version.is_some()
-            || self.published_version != self.source_version
-        {
-            if has_snapshot {
-                "stale"
-            } else if self.requested || self.running_version.is_some() {
-                "pending"
-            } else {
-                "empty"
-            }
-        } else if has_snapshot {
-            "ready"
-        } else {
-            "empty"
-        }
+        publication_status(
+            self.id.as_deref(),
+            self.compatible(request),
+            self.error.as_deref(),
+            self.requested || self.running_version.is_some(),
+            self.published_version == self.source_version,
+        )
     }
 }
 
@@ -482,28 +496,18 @@ WHERE s.account_id IN ({placeholders})"
         let engine: Option<String> = row.get(9).map_err(read_error)?;
         let schema_version: Option<i64> = row.get(10).map_err(read_error)?;
         let ranges: Option<String> = row.get(11).map_err(read_error)?;
-        let has_snapshot = snapshot_id.is_some();
+        let has_snapshot = snapshot_id.as_deref().is_some_and(|id| !id.is_empty());
         let incompatible = has_snapshot
             && (logic.as_deref() != Some(expected_logic)
                 || engine.as_deref() != Some(expected_engine));
-        let status = if incompatible {
-            "pending"
-        } else if error.is_some() {
-            "failed"
-        } else if requested || running_version.is_some() || published_version != source_version {
-            if has_snapshot {
-                "stale"
-            } else if requested || running_version.is_some() {
-                "pending"
-            } else {
-                "empty"
-            }
-        } else if has_snapshot {
-            "ready"
-        } else {
-            "empty"
-        };
-        let points = if incompatible || snapshot_id.is_none() {
+        let status = publication_status(
+            snapshot_id.as_deref(),
+            !incompatible,
+            error.as_deref(),
+            requested || running_version.is_some(),
+            published_version == source_version,
+        );
+        let points = if incompatible || !has_snapshot {
             Value::Array(Vec::new())
         } else if schema_version == Some(2) {
             let (_, points) = crate::result_reader::read_typed(
@@ -594,6 +598,87 @@ mod tests {
             params![json!({"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}).to_string(), ranges.to_string()],
         ).unwrap();
         connection.execute("INSERT INTO account_analysis (account_id, published_version, current_snapshot) VALUES (1, 1, 's1')", []).unwrap();
+    }
+
+    #[test]
+    fn publication_status_matches_all_readers() {
+        for (id, compatible, error, requested, running, versions_match, expected) in [
+            (None, true, None, false, None, true, "empty"),
+            (None, true, None, false, None, false, "empty"),
+            (None, true, None, true, None, false, "pending"),
+            (None, true, None, false, Some(0), true, "pending"),
+            (None, true, Some("failed"), true, Some(1), false, "failed"),
+            (Some(""), false, Some(""), false, None, true, "empty"),
+            (Some(""), false, None, true, None, true, "pending"),
+            (Some("s1"), true, Some(""), false, None, true, "ready"),
+            (Some("s1"), true, None, false, None, false, "stale"),
+            (Some("s1"), true, None, true, Some(1), true, "stale"),
+            (
+                Some("s1"),
+                true,
+                Some("failed"),
+                true,
+                Some(1),
+                false,
+                "failed",
+            ),
+            (
+                Some("s1"),
+                false,
+                Some("failed"),
+                true,
+                Some(1),
+                false,
+                "pending",
+            ),
+            (Some("s1"), false, None, false, None, true, "pending"),
+        ] {
+            let connection = database();
+            publish(&connection);
+            connection.execute_batch(
+                "CREATE TABLE account (id INTEGER PRIMARY KEY);
+                 INSERT INTO account VALUES (1);
+                 ALTER TABLE performance_snapshot ADD COLUMN read_view_schema_version INTEGER DEFAULT 0;"
+            ).unwrap();
+            connection
+                .execute(
+                    "UPDATE performance_snapshot SET id=?1, logic_version=?2",
+                    params![id.unwrap_or("s1"), if compatible { "18" } else { "old" }],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE account_analysis SET current_snapshot=?1,error=?2,requested=?3,
+                 running_version=?4,published_version=?5",
+                    params![
+                        id,
+                        error,
+                        requested,
+                        running,
+                        if versions_match { 1 } else { 0 }
+                    ],
+                )
+                .unwrap();
+            assert_eq!(
+                publication_status(
+                    id,
+                    compatible,
+                    error,
+                    requested || running.is_some(),
+                    versions_match
+                ),
+                expected
+            );
+            assert_eq!(
+                query(&connection, &request("all")).unwrap()["status"],
+                expected
+            );
+            assert_eq!(
+                crate::views::status(&connection, 1, "18", "equity-ledger-1").unwrap()["status"],
+                expected
+            );
+            assert_eq!(summaries(&connection, &json!({"account_ids": [1], "logic_version": "18", "engine_version": "equity-ledger-1"})).unwrap()["1"]["status"], expected);
+        }
     }
 
     #[test]

@@ -111,26 +111,13 @@ pub fn query_stream(
         ));
     }
     with_read_snapshot(database, |connection| {
-        let mut complete = false;
-        publication::write(connection, request, &mut |frame| {
-            if complete {
-                return Err("INVALID_STREAM: frame follows complete".into());
-            }
-            if !frame.is_object() {
-                return Err("INVALID_STREAM: frame must be an object".into());
-            }
-            write_frame(writer, frame).map_err(|error| format!("RESULT_WRITE: {error}"))?;
-            complete = frame.get("type").and_then(Value::as_str) == Some("complete");
-            Ok(())
+        let complete = publication::write(connection, request, &mut |table, columns, rows| {
+            let frame = json!({"type":"rows", "table":table, "columns":columns, "rows":rows});
+            write_frame(writer, &frame).map_err(|error| format!("RESULT_WRITE: {error}"))
         })
         .map_err(AnalysisError::from)?;
-        if !complete {
-            return Err(AnalysisError::new(
-                "INVALID_STREAM",
-                "publication ended without a complete frame",
-            ));
-        }
-        Ok(())
+        write_frame(writer, &complete)
+            .map_err(|error| AnalysisError::from(format!("RESULT_WRITE: {error}")))
     })
 }
 
@@ -263,6 +250,46 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
             frame
         );
+    }
+
+    #[test]
+    fn typed_batches_keep_legacy_ndjson_rows_and_complete_last() {
+        let mut output = Vec::new();
+        super::publication::rows(
+            "example",
+            &["idx", "text"],
+            (0..257).map(|index| Ok(vec![json!(index), json!("中文\n\"\\")])),
+            &mut |table, columns, rows| {
+                super::write_frame(
+                    &mut output,
+                    &json!({"type":"rows", "table":table,
+                    "columns":columns, "rows":rows}),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .unwrap();
+        let complete = json!({"type":"complete", "account_id":1, "source_version":2,
+            "settings":{}, "data_until":null, "row_counts":{"example":257}});
+        super::write_frame(&mut output, &complete).unwrap();
+        let frames: Vec<serde_json::Value> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames.last(), Some(&complete));
+        let mut index = 0;
+        for frame in &frames[..2] {
+            assert_eq!(frame["type"], "rows");
+            assert_eq!(frame["table"], "example");
+            assert_eq!(frame["columns"], json!(["idx", "text"]));
+            for row in frame["rows"].as_array().unwrap() {
+                assert_eq!(*row, json!([index, "中文\n\"\\"]));
+                index += 1;
+            }
+        }
+        assert_eq!(index, 257);
     }
 
     #[test]

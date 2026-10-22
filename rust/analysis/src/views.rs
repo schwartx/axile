@@ -208,33 +208,17 @@ pub fn status(
             "error": None::<String>, "retry_at": None::<f64>, "read_view_schema_version": 0,
         }));
     };
-    let has_snapshot = row[7].is_string();
+    let has_snapshot = row[7].as_str().is_some_and(|id| !id.is_empty());
     let compatible = has_snapshot
         && row[9].as_str() == Some(logic_version)
         && row[10].as_str() == Some(engine_version);
-    let state = if row[6].as_str().is_some() {
-        "failed"
-    } else {
-        let active = row[2].as_i64().unwrap_or(0) != 0 || row[3].is_i64();
-        if active || row[1].as_i64() != row[0].as_i64() {
-            if compatible {
-                "stale"
-            } else if active {
-                "pending"
-            } else {
-                "empty"
-            }
-        } else if compatible {
-            "ready"
-        } else {
-            "empty"
-        }
-    };
-    let state = if has_snapshot && !compatible && state != "failed" {
-        "pending"
-    } else {
-        state
-    };
+    let state = crate::snapshots::publication_status(
+        row[7].as_str(),
+        compatible,
+        row[6].as_str(),
+        row[2].as_i64().unwrap_or(0) != 0 || row[3].is_i64(),
+        row[1].as_i64() == row[0].as_i64(),
+    );
     let pick = |index: usize| {
         if compatible {
             row[index].clone()

@@ -11,6 +11,8 @@ use chrono::{DateTime, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+pub type RowEmitter<'a> = dyn FnMut(&str, &[&str], &[Vec<Value>]) -> Result<(), String> + 'a;
+
 const MAX_ROWS: usize = 256;
 const MAX_ROW_BYTES: usize = 512 * 1024;
 const POINT_COLUMNS: &[&str] = &[
@@ -88,7 +90,7 @@ pub(crate) fn rows(
     table: &str,
     columns: &[&str],
     values: impl IntoIterator<Item = Result<Vec<Value>, String>>,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
     let mut pending = Vec::with_capacity(MAX_ROWS);
     let mut bytes = 0;
@@ -104,7 +106,7 @@ pub(crate) fn rows(
             ));
         }
         if !pending.is_empty() && (pending.len() == MAX_ROWS || bytes + size > MAX_ROW_BYTES) {
-            emit(&json!({"type":"rows", "table":table, "columns":columns, "rows":pending}))?;
+            emit(table, columns, &pending)?;
             pending.clear();
             bytes = 0;
         }
@@ -112,7 +114,7 @@ pub(crate) fn rows(
         pending.push(row);
     }
     if !pending.is_empty() {
-        emit(&json!({"type":"rows", "table":table, "columns":columns, "rows":pending}))?;
+        emit(table, columns, &pending)?;
     }
     Ok(())
 }
@@ -123,7 +125,7 @@ fn array_rows(
     field: &str,
     table: &str,
     fields: &[&str],
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
     let values = performance
         .get_mut(field)
@@ -184,7 +186,7 @@ fn events(
     range: &str,
     start: f64,
     end: f64,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut RowEmitter<'_>,
 ) -> Result<usize, String> {
     let mut count = 0;
     let mut newest: Vec<Event> = Vec::with_capacity(101);
@@ -285,7 +287,7 @@ fn daily_costs(
     range: &str,
     start: f64,
     end: f64,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
     let predicate =
         "FROM analysis_source_trade t JOIN analysis_source_execution e ON e.record_id=t.record_id \
@@ -395,7 +397,7 @@ fn range_rows(
     account: i64,
     key: &str,
     mut performance: Value,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
+    emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
     let start = performance["baseline"]
         .as_str()
@@ -513,8 +515,8 @@ fn range_rows(
 pub fn write(
     connection: &Connection,
     request: &Value,
-    emit: &mut dyn FnMut(&Value) -> Result<(), String>,
-) -> Result<(), String> {
+    emit: &mut RowEmitter<'_>,
+) -> Result<Value, String> {
     let account = request
         .get("account_id")
         .and_then(Value::as_i64)
@@ -560,18 +562,12 @@ pub fn write(
     let mut data_until: Option<String> = None;
     let mut row_counts: BTreeMap<String, usize> = BTreeMap::new();
     {
-        let mut counted_emit = |frame: &Value| -> Result<(), String> {
-            emit(frame)?;
-            let table = frame["table"]
-                .as_str()
-                .ok_or("INVALID_RESULT_ROW:missing table")?;
-            let count = frame["rows"]
-                .as_array()
-                .ok_or("INVALID_RESULT_ROW:missing rows")?
-                .len();
-            *row_counts.entry(table.to_owned()).or_default() += count;
-            Ok(())
-        };
+        let mut counted_emit =
+            |table: &str, columns: &[&str], rows: &[Vec<Value>]| -> Result<(), String> {
+                emit(table, columns, rows)?;
+                *row_counts.entry(table.to_owned()).or_default() += rows.len();
+                Ok(())
+            };
         // Each range is released before the next scan. This intentionally spends
         // extra SQLite scans to avoid retaining three daily result trees at once.
         for key in ["30", "90", "all"] {
@@ -595,8 +591,8 @@ pub fn write(
             crate::execution_summary::write(connection, account, &mut counted_emit)?;
         }
     }
-    emit(
-        &json!({"type":"complete","account_id":account,"source_version":version,
+    Ok(
+        json!({"type":"complete","account_id":account,"source_version":version,
         "settings":settings,"data_until":data_until,"row_counts":row_counts}),
     )
 }
@@ -627,8 +623,8 @@ mod tests {
             "example",
             &["idx"],
             (0..777).map(|index| Ok(vec![json!(index)])),
-            &mut |frame| {
-                frames.push(frame.clone());
+            &mut |table, columns, rows| {
+                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
                 Ok(())
             },
         )
@@ -665,8 +661,8 @@ mod tests {
             "example",
             &["text"],
             (0..6).map(|_| Ok(vec![json!("a".repeat(200_000))])),
-            &mut |frame| {
-                frames.push(frame.clone());
+            &mut |table, columns, rows| {
+                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
                 Ok(())
             },
         )
@@ -679,7 +675,7 @@ mod tests {
             "example",
             &["text"],
             [Ok(vec![json!("x".repeat(MAX_ROW_BYTES))])],
-            &mut |_| Ok(())
+            &mut |_, _, _| Ok(())
         )
         .unwrap_err()
         .starts_with("RESULT_FRAME_TOO_LARGE:"));
@@ -734,10 +730,17 @@ mod tests {
             )
             .unwrap();
         let mut frames = Vec::new();
-        daily_costs(&connection, 2, "all", 100.0, 100.0, &mut |frame| {
-            frames.push(frame.clone());
-            Ok(())
-        })
+        daily_costs(
+            &connection,
+            2,
+            "all",
+            100.0,
+            100.0,
+            &mut |table, columns, rows| {
+                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
+                Ok(())
+            },
+        )
         .unwrap();
         let costs = &frames[0]["rows"];
         assert_eq!(
@@ -802,10 +805,17 @@ mod tests {
             ).unwrap();
         }
         let mut frames = Vec::new();
-        let count = events(&connection, 2, "all", time, time, &mut |frame| {
-            frames.push(frame.clone());
-            Ok(())
-        })
+        let count = events(
+            &connection,
+            2,
+            "all",
+            time,
+            time,
+            &mut |table, columns, rows| {
+                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
+                Ok(())
+            },
+        )
         .unwrap();
         assert_eq!(count, 152);
         let event_rows = frames[0]["rows"].as_array().unwrap();
@@ -825,10 +835,17 @@ mod tests {
     }
 
     fn events_empty(connection: &Connection, time: f64, emitted: &mut bool) -> usize {
-        events(connection, 2, "all", time + 1.0, time + 2.0, &mut |_| {
-            *emitted = true;
-            Ok(())
-        })
+        events(
+            connection,
+            2,
+            "all",
+            time + 1.0,
+            time + 2.0,
+            &mut |_, _, _| {
+                *emitted = true;
+                Ok(())
+            },
+        )
         .unwrap()
     }
 }

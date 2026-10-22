@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -14,6 +16,7 @@ from axile.server._native import _core
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_performance as routes
 from axile.server.db.models import Account
+from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION, read_snapshot_status
 
 
 class _RouteSession:
@@ -39,6 +42,51 @@ class _RouteSession:
                 return None
 
         return _Empty()
+
+
+@pytest.mark.parametrize(
+    ("snapshot_id", "compatible", "error", "requested", "running", "published", "expected"),
+    [
+        (None, True, None, False, None, 1, "empty"),
+        (None, True, None, False, None, 0, "empty"),
+        (None, True, None, True, None, 0, "pending"),
+        (None, True, None, False, 0, 1, "pending"),
+        ("", False, "", False, None, 1, "empty"),
+        ("s1", True, "", False, None, 1, "ready"),
+        ("s1", True, None, False, None, 0, "stale"),
+        ("s1", True, None, True, 1, 1, "stale"),
+        ("s1", True, "failed", True, 1, 0, "failed"),
+        ("s1", False, "failed", True, 1, 0, "pending"),
+        ("s1", False, None, False, None, 1, "pending"),
+    ],
+)
+def test_wait_status_uses_native_rules_in_caller_session(
+    snapshot_id, compatible, error, requested, running, published, expected
+) -> None:
+    """等待路径保留调用方事务，仅将标量交给原生统一判断。"""
+    row = {
+        "snapshot_id": snapshot_id,
+        "snapshot_logic_version": LOGIC_VERSION if compatible else "old",
+        "snapshot_engine_version": ENGINE_VERSION,
+        "error": error,
+        "requested": requested,
+        "running_version": running,
+        "published_version": published,
+        "source_version": 1,
+    }
+
+    class Session:
+        async def execute(self, statement):
+            assert "ranges" not in str(statement)
+            return self
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    assert asyncio.run(read_snapshot_status(Session(), 1)) == expected
 
 
 def _build_account() -> Account:

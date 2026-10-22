@@ -309,8 +309,8 @@ def test_status_is_small_and_reports_legacy_view_explicitly(dataset):
 
 @pytest.mark.parametrize("version_column", ["logic_version", "engine_version"])
 @pytest.mark.parametrize("error", ["analysis retries exhausted", None], ids=["failed", "pending"])
-def test_incompatible_status_preserves_exhausted_failure_and_pending_without_error(dataset, version_column, error):
-    """An incompatible prior snapshot cannot hide a terminal computation error."""
+def test_incompatible_status_is_pending_and_preserves_error_metadata(dataset, version_column, error):
+    """Incompatible snapshots stay pending while retaining exhausted error details."""
 
     async def check():
         async with http_client(dataset) as (client, sessions, _):
@@ -334,7 +334,7 @@ def test_incompatible_status_preserves_exhausted_failure_and_pending_without_err
             response = await client.get(f"{BASE_URL}/status")
             assert response.status_code == 200, response.text
             status = response.json()
-            assert status["status"] == ("failed" if error else "pending")
+            assert status["status"] == "pending"
             assert status["error"] == error
             assert status["retry_at"] is None
             assert status["snapshot_id"] is None
