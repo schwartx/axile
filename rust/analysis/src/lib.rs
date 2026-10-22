@@ -10,11 +10,9 @@ pub mod error;
 pub(crate) mod execution_summary;
 pub mod native_publication;
 pub mod performance;
-pub mod publication;
 pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
-pub(crate) mod source;
 pub mod wire_result;
 
 use std::io::{self, Write};
