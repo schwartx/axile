@@ -51,20 +51,7 @@ fn database(error: rusqlite::Error) -> String {
     format!("EXECUTION_READ_ERROR: {error}")
 }
 
-/// Read within the caller's Store transaction; never load execution payloads.
-pub fn page(
-    connection: &Connection,
-    account_id: i64,
-    skip: i64,
-    limit: i64,
-    execution_id: Option<&str>,
-    record_id: Option<i64>,
-) -> Result<Value, String> {
-    if skip < 0 || !(1..=500).contains(&limit) {
-        return Err(
-            "INVALID_REQUEST: skip must be nonnegative and limit must be 1 through 500".into(),
-        );
-    }
+fn account_exists(connection: &Connection, account_id: i64) -> Result<(), String> {
     let exists: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM account WHERE id=?1)",
@@ -75,18 +62,14 @@ pub fn page(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let arguments = params![account_id, execution_id, record_id, limit, skip];
-    let count: i64 = connection
-        .query_row(
-            &format!("SELECT count(*) FROM executerecord r WHERE {FILTER}"),
-            params![account_id, execution_id, record_id],
-            |row| row.get(0),
-        )
-        .map_err(database)?;
-    let page_ids = format!(
-        "SELECT r.id FROM executerecord r WHERE {FILTER}
-        ORDER BY r.id DESC LIMIT ?4 OFFSET ?5"
-    );
+    Ok(())
+}
+
+fn records(
+    connection: &Connection,
+    page_ids: &str,
+    arguments: impl rusqlite::Params + Copy,
+) -> Result<Vec<Value>, String> {
     let mut symbol_statement = connection.prepare(&format!(
         "WITH page AS ({page_ids})
          SELECT s.record_id,s.symbol,s.present,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
@@ -186,17 +169,50 @@ pub fn page(
         }
         data.push(Value::Object(header));
     }
+    Ok(data)
+}
+
+/// Read within the caller's Store transaction; never load execution payloads.
+pub fn page(
+    connection: &Connection,
+    account_id: i64,
+    skip: i64,
+    limit: i64,
+    execution_id: Option<&str>,
+    record_id: Option<i64>,
+) -> Result<Value, String> {
+    if skip < 0 || !(1..=500).contains(&limit) {
+        return Err(
+            "INVALID_REQUEST: skip must be nonnegative and limit must be 1 through 500".into(),
+        );
+    }
+    account_exists(connection, account_id)?;
+    let arguments = params![account_id, execution_id, record_id, limit, skip];
+    let count: i64 = connection
+        .query_row(
+            &format!("SELECT count(*) FROM executerecord r WHERE {FILTER}"),
+            params![account_id, execution_id, record_id],
+            |row| row.get(0),
+        )
+        .map_err(database)?;
+    let page_ids = format!(
+        "SELECT r.id FROM executerecord r WHERE {FILTER}
+        ORDER BY r.id DESC LIMIT ?4 OFFSET ?5"
+    );
+    let data = records(connection, &page_ids, arguments)?;
     Ok(json!({"data":data,"count":count}))
 }
 
 /// Read one account-owned execution and its complete cold business evidence.
 pub fn detail(connection: &Connection, account_id: i64, record_id: i64) -> Result<Value, String> {
-    let mut page = page(connection, account_id, 0, 1, None, Some(record_id))?;
-    let mut record = page["data"]
-        .as_array_mut()
-        .expect("execution page")
-        .pop()
-        .ok_or_else(|| "RECORD_NOT_FOUND: execution record does not exist".to_owned())?;
+    account_exists(connection, account_id)?;
+    let mut record = records(
+        connection,
+        "SELECT id FROM executerecord WHERE account_id=?1 AND id=?2",
+        params![account_id, record_id],
+    )?
+    .pop()
+    .ok_or_else(|| "RECORD_NOT_FOUND: execution record does not exist".to_owned())?;
     let facts = crate::business_detail::read(connection, account_id, record_id)?;
     let Value::Object(facts) = facts else {
         return Err("EXECUTION_READ_ERROR: invalid execution detail shape".into());
@@ -247,6 +263,20 @@ mod tests {
                 assert!(result["data"][index][name].is_null());
             }
         }
+        let direct = records(
+            &connection,
+            "SELECT id FROM executerecord WHERE account_id=?1 AND id=?2",
+            params![1, 1],
+        )
+        .unwrap();
+        assert_eq!(direct, vec![result["data"][2].clone()]);
+        assert!(records(
+            &connection,
+            "SELECT id FROM executerecord WHERE account_id=?1 AND id=?2",
+            params![2, 1],
+        )
+        .unwrap()
+        .is_empty());
         let good = &result["data"][2];
         assert_eq!(
             good["symbol_results"],

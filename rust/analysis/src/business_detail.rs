@@ -1,6 +1,6 @@
 //! Frozen execution facts. No model defaults or legacy payload fallback.
 
-use rusqlite::{types::ValueRef, Connection};
+use rusqlite::{types::ValueRef, Connection, Row};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -424,17 +424,6 @@ fn one(rows: &Rows) -> Result<&Object, String> {
     Ok(&rows[0])
 }
 fn load(conn: &Connection, table: &str, column: &str, value: &Value) -> Result<Rows, String> {
-    let mut schema = conn
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(db)?;
-    let types = schema
-        .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
-        .map_err(db)?
-        .collect::<Result<std::collections::HashMap<_, _>, _>>()
-        .map_err(db)?;
-    if types.is_empty() {
-        return Err(invalid(format!("missing fact table {table}")));
-    }
     let mut statement = conn
         .prepare(&format!("SELECT * FROM {table} WHERE {column}=?1"))
         .map_err(db)?;
@@ -445,39 +434,114 @@ fn load(conn: &Connection, table: &str, column: &str, value: &Value) -> Result<R
         ),
         _ => return Err(invalid("invalid identifier")),
     };
-    let names = statement
-        .column_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
     let mut cursor = statement.query([parameter]).map_err(db)?;
     let mut result = Vec::new();
     while let Some(row) = cursor.next().map_err(db)? {
-        let mut item = Object::new();
-        for (index, name) in names.iter().enumerate() {
-            let kind = types.get(name).map(String::as_str).unwrap_or("");
-            let value = match row.get_ref(index).map_err(db)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(n) if kind.eq_ignore_ascii_case("BOOLEAN") => json!(n != 0),
-                ValueRef::Integer(n) => json!(n),
-                ValueRef::Real(n) => Value::Number(
-                    serde_json::Number::from_f64(n).ok_or_else(|| invalid("nonfinite column"))?,
-                ),
-                ValueRef::Text(bytes) => {
-                    let s = std::str::from_utf8(bytes).map_err(invalid)?;
-                    if kind.eq_ignore_ascii_case("JSON") {
-                        serde_json::from_str(s).map_err(invalid)?
-                    } else {
-                        json!(s)
-                    }
-                }
-                ValueRef::Blob(_) => return Err(invalid("unexpected fact blob")),
-            };
-            item.insert(name.clone(), value);
-        }
-        result.push(item);
+        result.push(decode(row, table)?);
     }
     Ok(result)
+}
+fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
+    let mut item = Object::new();
+    for (index, name) in row.as_ref().column_names().iter().enumerate() {
+        // Frozen business0037 schema; algorithm is JSON only on execution_input.
+        let json_column = matches!(
+            (table, *name),
+            (_, "audit_evidence")
+                | ("notification_event", "context")
+                | (
+                    "executerecord",
+                    "result_input_value" | "termination_evidence"
+                )
+                | (
+                    "execution_input",
+                    "root_value"
+                        | "algorithm"
+                        | "symbol_algorithms"
+                        | "trade_rules"
+                        | "futures_close_policy"
+                        | "feishu_key"
+                        | "feishu_account"
+                        | "extra"
+                )
+                | ("execution_termination_cancel_failure", "order_id")
+                | (
+                    "execution_symbol_collection"
+                        | "execution_symbol_result"
+                        | "execution_symbol_sizing"
+                        | "execution_symbol_conversion"
+                        | "execution_symbol_tick"
+                        | "execution_symbol_target",
+                    "invalid_value"
+                )
+                | ("execution_symbol_result", "memory")
+                | (
+                    "execution_symbol_conversion" | "business_trade_conversion",
+                    "reference"
+                )
+                | ("execution_symbol_tick", "extra")
+                | (
+                    "business_asset_snapshot",
+                    "payload_value" | "positions_value" | "extra"
+                )
+                | ("execution_order_collection", "invalid_value")
+                | (
+                    "execution_order",
+                    "invalid_value"
+                        | "order_id"
+                        | "extra"
+                        | "conversion_invalid_value"
+                        | "conversion_reference"
+                        | "conversion_evidence"
+                )
+                | (
+                    "business_trade_collection" | "business_trade" | "business_trade_conversion",
+                    "malformed_value"
+                )
+                | ("business_trade", "trade_id" | "order_id" | "extra")
+                | (
+                    "execution_extension",
+                    "memory" | "extra" | "reconciliation" | "root_value"
+                )
+        );
+        let bool_column = matches!(
+            (table, *name),
+            (
+                "executerecord",
+                "success"
+                    | "facts_complete"
+                    | "termination_cancel_attempted"
+                    | "termination_forced"
+                    | "termination_cancel_unconfirmed"
+            ) | (
+                "execution_symbol_result",
+                "success" | "sizing_recorded" | "tick_recorded"
+            ) | (
+                "execution_symbol_sizing" | "business_trade",
+                "conversion_recorded"
+            ) | ("execution_symbol_tick", "book_valid")
+                | ("business_asset_snapshot", "observation_valid")
+        );
+        let value = match row.get_ref(index).map_err(db)? {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(n) if bool_column => json!(n != 0),
+            ValueRef::Integer(n) => json!(n),
+            ValueRef::Real(n) => Value::Number(
+                serde_json::Number::from_f64(n).ok_or_else(|| invalid("nonfinite column"))?,
+            ),
+            ValueRef::Text(bytes) => {
+                let s = std::str::from_utf8(bytes).map_err(invalid)?;
+                if json_column {
+                    serde_json::from_str(s).map_err(invalid)?
+                } else {
+                    json!(s)
+                }
+            }
+            ValueRef::Blob(_) => return Err(invalid("unexpected fact blob")),
+        };
+        item.insert((*name).into(), value);
+    }
+    Ok(item)
 }
 fn columns(row: &Object, fields: &[&str], evidence: &Value) -> Result<Object, String> {
     let evidence = object(evidence)?;
@@ -514,10 +578,10 @@ fn pointer(path: &str, key: &str) -> String {
 fn merge(target: &mut Object, fragment: Object) -> Result<(), String> {
     for (key, value) in fragment {
         if let Some(existing) = target.get_mut(&key) {
-            if let (Some(a), Some(b)) = (existing.as_object_mut(), value.as_object()) {
-                merge(a, b.clone())?;
-            } else if *existing != value {
-                return Err(invalid(format!("conflicting fact field {key}")));
+            match (existing, value) {
+                (Value::Object(a), Value::Object(b)) => merge(a, b)?,
+                (existing, value) if *existing == value => {}
+                _ => return Err(invalid(format!("conflicting fact field {key}"))),
             }
         } else {
             target.insert(key, value);
@@ -541,7 +605,10 @@ fn put(result: &mut Object, path: &str, value: Value) -> Result<(), String> {
         map.insert(part.clone(), fragment);
         fragment = Value::Object(map);
     }
-    merge(result, object(&fragment)?.clone())
+    let Value::Object(fragment) = fragment else {
+        return Err(invalid("expected object"));
+    };
+    merge(result, fragment)
 }
 fn assets(
     conn: &Connection,
@@ -552,13 +619,16 @@ fn assets(
     let mut bindings = load(conn, "business_asset_binding", "record_id", id)?;
     bindings.sort_by_key(|r| r.get("ordinal").and_then(Value::as_i64).unwrap_or(-1));
     for binding in bindings {
-        let roots = load(
-            conn,
-            "business_asset_snapshot",
-            "asset_id",
-            get(&binding, "asset_id")?,
-        )?;
-        let root = one(&roots)?;
+        let mut statement = conn
+            .prepare("SELECT * FROM business_asset_snapshot WHERE asset_id=?1")
+            .map_err(db)?;
+        let mut root_cursor = statement.query([text(&binding, "asset_id")?]).map_err(db)?;
+        let root_row = root_cursor
+            .next()
+            .map_err(db)?
+            .ok_or_else(|| invalid("expected exactly one fact"))?;
+        let decoded = decode(root_row, "business_asset_snapshot")?;
+        let root = &decoded;
         if get(root, "record_id")?.is_null() {
             let input_id = get(root, "input_id")?;
             if input_id.is_null()
@@ -611,20 +681,13 @@ fn assets(
             ));
         }
         let value = if text(root, "payload_kind")? == "object" {
-            let mut statement = conn
-                .prepare("SELECT * FROM business_asset_snapshot WHERE asset_id=?1")
-                .map_err(db)?;
-            let mut cursor = statement.query([asset_id]).map_err(db)?;
-            crate::assets::observation(
-                cursor
-                    .next()
-                    .map_err(db)?
-                    .ok_or_else(|| invalid("missing asset"))?,
-                &positions,
-            )?
+            crate::assets::observation(root_row, &positions)?
         } else {
             get(root, "payload_value")?.clone()
         };
+        if root_cursor.next().map_err(db)?.is_some() {
+            return Err(invalid("expected exactly one fact"));
+        }
         let scope = text(&binding, "scope")?;
         if scope == "symbol" {
             put(
@@ -1198,6 +1261,38 @@ fn collections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn known_schema_preserves_text_json_and_booleans() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE execution_input (id TEXT, algorithm JSON, audit_evidence JSON);
+             INSERT INTO execution_input VALUES ('input', '{\"name\":true}', '{}');
+             CREATE TABLE execution_symbol_result (
+                 record_id INTEGER, algorithm TEXT, memory JSON, success BOOLEAN,
+                 sizing_recorded BOOLEAN, tick_recorded BOOLEAN
+             );
+             INSERT INTO execution_symbol_result VALUES (1, '{\"name\":true}', '[false]', 0, 1, -2);
+             CREATE TABLE execution_input_symbol (input_id TEXT, value TEXT);
+             INSERT INTO execution_input_symbol VALUES ('input', '[false]');",
+        )
+        .unwrap();
+        let inputs = load(&conn, "execution_input", "id", &json!("input")).unwrap();
+        assert_eq!(one(&inputs).unwrap()["algorithm"], json!({"name":true}));
+        let symbols = load(&conn, "execution_symbol_result", "record_id", &json!(1)).unwrap();
+        let symbol = one(&symbols).unwrap();
+        assert_eq!(symbol["algorithm"], json!("{\"name\":true}"));
+        assert_eq!(symbol["memory"], json!([false]));
+        assert_eq!(symbol["success"], false);
+        assert_eq!(symbol["sizing_recorded"], true);
+        assert_eq!(symbol["tick_recorded"], true);
+        let names = load(&conn, "execution_input_symbol", "input_id", &json!("input")).unwrap();
+        assert_eq!(one(&names).unwrap()["value"], json!("[false]"));
+        conn.execute("UPDATE execution_input SET algorithm='not JSON'", [])
+            .unwrap();
+        assert!(load(&conn, "execution_input", "id", &json!("input"))
+            .unwrap_err()
+            .starts_with("INVALID_DATA:"));
+    }
     #[test]
     fn python_float_wire_and_unicode() {
         for (source, expected) in [
