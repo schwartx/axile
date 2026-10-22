@@ -3,7 +3,6 @@
 //! Intermediate history never crosses the language boundary. These allocations
 //! are the requested public response, not a second copy of persisted JSON.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -305,21 +304,7 @@ fn daily_costs(connection: &Connection, snapshot_id: &str, range: &str) -> Resul
 fn timestamp(value: &str) -> Option<f64> {
     // Python's datetime.timestamp() rounds to floating seconds before * 1000;
     // retain that order so inclusive bounds match stored fractional-ms facts.
-    let milliseconds = |micros: i64| micros as f64 / 1_000_000.0 * 1000.0;
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Some(milliseconds(parsed.timestamp_micros()));
-    }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
-        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            return Some(milliseconds(
-                parsed.and_utc().timestamp_micros() - 28_800_000_000,
-            ));
-        }
-    }
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .ok()?
-        .and_hms_opt(0, 0, 0)
-        .map(|parsed| milliseconds(parsed.and_utc().timestamp_micros() - 28_800_000_000))
+    crate::snapshots::timestamp(value).map(|micros| micros as f64 / 1_000_000.0 * 1000.0)
 }
 
 /// Return a selected range wrapper without reading serialized legacy payloads.

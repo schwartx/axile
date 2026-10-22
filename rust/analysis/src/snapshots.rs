@@ -434,7 +434,7 @@ impl<'de> Visitor<'de> for ExecutionFilter {
     }
 }
 
-fn timestamp(value: &str) -> Option<i64> {
+pub(crate) fn timestamp(value: &str) -> Option<i64> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Some(parsed.timestamp_micros());
     }
@@ -465,6 +465,15 @@ pub fn summaries(connection: &Connection, request: &Value) -> Result<Value, Stri
         .get("engine_version")
         .and_then(Value::as_str)
         .ok_or("INVALID_REQUEST: engine_version must be a nonempty string")?;
+    summaries_for_accounts(connection, &account_ids, expected_logic, expected_engine)
+}
+
+pub(crate) fn summaries_for_accounts(
+    connection: &Connection,
+    account_ids: &[i64],
+    expected_logic: &str,
+    expected_engine: &str,
+) -> Result<Value, String> {
     if account_ids.is_empty() {
         return Ok(json!({}));
     }
@@ -550,7 +559,7 @@ WHERE s.account_id IN ({placeholders})"
             ranges
                 .as_deref()
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|value| value.pointer("/all/performance/points").cloned())
+                .and_then(|mut value| value.pointer_mut("/all/performance/points").map(Value::take))
                 .unwrap_or_else(|| Value::Array(Vec::new()))
         };
         let last = points.as_array().and_then(|items| items.last());
@@ -993,6 +1002,23 @@ mod tests {
     }
 
     #[test]
+    fn summaries_preserve_request_validation_before_empty_accounts() {
+        let connection = database();
+        for ids in [json!([]), json!([null, true, "1", 1.5])] {
+            let mut request = json!({"account_ids": ids});
+            assert_eq!(summaries(&connection, &request).unwrap_err(),
+                "INVALID_REQUEST: logic_version must be a nonempty string");
+            request["logic_version"] = json!("");
+            assert_eq!(summaries(&connection, &request).unwrap_err(),
+                "INVALID_REQUEST: engine_version must be a nonempty string");
+            request["engine_version"] = json!("");
+            assert_eq!(summaries(&connection, &request).unwrap(), json!({}));
+        }
+        assert_eq!(summaries(&connection, &json!({"account_ids": 1})).unwrap_err(),
+            "INVALID_REQUEST: account_ids must be an array of integers");
+    }
+
+    #[test]
     fn summaries_batch_typed_points_in_index_order() {
         let connection = database();
         connection.execute_batch("INSERT INTO account_analysis
@@ -1010,6 +1036,8 @@ mod tests {
             "logic_version":"18","engine_version":"e"}),
         )
         .unwrap();
+        assert_eq!(result, summaries_for_accounts(&connection, &[1,2,3,4], "18", "e").unwrap());
+        assert_eq!(result, summaries(&connection, &json!({"account_ids":[1,null,"2",2,true,3,4,1.5], "logic_version":"18", "engine_version":"e"})).unwrap());
         assert_eq!(result["1"]["points"][0]["account_equity"], 10.0);
         assert_eq!(result["1"]["account_equity"], 20.0);
         assert_eq!(result["2"]["account_equity"], 99.0);
@@ -1051,5 +1079,17 @@ mod tests {
         assert_eq!(result["4"]["status"], "empty");
         assert_eq!(result["5"]["status"], "pending");
         assert!(result.get("6").is_none());
+        assert_eq!(result, summaries_for_accounts(&connection, &[1,2,3,4,5,6], "18", "equity-ledger-1").unwrap());
+        for (ranges, expected) in [
+            ("invalid", json!([])),
+            ("{}", json!([])),
+            (r#"{"all":{"performance":{"points":null}}}"#, Value::Null),
+            (r#"{"all":{"performance":{"points":42}}}"#, json!(42)),
+        ] {
+            connection.execute("UPDATE performance_snapshot SET ranges=?1 WHERE id='s1'", [ranges]).unwrap();
+            let result = summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap();
+            assert_eq!(result["1"]["points"], expected);
+            assert_eq!(result["1"]["account_equity"], Value::Null);
+        }
     }
 }

@@ -132,38 +132,30 @@ pub(crate) fn write(
     emit: &mut crate::publication::RowEmitter<'_>,
 ) -> Result<(), String> {
     let mut statement = connection.prepare(AGGREGATE_SQL).map_err(sql_error)?;
-    let mut cursor = statement.query([account]).map_err(sql_error)?;
-    let values = std::iter::from_fn(|| match cursor.next() {
-        Ok(Some(row)) => Some(Summary::values(row).map_err(sql_error)),
-        Ok(None) => None,
-        Err(error) => Some(Err(sql_error(error))),
-    });
+    let values = statement
+        .query_map([account], Summary::values)
+        .map_err(sql_error)?
+        .map(|row| row.map_err(sql_error));
     crate::publication::rows(
         "performance_execution_summary",
         SUMMARY_COLUMNS,
         values,
         emit,
     )?;
-    drop(cursor);
     drop(statement);
 
     let mut statement = connection.prepare(FEE_SQL).map_err(sql_error)?;
-    let mut cursor = statement.query([account]).map_err(sql_error)?;
-    let values = std::iter::from_fn(|| match cursor.next() {
-        Ok(Some(row)) => Some(
-            (|| -> rusqlite::Result<Vec<Value>> {
-                Ok(vec![
-                    json!(row.get::<_, i64>(0)?),
-                    json!(row.get::<_, String>(1)?),
-                    json!(row.get::<_, f64>(2)?),
-                    json!(row.get::<_, i64>(3)?),
-                ])
-            })()
-            .map_err(sql_error),
-        ),
-        Ok(None) => None,
-        Err(error) => Some(Err(sql_error(error))),
-    });
+    let values = statement
+        .query_map([account], |row| {
+            Ok(vec![
+                json!(row.get::<_, i64>(0)?),
+                json!(row.get::<_, String>(1)?),
+                json!(row.get::<_, f64>(2)?),
+                json!(row.get::<_, i64>(3)?),
+            ])
+        })
+        .map_err(sql_error)?
+        .map(|row| row.map_err(sql_error));
     crate::publication::rows("performance_execution_fee", FEE_COLUMNS, values, emit)
 }
 
@@ -363,6 +355,22 @@ mod tests {
         assert_eq!(frames[0]["rows"][1][13], true);
         assert_eq!(frames[0]["rows"][2][7], 1);
         assert_eq!(frames[0]["rows"][2][13], false);
+    }
+
+    #[test]
+    fn invalid_row_types_and_emitter_errors_are_propagated() {
+        let connection = fixture();
+        let error = write(&connection, 2, &mut |_, _, _| Err("sink failed".into()))
+            .unwrap_err();
+        assert_eq!(error, "sink failed");
+        connection.execute("UPDATE analysis_source_execution SET time='invalid'", []).unwrap();
+        let mut emitted = false;
+        let error = write(&connection, 2, &mut |_, _, _| {
+            emitted = true;
+            Ok(())
+        }).unwrap_err();
+        assert!(error.starts_with("ANALYSIS_READ_ERROR:"), "{error}");
+        assert!(!emitted);
     }
 
     #[test]

@@ -948,14 +948,12 @@ fn node(row: &Object, specs: &[&str]) -> Result<Value, String> {
     }
 }
 fn find<'a>(rows: &'a Rows, key: &str, value: &str) -> Result<Option<&'a Object>, String> {
-    let found = rows
-        .iter()
-        .filter(|r| r.get(key) == Some(&json!(value)))
-        .collect::<Vec<_>>();
-    if found.len() > 1 {
+    let mut matches = rows.iter().filter(|r| r.get(key).and_then(Value::as_str) == Some(value));
+    let found = matches.next();
+    if matches.next().is_some() {
         return Err(invalid("duplicate fact path"));
     }
-    Ok(found.first().copied())
+    Ok(found)
 }
 fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), String> {
     let collections = load(conn, "execution_symbol_collection", "record_id", id)?;
@@ -1097,26 +1095,20 @@ fn collections(
     result: &mut Object,
     trade: bool,
 ) -> Result<(), String> {
-    let roots = load(
-        conn,
-        if trade {
-            "business_trade_collection"
-        } else {
-            "execution_order_collection"
-        },
-        "record_id",
-        id,
-    )?;
-    let items = load(
-        conn,
-        if trade {
-            "business_trade"
-        } else {
-            "execution_order"
-        },
-        "record_id",
-        id,
-    )?;
+    let (collection_table, item_table) = if trade {
+        ("business_trade_collection", "business_trade")
+    } else {
+        ("execution_order_collection", "execution_order")
+    };
+    let state_field = if trade { "state" } else { "kind" };
+    let path_field = if trade { "collection_path" } else { "path" };
+    let count_field = if trade { "member_count" } else { "item_count" };
+    let invalid_field = if trade { "malformed_value" } else { "invalid_value" };
+    let specs = if trade { TRADE } else { ORDER };
+    let ids: &[&str] = if trade { &["trade_id", "order_id"] } else { &["order_id"] };
+    let invalid_states: &[&str] = if trade { &["malformed"] } else { &["null", "invalid"] };
+    let roots = load(conn, collection_table, "record_id", id)?;
+    let items = load(conn, item_table, "record_id", id)?;
     let conversions = if trade {
         load(conn, "business_trade_conversion", "record_id", id)?
     } else {
@@ -1125,53 +1117,29 @@ fn collections(
     let mut consumed = 0;
     for root in roots {
         let path = text(&root, "path")?;
-        let state = text(&root, if trade { "state" } else { "kind" })?;
+        let state = text(&root, state_field)?;
         let value = if state == "array" {
             let members = ordered(
                 items
                     .iter()
-                    .filter(|r| {
-                        r.get(if trade { "collection_path" } else { "path" }) == Some(&json!(path))
-                    })
+                    .filter(|r| r.get(path_field).and_then(Value::as_str) == Some(path))
                     .cloned()
                     .collect(),
-                get(&root, if trade { "member_count" } else { "item_count" })?,
+                get(&root, count_field)?,
             )?;
             consumed += members.len();
             let mut values = Vec::new();
             for row in members {
-                let state = text(&row, if trade { "state" } else { "kind" })?;
+                let state = text(&row, state_field)?;
                 if state != "object" {
-                    if !if trade {
-                        state == "malformed"
-                    } else {
-                        ["null", "invalid"].contains(&state)
-                    } {
+                    if !invalid_states.contains(&state) {
                         return Err(invalid("unknown item state"));
                     }
-                    values.push(
-                        get(
-                            &row,
-                            if trade {
-                                "malformed_value"
-                            } else {
-                                "invalid_value"
-                            },
-                        )?
-                        .clone(),
-                    );
+                    values.push(get(&row, invalid_field)?.clone());
                     continue;
                 }
-                let mut view = fields(&row, if trade { TRADE } else { ORDER })?;
-                availability(
-                    &mut view,
-                    &row,
-                    if trade {
-                        &["trade_id", "order_id"]
-                    } else {
-                        &["order_id"]
-                    },
-                )?;
+                let mut view = fields(&row, specs)?;
+                availability(&mut view, &row, ids)?;
                 if trade {
                     let conversion = find(&conversions, "trade_path", text(&row, "path")?)?;
                     if let Some(saved) = conversion {
@@ -1218,20 +1186,8 @@ fn collections(
                 values.push(Value::Object(view));
             }
             Value::Array(values)
-        } else if if trade {
-            state == "malformed"
-        } else {
-            ["null", "invalid"].contains(&state)
-        } {
-            get(
-                &root,
-                if trade {
-                    "malformed_value"
-                } else {
-                    "invalid_value"
-                },
-            )?
-            .clone()
+        } else if invalid_states.contains(&state) {
+            get(&root, invalid_field)?.clone()
         } else {
             return Err(invalid("unknown collection kind"));
         };
@@ -1261,6 +1217,17 @@ fn collections(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_preserves_missing_unique_and_duplicate_paths() {
+        let mut rows: Rows = vec![json!({"path":null}), json!({"path":7}), json!({}), json!({"path":"/a"})]
+            .into_iter().map(|value| value.as_object().unwrap().clone()).collect();
+        assert!(find(&rows, "path", "/missing").unwrap().is_none());
+        assert_eq!(find(&rows, "path", "/a").unwrap(), rows.last());
+        rows.push(rows.last().unwrap().clone());
+        assert_eq!(find(&rows, "path", "/a").unwrap_err(), invalid("duplicate fact path"));
+    }
+
     #[test]
     fn known_schema_preserves_text_json_and_booleans() {
         let conn = Connection::open_in_memory().unwrap();

@@ -32,14 +32,9 @@ struct Column {
     key: i64,
 }
 
-#[derive(Debug)]
-struct Table {
-    columns: Vec<Column>,
-}
-
 pub(super) struct Staging<'a> {
     connection: &'a Connection,
-    tables: BTreeMap<&'static str, Table>,
+    tables: BTreeMap<&'static str, Vec<Column>>,
     counts: BTreeMap<String, usize>,
 }
 
@@ -67,7 +62,7 @@ impl<'a> Staging<'a> {
         for &name in RESULT_TABLES {
             let columns = table_columns(connection, name)?;
             create_table(connection, name, &columns)?;
-            tables.insert(name, Table { columns });
+            tables.insert(name, columns);
         }
         connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
         Ok(Self {
@@ -214,7 +209,7 @@ fn create_table(
         .map_err(sql)
 }
 
-fn checked_columns<'a>(names: &[&str], table: &'a Table) -> Result<Vec<&'a Column>, AnalysisError> {
+fn checked_columns<'a>(names: &[&str], table: &'a [Column]) -> Result<Vec<&'a Column>, AnalysisError> {
     let mut seen = BTreeSet::new();
     let mut columns = Vec::new();
     for &name in names {
@@ -222,13 +217,12 @@ fn checked_columns<'a>(names: &[&str], table: &'a Table) -> Result<Vec<&'a Colum
             return Err(invalid("duplicate result column"));
         }
         let column = table
-            .columns
             .iter()
             .find(|column| column.name == name)
             .ok_or_else(|| invalid("unknown result column"))?;
         columns.push(column);
     }
-    if columns.len() != table.columns.len() {
+    if columns.len() != table.len() {
         return Err(invalid("result columns differ from migrated schema"));
     }
     Ok(columns)

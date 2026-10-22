@@ -309,23 +309,7 @@ fn summary_sql() -> String {
     let columns = SUMMARY_COLUMNS
         .iter()
         .map(|name| {
-            if matches!(
-                *name,
-                "record_id"
-                    | "time"
-                    | "value"
-                    | "cost"
-                    | "loss_bp"
-                    | "coverage"
-                    | "covered"
-                    | "count"
-                    | "fee_covered"
-                    | "amount_complete"
-                    | "covered_value"
-                    | "estimated"
-                    | "symbol_count"
-                    | "has_transactions"
-            ) {
+            if crate::execution_summary::SUMMARY_COLUMNS.contains(name) {
                 format!("s.{name}")
             } else {
                 format!("e.{name}")
@@ -694,7 +678,6 @@ pub fn execution_detail(
     }
     let mut tables = Map::new();
     let mut next_offsets = Map::new();
-    let mut transactions_next = Value::Null;
     for (name, source, columns, booleans, ordering) in [
         ("positions", "performance_cost_position", "idx,symbol,quantity,direction", &[][..], "idx"),
         ("attempts", "performance_cost_attempt", "idx,symbol,planned,filled,reason", &[][..], "idx"),
@@ -721,11 +704,7 @@ pub fn execution_detail(
         let has_more = rows.len() as i64 > limit;
         rows.truncate(limit as usize);
         let next = if has_more { json!(offset + limit) } else { Value::Null };
-        if name == "transactions" {
-            transactions_next = next;
-        } else {
-            next_offsets.insert(name.to_owned(), next);
-        }
+        next_offsets.insert(name.to_owned(), next);
         tables.insert(name.to_owned(), page);
     }
     tables.insert(
@@ -749,7 +728,7 @@ pub fn execution_detail(
             |row| row.get(0),
         )
         .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
-    let next_offset = transactions_next;
+    let next_offset = next_offsets.remove("transactions").unwrap_or(Value::Null);
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
@@ -998,6 +977,15 @@ mod tests {
         assert_eq!(transactions["rows"][0][9], false); // time_estimated
         assert_eq!(value["tables"]["transaction_fees"]["rows"][0][2], -0.25);
         assert_eq!(value["total"], 1);
+        assert_eq!(value["next_offset"], Value::Null);
+        assert_eq!(value["next_offsets"], json!({"positions":null,"attempts":null,"symbols":null}));
+        connection.execute("INSERT INTO performance_cost_transaction(snapshot_id,record_id,idx,symbol) VALUES('s1',1,1,'B')", []).unwrap();
+        let first = execution_detail(&connection, 2, "s1", 1, 1, 0).unwrap();
+        assert_eq!(first["next_offset"], 1);
+        assert!(first["next_offsets"].get("transactions").is_none());
+        let last = execution_detail(&connection, 2, "s1", 1, 1, 1).unwrap();
+        assert_eq!(last["next_offset"], Value::Null);
+        assert_eq!(last["tables"]["transactions"]["rows"][0][1], "B");
         let missing = execution_detail(&connection, 2, "s1", 9, 200, 0).unwrap_err();
         assert!(missing.starts_with("EXECUTION_NOT_FOUND"));
     }

@@ -1,7 +1,9 @@
 """资产页直读原生结果；账户隔离和事实完整性不依赖 Python ORM。"""
 
 import asyncio
+import json
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
@@ -42,7 +44,13 @@ def test_native_asset_page_http_and_integrity(tmp_path, monkeypatch):
                         },
                     )
                 await session.commit()
-            monkeypatch.setattr(account_assets, "analysis_store", lambda: _core.Store(str(database)))
+            store = _core.Store(str(database))
+            with pytest.raises(_core.NativeError):
+                _core.asset_snapshots(store, 1, 0, 501)
+            payload = _core.asset_snapshots(store, 1, 0, 1)
+            assert isinstance(payload, bytes)
+            assert json.loads(payload)["count"] == 1
+            monkeypatch.setattr(account_assets, "analysis_store", lambda: store)
             app = FastAPI()
             app.include_router(account_assets.router)
 

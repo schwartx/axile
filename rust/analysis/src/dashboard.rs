@@ -135,11 +135,8 @@ pub fn dashboard_inputs(
              GROUP BY t.account_id) latest ON t.id=latest.id)";
     let mut observations = observations(connection, cte, &ids)?;
     let mut targets = targets(connection, cte, &ids)?;
-    let performance = snapshots::summaries(
-        connection,
-        &json!({
-            "account_ids": account_ids, "logic_version": logic_version, "engine_version": engine_version
-        }),
+    let performance = snapshots::summaries_for_accounts(
+        connection, account_ids, logic_version, engine_version,
     )?;
     let mut statement = connection
         .prepare(&format!(

@@ -39,7 +39,7 @@ const TEXT_FIELDS: &[&str] = &[
     "termination_acked_at",
     "termination_finished_at",
 ];
-const SYMBOL_FIELDS: &[&str] = &[
+pub(crate) const SYMBOL_FIELDS: &[&str] = &[
     "status",
     "error",
     "outcome",

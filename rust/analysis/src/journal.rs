@@ -6,18 +6,12 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
 use crate::costs::{Summary, AGGREGATES};
+use crate::executions::SYMBOL_FIELDS;
 
 const HEADERS: &str = "SELECT id,created_at AS occurred_at,0 AS kind FROM executerecord
     WHERE account_id=?1 AND (?2 IS NULL OR created_at>=?2) AND (?3 IS NULL OR created_at<?3)
     UNION ALL SELECT id,triggered_at,1 FROM schedule_skip
     WHERE account_id=?1 AND (?2 IS NULL OR triggered_at>=?2) AND (?3 IS NULL OR triggered_at<?3)";
-const SYMBOL_FIELDS: [&str; 5] = [
-    "status",
-    "error",
-    "outcome",
-    "outcome_reason",
-    "reason_code",
-];
 const OWNER_VALID: &str = "((a.record_id=r.id AND a.path=b.path AND a.scope=b.scope
     AND a.ordinal=b.ordinal AND a.map_key IS b.map_key) OR
     (a.input_id IN (r.input_id,r.result_input_id) AND i.account_id=r.account_id

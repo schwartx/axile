@@ -54,6 +54,17 @@ impl Store {
 }
 
 impl Store {
+    fn json_bytes(
+        &self,
+        py: Python<'_>,
+        task: impl FnOnce(&Connection) -> Result<Value, String> + Send,
+    ) -> PyResult<Py<PyBytes>> {
+        let result = py
+            .detach(|| self.with_snapshot(task).and_then(encode_json))
+            .map_err(raise)?;
+        Ok(PyBytes::new(py, &result).unbind())
+    }
+
     fn with_snapshot<T>(
         &self,
         task: impl FnOnce(&Connection) -> Result<T, String>,
@@ -233,18 +244,11 @@ fn order_submissions(
     end_ms: i64,
     limit: i64,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::submissions::page(
-                        connection, account_id, day, timezone, start_ms, end_ms, limit,
-                    )
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::submissions::page(
+            connection, account_id, day, timezone, start_ms, end_ms, limit,
+        )
+    })
 }
 
 #[pyfunction]
@@ -279,16 +283,9 @@ fn asset_snapshots(
     skip: i64,
     limit: i64,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::assets::page(connection, account_id, skip, limit)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::assets::page(connection, account_id, skip, limit)
+    })
 }
 
 #[pyfunction]
@@ -302,23 +299,16 @@ fn execution_records(
     execution_id: Option<&str>,
     record_id: Option<i64>,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::executions::page(
-                        connection,
-                        account_id,
-                        skip,
-                        limit,
-                        execution_id,
-                        record_id,
-                    )
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::executions::page(
+            connection,
+            account_id,
+            skip,
+            limit,
+            execution_id,
+            record_id,
+        )
+    })
 }
 
 #[pyfunction]
@@ -328,16 +318,9 @@ fn execution_record_detail(
     account_id: i64,
     record_id: i64,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::executions::detail(connection, account_id, record_id)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::executions::detail(connection, account_id, record_id)
+    })
 }
 
 /// Internal business evidence stays as objects, not an HTTP JSON round trip.
@@ -369,16 +352,9 @@ fn journal(
     since: Option<&str>,
     until: Option<&str>,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::journal::page(connection, account_id, skip, limit, since, until)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::journal::page(connection, account_id, skip, limit, since, until)
+    })
 }
 
 #[pyfunction]
@@ -391,16 +367,9 @@ fn activity_symbols(
     until: &str,
     symbol: Option<&str>,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::symbols::query(connection, account_id, since, until, symbol)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::symbols::query(connection, account_id, since, until, symbol)
+    })
 }
 
 /// Classify scalars read in the caller's SQLAlchemy transaction.
@@ -495,37 +464,30 @@ fn query_costs(
     logic_version: &str,
     engine_version: &str,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::costs::query_costs(
-                        connection,
-                        &json!({
-                            "account_id": account_id,
-                            "snapshot_id": snapshot_id,
-                            "range": range,
-                            "dimension": dimension,
-                            "sort": sort,
-                            "day": day,
-                            "start": start,
-                            "end": end,
-                            "record_id": record_id,
-                            "symbol": symbol,
-                            "symbol_search": symbol_search,
-                            "side": side,
-                            "limit": limit,
-                            "cursor_scope": cursor_scope,
-                            "cursor": cursor,
-                            "logic_version": logic_version,
-                            "engine_version": engine_version,
-                        }),
-                    )
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::costs::query_costs(
+            connection,
+            &json!({
+                "account_id": account_id,
+                "snapshot_id": snapshot_id,
+                "range": range,
+                "dimension": dimension,
+                "sort": sort,
+                "day": day,
+                "start": start,
+                "end": end,
+                "record_id": record_id,
+                "symbol": symbol,
+                "symbol_search": symbol_search,
+                "side": side,
+                "limit": limit,
+                "cursor_scope": cursor_scope,
+                "cursor": cursor,
+                "logic_version": logic_version,
+                "engine_version": engine_version,
+            }),
+        )
+    })
 }
 
 /// 同一只读快照中的卡片输入；插件和实时状态由 Python 收尾。
@@ -564,13 +526,8 @@ fn summaries(
 ) -> PyResult<Py<PyAny>> {
     let result = store
         .with_snapshot(|connection| {
-            snapshots::summaries(
-                connection,
-                &json!({
-                    "account_ids": account_ids,
-                    "logic_version": logic_version,
-                    "engine_version": engine_version,
-                }),
+            snapshots::summaries_for_accounts(
+                connection, &account_ids, logic_version, engine_version,
             )
         })
         .map_err(raise)?;
@@ -586,16 +543,9 @@ fn status(
     logic_version: &str,
     engine_version: &str,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::views::status(connection, account_id, logic_version, engine_version)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::views::status(connection, account_id, logic_version, engine_version)
+    })
 }
 
 #[pyfunction]
@@ -607,16 +557,9 @@ fn chart(
     snapshot_id: &str,
     range: &str,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::views::chart(connection, account_id, snapshot_id, range)
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::views::chart(connection, account_id, snapshot_id, range)
+    })
 }
 
 #[pyfunction]
@@ -633,25 +576,18 @@ fn execution_summary(
     start: Option<f64>,
     end: Option<f64>,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::views::execution_summary(
-                        connection,
-                        account_id,
-                        snapshot_id,
-                        range,
-                        limit,
-                        offset,
-                        start,
-                        end,
-                    )
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::views::execution_summary(
+            connection,
+            account_id,
+            snapshot_id,
+            range,
+            limit,
+            offset,
+            start,
+            end,
+        )
+    })
 }
 
 #[pyfunction]
@@ -665,21 +601,14 @@ fn execution_detail(
     limit: i64,
     offset: i64,
 ) -> PyResult<Py<PyBytes>> {
-    let result = py
-        .detach(|| {
-            store
-                .with_snapshot(|connection| {
-                    crate::views::execution_detail(
-                        connection,
-                        account_id,
-                        snapshot_id,
-                        record_id,
-                        limit,
-                        offset,
-                    )
-                })
-                .and_then(encode_json)
-        })
-        .map_err(raise)?;
-    Ok(PyBytes::new(py, &result).unbind())
+    store.json_bytes(py, |connection| {
+        crate::views::execution_detail(
+            connection,
+            account_id,
+            snapshot_id,
+            record_id,
+            limit,
+            offset,
+        )
+    })
 }
