@@ -51,7 +51,7 @@ Rust 不写原始执行、资产、目标权重或渠道配置，不执行数据
 
 ## 兼容命令与运行要求
 
-`publish` 的 JSONL 帧协议与原有 `performance/replay/costs/snapshot/performance_result` 查询保留兼容入口。它们的完整结果传输和 Python 发布行为不代表新 `publish_store` 的职责。
+旧 `publish` JSONL 帧协议已移除，发布使用 `publish_store`。原有查询的完整结果传输不代表 `publish_store` 的职责。
 
 部署新协调代码前，核对二进制 `capabilities` 的 `protocol=1`，以及 `commands` 和 `write_commands` 都包含 `publish_store`。旧版本字符串、可运行或旧查询成功不能替代此项核对。构建使用冻结源码和工作树之外的 target；服务运行时不执行 Cargo。构建、暂存与资源设置见[SQLite 结构化事实与 Rust 分析](rust-sqlite-analysis.md#开发构建)。
 

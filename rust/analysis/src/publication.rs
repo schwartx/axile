@@ -1,9 +1,8 @@
-//! Bounded publication rows for native persistence and compatibility streaming.
+//! Bounded publication rows for native persistence.
 //!
 //! Rust keeps historical facts inside its read snapshot. Only scalar result
 //! rows are emitted to an in-process staging callback for publish_store, which
-//! atomically writes analysis results. The compatibility publish command can
-//! still stream its original result rows to a Python publisher.
+//! atomically writes analysis results.
 
 use std::collections::BTreeMap;
 

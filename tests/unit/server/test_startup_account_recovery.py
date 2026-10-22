@@ -16,6 +16,11 @@ from axile.server.execution import notification_outbox, supplements
 
 @pytest.fixture
 def isolated_lifespan(monkeypatch):
+    from axile.server import performance_analysis
+
+    manager = MagicMock(start=AsyncMock(), stop=AsyncMock())
+    monkeypatch.setattr(performance_analysis, "AnalysisManager", lambda _sessions: manager)
+    monkeypatch.setattr(performance_analysis._core, "publish_store", MagicMock(), raising=False)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
     monkeypatch.setattr(server_app.live_hub, "bind_loop", lambda _loop: None)
@@ -31,6 +36,9 @@ def isolated_lifespan(monkeypatch):
     monkeypatch.setattr(validation_service, "close", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_dispatchers", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_worker_backend_manager", MagicMock())
+    yield manager
+    manager.start.assert_awaited_once()
+    manager.stop.assert_awaited_once()
 
 
 def test_api_ready_while_account_connection_is_blocked_and_shutdown_cancels_recovery(isolated_lifespan, monkeypatch):

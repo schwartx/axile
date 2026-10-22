@@ -27,7 +27,6 @@ pub mod symbols;
 pub mod views;
 pub mod wire_result;
 
-use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -38,15 +37,12 @@ use crate::error::AnalysisError;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 pub fn capabilities() -> Value {
     json!({
         "protocol": PROTOCOL_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
-        "commands": ["costs", "snapshot", "performance_result", "publish", "publish_store"],
-        "streaming_commands": ["publish"],
-        "max_frame_bytes": MAX_FRAME_BYTES,
+        "commands": ["costs", "snapshot", "performance_result", "publish_store"],
         "read_only": false,
         "write_commands": ["publish_store"],
     })
@@ -94,32 +90,6 @@ pub fn query_wire(
         value,
         points: None,
         performance_only: false,
-    })
-}
-
-/// Stream normalized publication rows without collecting an encoded response.
-///
-/// A complete frame is required before success, and no frame may follow it.
-/// The caller must also check the process exit status before publishing rows.
-pub fn query_stream(
-    database: &Path,
-    request: &Value,
-    writer: &mut dyn Write,
-) -> Result<(), AnalysisError> {
-    if request_command(request)? != "publish" {
-        return Err(AnalysisError::new(
-            "INVALID_REQUEST",
-            "streaming requests require command publish",
-        ));
-    }
-    with_read_snapshot(database, |connection| {
-        let complete = publication::write(connection, request, &mut |table, columns, rows| {
-            let frame = json!({"type":"rows", "table":table, "columns":columns, "rows":rows});
-            write_frame(writer, &frame).map_err(|error| format!("RESULT_WRITE: {error}"))
-        })
-        .map_err(AnalysisError::from)?;
-        write_frame(writer, &complete)
-            .map_err(|error| AnalysisError::from(format!("RESULT_WRITE: {error}")))
     })
 }
 
@@ -171,41 +141,6 @@ fn with_read_snapshot<T>(
     }
 }
 
-/// Count bytes while writing directly to the pipe. Oversized frames fail the
-/// task rather than allocating a second serialized copy in memory.
-fn write_frame(writer: &mut dyn Write, frame: &Value) -> io::Result<()> {
-    let mut limited = FrameWriter {
-        writer,
-        remaining: MAX_FRAME_BYTES - 1,
-    };
-    serde_json::to_writer(&mut limited, frame).map_err(io::Error::other)?;
-    limited.writer.write_all(b"\n")?;
-    limited.writer.flush()
-}
-
-struct FrameWriter<'a> {
-    writer: &'a mut dyn Write,
-    remaining: usize,
-}
-
-impl Write for FrameWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "publication frame exceeds 1 MiB",
-            ));
-        }
-        let written = self.writer.write(bytes)?;
-        self.remaining -= written;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -216,7 +151,7 @@ mod tests {
     fn invalid_commands_do_not_open_a_database() {
         let result = super::query(
             Path::new("/nonexistent.sqlite"),
-            &json!({"command": "write"}),
+            &json!({"command": "publish"}),
         );
         assert_eq!(result.unwrap_err().code, "INVALID_REQUEST");
     }
@@ -230,76 +165,4 @@ mod tests {
         assert_eq!(result.unwrap_err().code, "DATABASE_OPEN");
     }
 
-    #[test]
-    fn streaming_rejects_regular_queries_without_opening_database() {
-        let mut output = Vec::new();
-        let result = super::query_stream(
-            Path::new("/nonexistent.sqlite"),
-            &json!({"command": "costs"}),
-            &mut output,
-        );
-        assert_eq!(result.unwrap_err().code, "INVALID_REQUEST");
-        assert!(output.is_empty());
-    }
-
-    #[test]
-    fn streamed_frame_is_one_json_line() {
-        let frame = json!({"type": "rows", "rows": [{"symbol": "BTC\\nUSDT"}]});
-        let mut output = Vec::new();
-        super::write_frame(&mut output, &frame).unwrap();
-        assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&output).unwrap(),
-            frame
-        );
-    }
-
-    #[test]
-    fn typed_batches_keep_legacy_ndjson_rows_and_complete_last() {
-        let mut output = Vec::new();
-        super::publication::rows(
-            "example",
-            &["idx", "text"],
-            (0..257).map(|index| Ok(vec![json!(index), json!("中文\n\"\\")])),
-            &mut |table, columns, rows| {
-                super::write_frame(
-                    &mut output,
-                    &json!({"type":"rows", "table":table,
-                    "columns":columns, "rows":rows}),
-                )
-                .map_err(|error| error.to_string())
-            },
-        )
-        .unwrap();
-        let complete = json!({"type":"complete", "account_id":1, "source_version":2,
-            "settings":{}, "data_until":null, "row_counts":{"example":257}});
-        super::write_frame(&mut output, &complete).unwrap();
-        let frames: Vec<serde_json::Value> = std::str::from_utf8(&output)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(frames.len(), 3);
-        assert_eq!(frames.last(), Some(&complete));
-        let mut index = 0;
-        for frame in &frames[..2] {
-            assert_eq!(frame["type"], "rows");
-            assert_eq!(frame["table"], "example");
-            assert_eq!(frame["columns"], json!(["idx", "text"]));
-            for row in frame["rows"].as_array().unwrap() {
-                assert_eq!(*row, json!([index, "中文\n\"\\"]));
-                index += 1;
-            }
-        }
-        assert_eq!(index, 257);
-    }
-
-    #[test]
-    fn oversized_frames_fail_without_a_complete_line() {
-        let frame = json!({"type": "rows", "value": "x".repeat(super::MAX_FRAME_BYTES)});
-        let mut output = Vec::new();
-        assert!(super::write_frame(&mut output, &frame).is_err());
-        assert!(output.len() < super::MAX_FRAME_BYTES);
-        assert!(!output.ends_with(b"\n"));
-    }
 }

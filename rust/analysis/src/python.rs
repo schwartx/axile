@@ -385,9 +385,21 @@ fn publication_status(
     snapshots::publication_status(snapshot_id, compatible, error, active, versions_match)
 }
 
+/// Calculate and atomically publish using a separate writer connection.
+#[pyfunction]
+fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<PyAny>> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| raise(AnalysisError::new("INVALID_REQUEST", error.to_string())))?;
+    let receipt = py
+        .detach(|| crate::native_publication::publish(std::path::Path::new(path), &request))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &receipt))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(publish_store, m)?)?;
     m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;

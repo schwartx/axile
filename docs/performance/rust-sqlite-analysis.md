@@ -20,7 +20,7 @@
 
 当前稳定业务字段以类型化事实为准，分析投影与冻结结果继续分别承担计算和版本读取职责。动态配置、渠道扩展和异常历史字段仍按所属对象保留 JSON；这不等于删除整个系统中的 JSON，也不保证所有数据分布的磁盘占用都会下降。
 
-新原生发布命令 `publish_store` 的进程间通信只有小请求和小回执。结果行在 Rust 进程内进入磁盘暂存 SQLite，不经过 Python 的 JSON 编解码。旧查询和 `publish` 帧协议继续保留兼容能力；它们仍可能编码完整响应或结果行。Python 使用标准库 `json`，Rust 使用 `serde_json`，没有进行全局 `orjson` 替换，也没有移除整个后端的 Pydantic 或 SQLAlchemy。
+新原生发布命令 `publish_store` 的进程间通信只有小请求和小回执。结果行在 Rust 进程内进入磁盘暂存 SQLite，不经过 Python 的 JSON 编解码。旧查询仍可能编码完整响应；旧 `publish` JSONL 帧协议已移除，发布使用 `publish_store`。Python 使用标准库 `json`，Rust 使用 `serde_json`，没有进行全局 `orjson` 替换，也没有移除整个后端的 Pydantic 或 SQLAlchemy。
 
 Python 的 `wbt` 包和没有业务引用的 Polars 依赖已移除，锁文件同时裁剪它们独占引入的 Plotly、Polars runtime。生产 Python 的 `build_wbt_input()`、`calculate_performance()` 与 `performance_replay.replay_daily()` 已退役，原公共 helper 导入和 DataFrame 返回契约不再支持；不提供兼容 wrapper。旧权益账本仅保存在 `tests/unit/server/_performance_oracle.py`，供业务断言和源码 benchmark 对照，不随生产包提供。`Observation`、`observation()`、`local_time()`、`close_before()` 仍用于生产事实准备及账户摘要；`ENGINE_VERSION` 归属 `performance_analysis.py`，值保持不变。pandas、NumPy、Arrow 仍被渠道 SDK、数据接口或 Streamlit 使用，没有随 WBT 一并删除。该变更清理安装依赖，不代表 Python 服务驻留内存会按包安装体积等量下降。
 
@@ -56,7 +56,6 @@ Python 领取任务 → 小请求 → Rust 读取、计算、暂存、事务发�
 - `publish_store`：小请求包含账户、源版本、claim token、设置等控制信息；Rust 自行计算和发布，只返回有界回执，不返回曲线或执行行。
 - 新 `status/chart/execution-summary/execution-detail` HTTP：Python 直接读已发布表，不调用原生查询程序。
 - 原有原生 `performance/replay/costs/snapshot/performance_result` 查询：保留完整 JSON 响应入口，适用时由 Python 转发原生编码字节。
-- 原有 `publish`：保留有界 JSONL 帧协议供兼容调用，Python 校验、暂存和发布；不能把这条路径的行为描述为新 `publish_store` 的进程间通信方式。
 
 原生子进程结束后，其读取缓存和计算内存随进程释放。计算、源事实复制、磁盘暂存及最终提交仍有成本；曲线和区间执行摘要仍随历史增长，详情分页也需要实际读取。这些边界不等于固定内存或已完成生产负载验收。
 
@@ -124,8 +123,7 @@ RUSTC_WRAPPER= cargo build --locked --release --manifest-path rust/analysis/Carg
 | --- | --- | --- |
 | `AXILE_ANALYSIS_TIMEOUT_SECONDS` | `120` | 包含排队和执行的任务期限 |
 | `AXILE_ANALYSIS_MAX_CONCURRENCY` | `2` | 每个 Python 事件循环允许同时运行的原生任务数 |
-| `AXILE_ANALYSIS_MAX_OUTPUT_BYTES` | `67108864` | 兼容查询响应或旧发布流的总输出字节上限；新发布回执另限至多 64 KiB |
-| `AXILE_ANALYSIS_MAX_FRAME_BYTES` | `1048576` | 旧发布流单帧字节上限；Rust 的结果校验也保留帧大小约束 |
+| `AXILE_ANALYSIS_MAX_OUTPUT_BYTES` | `67108864` | 兼容查询响应的总输出字节上限；新发布回执另限至多 64 KiB |
 
 请求限制为 1 MiB，错误输出限制为 64 KiB。超时或请求取消时终止并回收子进程。多个 Python worker 的总并发需要按 worker 数一起估算，不能把上述并发设置当作整台主机的全局限制。
 
