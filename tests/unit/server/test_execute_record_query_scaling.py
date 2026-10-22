@@ -1,11 +1,4 @@
-"""执行记录查询伸缩性测试。
-
-覆盖 issue #33：
-
-- ``ExecuteRecord`` 需要按账户查询的复合索引；
-- 仪表盘的逐账户查询（N+1）需被批量查询取代，查询数不随账户数线性增长；
-- 批量版本必须与逐账户版本语义完全一致。
-"""
+"""单账户执行记录查询的隔离、排序与条数限制。"""
 
 from __future__ import annotations
 
@@ -13,14 +6,10 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from axile.server.repositories import (
-    get_recent_execute_records_by_account_id,
-    get_recent_execute_records_for_accounts,
-)
+from axile.server.repositories import get_recent_execute_records_by_account_id
 from tests.unit.server._business_analysis_support import analysis_record, persist_records
 from tests.unit.server._execution_test_support import build_account
 
@@ -57,36 +46,31 @@ async def _seed(session: AsyncSession, accounts: int, per_account: int) -> None:
         session.add(build_account(id=account_id, account_control_preset="default"))
         for index in range(per_account):
             records.append(
-                _make_record(len(records) + 1, account_id, 100.0 + index, f"2026-07-{index + 1:02d}T09:00:00")
+                _make_record(
+                    len(records) + 1,
+                    account_id,
+                    100.0 + index,
+                    f"2026-07-{per_account - index:02d}T09:00:00",
+                    is_success=index % 2,
+                )
             )
     await session.flush()
     await persist_records(session, records)
     await session.commit()
 
 
-def test_batch_recent_matches_per_account() -> None:
-    """批量取记录必须与逐账户版本逐条一致（含每账户各自 limit）。"""
+def test_recent_records_preserve_account_limit_and_id_order() -> None:
+    """逐账户读取按 ID 而非时间倒序，保留成败记录并限制条数。"""
 
     async def scenario() -> None:
         async with _session_scope() as session:
             await _seed(session, accounts=3, per_account=5)
 
-            statements = []
-
-            def capture(_conn, _cursor, statement, _parameters, _context, _many):
-                statements.append(statement)
-
-            engine = session.bind
-            sa.event.listen(engine.sync_engine, "after_cursor_execute", capture)
-            try:
-                batched = await get_recent_execute_records_for_accounts(session, [1, 2, 3], limit=3)
-            finally:
-                sa.event.remove(engine.sync_engine, "after_cursor_execute", capture)
-            assert len(statements) == 1, "批量读取不随账户数量增加查询"
-
             for account_id in (1, 2, 3):
-                expected = await get_recent_execute_records_by_account_id(session, account_id, limit=3)
-                assert [r.id for r in batched[account_id]] == [r.id for r in expected]
-                assert len(batched[account_id]) == 3, "每个账户各自取 limit 条，而非全局 limit 条"
+                records = await get_recent_execute_records_by_account_id(session, account_id, limit=3)
+                assert [r.id for r in records] == [account_id * 5 - offset for offset in range(3)]
+                assert all(r.account_id == account_id for r in records)
+                assert [r.is_success for r in records] == [0, 1, 0]
+            assert await get_recent_execute_records_by_account_id(session, 4) == []
 
     asyncio.run(scenario())

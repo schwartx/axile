@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import loguru
+from sqlmodel import col, desc, select
 
+from axile.server.asset_observations import valid_asset_snapshot_condition
 from axile.server.business_facts.assets import read_snapshots_assets
 from axile.server.core.db import SessionLocal
+from axile.server.db.models import AccountAssetSnapshot
 from axile.server.db.models.account import AccountContext
-from axile.server.repositories import get_recent_account_asset_snapshots_for_accounts
 
 
 async def load_notification_snapshot(account: AccountContext) -> dict[str, object] | None:
@@ -16,11 +18,14 @@ async def load_notification_snapshot(account: AccountContext) -> dict[str, objec
         return None
     try:
         async with SessionLocal() as session:
-            grouped = await get_recent_account_asset_snapshots_for_accounts(session, [account.id], limit=1)
-            snapshots = grouped.get(account.id, [])
-            if not snapshots:
+            snapshot = await session.scalar(
+                select(AccountAssetSnapshot)
+                .where(AccountAssetSnapshot.account_id == account.id, valid_asset_snapshot_condition())
+                .order_by(desc(col(AccountAssetSnapshot.id)))
+                .limit(1)
+            )
+            if snapshot is None:
                 return None
-            snapshot = snapshots[0]
             snapshot_id = snapshot.id
             if snapshot_id is None:
                 raise ValueError("通知资产快照缺少持久化标识")

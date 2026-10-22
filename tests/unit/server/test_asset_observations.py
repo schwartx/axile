@@ -3,6 +3,7 @@
 import asyncio
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -20,9 +21,9 @@ from axile.server.asset_observations import (
 from axile.server.business_facts.assets import asset_fact_id, read_snapshots_assets, write_snapshot_assets
 from axile.server.business_facts.repository import store_execution_facts
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
+from axile.server.execution import notification_assets
 from axile.server.execution.records import _persist_execute_record
 from axile.server.performance import observation
-from axile.server.repositories import get_recent_account_asset_snapshots_for_accounts
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -177,11 +178,12 @@ def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path, mon
                         )
                     )
             await session.commit()
-            latest = await get_recent_account_asset_snapshots_for_accounts(session, [1, 2], limit=1)
-            latest_assets = await read_snapshots_assets(
-                session, [snapshot for rows in latest.values() for snapshot in rows]
-            )
-            assert {a: latest_assets[rows[0].id]["total_asset"] for a, rows in latest.items()} == {1: 100000, 2: 100000}
+            monkeypatch.setattr(notification_assets, "SessionLocal", sessions)
+            for account_id in (1, 2):
+                latest = await notification_assets.load_notification_snapshot(
+                    SimpleNamespace(id=account_id, execution_notification_code="configured")
+                )
+                assert latest["assets"]["total_asset"] == 100000
             page = json.loads((await list_account_asset_snapshots(1, skip=0, limit=1)).body)
             assert page["count"] == 1 and page["data"][0]["assets"]["total_asset"] == 100000
             assert not (json.loads((await list_account_asset_snapshots(1, skip=1, limit=1)).body))["data"]

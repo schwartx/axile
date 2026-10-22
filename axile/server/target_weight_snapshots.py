@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import sqlalchemy as sa
-from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, desc, select
 
@@ -257,45 +256,6 @@ async def get_previous_account_target_snapshots(
         .limit(limit)
     )
     return await _snapshot_views(session, list(result.scalars()))
-
-
-async def get_latest_account_target_snapshots_for_accounts(
-    session: AsyncSession,
-    pairs: list[tuple[int, int]],
-) -> dict[int, TargetWeightSnapshotData]:
-    """以窗口查询和一次明细查询，读取各账户在当前组合下的最新目标。"""
-    if not pairs:
-        return {}
-    wanted = set(pairs)
-    row_number = (
-        func.row_number()
-        .over(
-            partition_by=(col(TargetWeightSnapshot.account_id), col(TargetWeightSnapshot.portfolio_id)),
-            order_by=desc(col(TargetWeightSnapshot.id)),
-        )
-        .label("rn")
-    )
-    ranked = (
-        select(TargetWeightSnapshot, row_number)
-        .where(
-            col(TargetWeightSnapshot.account_id).in_([account for account, _ in pairs]),
-            col(TargetWeightSnapshot.portfolio_id).in_([portfolio for _, portfolio in pairs]),
-            TargetWeightSnapshot.normalized_weights_kind != "null",
-            TargetWeightSnapshot.normalized_weights_kind != "missing",
-        )
-        .subquery()
-    )
-    statement = select(TargetWeightSnapshot).from_statement(sa.select(ranked).where(ranked.c.rn <= 1))
-    snapshots = [
-        snapshot
-        for snapshot in (await session.execute(statement)).scalars()
-        if (snapshot.account_id, snapshot.portfolio_id) in wanted
-    ]
-    return {
-        snapshot.account_id: snapshot
-        for snapshot in await _snapshot_views(session, snapshots)
-        if snapshot.account_id is not None
-    }
 
 
 async def read_target_snapshot_weights(

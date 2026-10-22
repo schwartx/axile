@@ -31,7 +31,7 @@ from axile.server.portfolio_targets import (
     calculate_portfolio_for_account,
     portfolio_result_from_exception,
 )
-from axile.server.repositories import get_latest_account_id_by_portfolio_id, get_portfolios_every_account
+from axile.server.repositories import get_latest_account_id_by_portfolio_id
 from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
     get_latest_portfolio_target_snapshot,
@@ -86,7 +86,7 @@ async def delete_portfolio(session: SessionDep, portfolio_id: int) -> Message:
     if db_portfolio is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
 
-    if portfolio_id in (await get_portfolios_every_account(session)).values():
+    if await get_latest_account_id_by_portfolio_id(session, portfolio_id) is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="该组合与账户关联，必须解绑才能删除组合",

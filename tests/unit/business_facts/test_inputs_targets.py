@@ -280,7 +280,6 @@ def test_target_snapshot_services_explicitly_load_typed_maps():
     from axile.server.target_weight_snapshots import (
         append_target_weight_snapshot,
         get_latest_account_target_snapshot,
-        get_latest_account_target_snapshots_for_accounts,
         get_latest_portfolio_target_snapshot,
         read_target_snapshot_weights,
     )
@@ -316,9 +315,6 @@ def test_target_snapshot_services_explicitly_load_typed_maps():
                 assert business_evidence(await get_latest_portfolio_target_snapshot(session, 2)) == business_evidence(
                     snapshot
                 )
-                assert business_evidence(
-                    await get_latest_account_target_snapshots_for_accounts(session, [(1, 2)])
-                ) == business_evidence({1: snapshot})
                 assert await read_target_snapshot_weights(session, account_id=1, execution_id=None) is None
                 await session.execute(
                     sa.update(TargetWeightSnapshot)

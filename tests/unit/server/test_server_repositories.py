@@ -6,11 +6,14 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
+from axile.server.api.routes.portfolio import delete_portfolio
 from axile.server.db.models import Account, Portfolio, PortfolioAccount
-from axile.server.repositories import get_latest_account_id_by_portfolio_id, get_portfolios_every_account
+from axile.server.repositories import get_latest_account_id_by_portfolio_id
 
 CODE = "def calculate_portfolio(context):\n    return {}\n"
 
@@ -60,7 +63,19 @@ def test_latest_portfolio_bindings_are_returned() -> None:
             )
             await session.commit()
 
-            assert await get_portfolios_every_account(session) == {first.id: None, second.id: portfolio.id}
             assert await get_latest_account_id_by_portfolio_id(session, portfolio.id) == second.id
+            with pytest.raises(HTTPException) as error:
+                await delete_portfolio(session, portfolio.id)
+            assert error.value.status_code == 422
+            assert await session.get(Portfolio, portfolio.id) is portfolio
+
+            session.add(PortfolioAccount(account_id=second.id, portfolio_id=None))
+            await session.commit()
+            assert await get_latest_account_id_by_portfolio_id(session, portfolio.id) is None
+            await delete_portfolio(session, portfolio.id)
+            assert await session.get(Portfolio, portfolio.id) is None
+            with pytest.raises(HTTPException) as error:
+                await delete_portfolio(session, portfolio.id)
+            assert error.value.status_code == 404
 
     asyncio.run(scenario())
