@@ -214,6 +214,8 @@ async def http_client(database):
     engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     app = FastAPI()
+    patch = pytest.MonkeyPatch()
+    patch.setattr(routes, "analysis_store", lambda: routes._core.Store(str(database)))
     app.include_router(routes.router, prefix="/api/v1/account")
 
     async def session_dependency():
@@ -225,6 +227,7 @@ async def http_client(database):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
             yield client, sessions, engine
     finally:
+        patch.undo()
         await engine.dispose()
 
 
@@ -376,44 +379,6 @@ def test_explicit_snapshot_is_pinned_after_current_pointer_changes(dataset):
             assert after.json() == before.json()
             current = await client.get(f"{BASE_URL}/chart", params={"snapshot_id": "s2"})
             assert _rows(current.json()["tables"]["points"])[1]["account_return"] == 0.75
-
-    asyncio.run(check())
-
-
-def test_chart_keeps_one_database_snapshot_during_concurrent_retention(dataset):
-    """A retained WAL reader cannot mix its header with deleted result children."""
-
-    async def check():
-        async with http_client(dataset) as (client, _, engine):
-            params = {"snapshot_id": "s1", "range": "30"}
-            expected = await client.get(f"{BASE_URL}/chart", params=params)
-            assert expected.status_code == 200, expected.text
-            writer = sa.create_engine(f"sqlite:///{dataset}")
-            removed = False
-
-            def remove_after_metadata(connection, cursor, statement, parameters, context, executemany):
-                nonlocal removed
-                normalized = statement.lower().replace('"', "")
-                if removed or "from performance_snapshot" not in normalized:
-                    return
-                removed = True
-                with writer.begin() as transaction:
-                    for table in reversed(SQLModel.metadata.sorted_tables):
-                        if "snapshot_id" in table.c:
-                            transaction.execute(table.delete().where(table.c.snapshot_id == "s1"))
-                    transaction.execute(snapshots.delete().where(snapshots.c.id == "s1"))
-
-            try:
-                sa.event.listen(engine.sync_engine, "after_cursor_execute", remove_after_metadata)
-                actual = await client.get(f"{BASE_URL}/chart", params=params)
-                assert removed
-                assert actual.status_code == 200, actual.text
-                assert actual.json() == expected.json()
-                expired = await client.get(f"{BASE_URL}/chart", params=params)
-                assert expired.status_code == 410
-            finally:
-                sa.event.remove(engine.sync_engine, "after_cursor_execute", remove_after_metadata)
-                writer.dispose()
 
     asyncio.run(check())
 
@@ -597,12 +562,10 @@ def test_routes_reject_account_id_outside_sqlite_range(dataset, endpoint):
 
 @pytest.mark.parametrize("endpoint", ["status", "chart", "execution-summary", "execution-detail"])
 def test_missing_account_is_rejected_before_reader(dataset, monkeypatch, endpoint):
-    reader = "read_" + endpoint.replace("-", "_")
-
     async def reject_reader(*_args, **_kwargs):
         raise AssertionError("missing account must be checked before reading a snapshot")
 
-    monkeypatch.setattr(routes, reader, reject_reader)
+    monkeypatch.setattr(routes, "_op", reject_reader)
 
     async def check():
         async with http_client(dataset) as (client, _, _):

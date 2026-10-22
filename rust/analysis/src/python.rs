@@ -207,9 +207,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_costs, m)?)?;
     m.add_function(wrap_pyfunction!(summaries, m)?)?;
     m.add_function(wrap_pyfunction!(performance_result, m)?)?;
+    m.add_function(wrap_pyfunction!(status, m)?)?;
+    m.add_function(wrap_pyfunction!(chart, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_detail, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
-
 }
 
 /// 读取快照状态信封与已发布结果(含 daily_costs/events)。
@@ -310,3 +313,91 @@ fn summaries(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+#[pyo3(signature = (store, account_id, logic_version, engine_version))]
+fn status(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            crate::views::status(connection, account_id, logic_version, engine_version)
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[pyo3(signature = (store, account_id, snapshot_id, range))]
+fn chart(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    snapshot_id: &str,
+    range: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| crate::views::chart(connection, account_id, snapshot_id, range))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (store, account_id, snapshot_id, range, limit, offset, start, end))]
+fn execution_summary(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    snapshot_id: &str,
+    range: &str,
+    limit: i64,
+    offset: i64,
+    start: Option<f64>,
+    end: Option<f64>,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            crate::views::execution_summary(
+                connection,
+                account_id,
+                snapshot_id,
+                range,
+                limit,
+                offset,
+                start,
+                end,
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[pyo3(signature = (store, account_id, snapshot_id, record_id, limit, offset))]
+fn execution_detail(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    snapshot_id: &str,
+    record_id: i64,
+    limit: i64,
+    offset: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            crate::views::execution_detail(
+                connection,
+                account_id,
+                snapshot_id,
+                record_id,
+                limit,
+                offset,
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}

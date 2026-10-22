@@ -17,6 +17,7 @@ pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
 pub(crate) mod source;
+pub mod views;
 pub mod wire_result;
 
 use std::io::{self, Write};
