@@ -4,7 +4,6 @@ from collections.abc import Iterator, Mapping
 
 import sqlalchemy as sa
 
-from axile.server.analysis_cost_reader import read_execution_results
 from axile.server.db.models.analysis_result import (
     RESULT_TABLES as RESULT_TABLES,
 )
@@ -19,6 +18,7 @@ from axile.server.db.models.analysis_result import (
     result_range,
     result_skip,
 )
+from tests.unit.server._analysis_execution_results import read_execution_results
 
 RESULT_SCHEMA_VERSION = 2
 POINT_FIELDS = tuple(column.name for column in result_point.c if column.name not in ("snapshot_id", "range_key", "idx"))

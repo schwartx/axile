@@ -144,7 +144,7 @@ def test_typed_trade_search_and_missing_side_match_legacy(filters):
 )
 def test_execution_results_rebuild_full_snapshot_projection_without_json(baseline, end):
     """Range history retains statuses, positions, attempts, transactions and fees."""
-    from axile.server.analysis_cost_reader import read_execution_results
+    from tests.unit.server._analysis_execution_results import read_execution_results
 
     async def check():
         async with _database() as (engine, sessions, projected, costs, _):
@@ -195,7 +195,7 @@ def test_typed_cost_time_and_record_scopes_match_legacy(dimension, filters):
 
 def test_execution_result_keyset_batches_preserve_equal_timestamp_records(monkeypatch):
     """Small pages use record identity to advance through equal timestamps."""
-    from axile.server import analysis_cost_reader
+    from tests.unit.server import _analysis_execution_results as analysis_cost_reader
 
     monkeypatch.setattr(analysis_cost_reader, "READ_BATCH_SIZE", 2)
 
