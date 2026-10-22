@@ -421,19 +421,10 @@ fn scan(
 fn check_source_version(
     connection: &Connection,
     account_id: i64,
-    request: &Value,
+    expected: SourceVersionCheck,
 ) -> Result<(), String> {
-    let Some(expected) = request.get("expected_source_version") else {
+    let SourceVersionCheck::Version(expected) = expected else {
         return Ok(());
-    };
-    let expected = if expected.is_null() {
-        None
-    } else {
-        Some(
-            expected
-                .as_i64()
-                .ok_or("expected_source_version must be an integer or null")?,
-        )
     };
     let actual: Option<i64> = connection
         .query_row(
@@ -449,14 +440,6 @@ fn check_source_version(
         );
     }
     Ok(())
-}
-
-fn flag(request: &Value, name: &str) -> Result<bool, String> {
-    match request.get(name) {
-        None => Ok(false),
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(format!("{name} must be a boolean")),
-    }
 }
 
 /// Verify the replay snapshot is complete without reading raw JSON payloads.
@@ -512,36 +495,37 @@ pub fn enrich_metadata(
     crate::calendar::enrich(connection, account_id, performance)
 }
 
-pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String> {
-    let account_id = request
-        .get("account_id")
-        .and_then(Value::as_i64)
-        .ok_or("account_id must be an integer")?;
-    check_source_version(connection, account_id, request)?;
-    if flag(request, "require_observation_facts")? {
+/// 读路径性能计算的领域入参:账户、可选区间与回测语义。
+pub struct PerformanceRequest {
+    pub account_id: i64,
+    pub range: Option<&'static str>,
+    pub include_backtest: bool,
+    pub include_metadata: bool,
+    pub require_observation_facts: bool,
+    pub expected_source_version: SourceVersionCheck,
+    pub backtest_fee_rate: f64,
+}
+
+/// 源版本守卫的三态:跳过、要求行不存在、要求版本相等。
+#[derive(Clone, Copy)]
+pub enum SourceVersionCheck {
+    Skip,
+    Version(Option<i64>),
+}
+
+pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Result<Value, String> {
+    let account_id = request.account_id;
+    check_source_version(connection, account_id, request.expected_source_version)?;
+    if request.require_observation_facts {
         check_observation_facts(connection, account_id)?;
     }
-    let include_metadata = flag(request, "include_metadata")?;
-    let fee = request
-        .pointer("/settings/backtest_fee_rate")
-        .and_then(Value::as_f64)
-        .ok_or("settings.backtest_fee_rate must be a number")?;
+    let include_metadata = request.include_metadata;
+    let fee = request.backtest_fee_rate;
     if !fee.is_finite() || !(0.0..1.0).contains(&fee) {
         return Err("backtest_fee_rate must be finite and in [0,1)".to_owned());
     }
-    let weight_type = request
-        .pointer("/settings/backtest_weight_type")
-        .and_then(Value::as_str)
-        .ok_or("settings.backtest_weight_type must be cs or ts")?;
-    if !["cs", "ts"].contains(&weight_type) {
-        return Err("settings.backtest_weight_type must be cs or ts".to_owned());
-    }
     let settings = json!({"backtest_weight_type":"cs", "backtest_fee_rate":fee});
-    let include_backtest = request
-        .get("include_backtest")
-        .or_else(|| request.get("backtest_included"))
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    let include_backtest = request.include_backtest;
     let (record_count, first, last): (i64, Option<String>, Option<String>) = connection
         .query_row(
             "SELECT count(*),min(time),max(time) FROM replay_observation WHERE account_id=?1",
@@ -549,12 +533,12 @@ pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String>
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(database_error)?;
-    let range_keys: &[&str] = match request.get("range") {
+    let range_keys: &[&str] = match request.range {
         None => &["30", "90", "all"],
-        Some(Value::String(key)) if key == "30" => &["30"],
-        Some(Value::String(key)) if key == "90" => &["90"],
-        Some(Value::String(key)) if key == "all" => &["all"],
-        _ => return Err("range must be 30, 90 or all".to_owned()),
+        Some("30") => &["30"],
+        Some("90") => &["90"],
+        Some("all") => &["all"],
+        Some(_) => return Err("range must be 30, 90 or all".to_owned()),
     };
     let mut states = Vec::new();
     for &key in range_keys {
@@ -629,7 +613,7 @@ pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String>
             Ok(())
         })?;
     }
-    if request.get("range").is_some() {
+    if request.range.is_some() {
         let mut result = states.pop().expect("one requested range").finish(
             &settings,
             record_count,
@@ -702,10 +686,17 @@ mod tests {
     }
 
     fn calculate(connection: &Connection, include: bool) -> Value {
-        handle(
+        performance(
             connection,
-            &json!({"account_id":1,"include_backtest":include,
-            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+            &PerformanceRequest {
+                account_id: 1,
+                range: None,
+                include_backtest: include,
+                include_metadata: false,
+                require_observation_facts: false,
+                expected_source_version: SourceVersionCheck::Skip,
+                backtest_fee_rate: 0.0,
+            },
         )
         .unwrap()
     }
@@ -731,19 +722,32 @@ mod tests {
         );
         let batched = calculate(&connection, false);
         for key in ["30", "90", "all"] {
-            let single = handle(
+            let single = performance(
                 &connection,
-                &json!({"account_id":1,"range":key,
-                "include_backtest":false,
-                "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+                &PerformanceRequest {
+                    account_id: 1,
+                    range: Some(key),
+                    include_backtest: false,
+                    include_metadata: false,
+                    require_observation_facts: false,
+                    expected_source_version: SourceVersionCheck::Skip,
+                    backtest_fee_rate: 0.0,
+                },
             )
             .unwrap();
             assert_eq!(single, batched[key]);
         }
-        let invalid = handle(
+        let invalid = performance(
             &connection,
-            &json!({"account_id":1,"range":"7",
-            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}}),
+            &PerformanceRequest {
+                account_id: 1,
+                range: Some("7"),
+                include_backtest: true,
+                include_metadata: false,
+                require_observation_facts: false,
+                expected_source_version: SourceVersionCheck::Skip,
+                backtest_fee_rate: 0.0,
+            },
         );
         assert!(invalid.is_err());
     }
@@ -754,23 +758,28 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE account_analysis (account_id INTEGER PRIMARY KEY,source_version INTEGER NOT NULL);"
         ).unwrap();
-        let mut request = json!({"account_id":1,"expected_source_version":null,
-            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
-        assert!(handle(&connection, &request).is_ok());
+        let mut request = PerformanceRequest {
+            account_id: 1,
+            range: None,
+            include_backtest: true,
+            include_metadata: false,
+            require_observation_facts: false,
+            expected_source_version: SourceVersionCheck::Version(None),
+            backtest_fee_rate: 0.0,
+        };
+        assert!(performance(&connection, &request).is_ok());
         connection
             .execute("INSERT INTO account_analysis VALUES (1,4)", [])
             .unwrap();
-        assert!(handle(&connection, &request)
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_VERSION_CHANGED:"));
-        request["expected_source_version"] = json!(4);
-        assert!(handle(&connection, &request).is_ok());
-        request["expected_source_version"] = json!(3);
-        assert!(handle(&connection, &request)
+        request.expected_source_version = SourceVersionCheck::Version(Some(4));
+        assert!(performance(&connection, &request).is_ok());
+        request.expected_source_version = SourceVersionCheck::Version(Some(3));
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_VERSION_CHANGED:"));
-        request["expected_source_version"] = json!(true);
-        assert!(handle(&connection, &request).is_err());
     }
 
     #[test]
@@ -791,13 +800,20 @@ mod tests {
              INSERT INTO executerecord VALUES (1,1,'execution-1','2026-01-01T01:00:00Z');",
             )
             .unwrap();
-        let request = json!({"account_id":1,"require_observation_facts":true,
-            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
-        assert!(handle(&connection, &request).is_ok());
+        let request = &PerformanceRequest {
+            account_id: 1,
+            range: None,
+            include_backtest: true,
+            include_metadata: false,
+            require_observation_facts: true,
+            expected_source_version: SourceVersionCheck::Skip,
+            backtest_fee_rate: 0.0,
+        };
+        assert!(performance(&connection, &request).is_ok());
         connection
             .execute("UPDATE executerecord SET execution_id='changed'", [])
             .unwrap();
-        assert!(handle(&connection, &request)
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
         connection
@@ -809,7 +825,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert!(handle(&connection, &request)
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
         connection
@@ -821,7 +837,7 @@ mod tests {
         connection
             .execute("DELETE FROM replay_observation WHERE record_id=1", [])
             .unwrap();
-        assert!(handle(&connection, &request)
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
         connection.execute("DELETE FROM executerecord", []).unwrap();
@@ -833,7 +849,7 @@ mod tests {
             true,
             Some(10.0),
         );
-        assert!(handle(&connection, &request)
+        assert!(performance(&connection, &request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
     }
@@ -857,9 +873,16 @@ mod tests {
              CREATE TABLE analysis_calendar_day (channel TEXT,day TEXT,status TEXT,calendar_id TEXT,label TEXT,PRIMARY KEY(channel,day));
              INSERT INTO analysis_calendar_day VALUES ('ctp','2026-01-01','available_closed','china','中国');"
         ).unwrap();
-        let request = json!({"account_id":1,"include_metadata":true,"range":"all",
-            "settings":{"backtest_weight_type":"cs","backtest_fee_rate":0.0}});
-        let actual = handle(&connection, &request).unwrap();
+        let request = &PerformanceRequest {
+            account_id: 1,
+            range: Some("all"),
+            include_backtest: true,
+            include_metadata: true,
+            require_observation_facts: false,
+            expected_source_version: SourceVersionCheck::Skip,
+            backtest_fee_rate: 0.0,
+        };
+        let actual = performance(&connection, &request).unwrap();
         assert_eq!(actual["calendar"]["status"], "available");
         assert_eq!(
             actual["calendar"]["closed_ranges"],

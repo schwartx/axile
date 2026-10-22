@@ -529,12 +529,33 @@ pub fn write(
         )
         .optional()
         .map_err(sql_error)?;
-    let mut calculation = request.clone();
-    let object = calculation
-        .as_object_mut()
-        .ok_or("request must be an object")?;
-    object.insert("include_metadata".to_owned(), json!(true));
-    object.insert("require_source_facts".to_owned(), json!(true));
+    let mut calculation = crate::performance::PerformanceRequest {
+        account_id: account,
+        range: None,
+        include_backtest: request
+            .get("include_backtest")
+            .or_else(|| request.get("backtest_included"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        include_metadata: true,
+        require_observation_facts: request
+            .get("require_observation_facts")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        expected_source_version: match request.get("expected_source_version") {
+            None => crate::performance::SourceVersionCheck::Skip,
+            Some(Value::Null) => crate::performance::SourceVersionCheck::Version(None),
+            Some(value) => crate::performance::SourceVersionCheck::Version(Some(
+                value
+                    .as_i64()
+                    .ok_or("expected_source_version must be an integer or null")?,
+            )),
+        },
+        backtest_fee_rate: request
+            .pointer("/settings/backtest_fee_rate")
+            .and_then(Value::as_f64)
+            .ok_or("settings.backtest_fee_rate must be a number")?,
+    };
     let mut settings = Value::Null;
     let mut data_until: Option<String> = None;
     let mut row_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -554,8 +575,8 @@ pub fn write(
         // Each range is released before the next scan. This intentionally spends
         // extra SQLite scans to avoid retaining three daily result trees at once.
         for key in ["30", "90", "all"] {
-            calculation["range"] = json!(key);
-            let performance = crate::performance::handle(connection, &calculation)?;
+            calculation.range = Some(key);
+            let performance = crate::performance::performance(connection, &calculation)?;
             if settings.is_null() {
                 settings = performance["settings"].clone();
             }

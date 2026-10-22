@@ -5,16 +5,16 @@
 //! No historical rows cross the Python/Rust process boundary in publish_store.
 
 pub mod calendar;
-pub mod publication;
-pub(crate) mod source;
 pub mod costs;
 pub mod error;
 pub(crate) mod execution_summary;
 pub mod native_publication;
 pub mod performance;
+pub mod publication;
 pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
+pub(crate) mod source;
 pub mod wire_result;
 
 use std::io::{self, Write};
@@ -34,7 +34,7 @@ pub fn capabilities() -> Value {
     json!({
         "protocol": PROTOCOL_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
-        "commands": ["performance", "replay", "costs", "snapshot", "performance_result", "publish", "publish_store"],
+        "commands": ["costs", "snapshot", "performance_result", "publish", "publish_store"],
         "streaming_commands": ["publish"],
         "max_frame_bytes": MAX_FRAME_BYTES,
         "read_only": false,
@@ -48,10 +48,7 @@ pub fn query(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
     if command == "publish_store" {
         return native_publication::publish(database, request);
     }
-    if !matches!(
-        command,
-        "performance" | "replay" | "costs" | "snapshot" | "performance_result"
-    ) {
+    if !matches!(command, "costs" | "snapshot" | "performance_result") {
         return Err(AnalysisError::new(
             "INVALID_REQUEST",
             format!("unsupported command: {command}"),
@@ -62,8 +59,7 @@ pub fn query(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
         match command {
             "costs" => costs::query_costs(connection, request),
             "snapshot" => snapshots::query(connection, request),
-            "performance_result" => snapshots::performance_result(connection, request),
-            _ => performance::handle(connection, request),
+            _ => snapshots::performance_result(connection, request),
         }
         .map_err(AnalysisError::from)
     })
