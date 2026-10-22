@@ -1,5 +1,7 @@
 # 跳过未消费的 WBT DataFrame
 
+> 历史归档：候选实现及完整基准脚本见提交 `66feb7a`，基线见下文。`benchmark_performance_frames.py` 的旧 worker、合成生成器和独立 CLI 已删除；模块仅保留存活读取基准共用的采样与夹具检查函数。以下命令须在当时的候选 checkout 运行，不适用于当前 Rust 分析链路；测量数据与原始证据保留。
+
 > 历史测量：以下默认公共构造器契约现已退役，旧实现只保留在 `tests/unit/server/_performance_oracle.py`。复现整链路数字需要当时的基线与候选 checkout；当前生产不提供 Python 计算或 `AnalysisManager`。
 
 基线为 Axile main `9794361`，改动仅涉及 `performance.py`：权益账本消费的是 `participants` 和统计，不读取 `BacktestInput.frame`。在账本计算的两次调用中关闭权重表构造；`build_wbt_input()` 默认行为仍生成原有列、float64 类型和退出零权重行。不改变计算公式、存储、迁移、依赖、API 或前端。
@@ -32,7 +34,7 @@
 
 本次收益主要是减少无用计算：规模案例计算约快14%，整条计算发布约快9%。整进程峰值只减少约3.2 MiB，API耗时基本持平；不能据此声称已经解决数百MB常驻占用。三轮短测不代表长期运行或所有负载。
 
-## 复现
+## 历史复现
 
 在基线源码目录和候选源码目录均保留时，用同一已安装开发依赖的Python运行：
 

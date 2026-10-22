@@ -507,16 +507,6 @@ async def read_execution_detail(session: Any, record: Any) -> dict[str, object]:
     }
 
 
-async def read_execution_targets(session: Any, input_id: str, *, role: str = "curr_target") -> dict[str, object]:
-    """只查询一种冻结目标，未提供与异常形状不伪造为目标映射。"""
-    present, value = await inputs.load_input_target(session, input_id, role=role)
-    if not present:
-        raise ValueError("执行输入未提供该目标")
-    if not isinstance(value, dict):
-        raise ValueError("执行输入目标不是映射")
-    return value
-
-
 def business_result(payload: object, *, is_success: int | None = None) -> object:
     """迁移核对使用显式业务 DTO，表示细节不属于等价条件。"""
     batch = encode_result_facts(0, payload, is_success=is_success)

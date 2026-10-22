@@ -1,5 +1,7 @@
 # 冻结快照复用原生执行值，降低组装峰值
 
+> 历史归档：候选实现及完整基准脚本见提交 `c3675e5`，基线见下文。`benchmark_analysis_http.py` 与其依赖 `benchmark_analysis_memory.py` 已删除。以下命令须在当时的候选 checkout 运行，不适用于当前 Rust 分析链路；测量数据与原始证据保留。
+
 基线为 Axile main `85216de`。生产改动仅在 `performance_analysis.compute_batch`：执行列表已由数据库 JSON 值、原转换函数和标量构成，冻结时直接使用该列表，省去 `AccountPerformance.model_dump` 对整份执行历史的再次复制。
 
 绩效模型的其他字段仍按原方式序列化，执行字段保留原位置；短区间仍不重复存储执行列表。没有改公式、精度、顺序、缺失数据处理、表结构、版本、接口或前端。写入器只读取这些投影值，不在发布时修改嵌套字典。
@@ -50,7 +52,7 @@
 
 原始 JSON 读取、必要快照本身和应用导入基线仍存在。本次不进行存储迁移；未修改前端，未部署，未验证联机账户和完整线上生命周期。
 
-## 复现
+## 历史复现
 
 ```bash
 git worktree add --detach /ABS/BASELINE 85216de
@@ -59,6 +61,6 @@ PYTHONPATH=/ABS/CANDIDATE python -m scripts.benchmark_analysis_http /ABS/CANDIDA
 PYTHONPATH=/ABS/CANDIDATE python -m scripts.benchmark_analysis_http /ABS/CANDIDATE /PRIVATE/CHEN_0033.db /NEW/PRIVATE/SYNTHETIC --baseline /ABS/BASELINE --synthetic-records 5000 --symbols 20
 ```
 
-使用同一个装有开发依赖的 Python；输入为已 checkpoint 的封存副本，输出目录须不存在。每个服务进程最长 60 秒；客户端验证和服务启动/关闭均有独立超时。脚本复用原有源文件保护、工作库复制、三轮对照及落库哈希工具；原 `benchmark_analysis_memory` 命令默认仍运行 ASGI 模式。
+使用同一个装有开发依赖的 Python；输入为已 checkpoint 的封存副本，输出目录须不存在。每个服务进程最长 60 秒；客户端验证和服务启动/关闭均有独立超时。脚本复用原有源文件保护、工作库复制、三轮对照及落库哈希工具；原 `benchmark_analysis_memory` 命令当时默认运行 ASGI 模式。
 
 原始报告：`/tmp/axile-freeze-http-real-v1`、`/tmp/axile-freeze-http-chen-scale-v1`、`/tmp/axile-freeze-http-scale-v1`。ASGI 初测：`/tmp/axile-freeze-copy-probe`。输出包含私有工作库和日志，不应入库。

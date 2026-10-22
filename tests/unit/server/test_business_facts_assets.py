@@ -26,12 +26,12 @@ from axile.server.business_facts.assets import (
     input_after_asset_fact_id,
     load_result_asset_rows,
     read_input_asset_observations,
-    read_result_asset_totals,
     read_snapshots_assets,
     snapshot_asset_fact_id,
     validate_result_asset_ownership,
 )
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._journal_oracle import read_result_asset_totals
 
 
 def _metadata():

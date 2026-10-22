@@ -10,7 +10,6 @@ from axile.server.db.models.analysis import analysis_state as states
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
 LOGIC_VERSION = "18"
 ENGINE_VERSION = "equity-ledger-1"
-RETRY_DELAYS = (5, 30, 120)
 
 
 async def enqueue(session, account_id: int, force: bool = False) -> None:
