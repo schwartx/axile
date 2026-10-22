@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -13,11 +12,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
+from axile.server._native import _core
 from axile.server.api.deps import get_db, get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud
 from axile.server.business_facts.assets import write_snapshot_assets
-from axile.server.db.models import AccountAssetSnapshot
+from axile.server.db.models import AccountAssetSnapshot, PortfolioAccount, TargetWeightSnapshot
+from axile.server.db.models.target_weight_snapshot import target_weight_snapshot_weight
+from axile.server.target_weight_snapshots import encode_snapshot_weights
 from tests.unit.server._business_analysis_support import analysis_record, persist_records
 from tests.unit.server._execution_test_support import build_account
 
@@ -112,27 +114,19 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(tmp_path, mon
                     )
                 ],
             )
+            session.add(PortfolioAccount(account_id=1, portfolio_id=7))
+            columns, rows = encode_snapshot_weights(
+                1, {"normalized_weights": {"TA2701": -0.08, "c2611": 0.03, "m2701": -0.06, "rb2610": 0.13}}
+            )
+            session.add(TargetWeightSnapshot(id=1, account_id=1, portfolio_id=7, source="manual", **columns))
+            await session.flush()
+            await session.execute(target_weight_snapshot_weight.insert(), rows[target_weight_snapshot_weight])
             await session.commit()
         await engine.dispose()
 
     asyncio.run(seed())
 
-    async def _bindings(_session: object) -> dict[int, int]:
-        return {1: 7}
-
-    async def _no_baseline_records(*_args: object, **_kwargs: object) -> dict[int, list[object]]:
-        return {}
-
-    async def _targets(_session: object, _pairs: object) -> dict[int, object]:
-        return {
-            1: SimpleNamespace(
-                normalized_weights={"TA2701": -0.08, "c2611": 0.03, "m2701": -0.06, "rb2610": 0.13},
-            )
-        }
-
-    monkeypatch.setattr(account_crud, "get_portfolios_every_account", _bindings)
-    monkeypatch.setattr(account_crud, "read_performance_summaries", _no_baseline_records)
-    monkeypatch.setattr(account_crud, "get_latest_account_target_snapshots_for_accounts", _targets)
+    monkeypatch.setattr(account_crud, "analysis_store", lambda: _core.Store(str(tmp_path / "dashboard.db")))
 
     app = _build_app(sessions, _Scheduler(_Job(None)))
     try:
@@ -141,5 +135,58 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(tmp_path, mon
         assert item["holdings_count"] == 4
         assert item["total_asset"] == equity
         assert item["last_output_status"] == "SUCCEEDED"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [
+        None,
+        {"total_asset": 0, "positions": []},
+        {
+            "total_asset": 1000,
+            "positions": [{"symbol": str(i), "volume": 1, "market_value": -i} for i in range(1, 15)],
+        },
+    ],
+)
+def test_dashboard_empty_zero_and_top_twelve(tmp_path, monkeypatch, assets):
+    database = tmp_path / "cards.sqlite"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def seed():
+        async with engine.begin() as connection:
+            await connection.run_sync(SQLModel.metadata.create_all)
+        async with sessions() as session:
+            session.add(build_account(id=1))
+            await session.flush()
+            if assets is not None:
+                await write_snapshot_assets(session, AccountAssetSnapshot(account_id=1, source="manual"), assets)
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed())
+    monkeypatch.setattr(account_crud, "analysis_store", lambda: _core.Store(str(database)))
+    monkeypatch.setattr(
+        account_crud.live_hub,
+        "progress_for",
+        lambda _: {"status": "running", "execution_id": "live", "kind": "rebalance", "phase": "submitting"},
+    )
+    monkeypatch.setattr(account_crud, "get_running_execution_id", lambda _: "registry")
+    app = _build_app(sessions, _Scheduler())
+    try:
+        response = TestClient(app).get("/account/dashboard")
+        assert response.status_code == 200, response.text
+        item = response.json()["data"][0]
+        assert item["off_symbol_count"] is None
+        assert item["running_execution_id"] == "live"
+        assert item["running_phase"] == "submitting"
+        assert item["currency"] == "CNY"
+        assert item["performance"]["status"] == "empty"
+        assert item["holdings_count"] == (14 if assets and assets["positions"] else 0)
+        assert item["position_weights"] == (list(range(14, 2, -1)) if assets and assets["positions"] else [])
+        assert (item["asset_observed_at"] is None) == (assets is None)
+        assert "assets" not in item and "target_weights" not in item
     finally:
         asyncio.run(engine.dispose())

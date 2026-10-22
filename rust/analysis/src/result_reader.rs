@@ -119,7 +119,7 @@ pub(crate) struct Point {
 }
 
 impl Point {
-    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+    pub(crate) fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             date: row.get(0)?,
             observed_at: row.get(1)?,

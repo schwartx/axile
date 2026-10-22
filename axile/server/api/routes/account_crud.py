@@ -20,8 +20,8 @@ from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
+from axile.server.api.routes.account_analysis import _op
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.business_facts.assets import read_snapshots_assets
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, parse_cron_expr
 from axile.server.db.models import (
@@ -49,7 +49,6 @@ from axile.server.execution.account_runtime_sync import enqueue_account_runtime_
 from axile.server.execution.ctp_channels import drop_account_worker
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
-    execution_record_output_status,
     get_execution_task_state,
     get_queued_execution_id,
     get_running_execution_id,
@@ -61,11 +60,7 @@ from axile.server.performance import close_before, local_time
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.repositories import (
     add_record_portfolio_account,
-    get_portfolios_every_account,
-    get_recent_account_asset_snapshots_for_accounts,
-    get_recent_execute_records_for_accounts,
 )
-from axile.server.target_weight_snapshots import get_latest_account_target_snapshots_for_accounts
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
 
 router = APIRouter()
@@ -456,14 +451,6 @@ def _safe_total_asset(assets: dict[str, Any]) -> float:
         return 0.0
 
 
-async def read_performance_summaries(account_ids: list[int]) -> dict[int, PerformanceSummary]:
-    """批量卡片摘要走原生只读查询;键统一为 int。"""
-    if not account_ids:
-        return {}
-    result = await run_in_threadpool(_core.summaries, analysis_store(), account_ids, LOGIC_VERSION, ENGINE_VERSION)
-    return {int(account_id): PerformanceSummary.model_validate(item) for account_id, item in result.items()}
-
-
 @router.get("/dashboard", response_model=AccountDashboardPublic)
 async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDashboardPublic:
     """
@@ -490,27 +477,15 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
     from axile.server.connection_state import public_connection
 
     accounts = (await session.execute(select(Account))).scalars().all()
-    bindings = await get_portfolios_every_account(session)
-
     account_ids = [cast("int", account.id) for account in accounts]
-    performance_by_account = await read_performance_summaries(account_ids)
-    recent_records_by_account = await get_recent_execute_records_for_accounts(session, account_ids, limit=1)
-    recent_by_account = await get_recent_account_asset_snapshots_for_accounts(session, account_ids, limit=1)
-    assets_by_snapshot = await read_snapshots_assets(
-        session, [snapshot for snapshots in recent_by_account.values() for snapshot in snapshots]
-    )
-    target_pairs = [
-        (account_id, portfolio_id) for account_id, portfolio_id in bindings.items() if portfolio_id is not None
-    ]
-    targets_by_account = await get_latest_account_target_snapshots_for_accounts(session, target_pairs)
+    inputs = await _op(_core.dashboard_inputs, analysis_store(), account_ids, LOGIC_VERSION, ENGINE_VERSION)
     items: list[AccountDashboardItemPublic] = []
     for account in accounts:
         account_id = cast("int", account.id)
-        recent = recent_by_account.get(account_id, [])
-        latest_snapshot = recent[0] if recent else None
-        latest_records = recent_records_by_account.get(account_id, [])
-        latest = latest_records[0] if latest_records else None
-        assets = assets_by_snapshot[cast("int", latest_snapshot.id)] if latest_snapshot is not None else {}
+        persisted = inputs[str(account_id)]
+        latest_snapshot = persisted["observation"]
+        latest = persisted["latest"]
+        assets = latest_snapshot["assets"] if latest_snapshot is not None else {}
         raw_positions = assets.get("positions")
         positions: list[Any] = raw_positions if isinstance(raw_positions, list) else []
         holdings_count = len(positions)
@@ -565,15 +540,14 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
             running_status = "queued"
             running_phase = "queued"
 
-        last_output_status = None if latest is None else execution_record_output_status(latest)
-        performance = performance_by_account.get(account_id, PerformanceSummary())
+        last_output_status = None if latest is None else latest["display_status"]
+        performance = PerformanceSummary.model_validate(persisted["performance"])
         previous_close = (
-            close_before(performance.points, local_time(latest_snapshot.created_at).date().isoformat())
+            close_before(performance.points, local_time(latest_snapshot["created_at"]).date().isoformat())
             if latest_snapshot is not None
             else None
         )
-        target_snapshot = targets_by_account.get(account_id)
-        target_weights = None if target_snapshot is None else target_snapshot.normalized_weights
+        target_weights = persisted["target_weights"]
         off_symbol_count = None
         if latest_snapshot is not None and valuation_complete and isinstance(target_weights, dict):
             off_symbol_count = plan_executable_target(
@@ -592,7 +566,7 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
                 market=account.market,
                 trade_channel=account.trade_channel,
                 is_started=account.is_started,
-                portfolio_id=bindings.get(account_id),
+                portfolio_id=persisted["portfolio_id"],
                 is_scheduled=job is not None,
                 next_run_time=next_run.isoformat() if next_run is not None else None,
                 total_asset=_safe_total_asset(assets),
@@ -601,10 +575,10 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
                 position_weights=position_weights,
                 performance=performance,
                 connection=public_connection(account),
-                asset_observed_at=latest_snapshot.created_at if latest_snapshot is not None else None,
+                asset_observed_at=latest_snapshot["created_at"] if latest_snapshot is not None else None,
                 previous_close=previous_close,
-                last_is_success=latest.is_success if latest is not None else None,
-                last_exec_at=latest.created_at if latest is not None else None,
+                last_is_success=latest["is_success"] if latest is not None else None,
+                last_exec_at=latest["created_at"] if latest is not None else None,
                 last_output_status=last_output_status,
                 off_symbol_count=off_symbol_count,
                 running_execution_id=running_execution_id,

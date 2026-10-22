@@ -26,6 +26,25 @@ const POSITION_FIELDS: &[&str] = &[
 const FILTER: &str = "s.account_id=?1 AND EXISTS (SELECT 1 FROM business_asset_snapshot a
     WHERE a.asset_id=s.asset_fact_id AND a.observation_valid IS TRUE)";
 
+// Shared by history and dashboard; every matching execution owner must validate.
+pub(crate) const OWNER_VALID: &str = "CASE WHEN a.account_snapshot_id IS NOT NULL THEN a.account_snapshot_id IS s.id
+        ELSE EXISTS (
+            SELECT 1 FROM business_asset_binding b JOIN executerecord r ON r.id=b.record_id
+            WHERE b.asset_id=a.asset_id AND b.path='/account_assets'
+            AND r.account_id IS s.account_id AND r.execution_id IS s.execution_id)
+        AND NOT EXISTS (
+            SELECT 1 FROM business_asset_binding b JOIN executerecord r ON r.id=b.record_id
+            LEFT JOIN execution_input i ON i.id=a.input_id
+            WHERE b.asset_id=a.asset_id AND b.path='/account_assets'
+            AND r.account_id IS s.account_id AND r.execution_id IS s.execution_id
+            AND (CASE WHEN a.record_id IS NOT NULL THEN a.record_id IS r.id
+                ELSE i.id IS NOT NULL AND (a.input_id IS r.input_id OR a.input_id IS r.result_input_id)
+                AND i.account_id IS r.account_id
+                AND coalesce(i.owner_execution_id,i.execution_id) IS r.execution_id
+                AND (i.execution_id IS NULL OR i.execution_id IS r.execution_id)
+                AND a.path='/after_account_assets' AND a.scope='after_pending' END) IS NOT TRUE)
+        END";
+
 fn database(error: rusqlite::Error) -> String {
     format!("ASSET_READ_ERROR: {error}")
 }
@@ -199,28 +218,14 @@ pub fn page(
         ORDER BY s.id DESC LIMIT ?3 OFFSET ?2"
     );
     // Every matching record must validate, not just one favorable owner.
-    let sql = format!("WITH page AS ({page_sql})
+    let sql = format!(
+        "WITH page AS ({page_sql})
         SELECT a.*,s.id AS snapshot_id,s.account_id AS snapshot_account_id,
         s.source AS snapshot_source,s.execution_id AS snapshot_execution_id,s.created_at,
-        CASE WHEN a.account_snapshot_id IS NOT NULL THEN a.account_snapshot_id IS s.id
-        ELSE EXISTS (
-            SELECT 1 FROM business_asset_binding b JOIN executerecord r ON r.id=b.record_id
-            WHERE b.asset_id=a.asset_id AND b.path='/account_assets'
-            AND r.account_id IS s.account_id AND r.execution_id IS s.execution_id)
-        AND NOT EXISTS (
-            SELECT 1 FROM business_asset_binding b JOIN executerecord r ON r.id=b.record_id
-            LEFT JOIN execution_input i ON i.id=a.input_id
-            WHERE b.asset_id=a.asset_id AND b.path='/account_assets'
-            AND r.account_id IS s.account_id AND r.execution_id IS s.execution_id
-            AND (CASE WHEN a.record_id IS NOT NULL THEN a.record_id IS r.id
-                ELSE i.id IS NOT NULL AND (a.input_id IS r.input_id OR a.input_id IS r.result_input_id)
-                AND i.account_id IS r.account_id
-                AND coalesce(i.owner_execution_id,i.execution_id) IS r.execution_id
-                AND (i.execution_id IS NULL OR i.execution_id IS r.execution_id)
-                AND a.path='/after_account_assets' AND a.scope='after_pending' END) IS NOT TRUE)
-        END AS owner_valid
+        {OWNER_VALID} AS owner_valid
         FROM page s JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id
-        ORDER BY s.id DESC");
+        ORDER BY s.id DESC"
+    );
     let mut statement = connection.prepare(&sql).map_err(database)?;
     let mut cursor = statement
         .query(params![account_id, skip, limit])

@@ -8,6 +8,7 @@ pub mod assets;
 pub(crate) mod business_detail;
 pub mod calendar;
 pub mod costs;
+pub mod dashboard;
 pub mod error;
 pub(crate) mod execution_summary;
 pub mod executions;

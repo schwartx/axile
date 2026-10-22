@@ -479,6 +479,37 @@ WHERE s.account_id IN ({placeholders})"
         .prepare(&sql)
         .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
     let mut summaries = serde_json::Map::new();
+    let mut typed_points: std::collections::HashMap<String, Vec<crate::result_reader::Point>> =
+        std::collections::HashMap::new();
+    // Only compatible published schema2 snapshots need points; one query for all cards.
+    let mut points_statement = connection.prepare(&format!(
+        "SELECT q.date,q.observed_at,q.record_id,q.execution_id,q.account_return,q.account_equity,
+        q.portfolio_return,q.account_daily_return,q.portfolio_daily_return,
+        q.target_portfolio_return,q.target_portfolio_daily_return,q.difference,q.sizing_fallback,q.snapshot_id
+        FROM performance_result_point q WHERE q.range_key='all' AND q.snapshot_id IN (
+        SELECT p.id FROM account_analysis s JOIN performance_snapshot p ON s.current_snapshot=p.id
+        WHERE s.account_id IN ({placeholders}) AND p.result_schema_version=2
+        AND p.logic_version=? AND p.engine_version=?) ORDER BY q.snapshot_id,q.idx"
+    )).map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    let mut parameters: Vec<rusqlite::types::Value> =
+        account_ids.iter().copied().map(Into::into).collect();
+    parameters.push(expected_logic.to_owned().into());
+    parameters.push(expected_engine.to_owned().into());
+    let mut point_rows = points_statement
+        .query(rusqlite::params_from_iter(parameters))
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    while let Some(row) = point_rows
+        .next()
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?
+    {
+        let id: String = row
+            .get(13)
+            .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+        typed_points.entry(id).or_default().push(
+            crate::result_reader::Point::from_row(row)
+                .map_err(|error| format!("SNAPSHOT_READ: {error}"))?,
+        );
+    }
     let mut cursor = statement
         .query(rusqlite::params_from_iter(account_ids.iter()))
         .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
@@ -510,12 +541,10 @@ WHERE s.account_id IN ({placeholders})"
         let points = if incompatible || !has_snapshot {
             Value::Array(Vec::new())
         } else if schema_version == Some(2) {
-            let (_, points) = crate::result_reader::read_typed(
-                connection,
-                snapshot_id.as_deref().expect("checked"),
-                "all",
-                true,
-            )?;
+            let points = typed_points
+                .get(snapshot_id.as_deref().expect("checked"))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             serde_json::to_value(points).map_err(|error| format!("SUMMARY_ENCODE: {error}"))?
         } else {
             ranges
@@ -561,7 +590,13 @@ mod tests {
                  CREATE TABLE performance_snapshot (
                      id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
                      logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT,
-                     settings TEXT, ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);",
+                     settings TEXT, ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE performance_result_point (
+                     snapshot_id TEXT,range_key TEXT,idx INTEGER,date TEXT,observed_at TEXT,
+                     record_id INTEGER,execution_id TEXT,account_return REAL,account_equity REAL,
+                     portfolio_return REAL,account_daily_return REAL,portfolio_daily_return REAL,
+                     target_portfolio_return REAL,target_portfolio_daily_return REAL,difference REAL,
+                     sizing_fallback INTEGER NOT NULL DEFAULT 0);",
             )
             .unwrap();
         connection
@@ -955,6 +990,33 @@ mod tests {
         assert!(query(&connection, &input)
             .unwrap_err()
             .starts_with("INVALID_REQUEST:"));
+    }
+
+    #[test]
+    fn summaries_batch_typed_points_in_index_order() {
+        let connection = database();
+        connection.execute_batch("INSERT INTO account_analysis
+            (account_id,current_snapshot,published_version) VALUES (1,'a',1),(2,'b',1),(3,'c',1),(4,'d',1);
+            INSERT INTO performance_snapshot (id,account_id,logic_version,engine_version,result_schema_version)
+            VALUES ('a',1,'18','e',2),('b',2,'18','e',2),('c',3,'18','e',2),('d',4,'old','e',2);
+            INSERT INTO performance_result_point
+            (snapshot_id,range_key,idx,date,observed_at,account_equity) VALUES
+            ('a','all',2,'later','t2',20),('b','all',0,'other','tb',99),
+            ('a','all',1,'earlier','t1',10),('a','month',3,'excluded','x',999),
+            ('d','all',0,'incompatible','x',999);").unwrap();
+        let result = summaries(
+            &connection,
+            &json!({"account_ids":[1,2,3,4],
+            "logic_version":"18","engine_version":"e"}),
+        )
+        .unwrap();
+        assert_eq!(result["1"]["points"][0]["account_equity"], 10.0);
+        assert_eq!(result["1"]["account_equity"], 20.0);
+        assert_eq!(result["2"]["account_equity"], 99.0);
+        assert_eq!(result["3"]["points"], json!([]));
+        assert_eq!(result["3"]["account_equity"], Value::Null);
+        assert_eq!(result["4"]["points"], json!([]));
+        assert_eq!(result["4"]["status"], "pending");
     }
 
     #[test]

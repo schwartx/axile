@@ -429,6 +429,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(query_costs, m)?)?;
     m.add_function(wrap_pyfunction!(summaries, m)?)?;
+    m.add_function(wrap_pyfunction!(dashboard_inputs, m)?)?;
     m.add_function(wrap_pyfunction!(performance_result, m)?)?;
     m.add_function(wrap_pyfunction!(status, m)?)?;
     m.add_function(wrap_pyfunction!(publication_status, m)?)?;
@@ -527,9 +528,33 @@ fn query_costs(
     Ok(PyBytes::new(py, &result).unbind())
 }
 
-/// 批量账户卡片摘要:状态与全区间曲线末点。
+/// 同一只读快照中的卡片输入；插件和实时状态由 Python 收尾。
 #[pyfunction]
 #[pyo3(signature = ( store, account_ids, logic_version, engine_version))]
+fn dashboard_inputs(
+    py: Python<'_>,
+    store: &Store,
+    account_ids: Vec<i64>,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::dashboard::dashboard_inputs(
+                    connection,
+                    &account_ids,
+                    logic_version,
+                    engine_version,
+                )
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[pyo3(signature = (store, account_ids, logic_version, engine_version))]
 fn summaries(
     py: Python<'_>,
     store: &Store,
