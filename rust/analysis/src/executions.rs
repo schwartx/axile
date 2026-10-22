@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
-const FILTER: &str = "r.account_id=?1 AND (?4 IS NULL OR r.execution_id=?4)
-    AND (?5 IS NULL OR r.id=?5)";
-const HEADERS: &str = "r.id,r.account_id,r.created_at,r.execution_id,r.is_success,
-    r.input_id,r.result_input_id,r.status,r.task_status,r.error,r.outcome,
-    r.outcome_reason,r.reason_code,r.msg,r.execution_kind,r.channel_type,
-    r.execution_time,r.success,r.display_status,r.display_error,r.display_outcome,
-    r.display_outcome_reason,r.termination_reason,r.termination_mode,r.termination_trigger,
-    r.termination_requested_at,r.termination_acked_at,r.termination_finished_at,
-    r.termination_cancel_attempted,r.termination_forced,r.termination_cancel_unconfirmed";
+const FILTER: &str = "r.account_id=?1 AND (?2 IS NULL OR r.execution_id=?2)
+    AND (?3 IS NULL OR r.id=?3)";
+const INTEGER_FIELDS: &[&str] = &["id", "account_id", "is_success"];
+const BOOLEAN_FIELDS: &[&str] = &[
+    "success",
+    "termination_cancel_attempted",
+    "termination_forced",
+    "termination_cancel_unconfirmed",
+];
 const TEXT_FIELDS: &[&str] = &[
     "created_at",
     "execution_id",
@@ -75,23 +75,24 @@ pub fn page(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let arguments = params![account_id, skip, limit, execution_id, record_id];
-    // Keep the same numbered bindings for count, headers, and the symbol page CTE.
+    let arguments = params![account_id, execution_id, record_id, limit, skip];
     let count: i64 = connection
         .query_row(
-            &format!("SELECT count(*) FROM executerecord r WHERE {FILTER} AND ?2>=0 AND ?3>=1"),
-            arguments,
+            &format!("SELECT count(*) FROM executerecord r WHERE {FILTER}"),
+            params![account_id, execution_id, record_id],
             |row| row.get(0),
         )
         .map_err(database)?;
     let page_ids = format!(
         "SELECT r.id FROM executerecord r WHERE {FILTER}
-        ORDER BY r.id DESC LIMIT ?3 OFFSET ?2"
+        ORDER BY r.id DESC LIMIT ?4 OFFSET ?5"
     );
     let mut symbol_statement = connection.prepare(&format!(
         "WITH page AS ({page_ids})
          SELECT s.record_id,s.symbol,s.present,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
          FROM analysis_source_execution_symbol s JOIN page p ON p.id=s.record_id
+         JOIN analysis_source_execution e ON e.record_id=s.record_id
+         WHERE e.projection_error IS NULL AND e.has_symbol_results
          ORDER BY s.record_id,s.symbol"
     )).map_err(database)?;
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
@@ -112,9 +113,18 @@ pub fn page(
             .or_default()
             .insert(row.get("symbol").map_err(database)?, Value::Object(fields));
     }
+    let headers = TEXT_FIELDS
+        .iter()
+        .chain(INTEGER_FIELDS)
+        .chain(BOOLEAN_FIELDS)
+        .copied()
+        .chain(std::iter::once("execution_time"))
+        .map(|name| format!("r.{name}"))
+        .collect::<Vec<_>>()
+        .join(",");
     let mut statement = connection
         .prepare(&format!(
-            "WITH page AS ({page_ids}) SELECT {HEADERS},s.record_id AS source_id,
+            "WITH page AS ({page_ids}) SELECT {headers},s.record_id AS source_id,
          s.projection_error,s.has_symbol_results,s.trade_count,s.symbol_count
          FROM page p JOIN executerecord r ON r.id=p.id
          LEFT JOIN analysis_source_execution s ON s.record_id=r.id ORDER BY r.id DESC"
@@ -131,7 +141,7 @@ pub fn page(
                 json!(row.get::<_, Option<String>>(*name).map_err(database)?),
             );
         }
-        for name in ["id", "account_id", "is_success"] {
+        for &name in INTEGER_FIELDS {
             header.insert(
                 name.into(),
                 json!(row.get::<_, i64>(name).map_err(database)?),
@@ -143,12 +153,7 @@ pub fn page(
                 .get::<_, Option<f64>>("execution_time")
                 .map_err(database)?),
         );
-        for name in [
-            "success",
-            "termination_cancel_attempted",
-            "termination_forced",
-            "termination_cancel_unconfirmed",
-        ] {
+        for &name in BOOLEAN_FIELDS {
             header.insert(
                 name.into(),
                 json!(row.get::<_, Option<bool>>(name).map_err(database)?),
