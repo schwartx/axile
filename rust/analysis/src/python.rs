@@ -1,0 +1,205 @@
+//! Python 绑定:每业务函数一个 typed 入口,进程内直调,不经 JSON 文本协议。
+
+use std::time::Duration;
+
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
+use pyo3::prelude::*;
+use pyo3::types::PyAny;
+use pyo3::Py;
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{json, Value};
+use std::sync::Mutex;
+
+use crate::error::AnalysisError;
+use crate::performance::{self, PerformanceRequest, SourceVersionCheck};
+use crate::snapshots;
+
+create_exception!(_core, NativeError, PyException, "原生分析查询错误");
+
+fn raise(error: AnalysisError) -> PyErr {
+    NativeError::new_err((error.code, error.error))
+}
+
+fn open(path: &str) -> PyResult<Connection> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| raise(AnalysisError::new("DATABASE_OPEN", error.to_string())))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| raise(AnalysisError::new("DATABASE_CONFIG", error.to_string())))?;
+    // 只读连接;缓存与映射约束沿用 worker 读路径,保证资源口径可比。
+    connection
+        .execute_batch("PRAGMA query_only = ON;\nPRAGMA cache_size = -4096;\nPRAGMA mmap_size = 0;")
+        .map_err(|error| raise(AnalysisError::new("DATABASE_CONFIG", error.to_string())))?;
+    Ok(connection)
+}
+
+/// 只读 SQLite 访问点;每次查询一个 DEFERRED 快照,结束即释放。
+#[pyclass]
+struct Store {
+    connection: Mutex<Connection>,
+}
+
+#[pymethods]
+impl Store {
+    #[new]
+    fn new(path: &str) -> PyResult<Self> {
+        Ok(Self {
+            connection: Mutex::new(open(path)?),
+        })
+    }
+}
+
+impl Store {
+    fn with_snapshot<T>(
+        &self,
+        task: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, AnalysisError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| AnalysisError::new("DATABASE_LOCK", "store connection mutex poisoned"))?;
+        connection
+            .execute_batch("BEGIN DEFERRED;")
+            .map_err(|error| AnalysisError::new("DATABASE_BEGIN", error.to_string()))?;
+        let result = task(&connection);
+        let closed = connection
+            .execute_batch("ROLLBACK;")
+            .map_err(|error| AnalysisError::new("DATABASE_CLOSE", error.to_string()));
+        match result {
+            Ok(value) => closed.map(|()| value),
+            Err(error) => Err(AnalysisError::from(error)),
+        }
+    }
+}
+
+fn json_to_py(py: Python<'_>, value: &Value) -> Py<PyAny> {
+    match value {
+        Value::Null => py.None().into_any(),
+        Value::Bool(inner) => inner
+            .into_pyobject(py)
+            .unwrap()
+            .to_owned()
+            .into_any()
+            .unbind(),
+        Value::Number(number) => {
+            if let Some(inner) = number.as_i64() {
+                inner.into_pyobject(py).unwrap().into_any().unbind()
+            } else {
+                number
+                    .as_f64()
+                    .into_pyobject(py)
+                    .unwrap()
+                    .into_any()
+                    .unbind()
+            }
+        }
+        Value::String(inner) => inner.into_pyobject(py).unwrap().into_any().unbind(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| json_to_py(py, item))
+            .collect::<Vec<Py<PyAny>>>()
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+            .unbind(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, item)| (key, json_to_py(py, item)))
+            .collect::<std::collections::HashMap<&std::string::String, Py<PyAny>>>()
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+            .unbind(),
+    }
+}
+
+/// 同步计算账户绩效;费率与权重设置由 Rust 从账户行读取(旧 ts 归一为 cs)。
+#[pyfunction]
+#[pyo3(signature = (store, account_id, range=None, include_backtest=true, verify_source=false, expected_source_version=None))]
+fn account_performance(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    range: Option<&str>,
+    include_backtest: bool,
+    verify_source: bool,
+    expected_source_version: Option<i64>,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            let fee: f64 = connection
+                .query_row(
+                    "SELECT backtest_fee_rate FROM account WHERE id=?1",
+                    [account_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("DATABASE_READ: {error}"))?;
+            let range: Option<&'static str> = match range {
+                None => Ok(None),
+                Some("30") => Ok(Some("30")),
+                Some("90") => Ok(Some("90")),
+                Some("all") => Ok(Some("all")),
+                Some(_) => Err("INVALID_REQUEST: range must be 30, 90 or all".to_owned()),
+            }?;
+            performance::performance(
+                connection,
+                &PerformanceRequest {
+                    account_id,
+                    range,
+                    include_backtest,
+                    include_metadata: false,
+                    require_observation_facts: false,
+                    expected_source_version: if verify_source {
+                        SourceVersionCheck::Version(expected_source_version)
+                    } else {
+                        SourceVersionCheck::Skip
+                    },
+                    backtest_fee_rate: fee,
+                },
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+/// 读取已发布绩效结果;未就绪或版本过期时抛 NativeError。
+#[pyfunction]
+#[pyo3(signature = (store, account_id, range, include_backtest, logic_version, engine_version))]
+fn performance_result(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    range: &str,
+    include_backtest: bool,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            snapshots::performance_result(
+                connection,
+                &json!({
+                    "account_id": account_id,
+                    "range": range,
+                    "include_backtest": include_backtest,
+                    "logic_version": logic_version,
+                    "engine_version": engine_version,
+                }),
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pymodule]
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(account_performance, m)?)?;
+    m.add_function(wrap_pyfunction!(performance_result, m)?)?;
+    m.add("NativeError", m.py().get_type::<NativeError>())?;
+    Ok(())
+}

@@ -11,6 +11,8 @@ pub(crate) mod execution_summary;
 pub mod native_publication;
 pub mod performance;
 pub mod publication;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
