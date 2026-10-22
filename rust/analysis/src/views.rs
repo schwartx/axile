@@ -394,42 +394,6 @@ fn param_refs(params: &[Box<dyn rusqlite::ToSql>]) -> Vec<&dyn rusqlite::ToSql> 
     params.iter().map(|value| value.as_ref()).collect()
 }
 
-fn execution_fees(
-    connection: &Connection,
-    snapshot_id: &str,
-    record_ids: &[i64],
-) -> Result<Value, String> {
-    let placeholders = vec!["?"; record_ids.len()].join(",");
-    let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if record_ids.is_empty() {
-        (
-            "SELECT record_id,currency,value,count FROM performance_execution_fee WHERE 0"
-                .to_owned(),
-            Vec::new(),
-        )
-    } else {
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(snapshot_id.to_owned())];
-        params.extend(
-            record_ids
-                .iter()
-                .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>),
-        );
-        (
-            format!(
-                "SELECT record_id,currency,value,count FROM performance_execution_fee
-                 WHERE snapshot_id=? AND record_id IN ({placeholders}) ORDER BY record_id,currency"
-            ),
-            params,
-        )
-    };
-    table(
-        connection,
-        &sql,
-        &param_refs(&params),
-        &["record_id", "currency", "value", "count"],
-        &[],
-    )
-}
-
 fn result_tables(
     connection: &Connection,
     snapshot_id: &str,
@@ -617,13 +581,27 @@ pub fn execution_summary(
     let rows = page["rows"].as_array_mut().unwrap();
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    let record_ids: Vec<i64> = rows.iter().map(|row| row[0].as_i64().unwrap()).collect();
+    let limit_index = params.len() - 2;
+    params[limit_index] = Box::new(limit);
+    let fee_sql = format!(
+        "WITH selected AS ({sql})
+        SELECT record_id,currency,value,count FROM performance_execution_fee
+        WHERE snapshot_id=?1 AND record_id IN (SELECT record_id FROM selected)
+        ORDER BY record_id,currency"
+    );
+    let fees = table(
+        connection,
+        &fee_sql,
+        &param_refs(&params),
+        &["record_id", "currency", "value", "count"],
+        &[],
+    )?;
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
         "range": range_key,
         "table": page,
-        "fees": execution_fees(connection, snapshot_id, &record_ids)?,
+        "fees": fees,
         "next_offset": if has_more { json!(offset + limit) } else { Value::Null },
     }))
 }
@@ -665,25 +643,14 @@ pub fn execution_detail(
     ];
     let header = scalar_row(
         connection,
-        "SELECT record_id,time,success,noop,key,execution_id,created_at,is_success,duration_sec,trade_count,
-                symbol_count,position_count,positions_present,reason,raw_present,has_symbol_results,
-                raw_status,raw_task_status,raw_error,raw_outcome,raw_outcome_reason,raw_reason_code,
-                raw_msg,raw_execution_kind
-         FROM performance_cost_execution WHERE snapshot_id=?1 AND record_id=?2",
+        &format!(
+            "SELECT {} FROM performance_cost_execution WHERE snapshot_id=?1 AND record_id=?2",
+            header_columns.join(",")
+        ),
         &[&snapshot_id, &record_id],
     )?
     .ok_or("EXECUTION_NOT_FOUND: 此绩效版本中没有该执行记录")?;
-    let summary = scalar_row(
-        connection,
-        "SELECT record_id,time,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete,
-                covered_value,estimated,symbol_count,has_transactions
-         FROM performance_execution_summary WHERE snapshot_id=?1 AND record_id=?2",
-        &[&snapshot_id, &record_id],
-    )?
-    .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少执行摘要")?;
-    let fees = execution_fees(connection, snapshot_id, &[record_id])?;
-    let mut summary_map = Map::new();
-    for (index, name) in [
+    let summary_columns = [
         "value",
         "cost",
         "loss_bp",
@@ -696,11 +663,18 @@ pub fn execution_detail(
         "estimated",
         "symbol_count",
         "has_transactions",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let value = summary[index + 2].clone();
+    ];
+    let summary = scalar_row(
+        connection,
+        &format!(
+            "SELECT {} FROM performance_execution_summary WHERE snapshot_id=?1 AND record_id=?2",
+            summary_columns.join(",")
+        ),
+        &[&snapshot_id, &record_id],
+    )?
+    .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少执行摘要")?;
+    let mut summary_map = Map::new();
+    for (name, value) in summary_columns.iter().zip(summary) {
         summary_map.insert(
             (*name).to_owned(),
             if SUMMARY_BOOLEANS.contains(name) {
@@ -710,19 +684,21 @@ pub fn execution_detail(
             },
         );
     }
-    summary_map.insert("fees".into(), {
-        let mut fee_map = Map::new();
-        for row in fees["rows"].as_array().unwrap() {
-            if row[1].is_string() {
-                fee_map.insert(row[1].as_str().unwrap().to_owned(), row[2].clone());
-            }
-        }
-        Value::Object(fee_map)
-    });
+    let mut statement = connection.prepare(
+        "SELECT currency,value FROM performance_execution_fee WHERE snapshot_id=?1 AND record_id=?2 ORDER BY currency"
+    ).map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
+    let fees = statement
+        .query_map(rusqlite::params![snapshot_id, record_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?
+        .map(|row| row.map(|(currency, value)| (currency, json!(value))))
+        .collect::<rusqlite::Result<Map<String, Value>>>()
+        .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
+    summary_map.insert("fees".into(), Value::Object(fees));
     let header_booleans = &["success", "noop", "positions_present", "has_symbol_results"];
     let mut header_map = Map::new();
-    for (index, name) in header_columns.iter().enumerate() {
-        let value = header[index].clone();
+    for (name, value) in header_columns.iter().zip(header) {
         header_map.insert(
             (*name).to_owned(),
             if header_booleans.contains(name) {
