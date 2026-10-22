@@ -245,7 +245,7 @@ fn empty_summary() -> Value {
         "count":0,"amountComplete":true,"fees":{},"feeCovered":0})
 }
 
-fn historical_summary(mut summary: Value) -> Value {
+pub(crate) fn historical_summary(mut summary: Value) -> Value {
     let object = summary.as_object_mut().expect("summary object");
     if object["coveredValue"].as_f64().unwrap_or(0.0) <= 0.0 {
         object.insert("lossBp".into(), Value::Null);

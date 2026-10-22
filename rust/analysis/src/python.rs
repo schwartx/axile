@@ -332,10 +332,31 @@ fn journal(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+#[pyo3(signature = (store, account_id, since, until, symbol=None))]
+fn activity_symbols(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    since: &str,
+    until: &str,
+    symbol: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::symbols::query(connection, account_id, since, until, symbol)
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_function(wrap_pyfunction!(journal, m)?)?;
+    m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
     m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;

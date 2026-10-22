@@ -151,60 +151,70 @@ def test_detail_reads_canonical_facts_without_legacy_documents(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_activity_symbol_query_uses_projected_columns_and_account_scope(monkeypatch):
+def test_activity_symbol_query_uses_projected_columns_and_account_scope(monkeypatch, tmp_path):
     """成本行不依赖完整结果载荷，同时保留零费用及成交身份。"""
 
-    async def account_exists(_session, account_id):
-        return SimpleNamespace(id=account_id)
+    from axile.server._native import _core
+    from tests.unit.server._execution_test_support import build_account
 
-    monkeypatch.setattr(account_schedule, "_get_account_or_404", account_exists)
+    path = tmp_path / "symbols.db"
+    monkeypatch.setattr(account_schedule, "analysis_store", lambda: _core.Store(str(path)))
 
     async def scenario():
-        async with _session() as session:
-            for account_id in (1, 2):
-                record = ExecuteRecord(
-                    account_id=account_id,
-                    execution_id=f"execution-{account_id}",
-                    created_at="2026-10-20T09:00:00",
-                    is_success=1,
-                )
-                session.add(record)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                session.add_all([build_account(id=i, portfolio_id=None) for i in (1, 2)])
                 await session.flush()
-                await session.execute(source_execution.insert().values(record_id=record.id, account_id=account_id))
-                await session.execute(
-                    source_trade.insert().values(
-                        record_id=record.id,
-                        trade_index=0,
-                        symbol="SHFE.rb2610",
-                        time=1234.0,
-                        day="2026-10-20",
-                        value=1000.0,
-                        cost=0.0,
-                        loss_bp=0.0,
-                        fee=0.0,
-                        fee_currency="CNY",
-                        estimated=False,
-                        side="buy",
-                        quantity=1.0,
-                        price=100.0,
-                        reference=100.0,
-                        reference_source="mid",
+                for account_id in (1, 2):
+                    record = ExecuteRecord(
+                        account_id=account_id,
+                        execution_id=f"execution-{account_id}",
+                        created_at="2026-10-20T09:00:00",
+                        is_success=1,
                     )
+                    session.add(record)
+                    await session.flush()
+                    await session.execute(source_execution.insert().values(record_id=record.id, account_id=account_id))
+                    await session.execute(
+                        source_trade.insert().values(
+                            record_id=record.id,
+                            trade_index=0,
+                            symbol="SHFE.rb2610",
+                            time=1234.0,
+                            day="2026-10-20",
+                            value=1000.0,
+                            cost=0.0,
+                            loss_bp=0.0,
+                            fee=0.0,
+                            fee_currency="CNY",
+                            estimated=False,
+                            side="buy",
+                            quantity=1.0,
+                            price=100.0,
+                            reference=100.0,
+                            reference_source="mid",
+                        )
+                    )
+                await session.commit()
+                payload = await account_schedule.account_activity_symbols(
+                    account_id=1,
+                    since="2026-10-20T00:00:00",
+                    until="2026-10-21T00:00:00",
+                    symbol="SHFE.rb2610",
                 )
-            payload = await account_schedule.account_activity_symbols(
-                session,
-                account_id=1,
-                since="2026-10-20T00:00:00",
-                until="2026-10-21T00:00:00",
-                symbol="SHFE.rb2610",
-            )
-            assert payload.count == 1
-            symbol = payload.data[0]
-            assert symbol.n_trades == 1
-            assert symbol.summary.value == 1000.0
-            assert symbol.summary.fees == {"CNY": 0.0}
-            assert symbol.trades[0]["execution_id"] == "execution-1"
-            assert symbol.trades[0]["timeEstimated"] is False
+                assert payload["count"] == 1
+                symbol = payload["data"][0]
+                assert symbol["n_trades"] == 1
+                assert symbol["summary"]["value"] == 1000.0
+                assert symbol["summary"]["fees"] == {"CNY": 0.0}
+                assert symbol["trades"][0]["execution_id"] == "execution-1"
+                assert symbol["trades"][0]["timeEstimated"] is False
+
+        finally:
+            await engine.dispose()
 
     asyncio.run(scenario())
 

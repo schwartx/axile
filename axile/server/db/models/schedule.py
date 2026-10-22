@@ -85,28 +85,9 @@ class AccountActivityListPublic(SQLModel):
     count: int
 
 
-class ActivitySymbolRowPublic(SQLModel):
-    """实时按品种汇总的一行。"""
-
-    symbol: str
-    summary: CostSummary
-    last_time: int
-    n_trades: int
-    trades: list[dict] = Field(default_factory=list)
-
-
-class ActivitySymbolListPublic(SQLModel):
-    """实时按品种汇总列表。"""
-
-    data: list[ActivitySymbolRowPublic]
-    count: int
-
-
 __all__ = [
     "AccountActivityListPublic",
     "ActivityExecutionRecord",
-    "ActivitySymbolListPublic",
-    "ActivitySymbolRowPublic",
     "ExecutionActivity",
     "ScheduleSkip",
     "ScheduleSkipActivity",

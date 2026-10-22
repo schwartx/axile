@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
+from axile.server._native import _core
 from axile.server.analysis_history import AnalysisRecord
 from axile.server.analysis_source import write_source_facts
 from axile.server.api.routes import account_schedule
 from axile.server.db.models import ExecuteRecord
+from tests.unit.server._execution_test_support import build_account
 
 _FAT_RAW = {
     "status": "SUCCEEDED",
@@ -48,20 +49,20 @@ _FAT_RAW = {
 }
 
 
-def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch):
+def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch, tmp_path):
     """展开某个品种时，同一接口带上该品种成交。"""
 
-    async def account_exists(_session, account_id):
-        return SimpleNamespace(id=account_id)
-
-    monkeypatch.setattr(account_schedule, "_get_account_or_404", account_exists)
+    path = tmp_path / "activity.db"
+    monkeypatch.setattr(account_schedule, "analysis_store", lambda: _core.Store(str(path)))
 
     async def scenario():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(SQLModel.metadata.create_all)
             async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                session.add(build_account(id=1, portfolio_id=None))
+                await session.flush()
                 record = ExecuteRecord(
                     id=7,
                     account_id=1,
@@ -83,19 +84,19 @@ def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch
                         result=dict(_FAT_RAW),
                     ),
                 )
+                await session.commit()
                 payload = await account_schedule.account_activity_symbols(
-                    session=session,
                     account_id=1,
                     since="2026-09-01T00:00:00",
                     until="2026-09-02T00:00:00",
                     symbol="rb2610",
                 )
-                assert payload.count == 1
-                row = payload.data[0]
-                assert row.symbol == "rb2610"
-                assert len(row.trades) == 1
-                assert row.trades[0]["value"] == 1000.0
-                assert row.trades[0]["record_id"] == 7
+                assert payload["count"] == 1
+                row = payload["data"][0]
+                assert row["symbol"] == "rb2610"
+                assert len(row["trades"]) == 1
+                assert row["trades"][0]["value"] == 1000.0
+                assert row["trades"][0]["record_id"] == 7
         finally:
             await engine.dispose()
 

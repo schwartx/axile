@@ -8,8 +8,6 @@ from typing import Annotated, Literal
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import select as sql_select
-from sqlmodel import col, desc
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
@@ -17,24 +15,9 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
 from axile.server._native import _core
-from axile.server.api.business_execution import (
-    projected_trade,
-)
-from axile.server.api.deps import SessionDep
-from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, is_blank_cron_expr, parse_cron_expr
-from axile.server.db.models import (
-    ExecuteRecord,
-)
 from axile.server.db.models.account_settings import SupplementSettings
-from axile.server.db.models.analysis_source import source_trade
-from axile.server.db.models.performance import CostSummary
-from axile.server.db.models.schedule import (
-    ActivitySymbolListPublic,
-    ActivitySymbolRowPublic,
-)
-from axile.server.performance_costs import summarize
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import (
     CalendarDecisionStatus,
@@ -44,16 +27,6 @@ from axile.server.trading_calendar import (
 )
 
 router = APIRouter()
-
-
-def _time_clauses(column, since: str | None, until: str | None):
-    """把可选时间窗编成列比较；``since`` 含、``until`` 不含。"""
-    clauses = []
-    if since:
-        clauses.append(column >= since)
-    if until:
-        clauses.append(column < until)
-    return clauses
 
 
 class SchedulePreviewRequest(BaseModel):
@@ -272,47 +245,20 @@ async def schedule_preview(payload: SchedulePreviewRequest) -> SchedulePreviewRe
     )
 
 
-@router.get("/{account_id}/activity/symbols", response_model=ActivitySymbolListPublic)
+@router.get("/{account_id}/activity/symbols")
 async def account_activity_symbols(
-    session: SessionDep,
     account_id: int,
     since: str,
     until: str,
     symbol: Annotated[str | None, Query()] = None,
-) -> ActivitySymbolListPublic:
-    """实时按品种汇总；时间窗必填。"""
-    await _get_account_or_404(session, account_id)
-    statement = (
-        sql_select(source_trade, col(ExecuteRecord.execution_id))
-        .join(ExecuteRecord, col(ExecuteRecord.id) == source_trade.c.record_id)
-        .where(
-            col(ExecuteRecord.account_id) == account_id,
-            *_time_clauses(col(ExecuteRecord.created_at), since, until),
-        )
-        .order_by(desc(col(ExecuteRecord.created_at)), desc(col(ExecuteRecord.id)), source_trade.c.trade_index)
-        .execution_options(yield_per=100)
-    )
-    if symbol is not None:
-        statement = statement.where(source_trade.c.symbol == symbol)
-    rows = await session.stream(statement)
-    grouped: dict[str, list[dict]] = {}
+) -> dict:
+    """从原生读快照返回品种汇总及所选品种成交。"""
     try:
-        async for row in rows.mappings():
-            trade = {**projected_trade(row), "record_id": row["record_id"], "execution_id": row["execution_id"]}
-            grouped.setdefault(str(trade["symbol"]), []).append(trade)
-    finally:
-        await rows.close()
-    data = [
-        ActivitySymbolRowPublic(
-            symbol=name,
-            summary=CostSummary.model_validate(summarize(fills)),
-            last_time=int(max(fill["time"] for fill in fills)),
-            n_trades=len(fills),
-            trades=fills if symbol else [],
-        )
-        for name, fills in grouped.items()
-    ]
-    return ActivitySymbolListPublic(data=data, count=len(data))
+        return await run_in_threadpool(_core.activity_symbols, analysis_store(), account_id, since, until, symbol)
+    except _core.NativeError as error:
+        if error.args[0] == "ACCOUNT_NOT_FOUND":
+            raise HTTPException(404, detail="账户不存在") from error
+        raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
 @router.get("/{account_id}/activity")

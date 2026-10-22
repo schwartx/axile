@@ -21,6 +21,7 @@ pub(crate) mod result_reader;
 pub mod snapshots;
 pub(crate) mod source;
 pub mod submissions;
+pub mod symbols;
 pub mod views;
 pub mod wire_result;
 
