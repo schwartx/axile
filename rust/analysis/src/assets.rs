@@ -23,7 +23,6 @@ const POSITION_FIELDS: &[&str] = &[
     "avg_price",
     "extra",
 ];
-const AMOUNTS: &[&str] = &["volume", "available_volume", "market_value", "avg_price"];
 const FILTER: &str = "s.account_id=?1 AND EXISTS (SELECT 1 FROM business_asset_snapshot a
     WHERE a.asset_id=s.asset_fact_id AND a.observation_valid IS TRUE)";
 
@@ -35,48 +34,41 @@ fn invalid(message: &str) -> String {
     format!("INVALID_DATA: {message}")
 }
 
-fn row_values(row: &Row<'_>) -> Result<Map<String, Value>, String> {
-    let mut values = Map::new();
-    for (index, name) in row.as_ref().column_names().iter().enumerate() {
-        let value = match row.get_ref(index).map_err(database)? {
-            ValueRef::Null => Value::Null,
-            ValueRef::Integer(value) => json!(value),
-            ValueRef::Real(value) => serde_json::Number::from_f64(value)
-                .map(Value::Number)
-                .ok_or_else(|| invalid("nonfinite asset column"))?,
-            ValueRef::Text(value) => {
-                let text = std::str::from_utf8(value).map_err(|_| invalid("invalid asset text"))?;
-                if [
-                    "payload_value",
-                    "audit_evidence",
-                    "positions_value",
-                    "extra",
-                ]
-                .contains(name)
-                {
-                    serde_json::from_str(text).map_err(|error| invalid(&error.to_string()))?
-                } else {
-                    Value::String(text.into())
-                }
+fn cell(row: &Row<'_>, name: &str) -> Result<Value, String> {
+    Ok(match row.get_ref(name).map_err(database)? {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => json!(value),
+        ValueRef::Real(value) => serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| invalid("nonfinite asset column"))?,
+        ValueRef::Text(value) => {
+            let text = std::str::from_utf8(value).map_err(|_| invalid("invalid asset text"))?;
+            if [
+                "payload_value",
+                "audit_evidence",
+                "positions_value",
+                "extra",
+            ]
+            .contains(&name)
+            {
+                serde_json::from_str(text).map_err(|error| invalid(&error.to_string()))?
+            } else {
+                Value::String(text.into())
             }
-            ValueRef::Blob(_) => return Err(invalid("unexpected asset blob")),
-        };
-        values.insert((*name).into(), value);
-    }
-    Ok(values)
+        }
+        ValueRef::Blob(_) => return Err(invalid("unexpected asset blob")),
+    })
 }
 
-fn columns(row: &Map<String, Value>, fields: &[&str]) -> Result<Map<String, Value>, String> {
+fn columns(row: &Row<'_>, fields: &[&str]) -> Result<Map<String, Value>, String> {
     let mut view = Map::new();
     for &name in fields {
-        let value = row
-            .get(name)
-            .ok_or_else(|| invalid("missing asset column"))?;
+        let value = cell(row, name)?;
         if !value.is_null() {
-            view.insert(name.into(), value.clone());
+            view.insert(name.into(), value);
         }
     }
-    let evidence = &row["audit_evidence"];
+    let evidence = cell(row, "audit_evidence")?;
     if !evidence.is_null() {
         let evidence = evidence
             .as_object()
@@ -90,15 +82,13 @@ fn columns(row: &Map<String, Value>, fields: &[&str]) -> Result<Map<String, Valu
 
 fn availability(
     view: &mut Map<String, Value>,
-    row: &Map<String, Value>,
+    row: &Row<'_>,
     fields: &[(&str, &str, &str)],
 ) -> Result<(), String> {
     let mut states = Map::new();
     for &(label, field, column) in fields {
-        let state = row[column]
-            .as_str()
-            .ok_or_else(|| invalid("invalid availability"))?;
-        if !["absent", "null", "value", "invalid"].contains(&state) {
+        let state: String = row.get(column).map_err(database)?;
+        if !["absent", "null", "value", "invalid"].contains(&state.as_str()) {
             return Err(invalid("invalid availability"));
         }
         states.insert(label.into(), json!(state));
@@ -110,26 +100,30 @@ fn availability(
     Ok(())
 }
 
-fn position(row: &Map<String, Value>) -> Result<Value, String> {
-    if row["payload_kind"] != "object" {
-        return Ok(row["payload_value"].clone());
+fn position(row: &Row<'_>) -> Result<Value, String> {
+    if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
+        return cell(row, "payload_value");
     }
     let mut view = columns(row, POSITION_FIELDS)?;
-    let state_names: Vec<String> = AMOUNTS.iter().map(|name| format!("{name}_state")).collect();
-    let fields: Vec<_> = AMOUNTS
-        .iter()
-        .zip(&state_names)
-        .map(|(&name, state)| (name, name, state.as_str()))
-        .collect();
-    availability(&mut view, row, &fields)?;
+    availability(
+        &mut view,
+        row,
+        &[
+            ("volume", "volume", "volume_state"),
+            (
+                "available_volume",
+                "available_volume",
+                "available_volume_state",
+            ),
+            ("market_value", "market_value", "market_value_state"),
+            ("avg_price", "avg_price", "avg_price_state"),
+        ],
+    )?;
     Ok(Value::Object(view))
 }
 
-fn observation(
-    row: &Map<String, Value>,
-    positions: &[Map<String, Value>],
-) -> Result<Value, String> {
-    if row["payload_kind"] != "object" {
+fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<Value, String> {
+    if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
         return Err(invalid("account asset observation is not an object"));
     }
     let mut view = columns(row, ASSET_FIELDS)?;
@@ -142,25 +136,32 @@ fn observation(
             ("market_value", "market_value", "market_state"),
         ],
     )?;
-    match row["positions_kind"].as_str() {
-        Some("array") => {
-            if row["positions_count"].as_u64() != Some(positions.len() as u64) {
+    match row
+        .get::<_, String>("positions_kind")
+        .map_err(database)?
+        .as_str()
+    {
+        "array" => {
+            if row
+                .get::<_, Option<i64>>("positions_count")
+                .map_err(database)?
+                != Some(positions.len() as i64)
+            {
                 return Err(invalid("incomplete position facts"));
             }
             let mut values = Vec::with_capacity(positions.len());
-            for (ordinal, item) in positions.iter().enumerate() {
-                if item["ordinal"].as_u64() != Some(ordinal as u64) {
+            for (ordinal, (index, item)) in positions.iter().enumerate() {
+                if *index != ordinal as i64 {
                     return Err(invalid("invalid position occurrence sequence"));
                 }
-                values.push(position(item)?);
+                values.push(item.clone());
             }
             view.insert("positions".into(), Value::Array(values));
         }
-        Some("absent") => {}
-        Some(_) => {
-            view.insert("positions".into(), row["positions_value"].clone());
+        "absent" => {}
+        _ => {
+            view.insert("positions".into(), cell(row, "positions_value")?);
         }
-        None => return Err(invalid("invalid positions kind")),
     }
     Ok(Value::Object(view))
 }
@@ -224,51 +225,39 @@ pub fn page(
     let mut cursor = statement
         .query(params![account_id, skip, limit])
         .map_err(database)?;
-    let mut roots = Vec::new();
+    let mut positions: HashMap<String, Vec<(i64, Value)>> = HashMap::new();
+    let position_sql = format!(
+        "WITH page AS ({page_sql}) SELECT p.* FROM business_asset_position p
+         WHERE p.asset_id IN (SELECT asset_fact_id FROM page) ORDER BY p.asset_id,p.ordinal"
+    );
+    let mut position_statement = connection.prepare(&position_sql).map_err(database)?;
+    let mut position_cursor = position_statement
+        .query(params![account_id, skip, limit])
+        .map_err(database)?;
+    while let Some(row) = position_cursor.next().map_err(database)? {
+        positions
+            .entry(row.get("asset_id").map_err(database)?)
+            .or_default()
+            .push((row.get("ordinal").map_err(database)?, position(row)?));
+    }
+    let mut data = Vec::new();
     while let Some(row) = cursor.next().map_err(database)? {
-        let root = row_values(row)?;
-        if root["owner_valid"] != 1 {
+        if !row.get::<_, bool>("owner_valid").map_err(database)? {
             return Err(invalid(
                 "asset observation belongs to another snapshot, account or execution",
             ));
         }
-        if !matches!(
-            root["snapshot_source"].as_str(),
-            Some("manual" | "execution")
-        ) {
+        let source: String = row.get("snapshot_source").map_err(database)?;
+        if !matches!(source.as_str(), "manual" | "execution") {
             return Err(invalid("invalid snapshot source"));
         }
-        roots.push(root);
-    }
-    let mut positions: HashMap<String, Vec<Map<String, Value>>> = HashMap::new();
-    if !roots.is_empty() {
-        let sql = format!(
-            "WITH page AS ({page_sql}) SELECT p.* FROM business_asset_position p
-            WHERE p.asset_id IN (SELECT asset_fact_id FROM page) ORDER BY p.asset_id,p.ordinal"
-        );
-        let mut statement = connection.prepare(&sql).map_err(database)?;
-        let mut cursor = statement
-            .query(params![account_id, skip, limit])
-            .map_err(database)?;
-        while let Some(row) = cursor.next().map_err(database)? {
-            let row = row_values(row)?;
-            let id = row["asset_id"]
-                .as_str()
-                .ok_or_else(|| invalid("invalid asset id"))?
-                .to_owned();
-            positions.entry(id).or_default().push(row);
-        }
-    }
-    let mut data = Vec::with_capacity(roots.len());
-    for root in roots {
-        let id = root["asset_id"]
-            .as_str()
-            .ok_or_else(|| invalid("invalid asset id"))?;
-        let assets = observation(&root, positions.get(id).map(Vec::as_slice).unwrap_or(&[]))?;
+        let id: String = row.get("asset_id").map_err(database)?;
+        let assets = observation(row, positions.get(&id).map(Vec::as_slice).unwrap_or(&[]))?;
         data.push(
-            json!({"id":root["snapshot_id"],"account_id":root["snapshot_account_id"],
-            "assets":assets,"source":root["snapshot_source"],
-            "execution_id":root["snapshot_execution_id"],"created_at":root["created_at"]}),
+            json!({"id":row.get::<_, i64>("snapshot_id").map_err(database)?,
+            "account_id":account_id,"assets":assets,"source":source,
+            "execution_id":row.get::<_, Option<String>>("snapshot_execution_id").map_err(database)?,
+            "created_at":row.get::<_, String>("created_at").map_err(database)?}),
         );
     }
     Ok(json!({"data":data,"count":count}))
@@ -285,7 +274,22 @@ mod tests {
             "audit_evidence":{"invalid_fields":{"market_value":"bad"}},
             "cash_state":"null","equity_state":"value","market_state":"invalid",
             "positions_kind":"array","positions_count":0});
-        let result = observation(row.as_object().unwrap(), &[]).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        let projection = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|key| format!("json_extract(?1, '$.{key}') AS {key}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT {projection}");
+        let read = |value: &Value| {
+            let mut statement = db.prepare(&sql).unwrap();
+            let text = value.to_string();
+            let mut rows = statement.query([text]).unwrap();
+            observation(rows.next().unwrap().unwrap(), &[])
+        };
+        let result = read(&row).unwrap();
         assert_eq!(result["available_cash"], Value::Null);
         assert!(result.get("market_value").is_none());
         assert!(result.get("currency").is_none());
@@ -294,8 +298,8 @@ mod tests {
             "bad"
         );
         assert_eq!(result["positions"], json!([]));
-        let mut broken = row.as_object().unwrap().clone();
-        broken.insert("positions_count".into(), json!(1));
-        assert!(observation(&broken, &[]).is_err());
+        let mut broken = row;
+        broken["positions_count"] = json!(1);
+        assert!(read(&broken).is_err());
     }
 }
