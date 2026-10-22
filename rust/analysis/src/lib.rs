@@ -5,6 +5,8 @@
 //! No historical rows cross the Python/Rust process boundary in publish_store.
 
 pub mod calendar;
+pub mod publication;
+pub(crate) mod source;
 pub mod costs;
 pub mod error;
 pub(crate) mod execution_summary;

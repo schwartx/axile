@@ -4,6 +4,7 @@
 //! business facts and migrations; this command writes analysis-owned tables.
 
 mod staging;
+mod copy;
 mod task;
 mod writer;
 
