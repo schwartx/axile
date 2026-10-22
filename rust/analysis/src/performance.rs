@@ -518,12 +518,8 @@ pub fn handle(connection: &Connection, request: &Value) -> Result<Value, String>
         .and_then(Value::as_i64)
         .ok_or("account_id must be an integer")?;
     check_source_version(connection, account_id, request)?;
-    let require_source = flag(request, "require_source_facts")?;
-    if require_source || flag(request, "require_observation_facts")? {
+    if flag(request, "require_observation_facts")? {
         check_observation_facts(connection, account_id)?;
-    }
-    if require_source {
-        crate::source::validate(connection, account_id)?;
     }
     let include_metadata = flag(request, "include_metadata")?;
     let fee = request
