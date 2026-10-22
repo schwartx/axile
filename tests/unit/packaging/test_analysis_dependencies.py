@@ -29,7 +29,6 @@ def test_analysis_runs_without_retired_wbt_packages():
         from axile.server.api.routes.account_performance import router
         from axile.server.db.models.performance import PerformanceSettings
         from axile.server.performance import Observation, build_wbt_input, calculate_performance
-        from axile.server.performance_analysis import compute_batch
 
         items = [
             Observation(1, "first", datetime(2026, 1, 1), 100.0, {"A": 1.0}, {"A": 100.0}),
@@ -42,8 +41,6 @@ def test_analysis_runs_without_retired_wbt_packages():
         assert math.isclose(result.points[-1].account_return, 0.1, abs_tol=1e-12)
         assert math.isclose(result.points[-1].portfolio_return, 0.1, abs_tol=1e-12)
         assert len(build_wbt_input(items).frame) == 2
-        ranges, _, _ = compute_batch([], [], [], [], settings, "unregistered")
-        assert set(ranges) == {"30", "90", "all"}
         assert router.routes
         assert retired.isdisjoint(sys.modules)
         """

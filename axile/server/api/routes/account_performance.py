@@ -3,6 +3,7 @@
 import asyncio
 from typing import Annotated
 
+import sqlalchemy as sa
 from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
@@ -11,6 +12,7 @@ from axile.server._native import _core
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.core.db import analysis_store
+from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.performance import (
     AccountPerformance,
     PerformanceSettings,
@@ -21,10 +23,9 @@ from axile.server.performance_analysis import (
     ENGINE_VERSION,
     LOGIC_VERSION,
     enqueue,
-    read_snapshot,
     read_snapshot_status,
 )
-from axile.server.performance_details import CostQuery, _cursor, read_costs
+from axile.server.performance_details import CostQuery, read_costs
 
 router = APIRouter()
 
@@ -127,7 +128,7 @@ async def get_performance(
 async def get_snapshot(session: SessionDep, account_id: int, range: RangeKey = "all") -> dict:
     """只读取已发布结果及更新状态，不触达历史大 JSON."""
     await _get_account_or_404(session, account_id)
-    return await read_snapshot(session, account_id, range)
+    return await _op(_core.snapshot, analysis_store(), account_id, range, LOGIC_VERSION, ENGINE_VERSION)
 
 
 @router.post("/performance/{account_id}/refresh", status_code=202)
@@ -142,5 +143,28 @@ async def refresh_performance(session: SessionDep, account_id: int) -> dict:
 async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQuery, Query()]) -> dict:
     """按不可变快照版本聚合、排序并分页读取成本投影."""
     await _get_account_or_404(session, account_id)
-    _cursor(query, account_id)
-    return await read_costs(session, account_id, query)
+    fact_version = await session.scalar(
+        sa.select(snapshots.c.cost_schema_version).where(
+            snapshots.c.id == query.snapshot_id, snapshots.c.account_id == account_id
+        )
+    )
+    if fact_version == 0:
+        # 旧编码快照仍走 Python 读取;backfill 迁移决策落地后删除。
+        return await read_costs(session, account_id, query)
+    return await _op(
+        _core.query_costs,
+        analysis_store(),
+        account_id,
+        query.snapshot_id,
+        query.range,
+        query.dimension,
+        query.sort,
+        query.day,
+        query.start,
+        query.end,
+        query.record_id,
+        query.symbol,
+        query.cursor,
+        LOGIC_VERSION,
+        ENGINE_VERSION,
+    )

@@ -266,3 +266,64 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
         yield engine, sessions, None
     finally:
         await engine.dispose()
+
+
+def _events(records, bindings, skips) -> list[dict]:
+    """事件标签 oracle:与 rust/analysis publication.rs 的事件派生保持同义。"""
+    from collections.abc import Mapping
+
+    from axile.executor.session_closed import session_closed_scope
+    from axile.server.execution.legacy_compat import normalize_legacy_result
+    from axile.server.performance_costs import timestamp
+
+    events = [
+        {
+            "time": binding.created_at,
+            "tag": "换绑",
+            "text": "解绑组合" if binding.portfolio_id is None else f"组合 #{binding.portfolio_id}",
+            "executionId": None,
+        }
+        for binding in bindings
+    ]
+    events.extend(
+        {
+            "time": skip.triggered_at,
+            "tag": "跳过",
+            "text": "执行中" if skip.reason_code == "BUSY" else "休市",
+            "executionId": None,
+        }
+        for skip in skips
+    )
+    for record in records:
+        if record.is_success == 1:
+            continue
+        raw = normalize_legacy_result(record.result)
+        if not isinstance(raw, Mapping):
+            raise ValueError("Execution event result must be a mapping")
+        status = raw.get("status")
+        labels: dict[str | None, str] = {
+            "SUCCEEDED": "调仓完成",
+            "NOOP": "无需调仓",
+            "PARTIAL": "执行未全部完成",
+            "FAILED": "执行失败",
+            "BLOCKED": "未执行",
+        }
+        label = labels.get(status, "执行状态未知")
+        scope = session_closed_scope(raw)
+        if scope == "all":
+            label = "休市跳过"
+        elif scope == "partial":
+            label = "部分品种休市 · 执行未全部完成"
+        if raw.get("task_status") == "TERMINATED":
+            label = "执行已终止"
+        reason = raw.get("error") if status in {"FAILED", "BLOCKED", "PARTIAL"} else None
+        text = f"{label} · {reason}" if reason else label
+        events.append(
+            {
+                "time": record.created_at,
+                "tag": label,
+                "text": text[:500],
+                "executionId": record.execution_id,
+            }
+        )
+    return sorted(events, key=lambda event: timestamp(event["time"]), reverse=True)

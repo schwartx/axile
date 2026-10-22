@@ -203,7 +203,110 @@ fn performance_result(
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(query_costs, m)?)?;
+    m.add_function(wrap_pyfunction!(summaries, m)?)?;
     m.add_function(wrap_pyfunction!(performance_result, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
+
 }
+
+/// 读取快照状态信封与已发布结果(含 daily_costs/events)。
+#[pyfunction]
+#[pyo3(signature = ( store, account_id, range, logic_version, engine_version))]
+fn snapshot(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    range: &str,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            snapshots::query(
+                connection,
+                &json!({
+                    "account_id": account_id,
+                    "range": range,
+                    "logic_version": logic_version,
+                    "engine_version": engine_version,
+                }),
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+/// 分页读取成本投影;快照版本失效时抛 SNAPSHOT_EXPIRED。
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = ( store, account_id, snapshot_id, range, dimension, sort, day, start, end, record_id, symbol, cursor, logic_version, engine_version))]
+fn query_costs(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    snapshot_id: &str,
+    range: &str,
+    dimension: &str,
+    sort: &str,
+    day: Option<&str>,
+    start: Option<f64>,
+    end: Option<f64>,
+    record_id: Option<i64>,
+    symbol: Option<&str>,
+    cursor: Option<&str>,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            crate::costs::query_costs(
+                connection,
+                &json!({
+                    "account_id": account_id,
+                    "snapshot_id": snapshot_id,
+                    "range": range,
+                    "dimension": dimension,
+                    "sort": sort,
+                    "day": day,
+                    "start": start,
+                    "end": end,
+                    "record_id": record_id,
+                    "symbol": symbol,
+                    "cursor": cursor,
+                    "logic_version": logic_version,
+                    "engine_version": engine_version,
+                }),
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+/// 批量账户卡片摘要:状态与全区间曲线末点。
+#[pyfunction]
+#[pyo3(signature = ( store, account_ids, logic_version, engine_version))]
+fn summaries(
+    py: Python<'_>,
+    store: &Store,
+    account_ids: Vec<i64>,
+    logic_version: &str,
+    engine_version: &str,
+) -> PyResult<Py<PyAny>> {
+    let result = store
+        .with_snapshot(|connection| {
+            snapshots::summaries(
+                connection,
+                &json!({
+                    "account_ids": account_ids,
+                    "logic_version": logic_version,
+                    "engine_version": engine_version,
+                }),
+            )
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+

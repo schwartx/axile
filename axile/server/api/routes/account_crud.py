@@ -10,6 +10,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import and_, col, delete, desc, func, select
+from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
@@ -17,6 +18,7 @@ from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now
+from axile.server._native import _core
 from axile.server.api.business_execution import (
     ExecuteRecordDetailPublic,
     ExecuteRecordSummaryListPublic,
@@ -25,6 +27,7 @@ from axile.server.api.business_execution import (
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.business_facts.assets import read_snapshots_assets
+from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, parse_cron_expr
 from axile.server.db.models import (
     Account,
@@ -60,7 +63,7 @@ from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.performance import close_before, local_time
-from axile.server.performance_analysis import read_performance_summaries
+from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.repositories import (
     add_record_portfolio_account,
     get_portfolios_every_account,
@@ -458,6 +461,14 @@ def _safe_total_asset(assets: dict[str, Any]) -> float:
         return 0.0
 
 
+async def read_performance_summaries(account_ids: list[int]) -> dict[int, PerformanceSummary]:
+    """批量卡片摘要走原生只读查询;键统一为 int。"""
+    if not account_ids:
+        return {}
+    result = await run_in_threadpool(_core.summaries, analysis_store(), account_ids, LOGIC_VERSION, ENGINE_VERSION)
+    return {int(account_id): PerformanceSummary.model_validate(item) for account_id, item in result.items()}
+
+
 @router.get("/dashboard", response_model=AccountDashboardPublic)
 async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDashboardPublic:
     """
@@ -487,7 +498,7 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
     bindings = await get_portfolios_every_account(session)
 
     account_ids = [cast("int", account.id) for account in accounts]
-    performance_by_account = await read_performance_summaries(session, account_ids)
+    performance_by_account = await read_performance_summaries(account_ids)
     recent_records_by_account = await get_recent_execute_records_for_accounts(session, account_ids, limit=1)
     recent_by_account = await get_recent_account_asset_snapshots_for_accounts(session, account_ids, limit=1)
     assets_by_snapshot = await read_snapshots_assets(

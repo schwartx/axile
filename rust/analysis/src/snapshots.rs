@@ -436,6 +436,111 @@ fn timestamp(value: &str) -> Option<i64> {
         .map(|parsed| parsed.and_utc().timestamp_micros() - 8 * 3600 * 1_000_000)
 }
 
+/// 批量账户卡片摘要:状态 + 全区间曲线末点,兼容 typed(2)与 legacy ranges JSON。
+pub fn summaries(connection: &Connection, request: &Value) -> Result<Value, String> {
+    let account_ids: Vec<i64> = request
+        .get("account_ids")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_i64).collect())
+        .ok_or("INVALID_REQUEST: account_ids must be an array of integers")?;
+    let expected_logic = request
+        .get("logic_version")
+        .and_then(Value::as_str)
+        .ok_or("INVALID_REQUEST: logic_version must be a nonempty string")?;
+    let expected_engine = request
+        .get("engine_version")
+        .and_then(Value::as_str)
+        .ok_or("INVALID_REQUEST: engine_version must be a nonempty string")?;
+    if account_ids.is_empty() {
+        return Ok(json!({}));
+    }
+    let placeholders = vec!["?"; account_ids.len()].join(",");
+    let sql = format!(
+        "SELECT s.account_id,s.source_version,s.published_version,s.requested,s.running_version,s.error,\
+p.id,p.computed_at,p.logic_version,p.engine_version,p.result_schema_version,p.ranges \
+FROM account_analysis s LEFT JOIN performance_snapshot p ON s.current_snapshot=p.id \
+WHERE s.account_id IN ({placeholders})"
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    let mut summaries = serde_json::Map::new();
+    let mut cursor = statement
+        .query(rusqlite::params_from_iter(account_ids.iter()))
+        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
+    let read_error = |error: rusqlite::Error| format!("SNAPSHOT_READ: {error}");
+    while let Some(row) = cursor.next().map_err(read_error)? {
+        let account_id: i64 = row.get(0).map_err(read_error)?;
+        let source_version: i64 = row.get(1).map_err(read_error)?;
+        let published_version: i64 = row.get(2).map_err(read_error)?;
+        let requested: bool = row.get(3).map_err(read_error)?;
+        let running_version: Option<i64> = row.get(4).map_err(read_error)?;
+        let error: Option<String> = row.get(5).map_err(read_error)?;
+        let snapshot_id: Option<String> = row.get(6).map_err(read_error)?;
+        let computed_at: Option<String> = row.get(7).map_err(read_error)?;
+        let logic: Option<String> = row.get(8).map_err(read_error)?;
+        let engine: Option<String> = row.get(9).map_err(read_error)?;
+        let schema_version: Option<i64> = row.get(10).map_err(read_error)?;
+        let ranges: Option<String> = row.get(11).map_err(read_error)?;
+        let has_snapshot = snapshot_id.is_some();
+        let incompatible = has_snapshot
+            && (logic.as_deref() != Some(expected_logic)
+                || engine.as_deref() != Some(expected_engine));
+        let status = if incompatible {
+            "pending"
+        } else if error.is_some() {
+            "failed"
+        } else if requested || running_version.is_some() || published_version != source_version {
+            if has_snapshot {
+                "stale"
+            } else if requested || running_version.is_some() {
+                "pending"
+            } else {
+                "empty"
+            }
+        } else if has_snapshot {
+            "ready"
+        } else {
+            "empty"
+        };
+        let points = if incompatible || snapshot_id.is_none() {
+            Value::Array(Vec::new())
+        } else if schema_version == Some(2) {
+            let (_, points) = crate::result_reader::read_typed(
+                connection,
+                snapshot_id.as_deref().expect("checked"),
+                "all",
+                true,
+            )?;
+            serde_json::to_value(points).map_err(|error| format!("SUMMARY_ENCODE: {error}"))?
+        } else {
+            ranges
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|value| value.pointer("/all/performance/points").cloned())
+                .unwrap_or_else(|| Value::Array(Vec::new()))
+        };
+        let last = points.as_array().and_then(|items| items.last());
+        let pick = |field: &str| {
+            last.and_then(|point| point.get(field).cloned())
+                .unwrap_or(Value::Null)
+        };
+        summaries.insert(
+            account_id.to_string(),
+            json!({
+                "snapshot_id": if incompatible { Value::Null } else { snapshot_id.clone().map(Value::String).unwrap_or(Value::Null) },
+                "status": status,
+                "computed_at": if incompatible { Value::Null } else { computed_at.map(Value::String).unwrap_or(Value::Null) },
+                "observed_at": pick("observed_at"),
+                "account_equity": pick("account_equity"),
+                "account_daily_return": pick("account_daily_return"),
+                "points": points,
+            }),
+        );
+    }
+    Ok(Value::Object(summaries))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,5 +870,39 @@ mod tests {
         assert!(query(&connection, &input)
             .unwrap_err()
             .starts_with("INVALID_REQUEST:"));
+    }
+
+    #[test]
+    fn summaries_match_card_status_and_last_point() {
+        let connection = database();
+        connection
+            .execute_batch(
+                "INSERT INTO account_analysis (account_id, source_version, published_version, requested, current_snapshot)
+                 VALUES (1,3,3,0,'s1'),(2,3,1,0,'s2'),(3,3,3,0,'s3'),(4,3,3,0,NULL),(5,3,3,0,'s5');
+                 INSERT INTO performance_snapshot (id,account_id,source_version,logic_version,engine_version,
+                  computed_at,settings,ranges,result_schema_version) VALUES
+                 ('s1',1,3,'18','equity-ledger-1','2026-10-02T00:00:00','{}',
+                  '{\"all\":{\"performance\":{\"points\":[{\"observed_at\":\"t1\",\"account_equity\":100.0,\"account_daily_return\":0.01}]}}}',0),
+                 ('s2',2,1,'18','equity-ledger-1','2026-10-02T00:00:00','{}','{}',0),
+                 ('s3',3,3,'17','equity-ledger-1','2026-10-02T00:00:00','{}','{}',0),
+                 ('s5',5,3,'18','old-engine','2026-10-02T00:00:00','{}','{}',0);",
+            )
+            .unwrap();
+        let result = summaries(
+            &connection,
+            &json!({"account_ids": [1, 2, 3, 4, 5, 6], "logic_version": "18", "engine_version": "equity-ledger-1"}),
+        )
+        .unwrap();
+        assert_eq!(result["1"]["status"], "ready");
+        assert_eq!(result["1"]["snapshot_id"], "s1");
+        assert_eq!(result["1"]["account_equity"], 100.0);
+        assert_eq!(result["1"]["account_daily_return"], 0.01);
+        assert_eq!(result["1"]["points"].as_array().unwrap().len(), 1);
+        assert_eq!(result["2"]["status"], "stale");
+        assert_eq!(result["3"]["status"], "pending");
+        assert_eq!(result["3"]["snapshot_id"], Value::Null);
+        assert_eq!(result["4"]["status"], "empty");
+        assert_eq!(result["5"]["status"], "pending");
+        assert!(result.get("6").is_none());
     }
 }

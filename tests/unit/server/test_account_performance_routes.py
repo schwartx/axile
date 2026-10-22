@@ -129,3 +129,40 @@ def test_performance_route_rejects_unknown_account(tmp_path: Path, monkeypatch) 
     client = TestClient(_build_app(_RouteSession(None)))
 
     assert client.get("/performance/1").status_code == 404
+
+
+def test_snapshot_route_reads_published_snapshot(tmp_path: Path, monkeypatch) -> None:
+    """快照路由直读原生绑定;已发布结果原样返回,不再走 Python 读取器."""
+    path = tmp_path / "routes-snapshot.sqlite"
+    _seed_database(path)
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE account_analysis (account_id INTEGER PRIMARY KEY, source_version INTEGER NOT NULL DEFAULT 1,
+         published_version INTEGER NOT NULL DEFAULT 0, requested INTEGER NOT NULL DEFAULT 0,
+         current_snapshot TEXT, running_version INTEGER, failures INTEGER NOT NULL DEFAULT 0,
+         retry_at REAL NOT NULL DEFAULT 0, error TEXT);
+        CREATE TABLE performance_snapshot (id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
+         logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT, settings TEXT,
+         ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO account_analysis VALUES (1, 1, 1, 0, 'snap-1', NULL, 0, 0, NULL);
+        INSERT INTO performance_snapshot VALUES ('snap-1', 1, 1, '18', 'equity-ledger-1',
+         '2026-01-02T15:00:00', NULL,
+         '{"backtest_weight_type": "cs", "backtest_fee_rate": 0.0}',
+         '{"all": {"performance": {"settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0},
+            "engine_version": "equity-ledger-1", "range": "all",
+            "baseline": "2026-01-01T10:00:00", "end": "2026-01-02T10:00:00",
+            "points": [{"date": "2026-01-02", "observed_at": "2026-01-02T10:00:00", "account_equity": 110.0}],
+            "executions": [], "calendar": {"status": "not_required"}},
+            "daily_costs": {}, "events": [], "event_count": 0}}', 0);
+        """
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(path)))
+    app = _build_app(_RouteSession(_build_account()))
+    data = TestClient(app).get("/performance/1/snapshot").json()
+    assert data["status"] == "ready"
+    assert data["snapshot_id"] == "snap-1"
+    assert data["result"]["points"][-1]["account_equity"] == 110.0
+    assert data["settings"] == {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0}

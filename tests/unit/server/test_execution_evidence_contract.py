@@ -32,10 +32,10 @@ from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from axile.server.execution.backend import _dump_output_result
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
-from axile.server.performance_analysis import _events
 from axile.server.performance_costs import project_execution
 from scripts.business_facts_contract import business_evidence
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
+from tests.unit.server._business_analysis_support import _events
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "execution_evidence_contract.json"
