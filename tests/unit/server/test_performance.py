@@ -20,17 +20,11 @@ from axile.server.api.deps import get_db
 from axile.server.api.routes.account_performance import router
 from axile.server.db.models import PortfolioAccount
 from axile.server.db.models.performance import PerformanceSettings
-from axile.server.performance import (
-    Observation,
-    build_wbt_input,
-    calculate_performance,
-    close_before,
-    observation,
-    performance_calendar,
-)
+from axile.server.performance import Observation, close_before, observation
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
 from tests.unit.server._business_analysis_support import analysis_record, install_analysis_triggers, persist_records
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._performance_oracle import build_wbt_input, calculate_performance, performance_calendar
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 
 
@@ -68,7 +62,7 @@ def test_performance_calendar_merges_closed_days_and_preserves_unknown(monkeypat
             channel=str(channel), day=day, status=status, calendar_id="china", label="中国交易日"
         )
 
-    monkeypatch.setattr("axile.server.performance.evaluate_channel_calendar_day", evaluate)
+    monkeypatch.setattr("tests.unit.server._performance_oracle.evaluate_channel_calendar_day", evaluate)
     result = performance_calendar("ctp", "2026-01-01T09:00:00", "2026-01-05T16:00:00")
     assert result.status == "partial"
     assert [(item.start, item.end) for item in result.closed_ranges] == [
@@ -80,7 +74,7 @@ def test_performance_calendar_merges_closed_days_and_preserves_unknown(monkeypat
 
 def test_performance_calendar_not_required(monkeypatch):
     monkeypatch.setattr(
-        "axile.server.performance.evaluate_channel_calendar_day",
+        "tests.unit.server._performance_oracle.evaluate_channel_calendar_day",
         lambda channel, day: CalendarDayDecision(
             channel=str(channel), day=day, status=CalendarDecisionStatus.NOT_REQUIRED
         ),
@@ -94,7 +88,7 @@ def test_performance_calendar_degrades_to_unavailable_on_unregistered_channel(mo
     def evaluate(channel, day):
         raise KeyError(channel)
 
-    monkeypatch.setattr("axile.server.performance.evaluate_channel_calendar_day", evaluate)
+    monkeypatch.setattr("tests.unit.server._performance_oracle.evaluate_channel_calendar_day", evaluate)
     result = performance_calendar("not-registered", "2026-01-01", "2026-01-03")
     assert result.status == "unavailable"
     assert result.closed_ranges == []
@@ -562,8 +556,8 @@ def test_account_only_matches_full_without_building_or_running_wbt(monkeypatch, 
     def forbidden(*args, **kwargs):
         pytest.fail("账户快速路径不应构建或运行回测")
 
-    monkeypatch.setattr("axile.server.performance.build_wbt_input", forbidden)
-    monkeypatch.setattr("axile.server.performance._portfolio_daily", forbidden)
+    monkeypatch.setattr("tests.unit.server._performance_oracle.build_wbt_input", forbidden)
+    monkeypatch.setattr("tests.unit.server._performance_oracle._portfolio_daily", forbidden)
     quick = calculate_performance(items, settings, range_key, include_backtest=False)
     assert not quick.backtest_included
     assert quick.baseline == full.baseline

@@ -8,7 +8,7 @@
 
 随后启动两个全新进程，读取同一份已提交数据，计算 `30`、`90`、`all` 三个区间及独立权益回放，输出完整 JSON：
 
-- Python 直接通过 `sqlite3` 读取结构化事实，重建完整 `Observation` 历史列表，调用现有 `calculate_performance()`，再序列化响应。这是去除了原始 JSON 解析和 ORM 的 Python 计算对照。
+- Python 直接通过 `sqlite3` 读取结构化事实，重建完整 `Observation` 历史列表，调用测试专用 `tests.unit.server._performance_oracle.calculate_performance()`，再序列化响应。这是去除了原始 JSON 解析和 ORM 的 Python 计算对照。
 - Rust release CLI 直接读取同一数据库，通过游标逐条消费观测，保留当前持仓及每日输出，并序列化响应。
 
 墙钟时间包含启动、Python 导入、读取、三个区间计算和序列化。每个子进程硬超时 20 秒。使用 `wait4()` 获取各自的 OS `ru_maxrss`，覆盖整个进程，包含原生分配；不是 `tracemalloc` 或仅 Python 对象大小。Linux 的值由 KiB 转成字节。控制进程及最终输出比对不计入两者。
@@ -30,6 +30,8 @@ Python 内部计时：导入 0.888 秒、读取和重建观测 0.184 秒、计�
 为说明导入基线，另外使用相同脚本运行 1 条观测、10 个品种：Python 峰值 146.14 MiB、1.313 秒；Rust 峰值 15.88 MiB、0.003 秒，输出同样通过比对。大部分独立 Python 进程开销在只有一条数据时已经存在。因此不能把 185.70 与 18.56 MiB 的差直接当作现有 API 进程的增量节省；不同运行的峰值差也不是精确的对象分配量。
 
 ## 复现
+
+Python 对照现已迁至测试 oracle，必须在包含 `tests/` 的源码 checkout 运行，不属于安装包公共 API。迁移后的导入边界不同，下面历史数字没有重新测量。
 
 使用已有依赖的 Python 3.12 环境及预先构建的 release 二进制，无需启动 API 或连接真实数据库：
 

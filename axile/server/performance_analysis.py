@@ -6,10 +6,10 @@ from sqlalchemy.dialects.sqlite import insert
 from axile.server._native import _core
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import analysis_state as states
-from axile.server.performance_replay import ENGINE_VERSION
 
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
 LOGIC_VERSION = "18"
+ENGINE_VERSION = "equity-ledger-1"
 RETRY_DELAYS = (5, 30, 120)
 
 

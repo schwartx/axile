@@ -1,5 +1,7 @@
 # 跳过未消费的 WBT DataFrame
 
+> 历史测量：以下默认公共构造器契约现已退役，旧实现只保留在 `tests/unit/server/_performance_oracle.py`。复现整链路数字需要当时的基线与候选 checkout；当前生产不提供 Python 计算或 `AnalysisManager`。
+
 基线为 Axile main `9794361`，改动仅涉及 `performance.py`：权益账本消费的是 `participants` 和统计，不读取 `BacktestInput.frame`。在账本计算的两次调用中关闭权重表构造；`build_wbt_input()` 默认行为仍生成原有列、float64 类型和退出零权重行。不改变计算公式、存储、迁移、依赖、API 或前端。
 
 ## 验收方法

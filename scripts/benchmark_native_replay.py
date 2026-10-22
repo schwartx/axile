@@ -4,6 +4,7 @@ The fixture contains only normalized columns, not historical JSON. Both children
 read that same committed database and produce all three public performance
 ranges. Process peak RSS includes imports, loading, computation and serialization;
 the API server and combined Python-plus-Rust deployment are deliberately absent.
+The Python arm uses the retired test oracle and requires a source checkout with tests.
 """
 
 from __future__ import annotations
@@ -77,7 +78,8 @@ def python_child(database: Path) -> None:
     """Retain historical observations as the Python reference implementation does."""
     started = time.perf_counter()
     from axile.server.db.models.performance import PerformanceSettings
-    from axile.server.performance import Observation, calculate_performance
+    from axile.server.performance import Observation
+    from tests.unit.server._performance_oracle import calculate_performance
 
     imported = time.perf_counter()
     request = json.load(sys.stdin)

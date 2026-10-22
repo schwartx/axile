@@ -22,7 +22,7 @@
 
 新原生发布命令 `publish_store` 的进程间通信只有小请求和小回执。结果行在 Rust 进程内进入磁盘暂存 SQLite，不经过 Python 的 JSON 编解码。旧查询和 `publish` 帧协议继续保留兼容能力；它们仍可能编码完整响应或结果行。Python 使用标准库 `json`，Rust 使用 `serde_json`，没有进行全局 `orjson` 替换，也没有移除整个后端的 Pydantic 或 SQLAlchemy。
 
-Python 的 `wbt` 包和没有业务引用的 Polars 依赖已移除，锁文件同时裁剪它们独占引入的 Plotly、Polars runtime。Python 兼容计算使用独立权益账本，不依赖这些包；`build_wbt_input()` 保留原名称和 pandas DataFrame 返回契约。pandas、NumPy、Arrow 仍被渠道 SDK、数据接口或 Streamlit 使用，没有随 WBT 一并删除。该变更清理安装依赖，不代表 Python 服务驻留内存会按包安装体积等量下降。
+Python 的 `wbt` 包和没有业务引用的 Polars 依赖已移除，锁文件同时裁剪它们独占引入的 Plotly、Polars runtime。生产 Python 的 `build_wbt_input()`、`calculate_performance()` 与 `performance_replay.replay_daily()` 已退役，原公共 helper 导入和 DataFrame 返回契约不再支持；不提供兼容 wrapper。旧权益账本仅保存在 `tests/unit/server/_performance_oracle.py`，供业务断言和源码 benchmark 对照，不随生产包提供。`Observation`、`observation()`、`local_time()`、`close_before()` 仍用于生产事实准备及账户摘要；`ENGINE_VERSION` 归属 `performance_analysis.py`，值保持不变。pandas、NumPy、Arrow 仍被渠道 SDK、数据接口或 Streamlit 使用，没有随 WBT 一并删除。该变更清理安装依赖，不代表 Python 服务驻留内存会按包安装体积等量下降。
 
 ## 运行边界
 
@@ -32,11 +32,10 @@ Python 的 `wbt` 包和没有业务引用的 Polars 依赖已移除，锁文件�
 | --- | --- | --- |
 | 交易、策略调用、调度、账户与组合管理 | 执行业务逻辑；账户列表仍由 Python ORM 和响应模型处理 | 当前不接管 |
 | 源事实准备 | 保存类型化业务事实、维护分析投影、分批补齐缺失投影和日历元数据 | 校验并读取已提交的事实 |
-| 权益、收益及目标权重回放 | 协调任务和兼容计算 | 执行账户收益计算、目标回放和回测收益计算 |
+| 权益、收益及目标权重回放 | 协调任务，不执行 Python 回放 | 执行账户收益计算、目标回放和回测收益计算 |
 | 新绩效页读取 | 在固定版本内读取状态、曲线、日成本、执行摘要和单次执行详情 | 请求时不参与 |
 | 原有成本、绩效和快照接口 | 保留鉴权与兼容入口，适用时转发原生查询结果 | 保留筛选、聚合、排序、分页及旧完整结果读取 |
 | 原生后台刷新 | 领取带 token 的任务、准备源事实、核对回执和持久化结果 | 一致读取、计算、磁盘暂存、校验、CAS 发布和快照保留清理 |
-| 显式 Python 兼容刷新 | 兼容计算、事务发布，并为可结构化结果准备读取摘要 | 不接管不支持的源数据 |
 | 数据库迁移和业务写入 | 负责迁移、类型化业务事实、分析源事实及任务领取 | 仅原生发布命令写分析结果与对应发布状态，不写业务源事实 |
 
 ```text
@@ -50,7 +49,7 @@ Python 领取任务 → 小请求 → Rust 读取、计算、暂存、事务发�
 
 两边不共享 Python/Rust 对象引用。`publish_store` 在 Rust 内部复用计算输出回调，校验并暂存标量行；这些行不会经 stdin/stdout 交给 Python。前端表格采用 `columns/rows` 形式传输，客户端将这些轻量表格转换成展示数据，不恢复完整历史执行对象。
 
-数据库文件路径由 Python 服务的实际数据库会话解析，不能由前端查询参数指定。Rust 从现有文件打开数据库，不执行业务库迁移，也不因路径错误创建新业务库。计算使用独立只读事务；源读事务结束后，发布使用独立写事务。当前原生路径只支持文件型 SQLite；内存数据库和其他数据库后端使用既有 Python 兼容路径，显式要求原生时会报错。
+数据库文件路径由 Python 服务的实际数据库会话解析，不能由前端查询参数指定。Rust 从现有文件打开数据库，不执行业务库迁移，也不因路径错误创建新业务库。计算使用独立只读事务；源读事务结束后，发布使用独立写事务。当前生产分析只支持文件型 SQLite，不再提供内存数据库或其他数据库后端的 Python 计算回退。
 
 新旧命令采用不同的数据交接方式：
 
@@ -70,7 +69,7 @@ Python 领取任务 → 小请求 → Rust 读取、计算、暂存、事务发�
 | 回放观测 | `replay_observation`、`replay_observation_symbol` | Python 在业务事实写入后维护投影；Rust 按时间读取 |
 | 执行与成本源事实 | `analysis_source_execution`、`analysis_source_trade` 及品种、持仓、尝试、成交、手续费子表 | Python 在执行写入边界投影一次；Rust 分析时直接读，不再逐次解码原执行 JSON |
 | 日历元数据 | `analysis_calendar_day` | Python 按渠道、日期准备小型元数据；Rust 按日期读取 |
-| 已发布成本 | `performance_cost_*` 标量与明细表 | 原生发布由 Rust 在发布事务中复制源事实；Python 兼容发布仍负责其自身写入 |
+| 已发布成本 | `performance_cost_*` 标量与明细表 | 原生发布由 Rust 在发布事务中复制源事实 |
 | 已发布绩效结果 | `performance_result_range`、`performance_result_point`、`performance_result_skip`、`performance_result_fallback`、`performance_result_binding`、`performance_result_calendar_range`、`performance_result_event`、`performance_result_daily_cost`、`performance_result_daily_fee` | 原生计算和发布由 Rust 完成；新页面由 Python 直接读列 |
 | 执行摘要与费用 | `performance_execution_summary`、`performance_execution_fee` | 发布时按快照与执行冻结一次，区间按时间筛选，不按 range/day 重复保存整份摘要 |
 
@@ -117,24 +116,9 @@ cargo build --locked --release --manifest-path rust/analysis/Cargo.toml --target
 RUSTC_WRAPPER= cargo build --locked --release --manifest-path rust/analysis/Cargo.toml --target-dir "$CARGO_TARGET_DIR"
 ```
 
-## 启用与回退
+## 启用边界（旧回退已退役）
 
-| 设置 | 行为 |
-| --- | --- |
-| `AXILE_ANALYSIS_MODE=auto`（默认） | 找到可用程序及文件型 SQLite 时使用原生路径；用于新发布的程序需支持 `publish_store`，未构建时保留 Python 路径 |
-| `AXILE_ANALYSIS_MODE=required` | 要求原生路径；缺少程序或数据库不适用时明确失败；版本 0 的历史成本保留既有格式兼容例外，业务源事实损坏不能回退旧业务 JSON |
-| `AXILE_ANALYSIS_MODE=python` | 显式使用 Python 兼容路径 |
-| `AXILE_ANALYSIS_BINARY=/absolute/path/axile-analysis` | 指定程序位置；路径错误明确失败 |
-
-未指定程序时，依次寻找安装包内 `axile/server/_native/axile-analysis` 和源码目录下 `rust/analysis/target/release/axile-analysis`。设置显式程序路径意味着要求原生执行。已选择 Rust 后的运行、协议或资源限制错误不会悄悄重新执行 Python 计算。
-
-例如，在当前项目启动方式之前设置：
-
-```bash
-AXILE_ANALYSIS_BINARY="$CARGO_TARGET_DIR/release/axile-analysis" AXILE_ANALYSIS_MODE=required uv run axile --host 127.0.0.1 --port 8000
-```
-
-发布到运行环境前，先在同一平台的隔离环境完成迁移与接口一致性检查。可通过 `AXILE_ANALYSIS_MODE=python` 回退执行路径；无需删除已写入的结构化事实。
+生产刷新必须使用原生分析程序；`AXILE_ANALYSIS_MODE=python` 不再是可用回退方案，`auto` 也不提供 Python 计算。`AXILE_ANALYSIS_BINARY` 可指定预先构建的程序。缺少原生能力应明确失败，不得返回旧 Python 账本结果。
 
 | 资源设置 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -164,7 +148,7 @@ PY
 uv build --wheel
 ```
 
-构建钩子只在暂存了当前平台的程序时打包它，并生成 `py3-none-<本机平台>` wheel；本地 Linux 构建不会自动声称 manylinux 或 musllinux 兼容。未暂存程序时仍生成纯 Python wheel，继续支持兼容路径。
+构建钩子只在暂存了当前平台的程序时打包它，并生成 `py3-none-<本机平台>` wheel；本地 Linux 构建不会自动声称 manylinux 或 musllinux 兼容。不能将缺少原生程序的包作为支持 Python 计算回退的发行物。
 
 这不是跨平台构建方案：需要分别在目标系统和架构构建、验证，不应把其他机器生成的程序复制过来再用本机标签打包。源码分发不携带已编译程序。正式发行前还需要按现有发布门禁检查 wheel 内容、目标系统动态库兼容性和隔离安装。该功能没有自动发布或安装到生产环境。
 

@@ -1,12 +1,12 @@
-"""Skipping unused frames preserves complete ledger results and public defaults."""
+"""Skipping unused frames preserves complete ledger results and retired oracle defaults."""
 
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from axile.server import performance
 from axile.server.db.models.performance import PerformanceSettings
+from tests.unit.server import _performance_oracle as performance
 
 
 def observations():
@@ -48,13 +48,13 @@ def test_complete_ledger_matches_materialized_reference_without_dataframe(range_
 
     with patch.object(performance, "build_wbt_input", materialized):
         expected = performance.calculate_performance(items, settings, range_key)
-    # Fails immediately if production starts constructing either frame again.
+    # Fails immediately if the oracle starts constructing either frame again.
     with patch("pandas.DataFrame", side_effect=AssertionError("Unused frame allocated")):
         actual = performance.calculate_performance(items, settings, range_key)
     assert actual.model_dump_json() == expected.model_dump_json()
 
 
-def test_public_wbt_builder_still_returns_the_original_typed_frame():
+def test_retired_oracle_preserves_the_original_typed_frame():
     result = performance.build_wbt_input(observations())
     assert result.frame is not None
     assert list(result.frame.columns) == ["dt", "symbol", "weight", "price"]
