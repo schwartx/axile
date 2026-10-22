@@ -77,7 +77,7 @@ def test_account_activity_normalizes_legacy():
                 await store_execution_facts(session, record, raw_input={}, raw_result=_LEGACY_RAW)
                 await session.commit()
                 assert await read_execution_result(session, record) == _LEGACY_RAW
-                return await account_activity(session=session, account_id=1, skip=0, limit=20)
+                return await account_activity(account_id=1, skip=0, limit=20)
         finally:
             await engine.dispose()
 

@@ -20,6 +20,7 @@ from axile.server.api.routes import account_crud, account_execution, account_sch
 from axile.server.db.models.analysis_source import source_execution, source_execution_symbol, source_trade
 from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._journal_oracle import _compact_execution_activity
 
 
 @asynccontextmanager
@@ -93,7 +94,7 @@ def test_activity_distinguishes_unknown_from_explicit_no_trades(known):
     summary = ExecuteRecordSummaryPublic.model_validate(record)
     if known:
         summary.trade_count = 0
-    activity = account_schedule._compact_execution_activity(record, summary, [], None)
+    activity = _compact_execution_activity(record, summary, [], None)
     assert activity.record.trade_count == (0 if known else None)
     if known:
         assert activity.record.summary is not None

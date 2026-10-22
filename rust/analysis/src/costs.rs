@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Row};
 use serde_json::{json, Map, Value};
 
-const AGGREGATES: &str = "COUNT(*), COUNT(value), SUM(value), SUM(cost), \
+pub(crate) const AGGREGATES: &str = "COUNT(*), COUNT(value), SUM(value), SUM(cost), \
     COUNT(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN 1 END), \
     SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN value ELSE 0 END), \
     SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN loss_bp * value ELSE 0 END), \
@@ -67,7 +67,7 @@ fn quantity_total(row: &Row<'_>, index: usize) -> rusqlite::Result<Value> {
 }
 
 #[derive(Debug)]
-struct Summary {
+pub(crate) struct Summary {
     count: i64,
     valued: i64,
     value: Option<f64>,
@@ -79,7 +79,7 @@ struct Summary {
     estimated: i64,
 }
 impl Summary {
-    fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
+    pub(crate) fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
         Ok(Self {
             count: row.get(start)?,
             valued: row.get(start + 1)?,
@@ -92,7 +92,7 @@ impl Summary {
             estimated: row.get::<_, Option<i64>>(start + 7)?.unwrap_or(0),
         })
     }
-    fn output(&self, fees: Map<String, Value>, fee_count: i64) -> Value {
+    pub(crate) fn output(&self, fees: Map<String, Value>, fee_count: i64) -> Value {
         let complete = self.count == self.valued;
         let loss = self
             .covered_value

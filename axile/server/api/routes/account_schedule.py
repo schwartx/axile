@@ -3,44 +3,36 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import literal, union_all
 from sqlalchemy import select as sql_select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, desc, func, select
+from sqlmodel import col, desc
+from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
+from axile.server._native import _core
 from axile.server.api.business_execution import (
-    ExecuteRecordSummaryPublic,
     projected_trade,
-    read_execution_summaries,
-    read_projected_trades,
 )
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, is_blank_cron_expr, parse_cron_expr
 from axile.server.db.models import (
-    AccountActivityListPublic,
     ExecuteRecord,
-    ExecutionActivity,
-    ScheduleSkip,
-    ScheduleSkipActivity,
 )
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.analysis_source import source_trade
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import (
-    ActivityExecutionRecord,
     ActivitySymbolListPublic,
     ActivitySymbolRowPublic,
-    ScheduleSkipReason,
 )
 from axile.server.performance_costs import summarize
 from axile.server.supplement_plan import plan_supplements
@@ -62,39 +54,6 @@ def _time_clauses(column, since: str | None, until: str | None):
     if until:
         clauses.append(column < until)
     return clauses
-
-
-def _text_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _compact_execution_activity(
-    row: ExecuteRecord, summary: ExecuteRecordSummaryPublic, trades: list[dict], total: float | None
-) -> ExecutionActivity:
-    """列表只发布类型化头字段、摘要数字和结果权益。"""
-    duration = row.execution_time
-    costs = CostSummary.model_validate(summarize(trades)) if summary.trade_count is not None else None
-    return ExecutionActivity(
-        occurred_at=row.created_at,
-        record=ActivityExecutionRecord(
-            id=row.id,
-            execution_id=row.execution_id,
-            created_at=row.created_at,
-            is_success=row.is_success,
-            status=_text_or_none(row.display_status),
-            task_status=_text_or_none(row.task_status),
-            error=_text_or_none(row.display_error),
-            outcome=_text_or_none(row.display_outcome),
-            outcome_reason=_text_or_none(row.display_outcome_reason),
-            reason_code=_text_or_none(row.reason_code),
-            execution_kind=_text_or_none(row.execution_kind),
-            symbol_results=summary.symbol_results or {},
-            total_asset=total,
-            summary=costs,
-            duration_sec=duration if duration is not None and duration >= 0 else None,
-            trade_count=summary.trade_count,
-        ),
-    )
 
 
 class SchedulePreviewRequest(BaseModel):
@@ -356,96 +315,21 @@ async def account_activity_symbols(
     return ActivitySymbolListPublic(data=data, count=len(data))
 
 
-@router.get("/{account_id}/activity", response_model=AccountActivityListPublic)
+@router.get("/{account_id}/activity")
 async def account_activity(
-    session: SessionDep,
     account_id: int,
-    skip: int = Query(0, ge=0),
+    skip: int = Query(0, ge=0, le=2**63 - 1),
     limit: int = Query(100, ge=1, le=500),
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
-) -> AccountActivityListPublic:
-    """合并执行与休市记录，按发生时间倒序分页。"""
-    await _get_account_or_404(session, account_id)
-    # SQLite 的旧式事务模式下 SELECT 不会主动开启读事务；SAVEPOINT
-    # 让页头、总数和详情使用同一快照，同时保留调用者已有的事务。
-    async with session.begin_nested():
-        return await _read_activity_page(session, account_id, skip, limit, since, until)
-
-
-async def _read_activity_page(
-    session: AsyncSession,
-    account_id: int,
-    skip: int,
-    limit: int,
-    since: str | None,
-    until: str | None,
-) -> AccountActivityListPublic:
-    """只合并标量页头，随后读取当前页需要的执行与休市详情。"""
-    execution_where = [
-        col(ExecuteRecord.account_id) == account_id,
-        *_time_clauses(col(ExecuteRecord.created_at), since, until),
-    ]
-    skip_where = [
-        col(ScheduleSkip.account_id) == account_id,
-        *_time_clauses(col(ScheduleSkip.triggered_at), since, until),
-    ]
-    execution_count = await session.scalar(select(func.count()).select_from(ExecuteRecord).where(*execution_where))
-    skip_count = await session.scalar(select(func.count()).select_from(ScheduleSkip).where(*skip_where))
-    headers = union_all(
-        select(
-            col(ExecuteRecord.created_at).label("occurred_at"),
-            col(ExecuteRecord.id).label("id"),
-            literal(0).label("kind"),
-        ).where(*execution_where),
-        select(col(ScheduleSkip.triggered_at), col(ScheduleSkip.id), literal(1)).where(*skip_where),
-    ).subquery()
-    # 原 Python 稳定排序在时间和 ID 都相同时先放执行记录。
-    page = (
-        await session.execute(
-            sql_select(headers)
-            .order_by(headers.c.occurred_at.desc(), headers.c.id.desc(), headers.c.kind)
-            .offset(skip)
-            .limit(limit)
-        )
-    ).all()
-    execution_ids = [row.id for row in page if row.kind == 0]
-    skip_ids = [row.id for row in page if row.kind == 1]
-    execution_rows = (
-        (await session.execute(select(ExecuteRecord).where(col(ExecuteRecord.id).in_(execution_ids)))).scalars().all()
-    )
-    skip_rows = (await session.execute(select(ScheduleSkip).where(col(ScheduleSkip.id).in_(skip_ids)))).scalars().all()
-
-    summaries = await read_execution_summaries(session, execution_rows)
-    trades = await read_projected_trades(session, execution_ids)
-    from axile.server.business_facts.assets import read_result_asset_totals
-
-    totals = await read_result_asset_totals(session, execution_ids)
-    activities: dict[tuple[int, int], ExecutionActivity | ScheduleSkipActivity] = {
-        (0, cast(int, row.id)): _compact_execution_activity(
-            row, summaries[cast(int, row.id)], trades.get(cast(int, row.id), []), totals.get(cast(int, row.id))
-        )
-        for row in execution_rows
-    }
-    activities.update(
-        (
-            (1, cast(int, row.id)),
-            ScheduleSkipActivity(
-                occurred_at=row.triggered_at,
-                id=cast(int, row.id),
-                channel=row.channel,
-                calendar_id=row.calendar_id,
-                calendar_day=row.calendar_day,
-                calendar_label=row.calendar_label,
-                reason_code=cast("ScheduleSkipReason", row.reason_code),
-            ),
-        )
-        for row in skip_rows
-    )
-    return AccountActivityListPublic(
-        data=[activities[(row.kind, row.id)] for row in page],
-        count=int(execution_count or 0) + int(skip_count or 0),
-    )
+) -> dict:
+    """从同一原生读快照返回执行与休市混排页。"""
+    try:
+        return await run_in_threadpool(_core.journal, analysis_store(), account_id, skip, limit, since, until)
+    except _core.NativeError as error:
+        if error.args[0] == "ACCOUNT_NOT_FOUND":
+            raise HTTPException(404, detail="账户不存在") from error
+        raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
 __all__ = [

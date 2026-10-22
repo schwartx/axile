@@ -311,9 +311,31 @@ fn execution_records(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+#[pyo3(signature = (store, account_id, skip, limit, since=None, until=None))]
+fn journal(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    skip: i64,
+    limit: i64,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::journal::page(connection, account_id, skip, limit, since, until)
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
     m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
