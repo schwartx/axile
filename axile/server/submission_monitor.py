@@ -10,15 +10,10 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, select
 
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.order_submissions import OrderSubmissionFact
-from axile.server.db.models.order_submission import OrderSubmissionMonitor, OrderSubmissionWarning
 from axile.server.order_submissions import (
-    OrderSubmissionSummary,
-    query_order_submission_summary,
     submission_database,
     submission_window,
 )
@@ -173,46 +168,3 @@ def save_submission_monitor(account_id: int, update: SubmissionMonitorUpdate, ti
             old.model_dump(),
             config.model_dump(),
         )
-
-
-def _metric(
-    metric: Literal["order_calls", "combined_calls"], value: int, unknown: int, limit: int | None
-) -> SubmissionMetric:
-    state = "disabled" if limit is None else "reached" if value >= limit else "unknown" if unknown else "below"
-    return SubmissionMetric(metric=metric, value=value, unknown=unknown, limit=limit, state=state)
-
-
-async def query_submission_monitor(
-    session: AsyncSession, account_id: int, day: str, timezone: str, summary: OrderSubmissionSummary
-) -> SubmissionMonitorPublic:
-    """只读取持久化配置和触发记录，刷新页面不会生成预警。"""
-    row = await session.get(OrderSubmissionMonitor, account_id)
-    config = (
-        SubmissionMonitorSettings(timezone=timezone)
-        if row is None
-        else SubmissionMonitorSettings.model_validate(row.data)
-    )
-    if config.timezone != timezone:
-        day = _day(clock_now_ms(), config.timezone)
-        summary = await query_order_submission_summary(session, account_id, day, config.timezone)
-    statement = select(OrderSubmissionWarning.data).where(
-        OrderSubmissionWarning.account_id == account_id,
-        col(OrderSubmissionWarning.data)["control_date"].as_string() == day,
-        col(OrderSubmissionWarning.data)["revision"].as_integer() == config.revision,
-    )
-    warnings = (await session.execute(statement)).scalars().all()
-    events = [SubmissionWarning.model_validate(value) for value in warnings]
-    return SubmissionMonitorPublic(
-        settings=config,
-        control_date=day,
-        metrics=[
-            _metric("order_calls", summary.order_calls, summary.unknown, config.order_limit),
-            _metric(
-                "combined_calls",
-                summary.combined_calls,
-                summary.unknown + summary.cancel_unknown,
-                config.combined_limit,
-            ),
-        ],
-        warnings=sorted(events, key=lambda event: event.metric),
-    )

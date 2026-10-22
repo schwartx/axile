@@ -17,7 +17,9 @@ from sqlmodel import SQLModel
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server import order_submissions as submissions
 from axile.server import submission_monitor as monitoring
+from axile.server._native import _core
 from axile.server.api.deps import get_db
+from axile.server.api.routes import account_orders as routes
 from axile.server.api.routes.account_orders import router
 from tests.unit.server._execution_test_support import build_account
 
@@ -45,6 +47,8 @@ def test_native_thresholds_persist_at_crossing_and_survive_replay_restart_and_co
     database = str(tmp_path / "monitor.db")
     uri = f"sqlite+aiosqlite:///{database}"
     monkeypatch.setattr(submissions, "settings", SimpleNamespace(sqlalchemy_database_uri=uri))
+    monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(database))
+    monkeypatch.setattr(routes, "clock_now_ms", lambda: monitoring.clock_now_ms())
     start, end = submissions.submission_window("2026-10-19", "Asia/Shanghai")
     now = [start + 60_000]
     for module in (monitoring,):

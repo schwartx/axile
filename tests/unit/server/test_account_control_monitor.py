@@ -1,7 +1,9 @@
 """流控监控的数据库交接、异常边界和广播验证。"""
 
 import asyncio
+import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +20,7 @@ from axile.executor.account_control.models import (
     AccountControlSource,
 )
 from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.server._native import _core
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
@@ -28,7 +31,10 @@ from tests.unit.server._execution_test_support import build_account
 
 @asynccontextmanager
 async def database(monkeypatch):
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    temporary = tempfile.TemporaryDirectory()
+    path = Path(temporary.name) / "monitor.sqlite"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    monkeypatch.setattr(monitor_module, "analysis_store", lambda: _core.Store(str(path)))
     async with engine.begin() as connection:
         await connection.run_sync(SQLModel.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -60,6 +66,7 @@ async def database(monkeypatch):
         yield factory, account, monitor_module.AccountControlMonitor()
     finally:
         await engine.dispose()
+        temporary.cleanup()
 
 
 def used(frame):

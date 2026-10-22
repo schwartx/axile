@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 from sqlalchemy import select, update
 from sqlmodel import col
+from starlette.concurrency import run_in_threadpool
 
 from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
@@ -20,17 +21,17 @@ from axile.executor.account_control.models import AccountControlContextKind
 from axile.executor.account_control.monitor import policy_fingerprint
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.server._native import _core
 from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import AccountControlMonitorPublic
 from axile.server.account_control.store import AccountControlStore
 from axile.server.account_control.warnings import enqueue_quota_warnings, wake_pending_quota_warnings
-from axile.server.core.db import SessionLocal
+from axile.server.core.db import SessionLocal, analysis_store
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_control import AccountControlEvent
 from axile.server.db.models.account_control_session import AccountControlSession
-from axile.server.order_submissions import query_order_submission_summary
-from axile.server.submission_monitor import query_submission_monitor
+from axile.server.order_submissions import submission_window
 
 
 def _affected(session: AccountControlSession, control_date: str) -> bool:
@@ -312,11 +313,14 @@ class AccountControlMonitor:
             frame["actual_policy"] = None
             frame["actual_fingerprint"] = None
         if str(account.trade_channel) == "ctp":
-            summary = await query_order_submission_summary(db, account.id, window.control_date, policy.timezone)
-            frame["order_submissions"] = summary.model_dump(mode="json")
-            frame["submission_monitor"] = (
-                await query_submission_monitor(db, account.id, window.control_date, policy.timezone, summary)
-            ).model_dump(mode="json")
+            start, end = submission_window(window.control_date, policy.timezone)
+            store = analysis_store()
+            frame["order_submissions"] = await run_in_threadpool(
+                _core.order_submission_summary, store, account.id, start, end
+            )
+            frame["submission_monitor"] = await run_in_threadpool(
+                _core.submission_monitor, store, account.id, window.control_date, policy.timezone, start, end, now
+            )
         return frame
 
     async def _update_outcomes(self, db: Any, account_id: int, events: list[dict[str, Any]]) -> None:

@@ -15,7 +15,9 @@ from sqlmodel import SQLModel
 
 from axile.executor.order_submissions import OrderSubmissionFact
 from axile.server import order_submissions as submissions
+from axile.server._native import _core
 from axile.server.api.deps import get_db
+from axile.server.api.routes import account_orders as routes
 from axile.server.api.routes.account_orders import router
 from tests.unit.server._execution_test_support import build_account
 
@@ -41,6 +43,7 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
     database = str(tmp_path / "submissions.db")
     uri = f"sqlite+aiosqlite:///{database}"
     monkeypatch.setattr(submissions, "settings", SimpleNamespace(sqlalchemy_database_uri=uri))
+    monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(database))
     start, end = submissions.submission_window("2026-10-19", "Asia/Shanghai")
 
     async def scenario():
@@ -81,14 +84,18 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
                 submissions._save_fact(database, row)
 
             async with factory() as session:
-                summary = await submissions.query_order_submission_summary(session, 1, "2026-10-19", "Asia/Shanghai")
-                assert summary.recorded == 4
-                assert summary.sync_accepted == summary.sync_rejected == summary.broker_rejected == 1
-                assert summary.unknown == 2
-                rows = await submissions.query_order_submissions(session, 1, "2026-10-19", "Asia/Shanghai", limit=1)
+                summary = _core.order_submission_summary(_core.Store(database), 1, start, end)
+                assert summary["recorded"] == 4
+                assert summary["sync_accepted"] == summary["sync_rejected"] == summary["broker_rejected"] == 1
+                assert summary["unknown"] == 2
+                rows = _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 1)[
+                    "data"
+                ]
                 assert len(rows) == 1
-                all_rows = await submissions.query_order_submissions(session, 1, "2026-10-19", "Asia/Shanghai")
-                assert next(row for row in all_rows if row.submission_uid == "main").revision == 2
+                all_rows = _core.order_submissions(
+                    _core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100
+                )["data"]
+                assert next(row for row in all_rows if row["submission_uid"] == "main")["revision"] == 2
 
             app = FastAPI()
             app.include_router(router, prefix="/account")
@@ -121,14 +128,16 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
                 boundary.model_copy(update={"revision": 1, "occurred_at_ms": start, "send_status": "accepted"}),
             )
             async with factory() as session:
-                rows = await submissions.query_order_submissions(session, 1, "2026-10-19", "Asia/Shanghai")
-                raw = next(row for row in rows if row.order_id == "raw-script")
-                assert raw.source == "script" and raw.broker_status == "acknowledged"
-                assert any(row.submission_uid == "boundary" for row in rows)
-                summary = await submissions.query_order_submission_summary(session, 1, "2026-10-19", "Asia/Shanghai")
-                assert summary.recorded == 6
-                assert summary.sync_accepted == 3
-                assert summary.broker_acknowledged == 1
+                rows = _core.order_submissions(
+                    _core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100
+                )["data"]
+                raw = next(row for row in rows if row["order_id"] == "raw-script")
+                assert raw["source"] == "script" and raw["broker_status"] == "acknowledged"
+                assert any(row["submission_uid"] == "boundary" for row in rows)
+                summary = _core.order_submission_summary(_core.Store(database), 1, start, end)
+                assert summary["recorded"] == 6
+                assert summary["sync_accepted"] == 3
+                assert summary["broker_acknowledged"] == 1
         finally:
             await engine.dispose()
 

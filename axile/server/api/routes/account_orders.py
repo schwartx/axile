@@ -7,9 +7,12 @@ from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
+from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.server._native import _core
 from axile.server.account_orders import cancel_account_order, query_account_activity, query_account_orders
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.core.db import analysis_store
 from axile.server.db.models.account_order import (
     AccountActivityPublic,
     AccountOrdersPublic,
@@ -17,19 +20,17 @@ from axile.server.db.models.account_order import (
     OrderCancelRequest,
 )
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
-from axile.server.order_submissions import OrderSubmissionPage, query_order_submission_summary, query_order_submissions
+from axile.server.order_submissions import submission_window
 from axile.server.submission_monitor import (
-    SubmissionMonitorPublic,
     SubmissionMonitorUpdate,
-    query_submission_monitor,
     save_submission_monitor,
 )
 
 router = APIRouter()
 
 
-@router.get("/{account_id}/orders/monitor", response_model=SubmissionMonitorPublic)
-async def submission_monitor(session: SessionDep, account_id: int) -> SubmissionMonitorPublic:
+@router.get("/{account_id}/orders/monitor")
+async def submission_monitor(session: SessionDep, account_id: int) -> dict:
     """读取今日原生报撤监测；不发送任何柜台请求。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
     from axile.executor.algorithms.utils.clock import clock_now
@@ -39,14 +40,14 @@ async def submission_monitor(session: SessionDep, account_id: int) -> Submission
         raise HTTPException(422, detail="当前仅支持 CTP 原生报撤监测")
     policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
     day = clock_now().astimezone(ZoneInfo(policy.timezone)).date().isoformat()
-    summary = await query_order_submission_summary(session, account_id, day, policy.timezone)
-    return await query_submission_monitor(session, account_id, day, policy.timezone, summary)
+    start, end = submission_window(day, policy.timezone)
+    return await run_in_threadpool(
+        _core.submission_monitor, analysis_store(), account_id, day, policy.timezone, start, end, clock_now_ms()
+    )
 
 
-@router.put("/{account_id}/orders/monitor", response_model=SubmissionMonitorPublic)
-async def update_submission_monitor(
-    session: SessionDep, account_id: int, payload: SubmissionMonitorUpdate
-) -> SubmissionMonitorPublic:
+@router.put("/{account_id}/orders/monitor")
+async def update_submission_monitor(session: SessionDep, account_id: int, payload: SubmissionMonitorUpdate) -> dict:
     """立即保存并重评估监测阈值，不改变风控额度或触发交易。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
 
@@ -59,13 +60,13 @@ async def update_submission_monitor(
     return await submission_monitor(session, account_id)
 
 
-@router.get("/{account_id}/orders/submissions", response_model=OrderSubmissionPage)
+@router.get("/{account_id}/orders/submissions")
 async def order_submissions(
     session: SessionDep,
     account_id: int,
     control_date: date,
     limit: int = Query(100, ge=1, le=500),
-) -> OrderSubmissionPage:
+) -> dict:
     """读取已接入 CTP 入口的原生调用事实，不访问柜台、不以额度用量补算。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
 
@@ -74,9 +75,10 @@ async def order_submissions(
         raise HTTPException(422, detail="当前仅支持已接入的 CTP 原生报单流水")
     policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
     day = control_date.isoformat()
-    summary = await query_order_submission_summary(session, account_id, day, policy.timezone)
-    rows = await query_order_submissions(session, account_id, day, policy.timezone, limit=limit)
-    return OrderSubmissionPage(control_date=day, timezone=policy.timezone, summary=summary, data=rows)
+    start, end = submission_window(day, policy.timezone)
+    return await run_in_threadpool(
+        _core.order_submissions, analysis_store(), account_id, day, policy.timezone, start, end, limit
+    )
 
 
 @router.get("/{account_id}/orders/activity", response_model=AccountActivityPublic)

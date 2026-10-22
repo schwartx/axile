@@ -199,6 +199,72 @@ fn performance_result(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+fn order_submission_summary(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    start_ms: i64,
+    end_ms: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::submissions::summary(connection, account_id, start_ms, end_ms)
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn order_submissions(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    day: &str,
+    timezone: &str,
+    start_ms: i64,
+    end_ms: i64,
+    limit: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::submissions::page(
+                    connection, account_id, day, timezone, start_ms, end_ms, limit,
+                )
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn submission_monitor(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    day: &str,
+    timezone: &str,
+    start_ms: i64,
+    end_ms: i64,
+    now_ms: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::submissions::monitor(
+                    connection, account_id, day, timezone, start_ms, end_ms, now_ms,
+                )
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
@@ -211,6 +277,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(chart, m)?)?;
     m.add_function(wrap_pyfunction!(execution_summary, m)?)?;
     m.add_function(wrap_pyfunction!(execution_detail, m)?)?;
+    m.add_function(wrap_pyfunction!(order_submission_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(order_submissions, m)?)?;
+    m.add_function(wrap_pyfunction!(submission_monitor, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
 }
