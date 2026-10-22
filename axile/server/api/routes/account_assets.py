@@ -6,17 +6,17 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import desc, func, select
+from starlette.concurrency import run_in_threadpool
 
+from axile.server._native import _core
 from axile.server.account_assets import query_account_assets
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.asset_observations import is_asset_observation, valid_asset_snapshot_condition
-from axile.server.business_facts.assets import read_snapshots_assets, write_snapshot_assets
+from axile.server.asset_observations import is_asset_observation
+from axile.server.business_facts.assets import write_snapshot_assets
+from axile.server.core.db import analysis_store
 from axile.server.db.models import (
     AccountAssetSnapshot,
-    AccountAssetSnapshotListPublic,
     AccountAssetSnapshotPublic,
 )
 from axile.server.error_details import exception_details
@@ -94,38 +94,16 @@ async def refresh_account_assets(session: SessionDep, account_id: int) -> Accoun
         clear_account_asset_refresh(account_id)
 
 
-@router.get("/{account_id}/asset_snapshots", response_model=AccountAssetSnapshotListPublic)
+@router.get("/{account_id}/asset_snapshots")
 async def list_account_asset_snapshots(
-    session: SessionDep,
     account_id: int,
-    skip: int = Query(default=0, ge=0),
+    skip: int = Query(default=0, ge=0, le=2**63 - 1),
     limit: int = Query(default=100, ge=1, le=500),
-) -> AccountAssetSnapshotListPublic:
-    """分页读取账户资产快照（最新在前）."""
-    await _get_account_or_404(session, account_id)
-    async with session.begin_nested():
-        return await _read_asset_snapshot_page(session, account_id, skip, limit)
-
-
-async def _read_asset_snapshot_page(
-    session: AsyncSession, account_id: int, skip: int, limit: int
-) -> AccountAssetSnapshotListPublic:
-    """让快照页头和事实明细使用同一数据库读快照。"""
-    count = await session.scalar(
-        select(func.count())
-        .select_from(AccountAssetSnapshot)
-        .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
-    )
-    statement = (
-        select(AccountAssetSnapshot)
-        .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
-        .order_by(desc(AccountAssetSnapshot.id))
-        .offset(skip)
-        .limit(limit)
-    )
-    rows = (await session.execute(statement)).scalars().all()
-    assets = await read_snapshots_assets(session, rows)
-    return AccountAssetSnapshotListPublic(
-        data=[_snapshot_public(row, assets[cast("int", row.id)]) for row in rows],
-        count=int(count or 0),
-    )
+) -> dict:
+    """从一个原生读事务直接返回资产快照页。"""
+    try:
+        return await run_in_threadpool(_core.asset_snapshots, analysis_store(), account_id, skip, limit)
+    except _core.NativeError as error:
+        if error.args[0] == "ACCOUNT_NOT_FOUND":
+            raise HTTPException(404, detail="账户不存在") from error
+        raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error

@@ -4,6 +4,7 @@
 //! snapshot; publish_store stages and atomically writes analysis-owned results.
 //! No historical rows cross the Python/Rust process boundary in publish_store.
 
+pub mod assets;
 pub mod calendar;
 pub mod costs;
 pub mod error;

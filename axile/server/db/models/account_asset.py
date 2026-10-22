@@ -49,10 +49,3 @@ class AccountAssetSnapshotPublic(SQLModel):
     source: AccountAssetSnapshotSource
     execution_id: Optional[str]
     created_at: str
-
-
-class AccountAssetSnapshotListPublic(SQLModel):
-    """账户资产快照分页响应."""
-
-    data: list[AccountAssetSnapshotPublic]
-    count: int

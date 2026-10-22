@@ -265,9 +265,28 @@ fn submission_monitor(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+fn asset_snapshots(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    skip: i64,
+    limit: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::assets::page(connection, account_id, skip, limit)
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(query_costs, m)?)?;

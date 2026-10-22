@@ -140,7 +140,12 @@ def test_failed_placeholders_do_not_become_zero_observations():
     asyncio.run(check())
 
 
-def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path):
+def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path, monkeypatch):
+    from axile.server._native import _core
+    from axile.server.api.routes import account_assets
+
+    monkeypatch.setattr(account_assets, "analysis_store", lambda: _core.Store(str(tmp_path / "assets.db")))
+
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'assets.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -176,9 +181,9 @@ def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path):
                 session, [snapshot for rows in latest.values() for snapshot in rows]
             )
             assert {a: latest_assets[rows[0].id]["total_asset"] for a, rows in latest.items()} == {1: 100000, 2: 100000}
-            page = await list_account_asset_snapshots(session, 1, skip=0, limit=1)
-            assert page.count == 1 and page.data[0].assets["total_asset"] == 100000
-            assert not (await list_account_asset_snapshots(session, 1, skip=1, limit=1)).data
+            page = await list_account_asset_snapshots(1, skip=0, limit=1)
+            assert page["count"] == 1 and page["data"][0]["assets"]["total_asset"] == 100000
+            assert not (await list_account_asset_snapshots(1, skip=1, limit=1))["data"]
         for i, result in enumerate(
             [
                 legacy(),

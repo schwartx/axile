@@ -32,7 +32,6 @@ from axile.server.db.models.account import (
 )
 from axile.server.db.models.account_asset import (
     AccountAssetSnapshot,
-    AccountAssetSnapshotListPublic,
     AccountAssetSnapshotPublic,
     AccountAssetSnapshotSource,
 )
@@ -179,7 +178,6 @@ __all__ = [
     "AccountRuntimeSyncPublic",
     "AccountAssetSnapshot",
     "AccountAssetSnapshotPublic",
-    "AccountAssetSnapshotListPublic",
     "AccountAssetSnapshotSource",
     "PortfolioAccountBase",
     "PortfolioAccount",
