@@ -7,8 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from axile.server._native import _core
-from axile.server.api.deps import SessionDep
-from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.core.db import analysis_store
 from axile.server.db.models.performance import RangeKey
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
@@ -20,6 +18,8 @@ AccountId = Annotated[int, Path(gt=0, le=SQLITE_MAX_INTEGER)]
 
 def _native_http_error(error: _core.NativeError) -> HTTPException:
     """将原生读取错误映射为 HTTP 契约，不回退旧读取。"""
+    if error.args[0] == "ACCOUNT_NOT_FOUND":
+        return HTTPException(404, detail="账户不存在")
     status_code = {
         "SNAPSHOT_EXPIRED": 410,
         "SNAPSHOT_NOT_FOUND": 404,
@@ -74,25 +74,20 @@ class DetailQuery(BaseModel):
 
 
 @router.get("/performance/{account_id}/status")
-async def get_status(session: SessionDep, account_id: AccountId) -> dict:
+async def get_status(account_id: AccountId) -> dict:
     """Return small publication status independently of displayed page data."""
-    await _get_account_or_404(session, account_id)
     return await _op(_core.status, analysis_store(), account_id, LOGIC_VERSION, ENGINE_VERSION)
 
 
 @router.get("/performance/{account_id}/chart")
-async def get_chart(session: SessionDep, account_id: AccountId, query: Annotated[ChartQuery, Query()]) -> dict:
+async def get_chart(account_id: AccountId, query: Annotated[ChartQuery, Query()]) -> dict:
     """Read typed curves and flat indexes without historical execution details."""
-    await _get_account_or_404(session, account_id)
     return await _op(_core.chart, analysis_store(), account_id, query.snapshot_id, query.range)
 
 
 @router.get("/performance/{account_id}/execution-summary")
-async def get_execution_summary(
-    session: SessionDep, account_id: AccountId, query: Annotated[SummaryQuery, Query()]
-) -> dict:
+async def get_execution_summary(account_id: AccountId, query: Annotated[SummaryQuery, Query()]) -> dict:
     """Read frozen execution summary rows in a stable page."""
-    await _get_account_or_404(session, account_id)
     return await _op(
         _core.execution_summary,
         analysis_store(),
@@ -107,11 +102,8 @@ async def get_execution_summary(
 
 
 @router.get("/performance/{account_id}/execution-detail")
-async def get_execution_detail(
-    session: SessionDep, account_id: AccountId, query: Annotated[DetailQuery, Query()]
-) -> dict:
+async def get_execution_detail(account_id: AccountId, query: Annotated[DetailQuery, Query()]) -> dict:
     """Read only the selected execution's positions, attempts and transactions."""
-    await _get_account_or_404(session, account_id)
     return await _op(
         _core.execution_detail,
         analysis_store(),

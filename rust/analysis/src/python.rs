@@ -322,9 +322,11 @@ fn status(
     logic_version: &str,
     engine_version: &str,
 ) -> PyResult<Py<PyAny>> {
-    let result = store
-        .with_snapshot(|connection| {
-            crate::views::status(connection, account_id, logic_version, engine_version)
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::views::status(connection, account_id, logic_version, engine_version)
+            })
         })
         .map_err(raise)?;
     Ok(json_to_py(py, &result))
@@ -339,8 +341,12 @@ fn chart(
     snapshot_id: &str,
     range: &str,
 ) -> PyResult<Py<PyAny>> {
-    let result = store
-        .with_snapshot(|connection| crate::views::chart(connection, account_id, snapshot_id, range))
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::views::chart(connection, account_id, snapshot_id, range)
+            })
+        })
         .map_err(raise)?;
     Ok(json_to_py(py, &result))
 }
@@ -359,18 +365,20 @@ fn execution_summary(
     start: Option<f64>,
     end: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
-    let result = store
-        .with_snapshot(|connection| {
-            crate::views::execution_summary(
-                connection,
-                account_id,
-                snapshot_id,
-                range,
-                limit,
-                offset,
-                start,
-                end,
-            )
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::views::execution_summary(
+                    connection,
+                    account_id,
+                    snapshot_id,
+                    range,
+                    limit,
+                    offset,
+                    start,
+                    end,
+                )
+            })
         })
         .map_err(raise)?;
     Ok(json_to_py(py, &result))
@@ -387,16 +395,18 @@ fn execution_detail(
     limit: i64,
     offset: i64,
 ) -> PyResult<Py<PyAny>> {
-    let result = store
-        .with_snapshot(|connection| {
-            crate::views::execution_detail(
-                connection,
-                account_id,
-                snapshot_id,
-                record_id,
-                limit,
-                offset,
-            )
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::views::execution_detail(
+                    connection,
+                    account_id,
+                    snapshot_id,
+                    record_id,
+                    limit,
+                    offset,
+                )
+            })
         })
         .map_err(raise)?;
     Ok(json_to_py(py, &result))

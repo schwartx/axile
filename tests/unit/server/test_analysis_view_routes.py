@@ -219,8 +219,7 @@ async def http_client(database):
     app.include_router(routes.router, prefix="/api/v1/account")
 
     async def session_dependency():
-        async with sessions() as session:
-            yield session
+        raise AssertionError("analysis routes must not open a Python database session")
 
     app.dependency_overrides[get_db] = session_dependency
     try:
@@ -561,12 +560,7 @@ def test_routes_reject_account_id_outside_sqlite_range(dataset, endpoint):
 
 
 @pytest.mark.parametrize("endpoint", ["status", "chart", "execution-summary", "execution-detail"])
-def test_missing_account_is_rejected_before_reader(dataset, monkeypatch, endpoint):
-    async def reject_reader(*_args, **_kwargs):
-        raise AssertionError("missing account must be checked before reading a snapshot")
-
-    monkeypatch.setattr(routes, "_op", reject_reader)
-
+def test_missing_account_is_rejected_before_snapshot(dataset, endpoint):
     async def check():
         async with http_client(dataset) as (client, _, _):
             params = {"snapshot_id": "s1", "record_id": 1} if endpoint == "execution-detail" else {"snapshot_id": "s1"}

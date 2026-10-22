@@ -138,8 +138,23 @@ struct Guard {
     backtest_fee_rate: Option<f64>,
 }
 
+fn require_account(connection: &Connection, account_id: i64) -> Result<(), String> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM account WHERE id=?1)",
+            [account_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
+    if !exists {
+        return Err("ACCOUNT_NOT_FOUND: 账户不存在".into());
+    }
+    Ok(())
+}
+
 /// Check ownership and view schema without selecting either historical JSON column.
 fn guard(connection: &Connection, account_id: i64, snapshot_id: &str) -> Result<Guard, String> {
+    require_account(connection, account_id)?;
     let row = scalar_row(
         connection,
         "SELECT account_id,source_version,computed_at,data_until,backtest_weight_type,backtest_fee_rate,
@@ -173,6 +188,7 @@ pub fn status(
     logic_version: &str,
     engine_version: &str,
 ) -> Result<Value, String> {
+    require_account(connection, account_id)?;
     let row = scalar_row(
         connection,
         "SELECT a.source_version,a.published_version,a.requested,a.running_version,a.failures,a.retry_at,a.error,
@@ -381,16 +397,10 @@ fn param_refs(params: &[Box<dyn rusqlite::ToSql>]) -> Vec<&dyn rusqlite::ToSql> 
 fn execution_fees(
     connection: &Connection,
     snapshot_id: &str,
-    record_ids: &Value,
+    record_ids: &[i64],
 ) -> Result<Value, String> {
-    // record_ids 是 record_id 数组(可能来自页内行);直接展开为 IN 列表。
-    let ids: Vec<i64> = record_ids
-        .as_array()
-        .map(|items| items.iter().filter_map(Value::as_i64).collect())
-        .unwrap_or_default();
-    let placeholders = vec!["?"; ids.len()].join(",");
-    let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if ids.is_empty() {
-        // 空 IN 列表在 SQLite 中非法;Python 侧空列表同样返回空表。
+    let placeholders = vec!["?"; record_ids.len()].join(",");
+    let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if record_ids.is_empty() {
         (
             "SELECT record_id,currency,value,count FROM performance_execution_fee WHERE 0"
                 .to_owned(),
@@ -399,7 +409,8 @@ fn execution_fees(
     } else {
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(snapshot_id.to_owned())];
         params.extend(
-            ids.iter()
+            record_ids
+                .iter()
                 .map(|id| Box::new(*id) as Box<dyn rusqlite::ToSql>),
         );
         (
@@ -541,15 +552,18 @@ pub fn chart(
         SUMMARY_COLUMNS,
         SUMMARY_BOOLEANS,
     )?;
-    let record_ids = index["rows"]
-        .as_array()
-        .map(|rows| Value::Array(rows.iter().map(|row| row[0].clone()).collect()))
-        .unwrap_or(Value::Array(Vec::new()));
+    let fee_sql = format!("WITH selected AS ({sql})
+        SELECT record_id,currency,value,count FROM performance_execution_fee
+        WHERE snapshot_id=?1 AND record_id IN (SELECT record_id FROM selected) ORDER BY record_id,currency");
+    let fees = table(
+        connection,
+        &fee_sql,
+        &param_refs(&params),
+        &["record_id", "currency", "value", "count"],
+        &[],
+    )?;
     tables.insert("execution_index".into(), index);
-    tables.insert(
-        "execution_fees".into(),
-        execution_fees(connection, snapshot_id, &record_ids)?,
-    );
+    tables.insert("execution_fees".into(), fees);
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
@@ -593,22 +607,22 @@ pub fn execution_summary(
     sql.push_str(" ORDER BY s.time,s.record_id LIMIT ? OFFSET ?");
     params.push(Box::new(limit + 1));
     params.push(Box::new(offset));
-    let page = table(
+    let mut page = table(
         connection,
         &sql,
         &param_refs(&params),
         SUMMARY_COLUMNS,
         SUMMARY_BOOLEANS,
     )?;
-    let mut rows = page["rows"].as_array().cloned().unwrap_or_default();
+    let rows = page["rows"].as_array_mut().unwrap();
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    let record_ids = Value::Array(rows.iter().map(|row| row[0].clone()).collect());
+    let record_ids: Vec<i64> = rows.iter().map(|row| row[0].as_i64().unwrap()).collect();
     Ok(json!({
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
         "range": range_key,
-        "table": {"columns": SUMMARY_COLUMNS, "rows": rows},
+        "table": page,
         "fees": execution_fees(connection, snapshot_id, &record_ids)?,
         "next_offset": if has_more { json!(offset + limit) } else { Value::Null },
     }))
@@ -667,7 +681,7 @@ pub fn execution_detail(
         &[&snapshot_id, &record_id],
     )?
     .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少执行摘要")?;
-    let fees = execution_fees(connection, snapshot_id, &json!([record_id]))?;
+    let fees = execution_fees(connection, snapshot_id, &[record_id])?;
     let mut summary_map = Map::new();
     for (index, name) in [
         "value",
@@ -698,7 +712,7 @@ pub fn execution_detail(
     }
     summary_map.insert("fees".into(), {
         let mut fee_map = Map::new();
-        for row in fees["rows"].as_array().cloned().unwrap_or_default() {
+        for row in fees["rows"].as_array().unwrap() {
             if row[1].is_string() {
                 fee_map.insert(row[1].as_str().unwrap().to_owned(), row[2].clone());
             }
@@ -720,7 +734,6 @@ pub fn execution_detail(
     }
     let mut tables = Map::new();
     let mut next_offsets = Map::new();
-    let mut transaction_ids = Vec::new();
     let mut transactions_next = Value::Null;
     for (name, source, columns, booleans, ordering) in [
         ("positions", "performance_cost_position", "idx,symbol,quantity,direction", &[][..], "idx"),
@@ -737,54 +750,34 @@ pub fn execution_detail(
         );
         let columns: Vec<&str> = columns.split(',').collect();
         // 多取一行判断是否有下一页。
-        let page = table(
+        let mut page = table(
             connection,
             &sql,
             &[&snapshot_id, &record_id, &(limit + 1), &offset],
             &columns,
             booleans,
         )?;
-        let mut rows = page["rows"].as_array().cloned().unwrap_or_default();
+        let rows = page["rows"].as_array_mut().unwrap();
         let has_more = rows.len() as i64 > limit;
         rows.truncate(limit as usize);
         let next = if has_more { json!(offset + limit) } else { Value::Null };
         if name == "transactions" {
-            transaction_ids = rows.iter().map(|row| row[0].clone()).collect();
             transactions_next = next;
         } else {
             next_offsets.insert(name.to_owned(), next);
         }
-        tables.insert(name.to_owned(), json!({"columns": columns, "rows": rows}));
+        tables.insert(name.to_owned(), page);
     }
-    let placeholders = vec!["?"; transaction_ids.len()].join(",");
-    let (fee_sql, fee_params): (String, Vec<Box<dyn rusqlite::ToSql>>) =
-        if transaction_ids.is_empty() {
-            (
-            "SELECT transaction_idx,currency,value FROM performance_cost_transaction_fee WHERE 0"
-                .to_owned(),
-            Vec::new(),
-        )
-        } else {
-            let mut fee_params: Vec<Box<dyn rusqlite::ToSql>> =
-                vec![Box::new(snapshot_id.to_owned()), Box::new(record_id)];
-            for id in &transaction_ids {
-                fee_params.push(Box::new(id.as_i64().unwrap_or_default()));
-            }
-            (
-                format!(
-                    "SELECT transaction_idx,currency,value FROM performance_cost_transaction_fee
-                 WHERE snapshot_id=? AND record_id=? AND transaction_idx IN ({placeholders})
-                 ORDER BY transaction_idx,currency"
-                ),
-                fee_params,
-            )
-        };
     tables.insert(
         "transaction_fees".into(),
         table(
             connection,
-            &fee_sql,
-            &param_refs(&fee_params),
+            "SELECT transaction_idx,currency,value FROM performance_cost_transaction_fee
+             WHERE snapshot_id=?1 AND record_id=?2 AND transaction_idx IN (
+                 SELECT idx FROM performance_cost_transaction
+                 WHERE snapshot_id=?1 AND record_id=?2 ORDER BY idx LIMIT ?3 OFFSET ?4
+             ) ORDER BY transaction_idx,currency",
+            &[&snapshot_id, &record_id, &limit, &offset],
             &["transaction_idx", "currency", "value"],
             &[],
         )?,
@@ -819,7 +812,9 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE account_analysis (
+                "CREATE TABLE account (id INTEGER PRIMARY KEY);
+                 INSERT INTO account VALUES (2),(3),(7);
+                 CREATE TABLE account_analysis (
                      account_id INTEGER PRIMARY KEY, source_version INTEGER NOT NULL DEFAULT 1,
                      published_version INTEGER NOT NULL DEFAULT 0, requested INTEGER NOT NULL DEFAULT 0,
                      current_snapshot TEXT, running_version INTEGER, failures INTEGER NOT NULL DEFAULT 0,
