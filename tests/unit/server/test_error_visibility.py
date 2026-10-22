@@ -86,11 +86,16 @@ def test_remote_traceback_takes_precedence_over_local_wrapper():
     assert detail["traceback"] == error.formatted_traceback
 
 
-def test_exact_record_filters_share_account_scope_count_and_pagination():
+def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path, monkeypatch):
+    from axile.server._native import _core
+    from axile.server.api.routes import account_crud
+
+    database = tmp_path / "executions.sqlite"
+    monkeypatch.setattr(account_crud, "analysis_store", lambda: _core.Store(str(database)))
     from axile.server.db.models import ExecuteRecord
 
     async def run():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         async with engine.begin() as connection:
             await connection.run_sync(SQLModel.metadata.create_all)
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -105,22 +110,22 @@ def test_exact_record_filters_share_account_scope_count_and_pagination():
             await store_execution_facts(session, other, raw_input={}, raw_result={})
             await session.commit()
             page = HistoryPagination(skip=0, limit=1)
-            result = await list_execute_records(session, 1, page, execution_id="exec-1", record_id=1)
-            assert result.count == 1
-            assert [row.id for row in result.data] == [1]
-            assert "result" not in result.data[0].model_dump()
+            result = await list_execute_records(1, page, execution_id="exec-1", record_id=1)
+            assert result["count"] == 1
+            assert [row["id"] for row in result["data"]] == [1]
+            assert "result" not in result["data"][0]
             detail = await execute_record_detail(session, 1, 1)
             assert detail.result["technical_detail"] == RAW
             for execution_id, record_id in [("exec-1", 2), ("other-account", None), (None, 1000)]:
-                result = await list_execute_records(session, 1, page, execution_id=execution_id, record_id=record_id)
-                assert result.count == 0
-                assert result.data == []
-            skipped = await list_execute_records(session, 1, HistoryPagination(skip=1, limit=1), execution_id="exec-1")
-            assert skipped.count == 1
-            assert skipped.data == []
-            unfiltered = await list_execute_records(session, 1, page)
-            assert unfiltered.count == 602
-            assert unfiltered.data[0].id == 602
+                result = await list_execute_records(1, page, execution_id=execution_id, record_id=record_id)
+                assert result["count"] == 0
+                assert result["data"] == []
+            skipped = await list_execute_records(1, HistoryPagination(skip=1, limit=1), execution_id="exec-1")
+            assert skipped["count"] == 1
+            assert skipped["data"] == []
+            unfiltered = await list_execute_records(1, page)
+            assert unfiltered["count"] == 602
+            assert unfiltered["data"][0]["id"] == 602
         await engine.dispose()
 
     asyncio.run(run())

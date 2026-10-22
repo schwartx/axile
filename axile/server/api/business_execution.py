@@ -6,10 +6,8 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import SQLModel
 
 from axile.server.db.models.analysis_source import source_execution, source_execution_symbol, source_trade
 from axile.server.db.models.execution import ExecuteRecord, ExecuteRecordPublic
@@ -21,13 +19,6 @@ class ExecuteRecordSummaryPublic(ExecuteRecordPublic):
     symbol_results: dict[str, dict[str, Any]] | None = None
     trade_count: int | None = None
     symbol_count: int | None = None
-
-
-class ExecuteRecordSummaryListPublic(SQLModel):
-    """执行摘要的分页响应。"""
-
-    data: list[ExecuteRecordSummaryPublic] = Field(default_factory=list)
-    count: int
 
 
 class ExecuteRecordDetailPublic(ExecuteRecordSummaryPublic):

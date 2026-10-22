@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Response, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import and_, col, delete, desc, func, select
+from sqlmodel import and_, col, delete, func, select
 from starlette.concurrency import run_in_threadpool
 
 from axile.channels import get_channel
@@ -21,7 +21,6 @@ from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
 from axile.server.api.business_execution import (
     ExecuteRecordDetailPublic,
-    ExecuteRecordSummaryListPublic,
     read_execution_summaries,
 )
 from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
@@ -911,54 +910,28 @@ async def _reconcile_committed_runtime(session: SessionDep, sched: SchedDep, acc
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在") from exc
 
 
-@router.get("/execute_records/{account_id}", response_model=ExecuteRecordSummaryListPublic)
+@router.get("/execute_records/{account_id}")
 async def list_execute_records(
-    session: SessionDep,
     account_id: int,
     pagination: HistoryPaginationDep,
     execution_id: str | None = None,
     record_id: int | None = None,
-) -> ExecuteRecordSummaryListPublic:
-    """分页读取执行摘要，输入、资产和逐单证据仅在详情接口读取。"""
-    await _get_account_or_404(session, account_id)
-    async with session.begin_nested():
-        return await _read_execute_record_page(
-            session, account_id, pagination.skip, pagination.limit, execution_id, record_id
+) -> dict:
+    """直接返回原生执行摘要页，不读取完整执行证据。"""
+    try:
+        return await run_in_threadpool(
+            _core.execution_records,
+            analysis_store(),
+            account_id,
+            pagination.skip,
+            pagination.limit,
+            execution_id,
+            record_id,
         )
-
-
-async def _read_execute_record_page(
-    session: AsyncSession,
-    account_id: int,
-    skip: int,
-    limit: int,
-    execution_id: str | None,
-    record_id: int | None,
-) -> ExecuteRecordSummaryListPublic:
-    """页头、计数和结论在同一事务读取，避免更新时混入另一版本。"""
-    filters = [ExecuteRecord.account_id == account_id]
-    if execution_id is not None:
-        filters.append(ExecuteRecord.execution_id == execution_id)
-    if record_id is not None:
-        filters.append(ExecuteRecord.id == record_id)
-    count_statement = select(func.count()).select_from(ExecuteRecord).where(*filters)
-    count = (await session.execute(count_statement)).scalar_one()
-
-    statement = (
-        select(ExecuteRecord)
-        .where(*filters)
-        # execute_record 没有独立时间排序键时，按自增 id 倒序近似“最新在前”的时间线。
-        .order_by(desc(ExecuteRecord.id))
-        .offset(skip)
-        .limit(limit)
-    )
-    records = (await session.execute(statement)).scalars().all()
-
-    summaries = await read_execution_summaries(session, records)
-    return ExecuteRecordSummaryListPublic(
-        data=[summaries[cast("int", record.id)] for record in records],
-        count=count,
-    )
+    except _core.NativeError as error:
+        if error.args[0] == "ACCOUNT_NOT_FOUND":
+            raise HTTPException(404, detail="账户不存在") from error
+        raise HTTPException(503, detail={"code": error.args[0], "message": error.args[1]}) from error
 
 
 @router.get("/execute_records/{account_id}/{record_id}", response_model=ExecuteRecordDetailPublic)

@@ -283,9 +283,38 @@ fn asset_snapshots(
     Ok(json_to_py(py, &result))
 }
 
+#[pyfunction]
+#[pyo3(signature = (store, account_id, skip, limit, execution_id=None, record_id=None))]
+fn execution_records(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    skip: i64,
+    limit: i64,
+    execution_id: Option<&str>,
+    record_id: Option<i64>,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            store.with_snapshot(|connection| {
+                crate::executions::page(
+                    connection,
+                    account_id,
+                    skip,
+                    limit,
+                    execution_id,
+                    record_id,
+                )
+            })
+        })
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(execution_records, m)?)?;
     m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;

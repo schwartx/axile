@@ -9,6 +9,7 @@ pub mod calendar;
 pub mod costs;
 pub mod error;
 pub(crate) mod execution_summary;
+pub mod executions;
 pub mod native_publication;
 pub mod performance;
 pub mod publication;

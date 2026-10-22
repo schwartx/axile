@@ -622,7 +622,7 @@ def test_update_gm_keeps_session_until_connection_changes(monkeypatch, patch, re
     assert response.json()["is_started"] == patch.get("is_started", True)
 
 
-def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """有历史的账户复制后，新账户的执行、资产和收益独立开始。"""
     from axile.server.business_facts.assets import ensure_execution_asset_snapshot
     from axile.server.business_facts.repository import read_execution_result, store_execution_facts
@@ -639,8 +639,13 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(account_crud_routes, "get_running_execution_id", lambda _: None)
     monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _: None)
 
+    from axile.server._native import _core
+
+    database = tmp_path / "copy.sqlite"
+    monkeypatch.setattr(account_crud_routes, "analysis_store", lambda: _core.Store(str(database)))
+
     async def run():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(SQLModel.metadata.create_all)
@@ -695,9 +700,9 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                     if field not in {"name", "is_started", "account_config"}:
                         assert getattr(copied, field) == getattr(source, field)
                 assert all(copied.account_config[key] == value for key, value in source.account_config.items())
-                history = await account_crud_routes.list_execute_records(session, copied_id, HistoryPagination())
-                assert history.count == 0
-                assert history.data == []
+                history = await account_crud_routes.list_execute_records(copied_id, HistoryPagination())
+                assert history["count"] == 0
+                assert history["data"] == []
                 assert (
                     await session.execute(select(ExecutionEvent).where(ExecutionEvent.account_id == copied_id))
                 ).scalars().all() == []
@@ -726,15 +731,15 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                 await session.flush()
                 await store_execution_facts(session, new_record, {}, {"account_assets": {"total_asset": 250}})
                 await session.commit()
-                history = await account_crud_routes.list_execute_records(session, copied_id, HistoryPagination())
-                assert history.count == 1
-                assert history.data[0].execution_id == "new"
-                original = await account_crud_routes.list_execute_records(session, 1, HistoryPagination())
+                history = await account_crud_routes.list_execute_records(copied_id, HistoryPagination())
+                assert history["count"] == 1
+                assert history["data"][0]["execution_id"] == "new"
+                original = await account_crud_routes.list_execute_records(1, HistoryPagination())
                 assert original.count == 1
-                original_detail = await account_crud_routes.execute_record_detail(session, 1, original.data[0].id)
+                original_detail = await account_crud_routes.execute_record_detail(session, 1, original["data"][0]["id"])
                 assert original_detail.result["orders"] == old_result["orders"]
                 with pytest.raises(HTTPException) as cross_account:
-                    await account_crud_routes.execute_record_detail(session, copied_id, original.data[0].id)
+                    await account_crud_routes.execute_record_detail(session, copied_id, original["data"][0]["id"])
                 assert cross_account.value.status_code == 404
                 stored = (
                     await session.execute(select(ExecuteRecord).where(ExecuteRecord.account_id == 1))
