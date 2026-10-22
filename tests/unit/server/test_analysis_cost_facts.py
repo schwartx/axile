@@ -9,8 +9,8 @@ from alembic.operations import Operations
 
 from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION, iter_cost_fact_batches
 from axile.server.performance_costs import project_execution, timestamp
+from tests.unit.server._business_analysis_support import record
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
-from tests.unit.server.test_performance_analysis import record
 
 
 def _project_rows(records):

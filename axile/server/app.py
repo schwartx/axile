@@ -18,7 +18,6 @@ from loguru import logger
 from axile.common.config import API_V1_STR, PROJECT_NAME, is_configured, settings
 from axile.executor.algorithms.core.loader import load_algorithm_modules
 from axile.server.api.main import api_router
-from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import scheduler
 from axile.server.core.single_worker import ensure_single_worker
 from axile.server.error_details import json_error_value
@@ -27,7 +26,6 @@ from axile.server.execution.dispatcher import recover_intents_on_startup, shutdo
 from axile.server.execution.live import live_hub
 from axile.server.execution.worker_backend.manager import shutdown_worker_backend_manager
 from axile.server.initial_data import init_scheduler
-from axile.server.performance_analysis import AnalysisManager
 
 __all__ = [
     "ALGORITHM_DIRECTORIES_ENV",
@@ -250,9 +248,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     finally:
         notification_outbox.recovering = False
     await notification_outbox.recover_notifications()
-    analysis = AnalysisManager(SessionLocal)
-    _.state.analysis_manager = analysis
-    await analysis.start()
     # 核心服务先就绪；每个账户独立恢复，不等待柜台登录、合约查询或账户限流。
     account_recovery = asyncio.create_task(_recover_accounts_in_background(), name="axile-account-recovery")
     from axile.server.execution.catalog_preheat import arm_catalog_preheat
@@ -271,7 +266,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await time_check_service.close()
         await monitor.close()
         scheduler.shutdown()
-        await analysis.stop()
         await shutdown_dispatchers()
         shutdown_worker_backend_manager()
         logger.warning("axile已经关闭!")

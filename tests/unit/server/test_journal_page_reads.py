@@ -11,10 +11,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from axile.server.api.routes import account_schedule
 from axile.server.business_facts.assets import read_result_asset_totals
 from axile.server.db.models import ExecuteRecord, ScheduleSkip
-from tests.unit.server._business_analysis_support import persist_records
+from tests.unit.server._business_analysis_support import database, persist_records, record
+from tests.unit.server._business_analysis_support import schema_template as schema_template
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server.test_performance_analysis import database, record
-from tests.unit.server.test_performance_analysis import schema_template as schema_template
 
 
 def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, schema_template):

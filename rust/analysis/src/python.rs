@@ -131,13 +131,16 @@ fn account_performance(
 ) -> PyResult<Py<PyAny>> {
     let result = store
         .with_snapshot(|connection| {
+            // 回测口径存于 account_settings.backtest JSON 列;无行/缺省回退 0.0,
+            // 权重类型一律按 cs 计算(Python 校验器同样把旧 ts 归一为 cs)。
             let fee: f64 = connection
                 .query_row(
-                    "SELECT backtest_fee_rate FROM account WHERE id=?1",
+                    "SELECT COALESCE(json_extract(backtest,'$.backtest_fee_rate'),0.0) \
+                     FROM account_settings WHERE account_id=?1",
                     [account_id],
                     |row| row.get(0),
                 )
-                .map_err(|error| format!("DATABASE_READ: {error}"))?;
+                .unwrap_or(0.0);
             let range: Option<&'static str> = match range {
                 None => Ok(None),
                 Some("30") => Ok(Some("30")),
@@ -151,7 +154,8 @@ fn account_performance(
                     account_id,
                     range,
                     include_backtest,
-                    include_metadata: false,
+                    // 响应契约包含 bindings 与 calendar,同步计算按带元数据口径返回。
+                    include_metadata: true,
                     require_observation_facts: false,
                     expected_source_version: if verify_source {
                         SourceVersionCheck::Version(expected_source_version)

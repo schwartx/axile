@@ -14,9 +14,8 @@ from axile.server.analysis_cost_facts import iter_cost_fact_batches
 from axile.server.db.models import ExecuteRecord
 from axile.server.performance_analysis import _events
 from axile.server.performance_costs import project_execution, timestamp
-from tests.unit.server._business_analysis_support import persist_records
+from tests.unit.server._business_analysis_support import persist_records, record
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server.test_performance_analysis import record
 
 
 def _rich_record():

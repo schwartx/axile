@@ -11,9 +11,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from axile.server.api.routes import account_schedule
 from axile.server.db.models import ExecuteRecord
 from axile.server.performance_costs import project_execution, summarize
-from tests.unit.server._business_analysis_support import persist_records
-from tests.unit.server.test_performance_analysis import database, record
-from tests.unit.server.test_performance_analysis import schema_template as schema_template
+from tests.unit.server._business_analysis_support import database, persist_records, record
+from tests.unit.server._business_analysis_support import schema_template as schema_template
 
 
 def test_stream_preserves_all_fills_and_summary_and_bounds_live_records(tmp_path, schema_template):

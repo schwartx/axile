@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import AsyncAdaptedQueuePool, event
@@ -50,3 +51,12 @@ engine = create_async_engine(
 register_sqlite_concurrency_pragmas(engine)
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+@lru_cache(maxsize=1)
+def analysis_store():
+    """原生分析只读访问点;绑定产物随构建提供,缺失时让请求显式失败而非静默回退."""
+    from axile.server._native import _core
+
+    path = str(settings.sqlalchemy_database_uri).replace("sqlite+aiosqlite:///", "", 1)
+    return _core.Store(path)

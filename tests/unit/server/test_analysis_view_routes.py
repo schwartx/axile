@@ -243,12 +243,6 @@ def _reject_legacy_reads(connection, cursor, statement, parameters, context, exe
 
 def test_chart_uses_small_typed_tables_without_json_or_source_trade_aggregation(dataset, monkeypatch):
     """A poisoned legacy projection cannot affect the independently stored chart."""
-    from axile.server import native_analysis
-
-    def reject_native(*_args, **_kwargs):
-        raise AssertionError("page reads must not invoke Rust")
-
-    monkeypatch.setattr(native_analysis, "get_native_analysis", reject_native)
 
     async def check():
         async with http_client(dataset) as (client, _, engine):

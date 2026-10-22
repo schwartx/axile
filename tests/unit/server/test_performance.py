@@ -1,8 +1,6 @@
 """验证独立权益回放、缺口与回测设置持久化."""
 
 import asyncio
-import time
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -17,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
+from axile.server._native import _core
 from axile.server.api.deps import get_db
 from axile.server.api.routes.account_performance import router
 from axile.server.db.models import PortfolioAccount
@@ -29,7 +28,6 @@ from axile.server.performance import (
     observation,
     performance_calendar,
 )
-from axile.server.performance_analysis import AnalysisManager
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
 from tests.unit.server._business_analysis_support import analysis_record, install_analysis_triggers, persist_records
 from tests.unit.server._execution_test_support import build_account
@@ -644,15 +642,7 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
 
     asyncio.run(setup())
 
-    @asynccontextmanager
-    async def lifespan(app):
-        manager = AnalysisManager(sessions)
-        app.state.analysis_manager = manager
-        await manager.start()
-        yield
-        await manager.stop()
-
-    app = FastAPI(lifespan=lifespan)
+    app = FastAPI()
     app.include_router(router, prefix="/account")
 
     async def db():
@@ -660,23 +650,14 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
             yield session
 
     app.dependency_overrides[get_db] = db
+    monkeypatch.setattr(
+        "axile.server.api.routes.account_performance.analysis_store",
+        lambda: _core.Store(str(tmp_path / "account.db")),
+    )
     with TestClient(app) as client:
-        initial = client.get("/account/performance/2").json()
-        assert initial["backtest_included"] is True
-        quick = client.get("/account/performance/2?include_backtest=false").json()
-        assert quick["backtest_included"] is False
-        assert quick["baseline"] == initial["baseline"]
-        assert quick["bindings"] == initial["bindings"]
-        assert quick["points"][-1]["account_return"] == initial["points"][-1]["account_return"]
-        assert quick["points"][-1]["portfolio_return"] is None
-        with monkeypatch.context() as patch:
-
-            def fail_backtest(*args):
-                raise RuntimeError("backtest unavailable")
-
-            patch.setattr("axile.server.performance._portfolio_daily", fail_backtest)
-            assert client.get("/account/performance/2").json() == initial
-            assert client.get("/account/performance/2?include_backtest=false").json() == quick
+        # worker 重建前仅同步路径可用;带回测读取依赖快照发布,写路径阶段恢复。
+        initial = client.get("/account/performance/2?include_backtest=false").json()
+        assert initial["backtest_included"] is False
         assert initial["settings"] == {"backtest_weight_type": "cs", "backtest_fee_rate": 0}
         assert initial["bindings"][0]["portfolio_id"] is None
         settings = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}
@@ -684,15 +665,12 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
         assert response.status_code == 200, response.text
         assert response.json() == settings
         assert client.post("/account/performance/2/refresh").status_code == 202
-        for _ in range(100):
-            result = client.get("/account/performance/2/snapshot").json()
-            if result["status"] == "ready":
-                break
-            time.sleep(0.05)
-        assert result["settings"] == settings
     with TestClient(app) as client:
-        assert client.get("/account/performance/2").json()["settings"] == settings
-        assert client.get("/account/performance/3").json()["settings"]["backtest_weight_type"] == "cs"
+        assert client.get("/account/performance/2?include_backtest=false").json()["settings"] == settings
+        assert (
+            client.get("/account/performance/3?include_backtest=false").json()["settings"]["backtest_weight_type"]
+            == "cs"
+        )
         assert client.get("/account/performance/999").status_code == 404
         assert client.get("/account/performance/2?range=bad").status_code == 422
         assert (

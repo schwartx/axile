@@ -7,8 +7,8 @@ from axile.server.alembic import analysis0035_cost_restore as restore
 from axile.server.analysis_cost_facts import COST_FACT_TABLES, iter_cost_fact_batches
 from axile.server.db.models.analysis import analysis_snapshot, cost_execution, cost_trade
 from axile.server.performance_costs import summarize
+from tests.unit.server._business_analysis_support import record
 from tests.unit.server.test_analysis_cost_facts import _project_rows, _ranges, _rich_projection
-from tests.unit.server.test_performance_analysis import record
 
 
 @pytest.mark.parametrize("cost_schema", [1, 2])

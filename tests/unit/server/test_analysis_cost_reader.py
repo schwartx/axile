@@ -14,8 +14,8 @@ from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.performance_costs import execution_list_payload, summarize, timestamp
 from axile.server.performance_details import CostQuery, read_costs
+from tests.unit.server._business_analysis_support import record
 from tests.unit.server.test_analysis_cost_facts import _project_rows, _ranges, _rich_projection
-from tests.unit.server.test_performance_analysis import record
 
 
 def _history():

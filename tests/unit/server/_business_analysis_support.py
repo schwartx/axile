@@ -1,9 +1,13 @@
 """分析测试显式保存规范事实；不为 ORM 恢复已删除的原始文档属性。"""
 
 from collections import defaultdict
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 import sqlalchemy as sa
+from sqlmodel import SQLModel
 
 from axile.server.db.models import ExecuteRecord, TargetWeightSnapshot
 
@@ -187,3 +191,78 @@ async def persist_target(session, *, normalized_weights=None, raw_weights=None, 
             await session.execute(table.insert(), rows)
     await session.flush()
     return snapshot
+
+
+def record(index=1, **kwargs):
+    return analysis_record(
+        account_id=2,
+        id=index,
+        execution_id=f"exec-{index}",
+        is_success=1,
+        created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1)).isoformat(),
+        input={"curr_target": {"A": 1}},
+        result={
+            "account_assets": {"total_asset": 100 + index},
+            "symbol_results": {
+                "A": {
+                    "first_tick": {"bid_price": 100 + index, "ask_price": 100 + index},
+                    "sizing": {"unit_multiplier": 10},
+                    "orders": [{"order_id": "buy", "direction": "BUY"}],
+                    "trades": [
+                        {
+                            "order_id": "buy",
+                            "trade_price": 102 + index,
+                            "trade_volume": 2,
+                            "extra": {"commission": 0, "commission_asset": "CNY"},
+                        }
+                    ],
+                }
+            },
+            **kwargs,
+        },
+    )
+
+
+def _create_schema(connection):
+    SQLModel.metadata.create_all(connection)
+    install_analysis_triggers(connection)
+
+
+@pytest.fixture(scope="module")
+def schema_template(tmp_path_factory):
+    """模板包含真实索引和触发器，复制前关闭全部连接。"""
+    path = tmp_path_factory.mktemp("analysis-schema") / "template.db"
+    engine = sa.create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            _create_schema(connection)
+    finally:
+        engine.dispose()
+    return path
+
+
+@asynccontextmanager
+async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
+    """模板库 + 预置记录的引擎/会话工厂;第三个槽位保留给 worker,现阶段恒为 None."""
+    from shutil import copyfile
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from tests.unit.server._execution_test_support import build_account
+
+    if not fresh_schema:
+        copyfile(schema_template, tmp_path / "analysis.db")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'analysis.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    if fresh_schema:
+        async with engine.begin() as conn:
+            await conn.run_sync(_create_schema)
+    async with sessions() as session:
+        session.add(build_account(id=2, account_control_preset="default"))
+        await session.commit()
+        await persist_records(session, [record(i + 1) for i in range(count)], project=True)
+        await session.commit()
+    try:
+        yield engine, sessions, None
+    finally:
+        await engine.dispose()

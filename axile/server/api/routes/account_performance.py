@@ -3,29 +3,20 @@
 import asyncio
 from typing import Annotated
 
-import sqlalchemy as sa
-from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import text
-from sqlmodel import col, select
+from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_async_sleep, clock_monotonic
-from axile.server.analysis_history import iter_analysis_observations
-from axile.server.analysis_observations import ensure_observation_facts
+from axile.server._native import _core
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.db.models import PortfolioAccount
-from axile.server.db.models.analysis import analysis_snapshot as snapshots
+from axile.server.core.db import analysis_store
 from axile.server.db.models.performance import (
     AccountPerformance,
-    PerformanceBinding,
     PerformanceSettings,
     PerformanceSnapshot,
     RangeKey,
 )
-from axile.server.native_account_performance import native_account_performance
-from axile.server.native_analysis import NativeAnalysisError, get_native_analysis
-from axile.server.performance import calculate_performance, local_time
 from axile.server.performance_analysis import (
     ENGINE_VERSION,
     LOGIC_VERSION,
@@ -37,124 +28,32 @@ from axile.server.performance_details import CostQuery, _cursor, read_costs
 
 router = APIRouter()
 
+_NOT_READY = HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
 
-def _native_http_error(error: NativeAnalysisError) -> HTTPException:
-    """将原生查询错误映射为现有 API 错误，不在失败后重复计算。"""
+
+def _native_http_error(error: _core.NativeError) -> HTTPException:
+    """将原生查询错误映射为现有 API 错误;绑定常在,无静默回退."""
     status_code = {
         "SNAPSHOT_EXPIRED": 410,
         "INVALID_COST_CURSOR": 400,
         "INVALID_COST_QUERY": 400,
         "INVALID_REQUEST": 422,
-    }.get(error.code, 503)
-    return HTTPException(status_code, detail={"code": error.code, "message": str(error)})
+    }.get(error.args[0], 503)
+    return HTTPException(status_code, detail={"code": error.args[0], "message": error.args[1]})
 
 
-async def _native_response(session, command: str, **fields) -> Response | None:
-    """原样传递 Rust 编码结果，避免逐行模型构造和再次序列化。"""
+async def _op(call, *args):
+    """在线程池里执行原生查询,错误映射保持既有 HTTP 语义."""
     try:
-        native = get_native_analysis(session)
-        if native is None:
-            return None
-        body = await native.query(command, logic_version=LOGIC_VERSION, engine_version=ENGINE_VERSION, **fields)
-    except NativeAnalysisError as error:
+        return await run_in_threadpool(call, *args)
+    except _core.NativeError as error:
         raise _native_http_error(error) from error
-    return Response(body, media_type="application/json")
 
 
-async def _wait_ready_performance(session, account_id: int, deadline: float) -> None:
-    """只轮询小状态，不重排队或加载结果，期限由整次请求共享。"""
-    while True:
-        await session.rollback()
-        status = await read_snapshot_status(session, account_id)
-        if status == "failed" or clock_monotonic() >= deadline:
-            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
-        if status == "ready":
-            return
-        await clock_async_sleep(0.1)
-
-
-async def _native_ready_performance(session, request: Request, account_id: int, range_key: str, include_backtest: bool):
-    """仅对原生未就绪恢复小状态等待，所有尝试共用同一期限。"""
-    try:
-        native = get_native_analysis(session)
-    except NativeAnalysisError as error:
-        raise _native_http_error(error) from error
-    if native is None:
-        return None
-    deadline = clock_monotonic() + 120
-    enqueued = False
-    while True:
-        await session.rollback()
-        status = await read_snapshot_status(session, account_id)
-        if status != "ready":
-            if not include_backtest:
-                return await _account_performance(session, account_id, range_key)
-            if clock_monotonic() >= deadline:
-                raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
-            if not enqueued:
-                await enqueue(session, account_id)
-                request.app.state.analysis_manager.wake.set()
-                enqueued = True
-            await _wait_ready_performance(session, account_id, deadline)
-        remaining = deadline - clock_monotonic()
-        if remaining <= 0:
-            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
-        # 不跨子进程等待持有 Python 读事务；最终 ready 判断与结果读取由 Rust 原子完成。
-        await session.rollback()
-        try:
-            async with asyncio.timeout(remaining):
-                body = await native.query(
-                    "performance_result",
-                    logic_version=LOGIC_VERSION,
-                    engine_version=ENGINE_VERSION,
-                    account_id=account_id,
-                    range=range_key,
-                    include_backtest=include_backtest,
-                )
-        except NativeAnalysisError as error:
-            if error.code != "SNAPSHOT_NOT_READY":
-                raise _native_http_error(error) from error
-            if not include_backtest:
-                return await _account_performance(session, account_id, range_key)
-        except TimeoutError as error:
-            raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试") from error
-        else:
-            return Response(body, media_type="application/json")
-        # Python 观察到 ready 后仍可能失效；让出执行权后重新轮询，避免紧密启动子进程。
-        await clock_async_sleep(min(0.1, max(0, deadline - clock_monotonic())))
-
-
-async def _account_performance(session, account_id: int, range_key: RangeKey) -> AccountPerformance | Response:
-    """从同一数据库快照独立计算账户收益，不依赖 WBT 或后台队列."""
-    try:
-        body = await native_account_performance(session, account_id, range_key)
-    except NativeAnalysisError as error:
-        raise _native_http_error(error) from error
-    if body is not None:
-        return Response(body, media_type="application/json")
-    await session.rollback()
-    await ensure_observation_facts(session, account_id)
-    await session.execute(text("BEGIN"))
-    account = await _get_account_or_404(session, account_id)
-    trade_channel = str(account.trade_channel)
-    settings = PerformanceSettings.model_validate(account, from_attributes=True)
-    bindings = (
-        (await session.execute(select(PortfolioAccount).where(col(PortfolioAccount.account_id) == account_id)))
-        .scalars()
-        .all()
-    )
-    items = [item async for batch in iter_analysis_observations(session, account_id) for item in batch]
-    binding_values = [(local_time(binding.created_at), binding.portfolio_id) for binding in bindings]
-    await session.rollback()
-    result = await run_in_threadpool(calculate_performance, items, settings, range_key, False, trade_channel)
-    if result.baseline and result.end:
-        start, end = local_time(result.baseline), local_time(result.end)
-        result.bindings = [
-            PerformanceBinding(time=when.isoformat(), portfolio_id=portfolio_id)
-            for when, portfolio_id in sorted(binding_values, key=lambda item: item[0])
-            if start <= when <= end
-        ]
-    return result
+async def _account_performance(store: "_core.Store", account_id: int, range_key: RangeKey) -> AccountPerformance:
+    """同步计算账户收益;观测事实由发布管线物化,此处不重算投影."""
+    result = await _op(_core.account_performance, store, account_id, range_key, False)
+    return AccountPerformance.model_validate(result)
 
 
 @router.patch("/performance-settings/{account_id}", response_model=PerformanceSettings)
@@ -177,71 +76,71 @@ async def save_performance_settings(
 
 @router.get("/performance/{account_id}", response_model=AccountPerformance)
 async def get_performance(
-    session: SessionDep, request: Request, account_id: int, range: RangeKey = "all", include_backtest: bool = True
-) -> AccountPerformance | Response:
+    session: SessionDep,
+    request: Request,
+    account_id: int,
+    range: RangeKey = "all",
+    include_backtest: bool = True,
+) -> AccountPerformance:
     """完整绩效等待当前快照；纯账户收益不依赖回测成功."""
     await _get_account_or_404(session, account_id)
-    native_response = await _native_ready_performance(session, request, account_id, range, include_backtest)
-    if native_response is not None:
-        return native_response
-    snapshot = await read_snapshot(session, account_id, range)
-    if snapshot["status"] != "ready" and not include_backtest:
-        return await _account_performance(session, account_id, range)
-    if snapshot["status"] != "ready":
-        await enqueue(session, account_id)
-        request.app.state.analysis_manager.wake.set()
-        deadline = clock_monotonic() + 120
-        while snapshot["status"] != "ready":
-            await session.rollback()
-            snapshot = await read_snapshot(session, account_id, range)
-            if snapshot["status"] == "failed" or clock_monotonic() > deadline:
-                raise HTTPException(503, detail="绩效尚未就绪，请读取快照状态或稍后重试")
-            if snapshot["status"] != "ready":
-                await clock_async_sleep(0.1)
-    result = AccountPerformance.model_validate(snapshot["result"])
-    if not include_backtest:
-        result.backtest_included = False
-        result.skips = None
-        result.used_record_count = 0
-        for point in result.points:
-            point.portfolio_return = point.portfolio_daily_return = point.difference = None
-    return result
+    store = analysis_store()
+    deadline = clock_monotonic() + 120
+    enqueued = False
+    while True:
+        await session.rollback()
+        status = await read_snapshot_status(session, account_id)
+        if status == "ready":
+            try:
+                async with asyncio.timeout(deadline - clock_monotonic()):
+                    return await _op(
+                        _core.performance_result,
+                        store,
+                        account_id,
+                        range,
+                        include_backtest,
+                        LOGIC_VERSION,
+                        ENGINE_VERSION,
+                    )
+            except _core.NativeError as error:
+                # ready 之后仍可能因并发发布失效;无回测请求直接转同步计算。
+                if error.args[0] != "SNAPSHOT_NOT_READY" or include_backtest:
+                    if error.args[0] == "SNAPSHOT_NOT_READY":
+                        pass
+                    else:
+                        raise _native_http_error(error) from error
+            except TimeoutError as error:
+                raise _NOT_READY from error
+        if status == "failed":
+            raise _NOT_READY
+        if not include_backtest:
+            return await _account_performance(store, account_id, range)
+        if clock_monotonic() >= deadline:
+            raise _NOT_READY
+        if not enqueued and status != "ready":
+            await enqueue(session, account_id)
+            enqueued = True
+        await clock_async_sleep(min(0.1, max(0.0, deadline - clock_monotonic())))
 
 
 @router.get("/performance/{account_id}/snapshot", response_model=PerformanceSnapshot)
-async def get_snapshot(session: SessionDep, account_id: int, range: RangeKey = "all") -> dict | Response:
+async def get_snapshot(session: SessionDep, account_id: int, range: RangeKey = "all") -> dict:
     """只读取已发布结果及更新状态，不触达历史大 JSON."""
     await _get_account_or_404(session, account_id)
-    native_response = await _native_response(session, "snapshot", account_id=account_id, range=range)
-    if native_response is not None:
-        return native_response
     return await read_snapshot(session, account_id, range)
 
 
 @router.post("/performance/{account_id}/refresh", status_code=202)
-async def refresh_performance(session: SessionDep, request: Request, account_id: int) -> dict:
+async def refresh_performance(session: SessionDep, account_id: int) -> dict:
     """幂等排队；已有成功结果在新批次发布前保持可读."""
     await _get_account_or_404(session, account_id)
     await enqueue(session, account_id, force=True)
-    request.app.state.analysis_manager.wake.set()
     return {"status": "pending", "account_id": account_id}
 
 
 @router.get("/performance/{account_id}/costs", response_model=None)
-async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQuery, Query()]) -> dict | Response:
+async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQuery, Query()]) -> dict:
     """按不可变快照版本聚合、排序并分页读取成本投影."""
     await _get_account_or_404(session, account_id)
-    scope, _ = _cursor(query, account_id)
-    fact_version = await session.scalar(
-        sa.select(snapshots.c.cost_schema_version).where(
-            snapshots.c.id == query.snapshot_id, snapshots.c.account_id == account_id
-        )
-    )
-    if fact_version == 0:
-        return await read_costs(session, account_id, query)
-    native_response = await _native_response(
-        session, "costs", account_id=account_id, cursor_scope=scope, **query.model_dump()
-    )
-    if native_response is not None:
-        return native_response
+    _cursor(query, account_id)
     return await read_costs(session, account_id, query)

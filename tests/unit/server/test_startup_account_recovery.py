@@ -28,7 +28,6 @@ def isolated_lifespan(monkeypatch):
     monkeypatch.setattr(supplements, "recover_supplements", AsyncMock())
     monkeypatch.setattr(server_app, "recover_intents_on_startup", AsyncMock())
     monkeypatch.setattr(notification_outbox, "recover_notifications", AsyncMock())
-    monkeypatch.setattr(server_app, "AnalysisManager", lambda _factory: MagicMock(start=AsyncMock(), stop=AsyncMock()))
     monkeypatch.setattr(validation_service, "close", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_dispatchers", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_worker_backend_manager", MagicMock())
