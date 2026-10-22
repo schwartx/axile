@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 
@@ -700,7 +701,9 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                     if field not in {"name", "is_started", "account_config"}:
                         assert getattr(copied, field) == getattr(source, field)
                 assert all(copied.account_config[key] == value for key, value in source.account_config.items())
-                history = await account_crud_routes.list_execute_records(copied_id, HistoryPagination())
+                history = json.loads(
+                    (await account_crud_routes.list_execute_records(copied_id, HistoryPagination())).body
+                )
                 assert history["count"] == 0
                 assert history["data"] == []
                 assert (
@@ -731,15 +734,21 @@ def test_copy_account_database_history_isolation(monkeypatch: pytest.MonkeyPatch
                 await session.flush()
                 await store_execution_facts(session, new_record, {}, {"account_assets": {"total_asset": 250}})
                 await session.commit()
-                history = await account_crud_routes.list_execute_records(copied_id, HistoryPagination())
+                history = json.loads(
+                    (await account_crud_routes.list_execute_records(copied_id, HistoryPagination())).body
+                )
                 assert history["count"] == 1
                 assert history["data"][0]["execution_id"] == "new"
-                original = await account_crud_routes.list_execute_records(1, HistoryPagination())
+                original = json.loads((await account_crud_routes.list_execute_records(1, HistoryPagination())).body)
                 assert original["count"] == 1
-                original_detail = await account_crud_routes.execute_record_detail(1, original["data"][0]["id"])
+                original_detail = json.loads(
+                    (await account_crud_routes.execute_record_detail(1, original["data"][0]["id"])).body
+                )
                 assert original_detail["result"]["orders"] == old_result["orders"]
                 with pytest.raises(HTTPException) as cross_account:
-                    await account_crud_routes.execute_record_detail(copied_id, original["data"][0]["id"])
+                    json.loads(
+                        (await account_crud_routes.execute_record_detail(copied_id, original["data"][0]["id"])).body
+                    )
                 assert cross_account.value.status_code == 404
                 stored = (
                     await session.execute(select(ExecuteRecord).where(ExecuteRecord.account_id == 1))

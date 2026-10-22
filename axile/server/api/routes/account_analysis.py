@@ -2,7 +2,8 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -74,21 +75,23 @@ class DetailQuery(BaseModel):
 
 
 @router.get("/performance/{account_id}/status")
-async def get_status(account_id: AccountId) -> dict:
+async def get_status(account_id: AccountId) -> Response:
     """Return small publication status independently of displayed page data."""
-    return await _op(_core.status, analysis_store(), account_id, LOGIC_VERSION, ENGINE_VERSION)
+    content = await _op(_core.status, analysis_store(), account_id, LOGIC_VERSION, ENGINE_VERSION)
+    return Response(content=content, media_type="application/json")
 
 
-@router.get("/performance/{account_id}/chart")
-async def get_chart(account_id: AccountId, query: Annotated[ChartQuery, Query()]) -> dict:
+@router.get("/performance/{account_id}/chart", response_class=JSONResponse)
+async def get_chart(account_id: AccountId, query: Annotated[ChartQuery, Query()]) -> Response:
     """Read typed curves and flat indexes without historical execution details."""
-    return await _op(_core.chart, analysis_store(), account_id, query.snapshot_id, query.range)
+    content = await _op(_core.chart, analysis_store(), account_id, query.snapshot_id, query.range)
+    return Response(content=content, media_type="application/json")
 
 
 @router.get("/performance/{account_id}/execution-summary")
-async def get_execution_summary(account_id: AccountId, query: Annotated[SummaryQuery, Query()]) -> dict:
+async def get_execution_summary(account_id: AccountId, query: Annotated[SummaryQuery, Query()]) -> Response:
     """Read frozen execution summary rows in a stable page."""
-    return await _op(
+    content = await _op(
         _core.execution_summary,
         analysis_store(),
         account_id,
@@ -99,12 +102,13 @@ async def get_execution_summary(account_id: AccountId, query: Annotated[SummaryQ
         query.start,
         query.end,
     )
+    return Response(content=content, media_type="application/json")
 
 
 @router.get("/performance/{account_id}/execution-detail")
-async def get_execution_detail(account_id: AccountId, query: Annotated[DetailQuery, Query()]) -> dict:
+async def get_execution_detail(account_id: AccountId, query: Annotated[DetailQuery, Query()]) -> Response:
     """Read only the selected execution's positions, attempts and transactions."""
-    return await _op(
+    content = await _op(
         _core.execution_detail,
         analysis_store(),
         account_id,
@@ -113,3 +117,4 @@ async def get_execution_detail(account_id: AccountId, query: Annotated[DetailQue
         query.limit,
         query.offset,
     )
+    return Response(content=content, media_type="application/json")

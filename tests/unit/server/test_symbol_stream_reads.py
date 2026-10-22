@@ -1,6 +1,7 @@
 """原生活动品种读取保持成交顺序、汇总口径和账户隔离。"""
 
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
@@ -39,28 +40,36 @@ def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, s
                 patch.object(AsyncSession, "execute", side_effect=AssertionError("no Python session reads")),
                 patch.object(AsyncSession, "stream", side_effect=AssertionError("no Python trade stream")),
             ):
-                expanded = await account_schedule.account_activity_symbols(2, "2020", "2030", symbol="A")
+                expanded = json.loads(
+                    (await account_schedule.account_activity_symbols(2, "2020", "2030", symbol="A")).body
+                )
                 assert expanded["count"] == 1
                 row = expanded["data"][0]
                 assert row["trades"] == expected
                 assert row["summary"] == summarize(expected)
                 assert all(isinstance(trade["timeEstimated"], bool) for trade in row["trades"])
-                overview = await account_schedule.account_activity_symbols(2, "", "", symbol=None)
+                overview = json.loads((await account_schedule.account_activity_symbols(2, "", "", symbol=None)).body)
                 assert overview["data"][0]["summary"] == row["summary"]
                 assert overview["data"][0]["trades"] == []
                 assert overview["data"][0]["last_time"] == int(max(trade["time"] for trade in expected))
                 for since, until, symbol in [("2020", "2030", "missing"), ("2090", "2091", None), ("", "", "")]:
-                    assert await account_schedule.account_activity_symbols(2, since, until, symbol=symbol) == {
+                    assert json.loads(
+                        (await account_schedule.account_activity_symbols(2, since, until, symbol=symbol)).body
+                    ) == {
                         "data": [],
                         "count": 0,
                     }
-                bounded = await account_schedule.account_activity_symbols(
-                    2, record(2).created_at, record(3).created_at, symbol="A"
+                bounded = json.loads(
+                    (
+                        await account_schedule.account_activity_symbols(
+                            2, record(2).created_at, record(3).created_at, symbol="A"
+                        )
+                    ).body
                 )
                 assert bounded["data"][0]["trades"][0]["record_id"] == 2
                 assert bounded["data"][0]["n_trades"] == 1
                 with pytest.raises(HTTPException) as error:
-                    await account_schedule.account_activity_symbols(999, "", "", symbol=None)
+                    json.loads((await account_schedule.account_activity_symbols(999, "", "", symbol=None)).body)
                 assert error.value.status_code == 404
                 assert error.value.detail == "账户不存在"
 

@@ -1,6 +1,7 @@
 """资产可信度、旧占位与数据库过滤的跨层回归。"""
 
 import asyncio
+import json
 from copy import deepcopy
 
 import pytest
@@ -181,9 +182,9 @@ def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path, mon
                 session, [snapshot for rows in latest.values() for snapshot in rows]
             )
             assert {a: latest_assets[rows[0].id]["total_asset"] for a, rows in latest.items()} == {1: 100000, 2: 100000}
-            page = await list_account_asset_snapshots(1, skip=0, limit=1)
+            page = json.loads((await list_account_asset_snapshots(1, skip=0, limit=1)).body)
             assert page["count"] == 1 and page["data"][0]["assets"]["total_asset"] == 100000
-            assert not (await list_account_asset_snapshots(1, skip=1, limit=1))["data"]
+            assert not (json.loads((await list_account_asset_snapshots(1, skip=1, limit=1)).body))["data"]
         for i, result in enumerate(
             [
                 legacy(),

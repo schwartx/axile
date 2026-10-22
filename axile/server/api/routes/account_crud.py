@@ -912,10 +912,10 @@ async def list_execute_records(
     pagination: HistoryPaginationDep,
     execution_id: str | None = None,
     record_id: int | None = None,
-) -> dict:
+) -> Response:
     """直接返回原生执行摘要页，不读取完整执行证据。"""
     try:
-        return await run_in_threadpool(
+        content = await run_in_threadpool(
             _core.execution_records,
             analysis_store(),
             account_id,
@@ -924,6 +924,7 @@ async def list_execute_records(
             execution_id,
             record_id,
         )
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
@@ -931,10 +932,11 @@ async def list_execute_records(
 
 
 @router.get("/execute_records/{account_id}/{record_id}")
-async def execute_record_detail(account_id: int, record_id: int) -> dict:
+async def execute_record_detail(account_id: int, record_id: int) -> Response:
     """从同一原生读快照返回账户内执行的完整业务证据。"""
     try:
-        return await run_in_threadpool(_core.execution_record_detail, analysis_store(), account_id, record_id)
+        content = await run_in_threadpool(_core.execution_record_detail, analysis_store(), account_id, record_id)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error

@@ -1,6 +1,7 @@
 """日记分页保持混排、筛选和摘要口径，且只解析当前页的结果。"""
 
 import asyncio
+import json
 from datetime import date
 
 import sqlalchemy as sa
@@ -72,7 +73,9 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
             ):
                 for offset in range(0, len(window) + 3, 2):
                     async with sessions() as session:
-                        page = await account_schedule.account_activity(2, skip=offset, limit=2, **filters)
+                        page = json.loads(
+                            (await account_schedule.account_activity(2, skip=offset, limit=2, **filters)).body
+                        )
                         assert page["count"] == len(window)
                         actual = [
                             (item["kind"], item["record"]["id"] if item["kind"] == "execution" else item["id"])
@@ -85,7 +88,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
             async with sessions() as session:
                 # The route must not commit or roll back its caller's pending work.
                 await session.execute(sa.update(ExecuteRecord).where(ExecuteRecord.id == 1).values(is_success=0))
-                await account_schedule.account_activity(2, skip=0, limit=2)
+                json.loads((await account_schedule.account_activity(2, skip=0, limit=2)).body)
                 await session.rollback()
                 assert await session.scalar(sa.select(ExecuteRecord.is_success).where(ExecuteRecord.id == 1)) == 1
 
@@ -104,7 +107,7 @@ def test_deep_page_never_decodes_raw_input_or_projects_discarded_results(tmp_pat
                 await session.execute(sa.text("UPDATE execution_input SET audit_evidence='not-json'"))
                 await session.commit()
             monkeypatch.setattr(account_schedule, "analysis_store", lambda: _core.Store(str(tmp_path / "analysis.db")))
-            page = await account_schedule.account_activity(2, skip=4, limit=2)
+            page = json.loads((await account_schedule.account_activity(2, skip=4, limit=2)).body)
             assert [item["record"]["id"] for item in page["data"]] == [2, 1]
 
     asyncio.run(check())

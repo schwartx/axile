@@ -13,7 +13,7 @@ from axile.server.db.models.analysis import cost_execution as executions
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.performance_costs import execution_list_payload, summarize, timestamp
-from axile.server.performance_details import CostQuery, read_costs
+from axile.server.performance_details import CostQuery, _cursor, read_costs
 from tests.unit.server._business_analysis_support import record
 from tests.unit.server.test_analysis_cost_facts import _project_rows, _ranges, _rich_projection
 
@@ -281,5 +281,78 @@ def test_cost_reader_keeps_one_snapshot_during_concurrent_retention(tmp_path):
             finally:
                 sa.event.remove(engine.sync_engine, "after_cursor_execute", retain_after_metadata)
                 writer.dispose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("dimension", ["execution", "symbol", "trade", "summary"])
+@pytest.mark.parametrize("filters", [{}, {"limit": 1}, {"limit": 1, "symbol_search": "a", "side": "sell"}])
+def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, filters):
+    import json
+    from unittest.mock import AsyncMock
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from axile.server._native import _core
+    from axile.server.api.deps import get_db
+    from axile.server.api.routes import account_performance as routes
+
+    database = tmp_path / "native-costs.db"
+
+    async def check():
+        async with _database(database) as (_, sessions, _, _, _):
+            await _discard_legacy_json(sessions)
+            query = CostQuery(snapshot_id="snapshot", dimension=dimension, **filters)
+            content = _core.query_costs(
+                _core.Store(str(database)),
+                2,
+                query.snapshot_id,
+                query.range,
+                query.dimension,
+                query.sort,
+                query.day,
+                query.start,
+                query.end,
+                query.record_id,
+                query.symbol,
+                query.symbol_search,
+                query.side,
+                query.limit,
+                _cursor(query, 2)[0],
+                query.cursor,
+                LOGIC_VERSION,
+                ENGINE_VERSION,
+            )
+            assert isinstance(content, bytes)
+            async with sessions() as session:
+                expected = await read_costs(session, 2, query)
+            assert json.loads(content) == expected
+            monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(database)))
+            monkeypatch.setattr(routes, "_get_account_or_404", AsyncMock())
+
+            async def get_session():
+                async with sessions() as session:
+                    yield session
+
+            app = FastAPI()
+            app.include_router(routes.router)
+            app.dependency_overrides[get_db] = get_session
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/performance/2/costs", params=query.model_dump(exclude_none=True))
+                assert response.status_code == 200, response.text
+                assert response.content == content
+                assert response.headers["content-type"] == "application/json"
+                if expected["next_cursor"] is not None:
+                    next_query = query.model_copy(update={"cursor": expected["next_cursor"]})
+                    async with sessions() as session:
+                        next_expected = await read_costs(session, 2, next_query)
+                    response = await client.get("/performance/2/costs", params=next_query.model_dump(exclude_none=True))
+                    assert response.status_code == 200, response.text
+                    assert response.json() == next_expected
+                    invalid = next_query.model_copy(update={"limit": 2})
+                    response = await client.get("/performance/2/costs", params=invalid.model_dump(exclude_none=True))
+                    assert response.status_code == 400
+                    assert response.json()["detail"]["code"] == "INVALID_COST_CURSOR"
 
     asyncio.run(check())

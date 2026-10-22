@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
@@ -99,10 +99,11 @@ async def list_account_asset_snapshots(
     account_id: int,
     skip: int = Query(default=0, ge=0, le=2**63 - 1),
     limit: int = Query(default=100, ge=1, le=500),
-) -> dict:
+) -> Response:
     """从一个原生读事务直接返回资产快照页。"""
     try:
-        return await run_in_threadpool(_core.asset_snapshots, analysis_store(), account_id, skip, limit)
+        content = await run_in_threadpool(_core.asset_snapshots, analysis_store(), account_id, skip, limit)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error

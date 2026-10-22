@@ -4,7 +4,7 @@ import asyncio
 from typing import Annotated
 
 import sqlalchemy as sa
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_async_sleep, clock_monotonic
@@ -25,7 +25,7 @@ from axile.server.performance_analysis import (
     enqueue,
     read_snapshot_status,
 )
-from axile.server.performance_details import CostQuery, read_costs
+from axile.server.performance_details import CostQuery, _cursor, read_costs
 
 router = APIRouter()
 
@@ -140,7 +140,7 @@ async def refresh_performance(session: SessionDep, account_id: int) -> dict:
 
 
 @router.get("/performance/{account_id}/costs", response_model=None)
-async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQuery, Query()]) -> dict:
+async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQuery, Query()]) -> dict | Response:
     """按不可变快照版本聚合、排序并分页读取成本投影."""
     await _get_account_or_404(session, account_id)
     fact_version = await session.scalar(
@@ -151,7 +151,8 @@ async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQ
     if fact_version == 0:
         # 旧编码快照仍走 Python 读取;backfill 迁移决策落地后删除。
         return await read_costs(session, account_id, query)
-    return await _op(
+    cursor_scope, _ = _cursor(query, account_id)
+    content = await _op(
         _core.query_costs,
         analysis_store(),
         account_id,
@@ -164,7 +165,12 @@ async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQ
         query.end,
         query.record_id,
         query.symbol,
+        query.symbol_search,
+        query.side,
+        query.limit,
+        cursor_scope,
         query.cursor,
         LOGIC_VERSION,
         ENGINE_VERSION,
     )
+    return Response(content=content, media_type="application/json")

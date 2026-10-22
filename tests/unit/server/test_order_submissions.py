@@ -1,6 +1,7 @@
 """同账户主程序与脚本共用持久化事实，汇总按发送时间且不重复累计。"""
 
 import asyncio
+import json
 from importlib import import_module
 from types import SimpleNamespace
 
@@ -88,12 +89,12 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
                 assert summary["recorded"] == 4
                 assert summary["sync_accepted"] == summary["sync_rejected"] == summary["broker_rejected"] == 1
                 assert summary["unknown"] == 2
-                rows = _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 1)[
-                    "data"
-                ]
+                rows = json.loads(
+                    _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 1)
+                )["data"]
                 assert len(rows) == 1
-                all_rows = _core.order_submissions(
-                    _core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100
+                all_rows = json.loads(
+                    _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100)
                 )["data"]
                 assert next(row for row in all_rows if row["submission_uid"] == "main")["revision"] == 2
 
@@ -128,8 +129,8 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
                 boundary.model_copy(update={"revision": 1, "occurred_at_ms": start, "send_status": "accepted"}),
             )
             async with factory() as session:
-                rows = _core.order_submissions(
-                    _core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100
+                rows = json.loads(
+                    _core.order_submissions(_core.Store(database), 1, "2026-10-19", "Asia/Shanghai", start, end, 100)
                 )["data"]
                 raw = next(row for row in rows if row["order_id"] == "raw-script")
                 assert raw["source"] == "script" and raw["broker_status"] == "acknowledged"

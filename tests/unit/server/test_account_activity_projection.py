@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -85,11 +86,15 @@ def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch
                     ),
                 )
                 await session.commit()
-                payload = await account_schedule.account_activity_symbols(
-                    account_id=1,
-                    since="2026-09-01T00:00:00",
-                    until="2026-09-02T00:00:00",
-                    symbol="rb2610",
+                payload = json.loads(
+                    (
+                        await account_schedule.account_activity_symbols(
+                            account_id=1,
+                            since="2026-09-01T00:00:00",
+                            until="2026-09-02T00:00:00",
+                            symbol="rb2610",
+                        )
+                    ).body
                 )
                 assert payload["count"] == 1
                 row = payload["data"][0]

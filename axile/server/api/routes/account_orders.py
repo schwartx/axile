@@ -3,7 +3,7 @@
 from datetime import date
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 
@@ -66,7 +66,7 @@ async def order_submissions(
     account_id: int,
     control_date: date,
     limit: int = Query(100, ge=1, le=500),
-) -> dict:
+) -> Response:
     """读取已接入 CTP 入口的原生调用事实，不访问柜台、不以额度用量补算。"""
     from axile.executor.account_control.presets import resolve_account_control_policy
 
@@ -76,9 +76,10 @@ async def order_submissions(
     policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
     day = control_date.isoformat()
     start, end = submission_window(day, policy.timezone)
-    return await run_in_threadpool(
+    content = await run_in_threadpool(
         _core.order_submissions, analysis_store(), account_id, day, policy.timezone, start, end, limit
     )
+    return Response(content=content, media_type="application/json")
 
 
 @router.get("/{account_id}/orders/activity", response_model=AccountActivityPublic)

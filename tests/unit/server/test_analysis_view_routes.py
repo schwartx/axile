@@ -1,6 +1,7 @@
 """Small analysis HTTP reads remain version-bound and independent of legacy JSON."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 import httpx
@@ -251,6 +252,10 @@ def test_chart_uses_small_typed_tables_without_json_or_source_trade_aggregation(
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_legacy_reads)
             response = await client.get(f"{BASE_URL}/chart", params={"snapshot_id": "s1", "range": "30"})
             assert response.status_code == 200, response.text
+            native = routes._core.chart(routes._core.Store(str(dataset)), 2, "s1", "30")
+            assert isinstance(native, bytes)
+            assert response.content == native
+            assert response.headers["content-type"] == "application/json"
             chart = response.json()
             assert (chart["schema_version"], chart["snapshot_id"], chart["account_id"], chart["range"]) == (
                 1,
@@ -282,6 +287,50 @@ def test_chart_uses_small_typed_tables_without_json_or_source_trade_aggregation(
                 ("2026-01-02", "CNY"): 0,
                 ("2026-01-02", "USD"): 1.5,
             }
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("endpoint", ["status", "chart", "execution-summary", "execution-detail"])
+def test_views_pass_json_bytes_through_without_encoding(dataset, monkeypatch, endpoint):
+    payload = {"snapshot_id": "快照", "value": PRECISE_VALUE, "cost": REBATE, "missing": None, "ready": True}
+    content = json.dumps(payload, ensure_ascii=False).encode()
+
+    def native(*args):
+        return content
+
+    monkeypatch.setattr(routes._core, endpoint.replace("-", "_"), native)
+
+    async def check():
+        async with http_client(dataset) as (client, _, _):
+            response = await client.get(
+                f"{BASE_URL}/{endpoint}",
+                params={}
+                if endpoint == "status"
+                else {"snapshot_id": "s1", **({"record_id": 1} if endpoint == "execution-detail" else {})},
+            )
+            assert response.status_code == 200
+            assert response.content == content
+            assert response.json() == payload
+            assert response.headers["content-type"] == "application/json"
+            schema = (await client.get("/openapi.json")).json()
+            operation = schema["paths"]["/api/v1/account/performance/{account_id}/" + endpoint]["get"]
+            assert "application/json" in operation["responses"]["200"]["content"]
+
+    asyncio.run(check())
+
+
+def test_chart_native_serialization_error_keeps_http_mapping(dataset, monkeypatch):
+    def chart(*args):
+        raise routes._core.NativeError("ANALYSIS_ERROR", "serialization failed")
+
+    monkeypatch.setattr(routes._core, "chart", chart)
+
+    async def check():
+        async with http_client(dataset) as (client, _, _):
+            response = await client.get(f"{BASE_URL}/chart", params={"snapshot_id": "s1"})
+            assert response.status_code == 503
+            assert response.json() == {"detail": {"code": "ANALYSIS_ERROR", "message": "serialization failed"}}
 
     asyncio.run(check())
 

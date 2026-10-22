@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Annotated, Literal
 
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import AwareDatetime, BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -251,10 +251,11 @@ async def account_activity_symbols(
     since: str,
     until: str,
     symbol: Annotated[str | None, Query()] = None,
-) -> dict:
+) -> Response:
     """从原生读快照返回品种汇总及所选品种成交。"""
     try:
-        return await run_in_threadpool(_core.activity_symbols, analysis_store(), account_id, since, until, symbol)
+        content = await run_in_threadpool(_core.activity_symbols, analysis_store(), account_id, since, until, symbol)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
@@ -268,10 +269,11 @@ async def account_activity(
     limit: int = Query(100, ge=1, le=500),
     since: Annotated[str | None, Query()] = None,
     until: Annotated[str | None, Query()] = None,
-) -> dict:
+) -> Response:
     """从同一原生读快照返回执行与休市混排页。"""
     try:
-        return await run_in_threadpool(_core.journal, analysis_store(), account_id, skip, limit, since, until)
+        content = await run_in_threadpool(_core.journal, analysis_store(), account_id, skip, limit, since, until)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error

@@ -1,6 +1,7 @@
 """完整错误响应与跨进程证据回归；只使用合成异常和本地 SQLite。"""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -110,20 +111,24 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
             await store_execution_facts(session, other, raw_input={}, raw_result={})
             await session.commit()
             page = HistoryPagination(skip=0, limit=1)
-            result = await list_execute_records(1, page, execution_id="exec-1", record_id=1)
+            result = json.loads((await list_execute_records(1, page, execution_id="exec-1", record_id=1)).body)
             assert result["count"] == 1
             assert [row["id"] for row in result["data"]] == [1]
             assert "result" not in result["data"][0]
-            detail = await execute_record_detail(1, 1)
+            detail = json.loads((await execute_record_detail(1, 1)).body)
             assert detail["result"]["technical_detail"] == RAW
             for execution_id, record_id in [("exec-1", 2), ("other-account", None), (None, 1000)]:
-                result = await list_execute_records(1, page, execution_id=execution_id, record_id=record_id)
+                result = json.loads(
+                    (await list_execute_records(1, page, execution_id=execution_id, record_id=record_id)).body
+                )
                 assert result["count"] == 0
                 assert result["data"] == []
-            skipped = await list_execute_records(1, HistoryPagination(skip=1, limit=1), execution_id="exec-1")
+            skipped = json.loads(
+                (await list_execute_records(1, HistoryPagination(skip=1, limit=1), execution_id="exec-1")).body
+            )
             assert skipped["count"] == 1
             assert skipped["data"] == []
-            unfiltered = await list_execute_records(1, page)
+            unfiltered = json.loads((await list_execute_records(1, page)).body)
             assert unfiltered["count"] == 602
             assert unfiltered["data"][0]["id"] == 602
         await engine.dispose()

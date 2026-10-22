@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -149,11 +150,15 @@ def test_activity_symbol_query_uses_projected_columns_and_account_scope(monkeypa
                         )
                     )
                 await session.commit()
-                payload = await account_schedule.account_activity_symbols(
-                    account_id=1,
-                    since="2026-10-20T00:00:00",
-                    until="2026-10-21T00:00:00",
-                    symbol="SHFE.rb2610",
+                payload = json.loads(
+                    (
+                        await account_schedule.account_activity_symbols(
+                            account_id=1,
+                            since="2026-10-20T00:00:00",
+                            until="2026-10-21T00:00:00",
+                            symbol="SHFE.rb2610",
+                        )
+                    ).body
                 )
                 assert payload["count"] == 1
                 symbol = payload["data"][0]

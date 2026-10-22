@@ -1,6 +1,7 @@
 """迁移后的 API 边界回归：旧记录摘要与独立附件保留既有展示语义。"""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +78,7 @@ def test_account_activity_normalizes_legacy():
                 await store_execution_facts(session, record, raw_input={}, raw_result=_LEGACY_RAW)
                 await session.commit()
                 assert await read_execution_result(session, record) == _LEGACY_RAW
-                return await account_activity(account_id=1, skip=0, limit=20)
+                return json.loads((await account_activity(account_id=1, skip=0, limit=20)).body)
         finally:
             await engine.dispose()
 

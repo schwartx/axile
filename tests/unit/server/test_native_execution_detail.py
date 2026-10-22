@@ -1,6 +1,7 @@
 """原生执行详情与迁移前完整 HTTP 契约保持一致。"""
 
 import asyncio
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -108,7 +109,7 @@ def test_native_detail_matches_repository_and_summary(tmp_path, monkeypatch, sou
 
             event.listen(engine.sync_engine, "before_cursor_execute", reject_sql)
             try:
-                assert await account_crud.execute_record_detail(1, record_id) == expected
+                assert json.loads((await account_crud.execute_record_detail(1, record_id)).body) == expected
                 async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
                     response = await client.get(f"/execute_records/1/{record_id}")
                     assert response.status_code == 200, response.text
