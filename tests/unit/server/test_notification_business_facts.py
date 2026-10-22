@@ -14,9 +14,16 @@ from axile.server.execution.notification_records import build_persisted_notifica
 from tests.unit.server._execution_test_support import build_account
 
 
+@pytest.fixture(autouse=True)
+def preview_native_boundary(monkeypatch):
+    """单元测试隔离原生边界；文件数据库集成另行覆盖真实 Store。"""
+    monkeypatch.setattr(account_feishu, "_core", SimpleNamespace(execution_business_detail=object()))
+    monkeypatch.setattr(account_feishu, "analysis_store", lambda: "preview-store")
+
+
 def _record() -> SimpleNamespace:
     """不提供已删除的原始 JSON 属性。"""
-    return SimpleNamespace(execution_id="execution-facts", created_at="2026-10-20T09:00:00")
+    return SimpleNamespace(id=1, execution_id="execution-facts", created_at="2026-10-20T09:00:00")
 
 
 def _saved_context() -> dict:
@@ -55,7 +62,7 @@ def test_preview_prefers_outbox_without_loading_execution_detail(monkeypatch) ->
     detail = AsyncMock(side_effect=AssertionError("已有通知不应装载执行明细"))
     assets = AsyncMock(side_effect=AssertionError("预览不得查询渠道"))
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[_record()]))
-    monkeypatch.setattr(account_feishu, "read_execution_detail", detail)
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", detail)
     monkeypatch.setattr(account_feishu, "query_account_assets", assets)
     session = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(context=saved)))
 
@@ -79,7 +86,7 @@ def test_preview_reads_captured_context_from_business_facts(monkeypatch) -> None
     detail = AsyncMock(return_value={"input": {}, "result": {"extra": {"server_notification_context": captured}}})
     assets = AsyncMock(side_effect=AssertionError("预览不得查询渠道"))
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[record]))
-    monkeypatch.setattr(account_feishu, "read_execution_detail", detail)
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", detail)
     monkeypatch.setattr(account_feishu, "query_account_assets", assets)
     session = SimpleNamespace(scalar=AsyncMock(return_value=None))
 
@@ -90,7 +97,9 @@ def test_preview_reads_captured_context_from_business_facts(monkeypatch) -> None
     assert context["execution"]["execution_time"] == 0.0
     assert context["execution"]["error"] == "部分成交"
     assert context["execution"]["notified_at"] == record.created_at
-    detail.assert_awaited_once_with(session, record)
+    detail.assert_awaited_once_with(
+        account_feishu._core.execution_business_detail, account_feishu.analysis_store(), 1, record.id
+    )
     assets.assert_not_awaited()
 
 
@@ -98,7 +107,7 @@ def test_preview_rejects_incomplete_canonical_output_without_channel_query(monke
     """不完整事实给出明确错误，不连接渠道填补数据。"""
     assets = AsyncMock(side_effect=AssertionError("预览不得查询渠道"))
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[_record()]))
-    monkeypatch.setattr(account_feishu, "read_execution_detail", AsyncMock(return_value={"input": {}, "result": {}}))
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", AsyncMock(return_value={"input": {}, "result": {}}))
     monkeypatch.setattr(account_feishu, "query_account_assets", assets)
     session = SimpleNamespace(scalar=AsyncMock(return_value=None))
 
@@ -134,7 +143,7 @@ def test_preview_rebuild_preserves_explicit_null_input(monkeypatch, explicit_nul
         result["outcome"] = "completed"
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[_record()]))
     monkeypatch.setattr(
-        account_feishu, "read_execution_detail", AsyncMock(return_value={"input": inputs, "result": result})
+        account_feishu, "run_in_threadpool", AsyncMock(return_value={"input": inputs, "result": result})
     )
     session = SimpleNamespace(scalar=AsyncMock(return_value=None))
 

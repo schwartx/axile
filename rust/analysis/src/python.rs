@@ -5,7 +5,7 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes};
+use pyo3::types::{PyAny, PyBytes, PyDict};
 use pyo3::Py;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -111,14 +111,13 @@ fn json_to_py(py: Python<'_>, value: &Value) -> Py<PyAny> {
             .unwrap()
             .into_any()
             .unbind(),
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, item)| (key, json_to_py(py, item)))
-            .collect::<std::collections::HashMap<&std::string::String, Py<PyAny>>>()
-            .into_pyobject(py)
-            .unwrap()
-            .into_any()
-            .unbind(),
+        Value::Object(map) => {
+            let result = PyDict::new(py);
+            for (key, item) in map {
+                result.set_item(key, json_to_py(py, item)).unwrap();
+            }
+            result.into_any().unbind()
+        },
     }
 }
 
@@ -341,6 +340,22 @@ fn execution_record_detail(
     Ok(PyBytes::new(py, &result).unbind())
 }
 
+/// Internal business evidence stays as objects, not an HTTP JSON round trip.
+#[pyfunction]
+fn execution_business_detail(
+    py: Python<'_>,
+    store: &Store,
+    account_id: i64,
+    record_id: i64,
+) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| store.with_snapshot(|connection| {
+            crate::business_detail::read(connection, account_id, record_id)
+        }))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result))
+}
+
 #[pyfunction]
 #[pyo3(signature = (store, account_id, skip, limit, since=None, until=None))]
 fn journal(
@@ -406,6 +421,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
     m.add_function(wrap_pyfunction!(execution_record_detail, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_business_detail, m)?)?;
     m.add_function(wrap_pyfunction!(asset_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(account_performance, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot, m)?)?;

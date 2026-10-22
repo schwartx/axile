@@ -11,6 +11,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
+from starlette.concurrency import run_in_threadpool
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.feishu import push_feishu_card
@@ -25,10 +26,11 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.server._native import _core
 from axile.server.account_assets import query_account_assets
 from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.business_facts.repository import read_execution_detail
+from axile.server.core.db import analysis_store
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.supplement import NotificationEvent
 from axile.server.error_details import exception_details
@@ -325,7 +327,7 @@ async def _load_notification_preview_context(
     if event is not None and event.context:
         context = deepcopy(event.context)
     else:
-        detail = await read_execution_detail(session, record)
+        detail = await run_in_threadpool(_core.execution_business_detail, analysis_store(), account.id, record.id)
         raw = deepcopy(detail["result"])
         if not isinstance(raw, dict):
             raise ValueError("最近一次执行没有可用的通知快照")

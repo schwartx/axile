@@ -8,10 +8,14 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from axile.server.analysis_results import iter_result_fact_batches, read_result_points, read_result_range
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis_result import RESULT_TABLES
 from axile.server.db.models.performance import AccountPerformance
+from tests.unit.server._analysis_results_support import (
+    iter_result_fact_batches,
+    read_result_points,
+    read_result_range,
+)
 
 SETTINGS = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}
 ENGINE_VERSION = "equity-ledger-1"

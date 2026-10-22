@@ -322,15 +322,6 @@ def execution_fact_sources(
     return tuple(result)
 
 
-async def read_input_fact_rows(session: Any, input_id: str) -> dict[str, list[Mapping[str, object]]]:
-    """读取独立输入及交易前资产的物理证据行。"""
-    await _input_row(session, input_id)
-    return {
-        table.name: list((await session.execute(sa.select(table).where(predicate))).mappings())
-        for table, predicate in execution_fact_sources(input_ids=(input_id,))
-    }
-
-
 async def read_execution_fact_rows(session: Any, record: Any) -> dict[str, list[Mapping[str, object]]]:
     """显式加载一个执行的结果事实；历史列表不调用此函数。"""
     rows = {}

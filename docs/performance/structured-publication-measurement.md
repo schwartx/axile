@@ -10,7 +10,7 @@
 
 ## 输入和边界
 
-脚本：`scripts/benchmark_structured_publication.py`。
+历史脚本：`scripts/benchmark_structured_publication.py`。所测 Python 发布入口已退役；脚本暂保留供 `benchmark_analysis_views.py prepare` 引用旧夹具辅助函数，不是当前版本可运行的发布基准。以下数据仅记录当时的实现。
 
 - 合成 10,000 条按小时递增的执行观测，每条 10 个品种，共 100,000 笔成交。
 - 价格、权益、目标权重、目标数量、金额换算和成交手续费均有明确合成证据；没有通过补零、补成交或填补未知字段制造完整度。
@@ -60,7 +60,7 @@ SQLAlchemy 查询捕获记录到三轮共 **21 次**成本 `INSERT ... SELECT`�
 
 ## 复现和限制
 
-使用已装开发依赖（包括 psutil）的 Python 环境和预先构建的 release 二进制：
+以下是历史运行命令，仅适用于保留旧发布入口及 `executerecord.raw_input/raw_result` 列的测量版本，不能在当前 checkout 复现。需使用对应版本已装开发依赖（包括 psutil）的 Python 环境和预先构建的 release 二进制：
 
 ```bash
 PYTHONPATH=. python scripts/benchmark_structured_publication.py \

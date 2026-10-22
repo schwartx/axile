@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import Session, SQLModel
 
 from axile.server.analysis_cost_facts import iter_cost_fact_batches
-from axile.server.analysis_results import iter_result_fact_batches
 from axile.server.api.deps import get_db
 from axile.server.api.routes import account_analysis as routes
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
@@ -26,6 +25,7 @@ from axile.server.db.models.analysis import (
 )
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.performance_costs import timestamp
+from tests.unit.server._analysis_results_support import iter_result_fact_batches
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_analysis_results import SETTINGS, _range
 

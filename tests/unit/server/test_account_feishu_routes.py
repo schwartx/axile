@@ -10,18 +10,21 @@ from tests.unit.server._execution_test_support import build_account
 
 
 def test_notification_preview_rebuilds_standard_output(monkeypatch) -> None:
+    monkeypatch.setattr(account_feishu, "_core", SimpleNamespace(execution_business_detail=object()))
+    monkeypatch.setattr(account_feishu, "analysis_store", lambda: "preview-store")
     account = build_account()
     session = SimpleNamespace(scalar=AsyncMock(return_value=None))
     monkeypatch.setattr(account_feishu, "get_latest_account_target_snapshot", AsyncMock(return_value=None))
     output = asyncio.run(account_feishu._build_sample_output(session, account, _sample_assets()))
     record = SimpleNamespace(
+        id=1,
         execution_id="historical",
         created_at="2026-10-12T09:00:00",
     )
     monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[record]))
     monkeypatch.setattr(
         account_feishu,
-        "read_execution_detail",
+        "run_in_threadpool",
         AsyncMock(return_value={"input": {}, "result": output.model_dump(mode="json")}),
     )
     context = asyncio.run(account_feishu._load_notification_preview_context(session, account))

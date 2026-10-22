@@ -64,7 +64,7 @@ _TECHNICAL_ERROR = "RuntimeError: native callback failed\n" + "  at channel.conf
 
 
 @pytest.fixture
-def facts_database(tmp_path):
+def facts_database(tmp_path, monkeypatch):
     """独立 SQLite；测试只调用本地事实读取与归档。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'facts-evidence.db'}", poolclass=NullPool)
     register_sqlite_concurrency_pragmas(engine)
@@ -78,6 +78,8 @@ def facts_database(tmp_path):
             await session.commit()
 
     asyncio.run(initialize())
+    store = account_feishu._core.Store(str(tmp_path / "facts-evidence.db"))
+    monkeypatch.setattr(account_feishu, "analysis_store", lambda: store)
     yield factory
     asyncio.run(engine.dispose())
 
@@ -1009,7 +1011,7 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
         assert business_evidence(event_context[key]) == business_evidence(captured[key])
 
     forbidden_detail = AsyncMock(side_effect=AssertionError("frozen outbox must be selected before canonical detail"))
-    monkeypatch.setattr(account_feishu, "read_execution_detail", forbidden_detail)
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", forbidden_detail)
 
     async def preview():
         async with facts_database() as session:
@@ -1086,7 +1088,7 @@ def test_distinct_frozen_outbox_wins_preview_without_erasing_captured_evidence(f
     assert business_evidence(stored) == business_evidence(captured)
     assert business_evidence(retained_outbox) == business_evidence(outbox)
     forbidden_detail = AsyncMock(side_effect=AssertionError("existing outbox must win preview"))
-    monkeypatch.setattr(account_feishu, "read_execution_detail", forbidden_detail)
+    monkeypatch.setattr(account_feishu, "run_in_threadpool", forbidden_detail)
 
     async def preview():
         async with facts_database() as session:
