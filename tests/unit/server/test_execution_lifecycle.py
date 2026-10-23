@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models import ExecuteRecord
+from axile.server.execution import backend, rebalance, records
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.intents import IntentSnapshot
+from tests.unit.server._business_facts_test_support import seed_account
+from tests.unit.server._execution_test_support import build_account
 
 
 @pytest.fixture(autouse=True)
@@ -704,5 +709,87 @@ def test_mark_execution_finished_copies_record_error_unless_exception() -> None:
         assert failed is not None
         assert failed.error == "worker exploded"
         assert failed.output_status == "FAILED"
+    finally:
+        execution_registry._clear_execution_task_state(execution_id)
+
+
+@pytest.mark.parametrize("kind", [ExecutionKind.REBALANCE, ExecutionKind.CLEAR_POSITIONS])
+def test_worker_failure_persists_once_through_task_lifecycle(native_database, monkeypatch, kind):
+    """底层与任务收尾保留各自异常语义，同一失败只提交一次原生记录。"""
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    execution_id = f"failed-{kind.value}"
+    account = build_account(id=1).snapshot()
+    failure = RuntimeError("worker exploded")
+    worker = SimpleNamespace(
+        execute_trade=AsyncMock(side_effect=failure), empty_positions=AsyncMock(side_effect=failure)
+    )
+    monkeypatch.setattr(backend, "get_worker_backend_manager", lambda: worker)
+    native = AsyncMock(wraps=records.native_operation)
+    monkeypatch.setattr(records, "native_operation", native)
+    finished = AsyncMock()
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
+    monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda _account_id: None)
+    state = execution_registry.ExecutionTaskState(
+        execution_id=execution_id,
+        account_id=1,
+        execution_kind=kind,
+        status=ExecutionTaskStatus.QUEUED,
+        created_at="2026-10-23T10:00:00",
+    )
+    execution_registry.set_execution_task_state(execution_id, state)
+
+    async def runner(_execution_id):
+        if kind == ExecutionKind.REBALANCE:
+            standard_input = rebalance._build_rebalance_standard_input(
+                account=account,
+                curr_target={"A": 0.1},
+                last_target={},
+                execution_id=execution_id,
+                trigger_source="manual",
+            )
+            request = backend.RebalanceBackendRequest(
+                account=account,
+                standard_input=standard_input,
+                standard_input_dict=standard_input.to_dict(),
+                audit_input={},
+                execution_id=execution_id,
+                trigger_source="manual",
+                cleanup=True,
+                logger=logger,
+            )
+            return await backend._run_rebalance_via_worker_process(request)
+        request = backend.ClearPositionsBackendRequest(
+            account=account,
+            resolved_algorithm={"method": "SINGLE-MAKER"},
+            empty_kwargs={},
+            audit_input={},
+            execution_id=execution_id,
+            trigger_source="empty_positions",
+            logger=logger,
+        )
+        return await backend._run_clear_positions_via_worker_process(request)
+
+    try:
+        asyncio.run(
+            execution_lifecycle._run_execution_task(
+                account_id=1, execution_id=execution_id, execution_kind=kind, runner=runner
+            )
+        )
+        assert native.await_count == 1
+        name, request = native.await_args.args
+        assert name == "persist_execute_record"
+        assert request["raw_result"]["technical_detail"] == "worker exploded"
+        assert "RuntimeError: worker exploded" in request["raw_result"]["traceback"]
+        if kind == ExecutionKind.REBALANCE:
+            assert request["raw_input"]["curr_target"] == {"A": 0.1}
+        else:
+            assert request["raw_input"] is None
+        expected_error = "worker exploded" if kind == ExecutionKind.REBALANCE else "清仓执行失败，具体原因未确认"
+        assert state.status == ExecutionTaskStatus.FAILED
+        assert state.error == expected_error
+        finished.assert_awaited_once_with(
+            execution_id, ExecutionTaskStatus.FAILED, error=expected_error, finished_at=state.finished_at
+        )
     finally:
         execution_registry._clear_execution_task_state(execution_id)

@@ -173,11 +173,6 @@ def _resolve_termination_requested_at(
     return current_state.cancel_requested_at
 
 
-def _resolve_completion_status(record: ExecuteRecord | None) -> ExecutionTaskStatus:
-    """根据执行记录解析后台任务的最终状态。"""
-    return resolve_record_task_status(record)
-
-
 def _mark_execution_finished(
     execution_id: str,
     *,
@@ -370,15 +365,12 @@ async def mark_inline_execution_succeeded(execution_id: str, record: ExecuteReco
         该函数仅更新内存状态，不返回结果。
     """
     outcome_symbols = await load_record_outcome_symbols(record)
-    update_execution_task_state(
+    _mark_execution_finished(
         execution_id,
-        status=_resolve_completion_status(record),
+        status=resolve_record_task_status(record),
         finished_at=now_str(),
-        record_id=record.id,
-        is_success=record.is_success,
-        error=execution_record_output_error(record),
-        output_status=execution_record_output_status(record),
-        **execution_record_outcome(record, outcome_symbols=outcome_symbols),
+        record=record,
+        outcome_symbols=outcome_symbols,
     )
 
 
@@ -525,7 +517,7 @@ async def _run_execution_task(
     keep_queued = False
     try:
         record = await runner(execution_id)
-        status = _resolve_completion_status(record)
+        status = resolve_record_task_status(record)
         finished_at = now_str()
         _mark_execution_finished(
             execution_id,
@@ -557,7 +549,7 @@ async def _run_execution_task(
         from axile.server.execution.records import append_error_execute_record
 
         await append_error_execute_record(
-            account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e)
+            account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e), error=e
         )
         finished_at = now_str()
         _mark_execution_finished(

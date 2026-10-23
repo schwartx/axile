@@ -80,19 +80,22 @@ async def _load_bound_portfolio(
     curr_portfolio_id = context["portfolio_id"]
     if curr_portfolio_id is None:
         msg = "无法调仓，该账户未绑定组合"
-        await append_error_execute_record(account_id=account.id, msg=msg, execution_id=execution_id)
-        raise ValueError(msg)
+        error = ValueError(msg)
+        await append_error_execute_record(account_id=account.id, msg=msg, execution_id=execution_id, error=error)
+        raise error
 
     portfolio = context["portfolio"]
 
     if portfolio is None:
         msg = f"无法调仓，该账户绑定的组合不存在, 组合id: {curr_portfolio_id}"
+        error = ValueError(msg)
         await append_error_execute_record(
             account_id=account.id,
             msg=msg,
             execution_id=execution_id,
+            error=error,
         )
-        raise ValueError(msg)
+        raise error
 
     return Portfolio.model_validate(portfolio)
 
@@ -147,6 +150,7 @@ async def _execute_portfolio_function(
             msg=msg,
             execution_id=execution_id,
             raw_result=exception_details(e),
+            error=e,
         )
         raise ValueError(msg) from e
 
@@ -363,8 +367,6 @@ async def _build_rebalance_backend_request(
         execution_id=execution_id,
         trigger_source=trigger_source,
         cleanup=cleanup,
-        curr_target=normalized_target,
-        last_target=last_target,
         logger=logger,
         notification_snapshot=notification_snapshot,
     )

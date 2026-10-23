@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from axile.server._native import _core
-from axile.server.business_facts.summary_refs import BusinessFactReferenceError
+from axile.server.business_facts.summary_refs import raise_business_fact_error
 from axile.server.native_store import native_operation
 
 
@@ -12,11 +12,7 @@ async def _read(name: str, request: Mapping[str, object]) -> Any:
     try:
         return await native_operation(name, request)
     except _core.NativeError as error:
-        if error.args and error.args[0] == "BUSINESS_FACTS":
-            raise ValueError(error.args[1]) from None
-        if error.args and error.args[0] == "BUSINESS_FACTS_REFERENCE":
-            raise BusinessFactReferenceError(error.args[1]) from None
-        raise
+        raise_business_fact_error(error)
 
 
 def _record_identity(record: Any) -> dict[str, object]:

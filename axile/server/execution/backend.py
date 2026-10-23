@@ -37,8 +37,6 @@ class RebalanceBackendRequest:
     execution_id: str | None
     trigger_source: str
     cleanup: bool
-    curr_target: dict[str, float]
-    last_target: dict[str, object]
     logger: "loguru.Logger"
     notification_snapshot: dict[str, object] | None = None
 
@@ -90,10 +88,10 @@ async def _append_output_record(
     output: UnifiedStandardOutput,
     execution_id: str | None,
     execution_kind: ExecutionKind,
-) -> tuple[ExecuteRecord, dict[str, object]]:
+) -> ExecuteRecord:
     """统一序列化输出并写入执行记录。"""
     result = _dump_output_result(output)
-    record = await append_execute_record_from_output(
+    return await append_execute_record_from_output(
         account=account,
         raw_input=raw_input,
         result=result,
@@ -101,7 +99,6 @@ async def _append_output_record(
         execution_id=execution_id,
         execution_kind=execution_kind,
     )
-    return record, result
 
 
 async def _run_rebalance_via_worker_process(request: RebalanceBackendRequest) -> ExecuteRecord:
@@ -120,7 +117,7 @@ async def _run_rebalance_via_worker_process(request: RebalanceBackendRequest) ->
         raw_input = dict(request.standard_input_dict)
         if normalized_symbol_fields is not None:
             raw_input.update(normalized_symbol_fields)
-        record, _ = await _append_output_record(
+        record = await _append_output_record(
             account=request.account,
             raw_input=raw_input,
             output=output,
@@ -162,6 +159,7 @@ async def _append_rebalance_error_record(request: RebalanceBackendRequest, msg: 
         msg=msg,
         raw_result=exception_details(error),
         execution_id=request.execution_id,
+        error=error,
     )
 
 
@@ -199,7 +197,7 @@ async def _run_clear_positions_via_worker_process(request: ClearPositionsBackend
             execution_id=request.execution_id,
             **({"notification_snapshot": request.notification_snapshot} if request.notification_snapshot else {}),
         )
-        record, _ = await _append_output_record(
+        record = await _append_output_record(
             account=request.account,
             raw_input={},
             output=output,
@@ -257,4 +255,5 @@ async def _append_clear_positions_error_record(
         msg=msg,
         raw_result=exception_details(error),
         execution_id=request.execution_id,
+        error=error,
     )

@@ -16,7 +16,7 @@ from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 from axile.server._native import _core
-from axile.server.business_facts.summary_refs import BusinessFactReferenceError
+from axile.server.business_facts.summary_refs import raise_business_fact_error
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.base import now_str
@@ -47,11 +47,7 @@ async def _persist_execute_record(
             },
         )
     except _core.NativeError as error:
-        if error.args and error.args[0] == "BUSINESS_FACTS":
-            raise ValueError(error.args[1]) from None
-        if error.args and error.args[0] == "BUSINESS_FACTS_REFERENCE":
-            raise BusinessFactReferenceError(error.args[1]) from None
-        raise
+        raise_business_fact_error(error)
     return ExecuteRecord.model_validate(stored)
 
 
@@ -71,6 +67,8 @@ async def append_error_execute_record(
     msg: str = "",
     execution_id: str | None = None,
     logger: "loguru.Logger" = loguru.logger,
+    *,
+    error: Exception | None = None,
 ) -> ExecuteRecord:
     """
     添加失败的执行记录.
@@ -89,12 +87,18 @@ async def append_error_execute_record(
         当前执行 ID。
     logger : loguru.Logger, optional
         用于输出错误日志的 logger。
+    error : Exception | None, optional
+        本次失败的异常；同一执行沿异常链复用已经提交的记录。
 
     Returns
     -------
     ExecuteRecord
         已写入数据库的失败执行记录。
     """
+    if error is not None and execution_id is not None:
+        existing = _recorded_error(error, account_id, execution_id)
+        if existing is not None:
+            return existing
     persisted_raw_result = dict(raw_result or {"msg": msg})
     # 柔和版契约：status/error 为权威结论，outcome 同步保留供旧展示路径消费。
     persisted_raw_result.setdefault("status", ExecutionStatus.FAILED.value)
@@ -113,13 +117,32 @@ async def append_error_execute_record(
     else:
         persisted_raw_result.setdefault("task_status", ExecutionTaskStatus.FAILED.value)
         logger.error("{}", msg)
-    return await _persist_execute_record(
+    record = await _persist_execute_record(
         account_id=cast("int", account_id),
         execution_id=execution_id,
         raw_input=raw_input,
         raw_result=persisted_raw_result,
         is_success=0,
     )
+    if error is not None and execution_id is not None:
+        error.__dict__["_axile_execution_record"] = record
+    return record
+
+
+def _recorded_error(error: BaseException | None, account_id: int | None, execution_id: str) -> ExecuteRecord | None:
+    """只复用同账户、同执行的已提交记录，显式异常链允许出现环。"""
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        record = error.__dict__.get("_axile_execution_record")
+        if (
+            isinstance(record, ExecuteRecord)
+            and record.account_id == account_id
+            and record.execution_id == execution_id
+        ):
+            return record
+        error = error.__cause__
+    return None
 
 
 async def append_success_execute_record(
