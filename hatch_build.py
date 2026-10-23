@@ -50,7 +50,7 @@ if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
 if getattr(module, 'PUBLIC_HEAD', None) != '0039':
     raise RuntimeError('Native extension requires public migration head 0039')
 required = (
-    'Store', 'journal', 'activity_symbols', 'execution_records',
+    'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'execution_business_detail', 'asset_snapshots',
     'account_performance', 'snapshot', 'query_costs', 'summaries', 'dashboard_inputs',
     'performance_result', 'status', 'publication_status', 'chart',

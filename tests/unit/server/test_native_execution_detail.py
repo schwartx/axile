@@ -2,8 +2,9 @@
 
 import asyncio
 import json
-import sqlite3
-from contextlib import closing
+import pickle
+import subprocess
+import sys
 from copy import deepcopy
 from inspect import signature
 from types import SimpleNamespace
@@ -66,6 +67,37 @@ _DISPLAY_EDGE_CASES = [
         {"status": "BLOCKED", "error": "当前不在交易时间", "reason_code": "FUTURE.CODE", "outcome": "blocked"},
     ),
 ]
+
+
+_SQLITE_ORACLE = """
+import pickle, sqlite3, sys
+from contextlib import closing
+statements = pickle.loads(sys.stdin.buffer.read())
+with closing(sqlite3.connect(sys.argv[1], timeout=2)) as connection, connection:
+    result = [connection.execute(statement, parameters).fetchall() for statement, parameters in statements]
+sys.stdout.buffer.write(pickle.dumps(result))
+"""
+
+
+def _oracle(path, statements):
+    # 两个 SQLite 内核不能在同一进程持有同一 WAL 文件；每批 SQL 在子进程内提交。
+    result = subprocess.run(
+        [sys.executable, "-c", _SQLITE_ORACLE, str(path)],
+        input=pickle.dumps(statements),
+        capture_output=True,
+        timeout=5,
+        check=True,
+    )
+    return pickle.loads(result.stdout)
+
+
+def _sql(path, statement, parameters=()):
+    _oracle(path, [(statement, parameters)])
+
+
+@pytest.fixture(autouse=True)
+def _isolated_fixture_sql(monkeypatch):
+    monkeypatch.setattr("tests.unit.server._business_facts_test_support.sql", _sql)
 
 
 @pytest.mark.parametrize("page,journal", [(False, False), (True, False), (True, True)])
@@ -175,9 +207,11 @@ def _expected_detail(head, detail):
 
 
 def _accounts(path):
-    with closing(sqlite3.connect(path)) as connection, connection:
-        for identity in (1, 2):
-            insert_account(connection, build_account(id=identity))
+    statements = []
+    connection = SimpleNamespace(execute=lambda *args: statements.append(args))
+    for identity in (1, 2):
+        insert_account(connection, build_account(id=identity))
+    _oracle(path, statements)
 
 
 def _app():
@@ -191,22 +225,21 @@ def _app():
     return app
 
 
-def _historical_corruption(connection, name, statement, parameters):
+def _historical_corruption(path, name, statement, parameters):
     """只暂停目标表的归属和引用守卫，注入历史损坏后立即恢复。"""
     guards = [
         (trigger, sql)
-        for trigger, sql in connection.execute(
-            "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (name,)
-        )
+        for trigger, sql in _oracle(
+            path, [("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (name,))]
+        )[0]
         if trigger.endswith("_update")
         and ("_owner_" in trigger or trigger.endswith(("record_input_update", "notification_outbox_update")))
     ]
     assert guards
-    for trigger, _ in guards:
-        connection.execute(f'DROP TRIGGER "{trigger}"')
-    connection.execute(statement, parameters)
-    for _, sql in guards:
-        connection.execute(sql)
+    statements = [(f'DROP TRIGGER "{trigger}"', ()) for trigger, _ in guards]
+    statements.append((statement, parameters))
+    statements.extend((sql, ()) for _, sql in guards)
+    _oracle(path, statements)
 
 
 @pytest.mark.parametrize(
@@ -252,11 +285,11 @@ def test_native_detail_matches_repository_and_summary(native_database, monkeypat
     )
     record_id = head["id"]
     if not isinstance(source_input, dict):
-        with closing(sqlite3.connect(path)) as connection, connection:
-            connection.execute(
-                "UPDATE execution_input SET root_kind=?,root_value=? WHERE id=?",
-                ("null" if source_input is None else "invalid", json.dumps(source_input), head["input_id"]),
-            )
+        _sql(
+            path,
+            "UPDATE execution_input SET root_kind=?,root_value=? WHERE id=?",
+            ("null" if source_input is None else "invalid", json.dumps(source_input), head["input_id"]),
+        )
 
     async def scenario():
         expected = _expected_detail(head, await read_execution_detail(head))
@@ -277,13 +310,12 @@ def test_native_detail_matches_repository_and_summary(native_database, monkeypat
                 for account_id, requested_record in [(99, record_id), (1, 99999), (2, record_id)]:
                     response = await client.get(f"/execute_records/{account_id}/{requested_record}")
                     assert response.status_code == 404, response.text
-        with closing(sqlite3.connect(path)) as connection, connection:
-            _historical_corruption(
-                connection,
-                "executerecord",
-                "UPDATE executerecord SET input_id='missing-input' WHERE id=?",
-                (record_id,),
-            )
+        _historical_corruption(
+            path,
+            "executerecord",
+            "UPDATE executerecord SET input_id='missing-input' WHERE id=?",
+            (record_id,),
+        )
         async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
             response = await client.get(f"/execute_records/1/{record_id}")
             assert response.status_code == 503, response.text
@@ -325,20 +357,23 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
     step = SupplementStep(
         group_id=group.id, index=1, scheduled_at=created_at, status="running", execution_id=execution_id
     )
-    with closing(sqlite3.connect(path)) as connection, connection:
-        for name, item in (
-            ("notification_event", notification),
-            ("supplement_group", group),
-            ("supplement_step", step),
-        ):
-            values = item.model_dump(mode="json")
-            connection.execute(
+    statements = []
+    for name, item in (
+        ("notification_event", notification),
+        ("supplement_group", group),
+        ("supplement_step", step),
+    ):
+        values = item.model_dump(mode="json")
+        statements.append(
+            (
                 f"INSERT INTO {name} ({','.join('[' + key + ']' for key in values)}) VALUES ({','.join('?' for _ in values)})",
                 [
                     json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
                     for value in values.values()
                 ],
             )
+        )
+    _oracle(path, statements)
     native_store_call(
         path,
         "intent_insert",
@@ -376,13 +411,18 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
         },
     )
     record_id = head["id"]
-    with closing(sqlite3.connect(path)) as connection:
-        borrowed_asset = connection.execute(
-            "SELECT asset_id FROM business_asset_binding WHERE record_id=? AND path='/account_assets'", (other["id"],)
-        ).fetchone()[0]
-        extra = json.loads(
-            connection.execute("SELECT extra FROM execution_extension WHERE record_id=?", (record_id,)).fetchone()[0]
-        )
+    borrowed_rows, extra_rows = _oracle(
+        path,
+        [
+            (
+                "SELECT asset_id FROM business_asset_binding WHERE record_id=? AND path='/account_assets'",
+                (other["id"],),
+            ),
+            ("SELECT extra FROM execution_extension WHERE record_id=?", (record_id,)),
+        ],
+    )
+    borrowed_asset = borrowed_rows[0][0]
+    extra = json.loads(extra_rows[0][0])
     assert borrowed_asset is not None
     assert extra["server_notification_context"]["$axile_notification_context"] == 1
 
@@ -396,38 +436,35 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
             response = await client.get(f"/execute_records/1/{record_id}")
             assert response.status_code == 200, response.text
             assert response.json() == expected
-            with closing(sqlite3.connect(path)) as connection, connection:
-                if corruption == "foreign_asset":
-                    _historical_corruption(
-                        connection,
-                        "business_asset_binding",
-                        "UPDATE business_asset_binding SET asset_id=? WHERE record_id=?",
-                        (borrowed_asset, record_id),
-                    )
-                elif corruption in {"foreign_input", "foreign_result_input"}:
-                    field = "input_id" if corruption == "foreign_input" else "result_input_id"
-                    _historical_corruption(
-                        connection,
-                        "executerecord",
-                        f"UPDATE executerecord SET {field}=? WHERE id=?",
-                        (other["input_id"], record_id),
-                    )
-                elif corruption == "event_hash":
-                    context = deepcopy(event_context)
-                    context["account"]["name"] = "tampered"
-                    _historical_corruption(
-                        connection,
-                        "notification_event",
-                        "UPDATE notification_event SET context=? WHERE id=?",
-                        (json.dumps(context), notification.id),
-                    )
-                elif corruption == "capture_hash":
-                    extra["server_notification_context"]["capture_sha256"] = "0" * 64
-                    connection.execute(
-                        "UPDATE execution_extension SET extra=? WHERE record_id=?", (json.dumps(extra), record_id)
-                    )
-                else:
-                    connection.execute("DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
+            if corruption == "foreign_asset":
+                _historical_corruption(
+                    path,
+                    "business_asset_binding",
+                    "UPDATE business_asset_binding SET asset_id=? WHERE record_id=?",
+                    (borrowed_asset, record_id),
+                )
+            elif corruption in {"foreign_input", "foreign_result_input"}:
+                field = "input_id" if corruption == "foreign_input" else "result_input_id"
+                _historical_corruption(
+                    path,
+                    "executerecord",
+                    f"UPDATE executerecord SET {field}=? WHERE id=?",
+                    (other["input_id"], record_id),
+                )
+            elif corruption == "event_hash":
+                context = deepcopy(event_context)
+                context["account"]["name"] = "tampered"
+                _historical_corruption(
+                    path,
+                    "notification_event",
+                    "UPDATE notification_event SET context=? WHERE id=?",
+                    (json.dumps(context), notification.id),
+                )
+            elif corruption == "capture_hash":
+                extra["server_notification_context"]["capture_sha256"] = "0" * 64
+                _sql(path, "UPDATE execution_extension SET extra=? WHERE record_id=?", (json.dumps(extra), record_id))
+            else:
+                _sql(path, "DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
             response = await client.get(f"/execute_records/1/{record_id}")
             assert response.status_code == 503, response.text
 

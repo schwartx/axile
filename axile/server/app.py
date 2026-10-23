@@ -226,7 +226,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.warning("axile 未完成初始化配置，进入初始化向导模式（跳过调度与账户加载）。")
         yield
         return
-    from axile.server.core.db import initialize_database
+    from axile.server._native import _core
+    from axile.server.core.db import database_path, initialize_database
+    from axile.server.native_store import native_call
     from axile.server.performance_analysis import AnalysisManager, ensure_native_capabilities
 
     ensure_native_capabilities()
@@ -277,6 +279,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         scheduler.shutdown()
         await shutdown_dispatchers()
         shutdown_worker_backend_manager()
+        await native_call(_core.close_database, database_path())
         logger.warning("axile已经关闭!")
 
 

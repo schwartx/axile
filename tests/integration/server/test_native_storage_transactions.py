@@ -3,9 +3,11 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
-from contextlib import closing
+import pickle
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -52,27 +54,54 @@ _RESULT = {
 }
 
 
+_SQLITE_ORACLE = """
+import pickle, sqlite3, sys
+from contextlib import closing
+arguments = pickle.loads(sys.stdin.buffer.read())
+with closing(sqlite3.connect(sys.argv[1], timeout=2)) as connection:
+    connection.row_factory = sqlite3.Row
+
+    def rows(table):
+        columns = ','.join('"' + row[1] + '"' for row in connection.execute('PRAGMA table_info("' + table + '")'))
+        return [dict(row) for row in connection.execute('SELECT * FROM "' + table + '" ORDER BY ' + columns)]
+
+    if sys.argv[2] == 'rows':
+        result = rows(*arguments)
+    elif sys.argv[2] == 'snapshot':
+        tables = [name for (name,) in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )]
+        result = {name: rows(name) for name in tables}
+    else:
+        with connection:
+            connection.execute(*arguments)
+        result = None
+sys.stdout.buffer.write(pickle.dumps(result))
+"""
+
+
+def _oracle(path: Path, operation: str, *arguments: object) -> Any:
+    # 两个 SQLite 内核不能在同一进程持有同一 WAL 文件；pickle 保留 BLOB 等原始类型。
+    result = subprocess.run(
+        [sys.executable, "-c", _SQLITE_ORACLE, str(path), operation],
+        input=pickle.dumps(arguments),
+        capture_output=True,
+        timeout=5,
+        check=True,
+    )
+    return pickle.loads(result.stdout)
+
+
 def _rows(path: Path, table: str) -> list[dict]:
-    with closing(sqlite3.connect(path)) as connection:
-        connection.row_factory = sqlite3.Row
-        columns = ",".join(f'"{row[1]}"' for row in connection.execute(f'PRAGMA table_info("{table}")'))
-        return [dict(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY {columns}')]
+    return _oracle(path, "rows", table)
 
 
 def _snapshot(path: Path) -> dict[str, list[dict]]:
-    with closing(sqlite3.connect(path)) as connection:
-        tables = [
-            name
-            for (name,) in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-    return {name: _rows(path, name) for name in tables}
+    return _oracle(path, "snapshot")
 
 
 def _sql(path: Path, statement: str, parameters: tuple = ()) -> None:
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(statement, parameters)
+    _oracle(path, "sql", statement, parameters)
 
 
 @pytest.fixture

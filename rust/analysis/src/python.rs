@@ -7,8 +7,9 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyFloat, PyInt, PyTuple};
 use pyo3::Py;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::error::AnalysisError;
 use crate::performance::{self, PerformanceRequest, SourceVersionCheck};
@@ -32,7 +33,7 @@ fn raise(error: AnalysisError) -> PyErr {
 /// 只读 SQLite 访问点;每次查询一个 DEFERRED 快照,结束即释放。
 #[pyclass]
 struct Store {
-    connection: Mutex<Connection>,
+    path: PathBuf,
 }
 
 #[pyclass]
@@ -58,12 +59,27 @@ impl EvidenceCancellation {
 impl Store {
     #[new]
     fn new(py: Python<'_>, path: String) -> PyResult<Self> {
-        Ok(Self {
-            connection: Mutex::new(
-                py.detach(|| crate::storage_connection::open_reader(std::path::Path::new(&path)))
-                    .map_err(raise)?,
-            ),
-        })
+        let path = py
+            .detach(|| {
+                if path.is_empty() || path == ":memory:" {
+                    return Err(AnalysisError::new(
+                        "DATABASE_OPEN",
+                        "A file-backed SQLite database is required",
+                    ));
+                }
+                let path = Path::new(&path)
+                    .canonicalize()
+                    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
+                if !path.is_file() {
+                    return Err(AnalysisError::new(
+                        "DATABASE_OPEN",
+                        "database must be a file",
+                    ));
+                }
+                Ok(path)
+            })
+            .map_err(raise)?;
+        Ok(Self { path })
     }
 }
 
@@ -92,10 +108,7 @@ impl Store {
         &self,
         task: impl FnOnce(&Connection) -> Result<T, String>,
     ) -> Result<T, AnalysisError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| AnalysisError::new("DATABASE_LOCK", "store connection mutex poisoned"))?;
+        let connection = crate::storage_connection::open_reader(&self.path)?;
         connection
             .execute_batch("BEGIN DEFERRED;")
             .map_err(|error| AnalysisError::new("DATABASE_BEGIN", error.to_string()))?;
@@ -751,6 +764,12 @@ fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<
 }
 
 #[pyfunction]
+fn close_database(py: Python<'_>, path: String) -> PyResult<()> {
+    py.detach(|| crate::storage_connection::migration_guard(Path::new(&path)).map(drop))
+        .map_err(raise)
+}
+
+#[pyfunction]
 fn queue_claim(py: Python<'_>, path: &str, now: f64, token: &str) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(|| crate::analysis_queue::claim(path, now, token))
@@ -768,6 +787,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add_class::<Store>()?;
     m.add_class::<EvidenceCancellation>()?;
+    m.add_function(wrap_pyfunction!(close_database, m)?)?;
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;
     register_queue_operations(m)?;

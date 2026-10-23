@@ -11,6 +11,7 @@ use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
+use crate::storage_connection::ConnectionLease;
 use crate::writer_scope;
 
 pub(crate) mod encode;
@@ -34,7 +35,7 @@ pub(crate) fn sql(error: rusqlite::Error) -> AnalysisError {
 }
 
 /// 事实替换保留关闭外键约束的既有策略，清理由数据库触发器执行。
-fn open_connection(path: &str) -> Result<Connection, AnalysisError> {
+fn open_connection(path: &str) -> Result<ConnectionLease, AnalysisError> {
     crate::storage_connection::open_writer(Path::new(path), false)
 }
 

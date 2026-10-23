@@ -29,9 +29,14 @@ def initialize_database(migration_runner: Callable[[], None] | None = None) -> N
     _initialized_databases.add(path)
 
 
-@lru_cache(maxsize=1)
 def analysis_store():
     """原生分析只读访问点;绑定产物随构建提供,缺失时让请求显式失败而非静默回退."""
+    return _analysis_store(database_path())
+
+
+@lru_cache(maxsize=1)
+def _analysis_store(path: str):
+    """只缓存路径句柄，连接由 Rust 借用和归还。"""
     from axile.server._native import _core
 
-    return _core.Store(database_path())
+    return _core.Store(path)

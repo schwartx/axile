@@ -44,6 +44,19 @@ pub(super) struct Staging<'a> {
     counts: BTreeMap<String, usize>,
 }
 
+impl Drop for Staging<'_> {
+    fn drop(&mut self) {
+        if !self.connection.is_autocommit() {
+            let _ = self.connection.execute_batch("ROLLBACK;");
+        }
+        // Cached inserts must release the stage schema before it is detached.
+        self.connection.flush_prepared_statement_cache();
+        let _ = self
+            .connection
+            .execute_batch("DETACH DATABASE native_stage;");
+    }
+}
+
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("INVALID_NATIVE_PUBLICATION", message)
 }
@@ -57,25 +70,27 @@ impl<'a> Staging<'a> {
         // Empty filenames create private disk-backed databases which SQLite
         // unlinks automatically, including when the process is killed.
         connection
+            .execute_batch("ATTACH DATABASE '' AS native_stage;")
+            .map_err(sql)?;
+        let mut staged = Self {
+            connection,
+            tables: BTreeMap::new(),
+            counts: BTreeMap::new(),
+        };
+        connection
             .execute_batch(
-                "ATTACH DATABASE '' AS native_stage;
-                 PRAGMA native_stage.cache_size = -4096;
+                "PRAGMA native_stage.cache_size = -4096;
                  PRAGMA native_stage.mmap_size = 0;
                  PRAGMA native_stage.journal_mode = DELETE;",
             )
             .map_err(sql)?;
-        let mut tables = BTreeMap::new();
         for &name in RESULT_TABLES {
             let columns = table_columns(connection, name)?;
             create_table(connection, name, &columns)?;
-            tables.insert(name, columns);
+            staged.tables.insert(name, columns);
         }
         connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
-        Ok(Self {
-            connection,
-            tables,
-            counts: BTreeMap::new(),
-        })
+        Ok(staged)
     }
 
     pub(super) fn insert_rows(
@@ -118,7 +133,7 @@ impl<'a> Staging<'a> {
     }
 
     pub(super) fn finish(
-        self,
+        &self,
         complete: Value,
         account_id: i64,
         source_version: i64,
@@ -354,6 +369,33 @@ mod tests {
         connection
     }
 
+    fn assert_detached(connection: &Connection) {
+        assert!(connection.is_autocommit());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_database_list WHERE name='native_stage'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn schema_failure_detaches_partially_initialized_stage() {
+        let connection = fixture();
+        connection
+            .execute_batch("DROP TABLE performance_cost_transaction_fee;")
+            .unwrap();
+        for _ in 0..2 {
+            let error = Staging::new(&connection).err().unwrap();
+            assert_eq!(error.code, "SCHEMA_INCOMPATIBLE");
+            assert_detached(&connection);
+        }
+    }
+
     #[test]
     fn typed_insert_checks_identifiers_width_types_and_batch_limits() {
         let connection = fixture();
@@ -394,6 +436,8 @@ mod tests {
             "SELECT COUNT(*) FROM native_stage.performance_result_range WHERE value IS NULL",
             [], |row| row.get::<_, usize>(0)
         ).unwrap(), 256);
+        drop(staged);
+        assert_detached(&connection);
     }
 
     #[test]
@@ -428,6 +472,10 @@ mod tests {
                 assert_eq!(result.unwrap_err().code, "INVALID_NATIVE_PUBLICATION");
                 assert!(!connection.is_autocommit());
             }
+            drop(staged);
+            assert_detached(&connection);
+            drop(Staging::new(&connection).unwrap());
+            assert_detached(&connection);
         }
     }
 

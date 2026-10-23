@@ -5,12 +5,13 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
+use crate::storage_connection::ConnectionLease;
 
 fn database(error: rusqlite::Error) -> AnalysisError {
     AnalysisError::new("DATABASE_QUEUE", error.to_string())
 }
 
-fn open(path: &str, write: bool) -> Result<Connection, AnalysisError> {
+fn open(path: &str, write: bool) -> Result<ConnectionLease, AnalysisError> {
     if path.is_empty() || path == ":memory:" {
         return Err(AnalysisError::new(
             "DATABASE_OPEN",

@@ -146,8 +146,7 @@ fn with_read_snapshot<T>(
 
     let result = task(&connection);
 
-    // End the snapshot promptly. Drop still closes the transaction on errors,
-    // including an error while rolling back a damaged connection.
+    // End the snapshot promptly; the lease discards a connection if cleanup fails.
     let closed = connection
         .execute_batch("ROLLBACK;")
         .map_err(|error| AnalysisError::new("DATABASE_CLOSE", error.to_string()));

@@ -157,28 +157,22 @@ fn database_path(path: &str) -> Result<&Path, AnalysisError> {
     Ok(Path::new(path))
 }
 
-fn configure(connection: &Connection, readonly: bool) -> Result<(), AnalysisError> {
+fn configure(connection: &Connection) -> Result<(), AnalysisError> {
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(sql)?;
-    if !readonly {
-        let mode: String = connection
-            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-            .map_err(sql)?;
-        if !mode.eq_ignore_ascii_case("wal") {
-            return Err(AnalysisError::new(
-                "MIGRATION_SQL",
-                format!("migration requires WAL journal mode, got {mode}"),
-            ));
-        }
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .map_err(sql)?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(AnalysisError::new(
+            "MIGRATION_SQL",
+            format!("migration requires WAL journal mode, got {mode}"),
+        ));
     }
+    // 历史重建表沿用旧迁移关闭外键的连接配置。
     connection
-        .execute_batch(if readonly {
-            "PRAGMA query_only=ON;"
-        } else {
-            // 历史重建表沿用旧迁移关闭外键的连接配置。
-            "PRAGMA foreign_keys=OFF; PRAGMA synchronous=FULL;"
-        })
+        .execute_batch("PRAGMA foreign_keys=OFF; PRAGMA synchronous=FULL;")
         .map_err(sql)
 }
 
@@ -193,12 +187,7 @@ fn read_scope<T>(
     {
         return work(None);
     }
-    let mut connection = Connection::open_with_flags(
-        database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
-    configure(&connection, true)?;
+    let mut connection = crate::storage_connection::open_reader(database)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(sql)?;
@@ -215,13 +204,15 @@ fn write_scope<T>(
     create: bool,
     work: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
 ) -> Result<T, AnalysisError> {
+    let database = database_path(path)?;
+    let _migration = crate::storage_connection::migration_guard(database)?;
     let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     if create {
         flags |= OpenFlags::SQLITE_OPEN_CREATE;
     }
-    let mut connection = Connection::open_with_flags(database_path(path)?, flags)
+    let mut connection = Connection::open_with_flags(database, flags)
         .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
-    configure(&connection, false)?;
+    configure(&connection)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
@@ -825,7 +816,7 @@ mod tests {
     #[test]
     fn write_configuration_rejects_a_non_wal_result() {
         let connection = Connection::open_in_memory().unwrap();
-        let error = configure(&connection, false).unwrap_err();
+        let error = configure(&connection).unwrap_err();
         assert_eq!(error.code, "MIGRATION_SQL");
         assert!(error.error.contains("requires WAL journal mode"));
     }

@@ -9,9 +9,10 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::error::AnalysisError;
+use crate::storage_connection::ConnectionLease;
 
 /// Open the single writer connection shared by all write-side operations.
-pub(crate) fn open_writer(database: &Path) -> Result<Connection, AnalysisError> {
+pub(crate) fn open_writer(database: &Path) -> Result<ConnectionLease, AnalysisError> {
     crate::storage_connection::open_writer(database, true)
 }
 
@@ -88,6 +89,7 @@ mod tests {
             1
         );
         drop(reopened);
+        drop(crate::storage_connection::migration_guard(&path).unwrap());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

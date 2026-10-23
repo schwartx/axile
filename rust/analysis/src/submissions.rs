@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
-use crate::storage_connection;
+use crate::storage_connection::{self, ConnectionLease};
 use crate::writer_scope;
 
 fn database(error: rusqlite::Error) -> String {
@@ -376,7 +376,7 @@ pub fn monitor(
     )
 }
 
-fn open_writer(path: &str) -> Result<Connection, AnalysisError> {
+fn open_writer(path: &str) -> Result<ConnectionLease, AnalysisError> {
     if path.is_empty() || path == ":memory:" {
         return Err(AnalysisError::new(
             "DATABASE_OPEN",

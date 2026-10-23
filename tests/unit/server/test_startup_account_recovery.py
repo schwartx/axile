@@ -15,6 +15,7 @@ from axile.server.connection_validation import service as validation_service
 from axile.server.execution import notification_outbox, supplements
 
 NATIVE_OPERATIONS = (
+    "close_database",
     "publish_store",
     "freeze_execution_input",
     "freeze_execution_after_assets",
@@ -66,6 +67,7 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
 @pytest.fixture
 def isolated_lifespan(monkeypatch):
     from axile.server import connection_state, performance_analysis
+    from axile.server.core import db
     from axile.server.execution import catalog_preheat
     from axile.server.time_check import service as time_check
 
@@ -90,9 +92,25 @@ def isolated_lifespan(monkeypatch):
     monkeypatch.setattr(validation_service, "close", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_dispatchers", AsyncMock())
     monkeypatch.setattr(server_app, "shutdown_worker_backend_manager", MagicMock())
+    monkeypatch.setattr(db, "initialize_database", lambda: None)
+    monkeypatch.setattr(db, "database_path", lambda: "/isolated-lifespan.sqlite")
+
+    def close_database(path):
+        assert path == "/isolated-lifespan.sqlite"
+        manager.stop.assert_awaited_once()
+        validation_service.close.assert_awaited_once()
+        time_check.service.close.assert_awaited_once()
+        control_monitor.monitor.close.assert_awaited_once()
+        server_app.scheduler.shutdown.assert_called_once()
+        server_app.shutdown_dispatchers.assert_awaited_once()
+        server_app.shutdown_worker_backend_manager.assert_called_once()
+
+    close = MagicMock(side_effect=close_database)
+    monkeypatch.setattr(performance_analysis._core, "close_database", close, raising=False)
     yield manager
     manager.start.assert_awaited_once()
     manager.stop.assert_awaited_once()
+    close.assert_called_once_with("/isolated-lifespan.sqlite")
 
 
 def test_api_ready_while_account_connection_is_blocked_and_shutdown_cancels_recovery(isolated_lifespan, monkeypatch):
