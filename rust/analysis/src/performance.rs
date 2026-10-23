@@ -13,12 +13,6 @@ use serde_json::{json, Value};
 use crate::replay::{Observation, ReplayClose, ReplayLedger};
 
 const ENGINE_VERSION: &str = "equity-ledger-1";
-const LATEST: &str = "NOT EXISTS (SELECT 1 FROM replay_observation newer \
-    WHERE newer.account_id=o.account_id AND newer.time=o.time \
-    AND newer.record_id>o.record_id)";
-const BASELINE: &str = "o.asset>0 AND o.target_present=1 AND NOT EXISTS \
-    (SELECT 1 FROM replay_observation_symbol s WHERE s.record_id=o.record_id \
-    AND s.target!=0 AND s.price IS NULL)";
 
 fn database_error(error: rusqlite::Error) -> String {
     error.to_string()
@@ -40,25 +34,6 @@ fn display_time(value: &str) -> Result<String, String> {
     } else {
         canonical_time(parsed)
     })
-}
-
-fn select_start(connection: &Connection, account_id: i64, cutoff: &str) -> Result<String, String> {
-    for (comparison, direction) in [("<=", "DESC"), (">=", "ASC")] {
-        let query = format!(
-            "SELECT o.time FROM replay_observation o WHERE o.account_id=?1 \
-             AND o.time {comparison} ?2 AND {LATEST} AND {BASELINE} \
-             ORDER BY o.time {direction},o.record_id {direction} LIMIT 1"
-        );
-        let mut statement = connection.prepare(&query).map_err(database_error)?;
-        let mut rows = statement
-            .query(params![account_id, cutoff])
-            .map_err(database_error)?;
-        if let Some(row) = rows.next().map_err(database_error)? {
-            return row.get(0).map_err(database_error);
-        }
-    }
-    // No common baseline: preserve the independent account curve from cutoff.
-    Ok(cutoff.to_owned())
 }
 
 #[derive(Clone)]
@@ -360,67 +335,11 @@ fn scan(
     start: &str,
     mut consume: impl FnMut(&Observation) -> Result<(), String>,
 ) -> Result<(), String> {
-    let query = format!(
-        "SELECT o.record_id,o.execution_id,o.time,o.asset,o.sizing_fallback,\
-         o.target_present,o.target_weight_present,o.target_units_present,o.target_quantities_present,\
-         s.symbol,s.target,s.price,s.target_weight,s.target_units,s.target_quantity \
-         FROM replay_observation o LEFT JOIN replay_observation_symbol s ON s.record_id=o.record_id \
-         WHERE o.account_id=?1 AND o.time>=?2 AND {LATEST} \
-         ORDER BY o.time,o.record_id,s.symbol"
-    );
-    let mut statement = connection.prepare(&query).map_err(database_error)?;
-    let mut rows = statement
-        .query(params![account_id, start])
-        .map_err(database_error)?;
-    let mut current: Option<Observation> = None;
-    while let Some(row) = rows.next().map_err(database_error)? {
-        let id: i64 = row.get(0).map_err(database_error)?;
-        if current.as_ref().is_some_and(|item| item.id != id) {
-            consume(current.as_ref().expect("current item"))?;
-            current = None;
-        }
-        if current.is_none() {
-            let map = |column| -> Result<Option<BTreeMap<String, f64>>, String> {
-                Ok(row
-                    .get::<_, bool>(column)
-                    .map_err(database_error)?
-                    .then(BTreeMap::new))
-            };
-            current = Some(Observation {
-                id,
-                execution_id: row.get(1).map_err(database_error)?,
-                time: display_time(&row.get::<_, String>(2).map_err(database_error)?)?,
-                asset: row.get(3).map_err(database_error)?,
-                sizing_fallback: row.get(4).map_err(database_error)?,
-                target: map(5)?,
-                target_weight: map(6)?,
-                target_units: map(7)?,
-                target_quantities: map(8)?,
-                prices: BTreeMap::new(),
-            });
-        }
-        if let Some(symbol) = row.get::<_, Option<String>>(9).map_err(database_error)? {
-            let item = current.as_mut().expect("current item");
-            for (column, map) in [
-                (10, item.target.as_mut()),
-                (11, Some(&mut item.prices)),
-                (12, item.target_weight.as_mut()),
-                (13, item.target_units.as_mut()),
-                (14, item.target_quantities.as_mut()),
-            ] {
-                if let (Some(map), Some(value)) = (
-                    map,
-                    row.get::<_, Option<f64>>(column).map_err(database_error)?,
-                ) {
-                    map.insert(symbol.clone(), value);
-                }
-            }
-        }
-    }
-    if let Some(item) = current {
-        consume(&item)?;
-    }
-    Ok(())
+    crate::fact_observation::scan(connection, account_id, start, |item| {
+        let mut item = item.clone();
+        item.time = display_time(&item.time)?;
+        consume(&item)
+    })
 }
 
 fn check_source_version(
@@ -449,46 +368,7 @@ fn check_source_version(
 
 /// Verify the replay snapshot is complete without reading raw JSON payloads.
 fn check_observation_facts(connection: &Connection, account_id: i64) -> Result<(), String> {
-    let mut statement = connection.prepare(
-        "SELECT e.id,e.created_at,e.execution_id,o.record_id,o.account_id,o.time,o.execution_id \
-         FROM executerecord e LEFT JOIN replay_observation o ON o.record_id=e.id \
-         WHERE e.account_id=?1 ORDER BY e.id"
-    ).map_err(database_error)?;
-    let mut rows = statement.query([account_id]).map_err(database_error)?;
-    while let Some(row) = rows.next().map_err(database_error)? {
-        let record_id: i64 = row.get(0).map_err(database_error)?;
-        let observed_id: Option<i64> = row.get(3).map_err(database_error)?;
-        let observed_account: Option<i64> = row.get(4).map_err(database_error)?;
-        let created_at: String = row.get(1).map_err(database_error)?;
-        let observed_time: Option<String> = row.get(5).map_err(database_error)?;
-        let execution_id: Option<String> = row.get(2).map_err(database_error)?;
-        let observed_execution: Option<String> = row.get(6).map_err(database_error)?;
-        let matches_time = observed_time
-            .as_deref()
-            .map(|when| {
-                Ok::<bool, String>(crate::calendar::local_time(&created_at)? == parse_time(when)?)
-            })
-            .transpose()?
-            .unwrap_or(false);
-        if observed_id != Some(record_id)
-            || observed_account != Some(account_id)
-            || execution_id != observed_execution
-            || !matches_time
-        {
-            return Err(format!(
-                "SOURCE_FACTS_INCOMPLETE: observation {record_id} is missing or stale"
-            ));
-        }
-    }
-    let orphan: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM replay_observation o WHERE o.account_id=?1 AND NOT EXISTS \
-         (SELECT 1 FROM executerecord e WHERE e.id=o.record_id AND e.account_id=o.account_id))",
-        [account_id], |row| row.get(0),
-    ).map_err(database_error)?;
-    if orphan {
-        return Err("SOURCE_FACTS_INCOMPLETE: orphaned observation".to_owned());
-    }
-    Ok(())
+    crate::fact_integrity::validate(connection, account_id)
 }
 
 /// Reuse native metadata assembly when emitting normalized publication rows.
@@ -531,13 +411,32 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
     }
     let settings = json!({"backtest_weight_type":"cs", "backtest_fee_rate":fee});
     let include_backtest = request.include_backtest;
-    let (record_count, first, last): (i64, Option<String>, Option<String>) = connection
+    let record_count: i64 = connection
         .query_row(
-            "SELECT count(*),min(time),max(time) FROM replay_observation WHERE account_id=?1",
+            "SELECT count(*) FROM executerecord WHERE account_id=?1",
             [account_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )
         .map_err(database_error)?;
+    let mut first: Option<String> = None;
+    let mut last: Option<String> = None;
+    let mut baselines = BTreeSet::new();
+    let mut equities = BTreeMap::new();
+    crate::fact_observation::scan(connection, account_id, "", |item| {
+        first.get_or_insert_with(|| item.time.clone());
+        last = Some(item.time.clone());
+        if let Some(asset) = item.asset.filter(|asset| *asset > 0.0) {
+            equities.insert(item.time.clone(), asset);
+            if item.target.as_ref().is_some_and(|target| {
+                target
+                    .iter()
+                    .all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
+            }) {
+                baselines.insert(item.time.clone());
+            }
+        }
+        Ok(())
+    })?;
     let range_keys: &[&str] = match request.range {
         None => &["30", "90", "all"],
         Some("30") => &["30"],
@@ -555,27 +454,19 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
                     parse_time(last)? - Duration::days(key.parse::<i64>().expect("range days")),
                 )
             };
-            select_start(connection, account_id, &cutoff)?
+            baselines
+                .range(..=cutoff.clone())
+                .next_back()
+                .or_else(|| baselines.range(cutoff.clone()..).next())
+                .cloned()
+                .unwrap_or(cutoff)
         } else {
             String::new()
         };
-        let initial_equity: Option<f64> = if record_count > 0 {
-            let query = format!(
-                "SELECT o.asset FROM replay_observation o WHERE o.account_id=?1 \
-                 AND o.time>=?2 AND o.asset>0 AND {LATEST} ORDER BY o.time,o.record_id LIMIT 1"
-            );
-            let mut statement = connection.prepare(&query).map_err(database_error)?;
-            let mut rows = statement
-                .query(params![account_id, start])
-                .map_err(database_error)?;
-            rows.next()
-                .map_err(database_error)?
-                .map(|row| row.get(0))
-                .transpose()
-                .map_err(database_error)?
-        } else {
-            None
-        };
+        let initial_equity = equities
+            .range(start.clone()..)
+            .next()
+            .map(|(_, asset)| *asset);
         let executable = Participants::new(
             if include_backtest {
                 initial_equity
@@ -649,14 +540,20 @@ mod tests {
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
-            "CREATE TABLE replay_observation (record_id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
-             execution_id TEXT,time TEXT NOT NULL,asset REAL,sizing_fallback INTEGER NOT NULL,
-             target_present INTEGER NOT NULL,target_weight_present INTEGER NOT NULL,
-             target_units_present INTEGER NOT NULL,target_quantities_present INTEGER NOT NULL);
-             CREATE INDEX ix_replay_observation_account_time ON replay_observation(account_id,time,record_id);
-             CREATE TABLE replay_observation_symbol (record_id INTEGER NOT NULL,symbol TEXT NOT NULL,
-             target REAL,price REAL,target_weight REAL,target_units REAL,target_quantity REAL,
-             PRIMARY KEY(record_id,symbol));",
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER);
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
+             CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
+             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
+             CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
+             CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
+             CREATE TABLE business_asset_snapshot(asset_id TEXT,total_asset REAL,observation_valid INTEGER);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,tick_recorded INTEGER,sizing_recorded INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,sizing_mode TEXT,status TEXT,target_quantity REAL,equity REAL,unit_notional REAL,reference_price REAL,unit_multiplier REAL,conversion_recorded INTEGER);
+             CREATE TABLE execution_symbol_conversion(record_id INTEGER,path TEXT,rate REAL);
+             CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT,member_count INTEGER);
+             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,state TEXT,member_count INTEGER);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT);",
         ).unwrap();
         connection
     }
@@ -671,23 +568,38 @@ mod tests {
     ) {
         connection
             .execute(
-                "INSERT INTO replay_observation VALUES (?1,1,?2,?3,?4,0,?5,?5,0,0)",
-                params![
-                    id,
-                    format!("execution-{id}"),
-                    canonical_time(parse_time(time).unwrap()),
-                    asset,
-                    target
-                ],
+                "INSERT INTO executerecord VALUES(?1,1,?2,?3,NULL,?4,NULL,1)",
+                params![id, format!("execution-{id}"), time, id.to_string()],
             )
             .unwrap();
-        if target || price.is_some() {
+        connection
+            .execute(
+                "INSERT INTO execution_input VALUES(?1,1,?2)",
+                params![id.to_string(), if target { "value" } else { "absent" }],
+            )
+            .unwrap();
+        if target {
             connection
                 .execute(
-                    "INSERT INTO replay_observation_symbol VALUES (?1,'A',?2,?3,?2,NULL,NULL)",
-                    params![id, target.then_some(1.0), price],
+                    "INSERT INTO execution_input_target VALUES(?1,'curr_target','A',1)",
+                    [id.to_string()],
                 )
                 .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO business_asset_binding VALUES(?1,'/account_assets',?2)",
+                params![id, id.to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO business_asset_snapshot VALUES(?1,?2,1)",
+                params![id.to_string(), asset],
+            )
+            .unwrap();
+        if price.is_some() {
+            connection.execute("INSERT INTO execution_symbol_tick VALUES(?1,'/first_ticks/A','A',0,NULL,NULL,?2,1)",params![id,price]).unwrap();
         }
     }
 
@@ -809,13 +721,6 @@ mod tests {
             true,
             Some(10.0),
         );
-        connection
-            .execute_batch(
-                "CREATE TABLE executerecord (id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
-             execution_id TEXT,created_at TEXT NOT NULL);
-             INSERT INTO executerecord VALUES (1,1,'execution-1','2026-01-01T01:00:00Z');",
-            )
-            .unwrap();
         let request = &PerformanceRequest {
             account_id: 1,
             range: None,
@@ -827,45 +732,30 @@ mod tests {
         };
         assert!(performance(&connection, &request).is_ok());
         connection
-            .execute("UPDATE executerecord SET execution_id='changed'", [])
+            .execute("UPDATE executerecord SET facts_complete=0", [])
             .unwrap();
-        assert!(performance(&connection, &request)
+        assert!(performance(&connection, request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
         connection
-            .execute("UPDATE executerecord SET execution_id='execution-1'", [])
+            .execute("UPDATE executerecord SET facts_complete=1", [])
+            .unwrap();
+        connection
+            .execute("UPDATE execution_input SET account_id=2", [])
+            .unwrap();
+        assert!(performance(&connection, request)
+            .unwrap_err()
+            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
+        connection
+            .execute("UPDATE execution_input SET account_id=1", [])
             .unwrap();
         connection
             .execute(
-                "UPDATE executerecord SET created_at='2026-01-02T01:00:00Z'",
+                "INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object',1)",
                 [],
             )
             .unwrap();
-        assert!(performance(&connection, &request)
-            .unwrap_err()
-            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
-        connection
-            .execute(
-                "UPDATE executerecord SET created_at='2026-01-01T01:00:00Z'",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute("DELETE FROM replay_observation WHERE record_id=1", [])
-            .unwrap();
-        assert!(performance(&connection, &request)
-            .unwrap_err()
-            .starts_with("SOURCE_FACTS_INCOMPLETE:"));
-        connection.execute("DELETE FROM executerecord", []).unwrap();
-        insert(
-            &connection,
-            2,
-            "2026-01-02T09:00:00",
-            Some(100.0),
-            true,
-            Some(10.0),
-        );
-        assert!(performance(&connection, &request)
+        assert!(performance(&connection, request)
             .unwrap_err()
             .starts_with("SOURCE_FACTS_INCOMPLETE:"));
     }

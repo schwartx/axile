@@ -13,7 +13,6 @@ from axile.server import analysis_calendar
 from axile.server.analysis_calendar import ensure_calendar_facts
 from axile.server.db.models.analysis import analysis_state
 from axile.server.db.models.analysis_calendar import analysis_calendar_day as calendar_days
-from axile.server.db.models.analysis_replay import replay_observation as observations
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
 from tests.unit.server._business_analysis_support import analysis_record, persist_records
 from tests.unit.server._execution_test_support import build_account
@@ -44,18 +43,6 @@ async def database(tmp_path, dates=()):
                 ],
             )
             await session.flush()
-            await session.execute(
-                observations.insert().values(
-                    record_id=record_id,
-                    account_id=account_id,
-                    time=timestamp,
-                    sizing_fallback=False,
-                    target_present=False,
-                    target_weight_present=False,
-                    target_units_present=False,
-                    target_quantities_present=False,
-                )
-            )
         await session.execute(analysis_state.insert().values(account_id=1, source_version=7))
         await session.commit()
     return engine, sessions, path
@@ -117,6 +104,25 @@ def test_account_bounds_include_baseline_and_gaps_without_reading_other_accounts
                 ]
                 assert all(row["calendar_id"] == "SHFE" and row["label"] == "期货交易日历" for row in rows)
             assert evaluated == [("ctp", date(2026, 1, day)) for day in (2, 3, 4)]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_mixed_offsets_use_shanghai_days_not_lexical_bounds(tmp_path, monkeypatch):
+    monkeypatch.setattr(analysis_calendar, "evaluate_channel_calendar_day", lambda channel, day: decision(day))
+
+    async def check():
+        engine, sessions, _ = await database(
+            tmp_path,
+            [(1, "2026-01-01T23:30:00-05:00"), (1, "2026-01-02T00:30:00+14:00")],
+        )
+        try:
+            async with sessions() as session:
+                assert await ensure_calendar_facts(session, 1, "ctp") == 2
+                days = (await session.scalars(sa.select(calendar_days.c.day).order_by(calendar_days.c.day))).all()
+                assert days == ["2026-01-01", "2026-01-02"]
         finally:
             await engine.dispose()
 

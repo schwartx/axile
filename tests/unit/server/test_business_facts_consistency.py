@@ -14,11 +14,9 @@ from sqlmodel import SQLModel
 
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_state
-from axile.server.db.models.analysis_replay import replay_observation
-from axile.server.db.models.analysis_source import source_execution
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._business_analysis_support import install_analysis_triggers
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
 
 _CREATED = "2026-10-20T09:30:00.000001"
 
@@ -134,10 +132,7 @@ async def _database(tmp_path, *, foreign_keys=False):
     try:
         async with engine.begin() as connection:
             await connection.run_sync(SQLModel.metadata.create_all)
-            header_migration = _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py")
-            await connection.run_sync(header_migration.install_triggers)
-            facts_migration = _load_migration(_MIGRATIONS_DIR / "0037_business_execution_facts.py")
-            await connection.run_sync(facts_migration.install_revision_triggers)
+            await connection.run_sync(install_analysis_triggers)
         async with sessions() as session:
             session.add_all(
                 [
@@ -186,23 +181,10 @@ async def _version(session, account_id=1):
     ).scalar_one()
 
 
-async def _project(session, record):
-    from axile.server.analysis_history import read_analysis_record
-    from axile.server.analysis_observations import write_observation_fact
-    from axile.server.analysis_source import write_source_facts
-
-    source = await read_analysis_record(session, record)
-    await write_observation_fact(session, source)
-    assert await write_source_facts(session, source)
-
-
 async def _projection_rows(session, record_id):
-    from axile.server.db.models.analysis_replay import replay_observation_symbol
-    from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES
-
     return {
         table.name: list((await session.execute(sa.select(table).where(table.c.record_id == record_id))).mappings())
-        for table in (*SOURCE_FACT_TABLES, replay_observation, replay_observation_symbol)
+        for table in _fact_tables() if "record_id" in table.c
     }
 
 
@@ -439,39 +421,17 @@ def test_child_change_invalidation_and_source_version_are_atomic(tmp_path, commi
         async with _database(tmp_path) as (_, sessions, _):
             async with sessions() as session:
                 record = await _store(session)
-                await _project(session, record)
                 await session.commit()
                 original_version = await _version(session)
             async with sessions() as session:
                 await session.execute(trade.update().where(trade.c.record_id == record.id).values(trade_price=101.0))
                 assert await _version(session) > original_version
-                for projection in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (
-                            await session.execute(
-                                sa.select(sa.func.count())
-                                .select_from(projection)
-                                .where(projection.c.record_id == record.id)
-                            )
-                        ).scalar_one()
-                    ) == business_evidence(0)
                 await session.commit() if commit else await session.rollback()
             async with sessions() as session:
                 assert (await _version(session) > original_version) is commit
                 assert business_evidence(
                     (await session.execute(sa.select(trade.c.trade_price))).scalar_one()
                 ) == business_evidence(101.0 if commit else 100.0)
-                for projection in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (
-                            await session.execute(
-                                sa.select(sa.func.count())
-                                .select_from(projection)
-                                .where(projection.c.record_id == record.id)
-                            )
-                        ).scalar_one()
-                    ) == business_evidence(0 if commit else 1)
-
     asyncio.run(check())
 
 
@@ -484,7 +444,6 @@ def test_result_input_target_mutation_invalidates_its_execution(tmp_path):
             async with sessions() as session:
                 record = await _store(session, result=_result(inputs=_input(0.5)))
                 assert record.input_id != record.result_input_id
-                await _project(session, record)
                 await session.commit()
                 original_version = await _version(session)
             async with sessions() as session:
@@ -497,11 +456,6 @@ def test_result_input_target_mutation_invalidates_its_execution(tmp_path):
                 await session.commit()
             async with sessions() as session:
                 assert await _version(session) > original_version
-                for projection in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (await session.execute(sa.select(sa.func.count()).select_from(projection))).scalar_one()
-                    ) == business_evidence(0)
-
     asyncio.run(check())
 
 
@@ -520,8 +474,6 @@ def test_target_reparenting_invalidates_both_accounts(tmp_path):
                 await session.execute(
                     execution_input.update().where(execution_input.c.id == second.input_id).values(curr_target_count=0)
                 )
-                await _project(session, first)
-                await _project(session, second)
                 await session.commit()
                 before = {account_id: await _version(session, account_id) for account_id in (1, 2)}
             async with sessions() as session:
@@ -535,11 +487,6 @@ def test_target_reparenting_invalidates_both_accounts(tmp_path):
             async with sessions() as session:
                 for account_id in (1, 2):
                     assert await _version(session, account_id) > before[account_id]
-                for projection in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (await session.execute(sa.select(sa.func.count()).select_from(projection))).scalar_one()
-                    ) == business_evidence(0)
-
     asyncio.run(check())
 
 
@@ -583,7 +530,6 @@ def test_record_delete_removes_owned_facts_and_unreferenced_inputs(tmp_path, for
                     session, account_id=1, execution_id="pending", payload=_input(0), created_at=_CREATED
                 )
                 record = await _store(session, result=_result(inputs=_input(0.5)))
-                await _project(session, record)
                 await session.commit()
             async with sessions() as session:
                 await session.execute(sa.delete(ExecuteRecord).where(ExecuteRecord.id == record.id))
@@ -593,7 +539,7 @@ def test_record_delete_removes_owned_facts_and_unreferenced_inputs(tmp_path, for
                     (await session.execute(sa.select(execution_input.c.id))).scalars().all()
                 ) == business_evidence([pending])
                 assert business_evidence(await read_execution_input(session, pending)) == business_evidence(_input(0))
-                for table in (*tables, source_execution, replay_observation):
+                for table in tables:
                     if "record_id" in table.c:
                         assert business_evidence(
                             (await session.execute(sa.select(sa.func.count()).select_from(table))).scalar_one()
@@ -1123,26 +1069,15 @@ def test_summary_reference_freezes_child_until_journal_is_materialized(tmp_path,
 def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second_account):
     """不同执行可使用相同订单路径；新写入或修改只失效真正拥有该行的执行。"""
     from axile.server.business_facts.orders import order
-    from axile.server.db.models.analysis_replay import replay_observation_symbol
-    from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES
-
-    projections = (*SOURCE_FACT_TABLES, replay_observation, replay_observation_symbol)
-
-    async def frozen_projection(session, record_id):
-        return {
-            table.name: list((await session.execute(sa.select(table).where(table.c.record_id == record_id))).mappings())
-            for table in projections
-        }
+    frozen_projection = _projection_rows
 
     async def check():
         async with _database(tmp_path) as (_, sessions, _):
             async with sessions() as session:
                 first = await _store(session)
-                await _project(session, first)
                 await session.commit()
                 expected = await frozen_projection(session, first.id)
                 first_version = await _version(session, 1)
-                assert expected[source_execution.name] and expected[replay_observation.name]
             async with sessions() as session:
                 second = await _store(session, execution_id="same-order-paths", account_id=second_account)
                 await session.commit()
@@ -1150,7 +1085,6 @@ def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second
                 assert business_evidence(await frozen_projection(session, first.id)) == business_evidence(expected)
                 if second_account != 1:
                     assert business_evidence(await _version(session, 1)) == business_evidence(first_version)
-                await _project(session, second)
                 await session.commit()
             async with sessions() as session:
                 await session.execute(order.update().where(order.c.record_id == second.id).values(price=101.0))
@@ -1159,15 +1093,6 @@ def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second
                 assert business_evidence(await frozen_projection(session, first.id)) == business_evidence(expected)
                 if second_account != 1:
                     assert business_evidence(await _version(session, 1)) == business_evidence(first_version)
-                for table in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (
-                            await session.execute(
-                                sa.select(sa.func.count()).select_from(table).where(table.c.record_id == second.id)
-                            )
-                        ).scalar_one()
-                    ) == business_evidence(0)
-
     asyncio.run(check())
 
 
@@ -1200,11 +1125,9 @@ def test_new_account_asset_observation_preserves_unrelated_record_projection(
                 )
                 assert after is not None
                 _, alternate_asset_id = after
-                await _project(session, first)
                 await session.commit()
                 original = await _projection_rows(session, first.id)
                 version = await _version(session)
-                assert original[source_execution.name] and original[replay_observation.name]
             second = None
             async with sessions() as session:
                 if new_snapshot == "manual":
@@ -1219,7 +1142,6 @@ def test_new_account_asset_observation_preserves_unrelated_record_projection(
                 assert business_evidence(await _projection_rows(session, first.id)) == business_evidence(original)
                 second_projection = None
                 if second is not None:
-                    await _project(session, second)
                     await session.commit()
                     second_projection = await _projection_rows(session, second.id)
             async with sessions() as session:
@@ -1239,14 +1161,6 @@ def test_new_account_asset_observation_preserves_unrelated_record_projection(
                     )
                 await session.commit()
             async with sessions() as session:
-                for table in (source_execution, replay_observation):
-                    assert business_evidence(
-                        (
-                            await session.execute(
-                                sa.select(sa.func.count()).select_from(table).where(table.c.record_id == first.id)
-                            )
-                        ).scalar_one()
-                    ) == business_evidence(0)
                 if second is not None:
                     assert business_evidence(await _projection_rows(session, second.id)) == business_evidence(
                         second_projection
@@ -1286,7 +1200,6 @@ def test_late_insert_into_complete_graph_still_invalidates_projection(tmp_path):
         async with _database(tmp_path) as (_, sessions, _):
             async with sessions() as session:
                 record = await _store(session)
-                await _project(session, record)
                 await session.commit()
                 previous = await _version(session)
                 assert record.facts_complete
@@ -1295,6 +1208,5 @@ def test_late_insert_into_complete_graph_still_invalidates_projection(tmp_path):
                 )
                 await session.commit()
                 assert await _version(session) > previous
-                assert await session.scalar(sa.select(sa.func.count()).select_from(source_execution)) == 0
 
     asyncio.run(check())

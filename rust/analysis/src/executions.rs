@@ -72,24 +72,25 @@ fn records(
 ) -> Result<Vec<Value>, String> {
     let mut symbol_statement = connection.prepare(&format!(
         "WITH page AS ({page_ids})
-         SELECT s.record_id,s.symbol,s.present,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
-         FROM analysis_source_execution_symbol s JOIN page p ON p.id=s.record_id
-         JOIN analysis_source_execution e ON e.record_id=s.record_id
-         WHERE e.projection_error IS NULL AND e.has_symbol_results
-         ORDER BY s.record_id,s.symbol"
+         SELECT s.record_id,s.map_key AS symbol,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+         FROM execution_symbol_result s JOIN page p ON p.id=s.record_id
+         ORDER BY s.record_id,s.map_key"
     )).map_err(database)?;
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut symbol_rows = symbol_statement.query(arguments).map_err(database)?;
     while let Some(row) = symbol_rows.next().map_err(database)? {
-        let present: i64 = row.get("present").map_err(database)?;
         let mut fields = Map::new();
-        for (bit, name) in SYMBOL_FIELDS.iter().enumerate() {
-            if present & (1 << bit) != 0 {
-                fields.insert(
-                    (*name).into(),
-                    json!(row.get::<_, Option<String>>(*name).map_err(database)?),
-                );
+        for name in SYMBOL_FIELDS {
+            if let Some(value) = row.get::<_, Option<String>>(*name).map_err(database)? {
+                fields.insert((*name).into(), json!(value));
             }
+        }
+        if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(database)? {
+            fields.insert(
+                "memory".into(),
+                serde_json::from_str(&memory)
+                    .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?,
+            );
         }
         symbols
             .entry(row.get("record_id").map_err(database)?)
@@ -107,10 +108,11 @@ fn records(
         .join(",");
     let mut statement = connection
         .prepare(&format!(
-            "WITH page AS ({page_ids}) SELECT {headers},s.record_id AS source_id,
-         s.projection_error,s.has_symbol_results,s.trade_count,s.symbol_count
-         FROM page p JOIN executerecord r ON r.id=p.id
-         LEFT JOIN analysis_source_execution s ON s.record_id=r.id ORDER BY r.id DESC"
+            "WITH page AS ({page_ids}) SELECT {headers},r.facts_complete,
+         EXISTS(SELECT 1 FROM execution_symbol_collection c WHERE c.record_id=r.id AND c.path='/symbol_results' AND c.node_kind='object') AS has_symbol_results,
+         (SELECT COUNT(*) FROM business_trade t JOIN business_trade_collection c ON c.record_id=t.record_id AND c.path=t.collection_path JOIN execution_symbol_result s ON s.record_id=c.record_id AND s.path=c.parent_path WHERE t.record_id=r.id AND c.state='array') AS trade_count,
+         (SELECT COUNT(DISTINCT s.map_key) FROM business_trade t JOIN business_trade_collection c ON c.record_id=t.record_id AND c.path=t.collection_path JOIN execution_symbol_result s ON s.record_id=c.record_id AND s.path=c.parent_path WHERE t.record_id=r.id AND c.state='array' AND t.trade_volume>0) AS symbol_count
+         FROM page p JOIN executerecord r ON r.id=p.id ORDER BY r.id DESC"
         ))
         .map_err(database)?;
     let mut rows = statement.query(arguments).map_err(database)?;
@@ -142,14 +144,12 @@ fn records(
                 json!(row.get::<_, Option<bool>>(name).map_err(database)?),
             );
         }
-        let projected = row
-            .get::<_, Option<i64>>("source_id")
-            .map_err(database)?
-            .is_some()
-            && row
-                .get::<_, Option<String>>("projection_error")
-                .map_err(database)?
-                .is_none();
+        let projected = row.get::<_, bool>("facts_complete").map_err(database)?;
+        if !projected {
+            return Err(format!(
+                "SOURCE_FACTS_INCOMPLETE: record {id}: incomplete business facts"
+            ));
+        }
         let symbol_results =
             if projected && row.get::<_, bool>("has_symbol_results").map_err(database)? {
                 Value::Object(symbols.remove(&id).unwrap_or_default())
@@ -236,11 +236,11 @@ mod tests {
              INSERT INTO account VALUES(1);
              CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,is_success INTEGER,
              execution_time REAL,success INTEGER,termination_cancel_attempted INTEGER,
-             termination_forced INTEGER,termination_cancel_unconfirmed INTEGER);
-             CREATE TABLE analysis_source_execution(record_id INTEGER PRIMARY KEY,projection_error TEXT,
-             has_symbol_results INTEGER,trade_count INTEGER,symbol_count INTEGER);
-             CREATE TABLE analysis_source_execution_symbol(record_id INTEGER,symbol TEXT,present INTEGER,
-             status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT);"
+             termination_forced INTEGER,termination_cancel_unconfirmed INTEGER,facts_complete INTEGER DEFAULT 1);
+             CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory TEXT);
+             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,trade_volume REAL);"
         ).unwrap();
         for name in TEXT_FIELDS {
             connection
@@ -252,16 +252,16 @@ mod tests {
         connection.execute_batch(
             "INSERT INTO executerecord(id,account_id,is_success,success,termination_forced,execution_id)
              VALUES(1,1,1,1,0,'one'),(2,1,0,NULL,NULL,'two'),(3,1,0,NULL,NULL,'three');
-             INSERT INTO analysis_source_execution VALUES(1,NULL,1,2,1),(2,'bad',1,99,99);
-             INSERT INTO analysis_source_execution_symbol VALUES(1,'BTC',3,NULL,'failed',NULL,NULL,NULL);"
+             INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');
+             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/BTC','BTC',NULL,'failed',NULL,NULL,NULL,NULL);"
         ).unwrap();
         let result = page(&connection, 1, 0, 500, None, None).unwrap();
         assert_eq!(result["count"], 3);
         assert_eq!(result["data"][0]["id"], 3);
         for index in [0, 1] {
-            for name in ["symbol_results", "trade_count", "symbol_count"] {
-                assert!(result["data"][index][name].is_null());
-            }
+            assert!(result["data"][index]["symbol_results"].is_null());
+            assert_eq!(result["data"][index]["trade_count"], 0);
+            assert_eq!(result["data"][index]["symbol_count"], 0);
         }
         let direct = records(
             &connection,
@@ -278,10 +278,7 @@ mod tests {
         .unwrap()
         .is_empty());
         let good = &result["data"][2];
-        assert_eq!(
-            good["symbol_results"],
-            json!({"BTC":{"status":null,"error":"failed"}})
-        );
+        assert_eq!(good["symbol_results"], json!({"BTC":{"error":"failed"}}));
         assert_eq!(good["success"], true);
         assert_eq!(good["termination_forced"], false);
         assert!(!good.as_object().unwrap().contains_key("audit_evidence"));
@@ -302,7 +299,7 @@ mod tests {
             .starts_with("INVALID_REQUEST:"));
         connection
             .execute(
-                "UPDATE analysis_source_execution SET has_symbol_results=0 WHERE record_id=1",
+                "DELETE FROM execution_symbol_collection WHERE record_id=1",
                 [],
             )
             .unwrap();

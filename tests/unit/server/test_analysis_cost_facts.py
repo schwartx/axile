@@ -161,18 +161,12 @@ def test_cost_fact_batches_stream_and_limit_each_insert():
             yield row
 
     batches = iter_cost_fact_batches("snapshot", history(), iter(costs), _ranges(), batch_size=2)
-    table, first = next(batches)
-    assert table.name == "performance_cost_range"
-    assert len(first) == 2
-    assert consumed == []
     remaining = list(batches)
     assert all(0 < len(rows) <= 2 for _, rows in remaining)
     assert consumed == list(range(1, 8))
     assert sum(len(rows) for table, rows in remaining if table.name == "performance_cost_execution") == 7
     assert sum(len(rows) for table, rows in remaining if table.name == "performance_cost_trade") == len(costs)
-    ranges = first + [row for table, rows in remaining if table.name == "performance_cost_range" for row in rows]
-    assert next(row for row in ranges if row["range_key"] == "30")["baseline"] is None
-    assert next(row for row in ranges if row["range_key"] == "all")["end"] == timestamp("2026-01-02T09:00:00")
+    assert not any(table.name == "performance_cost_range" for table, _ in remaining)
     with pytest.raises(ValueError, match="batch_size"):
         list(iter_cost_fact_batches("snapshot", [], [], {}, batch_size=0))
 

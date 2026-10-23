@@ -17,9 +17,6 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, Execution
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
-from axile.server.analysis_history import AnalysisRecord
-from axile.server.analysis_observations import write_observation_fact
-from axile.server.analysis_source import write_source_facts
 from axile.server.business_facts.artifacts import compact_execution_summary
 from axile.server.business_facts.assets import ensure_execution_asset_snapshot
 from axile.server.business_facts.head import execution_head_values
@@ -89,7 +86,7 @@ async def _persist_execute_record(
         try:
             # 业务明细与终态、分析事实同一事务提交，原生读取不会看到半份结果。
             await session.flush()
-            canonical_input = await store_execution_facts(
+            await store_execution_facts(
                 cast("AsyncSession", session),
                 record,
                 raw_input=None if raw_input is None else sanitize_execution_input(raw_input),
@@ -98,17 +95,6 @@ async def _persist_execute_record(
             await ensure_execution_asset_snapshot(cast("AsyncSession", session), record)
             await compact_execution_summary(cast("AsyncSession", session), record, result=persisted_result)
             await session.flush()
-            analysis_record = AnalysisRecord(
-                id=cast("int", record.id),
-                account_id=record.account_id,
-                execution_id=record.execution_id,
-                created_at=record.created_at,
-                is_success=record.is_success,
-                input=canonical_input,
-                result=persisted_result,
-            )
-            await write_observation_fact(cast("AsyncSession", session), analysis_record)
-            await write_source_facts(cast("AsyncSession", session), analysis_record)
             await session.commit()
         except IntegrityError:
             # 同一执行的两条收尾路径（如终止确认与脚本失败）可能并发落库，

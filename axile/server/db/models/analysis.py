@@ -4,10 +4,7 @@ import sqlalchemy as sa
 from sqlmodel import SQLModel
 
 from axile.server.db.models.analysis_calendar import analysis_calendar_day as analysis_calendar_day
-from axile.server.db.models.analysis_replay import replay_observation as replay_observation
-from axile.server.db.models.analysis_replay import replay_observation_symbol as replay_observation_symbol
 from axile.server.db.models.analysis_result import RESULT_TABLES as RESULT_TABLES
-from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES as SOURCE_FACT_TABLES
 from axile.server.db.models.analysis_view import READ_VIEW_TABLES as READ_VIEW_TABLES
 
 metadata = SQLModel.metadata
@@ -80,7 +77,12 @@ cost_execution = sa.Table(
         )
     ],
     sa.Column("payload", sa.JSON, nullable=False),
+    *[sa.Column(name, sa.Float) for name in ("value", "cost", "loss_bp", "coverage", "covered_value")],
+    *[sa.Column(name, sa.Integer) for name in ("covered", "count", "fee_covered", "estimated")],
+    sa.Column("amount_complete", sa.Boolean),
+    sa.Column("has_transactions", sa.Boolean),
     sa.Index("ix_performance_execution_time", "snapshot_id", "time"),
+    sa.Index("ix_performance_execution_summary_time", "snapshot_id", "time", "record_id"),
 )
 cost_trade = sa.Table(
     "performance_cost_trade",
@@ -121,16 +123,11 @@ def _cost_child(name: str, keys: list[sa.Column], values: list[sa.Column]) -> sa
     )
 
 
-cost_range = _cost_child(
-    "performance_cost_range",
-    [sa.Column("range_key", sa.Text, primary_key=True)],
-    [sa.Column("baseline", sa.Float), sa.Column("end", sa.Float)],
-)
 cost_execution_symbol = _cost_child(
     "performance_cost_execution_symbol",
     [sa.Column("record_id", sa.Integer, primary_key=True), sa.Column("symbol", sa.Text, primary_key=True)],
     [sa.Column("present", sa.Integer, nullable=False)]
-    + [sa.Column(field, sa.Text) for field in ("status", "error", "outcome", "outcome_reason", "reason_code")],
+    + [sa.Column(field, sa.Text) for field in ("status", "error", "outcome", "outcome_reason", "reason_code", "memory_message", "memory_reason_code")],
 )
 cost_position = _cost_child(
     "performance_cost_position",

@@ -7,11 +7,16 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
-from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
 from axile.server.db.models.analysis_result import RESULT_TABLES
-from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES
 from tests.unit.server.test_analysis_cost_facts import _legacy_schema
 from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+
+_replay_schema = _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py")._schema()
+_source_migration = _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py")
+_source_schema = _source_migration._schema()
+replay_observation = _replay_schema.tables["replay_observation"]
+replay_observation_symbol = _replay_schema.tables["replay_observation_symbol"]
+SOURCE_FACT_TABLES = tuple(_source_schema.tables[name] for name in _source_migration._SOURCE_NAMES)
 
 
 @pytest.fixture

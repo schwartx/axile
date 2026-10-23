@@ -20,6 +20,46 @@ from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_business_facts_tq import tq_historical_payloads
 
 
+@pytest.mark.parametrize("page,journal", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize(
+    "symbol,expected",
+    [
+        ({"error": "failed"}, {"error": "failed", "outcome": None}),
+        ({"outcome": "error"}, {"outcome": "error", "status": "FAILED", "error": "执行失败，具体原因见执行证据"}),
+        (
+            {"status": "FAILED", "error": "RuntimeError: secret"},
+            {"status": "FAILED", "outcome": "error", "error": "执行失败，具体原因见执行证据"},
+        ),
+        (
+            {"status": "PARTIAL", "memory": {"message": "未达到目标"}},
+            {"status": "PARTIAL", "outcome": "not_reached", "error": "未达到目标"},
+        ),
+        ({"outcome": "terminated"}, {"status": None, "outcome": "terminated", "error": "执行已终止"}),
+        (
+            {"status": "BLOCKED", "error": "当前不在交易时间", "reason_code": "CLOSED"},
+            {
+                "status": "BLOCKED",
+                "error": "当前不在交易时间",
+                "outcome": "blocked",
+                "reason_code": "COMMON.SESSION.CLOSED",
+            },
+        ),
+    ],
+)
+def test_execution_response_reuses_complete_legacy_display_contract(page, journal, symbol, expected):
+    record = {"id": 1, "symbol_results": {"A": symbol}}
+    item = {"kind": "execution", "record": record} if journal else record
+    payload = {"data": [item], "count": 1} if page else record
+    response = account_crud._execution_response(json.dumps(payload), page=page, journal=journal)
+    decoded = json.loads(response.body)
+    actual = decoded["data"][0] if page else decoded
+    if journal:
+        actual = actual["record"]
+    assert actual["symbol_results"] == {"A": expected}
+    assert "secret" not in response.body.decode()
+    assert "memory" not in actual["symbol_results"]["A"]
+
+
 @pytest.mark.parametrize(
     "source_input,source_result",
     [

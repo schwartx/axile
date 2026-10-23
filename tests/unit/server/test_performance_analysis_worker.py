@@ -31,6 +31,16 @@ def queue_native(monkeypatch):
     monkeypatch.setattr(analysis, "_core", native)
 
 
+def test_native_schema_capability_rejects_old_extension(monkeypatch):
+    monkeypatch.delattr(analysis._core, "ANALYSIS_FACT_SCHEMA", raising=False)
+    with pytest.raises(RuntimeError, match="schema 0039"):
+        analysis.ensure_native_capabilities()
+
+
+def test_native_schema_capability_accepts_current_extension():
+    analysis.ensure_native_capabilities()
+
+
 @asynccontextmanager
 async def database(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'analysis.sqlite'}")
@@ -72,7 +82,22 @@ async def test_real_native_publication_ready_and_readable(sessions, monkeypatch)
         await connection.run_sync(install_analysis_triggers)
         execution = record()
         execution.account_id = 1
+        execution.result["symbol_results"]["A"].update(status="PARTIAL", memory={"message": "冻结未到目标", "symbol_decision_reason_code": "CLOSED"})
         await persist_records(session, [execution])
+        await session.commit()
+
+        def migrate(connection):
+            from importlib import import_module
+
+            from alembic.migration import MigrationContext
+            from alembic.operations import Operations
+
+            migration = import_module("axile.server.alembic.versions.0039_direct_analysis_facts")
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+
+        connection = await session.connection()
+        await connection.run_sync(migrate)
         await session.commit()
     manager = analysis.AnalysisManager(sessions)
     assert await manager.run_once()
@@ -91,6 +116,13 @@ async def test_real_native_publication_ready_and_readable(sessions, monkeypatch)
         assert await session.scalar(sa.text("SELECT count(*) FROM performance_cost_execution")) == 1
         assert await session.scalar(sa.text("SELECT count(*) FROM performance_cost_trade")) == 1
     assert not await manager.run_once()
+    async with sessions() as session:
+        frozen = (await session.execute(sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol"))).one()
+        assert frozen == ("冻结未到目标", "CLOSED")
+        await session.execute(sa.text("UPDATE execution_symbol_result SET memory='{}' WHERE record_id=:id"), {"id": execution.id})
+        await session.commit()
+    async with sessions() as session:
+        assert (await session.execute(sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol"))).one() == frozen
 
 
 async def state(sessions):

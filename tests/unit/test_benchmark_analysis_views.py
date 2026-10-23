@@ -171,13 +171,13 @@ def test_frozen_database_inspection_counts_source_trades_via_account(tmp_path):
             CREATE TABLE account_analysis(account_id INTEGER, current_snapshot TEXT);
             CREATE TABLE performance_snapshot(id TEXT, read_view_schema_version INTEGER);
             CREATE TABLE performance_cost_execution(snapshot_id TEXT, record_id INTEGER, time REAL);
-            CREATE TABLE performance_cost_range(snapshot_id TEXT, range_key TEXT, baseline REAL, end REAL);
+            CREATE TABLE performance_result_range(snapshot_id TEXT, range_key TEXT, baseline TEXT, end TEXT);
             CREATE TABLE analysis_source_execution(record_id INTEGER, account_id INTEGER);
             CREATE TABLE analysis_source_trade(record_id INTEGER);
             INSERT INTO account_analysis VALUES(7,'s1');
             INSERT INTO performance_snapshot VALUES('s1',1);
             INSERT INTO performance_cost_execution VALUES('s1',1,10),('s1',2,20),('other',9,50);
-            INSERT INTO performance_cost_range VALUES('s1','all',0,15);
+            INSERT INTO performance_result_range VALUES('s1','all','1970-01-01T08:00:00','1970-01-01T08:00:00.015');
             INSERT INTO analysis_source_execution VALUES(1,7),(2,7),(3,8);
             INSERT INTO analysis_source_trade VALUES(1),(1),(2),(3);
         """)

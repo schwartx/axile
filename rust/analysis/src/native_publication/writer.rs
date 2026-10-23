@@ -155,8 +155,6 @@ pub(super) fn publish(
             .map_err(sql)?;
         snapshot(connection, task, complete)?;
         staging::copy_results(connection, &task.snapshot_id)?;
-        copy::ranges(connection, &task.snapshot_id)?;
-        copy::source_facts(connection, &task.snapshot_id, task.account_id)?;
         validate_view(connection, task)?;
         publish_pointer(connection, task)?;
         cleanup(connection, task, previous.as_deref())?;
@@ -196,17 +194,9 @@ fn publish_pointer(connection: &Connection, task: &Task) -> Result<(), AnalysisE
 
 fn validate_view(connection: &Connection, task: &Task) -> Result<(), AnalysisError> {
     let complete: bool = connection.query_row(
-        "SELECT
-           (SELECT COUNT(*) FROM main.performance_execution_summary WHERE snapshot_id=?1)
-           =(SELECT COUNT(*) FROM main.performance_cost_execution WHERE snapshot_id=?1)
-           AND NOT EXISTS (
-               SELECT 1 FROM main.performance_execution_summary s
-               LEFT JOIN main.performance_cost_execution e ON e.snapshot_id=s.snapshot_id AND e.record_id=s.record_id
-               WHERE s.snapshot_id=?1 AND (e.record_id IS NULL OR s.time IS NOT e.time)
-           )
-           AND NOT EXISTS (
+        "SELECT NOT EXISTS (
                SELECT 1 FROM main.performance_execution_fee f
-               LEFT JOIN main.performance_execution_summary s ON s.snapshot_id=f.snapshot_id AND s.record_id=f.record_id
+               LEFT JOIN main.performance_cost_execution s ON s.snapshot_id=f.snapshot_id AND s.record_id=f.record_id
                WHERE f.snapshot_id=?1 AND (s.record_id IS NULL OR f.currency='')
            )",
         [&task.snapshot_id], |row| row.get(0),
@@ -226,10 +216,11 @@ fn cleanup(
     previous: Option<&str>,
 ) -> Result<(), AnalysisError> {
     let obsolete = "SELECT id FROM main.performance_snapshot WHERE account_id=?1 AND id!=?2 AND (?3 IS NULL OR id!=?3)";
-    for name in staging::RESULT_TABLES
-        .iter()
-        .chain(copy::COST_TABLES.iter())
-    {
+    for name in staging::RESULT_TABLES.iter().chain(
+        copy::COST_TABLES
+            .iter()
+            .filter(|name| !staging::RESULT_TABLES.contains(name)),
+    ) {
         let query = format!("DELETE FROM main.\"{name}\" WHERE snapshot_id IN ({obsolete})");
         connection
             .execute(&query, params![task.account_id, task.snapshot_id, previous])
@@ -504,10 +495,11 @@ mod tests {
     #[test]
     fn cleanup_keeps_current_previous_and_other_accounts() {
         let connection = fixture();
-        for name in staging::RESULT_TABLES
-            .iter()
-            .chain(copy::COST_TABLES.iter())
-        {
+        for name in staging::RESULT_TABLES.iter().chain(
+            copy::COST_TABLES
+                .iter()
+                .filter(|name| !staging::RESULT_TABLES.contains(name)),
+        ) {
             connection.execute_batch(&format!(
                 "CREATE TABLE main.\"{name}\" (snapshot_id TEXT NOT NULL REFERENCES performance_snapshot(id));"
             )).unwrap();
@@ -519,10 +511,11 @@ mod tests {
                     params![id, account],
                 )
                 .unwrap();
-            for name in staging::RESULT_TABLES
-                .iter()
-                .chain(copy::COST_TABLES.iter())
-            {
+            for name in staging::RESULT_TABLES.iter().chain(
+                copy::COST_TABLES
+                    .iter()
+                    .filter(|name| !staging::RESULT_TABLES.contains(name)),
+            ) {
                 connection
                     .execute(&format!("INSERT INTO \"{name}\" VALUES(?1)"), [id])
                     .unwrap();
@@ -542,10 +535,11 @@ mod tests {
                 .unwrap(),
             3
         );
-        for name in staging::RESULT_TABLES
-            .iter()
-            .chain(copy::COST_TABLES.iter())
-        {
+        for name in staging::RESULT_TABLES.iter().chain(
+            copy::COST_TABLES
+                .iter()
+                .filter(|name| !staging::RESULT_TABLES.contains(name)),
+        ) {
             assert_eq!(
                 connection
                     .query_row(&format!("SELECT COUNT(*) FROM \"{name}\""), [], |row| row

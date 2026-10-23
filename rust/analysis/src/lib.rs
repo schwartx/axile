@@ -14,6 +14,18 @@ pub mod dashboard;
 pub mod error;
 pub(crate) mod execution_summary;
 pub mod executions;
+pub(crate) mod fact_attempts;
+pub(crate) mod fact_cost_rows;
+pub(crate) mod fact_events;
+pub(crate) mod fact_headers;
+pub(crate) mod fact_integrity;
+pub(crate) mod fact_observation;
+pub(crate) mod fact_positions;
+pub(crate) mod fact_prices;
+pub(crate) mod fact_sizing;
+pub(crate) mod fact_ticks;
+pub(crate) mod fact_trades;
+pub(crate) mod fact_transactions;
 pub mod journal;
 pub mod native_publication;
 pub mod performance;
@@ -23,7 +35,6 @@ pub mod python;
 pub mod replay;
 pub(crate) mod result_reader;
 pub mod snapshots;
-pub(crate) mod source;
 pub mod submissions;
 pub mod symbols;
 pub mod views;
@@ -44,6 +55,7 @@ pub const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 pub fn capabilities() -> Value {
     json!({
         "protocol": PROTOCOL_VERSION,
+        "analysis_fact_schema": 40,
         "version": env!("CARGO_PKG_VERSION"),
         "commands": ["costs", "snapshot", "performance_result", "publish_store"],
         "read_only": false,

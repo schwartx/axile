@@ -79,6 +79,36 @@ pub(crate) struct Summary {
     estimated: i64,
 }
 impl Summary {
+    pub(crate) fn empty() -> Self {
+        Self {
+            count: 0,
+            valued: 0,
+            value: None,
+            cost: None,
+            covered: 0,
+            covered_value: Some(0.0),
+            covered_value_json: json!(0),
+            weighted_loss: Some(0.0),
+            estimated: 0,
+        }
+    }
+
+    pub(crate) fn push_historical(&mut self, trade: &crate::fact_trades::Trade) {
+        self.count += 1;
+        self.estimated += i64::from(trade.estimated);
+        if let Some(value) = trade.value {
+            self.valued += 1;
+            *self.value.get_or_insert(0.0) += value;
+            if let Some(cost) = trade.cost {
+                *self.cost.get_or_insert(0.0) += cost;
+                self.covered += 1;
+                *self.covered_value.get_or_insert(0.0) += value;
+                self.covered_value_json = json!(self.covered_value);
+                *self.weighted_loss.get_or_insert(0.0) += trade.loss_bp.unwrap_or(0.0) * value;
+            }
+        }
+    }
+
     pub(crate) fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
         Ok(Self {
             count: row.get(start)?,
@@ -131,10 +161,8 @@ impl Scope {
     fn new(conn: &Connection, request: &Value) -> Result<Self, String> {
         let snapshot = string(request, "snapshot_id", "");
         let range = string(request, "range", "all");
-        let bounds = conn.query_row(
-            "SELECT baseline, end FROM performance_cost_range WHERE snapshot_id=?1 AND range_key=?2",
-            [snapshot, range], |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?)),
-        ).map_err(sql_error)?;
+        let bounds = crate::native_publication::copy::range_bounds(conn,snapshot,range)?
+            .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: missing range bounds")?;
         let mut args = vec![
             SqlValue::Text(snapshot.to_owned()),
             SqlValue::Real(bounds.0.unwrap_or(0.0)),
@@ -596,7 +624,7 @@ fn attach_execution_children(
         .collect::<Vec<_>>()
         .join(",");
     let predicate = format!("snapshot_id=?1 AND record_id IN ({ids})");
-    let mut stmt = conn.prepare(&format!("SELECT record_id,symbol,present,status,error,outcome,outcome_reason,reason_code FROM performance_cost_execution_symbol WHERE {predicate} ORDER BY record_id,symbol")).map_err(sql_error)?;
+    let mut stmt = conn.prepare(&format!("SELECT record_id,symbol,present,status,error,outcome,outcome_reason,reason_code,memory_message,memory_reason_code FROM performance_cost_execution_symbol WHERE {predicate} ORDER BY record_id,symbol")).map_err(sql_error)?;
     let mut rows = stmt
         .query(params_from_iter(args.iter()))
         .map_err(sql_error)?;
@@ -612,6 +640,15 @@ fn attach_execution_children(
                     json!(row.get::<_, Option<String>>(index + 3).map_err(sql_error)?),
                 );
             }
+        }
+        let mut memory = Map::new();
+        for (column, key) in [(8, "message"), (9, "symbol_decision_reason_code")] {
+            if let Some(value) = row.get::<_, Option<String>>(column).map_err(sql_error)? {
+                memory.insert(key.into(), json!(value));
+            }
+        }
+        if !memory.is_empty() {
+            status.insert("memory".into(), Value::Object(memory));
         }
         if let Some(index) = lookup.get(&record) {
             output[*index]["record"]["raw_result"]["symbol_results"][symbol] =
@@ -805,7 +842,7 @@ mod tests {
             "CREATE TABLE performance_cost_execution(snapshot_id TEXT,record_id INTEGER,time REAL,success INTEGER,noop INTEGER,key TEXT,execution_id TEXT,created_at TEXT,is_success INTEGER,duration_sec REAL,trade_count INTEGER,symbol_count INTEGER,position_count INTEGER,positions_present INTEGER,reason TEXT,raw_present INTEGER,has_symbol_results INTEGER,raw_status TEXT,raw_task_status TEXT,raw_error TEXT,raw_outcome TEXT,raw_outcome_reason TEXT,raw_reason_code TEXT,raw_msg TEXT,raw_execution_kind TEXT,payload TEXT,PRIMARY KEY(snapshot_id,record_id));
              CREATE INDEX execution_time ON performance_cost_execution(snapshot_id,time);
              CREATE TABLE performance_cost_trade(snapshot_id TEXT,id INTEGER,record_id INTEGER,symbol TEXT,time REAL,day TEXT,value REAL,cost REAL,loss_bp REAL,fee REAL,fee_currency TEXT,estimated INTEGER,side TEXT,quantity REAL,price REAL,reference REAL,reference_source TEXT,payload TEXT);
-             CREATE TABLE performance_cost_execution_symbol(snapshot_id TEXT,record_id INTEGER,symbol TEXT,present INTEGER,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT);
+             CREATE TABLE performance_cost_execution_symbol(snapshot_id TEXT,record_id INTEGER,symbol TEXT,present INTEGER,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory_message TEXT,memory_reason_code TEXT);
              CREATE TABLE performance_cost_position(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,quantity REAL,direction TEXT);
              CREATE TABLE performance_cost_attempt(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,planned REAL,filled REAL,reason TEXT);
              CREATE TABLE performance_cost_transaction(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,side TEXT,quantity REAL,price REAL,reference REAL,reference_source TEXT,time REAL,end_time REAL,time_estimated INTEGER,\"before\" REAL,target REAL,value REAL,cost REAL,loss_bp REAL,coverage REAL,covered INTEGER,count INTEGER,amount_complete INTEGER,fee_covered INTEGER);

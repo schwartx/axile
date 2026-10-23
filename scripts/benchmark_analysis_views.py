@@ -462,11 +462,17 @@ def inspect_database(path: Path, account_id: int, range_key: str, record_id: int
                 (account_id,),
             ).fetchone()[0]
         if record_id is None:
-            row = database.execute(
-                "SELECT e.record_id FROM performance_cost_execution e JOIN performance_cost_range r "
-                "ON e.snapshot_id=r.snapshot_id WHERE e.snapshot_id=? AND r.range_key=? "
-                "AND e.time BETWEEN r.baseline AND r.end ORDER BY e.time DESC,e.record_id DESC LIMIT 1",
+            from axile.server.performance_costs import timestamp
+
+            bounds = database.execute(
+                "SELECT baseline,end FROM performance_result_range WHERE snapshot_id=? AND range_key=?",
                 (identity, range_key),
+            ).fetchone()
+            row = database.execute(
+                "SELECT record_id FROM performance_cost_execution WHERE snapshot_id=? "
+                "AND time BETWEEN ? AND ? ORDER BY time DESC,record_id DESC LIMIT 1",
+                (identity, timestamp(bounds[0]) if bounds and bounds[0] else None,
+                 timestamp(bounds[1]) if bounds and bounds[1] else None),
             ).fetchone()
             record_id = row[0] if row else None
         return {"snapshot_id": identity, "record_id": record_id, "row_counts": counts}

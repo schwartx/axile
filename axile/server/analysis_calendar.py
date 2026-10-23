@@ -6,7 +6,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.sqlite import insert
 
 from axile.server.db.models.analysis_calendar import analysis_calendar_day
-from axile.server.db.models.analysis_replay import replay_observation
+from axile.server.db.models.execution import ExecuteRecord
+from axile.server.performance import local_time
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_day
 
 
@@ -18,7 +19,7 @@ async def ensure_calendar_facts(session, account_id: int, trade_channel: str | N
     session
         专用异步会话；此函数拥有事务边界，每批提交后释放 SQLite 写锁。
     account_id
-        已完成结构化观测补齐的账户编号。
+        读取规范执行事实的账户编号。
     trade_channel
         账户当前渠道；缺失渠道时不创建事实，读取方按不可用处理。
     batch_size
@@ -31,8 +32,7 @@ async def ensure_calendar_facts(session, account_id: int, trade_channel: str | N
 
     Notes
     -----
-    观测时间已在写入边界规范为上海本地、固定微秒精度，因此索引的
-    最小和最大时间可以直接确定完整区间，包含绩效基准日。
+    仅流式读取规范执行时间并转换为上海自然日，确定包含绩效基准日的完整区间。
     日历是外部元数据，每次分析重新评估；不改变账户的业务源版本。
     共享渠道事实只更新本次覆盖日期，不删除其他账户仍可能使用的日期。
     未注册渠道使用 ``unregistered`` 标记，让 Rust 保留旧接口的不可用且无区间语义。
@@ -41,20 +41,25 @@ async def ensure_calendar_facts(session, account_id: int, trade_channel: str | N
         raise ValueError("batch_size 必须在 1 到 1000 之间")
     if trade_channel is None:
         return 0
-    # 分别从复合索引的两端取值，避免同时 MIN/MAX 导致扫描全部历史。
-    times = sa.select(replay_observation.c.time).where(replay_observation.c.account_id == account_id)
-    bounds = (
-        await session.execute(
-            sa.select(
-                times.order_by(replay_observation.c.time).limit(1).scalar_subquery(),
-                times.order_by(replay_observation.c.time.desc()).limit(1).scalar_subquery(),
-            )
-        )
-    ).one()
+    # 原始时间允许混合时区，字符串排序不能确定上海自然日边界。
+    times = await session.stream_scalars(
+        sa.select(ExecuteRecord.created_at)
+        .where(ExecuteRecord.account_id == account_id)
+        .execution_options(yield_per=batch_size)
+    )
+    first_day: date | None = None
+    last_day: date | None = None
+    try:
+        async for timestamp in times:
+            day = local_time(timestamp).date()
+            first_day = day if first_day is None else min(first_day, day)
+            last_day = day if last_day is None else max(last_day, day)
+    finally:
+        await times.close()
     await session.commit()
-    if bounds[0] is None or bounds[1] is None:
+    if first_day is None or last_day is None:
         return 0
-    current, last = date.fromisoformat(bounds[0][:10]), date.fromisoformat(bounds[1][:10])
+    current, last = first_day, last_day
     written = 0
     terminal_status: str | None = None
     while current <= last:

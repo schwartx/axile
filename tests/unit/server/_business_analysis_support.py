@@ -27,8 +27,6 @@ def install_analysis_triggers(connection):
 
     _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py").install_triggers(connection)
     _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py").install_settings_trigger(connection)
-    _load_migration(_MIGRATIONS_DIR / "0034_analysis_rust_facts.py").install_triggers(connection)
-    _load_migration(_MIGRATIONS_DIR / "0035_analysis_structured_results.py").install_triggers(connection)
     install_triggers(
         connection,
         (
@@ -38,6 +36,13 @@ def install_analysis_triggers(connection):
             target_weight_snapshot_weight,
         ),
     )
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = _load_migration(_MIGRATIONS_DIR / "0039_direct_analysis_facts.py")
+    migration.op = Operations(MigrationContext.configure(connection))
+    migration.upgrade()
 
 
 async def _insert_batches(session, batches):
@@ -101,29 +106,8 @@ async def _rewrite_input(session, record, head):
     await _insert_batches(session, batches)
 
 
-async def _project_records(session, records):
-    from axile.server.analysis_observations import observation_fact_values
-    from axile.server.analysis_source import source_fact_values
-    from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
-    from axile.server.db.models.analysis_source import SOURCE_FACT_TABLES, source_execution
-
-    fact_batches = defaultdict(list)
-    record_ids = [record.id for record in records]
-    for table in (*SOURCE_FACT_TABLES, replay_observation_symbol, replay_observation):
-        await session.execute(table.delete().where(table.c.record_id.in_(record_ids)))
-    for record in records:
-        scalar, children = source_fact_values(record)
-        fact_batches[source_execution].append(scalar)
-        for table, rows in children.items():
-            fact_batches[table].extend(rows)
-        scalar, rows = observation_fact_values(record)
-        fact_batches[replay_observation].append(scalar)
-        fact_batches[replay_observation_symbol].extend(rows)
-    await _insert_batches(session, fact_batches)
-
-
-async def persist_records(session, records, *, project=False):
-    """正式编码器批量保存测试事实，按需同时生成已冻结的分析投影。"""
+async def persist_records(session, records):
+    """正式编码器批量保存规范业务事实。"""
     from axile.server.business_facts.repository import store_execution_facts
 
     existing = {
@@ -157,8 +141,6 @@ async def persist_records(session, records, *, project=False):
     session.add_all(new_heads)
     await session.flush()
     await _insert_batches(session, result_batches)
-    if project:
-        await _project_records(session, records)
 
 
 async def load_record(session, record_id):
@@ -260,7 +242,7 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
     async with sessions() as session:
         session.add(build_account(id=2, account_control_preset="default"))
         await session.commit()
-        await persist_records(session, [record(i + 1) for i in range(count)], project=True)
+        await persist_records(session, [record(i + 1) for i in range(count)])
         await session.commit()
     try:
         yield engine, sessions, None

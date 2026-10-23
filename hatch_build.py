@@ -26,6 +26,7 @@ def verify_native_capabilities(binary: Path) -> None:
         not isinstance(capabilities, dict)
         or type(capabilities.get("protocol")) is not int
         or capabilities["protocol"] != 1
+        or capabilities.get("analysis_fact_schema") != 40
         or not isinstance(capabilities.get("commands"), list)
         or "publish_store" not in capabilities["commands"]
     ):
@@ -42,6 +43,8 @@ import sys
 spec = importlib.util.spec_from_file_location('_core', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
+    raise RuntimeError('Native extension requires direct business facts schema 0039')
 required = (
     'Store', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'execution_business_detail', 'asset_snapshots',

@@ -1,6 +1,7 @@
 """账户绩效设置和 WBT 收益对比接口，不操作执行与调度."""
 
 import asyncio
+import json
 from typing import Annotated
 
 import sqlalchemy as sa
@@ -19,6 +20,7 @@ from axile.server.db.models.performance import (
     PerformanceSnapshot,
     RangeKey,
 )
+from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.performance_analysis import (
     ENGINE_VERSION,
     LOGIC_VERSION,
@@ -177,4 +179,28 @@ async def get_costs(session: SessionDep, account_id: int, query: Annotated[CostQ
         LOGIC_VERSION,
         ENGINE_VERSION,
     )
-    return Response(content=content, media_type="application/json")
+    return _cost_response(content)
+
+
+def _cost_response(content: bytes | str) -> Response:
+    """仅使用冻结页内证据归一展示，不回读当前执行事实。"""
+    payload = json.loads(content)
+    for item in payload.get("data", []):
+        record = item.get("record")
+        if not isinstance(record, dict):
+            continue
+        raw = record.get("raw_result")
+        if not isinstance(raw, dict):
+            continue
+        normalized = normalize_legacy_result(raw)
+        symbols = normalized.get("symbol_results", {})
+        for symbol in symbols.values():
+            if isinstance(symbol, dict):
+                symbol.pop("memory", None)
+                symbol.pop("technical_detail", None)
+        normalized.pop("technical_detail", None)
+        record["raw_result"] = normalized
+        for attempt in item.get("attempts", []):
+            symbol = symbols.get(attempt.get("symbol"), {})
+            attempt["reason"] = str(symbol.get("error") or "")[:200]
+    return Response(content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), media_type="application/json")

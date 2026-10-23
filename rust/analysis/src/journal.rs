@@ -65,22 +65,23 @@ pub fn page(
 
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut statement = connection.prepare(&format!("{cte}
-        SELECT s.record_id,s.symbol,s.present,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code
-        FROM analysis_source_execution_symbol s JOIN selected p ON p.id=s.record_id
-        JOIN analysis_source_execution e ON e.record_id=s.record_id
-        WHERE e.projection_error IS NULL AND e.has_symbol_results
-        ORDER BY s.record_id,s.symbol")).map_err(database)?;
+        SELECT s.record_id,s.map_key,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+        FROM execution_symbol_result s JOIN selected p ON p.id=s.record_id
+        ORDER BY s.record_id,s.map_key")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
-        let present: i64 = row.get(2).map_err(database)?;
         let mut fields = Map::new();
-        for (bit, name) in SYMBOL_FIELDS.iter().enumerate() {
-            if present & (1 << bit) != 0 {
-                fields.insert(
-                    (*name).into(),
-                    json!(row.get::<_, Option<String>>(bit + 3).map_err(database)?),
-                );
+        for name in SYMBOL_FIELDS {
+            if let Some(value) = row.get::<_, Option<String>>(*name).map_err(database)? {
+                fields.insert((*name).into(), json!(value));
             }
+        }
+        if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(database)? {
+            fields.insert(
+                "memory".into(),
+                serde_json::from_str(&memory)
+                    .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?,
+            );
         }
         symbols
             .entry(row.get(0).map_err(database)?)
@@ -88,45 +89,33 @@ pub fn page(
             .insert(row.get(1).map_err(database)?, Value::Object(fields));
     }
 
-    let mut fees: HashMap<i64, (Map<String, Value>, i64)> = HashMap::new();
-    let mut statement = connection
-        .prepare(&format!(
-            "{cte}
-        SELECT t.record_id,t.fee_currency,SUM(t.fee),COUNT(*) FROM analysis_source_trade t
-        JOIN selected p ON p.id=t.record_id
-        JOIN analysis_source_execution e ON e.record_id=t.record_id
-        WHERE e.projection_error IS NULL AND e.trade_count IS NOT NULL AND t.fee IS NOT NULL AND t.fee_currency IS NOT NULL AND t.fee_currency!=''
-        GROUP BY t.record_id,t.fee_currency"
-        ))
-        .map_err(database)?;
-    let mut rows = statement.query(args).map_err(database)?;
-    while let Some(row) = rows.next().map_err(database)? {
-        let entry = fees.entry(row.get(0).map_err(database)?).or_default();
-        entry.0.insert(
-            row.get(1).map_err(database)?,
-            json!(row.get::<_, f64>(2).map_err(database)?),
-        );
-        entry.1 += row.get::<_, i64>(3).map_err(database)?;
-    }
-    // Python summarize excludes costs on unvalued fills; the analysis aggregate does not.
     let mut summaries = HashMap::new();
-    let mut statement = connection
-        .prepare(&format!(
-            "{cte},
-        trades AS (SELECT t.record_id,t.value,
-            CASE WHEN t.value IS NOT NULL THEN t.cost END AS cost,t.loss_bp,t.estimated
-            FROM analysis_source_trade t JOIN selected p ON p.id=t.record_id
-            JOIN analysis_source_execution e ON e.record_id=t.record_id
-            WHERE e.projection_error IS NULL AND e.trade_count IS NOT NULL)
-        SELECT record_id,{AGGREGATES} FROM trades GROUP BY record_id"
-        ))
+    let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(database)?;
+    let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(database)?;
+    let mut statement = connection.prepare(&format!("{cte}
+        SELECT r.id,r.created_at,r.facts_complete FROM executerecord r JOIN selected p ON p.id=r.id"))
         .map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
         let id: i64 = row.get(0).map_err(database)?;
-        let summary = Summary::read(row, 1).map_err(database)?;
-        let (currencies, covered) = fees.remove(&id).unwrap_or_default();
-        summaries.insert(id, historical_summary(summary.output(currencies, covered)));
+        if !row.get::<_, bool>(2).map_err(database)? {
+            return Err(format!("SOURCE_FACTS_INCOMPLETE: record {id}"));
+        }
+        let created: String = row.get(1).map_err(database)?;
+        let prices = ticks.read(id).map_err(database)?;
+        let fills = trades.read(id, &created, &prices)?;
+        let mut summary = Summary::empty();
+        let mut fees = Map::new();
+        let mut covered = 0;
+        for fill in fills {
+            summary.push_historical(&fill);
+            if let (Some(fee), Some(currency)) = (fill.fee, fill.fee_currency) {
+                let total = fees.get(&currency).and_then(Value::as_f64).unwrap_or(0.0) + fee;
+                fees.insert(currency, json!(total));
+                covered += 1;
+            }
+        }
+        summaries.insert(id, historical_summary(summary.output(fees, covered)));
     }
 
     let mut totals = HashMap::new();
@@ -163,11 +152,15 @@ pub fn page(
             "{cte}
         SELECT r.id,r.execution_id,r.created_at,r.is_success,r.display_status,r.task_status,
         r.display_error,r.display_outcome,r.display_outcome_reason,r.reason_code,r.execution_kind,
-        r.execution_time,s.record_id,s.projection_error,s.has_symbol_results,s.trade_count,
+        r.execution_time,r.id,NULL,
+        EXISTS(SELECT 1 FROM execution_symbol_collection c WHERE c.record_id=r.id AND c.path='/symbol_results' AND c.node_kind='object'),
+        (SELECT count(*) FROM business_trade t JOIN business_trade_collection c
+          ON c.record_id=t.record_id AND c.path=t.collection_path
+          JOIN execution_symbol_result s ON s.record_id=c.record_id AND s.path=c.parent_path
+          WHERE t.record_id=r.id AND c.state='array'),
         p.kind,k.id,k.triggered_at,k.channel,k.calendar_id,k.calendar_day,k.calendar_label,k.reason_code
         FROM page p LEFT JOIN executerecord r ON p.kind=0 AND r.id=p.id
         LEFT JOIN schedule_skip k ON p.kind=1 AND k.id=p.id
-        LEFT JOIN analysis_source_execution s ON s.record_id=r.id
         ORDER BY p.occurred_at DESC,p.id DESC,p.kind"
         ))
         .map_err(database)?;
@@ -255,6 +248,61 @@ pub(crate) fn historical_summary(mut summary: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_page_without_projection_tables() {
+        let conn = crate::execution_summary::tests::fixture();
+        conn.execute_batch("CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
+            CREATE TABLE schedule_skip(id INTEGER,account_id INTEGER,triggered_at TEXT,channel TEXT,calendar_id TEXT,calendar_day TEXT,calendar_label TEXT,reason_code TEXT);
+            CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
+            CREATE TABLE business_asset_binding(record_id INTEGER,asset_id TEXT,path TEXT,scope TEXT,ordinal INTEGER,map_key TEXT);
+            CREATE TABLE business_asset_snapshot(asset_id TEXT,record_id INTEGER,input_id TEXT,path TEXT,scope TEXT,ordinal INTEGER,map_key TEXT,total_asset REAL,observation_valid INTEGER);
+            CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT);
+            INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');").unwrap();
+        for column in [
+            "execution_id TEXT",
+            "input_id TEXT",
+            "result_input_id TEXT",
+            "facts_complete INTEGER DEFAULT 1",
+            "is_success INTEGER DEFAULT 1",
+            "display_status TEXT",
+            "task_status TEXT",
+            "display_error TEXT",
+            "display_outcome TEXT",
+            "display_outcome_reason TEXT",
+            "reason_code TEXT",
+            "execution_kind TEXT",
+            "execution_time REAL",
+        ] {
+            conn.execute_batch(&format!("ALTER TABLE executerecord ADD COLUMN {column}"))
+                .unwrap();
+        }
+        for name in [
+            "status",
+            "error",
+            "outcome",
+            "outcome_reason",
+            "reason_code",
+            "memory",
+        ] {
+            conn.execute_batch(&format!(
+                "ALTER TABLE execution_symbol_result ADD COLUMN {name} TEXT"
+            ))
+            .unwrap();
+        }
+        let result = page(&conn, 2, 0, 10, None, None).unwrap();
+        assert_eq!(result["count"], 2);
+        assert_eq!(result["data"][0]["record"]["summary"]["count"], 0);
+        assert_eq!(result["data"][1]["record"]["trade_count"], 2);
+        assert_eq!(result["data"][1]["record"]["summary"]["fees"]["USD"], -0.2);
+        assert_eq!(
+            page(&conn, 2, 1, 1, None, None).unwrap()["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn union_bounds_ties_and_pagination() {
