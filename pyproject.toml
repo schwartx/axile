@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.10.11",
+    "zstandard>=0.23,<1",
     "apscheduler>=3.11.0",
     "croniter>=5.0.0",
     "fastapi[standard]>=0.115.12",
