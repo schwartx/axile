@@ -629,7 +629,6 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
                             },
                         )
                     ],
-                    project=True,
                 )
             session.add(PortfolioAccount(account_id=2, portfolio_id=None, created_at="2026-01-02T09:00:00"))
             await session.commit()

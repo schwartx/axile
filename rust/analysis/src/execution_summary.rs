@@ -4,9 +4,11 @@
 //! transactions. The result belongs to a snapshot, rather than to a display
 //! range, so changing a chart range cannot multiply the stored summaries.
 
-use rusqlite::{Connection, Row};
+#[cfg(test)]
+use rusqlite::Connection;
 use serde_json::{json, Value};
 
+#[cfg(test)]
 pub(crate) const SUMMARY_COLUMNS: &[&str] = &[
     "record_id",
     "time",
@@ -25,365 +27,193 @@ pub(crate) const SUMMARY_COLUMNS: &[&str] = &[
 ];
 pub(crate) const FEE_COLUMNS: &[&str] = &["record_id", "currency", "value", "count"];
 
-/// Aggregate only the account's trades, retaining the historical chart rules.
-/// A cost without a known amount is not covered execution cost; missing amounts
-/// also make coverage unknown. Fee currencies remain separate, including zero
-/// fees and negative rebates.
-const AGGREGATE_SQL: &str = "
-    SELECT e.record_id, COUNT(t.trade_index), COUNT(t.value), SUM(t.value),
-           SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.cost END),
-           COUNT(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN 1 END),
-           SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.value ELSE 0 END),
-           SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.value*t.loss_bp ELSE 0 END),
-           COALESCE(SUM(t.estimated),0),
-           COUNT(CASE WHEN t.fee IS NOT NULL AND t.fee_currency IS NOT NULL
-                           AND t.fee_currency!='' THEN 1 END),
-           e.time,
-           CASE WHEN e.symbol_count IS NULL THEN NULL
-                ELSE COUNT(DISTINCT CASE WHEN t.quantity IS NOT NULL THEN t.symbol END) END,
-           EXISTS(SELECT 1 FROM analysis_source_transaction x WHERE x.record_id=e.record_id)
-    FROM analysis_source_execution e
-    LEFT JOIN analysis_source_trade t ON t.record_id=e.record_id
-    WHERE e.account_id=?1
-    GROUP BY e.record_id";
-
-const FEE_SQL: &str = "
-    SELECT t.record_id,t.fee_currency,SUM(t.fee),COUNT(*)
-    FROM analysis_source_execution e
-    JOIN analysis_source_trade t ON t.record_id=e.record_id
-    WHERE e.account_id=?1 AND t.fee IS NOT NULL
-      AND t.fee_currency IS NOT NULL AND t.fee_currency!=''
-    GROUP BY t.record_id,t.fee_currency
-    ORDER BY t.record_id,t.fee_currency";
-
+#[cfg(test)]
 fn sql_error(error: rusqlite::Error) -> String {
     format!("ANALYSIS_READ_ERROR:{error}")
-}
-
-#[derive(Debug, PartialEq)]
-struct Summary {
-    record_id: i64,
-    value: Option<f64>,
-    cost: Option<f64>,
-    loss_bp: Option<f64>,
-    coverage: Option<f64>,
-    covered: i64,
-    count: i64,
-    amount_complete: bool,
-    covered_value: f64,
-    estimated: i64,
-    fee_covered: i64,
-}
-
-impl Summary {
-    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
-        let count = row.get(1)?;
-        let valued: i64 = row.get(2)?;
-        let value: Option<f64> = row.get(3)?;
-        let covered_value: f64 = row.get(6)?;
-        let weighted: Option<f64> = row.get(7)?;
-        let amount_complete = valued == count;
-        Ok(Self {
-            record_id: row.get(0)?,
-            value,
-            cost: row.get(4)?,
-            loss_bp: weighted
-                .filter(|_| covered_value > 0.0)
-                .map(|weighted| weighted / covered_value),
-            coverage: value
-                .filter(|value| amount_complete && *value > 0.0)
-                .map(|value| covered_value / value),
-            covered: row.get(5)?,
-            count,
-            amount_complete,
-            covered_value,
-            estimated: row.get(8)?,
-            fee_covered: row.get(9)?,
-        })
-    }
-
-    fn values(row: &Row<'_>) -> rusqlite::Result<Vec<Value>> {
-        let summary = Self::from_row(row)?;
-        Ok(vec![
-            json!(summary.record_id),
-            json!(row.get::<_, f64>(10)?),
-            json!(summary.value),
-            json!(summary.cost),
-            json!(summary.loss_bp),
-            json!(summary.coverage),
-            json!(summary.covered),
-            json!(summary.count),
-            json!(summary.fee_covered),
-            json!(summary.amount_complete),
-            json!(summary.covered_value),
-            json!(summary.estimated),
-            json!(row.get::<_, Option<i64>>(11)?),
-            json!(row.get::<_, bool>(12)?),
-        ])
-    }
 }
 
 /// Prepare each execution summary once, independently of chart display ranges.
 /// The emitter assigns the snapshot ID and persists bounded frames internally;
 /// no per-execution details or serialized historical payloads are produced.
-pub(crate) fn write(
-    connection: &Connection,
-    account: i64,
+pub(crate) fn values(
+    id: i64,
+    fills: &[crate::fact_trades::Trade],
     emit: &mut crate::publication::RowEmitter<'_>,
-) -> Result<(), String> {
-    let mut statement = connection.prepare(AGGREGATE_SQL).map_err(sql_error)?;
-    let values = statement
-        .query_map([account], Summary::values)
-        .map_err(sql_error)?
-        .map(|row| row.map_err(sql_error));
-    crate::publication::rows(
-        "performance_execution_summary",
-        SUMMARY_COLUMNS,
-        values,
-        emit,
-    )?;
-    drop(statement);
+) -> Result<Vec<Value>, String> {
+        let valued: Vec<_> = fills.iter().filter(|trade| trade.value.is_some()).collect();
+        let covered: Vec<_> = valued.iter().filter(|trade| trade.cost.is_some()).collect();
+        let value: f64 = valued.iter().filter_map(|trade| trade.value).sum();
+        let cost: f64 = covered.iter().filter_map(|trade| trade.cost).sum();
+        let covered_value: f64 = covered.iter().filter_map(|trade| trade.value).sum();
+        let weighted: f64 = covered
+            .iter()
+            .map(|trade| trade.value.unwrap() * trade.loss_bp.unwrap_or(0.0))
+            .sum();
+        let symbols: std::collections::BTreeSet<_> = fills
+            .iter()
+            .filter(|trade| trade.quantity.is_some())
+            .map(|trade| &trade.symbol)
+            .collect();
+        let mut fees: std::collections::BTreeMap<&str, (f64, usize)> =
+            std::collections::BTreeMap::new();
+        let mut fee_count = 0;
+        for trade in fills {
+            if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_deref()) {
+                let entry = fees.entry(currency).or_default();
+                entry.0 += fee;
+                entry.1 += 1;
+                fee_count += 1;
+            }
+        }
+        let values = vec![
+                json!((!valued.is_empty()).then_some(value)),
+                json!((!covered.is_empty()).then_some(cost)),
+                json!((covered_value > 0.0).then(|| weighted / covered_value)),
+                json!((valued.len() == fills.len() && value > 0.0).then(|| covered_value / value)),
+                json!(covered.len()),
+                json!(fills.len()),
+                json!(fee_count),
+                json!(valued.len() == fills.len()),
+                json!(covered_value),
+                json!(fills.iter().filter(|trade| trade.estimated).count()),
+                json!(!symbols.is_empty()),
+            ];
 
-    let mut statement = connection.prepare(FEE_SQL).map_err(sql_error)?;
-    let values = statement
-        .query_map([account], |row| {
-            Ok(vec![
-                json!(row.get::<_, i64>(0)?),
-                json!(row.get::<_, String>(1)?),
-                json!(row.get::<_, f64>(2)?),
-                json!(row.get::<_, i64>(3)?),
-            ])
-        })
-        .map_err(sql_error)?
-        .map(|row| row.map_err(sql_error));
-    crate::publication::rows("performance_execution_fee", FEE_COLUMNS, values, emit)
+        crate::publication::rows(
+            "performance_execution_fee",
+            FEE_COLUMNS,
+            fees.into_iter().map(|(currency, (value, count))| {
+                Ok(vec![json!(id), json!(currency), json!(value), json!(count)])
+            }),
+            emit,
+        )?;
+    Ok(values)
 }
 
 #[cfg(test)]
-mod tests {
+fn write(connection:&Connection,account:i64,emit:&mut crate::publication::RowEmitter<'_>)->Result<(),String>{
+    let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
+    let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
+    let mut statement = connection
+        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 ORDER BY id")
+        .map_err(sql_error)?;
+    let mut cursor = statement.query([account]).map_err(sql_error)?;
+    while let Some(row) = cursor.next().map_err(sql_error)? {
+        let id: i64 = row.get(0).map_err(sql_error)?;
+        let created_at: String = row.get(1).map_err(sql_error)?;
+        let prices = ticks.read(id).map_err(sql_error)?;
+        let fills = trades.read(id, &created_at, &prices)?;
+        let values = values(id,&fills,emit)?;
+        let mut row = vec![json!(id),json!(crate::calendar::local_time(&created_at)?.and_utc().timestamp_micros() as f64/1000.0-28_800_000.0)];
+        row.extend(values[..10].iter().cloned());
+        row.push(json!(fills.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<std::collections::BTreeSet<_>>().len()));
+        row.push(values[10].clone());
+        emit("performance_execution_summary",SUMMARY_COLUMNS,&[row])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
 
-    fn fixture() -> Connection {
+    pub(crate) fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
+             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
+             CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
+             INSERT INTO executerecord VALUES(1,2,'2026-01-01T09:00:00'),(2,2,'2026-01-02T09:00:00'),(3,9,'2026-01-03T09:00:00');
+             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0);
+             INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,100,100,100,1);
+             INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1);
+             INSERT INTO business_trade_collection VALUES(1,'/symbol_results/A/trades','/symbol_results/A','array');
+             INSERT INTO business_trade VALUES
+               (1,'/symbol_results/A/trades',0,'invalid',102,1,'1','{\"direction\":\"buy\",\"commission\":0}','CNY'),
+               (1,'/symbol_results/A/trades',1,'2026-01-01T09:00:00',NULL,1,'2','{\"commission\":-0.2}','USD');"
+        ).unwrap();
         connection
-            .execute_batch(
-                "CREATE TABLE analysis_source_execution(record_id INTEGER PRIMARY KEY,account_id INTEGER,
-                     time REAL NOT NULL,symbol_count INTEGER);
-                 CREATE TABLE analysis_source_trade(record_id INTEGER,trade_index INTEGER,value REAL,
-                     cost REAL,loss_bp REAL,estimated INTEGER,fee REAL,fee_currency TEXT,
-                     symbol TEXT,quantity REAL,
-                     PRIMARY KEY(record_id,trade_index));
-                 CREATE TABLE analysis_source_transaction(record_id INTEGER,idx INTEGER,
-                     PRIMARY KEY(record_id,idx));
-                 INSERT INTO analysis_source_execution VALUES(1,2,100.25,2),(2,2,200,NULL),
-                     (3,2,300,0),(4,9,400,1);
-                 INSERT INTO analysis_source_transaction VALUES(1,0);
-                 INSERT INTO analysis_source_trade VALUES
-                    (1,0,100,2,200,0,0,'CNY','A',1),
-                    (1,1,NULL,7,NULL,1,-0.2,'USD','A',1),
-                    (1,2,NULL,NULL,NULL,1,0,'USD','B',NULL),
-                    (1,3,50,NULL,NULL,0,9,'','B',NULL),
-                    (3,0,0,0,500,0,NULL,NULL,'C',0),
-                    (4,0,900,9,100,0,8,'CNY','D',1);",
-            )
-            .unwrap();
-        connection
-    }
-
-    fn summaries(connection: &Connection) -> Vec<Summary> {
-        connection
-            .prepare(AGGREGATE_SQL)
-            .unwrap()
-            .query_map([2], Summary::from_row)
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
     }
 
     #[test]
-    fn incomplete_amount_does_not_turn_unknown_cost_into_coverage() {
-        let values = summaries(&fixture());
-        assert_eq!(values.len(), 3);
-        assert_eq!(
-            values[0],
-            Summary {
-                record_id: 1,
-                value: Some(150.0),
-                cost: Some(2.0),
-                loss_bp: Some(200.0),
-                coverage: None,
-                covered: 1,
-                count: 4,
-                amount_complete: false,
-                covered_value: 100.0,
-                estimated: 2,
-                fee_covered: 3,
+    fn direct_summaries_preserve_unknown_amounts_fees_and_empty_executions() {
+        let connection = fixture();
+        let mut summaries = Vec::new();
+        let mut fees = Vec::new();
+        write(&connection, 2, &mut |table, _, rows| {
+            if table == "performance_execution_summary" {
+                summaries.extend_from_slice(rows);
+            } else {
+                fees.extend_from_slice(rows);
             }
-        );
-    }
-
-    #[test]
-    fn an_execution_without_fills_keeps_known_empty_and_unknown_amounts_distinct() {
-        let values = summaries(&fixture());
-        assert_eq!(
-            values[1],
-            Summary {
-                record_id: 2,
-                value: None,
-                cost: None,
-                loss_bp: None,
-                coverage: None,
-                covered: 0,
-                count: 0,
-                amount_complete: true,
-                covered_value: 0.0,
-                estimated: 0,
-                fee_covered: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn actual_zero_amount_and_cost_remain_zero_without_a_coverage_ratio() {
-        let values = summaries(&fixture());
-        assert_eq!(values[2].value, Some(0.0));
-        assert_eq!(values[2].cost, Some(0.0));
-        assert_eq!(values[2].covered, 1);
-        assert!(values[2].amount_complete);
-        assert_eq!(values[2].loss_bp, None);
-        assert_eq!(values[2].coverage, None);
-    }
-
-    #[test]
-    fn complete_amounts_use_only_covered_value_for_weighted_loss() {
-        let connection = fixture();
-        connection
-            .execute("DELETE FROM analysis_source_trade WHERE record_id=1", [])
-            .unwrap();
-        connection
-            .execute_batch(
-                "INSERT INTO analysis_source_trade VALUES
-                (1,0,100,0.1,10,0,NULL,NULL,'A',1),
-                (1,1,300,0.9,30,0,NULL,NULL,'B',1),
-                (1,2,200,NULL,NULL,0,NULL,NULL,'C',1);",
-            )
-            .unwrap();
-        let values = summaries(&connection);
-        assert_eq!(values[0].loss_bp, Some(25.0));
-        assert_eq!(values[0].coverage, Some(400.0 / 600.0));
-        assert_eq!(values[0].covered_value, 400.0);
-        assert_eq!(values[0].cost, Some(1.0));
-        assert_eq!(values[0].covered, 2);
-        assert!(values[0].amount_complete);
-    }
-
-    #[test]
-    fn emitted_rows_are_flat_version_independent_and_preserve_unknown_symbols() {
-        let connection = fixture();
-        let mut frames = Vec::new();
-        write(&connection, 2, &mut |table, columns, rows| {
-            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
             Ok(())
         })
         .unwrap();
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0]["table"], "performance_execution_summary");
-        assert_eq!(frames[0]["columns"], json!(SUMMARY_COLUMNS));
+        assert_eq!(summaries.len(), 2);
         assert_eq!(
-            frames[0]["rows"][0],
-            json!([1, 100.25, 150.0, 2.0, 200.0, null, 1, 4, 3, false, 100.0, 2, 1, true])
+            &summaries[0][2..],
+            &[
+                json!(102.0),
+                json!(2.0),
+                json!(200.0),
+                Value::Null,
+                json!(1),
+                json!(2),
+                json!(2),
+                json!(false),
+                json!(102.0),
+                json!(1),
+                json!(1),
+                json!(true)
+            ]
         );
         assert_eq!(
-            frames[0]["rows"][1],
-            json!([2, 200.0, null, null, null, null, 0, 0, 0, true, 0.0, 0, null, false])
+            &summaries[1][2..],
+            &[
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                json!(0),
+                json!(0),
+                json!(0),
+                json!(true),
+                json!(0.0),
+                json!(0),
+                json!(0),
+                json!(false)
+            ]
         );
-        assert_eq!(frames[0]["rows"][2][12], 1);
-        assert_eq!(frames[0]["rows"][2][13], false);
-    }
-
-    #[test]
-    fn fee_rows_preserve_separate_currencies_zero_totals_and_rebates() {
-        let connection = fixture();
-        connection
-            .execute_batch(
-                "INSERT INTO analysis_source_trade VALUES
-                (1,4,NULL,NULL,NULL,0,0.2,'USD','A',NULL),
-                (1,5,NULL,NULL,NULL,0,-3,'BTC','A',NULL),
-                (1,6,NULL,NULL,NULL,0,4,NULL,'A',NULL);",
-            )
-            .unwrap();
-        let mut frames = Vec::new();
-        write(&connection, 2, &mut |table, columns, rows| {
-            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(frames[1]["table"], "performance_execution_fee");
-        assert_eq!(frames[1]["columns"], json!(FEE_COLUMNS));
         assert_eq!(
-            frames[1]["rows"],
-            json!([[1, "BTC", -3.0, 1], [1, "CNY", 0.0, 1], [1, "USD", 0.0, 3]])
+            fees,
+            vec![
+                vec![json!(1), json!("CNY"), json!(0.0), json!(1)],
+                vec![json!(1), json!("USD"), json!(-0.2), json!(1)]
+            ]
         );
-        let covered = frames[1]["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|row| row[3].as_i64().unwrap())
-            .sum::<i64>();
-        assert_eq!(frames[0]["rows"][0][8], covered);
     }
 
     #[test]
-    fn index_flags_use_their_facts_and_keep_legacy_unknown_symbol_counts() {
+    fn errors_and_empty_accounts_do_not_emit_phantom_summaries() {
         let connection = fixture();
-        connection
-            .execute_batch(
-                "UPDATE analysis_source_execution SET symbol_count=NULL WHERE record_id=1;
-                 INSERT INTO analysis_source_transaction VALUES(2,0);",
-            )
-            .unwrap();
-        let mut frames = Vec::new();
-        write(&connection, 2, &mut |table, columns, rows| {
-            frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-            Ok(())
-        })
-        .unwrap();
-        // Existing fills do not manufacture a formerly unknown symbol count.
-        assert!(frames[0]["rows"][0][12].is_null());
-        // Transaction presence is independent of whether individual fills exist.
-        assert_eq!(frames[0]["rows"][1][7], 0);
-        assert_eq!(frames[0]["rows"][1][13], true);
-        assert_eq!(frames[0]["rows"][2][7], 1);
-        assert_eq!(frames[0]["rows"][2][13], false);
-    }
-
-    #[test]
-    fn invalid_row_types_and_emitter_errors_are_propagated() {
-        let connection = fixture();
-        let error = write(&connection, 2, &mut |_, _, _| Err("sink failed".into())).unwrap_err();
-        assert_eq!(error, "sink failed");
-        connection
-            .execute("UPDATE analysis_source_execution SET time='invalid'", [])
-            .unwrap();
-        let mut emitted = false;
-        let error = write(&connection, 2, &mut |_, _, _| {
-            emitted = true;
-            Ok(())
-        })
-        .unwrap_err();
-        assert!(error.starts_with("ANALYSIS_READ_ERROR:"), "{error}");
-        assert!(!emitted);
-    }
-
-    #[test]
-    fn an_account_without_executions_emits_no_phantom_rows() {
-        let connection = fixture();
-        let mut count = 0;
+        assert_eq!(
+            write(&connection, 2, &mut |_, _, _| Err("sink failed".into())).unwrap_err(),
+            "sink failed"
+        );
         write(&connection, 99, &mut |_, _, _| {
-            count += 1;
-            Ok(())
+            panic!("empty account emitted rows")
         })
         .unwrap();
-        assert_eq!(count, 0);
+        connection
+            .execute("UPDATE executerecord SET created_at='invalid'", [])
+            .unwrap();
+        assert!(write(&connection, 2, &mut |_, _, _| panic!(
+            "invalid timestamp emitted rows"
+        ))
+        .is_err());
     }
 }

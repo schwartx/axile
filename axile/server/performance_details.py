@@ -13,7 +13,7 @@ from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION
 from axile.server.analysis_cost_reader import read_execution_payloads, scalar_columns, trade_payload
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import cost_execution as executions
-from axile.server.db.models.analysis import cost_range as ranges
+from axile.server.db.models.analysis_result import result_range as ranges
 from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.db.models.performance import RangeKey
 from axile.server.performance_costs import execution_list_payload, timestamp
@@ -369,7 +369,7 @@ async def _read_costs(session, account_id: int, query: CostQuery) -> dict:
         bounds = await _legacy_bounds(session, query)
     else:
         raise HTTPException(410, detail={"code": "SNAPSHOT_EXPIRED", "message": "快照版本已失效，请重新读取绩效"})
-    execution_filter, trade_filter = _filters(query, bounds, typed)
+    execution_filter, trade_filter = _filters(query, bounds, False)
     totals = await summary(session, trade_filter)
     execution_counts = (
         await session.execute(

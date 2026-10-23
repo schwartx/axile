@@ -37,7 +37,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                     )
                 other = record(7)
                 other.account_id = 3
-                await persist_records(session, [other], project=True)
+                await persist_records(session, [other])
                 await session.commit()
             async with sessions() as session:
                 rows = (
@@ -101,7 +101,7 @@ def test_deep_page_never_decodes_raw_input_or_projects_discarded_results(tmp_pat
                 rows = [record(index) for index in range(1, 7)]
                 for row in rows:
                     row.input["algorithm"] = {"params": {"unused": "x" * 2_000_000}}
-                await persist_records(session, rows, project=True)
+                await persist_records(session, rows)
                 await session.commit()
                 await session.execute(sa.text("UPDATE execution_input SET audit_evidence='not-json'"))
                 await session.commit()

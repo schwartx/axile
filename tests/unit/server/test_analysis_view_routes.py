@@ -102,11 +102,11 @@ def _projected():
 def _insert_frozen_views(connection, snapshot_id):
     """Insert results directly so readers cannot derive them from missing trades."""
     statement = sa.text(
-        "INSERT INTO performance_execution_summary "
-        "(snapshot_id,record_id,time,value,cost,loss_bp,coverage,covered,count,fee_covered,"
-        "amount_complete,covered_value,estimated,symbol_count,has_transactions) "
-        "VALUES (:snapshot_id,:record_id,:time,:value,:cost,:loss_bp,:coverage,:covered,:count,"
-        ":fee_covered,:amount_complete,:covered_value,:estimated,:symbol_count,:has_transactions)"
+        "UPDATE performance_cost_execution SET time=:time,value=:value,cost=:cost,loss_bp=:loss_bp,"
+        "coverage=:coverage,covered=:covered,count=:count,fee_covered=:fee_covered,"
+        "amount_complete=:amount_complete,covered_value=:covered_value,estimated=:estimated,"
+        "symbol_count=:symbol_count,has_transactions=:has_transactions "
+        "WHERE snapshot_id=:snapshot_id AND record_id=:record_id"
     )
     for record_id in (1, 2, 3):
         traded = record_id == 1

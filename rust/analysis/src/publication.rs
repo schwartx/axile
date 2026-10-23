@@ -246,19 +246,43 @@ fn events(
     }
     {
         let mut statement = connection.prepare(
-            "SELECT created_at,time,event_tag,event_text,execution_id FROM analysis_source_execution \
-             WHERE account_id=?1 AND time>=?2 AND time<=?3 AND event_tag IS NOT NULL ORDER BY time,record_id"
+            "SELECT id,created_at,display_status,task_status,reason_code,display_error,execution_id FROM executerecord
+             WHERE account_id=?1 AND is_success IS NOT 1 ORDER BY id"
         ).map_err(sql_error)?;
-        let mut cursor = statement
-            .query(params![account, start, end])
-            .map_err(sql_error)?;
+        let mut labels = crate::fact_events::EventReader::new(connection).map_err(sql_error)?;
+        let mut cursor = statement.query([account]).map_err(sql_error)?;
         while let Some(row) = cursor.next().map_err(sql_error)? {
+            let time: String = row.get(1).map_err(sql_error)?;
+            let numeric_time = numeric_time(&time)?;
+            if numeric_time < start || numeric_time > end {
+                continue;
+            }
+            let status: Option<String> = row.get(2).map_err(sql_error)?;
+            let task: Option<String> = row.get(3).map_err(sql_error)?;
+            let code: Option<String> = row.get(4).map_err(sql_error)?;
+            let label = labels
+                .label(
+                    row.get(0).map_err(sql_error)?,
+                    status.as_deref(),
+                    task.as_deref(),
+                    code.as_deref(),
+                )
+                .map_err(sql_error)?;
+            let reason: Option<String> = row.get(5).map_err(sql_error)?;
+            let text = if matches!(status.as_deref(), Some("FAILED" | "BLOCKED" | "PARTIAL")) {
+                reason
+                    .filter(|reason| !reason.is_empty())
+                    .map(|reason| format!("{label} · {reason}"))
+                    .unwrap_or_else(|| label.to_owned())
+            } else {
+                label.to_owned()
+            };
             consume(Event {
-                time: row.get(0).map_err(sql_error)?,
-                numeric_time: row.get(1).map_err(sql_error)?,
-                tag: row.get(2).map_err(sql_error)?,
-                text: row.get(3).map_err(sql_error)?,
-                execution_id: row.get(4).map_err(sql_error)?,
+                time,
+                numeric_time,
+                tag: label.to_owned(),
+                text: text.chars().take(500).collect(),
+                execution_id: row.get(6).map_err(sql_error)?,
             });
         }
     }
@@ -283,64 +307,66 @@ fn events(
 fn daily_costs(
     connection: &Connection,
     account: i64,
-    range: &str,
-    start: f64,
-    end: f64,
+    ranges: &[(&str, f64, f64)],
     emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
-    let predicate =
-        "FROM analysis_source_trade t JOIN analysis_source_execution e ON e.record_id=t.record_id \
-        WHERE e.account_id=?1 AND e.time>=?2 AND e.time<=?3";
-    let sql = format!("SELECT t.day,COUNT(*),COUNT(t.value),SUM(t.value), \
-        COUNT(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN 1 END), \
-        SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.cost END), \
-        SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.value ELSE 0 END), \
-        SUM(CASE WHEN t.value IS NOT NULL AND t.cost IS NOT NULL THEN t.value*t.loss_bp ELSE 0 END), \
-        COUNT(CASE WHEN t.fee IS NOT NULL AND t.fee_currency IS NOT NULL AND t.fee_currency!='' THEN 1 END) \
-        {predicate} GROUP BY t.day ORDER BY t.day");
-    let mut statement = connection.prepare(&sql).map_err(sql_error)?;
-    let mut cursor = statement
-        .query(params![account, start, end])
+    #[derive(Default)]
+    struct Day {
+        count: usize,
+        valued: usize,
+        value: f64,
+        covered: usize,
+        cost: f64,
+        covered_value: f64,
+        weighted: f64,
+        fee_covered: usize,
+        fees: BTreeMap<String, f64>,
+    }
+    let mut summaries: Vec<BTreeMap<String, Day>> =
+        ranges.iter().map(|_| BTreeMap::new()).collect();
+    let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
+    let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
+    let mut statement = connection
+        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 ORDER BY id")
         .map_err(sql_error)?;
-    let values = std::iter::from_fn(|| match cursor.next() {
-        Ok(Some(row)) => Some((|| -> Result<Vec<Value>, String> {
-            let day: String = row.get(0).map_err(sql_error)?;
-            let count: i64 = row.get(1).map_err(sql_error)?;
-            let valued: i64 = row.get(2).map_err(sql_error)?;
-            let value: Option<f64> = row.get(3).map_err(sql_error)?;
-            let covered: i64 = row.get(4).map_err(sql_error)?;
-            let cost: Option<f64> = row.get(5).map_err(sql_error)?;
-            let covered_value: f64 = row.get(6).map_err(sql_error)?;
-            let weighted: Option<f64> = row.get(7).map_err(sql_error)?;
-            let fee_covered: i64 = row.get(8).map_err(sql_error)?;
-            let loss = weighted
-                .filter(|_| covered_value > 0.0)
-                .map(|amount| amount / covered_value);
-            let coverage = value
-                .filter(|total| valued == count && *total > 0.0)
-                .map(|total| covered_value / total);
-            // Existing daily summaries omit coveredValue and estimated. Preserve
-            // their absence instead of manufacturing API fields during storage.
-            Ok(vec![
-                json!(range),
-                json!(day),
-                json!(value),
-                json!(cost),
-                json!(loss),
-                json!(coverage),
-                Value::Null,
-                json!(covered),
-                json!(count),
-                json!(fee_covered),
-                Value::Null,
-                json!(valued == count),
-                json!(255),
-            ])
-        })()),
-        Ok(None) => None,
-        Err(error) => Some(Err(sql_error(error))),
-    });
-    rows(
+    let mut cursor = statement.query([account]).map_err(sql_error)?;
+    while let Some(row) = cursor.next().map_err(sql_error)? {
+        let id: i64 = row.get(0).map_err(sql_error)?;
+        let created_at: String = row.get(1).map_err(sql_error)?;
+        let time = numeric_time(&created_at)?;
+        if !ranges
+            .iter()
+            .any(|(_, start, end)| time >= *start && time <= *end)
+        {
+            continue;
+        }
+        let prices = ticks.read(id).map_err(sql_error)?;
+        for trade in trades.read(id, &created_at, &prices)? {
+            for ((_, start, end), days) in ranges.iter().zip(&mut summaries) {
+                if time < *start || time > *end {
+                    continue;
+                }
+                let day = days.entry(trade.day.clone()).or_default();
+                day.count += 1;
+                if let Some(value) = trade.value {
+                    day.valued += 1;
+                    day.value += value;
+                    if let Some(cost) = trade.cost {
+                        day.covered += 1;
+                        day.cost += cost;
+                        day.covered_value += value;
+                        day.weighted += value * trade.loss_bp.unwrap_or(0.0);
+                    }
+                }
+                if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_ref()) {
+                    day.fee_covered += 1;
+                    *day.fees.entry(currency.clone()).or_default() += fee;
+                }
+            }
+        }
+    }
+    for ((range, _, _), days) in ranges.iter().zip(&summaries) {
+        rows(
         "performance_result_daily_cost",
         &[
             "range_key",
@@ -357,38 +383,38 @@ fn daily_costs(
             "amount_complete",
             "present",
         ],
-        values,
-        emit,
-    )?;
-    drop(cursor);
-    drop(statement);
-    let sql = format!(
-        "SELECT t.day,t.fee_currency,SUM(t.fee) {predicate} \
-        AND t.fee IS NOT NULL AND t.fee_currency IS NOT NULL AND t.fee_currency!='' \
-        GROUP BY t.day,t.fee_currency ORDER BY t.day,t.fee_currency"
-    );
-    let mut statement = connection.prepare(&sql).map_err(sql_error)?;
-    let mut cursor = statement
-        .query(params![account, start, end])
-        .map_err(sql_error)?;
-    let values = std::iter::from_fn(|| match cursor.next() {
-        Ok(Some(row)) => Some((|| -> Result<Vec<Value>, String> {
+        days.iter().map(|(day, value)| {
             Ok(vec![
                 json!(range),
-                json!(row.get::<_, String>(0).map_err(sql_error)?),
-                json!(row.get::<_, String>(1).map_err(sql_error)?),
-                json!(row.get::<_, f64>(2).map_err(sql_error)?),
+                json!(day),
+                json!((value.valued > 0).then_some(value.value)),
+                json!((value.covered > 0).then_some(value.cost)),
+                json!((value.covered_value > 0.0).then(|| value.weighted / value.covered_value)),
+                json!((value.valued == value.count && value.value > 0.0)
+                    .then(|| value.covered_value / value.value)),
+                Value::Null,
+                json!(value.covered),
+                json!(value.count),
+                json!(value.fee_covered),
+                Value::Null,
+                json!(value.valued == value.count),
+                json!(255),
             ])
-        })()),
-        Ok(None) => None,
-        Err(error) => Some(Err(sql_error(error))),
-    });
-    rows(
-        "performance_result_daily_fee",
-        &["range_key", "day", "currency", "value"],
-        values,
+        }),
         emit,
-    )
+    )?;
+        rows(
+            "performance_result_daily_fee",
+            &["range_key", "day", "currency", "value"],
+            days.iter().flat_map(|(day, value)| {
+                value.fees.iter().map(move |(currency, fee)| {
+                    Ok(vec![json!(range), json!(day), json!(currency), json!(fee)])
+                })
+            }),
+            emit,
+        )?;
+    }
+    Ok(())
 }
 
 fn range_rows(
@@ -489,7 +515,6 @@ fn range_rows(
             emit,
         )?;
     }
-    daily_costs(connection, account, key, start, end, emit)?;
     let count = events(connection, account, key, start, end, emit)?;
     let mut row = vec![json!(key)];
     row.extend(
@@ -530,7 +555,7 @@ pub fn write(
         )
         .optional()
         .map_err(sql_error)?;
-    let mut calculation = crate::performance::PerformanceRequest {
+    let calculation = crate::performance::PerformanceRequest {
         account_id: account,
         range: None,
         include_backtest: request
@@ -567,11 +592,28 @@ pub fn write(
                 *row_counts.entry(table.to_owned()).or_default() += rows.len();
                 Ok(())
             };
-        // Each range is released before the next scan. This intentionally spends
-        // extra SQLite scans to avoid retaining three daily result trees at once.
+        let mut ranges = crate::performance::performance(connection, &calculation)?;
+        let bounds = ["30", "90", "all"]
+            .map(|key| {
+                Ok((
+                    key,
+                    ranges[key]["baseline"]
+                        .as_str()
+                        .map(numeric_time)
+                        .transpose()?
+                        .unwrap_or(0.0),
+                    ranges[key]["end"]
+                        .as_str()
+                        .map(numeric_time)
+                        .transpose()?
+                        .unwrap_or(-1.0),
+                ))
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, String>>()?;
+        daily_costs(connection, account, &bounds, &mut counted_emit)?;
         for key in ["30", "90", "all"] {
-            calculation.range = Some(key);
-            let performance = crate::performance::performance(connection, &calculation)?;
+            let performance = ranges[key].take();
             if settings.is_null() {
                 settings = performance["settings"].clone();
             }
@@ -587,7 +629,7 @@ pub fn write(
             .and_then(Value::as_bool)
             == Some(true)
         {
-            crate::execution_summary::write(connection, account, &mut counted_emit)?;
+            crate::fact_cost_rows::trades(connection, account, &mut counted_emit)?;
         }
     }
     Ok(
@@ -705,8 +747,10 @@ mod tests {
     fn scalar_fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
-            "CREATE TABLE analysis_source_execution(record_id INTEGER PRIMARY KEY,account_id INTEGER,time REAL,created_at TEXT,event_tag TEXT,event_text TEXT,execution_id TEXT);
-             CREATE TABLE analysis_source_trade(record_id INTEGER,trade_index INTEGER,day TEXT,value REAL,cost REAL,loss_bp REAL,fee REAL,fee_currency TEXT);
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,display_status TEXT,task_status TEXT,reason_code TEXT,display_error TEXT,execution_id TEXT,is_success INTEGER);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,ordinal INTEGER,node_kind TEXT,status TEXT,reason_code TEXT);
+             CREATE TABLE execution_order(record_id INTEGER,path TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT); CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT); CREATE TABLE execution_order_collection(record_id INTEGER,kind TEXT); CREATE TABLE business_trade_collection(record_id INTEGER,state TEXT,malformed_value TEXT);
              CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,portfolio_id INTEGER);
              CREATE TABLE schedule_skip(id INTEGER PRIMARY KEY,account_id INTEGER,triggered_at TEXT,reason_code TEXT);"
         ).unwrap();
@@ -715,26 +759,32 @@ mod tests {
 
     #[test]
     fn daily_costs_filter_by_execution_time_and_keep_unknown_amounts() {
-        let connection = scalar_fixture();
-        connection
-            .execute_batch(
-                "INSERT INTO analysis_source_execution VALUES
-             (1,2,100,'2026-01-01T23:59:00',NULL,NULL,'one'),
-             (2,2,200,'2026-01-02T09:00:00',NULL,NULL,'two');
-             INSERT INTO analysis_source_trade VALUES
-             (1,0,'2026-01-01',100,2,200,0,'CNY'),
-             (1,1,'2026-01-02',NULL,7,NULL,-0.2,'USD'),
-             (1,2,'2026-01-02',NULL,NULL,NULL,0,'USD'),
-             (2,0,'2026-01-02',500,5,100,8,'CNY');",
-            )
-            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
+             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
+             CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
+             INSERT INTO executerecord VALUES(1,2,'2026-01-01T23:59:00'),(2,2,'2026-01-02T09:00:00');
+             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0),(2,'/symbol_results/A','A',0);
+             INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,98,98,98,1);
+             INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1),(2,'/symbol_results/A/sizing',1);
+             INSERT INTO business_trade_collection VALUES(1,'/symbol_results/A/trades','/symbol_results/A','array'),(2,'/symbol_results/A/trades','/symbol_results/A','array');
+             INSERT INTO business_trade VALUES
+              (1,'/symbol_results/A/trades',0,'2026-01-01T23:59:00',100,1,'1','{\"commission\":0,\"direction\":\"buy\"}','CNY'),
+              (1,'/symbol_results/A/trades',1,'2026-01-02T00:01:00',NULL,1,'2','{\"commission\":-0.2}','USD'),
+              (1,'/symbol_results/A/trades',2,'2026-01-02T00:02:00',NULL,1,'3','{\"commission\":0}','USD'),
+              (2,'/symbol_results/A/trades',0,'2026-01-02T09:00:00',500,1,'4','{\"commission\":8}','CNY');"
+        ).unwrap();
+        let boundary = numeric_time("2026-01-01T23:59:00").unwrap();
         let mut frames = Vec::new();
         daily_costs(
             &connection,
             2,
-            "all",
-            100.0,
-            100.0,
+            &[("all", boundary, boundary)],
             &mut |table, columns, rows| {
                 frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
                 Ok(())
@@ -749,7 +799,7 @@ mod tests {
                 "2026-01-01",
                 100.0,
                 2.0,
-                200.0,
+                2.0 / 98.0 * 10000.0,
                 1.0,
                 null,
                 1,
@@ -799,8 +849,8 @@ mod tests {
             .unwrap();
         for index in 0..150 {
             connection.execute(
-                "INSERT INTO analysis_source_execution VALUES(?1,2,?2,'2026-01-01T10:00:00','failed',?3,?4)",
-                params![index, time, format!("failure-{index}"),format!("execution-{index}")],
+                "INSERT INTO executerecord VALUES(?1,2,'2026-01-01T10:00:00','FAILED',NULL,NULL,?2,?3,0)",
+                params![index, format!("failure-{index}"),format!("execution-{index}")],
             ).unwrap();
         }
         let mut frames = Vec::new();

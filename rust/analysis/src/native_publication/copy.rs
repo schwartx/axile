@@ -1,19 +1,9 @@
 //! Copy frozen scalar source facts without materializing historical rows.
 
 use chrono::{DateTime, NaiveDateTime};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::AnalysisError;
-
-const EXECUTION_COLUMNS: &str = "record_id,time,success,noop,key,execution_id,created_at,is_success,duration_sec,trade_count,symbol_count,position_count,positions_present,reason,raw_present,has_symbol_results,raw_status,raw_task_status,raw_error,raw_outcome,raw_outcome_reason,raw_reason_code,raw_msg,raw_execution_kind";
-const TRADE_COLUMNS: &str = "record_id,symbol,time,day,value,cost,loss_bp,fee,fee_currency,estimated,side,quantity,price,reference,reference_source";
-const CHILDREN: &[(&str, &str)] = &[
-    ("execution_symbol", "record_id,symbol,present,status,error,outcome,outcome_reason,reason_code"),
-    ("position", "record_id,idx,symbol,quantity,direction"),
-    ("attempt", "record_id,idx,symbol,planned,filled,reason"),
-    ("transaction", "record_id,idx,symbol,side,quantity,price,reference,reference_source,time,end_time,time_estimated,before,target,value,cost,loss_bp,coverage,covered,count,amount_complete,fee_covered"),
-    ("transaction_fee", "record_id,transaction_idx,currency,value"),
-];
 
 pub(super) const COST_TABLES: &[&str] = &[
     "performance_cost_transaction_fee",
@@ -23,73 +13,15 @@ pub(super) const COST_TABLES: &[&str] = &[
     "performance_cost_execution_symbol",
     "performance_cost_trade",
     "performance_cost_execution",
-    "performance_cost_range",
 ];
 
-fn sql(error: rusqlite::Error) -> AnalysisError {
-    AnalysisError::new("PUBLICATION_WRITE", error.to_string())
-}
-
-const ACCOUNT_SOURCES: &str = "SELECT s.record_id FROM main.analysis_source_execution s JOIN main.executerecord e ON e.id=s.record_id WHERE s.account_id=?2 AND e.account_id=?2";
-
-pub(super) fn source_facts(
-    connection: &Connection,
-    snapshot_id: &str,
-    account: i64,
-) -> Result<(), AnalysisError> {
-    crate::source::validate(connection, account).map_err(AnalysisError::from)?;
-    let query = format!(
-        "INSERT INTO main.performance_cost_execution (snapshot_id,{EXECUTION_COLUMNS},payload)
-         SELECT ?1,{EXECUTION_COLUMNS},'{{}}' FROM main.analysis_source_execution
-         WHERE record_id IN ({ACCOUNT_SOURCES})"
-    );
-    connection
-        .execute(&query, params![snapshot_id, account])
-        .map_err(sql)?;
-    let query = format!(
-        "INSERT INTO main.performance_cost_trade (snapshot_id,id,{TRADE_COLUMNS},payload)
-         SELECT ?1,ROW_NUMBER() OVER (ORDER BY record_id,trade_index)-1,{TRADE_COLUMNS},'{{}}'
-         FROM main.analysis_source_trade WHERE record_id IN ({ACCOUNT_SOURCES})"
-    );
-    connection
-        .execute(&query, params![snapshot_id, account])
-        .map_err(sql)?;
-    for &(suffix, columns) in CHILDREN {
-        let query = format!(
-            "INSERT INTO main.performance_cost_{suffix} (snapshot_id,{columns})
-             SELECT ?1,{columns} FROM main.analysis_source_{suffix}
-             WHERE record_id IN ({ACCOUNT_SOURCES})"
-        );
-        connection
-            .execute(&query, params![snapshot_id, account])
-            .map_err(sql)?;
-    }
-    Ok(())
-}
-
-pub(super) fn ranges(connection: &Connection, snapshot_id: &str) -> Result<(), AnalysisError> {
-    let mut statement = connection.prepare(
-        "SELECT range_key,baseline,end FROM native_stage.performance_result_range ORDER BY range_key"
-    ).map_err(sql)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        })
-        .map_err(sql)?;
-    for row in rows {
-        let (range, baseline, end) = row.map_err(sql)?;
-        let baseline = baseline.as_deref().map(timestamp).transpose()?;
-        let end = end.as_deref().map(timestamp).transpose()?;
-        connection.execute(
-            "INSERT INTO main.performance_cost_range (snapshot_id,range_key,baseline,end) VALUES (?1,?2,?3,?4)",
-            params![snapshot_id, range, baseline, end],
-        ).map_err(sql)?;
-    }
-    Ok(())
+pub(crate) fn range_bounds(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Option<(Option<f64>, Option<f64>)>, String> {
+    let row = connection.query_row(
+        "SELECT baseline,end FROM performance_result_range WHERE snapshot_id=?1 AND range_key=?2",
+        [snapshot_id,range], |row| Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?))
+    ).optional().map_err(|error| error.to_string())?;
+    row.map(|(lower,upper)| Ok((lower.as_deref().map(timestamp).transpose().map_err(|e|e.to_string())?,
+        upper.as_deref().map(timestamp).transpose().map_err(|e|e.to_string())?))).transpose()
 }
 
 fn timestamp(value: &str) -> Result<f64, AnalysisError> {
@@ -104,6 +36,15 @@ fn timestamp(value: &str) -> Result<f64, AnalysisError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_lookup_preserves_missing_and_null_bounds() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE performance_result_range(snapshot_id TEXT,range_key TEXT,baseline TEXT,end TEXT); INSERT INTO performance_result_range VALUES('s','empty',NULL,NULL),('s','mixed','2026-01-01T09:00:00.000003','2026-01-01T01:00:00.000003Z');").unwrap();
+        assert_eq!(range_bounds(&connection,"s","missing").unwrap(),None);
+        assert_eq!(range_bounds(&connection,"s","empty").unwrap(),Some((None,None)));
+        assert_eq!(range_bounds(&connection,"s","mixed").unwrap(),Some((Some(1767229200000.0032),Some(1767229200000.0032))));
+    }
 
     #[test]
     fn range_boundaries_match_historical_microsecond_precision() {

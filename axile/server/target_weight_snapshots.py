@@ -10,9 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, desc, select
 
-from axile.server.analysis_observations import write_observation_fact
 from axile.server.business_facts.columns import read_columns, store_columns
-from axile.server.db.models import ExecuteRecord, TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
+from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
 from axile.server.db.models.target_weight_snapshot import target_weight_snapshot_weight
 
 _WEIGHT_ROLES = ("raw_weights", "normalized_weights")
@@ -175,21 +174,6 @@ async def append_target_weight_snapshot(
             for row in rows:
                 row["snapshot_id"] = snapshot.id
             await session.execute(table.insert(), rows)
-    if account_id is not None and execution_id is not None and normalized_weights is not None:
-        record = await session.scalar(
-            select(ExecuteRecord).where(
-                ExecuteRecord.account_id == account_id,
-                ExecuteRecord.execution_id == execution_id,
-            )
-        )
-        if record is not None:
-            from axile.server.analysis_history import read_analysis_record
-
-            await write_observation_fact(
-                session,
-                await read_analysis_record(session, record),
-                fallback_weights=normalized_weights,
-            )
     await session.commit()
     await session.refresh(snapshot)
     return (await _snapshot_views(session, [snapshot]))[0]

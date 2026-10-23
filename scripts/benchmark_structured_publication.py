@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,65 +93,47 @@ def record(index: int, symbols: int) -> SimpleNamespace:
 
 
 def prepare(args) -> None:
-    """Freeze real projection-helper outputs in a separate, unmeasured process."""
+    """Create canonical evidence on the actual Alembic head before measurement."""
     import sqlalchemy as sa
-    from sqlalchemy.orm import Session
-    from sqlmodel import SQLModel
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from axile.server.analysis_observations import observation_fact_values
-    from axile.server.analysis_source import source_fact_values
+    from axile.server.business_facts.repository import store_execution_facts
     from axile.server.db.models import Account, ExecuteRecord
-    from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
-    from axile.server.db.models.analysis_source import source_execution
-    from axile.server.performance_analysis import AnalysisManager  # noqa: F401
 
-    if not {"raw_input", "raw_result"} <= set(ExecuteRecord.__table__.c.keys()):
-        raise ValueError("This legacy publication fixture requires an Axile <=0036 baseline checkout")
     engine = sa.create_engine(f"sqlite:///{args.prepare}")
     try:
         with engine.begin() as connection:
-            SQLModel.metadata.create_all(connection)
-            migration("0012_performance_snapshots.py").install_triggers(connection)
-            migration("0020_account_settings.py").install_settings_trigger(connection)
-        with Session(engine) as session:
-            session.add(
-                Account(
-                    id=1,
-                    name="synthetic-analysis",
-                    market="期货",
-                    trade_channel="ctp",
-                    brokerage="synthetic",
-                    backtest_weight_type="cs",
-                    backtest_fee_rate=0.0002,
-                )
-            )
-            session.commit()
-        for start in range(0, args.observations, 100):
-            values = defaultdict(list)
-            for index in range(start, min(start + 100, args.observations)):
-                item = record(index, args.symbols)
-                values[ExecuteRecord.__table__].append(vars(item))
-                header, children = observation_fact_values(item)
-                values[replay_observation].append(header)
-                values[replay_observation_symbol].extend(children)
-                header, children = source_fact_values(item)
-                values[source_execution].append(header)
-                for table, rows in children.items():
-                    values[table].extend(rows)
-            with engine.begin() as connection:
-                for table, rows in values.items():
-                    if rows:
-                        connection.execute(table.insert(), rows)
-        with engine.begin() as connection:
-            # Poison only the isolated fixture, before invalidation triggers are
-            # installed. A warm refresh must never decode these legacy columns.
-            connection.exec_driver_sql("UPDATE executerecord SET raw_input='invalid-json',raw_result='invalid-json'")
-            migration("0034_analysis_rust_facts.py").install_triggers(connection)
-            migration("0035_analysis_structured_results.py").install_triggers(connection)
-            connection.exec_driver_sql("PRAGMA journal_mode=WAL")
-        emit("prepared", observations=args.observations, symbols=args.symbols)
+            for path in sorted((ROOT / "axile/server/alembic/versions").glob("*.py")):
+                if not path.stem[:4].isdigit():
+                    continue
+                revision = migration(path.name)
+                revision.op = Operations(MigrationContext.configure(connection))
+                revision.upgrade()
     finally:
         engine.dispose()
+
+    async def populate():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{args.prepare}")
+        try:
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                session.add(Account(id=1,name="synthetic-analysis",market="期货",trade_channel="ctp",brokerage="synthetic"))
+                await session.commit()
+            for start in range(0,args.observations,100):
+                async with factory() as session:
+                    for index in range(start,min(start+100,args.observations)):
+                        item = record(index,args.symbols)
+                        head = ExecuteRecord(**{key:value for key,value in vars(item).items() if key not in {"raw_input","raw_result"}})
+                        session.add(head)
+                        await session.flush()
+                        await store_execution_facts(session,head,raw_input=item.raw_input,raw_result=item.raw_result)
+                    await session.commit()
+        finally:
+            await engine.dispose()
+    asyncio.run(populate())
+    emit("prepared",observations=args.observations,symbols=args.symbols)
 
 
 def verify(database: Path, expected_records: int, expected_trades: int) -> dict:
@@ -195,7 +177,6 @@ async def worker(args) -> None:
     import sqlalchemy as sa
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from axile.server import analysis_observations, analysis_source
     from axile.server import performance_analysis as analysis
 
     os.environ["AXILE_ANALYSIS_MODE"] = "required"
@@ -218,30 +199,6 @@ async def worker(args) -> None:
 
     sa.event.listen(engine.sync_engine, "before_cursor_execute", capture)
 
-    def reject_history(*_args, **_kwargs):
-        raise AssertionError("Frozen source history was projected again during a warm refresh")
-
-    analysis_source.source_fact_values = reject_history
-    analysis_observations.observation_fact_values = reject_history
-    analysis._prepare_records = reject_history
-    original_stage = analysis.stage_publication
-    original_publish = manager._publish_structured
-
-    async def stage(*values, **keywords):
-        emit("stage_start")
-        result = await original_stage(*values, **keywords)
-        result.file.seek(0, 2)
-        emit("stage_end", spool_bytes=result.file.tell(), result_row_counts=result.complete["row_counts"])
-        result.file.seek(0)
-        return result
-
-    async def publish(*values, **keywords):
-        emit("publish_start")
-        await original_publish(*values, **keywords)
-        emit("publish_end")
-
-    analysis.stage_publication = stage
-    manager._publish_structured = publish
     hashes = []
     try:
         for round_number in range(1, 4):

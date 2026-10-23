@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -19,6 +20,21 @@ from axile.server.api.deps import get_db
 from axile.server.api.routes import account_performance as routes
 from axile.server.db.models import Account
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION, read_snapshot_status
+
+
+@pytest.mark.parametrize("memory", [{}, {"message": None}, {"message": ""}, {"message": "未达到目标"}, {"message": "RuntimeError: secret"}])
+def test_frozen_cost_display_uses_existing_normalization(memory):
+    from axile.server.execution.legacy_compat import normalize_legacy_result
+
+    symbol = {"status": "PARTIAL", "memory": memory}
+    expected = normalize_legacy_result(symbol)
+    payload = {"data": [{"record": {"raw_result": {"symbol_results": {"A": symbol}}},
+                         "attempts": [{"symbol": "A", "reason": "RuntimeError: secret"}]}]}
+    response = routes._cost_response(json.dumps(payload))
+    item = json.loads(response.body)["data"][0]
+    assert item["attempts"][0]["reason"] == expected["error"]
+    assert "secret" not in response.body.decode()
+    assert "memory" not in item["record"]["raw_result"]["symbol_results"]["A"]
 
 
 class _RouteSession:
@@ -128,30 +144,28 @@ def _build_app(session: _RouteSession) -> FastAPI:
 
 
 def _seed_database(path: Path) -> None:
-    connection = sqlite3.connect(path)
-    connection.executescript(
-        """
-        CREATE TABLE replay_observation (record_id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
-         execution_id TEXT,time TEXT NOT NULL,asset REAL,sizing_fallback INTEGER NOT NULL,
-         target_present INTEGER NOT NULL,target_weight_present INTEGER NOT NULL,
-         target_units_present INTEGER NOT NULL,target_quantities_present INTEGER NOT NULL);
-        CREATE TABLE replay_observation_symbol (record_id INTEGER NOT NULL,symbol TEXT NOT NULL,
-         target REAL,price REAL,target_weight REAL,target_units REAL,target_quantity REAL,
-         PRIMARY KEY(record_id,symbol));
-        CREATE TABLE account (id INTEGER PRIMARY KEY, trade_channel TEXT NOT NULL);
-        CREATE TABLE account_settings (account_id INTEGER PRIMARY KEY,
-         backtest TEXT NOT NULL DEFAULT '{"backtest_weight_type": "ts", "backtest_fee_rate": 0.0}');
-        CREATE TABLE portfolioaccount (id INTEGER PRIMARY KEY, account_id INTEGER, portfolio_id INTEGER, created_at TEXT);
-        CREATE TABLE analysis_calendar_day (channel TEXT, day TEXT, status TEXT, calendar_id TEXT, label TEXT,
-         PRIMARY KEY(channel, day));
-        INSERT INTO account VALUES (1, 'ctp');
-        INSERT INTO account_settings VALUES (1, '{"backtest_weight_type": "ts", "backtest_fee_rate": 0.0}');
-        INSERT INTO replay_observation VALUES (1,1,'e-1','2026-01-01T10:00:00',100.0,0,1,1,0,0);
-        INSERT INTO replay_observation VALUES (2,1,'e-2','2026-01-02T10:00:00',110.0,0,1,1,0,0);
-        """
-    )
-    connection.commit()
-    connection.close()
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlmodel import SQLModel
+
+    from tests.unit.server._business_analysis_support import analysis_record, persist_records
+    from tests.unit.server._execution_test_support import build_account
+
+    async def seed():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(SQLModel.metadata.create_all)
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                session.add(build_account(id=1,portfolio_id=None))
+                await session.flush()
+                await persist_records(session,[analysis_record(id=i,account_id=1,execution_id=f"e-{i}",
+                    created_at=f"2026-01-0{i}T10:00:00",is_success=1,input={"curr_target":{}},
+                    result={"account_assets":{"total_asset":asset,"positions":[]}})
+                    for i,asset in [(1,100.0),(2,110.0)]])
+                await session.commit()
+        finally:
+            await engine.dispose()
+    asyncio.run(seed())
 
 
 def test_performance_route_computes_synchronously_without_backtest(tmp_path: Path, monkeypatch) -> None:
@@ -187,15 +201,9 @@ def test_snapshot_route_reads_published_snapshot(tmp_path: Path, monkeypatch) ->
     connection = sqlite3.connect(path)
     connection.executescript(
         """
-        CREATE TABLE account_analysis (account_id INTEGER PRIMARY KEY, source_version INTEGER NOT NULL DEFAULT 1,
-         published_version INTEGER NOT NULL DEFAULT 0, requested INTEGER NOT NULL DEFAULT 0,
-         current_snapshot TEXT, running_version INTEGER, failures INTEGER NOT NULL DEFAULT 0,
-         retry_at REAL NOT NULL DEFAULT 0, error TEXT);
-        CREATE TABLE performance_snapshot (id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
-         logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT, settings TEXT,
-         ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);
-        INSERT INTO account_analysis VALUES (1, 1, 1, 0, 'snap-1', NULL, 0, 0, NULL);
-        INSERT INTO performance_snapshot VALUES ('snap-1', 1, 1, '18', 'equity-ledger-1',
+        INSERT INTO account_analysis(account_id,source_version,published_version,requested,current_snapshot,failures,retry_at)
+        VALUES (1,1,1,0,'snap-1',0,0);
+        INSERT INTO performance_snapshot(id,account_id,source_version,logic_version,engine_version,computed_at,data_until,settings,ranges,result_schema_version) VALUES ('snap-1', 1, 1, '19', 'equity-ledger-1',
          '2026-01-02T15:00:00', NULL,
          '{"backtest_weight_type": "cs", "backtest_fee_rate": 0.0}',
          '{"all": {"performance": {"settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0},

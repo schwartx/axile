@@ -17,7 +17,7 @@ from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.performance_costs import SHANGHAI
 
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
-LOGIC_VERSION = "18"
+LOGIC_VERSION = "19"
 ENGINE_VERSION = "equity-ledger-1"
 
 
@@ -34,6 +34,8 @@ def ensure_native_capabilities() -> None:
         "queue_fail",
         "queue_release",
     )
+    if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 40:
+        raise RuntimeError("Native analysis extension requires direct business facts schema 0039; rebuild the wheel")
     missing = [name for name in required if not callable(getattr(_core, name, None))]
     if missing:
         raise RuntimeError(f"Native analysis extension must export {', '.join(missing)}; rebuild the wheel")
@@ -103,10 +105,8 @@ class AnalysisManager:
         )
 
     async def _run_native(self, row) -> None:
-        """Python 仅准备源事实；Rust 负责计算、结果暂存及成功发布事务。"""
+        """Python 准备渠道日历；Rust 直接读取业务事实并原子发布。"""
         from axile.server.analysis_calendar import ensure_calendar_facts
-        from axile.server.analysis_observations import ensure_observation_facts
-        from axile.server.analysis_source import ensure_source_facts
 
         async with self.sessions() as session:
             path = session.get_bind().url.database
@@ -126,10 +126,6 @@ class AnalysisManager:
             settings = backtest.model_dump(mode="json")
             channel = str(metadata.trade_channel)
             await session.rollback()
-            await ensure_observation_facts(session, row["account_id"])
-            progress = await ensure_source_facts(session, row["account_id"])
-            if progress.unsupported:
-                raise ValueError("Unsupported historical analysis facts")
             await ensure_calendar_facts(session, row["account_id"], channel)
         request = {
             "command": "publish_store",

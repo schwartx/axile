@@ -273,13 +273,4 @@ async def compact_record_notification_context(session: Any, record: Any, event: 
         .where(execution_extension.c.record_id == record.id)
         .values(extra={**extra, "server_notification_context": reference})
     )
-    # extra 的物理变化仍须触发正常失效；同事务从解引用后的真实事实重建，
-    # 避免尚未请求分析的账户永久丢失列表成交数、成本及回放观测。
-    from axile.server.analysis_history import read_analysis_record
-    from axile.server.analysis_observations import write_observation_fact
-    from axile.server.analysis_source import write_source_facts
-
-    analysis_record = await read_analysis_record(session, record)
-    await write_observation_fact(session, analysis_record)
-    await write_source_facts(session, analysis_record)
     return True

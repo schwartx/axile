@@ -474,6 +474,7 @@ fn queue_fail(
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("ANALYSIS_FACT_SCHEMA", 40)?;
     m.add_class::<Store>()?;
     m.add_function(wrap_pyfunction!(queue_enqueue, m)?)?;
     m.add_function(wrap_pyfunction!(queue_status, m)?)?;

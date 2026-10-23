@@ -306,22 +306,8 @@ fn range_header(
 
 /// Summary rows are frozen per snapshot; the range only filters by time bounds.
 fn summary_sql() -> String {
-    let columns = SUMMARY_COLUMNS
-        .iter()
-        .map(|name| {
-            if crate::execution_summary::SUMMARY_COLUMNS.contains(name) {
-                format!("s.{name}")
-            } else {
-                format!("e.{name}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(
-        "SELECT {columns} FROM performance_execution_summary s
-         JOIN performance_cost_execution e
-           ON s.snapshot_id=e.snapshot_id AND s.record_id=e.record_id"
-    )
+    let columns = SUMMARY_COLUMNS.iter().map(|name|format!("s.{name}")).collect::<Vec<_>>().join(",");
+    format!("SELECT {columns} FROM performance_cost_execution s")
 }
 
 /// Range-bounded filters; a missing bound pair yields no rows, matching sa.false().
@@ -334,15 +320,11 @@ fn summary_filters(
     sql: &mut String,
     params: &mut Vec<Box<dyn rusqlite::ToSql>>,
 ) -> Result<(), String> {
-    let bounds = scalar_row(
-        connection,
-        "SELECT baseline,end FROM performance_cost_range WHERE snapshot_id=?1 AND range_key=?2",
-        &[&snapshot_id, &range_key],
-    )?
-    .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少区间边界")?;
+    let bounds = crate::native_publication::copy::range_bounds(connection,snapshot_id,range_key)?
+        .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少区间边界")?;
     params.push(Box::new(snapshot_id.to_owned()));
-    sql.push_str(" WHERE s.snapshot_id=?");
-    if let (Some(lower), Some(upper)) = (bounds[0].as_f64(), bounds[1].as_f64()) {
+    sql.push_str(" WHERE s.snapshot_id=? AND s.amount_complete IS NOT NULL");
+    if let (Some(lower), Some(upper)) = bounds {
         sql.push_str(" AND s.time>=? AND s.time<=?");
         params.push(Box::new(lower));
         params.push(Box::new(upper));
@@ -635,7 +617,7 @@ pub fn execution_detail(
     let summary = scalar_row(
         connection,
         &format!(
-            "SELECT {} FROM performance_execution_summary WHERE snapshot_id=?1 AND record_id=?2",
+            "SELECT {} FROM performance_cost_execution WHERE snapshot_id=?1 AND record_id=?2 AND amount_complete IS NOT NULL",
             summary_columns.join(",")
         ),
         &[&snapshot_id, &record_id],
@@ -801,11 +783,6 @@ mod tests {
                  CREATE TABLE performance_result_event (
                      snapshot_id TEXT, range_key TEXT, idx INTEGER, time TEXT, tag TEXT, text TEXT,
                      execution_id TEXT, PRIMARY KEY(snapshot_id, range_key, idx));
-                 CREATE TABLE performance_execution_summary (
-                     snapshot_id TEXT, record_id INTEGER, time REAL, value REAL, cost REAL, loss_bp REAL,
-                     coverage REAL, covered INTEGER, count INTEGER, fee_covered INTEGER,
-                     amount_complete INTEGER, covered_value REAL, estimated INTEGER, symbol_count INTEGER,
-                     has_transactions INTEGER, PRIMARY KEY(snapshot_id, record_id));
                  CREATE TABLE performance_execution_fee (
                      snapshot_id TEXT, record_id INTEGER, currency TEXT, value REAL, count INTEGER,
                      PRIMARY KEY(snapshot_id, record_id, currency));
@@ -816,10 +793,7 @@ mod tests {
                      positions_present INTEGER, reason TEXT, raw_present INTEGER, has_symbol_results INTEGER,
                      raw_status TEXT, raw_task_status TEXT, raw_error TEXT, raw_outcome TEXT,
                      raw_outcome_reason TEXT, raw_reason_code TEXT, raw_msg TEXT, raw_execution_kind TEXT,
-                     payload TEXT, PRIMARY KEY(snapshot_id, record_id));
-                 CREATE TABLE performance_cost_range (
-                     snapshot_id TEXT, range_key TEXT, baseline REAL, end REAL,
-                     PRIMARY KEY(snapshot_id, range_key));
+                     payload TEXT,value REAL,cost REAL,loss_bp REAL,coverage REAL,covered INTEGER,count INTEGER,fee_covered INTEGER,amount_complete INTEGER,covered_value REAL,estimated INTEGER,has_transactions INTEGER, PRIMARY KEY(snapshot_id, record_id));
                  CREATE TABLE performance_cost_position (
                      snapshot_id TEXT, record_id INTEGER, idx INTEGER, symbol TEXT, quantity REAL,
                      direction TEXT, PRIMARY KEY(snapshot_id, record_id, idx));
@@ -847,15 +821,12 @@ mod tests {
                  INSERT INTO performance_snapshot VALUES ('s1',2,1,'18','equity-ledger-1','2026-01-03T00:00:00','2026-01-02T09:00:00','cs',0.0,1,2,1);
                  INSERT INTO performance_snapshot VALUES ('foreign',3,1,'18','equity-ledger-1',NULL,NULL,'cs',0.0,1,2,1);
                  INSERT INTO performance_snapshot VALUES ('legacy',2,1,'18','equity-ledger-1',NULL,NULL,'cs',0.0,1,2,0);
-                 INSERT INTO performance_result_range VALUES ('s1','all','equity-ledger-1',1,'2026-01-01T09:00:00','2026-01-02T09:00:00',1,1,1,1,0,0,'available','cal','日历',1);
+                 INSERT INTO performance_result_range VALUES ('s1','all','equity-ledger-1',1,'1970-01-01T08:00:01','1970-01-01T08:00:02',1,1,1,1,0,0,'available','cal','日历',1);
                  INSERT INTO performance_result_point VALUES ('s1','all',0,'2026-01-01','2026-01-01T09:00:00',NULL,NULL,NULL,100.0,NULL,NULL,NULL,NULL,NULL,NULL,0);
                  INSERT INTO performance_result_point VALUES ('s1','all',1,'2026-01-02','2026-01-02T09:00:00',1,'e-1',0.1,110.0,NULL,0.1,NULL,NULL,NULL,NULL,1);
-                 INSERT INTO performance_cost_range VALUES ('s1','all',1000.0,2000.0);
-                 INSERT INTO performance_execution_summary VALUES ('s1',1,1500.0,1234.5,-0.5,NULL,1.0,1,1,2,1,1234.5,0,1,1);
-                 INSERT INTO performance_execution_summary VALUES ('s1',2,1800.0,NULL,NULL,NULL,NULL,0,0,0,1,0,0,NULL,0);
                  INSERT INTO performance_execution_fee VALUES ('s1',1,'USD',0.0,1),('s1',1,'BTC',-0.000001,1);
-                 INSERT INTO performance_cost_execution VALUES ('s1',1,1500.0,1,0,'k-1','e-1','2026-01-01T09:30:00',1,0.25,1,1,1,1,NULL,0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}');
-                 INSERT INTO performance_cost_execution VALUES ('s1',2,1800.0,1,1,'k-2','e-2','2026-01-02T09:30:00',1,0.1,0,0,0,0,'noop',0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}');
+                 INSERT INTO performance_cost_execution VALUES ('s1',1,1500.0,1,0,'k-1','e-1','2026-01-01T09:30:00',1,0.25,1,1,1,1,NULL,0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}',1234.5,-0.5,NULL,1.0,1,1,2,1,1234.5,0,1);
+                 INSERT INTO performance_cost_execution VALUES ('s1',2,1800.0,1,1,'k-2','e-2','2026-01-02T09:30:00',1,0.1,0,0,0,0,'noop',0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}',NULL,NULL,NULL,NULL,0,0,0,1,0,0,0);
                  INSERT INTO performance_cost_transaction VALUES ('s1',1,0,'A','buy',0.5,2469.0,NULL,NULL,1500.25,NULL,0,NULL,NULL,1234.5,-0.5,NULL,1.0,1,1,1,2);
                  INSERT INTO performance_cost_transaction_fee VALUES ('s1',1,0,'USD',-0.25);",
             )

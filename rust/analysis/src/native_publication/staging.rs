@@ -20,8 +20,14 @@ pub(super) const RESULT_TABLES: &[&str] = &[
     "performance_result_skip",
     "performance_result_point",
     "performance_result_range",
-    "performance_execution_summary",
     "performance_execution_fee",
+    "performance_cost_execution",
+    "performance_cost_trade",
+    "performance_cost_execution_symbol",
+    "performance_cost_position",
+    "performance_cost_attempt",
+    "performance_cost_transaction",
+    "performance_cost_transaction_fee",
 ];
 
 #[derive(Debug)]
@@ -180,7 +186,7 @@ fn create_table(
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
             || !matches!(
                 column.kind.as_str(),
-                "TEXT" | "INTEGER" | "FLOAT" | "REAL" | "BOOLEAN"
+                "TEXT" | "INTEGER" | "FLOAT" | "REAL" | "BOOLEAN" | "JSON"
             )
         {
             return Err(invalid("unsupported result schema column"));
@@ -247,6 +253,9 @@ fn cell(column: &Column, value: &Value) -> Result<SqlValue, AnalysisError> {
     }
     let parsed = match column.kind.as_str() {
         "TEXT" => value.as_str().map(|value| SqlValue::Text(value.to_owned())),
+        "JSON" if column.name == "payload" && value.as_str() == Some("{}") => {
+            Some(SqlValue::Text("{}".into()))
+        }
         "INTEGER" => value.as_i64().map(SqlValue::Integer),
         "BOOLEAN" => value
             .as_bool()
@@ -318,6 +327,22 @@ pub(super) fn copy_results(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn payload_accepts_only_empty_compatibility_object() {
+        let column = Column {
+            name: "payload".into(),
+            kind: "JSON".into(),
+            required: true,
+            key: 0,
+        };
+        assert_eq!(
+            cell(&column, &json!("{}")).unwrap(),
+            SqlValue::Text("{}".into())
+        );
+        assert!(cell(&column, &json!("{\"history\":[]} ")).is_err());
+        assert!(cell(&column, &json!({})).is_err());
+    }
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

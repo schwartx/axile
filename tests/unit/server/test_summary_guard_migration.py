@@ -142,6 +142,97 @@ def historical_connection(tmp_path):
         engine.dispose()
 
 
+def test_0039_merges_only_frozen_values_and_restores_outputs(historical_connection):
+    connection = historical_connection
+    _revision(connection, "0038_summary_guard_prefilter.py").upgrade()
+    migration = _revision(connection, "0039_direct_analysis_facts.py")
+    connection.exec_driver_sql("INSERT INTO performance_cost_execution(snapshot_id,record_id,time,success,noop,symbol_count,payload) VALUES('frozen',1,1000,1,0,2,'{}'),('frozen',2,1100,1,1,0,'{}')")
+    connection.exec_driver_sql("INSERT INTO performance_execution_summary(snapshot_id,record_id,time,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete,covered_value,estimated,symbol_count,has_transactions) VALUES('frozen',1,1000,NULL,-2,NULL,NULL,0,3,1,0,0,2,2,1)")
+    connection.exec_driver_sql("INSERT INTO performance_result_range(snapshot_id,range_key,backtest_included,engine_version,baseline,end,record_count,observation_count,used_record_count,target_used_record_count,invalid_asset_count,calendar_status,event_count) VALUES('frozen','all',1,'engine','2026-01-01T09:00:00.000003','2026-01-01T01:00:00.000003Z',0,0,0,0,0,'available',0)")
+    bound = migration._millis('2026-01-01T09:00:00.000003')
+    connection.exec_driver_sql("INSERT INTO performance_cost_range VALUES('frozen','all',?,?)", (bound,bound))
+    before = {name: connection.exec_driver_sql(f'SELECT * FROM {name}').all() for name in migration._OUTPUT_TABLES}
+    migration.upgrade()
+    assert not set(migration._OUTPUT_TABLES) & set(sa.inspect(connection).get_table_names())
+    assert connection.exec_driver_sql("SELECT value,cost,count,amount_complete,estimated FROM performance_cost_execution WHERE record_id=1").one() == (None,-2,3,0,2)
+    assert connection.exec_driver_sql("SELECT amount_complete FROM performance_cost_execution WHERE record_id=2").scalar_one() is None
+    migration.downgrade()
+    for name, rows in before.items():
+        assert connection.exec_driver_sql(f'SELECT * FROM {name}').all() == rows
+
+
+def test_0039_removes_only_inputs_and_restores_old_guards(historical_connection):
+    connection = historical_connection
+    _revision(connection, "0038_summary_guard_prefilter.py").upgrade()
+    migration = _revision(connection, "0039_direct_analysis_facts.py")
+    guards = _summary_guards(connection)
+    original_schema = _schema(connection)
+    version = connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
+    migration.upgrade()
+    assert not set(migration._TABLES) & set(sa.inspect(connection).get_table_names())
+    assert _summary_guards(connection) == guards
+    assert (
+        connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
+        == version
+    )
+    _assert_summary_protected(connection)
+    for row in _schema(connection):
+        if row.type == "trigger":
+            assert not any(table in row.sql for table in migration._TABLES)
+    migration.downgrade()
+    assert set(migration._TABLES) <= set(sa.inspect(connection).get_table_names())
+    assert _schema(connection) == original_schema
+    assert _summary_guards(connection) == guards
+    _assert_summary_protected(connection)
+    migration.upgrade()
+    assert not set(migration._TABLES) & set(sa.inspect(connection).get_table_names())
+
+
+def test_0039_retains_old_display_and_refuses_lossy_memory_downgrade(historical_connection):
+    connection = historical_connection
+    _revision(connection, "0038_summary_guard_prefilter.py").upgrade()
+    connection.exec_driver_sql("INSERT INTO performance_cost_execution_symbol(snapshot_id,record_id,symbol,present,error) VALUES('frozen',1,'A',2,'旧展示')")
+    migration = _revision(connection, "0039_direct_analysis_facts.py")
+    migration.upgrade()
+    assert connection.exec_driver_sql("SELECT error,memory_message,memory_reason_code FROM performance_cost_execution_symbol").one() == ("旧展示", None, None)
+    connection.exec_driver_sql("UPDATE performance_cost_execution_symbol SET memory_message='未达到目标'")
+    before = _schema(connection)
+    with pytest.raises(RuntimeError, match="frozen symbol memory evidence"):
+        migration.downgrade()
+    assert _schema(connection) == before
+    assert connection.exec_driver_sql("SELECT memory_message FROM performance_cost_execution_symbol").scalar_one() == "未达到目标"
+
+
+@pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+def test_0039_ddl_failure_restores_schema_and_rows(historical_connection, direction):
+    connection = historical_connection
+    _revision(connection, "0038_summary_guard_prefilter.py").upgrade()
+    migration = _revision(connection, "0039_direct_analysis_facts.py")
+    if direction == "downgrade":
+        migration.upgrade()
+    schema = _schema(connection)
+    rows = _business_rows(connection)
+    statements = []
+
+    def fail_ddl(_connection, _cursor, statement, parameters, _context, _executemany):
+        if statement.lstrip().startswith(("DROP TABLE", "CREATE TABLE")):
+            statements.append(statement)
+            if len(statements) == 2:
+                return "CREATE TABLE", parameters
+        return statement, parameters
+
+    sa.event.listen(connection, "before_cursor_execute", fail_ddl, retval=True)
+    try:
+        with pytest.raises(sa.exc.OperationalError):
+            getattr(migration, direction)()
+    finally:
+        sa.event.remove(connection, "before_cursor_execute", fail_ddl)
+    assert len(statements) == 2
+    assert _schema(connection) == schema
+    assert _business_rows(connection) == rows
+    _assert_summary_protected(connection)
+
+
 def test_0037_to_0038_roundtrip_preserves_everything_except_summary_guards(historical_connection):
     connection = historical_connection
     migration = _revision(connection, "0038_summary_guard_prefilter.py")

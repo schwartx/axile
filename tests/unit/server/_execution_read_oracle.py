@@ -1,20 +1,19 @@
-"""执行记录 API 的显式详情和有界列表投影。"""
+"""独立 Python oracle：测试按单执行恢复事实，与原生直接查询比较。"""
 
-from __future__ import annotations
-
-from collections import defaultdict
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from axile.server.db.models.analysis_source import source_execution, source_execution_symbol, source_trade
+from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models.execution import ExecuteRecord, ExecuteRecordPublic
+from axile.server.execution.legacy_compat import normalize_legacy_result
+from axile.server.performance_costs import project_execution
 
 
 class ExecuteRecordSummaryPublic(ExecuteRecordPublic):
-    """执行列表仅公开头字段与已投影的结论，不加载输入和逐单证据。"""
+    """历史列表响应契约。"""
 
     symbol_results: dict[str, dict[str, Any]] | None = None
     trade_count: int | None = None
@@ -22,102 +21,52 @@ class ExecuteRecordSummaryPublic(ExecuteRecordPublic):
 
 
 class ExecuteRecordDetailPublic(ExecuteRecordSummaryPublic):
-    """显式读取一次执行的完整业务事实；不存在的输入保持缺失。"""
+    """历史详情响应契约。"""
 
     input: Any
     result: Any
 
 
-_SYMBOL_FIELDS = ("status", "error", "outcome", "outcome_reason", "reason_code")
-
-
 async def read_execution_summaries(
-    session: AsyncSession,
-    records: Sequence[ExecuteRecord],
+    session: AsyncSession, records: Sequence[ExecuteRecord]
 ) -> dict[int, ExecuteRecordSummaryPublic]:
-    """用两次批量标量查询补充当前页，绝不调用完整业务事实重建。"""
-    ids = [record.id for record in records if record.id is not None]
-    if not ids:
-        return {}
-    sources = {
-        row["record_id"]: row
-        for row in (
-            await session.execute(
-                select(
-                    source_execution.c.record_id,
-                    source_execution.c.projection_error,
-                    source_execution.c.has_symbol_results,
-                    source_execution.c.trade_count,
-                    source_execution.c.symbol_count,
-                ).where(source_execution.c.record_id.in_(ids))
-            )
-        ).mappings()
-    }
-    symbols: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
-    rows = (
-        await session.execute(
-            select(source_execution_symbol)
-            .where(source_execution_symbol.c.record_id.in_(ids))
-            .order_by(source_execution_symbol.c.record_id, source_execution_symbol.c.symbol)
-        )
-    ).mappings()
-    for row in rows:
-        symbols[row["record_id"]][row["symbol"]] = {
-            name: row[name] for index, name in enumerate(_SYMBOL_FIELDS) if row["present"] & (1 << index)
-        }
-    result: dict[int, ExecuteRecordSummaryPublic] = {}
+    """测试专用参考实现，不依赖已删除的分析输入表。"""
+    result = {}
     for record in records:
         if record.id is None:
             continue
+        detail = await read_execution_detail(session, record)
+        raw = normalize_legacy_result(detail["result"])
+        payload, _ = project_execution(SimpleNamespace(**detail))
+        symbols = raw.get("symbol_results") if isinstance(raw, dict) else None
         summary = ExecuteRecordSummaryPublic.model_validate(record)
-        source = sources.get(record.id)
-        if source is not None and source["projection_error"] is None:
-            summary = summary.model_copy(
-                update={
-                    "symbol_results": symbols.get(record.id, {}) if source["has_symbol_results"] else None,
-                    "trade_count": source["trade_count"],
-                    "symbol_count": source["symbol_count"],
+        result[record.id] = summary.model_copy(
+            update={
+                "symbol_results": {
+                    symbol: {
+                        key: item[key]
+                        for key in ("status", "error", "outcome", "outcome_reason", "reason_code")
+                        if key in item
+                    }
+                    if isinstance(item, dict)
+                    else {}
+                    for symbol, item in symbols.items()
                 }
-            )
-        result[record.id] = summary
+                if isinstance(symbols, dict)
+                else None,
+                "trade_count": payload["tradeCount"],
+                "symbol_count": payload["symbolCount"],
+            }
+        )
     return result
 
 
-def projected_trade(row: Any) -> dict[str, Any]:
-    """把结构化成交投影列映射为已有成本展示契约。"""
-    return {
-        "symbol": row["symbol"],
-        "day": row["day"],
-        "time": row["time"],
-        "timeEstimated": row["estimated"],
-        "side": row["side"],
-        "quantity": row["quantity"],
-        "price": row["price"],
-        "reference": row["reference"],
-        "referenceSource": row["reference_source"],
-        "value": row["value"],
-        "cost": row["cost"],
-        "lossBp": row["loss_bp"],
-        "fee": row["fee"],
-        "feeCurrency": row["fee_currency"],
-    }
-
-
-async def read_projected_trades(
-    session: AsyncSession,
-    record_ids: Sequence[int],
-) -> dict[int, list[dict[str, Any]]]:
-    """只读取当前活动页的成本列，不读取订单、输入、行情或扩展。"""
-    result: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    if not record_ids:
-        return result
-    rows = (
-        await session.execute(
-            select(source_trade)
-            .where(source_trade.c.record_id.in_(record_ids))
-            .order_by(source_trade.c.record_id, source_trade.c.trade_index)
-        )
-    ).mappings()
-    for row in rows:
-        result[row["record_id"]].append(projected_trade(row))
+async def read_projected_trades(session: AsyncSession, record_ids: Sequence[int]) -> dict[int, list[dict[str, Any]]]:
+    """旧成本算法仅作为独立测试oracle，逐执行读取。"""
+    result = {}
+    for record_id in record_ids:
+        record = await session.get(ExecuteRecord, record_id)
+        if record is not None:
+            detail = await read_execution_detail(session, record)
+            _, result[record_id] = project_execution(SimpleNamespace(**detail))
     return result

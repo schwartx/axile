@@ -34,7 +34,7 @@ def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, s
                 other.account_id = 3
                 session.add(build_account(id=3, account_control_preset="default"))
                 await session.flush()
-                await persist_records(session, [bulky, other], project=True)
+                await persist_records(session, [bulky, other])
                 await session.commit()
             with (
                 patch.object(AsyncSession, "execute", side_effect=AssertionError("no Python session reads")),

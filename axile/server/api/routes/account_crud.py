@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta
 from typing import Annotated, Any, cast
 
@@ -47,6 +48,7 @@ from axile.server.db.models.account_validation import _check_algorithm_channel_c
 from axile.server.db.models.performance import PerformanceSummary
 from axile.server.execution.account_runtime_sync import enqueue_account_runtime_sync, reconcile_account_runtime
 from axile.server.execution.ctp_channels import drop_account_worker
+from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
     get_execution_task_state,
@@ -880,6 +882,29 @@ async def _reconcile_committed_runtime(session: SessionDep, sched: SchedDep, acc
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在") from exc
 
 
+def _execution_response(content: bytes | str, *, page: bool, journal: bool = False) -> Response:
+    """仅对有界响应中的品种展示应用已有兼容规则，不重读业务事实。"""
+    payload = json.loads(content)
+    for item in payload["data"] if page else [payload]:
+        record = item.get("record", {}) if journal else item
+        symbols = record.get("symbol_results")
+        if isinstance(symbols, dict):
+            normalized = normalize_legacy_result({"symbol_results": symbols})["symbol_results"]
+            record["symbol_results"] = {
+                symbol: {
+                    key: item[key]
+                    for key in ("status", "error", "outcome", "outcome_reason", "reason_code")
+                    if key in item
+                }
+                if isinstance(item, dict)
+                else {}
+                for symbol, item in normalized.items()
+            }
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), media_type="application/json"
+    )
+
+
 @router.get("/execute_records/{account_id}")
 async def list_execute_records(
     account_id: int,
@@ -898,7 +923,7 @@ async def list_execute_records(
             execution_id,
             record_id,
         )
-        return Response(content=content, media_type="application/json")
+        return _execution_response(content, page=True)
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
@@ -910,7 +935,7 @@ async def execute_record_detail(account_id: int, record_id: int) -> Response:
     """从同一原生读快照返回账户内执行的完整业务证据。"""
     try:
         content = await run_in_threadpool(_core.execution_record_detail, analysis_store(), account_id, record_id)
-        return Response(content=content, media_type="application/json")
+        return _execution_response(content, page=False)
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error

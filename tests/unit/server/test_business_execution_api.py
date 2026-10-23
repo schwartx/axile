@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
 from axile.server.api.routes import account_crud, account_execution, account_schedule
-from axile.server.db.models.analysis_source import source_execution, source_execution_symbol, source_trade
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_read_oracle import (
@@ -42,29 +42,21 @@ def test_execution_summaries_expose_only_head_and_compact_projection():
             record = ExecuteRecord(account_id=1, is_success=1, status="NOOP", execution_time=0.0)
             session.add(record)
             await session.flush()
-            await session.execute(
-                source_execution.insert().values(
-                    record_id=record.id,
-                    account_id=1,
-                    has_symbol_results=True,
-                    trade_count=0,
-                    symbol_count=0,
-                )
-            )
-            await session.execute(
-                source_execution_symbol.insert().values(
-                    record_id=record.id,
-                    symbol="SHFE.rb2610",
-                    present=3,
-                    status="NOOP",
-                    error=None,
-                )
+            await store_execution_facts(
+                session,
+                record,
+                raw_input={},
+                raw_result={
+                    "status": "NOOP",
+                    "execution_time": 0.0,
+                    "symbol_results": {"SHFE.rb2610": {"status": "NOOP", "error": None}},
+                },
             )
             summary = (await read_execution_summaries(session, [record]))[record.id]
             payload = summary.model_dump()
             assert payload["trade_count"] == payload["symbol_count"] == 0
             assert payload["execution_time"] == 0.0
-            assert payload["symbol_results"] == {"SHFE.rb2610": {"status": "NOOP", "error": None}}
+            assert payload["symbol_results"] == {"SHFE.rb2610": {"status": "NOOP", "outcome": "completed"}}
             assert not {"raw_input", "raw_result", "input", "result", "field_metadata"}.intersection(payload)
 
     asyncio.run(scenario())
@@ -78,10 +70,8 @@ def test_missing_projection_keeps_counts_unknown():
             record = ExecuteRecord(account_id=1, is_success=0)
             session.add(record)
             await session.flush()
-            summary = (await read_execution_summaries(session, [record]))[record.id]
-            assert summary.trade_count is None
-            assert summary.symbol_count is None
-            assert summary.symbol_results is None
+            with pytest.raises(ValueError):
+                await read_execution_summaries(session, [record])
 
     asyncio.run(scenario())
 
@@ -128,26 +118,27 @@ def test_activity_symbol_query_uses_projected_columns_and_account_scope(monkeypa
                     )
                     session.add(record)
                     await session.flush()
-                    await session.execute(source_execution.insert().values(record_id=record.id, account_id=account_id))
-                    await session.execute(
-                        source_trade.insert().values(
-                            record_id=record.id,
-                            trade_index=0,
-                            symbol="SHFE.rb2610",
-                            time=1234.0,
-                            day="2026-10-20",
-                            value=1000.0,
-                            cost=0.0,
-                            loss_bp=0.0,
-                            fee=0.0,
-                            fee_currency="CNY",
-                            estimated=False,
-                            side="buy",
-                            quantity=1.0,
-                            price=100.0,
-                            reference=100.0,
-                            reference_source="mid",
-                        )
+                    await store_execution_facts(
+                        session,
+                        record,
+                        raw_input={},
+                        raw_result={
+                            "symbol_results": {
+                                "SHFE.rb2610": {
+                                    "first_tick": {"bid_price": 100, "ask_price": 100},
+                                    "sizing": {"unit_multiplier": 10},
+                                    "trades": [
+                                        {
+                                            "trade_time": "2026-10-20T09:00:00",
+                                            "trade_price": 100,
+                                            "trade_volume": 1,
+                                            "fee_currency": "CNY",
+                                            "extra": {"direction": "buy", "commission": 0, "commission_asset": "CNY"},
+                                        }
+                                    ],
+                                }
+                            }
+                        },
                     )
                 await session.commit()
                 payload = json.loads(

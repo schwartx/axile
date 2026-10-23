@@ -600,8 +600,11 @@ def test_independent_asset_indices_preserve_old_execution_projections(legacy_con
     )
     _revision(connection).upgrade()
     from axile.server.business_facts import assets
-    from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
-    from axile.server.db.models.analysis_source import source_execution
+    legacy = sa.MetaData()
+    legacy.reflect(connection, only=["analysis_source_execution", "replay_observation", "replay_observation_symbol"])
+    source_execution = legacy.tables["analysis_source_execution"]
+    replay_observation = legacy.tables["replay_observation"]
+    replay_observation_symbol = legacy.tables["replay_observation_symbol"]
 
     connection.execute(
         source_execution.insert(),

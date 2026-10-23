@@ -10,7 +10,6 @@ from axile.server.db.models.analysis import (
     cost_execution,
     cost_execution_symbol,
     cost_position,
-    cost_range,
     cost_trade,
     cost_transaction,
     cost_transaction_fee,
@@ -27,7 +26,6 @@ COST_FACT_TABLES = (
     cost_attempt,
     cost_position,
     cost_execution_symbol,
-    cost_range,
     cost_trade,
     cost_execution,
 )
@@ -149,7 +147,7 @@ def _execution_children(row: dict, snapshot_id: str) -> Iterator[tuple[sa.Table,
 
 
 def range_facts(snapshot_id: str, ranges: dict) -> Iterator[dict]:
-    """Resolve range bounds once at publication instead of extracting snapshot JSON."""
+    """保留历史0034迁移调用的纯转换，不注册或写入范围副本。"""
     for key, value in ranges.items():
         performance = value["performance"]
         baseline, end = performance["baseline"], performance["end"]
@@ -174,8 +172,6 @@ def iter_cost_fact_batches(
     pending: dict[sa.Table, list[dict]] = {}
 
     def rows() -> Iterator[tuple[sa.Table, dict]]:
-        for value in range_facts(snapshot_id, ranges):
-            yield cost_range, value
         for row in projected:
             yield cost_execution, execution_fact(row, snapshot_id)
             yield from _execution_children(row, snapshot_id)

@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
 from axile.server._native import _core
-from axile.server.analysis_history import AnalysisRecord
-from axile.server.analysis_source import write_source_facts
 from axile.server.api.routes import account_schedule
+from axile.server.business_facts.repository import store_execution_facts
 from axile.server.db.models import ExecuteRecord
 from tests.unit.server._execution_test_support import build_account
 
@@ -73,17 +72,11 @@ def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch
                 )
                 session.add(record)
                 await session.flush()
-                assert await write_source_facts(
+                await store_execution_facts(
                     session,
-                    AnalysisRecord(
-                        id=7,
-                        account_id=1,
-                        execution_id="exec-7",
-                        created_at=record.created_at,
-                        is_success=1,
-                        input={"curr_target": {"rb2610": 1}, "algorithm": {"method": "TWAP"}},
-                        result=dict(_FAT_RAW),
-                    ),
+                    record,
+                    raw_input={"curr_target": {"rb2610": 1}, "algorithm": {"method": "TWAP"}},
+                    raw_result=dict(_FAT_RAW),
                 )
                 await session.commit()
                 payload = json.loads(

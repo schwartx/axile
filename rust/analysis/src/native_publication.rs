@@ -3,7 +3,7 @@
 //! Only a small receipt crosses the process boundary. Python continues to own
 //! business facts and migrations; this command writes analysis-owned tables.
 
-mod copy;
+pub(crate) mod copy;
 mod staging;
 mod task;
 mod writer;

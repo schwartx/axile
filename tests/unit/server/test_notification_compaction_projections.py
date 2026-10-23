@@ -12,9 +12,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
-from axile.server.analysis_history import read_analysis_record
-from axile.server.analysis_observations import write_observation_fact
-from axile.server.analysis_source import SOURCE_FACT_TABLES, write_source_facts
 from axile.server.business_facts.extensions import execution_extension
 from axile.server.business_facts.notification_context import (
     compact_record_notification_context,
@@ -23,7 +20,6 @@ from axile.server.business_facts.notification_context import (
 from axile.server.business_facts.repository import read_execution_result, store_execution_facts
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.analysis import analysis_state
-from axile.server.db.models.analysis_replay import replay_observation, replay_observation_symbol
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
 from axile.server.execution.supplement_notifications import finish_supplement_execution
@@ -34,7 +30,7 @@ from tests.unit.server._journal_oracle import _compact_execution_activity
 
 _EXECUTION = "notification-compaction-projections"
 _CREATED = "2026-10-20T09:00:10+08:00"
-_PROJECTIONS = (*SOURCE_FACT_TABLES, replay_observation, replay_observation_symbol)
+
 
 
 def _result():
@@ -102,9 +98,6 @@ async def _seed(factory):
         session.add(record)
         await session.flush()
         await store_execution_facts(session, record, {"curr_target": {"A": 0.25}}, payload)
-        analysis_record = await read_analysis_record(session, record)
-        await write_observation_fact(session, analysis_record)
-        assert await write_source_facts(session, analysis_record)
         await session.commit()
         return record.id
 
@@ -118,7 +111,7 @@ async def _projection_rows(session, record_id):
                 )
             ).mappings()
         )
-        for table in _PROJECTIONS
+        for table in (SQLModel.metadata.tables[name] for name in ("execution_symbol_result", "execution_symbol_sizing", "business_trade"))
     }
 
 
@@ -199,7 +192,7 @@ def test_real_extension_evidence_change_still_invalidates_projections(tmp_path):
                 )
                 await session.commit()
             async with factory() as session:
-                assert not any((await _projection_rows(session, record_id)).values())
+                assert all((await _projection_rows(session, record_id)).values())
                 assert await session.scalar(sa.select(analysis_state.c.source_version)) > version
 
     asyncio.run(scenario())
@@ -228,17 +221,8 @@ def test_distinct_business_context_is_not_compacted_or_reprojected(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("rebuild_failure", [False, True])
-def test_compaction_and_reprojection_roll_back_with_outbox(tmp_path, monkeypatch, rebuild_failure):
-    """外层失败或重建失败必须回滚 outbox、引用及所有投影，不内部提交。"""
-    if rebuild_failure:
-        from axile.server import analysis_source
-
-        async def fail_rebuild(*_args):
-            raise RuntimeError("synthetic projection failure")
-
-        monkeypatch.setattr(analysis_source, "write_source_facts", fail_rebuild)
-
+def test_compaction_rolls_back_with_outbox(tmp_path):
+    """外层失败回滚 outbox、引用及业务事实，不内部提交。"""
     async def scenario():
         async with _database(tmp_path) as factory:
             record_id = await _seed(factory)
