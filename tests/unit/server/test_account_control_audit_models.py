@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +18,6 @@ from axile.executor.account_control.models import (
 )
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
-from axile.server.db.models import AccountControlCounterDelta, AccountControlEvent
 from tests.unit.executor._account_control_test_support import normalize_account_control_override
 
 
@@ -23,13 +25,15 @@ def _clock() -> datetime:
     return datetime(2026, 3, 22, 9, 31, 15)
 
 
-def test_account_control_event_schema_supports_audit_drill_down_queries() -> None:
+def test_account_control_event_schema_supports_audit_drill_down_queries(native_database: Path) -> None:
     """审计事件应使用显式列与读侧索引支撑下钻查询。"""
-    event_columns = set(AccountControlEvent.__table__.columns.keys())
-    delta_columns = set(AccountControlCounterDelta.__table__.columns.keys())
-    index_columns = {
-        index.name: tuple(column.name for column in index.columns) for index in AccountControlEvent.__table__.indexes
-    }
+    with closing(sqlite3.connect(native_database)) as connection:
+        event_columns = {row[1] for row in connection.execute("PRAGMA table_info(account_control_event)")}
+        delta_columns = {row[1] for row in connection.execute("PRAGMA table_info(account_control_counter_delta)")}
+        index_columns = {
+            row[1]: tuple(column[2] for column in connection.execute(f"PRAGMA index_info({row[1]})"))
+            for row in connection.execute("PRAGMA index_list(account_control_event)")
+        }
 
     assert event_columns == {
         "account_id",

@@ -2,20 +2,32 @@
 
 import json
 from copy import deepcopy
-from importlib import import_module
 
 import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 
-from tests.unit.server.test_session_closed_execution import closed_result
-
-revision = import_module("axile.server.alembic.versions.0030_partial_session_tasks")
+from tests.conftest import initialize_native_database
+from tests.unit.server.test_analysis_structured_migration import _connect, _downgrade, _upgrade
 
 
-def test_migrate_only_unambiguous_partial_sessions():
-    raw = closed_result()
-    raw.update(status="PARTIAL", outcome="not_reached", outcome_reason=None)
+def test_migrate_only_unambiguous_partial_sessions(tmp_path):
+    raw = {
+        "status": "PARTIAL",
+        "reason_code": "COMMON.SESSION.CLOSED",
+        "error": "非交易时段",
+        "success": False,
+        "outcome": "not_reached",
+        "outcome_reason": None,
+        "symbol_results": {
+            "m2701": {
+                "status": "BLOCKED",
+                "reason_code": "COMMON.SESSION.CLOSED",
+                "target_volume": -38,
+                "final_volume": None,
+                "orders": [],
+                "trades": [],
+            }
+        },
+    }
     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "target_volume": -6, "final_volume": -6}
     failed = deepcopy(raw)
     failed["symbol_results"]["ag2612"]["status"] = "FAILED"
@@ -32,28 +44,27 @@ def test_migrate_only_unambiguous_partial_sessions():
         (raw, "FAILED", None, None, 2),
         ("malformed", "FAILED", None, None, 1),
     ]
-    engine = sa.create_engine("sqlite://")
-    with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE execution_intent (execution_id TEXT, account_id INTEGER, status TEXT, "
-            "error TEXT, cancel_requested_at TEXT, cancel_reason TEXT, terminate_mode TEXT)"
-        )
-        connection.exec_driver_sql(
-            "CREATE TABLE executerecord (id INTEGER PRIMARY KEY, execution_id TEXT, account_id INTEGER, "
-            "is_success INTEGER, raw_result JSON)"
-        )
+    database = tmp_path / "partial-session.db"
+    initialize_native_database(database, revision="0029")
+    with _connect(database) as connection:
         for index, (value, status, error, cancel, account) in enumerate(cases):
             connection.execute(
-                sa.text("INSERT INTO execution_intent VALUES (:id, 1, :status, :error, NULL, :cancel, NULL)"),
+                sa.text(
+                    "INSERT INTO execution_intent(execution_id,account_id,status,error,cancel_reason,kind,trigger_source,payload,created_at) "
+                    "VALUES(:id,1,:status,:error,:cancel,'execute','manual','{}','2026-01-01')"
+                ),
                 {"id": str(index), "status": status, "error": error, "cancel": cancel},
             )
             connection.execute(
-                sa.text("INSERT INTO executerecord VALUES (:id, :exec, :account, 0, :raw)"),
+                sa.text(
+                    "INSERT INTO executerecord(id,execution_id,account_id,is_success,raw_result,raw_input,created_at) "
+                    "VALUES(:id,:exec,:account,0,:raw,'{}','2026-01-01')"
+                ),
                 {"id": index, "exec": str(index), "account": account, "raw": json.dumps(value)},
             )
-        with Operations.context(MigrationContext.configure(connection)):
-            revision.upgrade()
-            revision.upgrade()
+    _upgrade(database, "0030")
+    _upgrade(database, "0030")
+    with _connect(database) as connection:
         statuses = (
             connection.execute(sa.text("SELECT status FROM execution_intent ORDER BY execution_id")).scalars().all()
         )
@@ -63,9 +74,8 @@ def test_migrate_only_unambiguous_partial_sessions():
         assert migrated == dict(raw, task_status="PARTIAL", outcome_reason="非交易时段")
         assert [json.loads(value) for value in results[1:]] == [case[0] for case in cases[1:]]
         assert connection.scalar(sa.text("SELECT sum(is_success) FROM executerecord")) == 0
-        with Operations.context(MigrationContext.configure(connection)):
-            revision.downgrade()
+    _downgrade(database, "0029")
+    with _connect(database) as connection:
         assert connection.scalar(sa.text("SELECT status FROM execution_intent WHERE execution_id='0'")) == "FAILED"
         restored = json.loads(connection.scalar(sa.text("SELECT raw_result FROM executerecord WHERE id=0")))
         assert restored == dict(migrated, task_status="FAILED")
-    engine.dispose()

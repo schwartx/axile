@@ -7,10 +7,10 @@ import pytest
 
 from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
-from axile.server.business_facts.head import execution_head_values
-from axile.server.business_facts.repository import decode_result_facts, encode_result_facts
+from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import lifecycle, records, registry
+from tests.unit.server._business_facts_test_support import persist_result, seed_account
 
 
 def closed_result():
@@ -32,24 +32,25 @@ def closed_result():
     }
 
 
-def _record(result, *, execution_id="session-closed-record", is_success=0):
-    """通过正式头字段转换构造任务回放所读取的紧凑记录。"""
-    return ExecuteRecord(
-        id=4,
-        account_id=1,
-        execution_id=execution_id,
-        created_at="2026-10-16T10:15:07",
-        is_success=is_success,
-        **execution_head_values(result, is_success=is_success),
+def _record(path, result, *, execution_id="session-closed-record", is_success=0):
+    """使用真实原生终态，回放只读取持久化后的紧凑 DTO。"""
+    return ExecuteRecord.model_validate(
+        persist_result(
+            path,
+            result,
+            execution_id=execution_id,
+            is_success=is_success,
+            created_at="2026-10-16T10:15:07",
+        )
     )
 
 
 @pytest.mark.parametrize("failure", ["FAILED", "PARTIAL", "BLOCKED"])
-def test_real_errors_alongside_closed_symbols_are_not_session_skips(failure):
+def test_real_errors_alongside_closed_symbols_are_not_session_skips(native_database, failure):
     raw = closed_result()
     raw["symbol_results"]["ag2612"] = {"status": failure, "reason_code": "CHANNEL.QUERY_FAILED"}
     assert session_closed_scope(raw) is None
-    record = _record(raw)
+    record = _record(native_database, raw)
     assert lifecycle._resolve_completion_status(record) == ExecutionTaskStatus.FAILED
 
 
@@ -96,23 +97,26 @@ def test_order_evidence_prevents_a_neutral_session_title_in_lightweight_results(
     assert session_closed_scope(output.model_dump(mode="json")) is None
 
 
-def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target():
+def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target(native_database):
     raw = closed_result()
     raw["status"] = "PARTIAL"
     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "final_volume": -6, "target_volume": -6}
     assert session_closed_scope(raw) == "partial"
-    assert lifecycle._resolve_completion_status(_record(raw)) == ExecutionTaskStatus.PARTIAL
+    assert lifecycle._resolve_completion_status(_record(native_database, raw)) == ExecutionTaskStatus.PARTIAL
 
 
 @pytest.mark.parametrize("partial", [False, True])
-def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeypatch, partial):
+def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeypatch, native_database, partial):
     captured = {}
+    original = records._persist_execute_record
+    seed_account(native_database)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
 
     async def persist(**kwargs):
         captured.update(kwargs)
-        batch = encode_result_facts(4, kwargs["raw_result"], is_success=kwargs["is_success"])
-        captured["result"] = decode_result_facts({table.name: rows for table, rows in batch.items()})
-        return _record(kwargs["raw_result"], execution_id=kwargs["execution_id"], is_success=kwargs["is_success"])
+        record = await original(**kwargs)
+        captured["result"] = await read_execution_result(record)
+        return record
 
     monkeypatch.setattr(records, "_persist_execute_record", persist)
     logger = Mock()

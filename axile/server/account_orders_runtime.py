@@ -11,9 +11,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import update
-from sqlmodel import col
-
 from axile.executor.account_control.decorators import run_controlled_call
 from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlSource
@@ -22,9 +19,7 @@ from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server.account_control import providers
 from axile.server.account_control.store import AccountControlStore
-from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_control import AccountControlEvent
 from axile.server.db.models.account_order import AccountOrderPublic
 from axile.server.execution.execution_account_control import build_account_control_guard, flush_account_control_records
 from axile.server.order_attributes import order_attributes
@@ -129,9 +124,8 @@ def public_order(order: UnifiedOrder) -> dict[str, Any]:
 
 async def _flush_borrowed_guard(guard: Any) -> None:
     _, events = guard.flush_records()
-    async with SessionLocal() as session:
-        # delta_uid 对应整个 guard 的累计量，提前插入会让最终 OR IGNORE 丢掉后续计数。
-        await AccountControlStore(session).flush_execution_records(counter_deltas=[], events=events)
+    # delta_uid 对应整个 guard 的累计量，提前插入会丢掉执行收尾前的后续计数。
+    await AccountControlStore().flush_execution_records(counter_deltas=[], events=events)
 
 
 @contextmanager
@@ -232,14 +226,7 @@ def _observe_cancellation(executor: Any, symbol: str, order_id: str) -> None:
 
 
 async def _persist_cancel_outcomes(events: list[dict[str, Any]]) -> None:
-    async with SessionLocal() as session:
-        for event in events:
-            await session.execute(
-                update(AccountControlEvent)
-                .where(col(AccountControlEvent.event_uid) == event["event_uid"])
-                .values(outcome=event["outcome"], metadata_=event["metadata"])
-            )
-        await session.commit()
+    await AccountControlStore().update_event_outcomes(events)
 
 
 def _cancellation_failures(executor: Any, tracked: list, *, persist: bool = True) -> list[dict[str, Any]]:

@@ -6,20 +6,15 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.10.11",
-    "aiosqlite>=0.21.0",
-    "alembic>=1.15.2",
     "apscheduler>=3.11.0",
     "croniter>=5.0.0",
     "fastapi[standard]>=0.115.12",
-    "greenlet>=3.3.0",
     "loguru>=0.7.3",
     "numpy==2.3.2",
     "pandas>=2.2.3",
     "pydantic-settings>=2.8.1",
     "python-dotenv>=1.1.0",
-    "sqlalchemy>=2.0.46",
     "shinny-calendar>=1.0.2026,<2",
-    "sqlmodel>=0.0.24",
     "streamlit>=1.41.0",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
@@ -37,6 +32,11 @@ all = ["axile[ctp]", "axile[gm]", "axile[tqsdk]"]
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.21.0",
+    "alembic>=1.15.2",
+    "greenlet>=3.3.0",
+    "sqlalchemy>=2.0.46",
+    "sqlmodel>=0.0.24",
     "basedpyright>=1.29.1",
     "commitizen>=4.11.1",
     "hatchling>=1.27.0",

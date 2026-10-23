@@ -187,14 +187,13 @@ def test_control_audit_list_exposes_context_type_and_all_sources(database):
     )
 
     async def verify():
-        async with database() as session:
-            page = await query_account_control_audit_executions(session, account_id=1, control_date="2026-10-15")
-            assert page.count == 3
-            contexts = {row.execution_id: row for row in page.data}
-            assert contexts["exec-1"].context_kind == "execution"
-            assert contexts["exec-1"].sources == ["algorithm", "manual_cancel"]
-            assert contexts["op"].context_kind == "account_operation"
-            assert contexts["old-unknown"].context_kind == "unknown"
+        page = json.loads(await query_account_control_audit_executions(account_id=1, control_date="2026-10-15"))
+        assert page["count"] == 3
+        contexts = {row["execution_id"]: row for row in page["data"]}
+        assert contexts["exec-1"]["context_kind"] == "execution"
+        assert contexts["exec-1"]["sources"] == ["algorithm", "manual_cancel"]
+        assert contexts["op"]["context_kind"] == "account_operation"
+        assert contexts["old-unknown"]["context_kind"] == "unknown"
 
     asyncio.run(verify())
 

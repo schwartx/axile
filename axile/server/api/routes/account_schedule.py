@@ -15,7 +15,6 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.executor.trading_calendar import SHINNY_COVERAGE_END, SHINNY_COVERAGE_START
 from axile.server._native import _core
-from axile.server.api.routes.account_crud import _execution_response
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, is_blank_cron_expr, parse_cron_expr
 from axile.server.db.models.account_settings import SupplementSettings
@@ -274,7 +273,7 @@ async def account_activity(
     """从同一原生读快照返回执行与休市混排页。"""
     try:
         content = await run_in_threadpool(_core.journal, analysis_store(), account_id, skip, limit, since, until)
-        return _execution_response(content, page=True, journal=True)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error

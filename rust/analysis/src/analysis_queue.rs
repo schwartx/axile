@@ -1,7 +1,7 @@
 //! Durable queue operations; each writer owns one short IMMEDIATE transaction.
-use std::time::Duration;
+use std::path::Path;
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
@@ -17,20 +17,11 @@ fn open(path: &str, write: bool) -> Result<Connection, AnalysisError> {
             "Queue requires a file-backed SQLite database",
         ));
     }
-    let flags = if write {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
+    if write {
+        crate::storage_connection::open_writer(Path::new(path), true)
     } else {
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-    };
-    let connection = Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(database)?;
-    connection
-        .execute_batch("PRAGMA foreign_keys=ON;")
-        .map_err(database)?;
-    Ok(connection)
+        crate::storage_connection::open_reader(Path::new(path))
+    }
 }
 
 fn write<T>(
@@ -136,7 +127,49 @@ pub fn fail(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+
+    #[test]
+    fn queue_write_is_atomic_and_committed_before_returning() {
+        let directory =
+            std::env::temp_dir().join(format!("axile-queue-atomic-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("queue.sqlite");
+        let path = path.to_str().unwrap();
+        Connection::open(path)
+            .unwrap()
+            .execute_batch("CREATE TABLE entries(value INTEGER NOT NULL UNIQUE);")
+            .unwrap();
+        let error = write(path, |connection| {
+            connection.execute("INSERT INTO entries VALUES (1)", [])?;
+            connection.execute("INSERT INTO entries VALUES (1)", [])?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "DATABASE_QUEUE");
+        let reader = open(path, false).unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT COUNT(*) FROM entries", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        write(path, |connection| {
+            connection.execute("INSERT INTO entries VALUES (2)", [])
+        })
+        .unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT value FROM entries", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        drop(reader);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn queue_waits_for_committed_source_changes() {
@@ -152,7 +185,8 @@ mod tests {
             writer.busy_timeout(Duration::from_secs(2)).unwrap();
             writer
                 .execute_batch(
-                    "CREATE TABLE account_analysis(account_id INTEGER PRIMARY KEY,
+                    "PRAGMA journal_mode=WAL;
+                CREATE TABLE account_analysis(account_id INTEGER PRIMARY KEY,
                 source_version INTEGER DEFAULT 1, published_version INTEGER DEFAULT 0,
                 current_snapshot TEXT, requested INTEGER DEFAULT 1, running_version INTEGER,
                 running_token TEXT, failures INTEGER DEFAULT 0, retry_at REAL DEFAULT 0,

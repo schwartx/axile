@@ -8,16 +8,11 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from functools import lru_cache
 from typing import Any, cast
 from uuid import uuid4
 
 from loguru import logger
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
-from sqlmodel import Session, col, select
 
-from axile.common.config import settings
 from axile.executor.connection_presentation import presentation_snapshot
 from axile.executor.connection_state import (
     ConnectionObservation,
@@ -27,29 +22,14 @@ from axile.executor.connection_state import (
 from axile.server.db.models.account_connection import (
     AccountConnectionDetail,
     AccountConnectionPublic,
-    AccountConnectionState,
 )
+from axile.server.native_store import native_operation, native_operation_sync
 
 
 def connection_config_key(channel: object, config: object) -> str:
     """比较规范化连接配置；签名不公开，也不写日志。"""
     value = json.dumps([str(channel), config], sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(value.encode()).hexdigest()
-
-
-@lru_cache(maxsize=1)
-def connection_engine() -> Engine:
-    """为主服务后台线程提供独立同步连接，不复用请求事务。"""
-    engine = create_engine(str(settings.sqlalchemy_database_uri).replace("sqlite+aiosqlite:", "sqlite:"))
-
-    @event.listens_for(engine, "connect")
-    def configure(connection, _record) -> None:
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
-    return engine
 
 
 @dataclass(frozen=True)
@@ -62,18 +42,6 @@ class ConnectionBinding:
     manually_disconnected: bool = False
 
 
-def _saved_key(session: Session, account_id: int) -> str | None:
-    from axile.server.db.models.account import Account
-    from axile.server.db.models.account_settings import AccountSettings
-
-    row = session.exec(
-        select(Account.trade_channel, AccountSettings.connection)
-        .join(AccountSettings, col(AccountSettings.account_id) == col(Account.id))
-        .where(col(Account.id) == account_id)
-    ).first()
-    return connection_config_key(*row) if row is not None else None
-
-
 def begin_connection_instance(account: object) -> ConnectionBinding | None:
     """注册最新实例，拒绝使用过期配置的调用方；重连不提前清除旧异常。"""
     account_id = getattr(account, "id", None)
@@ -81,21 +49,10 @@ def begin_connection_instance(account: object) -> ConnectionBinding | None:
         return None
     key = connection_config_key(getattr(account, "trade_channel"), getattr(account, "account_config"))
     try:
-        with Session(connection_engine()) as session:
-            if _saved_key(session, account_id) != key:
-                return None
-            state = session.get(AccountConnectionState, account_id)
-            if state is None:
-                state = AccountConnectionState(account_id=account_id, config_key=key)
-            if state.config_key != key:
-                state.config_key = key
-                state.status, state.observed_at, state.message, state.error = "unknown", None, None, None
-                state.label, state.presentation = None, None
-                state.last_success_at, state.last_failure, state.manually_disconnected = None, None, False
-            state.instance_id, state.sequence = uuid4().hex, 0
-            session.add(state)
-            session.commit()
-            return ConnectionBinding(account_id, key, state.instance_id, state.manually_disconnected)
+        result = native_operation_sync(
+            "connection_begin", {"account_id": account_id, "config_key": key, "instance_id": uuid4().hex}
+        )
+        return ConnectionBinding(**result) if result is not None else None
     except Exception:
         logger.exception("账户连接实例注册失败，不改变原始操作")
         return None
@@ -112,46 +69,11 @@ def record_connection_observation(
     if binding is None:
         return
     try:
-        with Session(connection_engine()) as session:
-            state = session.get(AccountConnectionState, binding.account_id)
-            if (
-                state is None
-                or state.config_key != binding.config_key
-                or state.instance_id != binding.instance_id
-                or state.sequence >= sequence
-                or _saved_key(session, binding.account_id) != binding.config_key
-            ):
-                return
-            values = asdict(observation)
-            values.pop("kind", None)
-            values.pop("progress", None)
-            if observation.kind == "access" and observation.status == "ok":
-                values["last_success_at"] = observation.observed_at
-            if observation.status in {"error", "cooldown"}:
-                values["last_failure"] = {
-                    key: values[key] for key in ("observed_at", "message", "label", "error", "presentation")
-                }
-            if history:
-                values.update({key: value for key, value in history.items() if value is not None})
-            if observation.kind == "session":
-                if observation.status == "disconnected":
-                    values["manually_disconnected"] = True
-                elif observation.status in {"ok", "connecting", "recovering"}:
-                    values["manually_disconnected"] = False
-            # 条件 UPDATE 同时防止监控响应与业务响应竞争，把旧序号写回。
-            from sqlalchemy import update
-
-            session.execute(
-                update(AccountConnectionState)
-                .where(
-                    col(AccountConnectionState.account_id) == binding.account_id,
-                    col(AccountConnectionState.config_key) == binding.config_key,
-                    col(AccountConnectionState.instance_id) == binding.instance_id,
-                    col(AccountConnectionState.sequence) < sequence,
-                )
-                .values(sequence=sequence, **values)
-            )
-            session.commit()
+        result = native_operation_sync(
+            "connection_observe",
+            {"binding": asdict(binding), "sequence": sequence, "observation": asdict(observation), "history": history},
+        )
+        if result["applied"]:
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(binding.account_id)
@@ -297,15 +219,10 @@ def public_connection(account: object, *, detail: bool = False) -> AccountConnec
 
 async def recover_connection_sessions() -> None:
     """服务重启撤销旧实例的写回权限，保留历史和主动断开意愿。"""
-    from sqlalchemy import update
-
     from axile.server.connection_runtime import clear_sessions
-    from axile.server.core.db import SessionLocal
 
     clear_sessions()
-    async with SessionLocal() as session:
-        await session.execute(update(AccountConnectionState).values(instance_id="", sequence=0))
-        await session.commit()
+    await native_operation("connection_recover", {})
 
 
 def end_connection_instance(
@@ -320,55 +237,15 @@ def end_connection_instance(
 
     end_session(binding, message, failed=error is not None)
     try:
-        from sqlalchemy import update
-
-        with Session(connection_engine()) as session:
-            values: dict[str, object] = {"instance_id": ""}
-            if error is not None:
-                values["last_failure"] = {
-                    "observed_at": clock_now_iso(),
-                    "message": message,
-                    "error": exception_details(error),
-                }
-            session.execute(
-                update(AccountConnectionState)
-                .where(
-                    col(AccountConnectionState.account_id) == binding.account_id,
-                    col(AccountConnectionState.instance_id) == binding.instance_id,
-                    col(AccountConnectionState.config_key) == binding.config_key,
-                )
-                .values(**values)
-            )
-            session.commit()
+        failure = (
+            {"observed_at": clock_now_iso(), "message": message, "error": exception_details(error)}
+            if error is not None
+            else None
+        )
+        result = native_operation_sync("connection_end", {"binding": asdict(binding), "last_failure": failure})
+        if result["applied"]:
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(binding.account_id)
     except Exception:
         logger.exception("账户会话结束状态保存失败 account_id={}", binding.account_id)
-
-
-async def reset_connection_for_config(session, account: object) -> None:
-    """配置实际变化时，在同一提交中清除旧结果并撤销旧实例。"""
-    key = connection_config_key(getattr(account, "trade_channel"), getattr(account, "account_config"))
-    from sqlalchemy.dialects.sqlite import insert
-
-    values = dict(
-        config_key=key,
-        instance_id="",
-        sequence=0,
-        status="unknown",
-        observed_at=None,
-        message=None,
-        error=None,
-        label=None,
-        presentation=None,
-        last_success_at=None,
-        last_failure=None,
-        manually_disconnected=False,
-    )
-    statement = insert(AccountConnectionState).values(account_id=getattr(account, "id"), **values)
-    await session.execute(
-        statement.on_conflict_do_update(
-            index_elements=["account_id"], set_=values, where=col(AccountConnectionState.config_key) != key
-        )
-    )

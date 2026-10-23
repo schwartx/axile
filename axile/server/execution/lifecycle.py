@@ -18,9 +18,7 @@ from axile.executor.termination import (
     TERMINATION_TRIGGER_TIMEOUT,
     ExecutionTerminated,
 )
-from axile.server.core.db import SessionLocal
 from axile.server.db.models import (
-    Account,
     ExecuteRecord,
     now_str,
 )
@@ -50,6 +48,7 @@ from axile.server.execution.registry import (
     update_execution_task_state,
 )
 from axile.server.execution_audit import append_execution_event
+from axile.server.repositories import get_account_snapshot
 
 type ExecutionRunner = Callable[[str], Awaitable[ExecuteRecord | None]]
 
@@ -133,12 +132,10 @@ async def _load_account(account_id: int) -> AccountSnapshot | None:
 
     Returns
     -------
-    Account | None
+    AccountSnapshot | None
         命中时返回账户对象；否则返回 ``None``。
     """
-    async with SessionLocal() as session:
-        account = await session.get(Account, account_id)
-        return account.snapshot() if account is not None else None
+    return await get_account_snapshot(account_id)
 
 
 async def _require_account(account_id: int) -> AccountSnapshot:

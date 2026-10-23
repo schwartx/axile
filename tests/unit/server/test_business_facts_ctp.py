@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.business_facts.repository import (
-    read_execution_detail,
-    read_execution_input,
-    read_execution_result,
-    store_execution_facts,
-)
-from axile.server.db.models import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import persist_result, seed_account
 
 _CREATED_AT = "2026-10-16T21:05:01+08:00"
 _TRADE_TIME = "2026-10-16T21:05:00+08:00"
@@ -25,42 +17,26 @@ _ORDER_ID = "20261019:7:23:000001"
 
 
 def _roundtrip(
-    result: dict[str, object], *, execution_input: dict[str, object] | None = None
+    path, result: dict[str, object], *, execution_input: dict[str, object] | None = None
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """跨事务重新加载，确保检查实际持久化后的事实。"""
+    """每个原生阶段关闭连接后重读，检查真实持久化后的事实。"""
     payload = execution_input if execution_input is not None else {"channel_type": "CTP"}
-
-    async def scenario() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-            async with factory() as session:
-                record = ExecuteRecord(
-                    account_id=22,
-                    execution_id="ctp-facts-roundtrip",
-                    created_at=_CREATED_AT,
-                    is_success=0,
-                )
-                session.add(record)
-                await session.flush()
-                await store_execution_facts(session, record, payload, result)
-                await session.commit()
-                record_id = record.id
-            async with factory() as session:
-                stored = await session.get(ExecuteRecord, record_id)
-                assert stored is not None
-                assert stored.input_id is not None
-                return (
-                    await read_execution_input(session, stored.input_id),
-                    await read_execution_result(session, stored),
-                    await read_execution_detail(session, stored),
-                )
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(scenario())
+    seed_account(path, 22)
+    record = persist_result(
+        path,
+        result,
+        raw_input=payload,
+        account_id=22,
+        execution_id="ctp-facts-roundtrip",
+        created_at=_CREATED_AT,
+    )
+    assert record["input_id"] is not None
+    identity = {"account_id": 22, "record_id": record["id"]}
+    return (
+        native_store_call(path, "read_execution_input", {"input_id": record["input_id"]}),
+        native_store_call(path, "read_execution_result", identity),
+        native_store_call(path, "read_execution_detail", identity),
+    )
 
 
 def _order(*, order_id: str = _ORDER_ID, offset: str = "3") -> dict[str, object]:
@@ -154,7 +130,7 @@ def _position() -> dict[str, object]:
     }
 
 
-def test_ctp_execution_preserves_natural_time_identity_offset_and_frozen_values() -> None:
+def test_ctp_execution_preserves_natural_time_identity_offset_and_frozen_values(native_database) -> None:
     result = {
         "channel_type": "CTP",
         "status": "PARTIAL",
@@ -189,7 +165,7 @@ def test_ctp_execution_preserves_natural_time_identity_offset_and_frozen_values(
             }
         },
     }
-    _, restored, detail = _roundtrip(result)
+    _, restored, detail = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     assert business_evidence(detail["result"]) == business_evidence(result)
     symbol = restored["symbol_results"]["rb2611"]
@@ -200,12 +176,14 @@ def test_ctp_execution_preserves_natural_time_identity_offset_and_frozen_values(
 
 
 @pytest.mark.parametrize("commission", [None, 0.0, -0.25])
-def test_ctp_unknown_zero_and_rebate_commission_do_not_become_each_other(commission: float | None) -> None:
+def test_ctp_unknown_zero_and_rebate_commission_do_not_become_each_other(
+    native_database, commission: float | None
+) -> None:
     trade = _trade()
     if commission is not None:
         trade["extra"].update(commission=commission, commission_currency="CNY")
     result = {"channel_type": "CTP", "trades": [trade]}
-    _, restored, _ = _roundtrip(result)
+    _, restored, _ = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     extra = restored["trades"][0]["extra"]
     if commission is None:
@@ -215,7 +193,7 @@ def test_ctp_unknown_zero_and_rebate_commission_do_not_become_each_other(commiss
         assert business_evidence(extra["commission"]) == business_evidence(commission)
 
 
-def test_ctp_native_position_missing_amounts_are_not_inferred_from_totals() -> None:
+def test_ctp_native_position_missing_amounts_are_not_inferred_from_totals(native_database) -> None:
     position = _position()
     result = {
         "channel_type": "CTP",
@@ -230,7 +208,7 @@ def test_ctp_native_position_missing_amounts_are_not_inferred_from_totals() -> N
             "extra": {"trading_day": _TRADING_DAY},
         },
     }
-    _, restored, _ = _roundtrip(result)
+    _, restored, _ = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     restored_position = restored["account_assets"]["positions"][0]
     attributes = restored_position["extra"]["position_attributes"]
@@ -243,7 +221,7 @@ def test_ctp_native_position_missing_amounts_are_not_inferred_from_totals() -> N
     ) == business_evidence(["1", "3"])
 
 
-def test_ctp_targets_keep_lots_zero_short_and_close_policy_input_semantics() -> None:
+def test_ctp_targets_keep_lots_zero_short_and_close_policy_input_semantics(native_database) -> None:
     payload = {
         "channel_type": "CTP",
         "execution_timeout": 180,
@@ -255,7 +233,7 @@ def test_ctp_targets_keep_lots_zero_short_and_close_policy_input_semantics() -> 
         "forbidden_symbols": [],
         "risk_symbols": ["hc2611"],
     }
-    restored_input, restored_result, detail = _roundtrip({"status": "NOOP"}, execution_input=payload)
+    restored_input, restored_result, detail = _roundtrip(native_database, {"status": "NOOP"}, execution_input=payload)
     assert business_evidence(restored_input) == business_evidence(payload)
     assert business_evidence(detail["input"]) == business_evidence(payload)
     assert business_evidence(restored_result) == business_evidence({"status": "NOOP"})
@@ -267,7 +245,7 @@ def test_ctp_targets_keep_lots_zero_short_and_close_policy_input_semantics() -> 
     assert business_evidence(restored_input["trade_rules"]["rb2611"]["sizing_mode"]) == business_evidence("lots")
 
 
-def test_ctp_unknown_quote_time_and_book_validity_remain_explicit() -> None:
+def test_ctp_unknown_quote_time_and_book_validity_remain_explicit(native_database) -> None:
     first_tick = {
         "symbol": "rb2611",
         "last_price": 3500.0,
@@ -287,13 +265,13 @@ def test_ctp_unknown_quote_time_and_book_validity_remain_explicit() -> None:
         },
     }
     result = {"symbol_results": {"rb2611": {"first_tick": first_tick}}}
-    _, restored, _ = _roundtrip(result)
+    _, restored, _ = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     assert business_evidence(restored["symbol_results"]["rb2611"]["first_tick"]["timestamp"]) == business_evidence(0)
     assert restored["symbol_results"]["rb2611"]["first_tick"]["book_valid"] is False
 
 
-def test_ctp_duplicate_and_unresolved_native_ids_preserve_collection_occurrences() -> None:
+def test_ctp_duplicate_and_unresolved_native_ids_preserve_collection_occurrences(native_database) -> None:
     root_order = _order(order_id="")
     nested_order = _order(order_id="", offset="4")
     root_trade = _trade(trade_id="", order_id="")
@@ -312,21 +290,21 @@ def test_ctp_duplicate_and_unresolved_native_ids_preserve_collection_occurrences
             }
         },
     }
-    _, restored, _ = _roundtrip(result)
+    _, restored, _ = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     assert business_evidence(len(restored["orders"])) == business_evidence(2)
     assert business_evidence(len(restored["trades"])) == business_evidence(2)
     assert business_evidence(restored["symbol_results"]["rb/26~11"]["trades"][0]["order_id"]) == business_evidence("")
 
 
-def test_ctp_partial_history_preserves_absent_null_and_zero_fields() -> None:
+def test_ctp_partial_history_preserves_absent_null_and_zero_fields(native_database) -> None:
     result = {
         "status": "TERMINATED",
         "orders": [{"order_id": "", "price": 0, "update_time": None}],
         "trades": [{"trade_id": "", "trade_time": "", "trade_value": None, "extra": {}}],
         "account_assets": {"source": "unavailable", "available_cash": None, "positions": []},
     }
-    _, restored, _ = _roundtrip(result)
+    _, restored, _ = _roundtrip(native_database, result)
     assert business_evidence(restored) == business_evidence(result)
     assert "volume" not in restored["orders"][0]
     assert "trade_volume" not in restored["trades"][0]

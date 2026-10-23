@@ -3,206 +3,193 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from typing import cast
+import sqlite3
+from contextlib import closing
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.business_facts.repository import (
-    execution_fact_tables,
-    read_execution_input,
-    read_execution_result,
-)
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord, Portfolio
+from axile.server._native import _core
+from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.execution import records
-from axile.server.target_weight_snapshots import append_target_weight_snapshot
-from tests.unit.server._execution_test_support import build_account
+from axile.server.target_weight_snapshots import append_target_weight_snapshot, read_target_snapshot_weights
+from tests.unit.server._business_facts_test_support import persist_result, rows, seed_account, sql
 
 
-@asynccontextmanager
-async def _database() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        async with sessions() as session:
-            session.add(build_account(id=1))
-            session.add(
-                Portfolio(
-                    id=1,
-                    name="事实测试",
-                    market="期货",
-                    custom_calc_py_code="def calculate_portfolio(context): return {}",
-                )
+@pytest.fixture
+def database(native_database, monkeypatch):
+    seed_account(native_database)
+    sql(
+        native_database,
+        "INSERT INTO portfolio(id,name,market,custom_calc_py_code,status,updated_at,created_at) "
+        "VALUES(1,'事实测试','期货','def calculate_portfolio(context): return {}','normal','now','now')",
+    )
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    return native_database
+
+
+def _fact_counts(path):
+    with closing(sqlite3.connect(path)) as connection:
+        names = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        return {
+            name: connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+            for name in names
+            if name.startswith(
+                ("business_", "execution_input", "execution_order", "execution_symbol", "execution_extension")
             )
-            await session.commit()
-        yield sessions
-    finally:
-        await engine.dispose()
+            or name in {"executerecord", "execution_termination_cancel_failure", "account_asset_snapshot"}
+        }
 
 
-def test_record_fact_freezes_final_sizing_and_commits_with_record() -> None:
+def test_record_fact_freezes_final_sizing_and_commits_with_record(database) -> None:
     async def scenario() -> None:
-        async with _database() as sessions:
-            record = await records._persist_execute_record(
-                account_id=1,
-                execution_id="sized",
-                raw_input={"account_config": {"secret": "hidden"}, "curr_target": {"A": 0.9}},
-                raw_result={
-                    "account_assets": {"total_asset": 1000.0, "positions": []},
-                    "symbol_results": {
-                        "A": {
-                            "first_tick": {"last_price": 100.0},
-                            "sizing": {
-                                "status": "SIZED",
-                                "sizing_mode": "weight",
-                                "target_quantity": 2.0,
-                                "unit_notional": 300.0,
-                                "reference_price": 100.0,
-                                "equity": 1000.0,
-                            },
-                        }
-                    },
+        record = await records._persist_execute_record(
+            account_id=1,
+            execution_id="sized",
+            raw_input={"account_config": {"secret": "hidden"}, "curr_target": {"A": 0.9}},
+            raw_result={
+                "account_assets": {"total_asset": 1000.0, "positions": []},
+                "symbol_results": {
+                    "A": {
+                        "first_tick": {"last_price": 100.0},
+                        "sizing": {
+                            "status": "SIZED",
+                            "sizing_mode": "weight",
+                            "target_quantity": 2.0,
+                            "unit_notional": 300.0,
+                            "reference_price": 100.0,
+                            "equity": 1000.0,
+                        },
+                    }
                 },
-                is_success=1,
-                session_factory=cast("records.SessionFactory", sessions),
-            )
-            async with sessions() as session:
-                result = await read_execution_result(session, record)
-                sizing = result["symbol_results"]["A"]["sizing"]
-                assert sizing["target_quantity"] == 2.0
-                assert sizing["unit_notional"] == 300.0
-                assert result["account_assets"]["total_asset"] == 1000.0
-                assert record.facts_complete
-                assert (await session.scalar(sa.select(sa.func.count()).select_from(AccountAssetSnapshot))) == 1
-                assert record.input_id is not None
-                stored_input = await read_execution_input(session, record.input_id)
-                assert stored_input == {"curr_target": {"A": 0.9}}
+            },
+            is_success=1,
+        )
+        result = await read_execution_result(record)
+        sizing = result["symbol_results"]["A"]["sizing"]
+        assert sizing["target_quantity"] == 2.0
+        assert sizing["unit_notional"] == 300.0
+        assert result["account_assets"]["total_asset"] == 1000.0
+        assert record.facts_complete
+        assert len(rows(database, "account_asset_snapshot")) == 1
+        assert record.input_id is not None
+        assert await read_execution_input(record.input_id) == {"curr_target": {"A": 0.9}}
 
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("writer", ["store_execution_facts", "ensure_execution_asset_snapshot"])
-def test_fact_failure_rolls_back_record_assets_and_facts(monkeypatch: pytest.MonkeyPatch, writer: str) -> None:
-    original = getattr(records, writer)
-
-    async def fail_after_write(session: AsyncSession, record, **kwargs) -> None:
-        await original(session, record, **kwargs)
-        raise RuntimeError("projection failed")
-
-    monkeypatch.setattr(records, writer, fail_after_write)
+def test_fact_failure_rolls_back_record_assets_and_facts(database, writer: str) -> None:
+    table = "business_asset_snapshot" if writer == "store_execution_facts" else "account_asset_snapshot"
+    sql(
+        database,
+        f"CREATE TRIGGER reject_projection AFTER INSERT ON {table} BEGIN SELECT RAISE(ABORT,'projection failed'); END",
+    )
 
     async def scenario() -> None:
-        async with _database() as sessions:
-            with pytest.raises(RuntimeError, match="projection failed"):
-                await records._persist_execute_record(
-                    account_id=1,
-                    execution_id="rollback",
-                    raw_input={"curr_target": {"A": 1.0}},
-                    raw_result={"account_assets": {"total_asset": 1000.0, "positions": []}},
-                    is_success=1,
-                    session_factory=cast("records.SessionFactory", sessions),
-                )
-            async with sessions() as session:
-                for table in (
-                    *execution_fact_tables(),
-                    AccountAssetSnapshot,
-                ):
-                    assert (await session.scalar(sa.select(sa.func.count()).select_from(table))) == 0
-
-    asyncio.run(scenario())
-
-
-def test_late_target_refreshes_only_matching_execution_fact() -> None:
-    async def scenario() -> None:
-        async with _database() as sessions:
-            for execution_id in ("late", "unrelated"):
-                await records._persist_execute_record(
-                    account_id=1,
-                    execution_id=execution_id,
-                    raw_input={},
-                    raw_result={"first_ticks": {"A": {"last_price": 100.0}}},
-                    is_success=1,
-                    session_factory=cast("records.SessionFactory", sessions),
-                )
-            async with sessions() as session:
-                await append_target_weight_snapshot(
-                    session,
-                    portfolio_id=1,
-                    account_id=1,
-                    raw_weights={"A": 0.6},
-                    normalized_weights={"A": 0.6},
-                    source="execution",
-                    execution_id="late",
-                )
-            async with sessions() as session:
-                from axile.server.target_weight_snapshots import read_target_snapshot_weights
-
-                assert await read_target_snapshot_weights(session, account_id=1, execution_id="late") == {"A": 0.6}
-                assert await read_target_snapshot_weights(session, account_id=1, execution_id="unrelated") is None
-
-    asyncio.run(scenario())
-
-
-def test_duplicate_record_retains_first_source_facts_and_projects_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = records.store_execution_facts
-    calls: list[str] = []
-
-    async def track_write(session: AsyncSession, record, **kwargs):
-        calls.append(kwargs["raw_result"]["status"])
-        return await original(session, record, **kwargs)
-
-    monkeypatch.setattr(records, "store_execution_facts", track_write)
-
-    async def scenario() -> None:
-        async with _database() as sessions:
-            first = await records._persist_execute_record(
+        with pytest.raises(_core.NativeError, match="projection failed"):
+            await records._persist_execute_record(
                 account_id=1,
-                execution_id="duplicate-source",
-                raw_input={},
-                raw_result={"status": "NOOP"},
+                execution_id="rollback",
+                raw_input={"curr_target": {"A": 1.0}},
+                raw_result={"account_assets": {"total_asset": 1000.0, "positions": []}},
                 is_success=1,
-                session_factory=cast("records.SessionFactory", sessions),
             )
-            second = await records._persist_execute_record(
-                account_id=1,
-                execution_id="duplicate-source",
-                raw_input={},
-                raw_result={"status": "FAILED", "error": "late failure"},
-                is_success=0,
-                session_factory=cast("records.SessionFactory", sessions),
-            )
-            assert first.id == second.id
-            assert calls == ["NOOP"]
-            async with sessions() as session:
-                assert (await read_execution_result(session, second))["status"] == "NOOP"
-                assert second.facts_complete
+        assert all(count == 0 for count in _fact_counts(database).values())
 
     asyncio.run(scenario())
 
 
-def test_unsupported_source_shape_preserves_business_record_and_marks_fact() -> None:
+def test_late_target_refreshes_only_matching_execution_fact(database) -> None:
     async def scenario() -> None:
-        async with _database() as sessions:
-            record = await records._persist_execute_record(
+        for execution_id in ("late", "unrelated"):
+            await records._persist_execute_record(
                 account_id=1,
-                execution_id="unsupported-source",
+                execution_id=execution_id,
                 raw_input={},
-                raw_result={"status": 123, "account_assets": {"total_asset": 101}, "symbol_results": {}},
-                is_success=0,
-                session_factory=cast("records.SessionFactory", sessions),
+                raw_result={"first_ticks": {"A": {"last_price": 100.0}}},
+                is_success=1,
             )
-            async with sessions() as session:
-                persisted = await session.get(ExecuteRecord, record.id)
-                assert persisted is not None
-                result = await read_execution_result(session, persisted)
-                assert "status" not in result
-                assert "123" in str(result["audit_evidence"])
-                assert persisted.facts_complete
+        await append_target_weight_snapshot(
+            portfolio_id=1,
+            account_id=1,
+            raw_weights={"A": 0.6},
+            normalized_weights={"A": 0.6},
+            source="execution",
+            execution_id="late",
+        )
+        assert await read_target_snapshot_weights(account_id=1, execution_id="late") == {"A": 0.6}
+        assert await read_target_snapshot_weights(account_id=1, execution_id="unrelated") is None
 
     asyncio.run(scenario())
+
+
+def test_duplicate_record_retains_first_source_facts_and_projects_once(database) -> None:
+    async def scenario() -> None:
+        first = await records._persist_execute_record(
+            account_id=1,
+            execution_id="duplicate-source",
+            raw_input={},
+            raw_result={"status": "NOOP"},
+            is_success=1,
+        )
+        committed = {name: rows(database, name) for name in _fact_counts(database)}
+        version = rows(database, "account_analysis")
+        # 重复终态若重新投影，真实触发器会中止整个调用。
+        sql(
+            database,
+            "CREATE TRIGGER reject_second_projection BEFORE UPDATE ON executerecord "
+            "BEGIN SELECT RAISE(ABORT,'duplicate projection'); END",
+        )
+        second = await records._persist_execute_record(
+            account_id=1,
+            execution_id="duplicate-source",
+            raw_input={},
+            raw_result={"status": "FAILED", "error": "late failure"},
+            is_success=0,
+        )
+        assert first.id == second.id
+        assert {name: rows(database, name) for name in committed} == committed
+        assert rows(database, "account_analysis") == version
+        assert (await read_execution_result(second))["status"] == "NOOP"
+        assert second.facts_complete
+
+    asyncio.run(scenario())
+
+
+def test_unsupported_source_shape_preserves_business_record_and_marks_fact(database) -> None:
+    async def scenario() -> None:
+        record = await records._persist_execute_record(
+            account_id=1,
+            execution_id="unsupported-source",
+            raw_input={},
+            raw_result={"status": 123, "account_assets": {"total_asset": 101}, "symbol_results": {}},
+            is_success=0,
+        )
+        persisted = rows(database, "executerecord")
+        assert len(persisted) == 1 and persisted[0]["id"] == record.id
+        result = await read_execution_result(record)
+        assert "status" not in result
+        assert "123" in str(result["audit_evidence"])
+        assert persisted[0]["facts_complete"] and record.facts_complete
+
+    asyncio.run(scenario())
+
+
+def test_terminal_source_version_does_not_scale_with_fill_count(database) -> None:
+    initial = rows(database, "account_analysis")
+    before = initial[0]["source_version"] if initial else 0
+    versions = [before]
+    for count in (0, 20):
+        persist_result(
+            database,
+            {
+                "status": "SUCCEEDED",
+                "trades": [{"trade_id": str(index), "trade_volume": 1, "trade_price": 3} for index in range(count)],
+            },
+            raw_input={},
+            execution_id=f"fills-{count}",
+            is_success=1,
+        )
+        versions.append(rows(database, "account_analysis")[0]["source_version"])
+    assert versions[1] > versions[0]
+    assert versions[2] - versions[1] == versions[1] - versions[0]

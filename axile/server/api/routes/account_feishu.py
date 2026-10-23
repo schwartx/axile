@@ -9,9 +9,6 @@ from typing import Any, Literal, NamedTuple
 from fastapi import APIRouter, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
-from starlette.concurrency import run_in_threadpool
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.feishu import push_feishu_card
@@ -28,15 +25,12 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Trade
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server._native import _core
 from axile.server.account_assets import query_account_assets
-from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.core.db import analysis_store
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.supplement import NotificationEvent
 from axile.server.error_details import exception_details
 from axile.server.execution.notification_records import build_persisted_notification_context
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
-from axile.server.repositories import get_recent_execute_records_by_account_id
+from axile.server.native_store import native_operation
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
 
 router = APIRouter()
@@ -226,24 +220,23 @@ def _leg_target_weights(legs: list[_SampleLeg], assets: UnifiedAccountAssets) ->
     return {leg.symbol: leg.target_volume * leg.price / total for leg in legs}
 
 
-async def _load_sample_target_weights(session: AsyncSession, account: AccountContext) -> dict[str, float]:
+async def _load_sample_target_weights(account: AccountContext) -> dict[str, float]:
     """读取账户当前组合最近的归一化目标权重作为样例目标；无快照则返回空。"""
     if account.id is None or account.portfolio_id is None:
         return {}
-    snapshot = await get_latest_account_target_snapshot(session, account.id, account.portfolio_id)
+    snapshot = await get_latest_account_target_snapshot(account.id, account.portfolio_id)
     if snapshot is None or not snapshot.normalized_weights:
         return {}
     return dict(snapshot.normalized_weights)
 
 
 async def _build_sample_output(
-    session: AsyncSession,
     account: AccountContext,
     assets: UnifiedAccountAssets,
 ) -> UnifiedStandardOutput:
     """用真实资产叠加样例成交，构造接近真实执行版面的输出。"""
     legs = _sample_legs(assets)
-    target_weights = await _load_sample_target_weights(session, account)
+    target_weights = await _load_sample_target_weights(account)
     curr_target = target_weights or _leg_target_weights(legs, assets)
     algorithm = str(account.algorithm.get("method", "Unknown")) if isinstance(account.algorithm, dict) else "Unknown"
     return UnifiedStandardOutput(
@@ -257,7 +250,6 @@ async def _build_sample_output(
 
 
 async def _build_test_card(
-    session: AsyncSession,
     account: AccountContext,
 ) -> dict[str, object]:
     """读取当前账户资产并构造默认样例卡片。"""
@@ -269,7 +261,6 @@ async def _build_test_card(
     if not try_register_account_asset_refresh(account_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新资产，请稍后再试")
     try:
-        await session.close()
         assets = await query_account_assets(account)
     except TimeoutError as exc:
         raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="账户权益查询超时，请稍后重试") from exc
@@ -279,23 +270,21 @@ async def _build_test_card(
     finally:
         clear_account_asset_refresh(account_id)
 
-    output = await _build_sample_output(session, account, assets)
+    output = await _build_sample_output(account, assets)
     return build_execute_results_feishu_card(source, output)
 
 
 @router.post("/{account_id}/feishu/test", response_model=AccountFeishuTestResult)
 async def test_account_feishu(
-    session: SessionDep,
     account_id: int,
     payload: AccountFeishuTestRequest,
 ) -> AccountFeishuTestResult:
     """使用账户当前资产、目标快照与页面草稿推送样例执行结果卡片。"""
-    account = await _get_account_or_404(session, account_id)
+    account = await _get_account_or_404(account_id)
     key = payload.feishu_key.strip() or account.feishu_key or ""
     if not key:
         return AccountFeishuTestResult(ok=False, message="请先配置飞书 Webhook")
-    card = await _build_test_card(session, account)
-    await session.close()
+    card = await _build_test_card(account)
     try:
         await asyncio.to_thread(push_feishu_card, card, key)
     except Exception as exc:  # noqa: BLE001 - 统一转为可展示的联通测试结果
@@ -306,31 +295,20 @@ async def test_account_feishu(
 
 
 async def _load_notification_preview_context(
-    session: AsyncSession,
     account: AccountContext,
 ) -> dict[str, Any]:
     """复用最近一次执行的脱敏通知快照，不连接渠道或模拟成交。"""
-    records = await get_recent_execute_records_by_account_id(session, account.id, limit=1)
-    if not records:
+    try:
+        preview = await native_operation("notifications_preview", {"account_id": account.id})
+    except _core.NativeError as exc:
+        raise ValueError(str(exc.args[1])) from exc
+    if preview is None:
         raise ValueError("当前账户暂无执行记录，无法试跑通知")
-    record = records[0]
-    event = (
-        await session.scalar(
-            select(NotificationEvent).where(
-                NotificationEvent.account_id == account.id,
-                NotificationEvent.id == f"execution:{record.execution_id}",
-            )
-        )
-        if record.execution_id
-        else None
-    )
-    if event is not None and event.context:
-        context = deepcopy(event.context)
+    record = preview["record"]
+    if "context" in preview:
+        context = deepcopy(preview["context"])
     else:
-        try:
-            detail = await run_in_threadpool(_core.execution_business_detail, analysis_store(), account.id, record.id)
-        except _core.NativeError as exc:
-            raise ValueError(str(exc.args[1])) from exc
+        detail = preview["detail"]
         raw = deepcopy(detail["result"])
         if not isinstance(raw, dict):
             raise ValueError("最近一次执行没有可用的通知快照")
@@ -347,33 +325,31 @@ async def _load_notification_preview_context(
                 raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
             execution = context.get("execution")
             if isinstance(execution, dict):
-                execution["notified_at"] = record.created_at
+                execution["notified_at"] = record["created_at"]
     context["is_test"] = True
     context["event_type"] = "execution.finished"
     execution = context.get("execution")
     if isinstance(execution, dict):
         execution["is_test"] = True
-        execution["id"] = record.execution_id
-        execution.setdefault("notified_at", record.created_at)
+        execution["id"] = record["execution_id"]
+        execution.setdefault("notified_at", record["created_at"])
     return context
 
 
 @router.post("/{account_id}/notification/test", response_model=AccountFeishuTestResult)
 async def test_account_notification_function(
-    session: SessionDep,
     account_id: int,
     payload: AccountNotificationFunctionTestRequest,
 ) -> AccountFeishuTestResult:
     """复用最近一次执行的真实快照，在独立进程中运行页面草稿函数。"""
-    account = await _get_account_or_404(session, account_id)
+    account = await _get_account_or_404(account_id)
     key = payload.feishu_key if "feishu_key" in payload.model_fields_set else account.feishu_key
     if payload.code.strip() == DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip() and not key:
         return AccountFeishuTestResult(ok=False, message="请返回基本信息页配置飞书 Webhook")
     try:
-        context = await _load_notification_preview_context(session, account)
+        context = await _load_notification_preview_context(account)
     except ValueError as exc:
         return AccountFeishuTestResult(ok=False, message=str(exc), traceback=str(exception_details(exc)["traceback"]))
-    await session.close()
     if payload.event_type == "supplement.cancelled":
         context = {
             "event_id": "supplement:test:cancelled",

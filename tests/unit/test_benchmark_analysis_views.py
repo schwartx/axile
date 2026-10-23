@@ -5,6 +5,7 @@ import sqlite3
 
 import pytest
 
+from scripts import benchmark_analysis_views as views
 from scripts.benchmark_analysis_views import (
     aggregate,
     inspect_database,
@@ -210,3 +211,58 @@ def test_report_does_not_claim_zero_rss_when_a_fast_request_has_no_sample():
     metrics = aggregate(results)
     assert metrics["full"]["full_snapshot"]["sampled_combined_peak_bytes"] is None
     assert metrics["views"]["chart"]["rss_requests_with_samples"] == 0
+
+
+def test_checkout_labels_do_not_change_the_selected_http_scenario(monkeypatch):
+    paths = []
+
+    class Client:
+        def __init__(self, **_options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_error):
+            pass
+
+        def get(self, path, **_options):
+            paths.append(path)
+            return type(
+                "Response", (), {"status_code": 200, "content": b"{}", "json": lambda _self: {"snapshot_id": "frozen"}}
+            )()
+
+    monkeypatch.setattr("httpx.Client", Client)
+    monkeypatch.setattr(views, "_client_semantics", lambda _config, _bodies: {"verified": True})
+    config = {
+        "scenario": "views",
+        "account_id": 7,
+        "snapshot_id": "frozen",
+        "range": "all",
+        "record_id": None,
+        "port": 1,
+        "iterations": 1,
+    }
+    for arm in ("baseline", "candidate"):
+        views.client({**config, "arm": arm})
+    assert paths[:2] == paths[2:]
+    assert paths[0].endswith("/status")
+    assert "/chart?" in paths[1]
+
+
+def test_timing_and_rss_can_run_as_separate_short_jobs():
+    results = [
+        {
+            "arm": arm,
+            "mode": "rss",
+            "samples": [
+                {"endpoint": "chart", "iteration": 0, "seconds": 999, "bytes": 10, "sampled_combined_peak_bytes": None}
+            ],
+        }
+        for arm in ("baseline", "candidate")
+    ]
+    report = aggregate(results)
+    assert set(report) == {"baseline", "candidate"}
+    assert report["baseline"]["chart"]["first_seconds_p50"] is None
+    assert report["candidate"]["first_open"]["http_seconds_p50"] is None
+    assert report["candidate"]["first_open"]["request_count"] == 1

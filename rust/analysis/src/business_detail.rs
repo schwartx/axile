@@ -5,67 +5,13 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 // Python's notification hashes include insertion order and its JSON float spelling.
-fn wire(value: &serde_json::Value) -> Result<String, String> {
+pub(crate) fn wire(value: &serde_json::Value) -> Result<String, String> {
     use serde_json::Value;
     Ok(match value {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
         Value::String(s) => serde_json::to_string(s).map_err(invalid)?,
-        Value::Number(n) if n.is_f64() => {
-            let f = n.as_f64().ok_or_else(|| invalid("invalid float"))?;
-            let raw = n.to_string();
-            let negative = raw.starts_with('-');
-            let unsigned = raw.trim_start_matches('-');
-            let (mantissa, explicit) = if let Some((a, b)) = unsigned.split_once(['e', 'E']) {
-                (a, b.parse::<i32>().map_err(invalid)?)
-            } else {
-                (unsigned, 0)
-            };
-            let decimal = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
-            let digits = mantissa.replace('.', "");
-            let first = digits.find(|c| c != '0');
-            if let Some(first) = first {
-                let exponent = explicit + decimal - first as i32 - 1;
-                let significant = digits[first..].trim_end_matches('0');
-                let sign = if negative { "-" } else { "" };
-                if !(-4..16).contains(&exponent) {
-                    let mut m = significant[..1].to_string();
-                    if significant.len() > 1 {
-                        m.push('.');
-                        m.push_str(&significant[1..]);
-                    }
-                    format!(
-                        "{sign}{m}e{}{:02}",
-                        if exponent < 0 { "-" } else { "+" },
-                        exponent.abs()
-                    )
-                } else {
-                    let point = exponent + 1;
-                    let mut fixed = if point <= 0 {
-                        format!("0.{}{}", "0".repeat((-point) as usize), significant)
-                    } else if point as usize >= significant.len() {
-                        format!(
-                            "{}{}.0",
-                            significant,
-                            "0".repeat(point as usize - significant.len())
-                        )
-                    } else {
-                        format!(
-                            "{}.{}",
-                            &significant[..point as usize],
-                            &significant[point as usize..]
-                        )
-                    };
-                    fixed.insert_str(0, sign);
-                    fixed
-                }
-            } else if f.is_sign_negative() {
-                "-0.0".into()
-            } else {
-                "0.0".into()
-            }
-        }
-        Value::Number(n) => n.to_string(),
+        Value::Number(n) => number_wire(n)?,
         Value::Array(values) => format!(
             "[{}]",
             values
@@ -87,10 +33,78 @@ fn wire(value: &serde_json::Value) -> Result<String, String> {
         ),
     })
 }
-fn digest(value: &Value) -> Result<String, String> {
+fn number_wire(n: &serde_json::Number) -> Result<String, String> {
+    let raw = n.to_string();
+    let digits = raw.strip_prefix('-').unwrap_or(&raw);
+    // 大整数属于冻结证据与哈希，先转 f64 会改变原值。
+    if !digits.is_empty() && digits.bytes().all(|value| value.is_ascii_digit()) {
+        return Ok(if raw == "-0" { "0".into() } else { raw });
+    }
+    Ok({
+        let f = n
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| invalid("invalid float"))?;
+        let raw = serde_json::Number::from_f64(f)
+            .ok_or_else(|| invalid("invalid float"))?
+            .to_string();
+        let negative = raw.starts_with('-');
+        let unsigned = raw.trim_start_matches('-');
+        let (mantissa, explicit) = if let Some((a, b)) = unsigned.split_once(['e', 'E']) {
+            (a, b.parse::<i32>().map_err(invalid)?)
+        } else {
+            (unsigned, 0)
+        };
+        let decimal = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+        let digits = mantissa.replace('.', "");
+        let first = digits.find(|c| c != '0');
+        if let Some(first) = first {
+            let exponent = explicit + decimal - first as i32 - 1;
+            let significant = digits[first..].trim_end_matches('0');
+            let sign = if negative { "-" } else { "" };
+            if !(-4..16).contains(&exponent) {
+                let mut m = significant[..1].to_string();
+                if significant.len() > 1 {
+                    m.push('.');
+                    m.push_str(&significant[1..]);
+                }
+                format!(
+                    "{sign}{m}e{}{:02}",
+                    if exponent < 0 { "-" } else { "+" },
+                    exponent.abs()
+                )
+            } else {
+                let point = exponent + 1;
+                let mut fixed = if point <= 0 {
+                    format!("0.{}{}", "0".repeat((-point) as usize), significant)
+                } else if point as usize >= significant.len() {
+                    format!(
+                        "{}{}.0",
+                        significant,
+                        "0".repeat(point as usize - significant.len())
+                    )
+                } else {
+                    format!(
+                        "{}.{}",
+                        &significant[..point as usize],
+                        &significant[point as usize..]
+                    )
+                };
+                fixed.insert_str(0, sign);
+                fixed
+            }
+        } else if f.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        }
+    })
+}
+
+pub(crate) fn digest(value: &Value) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(wire(value)?.as_bytes())))
 }
-const EXEC_METADATA: &[&str] = &[
+pub(crate) const EXEC_METADATA: &[&str] = &[
     "id",
     "kind",
     "trigger_source",
@@ -143,6 +157,21 @@ fn hydrate(conn: &Connection, record: &Object, result: &mut Object) -> Result<()
     if !reference.contains_key("$axile_notification_context") {
         return Ok(());
     }
+    validate_notification_reference(reference)?;
+    let event_id = format!("execution:{}", text(record, "execution_id")?);
+    let events = load(conn, "notification_event", "id", &json!(event_id))?;
+    let event = one(&events)?;
+    if get(event, "account_id")? != get(record, "account_id")?
+        || text(event, "event_type")? != "execution.finished"
+    {
+        return Err(invalid("notification identity or digest mismatch"));
+    }
+    let restored = hydrate_notification_context(reference, &event_id, get(event, "context")?)?;
+    extra.insert("server_notification_context".into(), restored);
+    Ok(())
+}
+
+fn validate_notification_reference(reference: &Object) -> Result<(), String> {
     let expected = [
         "$axile_notification_context",
         "event_id",
@@ -160,13 +189,18 @@ fn hydrate(conn: &Connection, record: &Object, result: &mut Object) -> Result<()
     {
         return Err(invalid("invalid notification reference"));
     }
-    let event_id = format!("execution:{}", text(record, "execution_id")?);
-    let events = load(conn, "notification_event", "id", &json!(event_id))?;
-    let event = one(&events)?;
-    if get(event, "account_id")? != get(record, "account_id")?
-        || text(event, "event_type")? != "execution.finished"
-        || text(reference, "event_id")? != event_id
-        || text(reference, "event_sha256")? != digest(get(event, "context")?)?
+    Ok(())
+}
+
+/// 复用冻结引用的唯一线格式、哈希和恢复规则。
+pub(crate) fn hydrate_notification_context(
+    reference: &Map<String, Value>,
+    event_id: &str,
+    event_context: &Value,
+) -> Result<Value, String> {
+    validate_notification_reference(reference)?;
+    if text(reference, "event_id")? != event_id
+        || text(reference, "event_sha256")? != digest(event_context)?
     {
         return Err(invalid("notification identity or digest mismatch"));
     }
@@ -209,7 +243,7 @@ fn hydrate(conn: &Connection, record: &Object, result: &mut Object) -> Result<()
             return Err(invalid("notification execution metadata override"));
         }
     }
-    let mut context = object(get(event, "context")?)?.clone();
+    let mut context = object(event_context)?.clone();
     for key in ["event_id", "event_type"] {
         context.shift_remove(key);
     }
@@ -243,12 +277,49 @@ fn hydrate(conn: &Connection, record: &Object, result: &mut Object) -> Result<()
     if text(reference, "capture_sha256")? != digest(&restored)? {
         return Err(invalid("notification capture digest mismatch"));
     }
-    extra.insert("server_notification_context".into(), restored);
-    Ok(())
+    Ok(restored)
 }
 
 /// Read one authorized record inside the caller's Store snapshot.
 pub fn read(conn: &Connection, account_id: i64, record_id: i64) -> Result<Value, String> {
+    read_detail(conn, account_id, record_id, true, true)
+}
+
+/// 只组装结果，主输入仅校验归属，避免通知和摘要读取物化无关输入。
+pub(crate) fn read_result(
+    conn: &Connection,
+    account_id: i64,
+    record_id: i64,
+) -> Result<Value, String> {
+    let mut detail = read_detail(conn, account_id, record_id, false, true)?;
+    Ok(detail
+        .as_object_mut()
+        .expect("detail object")
+        .shift_remove("result")
+        .expect("result field"))
+}
+
+/// 仅供冻结的 0037 迁移解码；旧迁移未施加运行时输入及资产归属约束。
+pub(crate) fn read_result_for_migration(
+    conn: &Connection,
+    account_id: i64,
+    record_id: i64,
+) -> Result<Value, String> {
+    let mut detail = read_detail(conn, account_id, record_id, false, false)?;
+    Ok(detail
+        .as_object_mut()
+        .expect("detail object")
+        .shift_remove("result")
+        .expect("result field"))
+}
+
+fn read_detail(
+    conn: &Connection,
+    account_id: i64,
+    record_id: i64,
+    include_input: bool,
+    validate_owners: bool,
+) -> Result<Value, String> {
     let id = json!(record_id);
     let heads = load(conn, "executerecord", "id", &id)?;
     if heads.is_empty() {
@@ -258,20 +329,28 @@ pub fn read(conn: &Connection, account_id: i64, record_id: i64) -> Result<Value,
     if number(head, "account_id")? != account_id {
         return Err("EXECUTION_NOT_FOUND: execution does not exist".into());
     }
-    if get(head, "facts_complete")? != &json!(true) {
+    if validate_owners && get(head, "facts_complete")? != &json!(true) {
         return Err(invalid("execution facts are not complete"));
     }
-    let primary = if get(head, "input_id")?.is_null() {
+    let primary = if !validate_owners || get(head, "input_id")?.is_null() {
         Value::Null
-    } else {
+    } else if include_input {
         input(conn, get(head, "input_id")?, head)?
+    } else {
+        input_header(conn, get(head, "input_id")?, head)?;
+        Value::Null
     };
     let extensions = load(conn, "execution_extension", "record_id", &id)?;
     let extension = one(&extensions)?;
     let kind = text(extension, "root_kind")?;
     // Resolve references even for malformed result roots, as the Python repository does.
     let result_input = match text(head, "result_input_kind")? {
-        "value" => Some(input(conn, get(head, "result_input_id")?, head)?),
+        "value" if validate_owners => Some(input(conn, get(head, "result_input_id")?, head)?),
+        "value" => {
+            let id = get(head, "result_input_id")?;
+            let rows = load(conn, "execution_input", "id", id)?;
+            Some(decode_input_value(conn, id, one(&rows)?)?)
+        }
         "null" => Some(Value::Null),
         "invalid" => Some(get(head, "result_input_value")?.clone()),
         "absent" => None,
@@ -279,7 +358,9 @@ pub fn read(conn: &Connection, account_id: i64, record_id: i64) -> Result<Value,
     };
     // Asset owners are checked before root dispatch, including scalar/null result roots.
     let mut asset_fragment = Object::new();
-    assets(conn, &id, head, &mut asset_fragment)?;
+    if validate_owners || kind == "object" {
+        assets_with_ownership(conn, &id, head, &mut asset_fragment, validate_owners)?;
+    }
     let result = if kind != "object" {
         object(get(extension, "audit_evidence")?)?;
         let value = get(extension, "root_value")?;
@@ -449,6 +530,9 @@ pub(crate) fn load(
 pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
     let mut item = Object::new();
     for (index, name) in row.as_ref().column_names().iter().enumerate() {
+        if table == "executerecord" && ["raw_input", "raw_result"].contains(name) {
+            continue;
+        }
         // Frozen business0037 schema; algorithm is JSON only on execution_input.
         let json_column = matches!(
             (table, *name),
@@ -600,8 +684,16 @@ fn put(result: &mut Object, path: &str, value: Value) -> Result<(), String> {
         .strip_prefix('/')
         .ok_or_else(|| invalid("invalid fact path"))?
         .split('/')
-        .map(|s| s.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>();
+        .map(|s| {
+            if s.split('~')
+                .skip(1)
+                .any(|escape| !escape.starts_with(['0', '1']))
+            {
+                return Err(invalid("invalid fact path"));
+            }
+            Ok(s.replace("~1", "/").replace("~0", "~"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if !(parts.len() == 1 || parts.len() == 3 && parts[0] == "symbol_results") {
         return Err(invalid("unsupported fact path"));
     }
@@ -616,13 +708,26 @@ fn put(result: &mut Object, path: &str, value: Value) -> Result<(), String> {
     };
     merge(result, fragment)
 }
-fn assets(
+pub(crate) fn assets(
     conn: &Connection,
     id: &Value,
     record: &Object,
     result: &mut Object,
 ) -> Result<(), String> {
+    assets_with_ownership(conn, id, record, result, true)
+}
+
+fn assets_with_ownership(
+    conn: &Connection,
+    id: &Value,
+    record: &Object,
+    result: &mut Object,
+    validate_owners: bool,
+) -> Result<(), String> {
     let mut bindings = load(conn, "business_asset_binding", "record_id", id)?;
+    if !validate_owners && bindings.is_empty() {
+        bindings = load(conn, "business_asset_snapshot", "record_id", id)?;
+    }
     bindings.sort_by_key(|r| r.get("ordinal").and_then(Value::as_i64).unwrap_or(-1));
     for binding in bindings {
         let mut statement = conn
@@ -635,7 +740,7 @@ fn assets(
             .ok_or_else(|| invalid("expected exactly one fact"))?;
         let decoded = decode(root_row, "business_asset_snapshot")?;
         let root = &decoded;
-        if get(root, "record_id")?.is_null() {
+        if validate_owners && get(root, "record_id")?.is_null() {
             let input_id = get(root, "input_id")?;
             if input_id.is_null()
                 || !(input_id == get(record, "input_id")?
@@ -664,7 +769,7 @@ fn assets(
             {
                 return Err(invalid("invalid indirect asset binding"));
             }
-        } else {
+        } else if validate_owners {
             if get(root, "record_id")? != id {
                 return Err(invalid("asset belongs to another execution"));
             }
@@ -726,7 +831,7 @@ const INPUT: &[&str] = &[
     "feishu_account",
     "extra",
 ];
-fn input(conn: &Connection, id: &Value, record: &Object) -> Result<Value, String> {
+fn input_header(conn: &Connection, id: &Value, record: &Object) -> Result<Object, String> {
     let rows = load(conn, "execution_input", "id", id)?;
     let head = one(&rows)?;
     let owner = if get(head, "owner_execution_id")?.is_null() {
@@ -745,6 +850,15 @@ fn input(conn: &Connection, id: &Value, record: &Object) -> Result<Value, String
             return Err(invalid("anonymous execution input is shared"));
         }
     }
+    Ok(head.clone())
+}
+
+pub(crate) fn input(conn: &Connection, id: &Value, record: &Object) -> Result<Value, String> {
+    let head = input_header(conn, id, record)?;
+    decode_input_value(conn, id, &head)
+}
+
+fn decode_input_value(conn: &Connection, id: &Value, head: &Object) -> Result<Value, String> {
     if text(head, "root_kind")? != "object" {
         return Ok(get(head, "root_value")?.clone());
     }
@@ -761,6 +875,9 @@ pub(crate) fn decode_input(
     symbols: &Rows,
     plans: &Rows,
 ) -> Result<Value, String> {
+    if text(head, "root_kind")? != "object" {
+        return Ok(get(head, "root_value")?.clone());
+    }
     let mut result = fields(head, INPUT)?;
     for role in [
         "curr_target",
@@ -1107,7 +1224,7 @@ fn symbols(conn: &Connection, id: &Value, result: &mut Object) -> Result<(), Str
     }
     Ok(())
 }
-fn collections(
+pub(crate) fn collections(
     conn: &Connection,
     id: &Value,
     result: &mut Object,
@@ -1249,6 +1366,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn result_only_read_checks_primary_owner_without_decoding_unused_input() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,
+             input_id TEXT,facts_complete BOOLEAN,result_input_kind TEXT);
+             INSERT INTO executerecord VALUES(1,7,'e1','i1',1,'absent');
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER,execution_id TEXT,
+             owner_execution_id TEXT,root_kind TEXT);
+             INSERT INTO execution_input VALUES('i1',7,'e1','e1','object');
+             CREATE TABLE execution_extension(record_id INTEGER,root_kind TEXT,root_value JSON,
+             audit_evidence JSON);
+             INSERT INTO execution_extension VALUES(1,'scalar','false','{}');
+             CREATE TABLE business_asset_binding(record_id INTEGER);",
+        )
+        .unwrap();
+        assert_eq!(read_result(&conn, 7, 1).unwrap(), json!(false));
+        assert!(read(&conn, 7, 1).is_err());
+        conn.execute("UPDATE execution_input SET account_id=8", [])
+            .unwrap();
+        assert!(read_result(&conn, 7, 1)
+            .unwrap_err()
+            .contains("input belongs to another account"));
+    }
+
+    #[test]
+    fn migration_keeps_empty_execution_identity_and_ignores_legacy_blob_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,
+             input_id TEXT,facts_complete BOOLEAN,result_input_kind TEXT,result_input_id TEXT,
+             raw_input BLOB,raw_result BLOB);
+             INSERT INTO executerecord VALUES(1,7,'',NULL,1,'value','variant',X'FF',X'FE');
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER,execution_id TEXT,
+             owner_execution_id TEXT,root_kind TEXT,root_value JSON);
+             INSERT INTO execution_input VALUES('variant',7,NULL,NULL,'scalar','false');
+             CREATE TABLE execution_extension(record_id INTEGER,root_kind TEXT,root_value JSON,
+             audit_evidence JSON);
+             INSERT INTO execution_extension VALUES(1,'scalar','0','{}');
+             CREATE TABLE business_asset_binding(record_id INTEGER);",
+        )
+        .unwrap();
+        assert!(read_result(&conn, 7, 1)
+            .unwrap_err()
+            .contains("input belongs to another account or execution"));
+        assert_eq!(read_result_for_migration(&conn, 7, 1).unwrap(), json!(0));
+        conn.execute("DELETE FROM execution_input", []).unwrap();
+        assert!(read_result_for_migration(&conn, 7, 1).is_err());
+    }
+
+    #[test]
+    fn migration_asset_decode_retains_values_without_runtime_relation_checks() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE business_asset_binding(record_id INTEGER,asset_id TEXT,path TEXT,
+             scope TEXT,ordinal INTEGER,map_key TEXT);
+             INSERT INTO business_asset_binding VALUES(1,'asset','/account_assets','after',0,NULL);
+             CREATE TABLE business_asset_snapshot(asset_id TEXT,record_id INTEGER,input_id TEXT,
+             path TEXT,scope TEXT,ordinal INTEGER,map_key TEXT,payload_kind TEXT,payload_value JSON);
+             INSERT INTO business_asset_snapshot VALUES('asset',22,NULL,'/account_assets','after',0,NULL,'null','null');
+             CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER);",
+        )
+        .unwrap();
+        let record = object(&json!({"id":1,"account_id":7,"execution_id":""}))
+            .unwrap()
+            .clone();
+        let mut result = Object::new();
+        assert!(assets(&conn, &json!(1), &record, &mut result).is_err());
+        assets_with_ownership(&conn, &json!(1), &record, &mut result, false).unwrap();
+        assert_eq!(result["account_assets"], Value::Null);
+        conn.execute(
+            "UPDATE business_asset_snapshot SET payload_kind='object'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            assets_with_ownership(&conn, &json!(1), &record, &mut Object::new(), false).is_err()
+        );
+    }
+
+    #[test]
     fn find_preserves_missing_unique_and_duplicate_paths() {
         let mut rows: Rows = vec![
             json!({"path":null}),
@@ -1310,11 +1507,65 @@ mod tests {
             ("1.0", "1.0"),
             ("-0.0", "-0.0"),
             ("1.234e-7", "1.234e-07"),
+            ("1.234567890123456789", "1.2345678901234567"),
+            ("1e-9999999999", "0.0"),
+            ("-1e-9999999999", "-0.0"),
         ] {
             let value: Value = serde_json::from_str(source).unwrap();
             assert_eq!(wire(&value).unwrap(), expected);
         }
         assert_eq!(wire(&json!({"汉字":"好"})).unwrap(), "{\"汉字\":\"好\"}");
+    }
+
+    #[test]
+    fn huge_integer_float_and_text_keep_distinct_python_wire_hashes() {
+        for (source, expected, sha256) in [
+            (
+                "1267650600228229401496703205377",
+                "1267650600228229401496703205377",
+                "06fcc0ce6458663091c174b303abd34f88b8989fa5f6a4d366dac2b7ca75eb43",
+            ),
+            (
+                "1267650600228229401496703205377.0",
+                "1.2676506002282294e+30",
+                "fc89c65a72ca5e5a9e13e75750cc2c8e7bb353386303341542fd173e28bd0cdd",
+            ),
+            (
+                "\"1267650600228229401496703205377\"",
+                "\"1267650600228229401496703205377\"",
+                "eff34fb5aa8f6060f856d19ae0dbee4bbd18095eca5eb6ef35fd1cec5b2959b7",
+            ),
+        ] {
+            let value: Value = serde_json::from_str(source).unwrap();
+            assert_eq!(wire(&value).unwrap(), expected);
+            assert_eq!(digest(&value).unwrap(), sha256);
+        }
+        let value: Value = serde_json::from_str(
+            r#"{"integer":1267650600228229401496703205377,"float":1267650600228229401496703205377.0,"text":"1267650600228229401496703205377","rounded":1.234567890123456789,"negative_zero":-0}"#,
+        ).unwrap();
+        assert_eq!(
+            wire(&value).unwrap(),
+            r#"{"integer":1267650600228229401496703205377,"float":1.2676506002282294e+30,"text":"1267650600228229401496703205377","rounded":1.2345678901234567,"negative_zero":0}"#
+        );
+        assert_eq!(
+            digest(&value).unwrap(),
+            "87cb20f921b397792b060267474a4619298ae8888bd468256d46d3a1a287e781"
+        );
+    }
+
+    #[test]
+    fn legacy_nonfinite_numbers_never_escape_frozen_wire() {
+        for source in ["NaN", "Infinity", "-Infinity", "1e400", "-1e400"] {
+            let value = Value::Number(serde_json::Number::from_string_unchecked(source.into()));
+            assert!(wire(&value).unwrap_err().starts_with("INVALID_DATA:"));
+            let nested = Value::Object(Object::from_iter([(
+                "nested".into(),
+                Value::Array(vec![value]),
+            )]));
+            assert!(wire(&nested).unwrap_err().starts_with("INVALID_DATA:"));
+        }
+        let evidence = json!({"invalid_number":"nan"});
+        assert_eq!(wire(&evidence).unwrap(), r#"{"invalid_number":"nan"}"#);
     }
     #[test]
     fn sparse_columns_and_collection_integrity() {
@@ -1343,5 +1594,38 @@ mod tests {
         put(&mut result, "/symbol_results/a~1b~0c/orders", json!([])).unwrap();
         assert_eq!(result["symbol_results"]["a/b~c"]["orders"], json!([]));
         assert!(put(&mut result, "/symbol_results/a~1b~0c/orders", Value::Null).is_err());
+    }
+
+    #[test]
+    fn native_symbol_paths_roundtrip_without_changing_keys() {
+        let mut result = Object::new();
+        for symbol in ["", "0", "A/B~C", "沪深300", "same", "~1", "/0"] {
+            let path = crate::business_facts_ops::encode::join_pointer(
+                &crate::business_facts_ops::encode::join_pointer("/symbol_results", symbol),
+                "orders",
+            );
+            put(&mut result, &path, json!([])).unwrap();
+            assert_eq!(result["symbol_results"][symbol]["orders"], json!([]));
+        }
+        assert_eq!(result["symbol_results"].as_object().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn invalid_pointer_origins_are_rejected_before_merging() {
+        for path in [
+            "no-root",
+            "/bad~",
+            "/bad~2",
+            "/symbol_results/bad~/orders",
+            "/symbol_results/bad~2/orders",
+        ] {
+            let mut result = Object::new();
+            assert_eq!(
+                put(&mut result, path, json!([])).unwrap_err(),
+                invalid("invalid fact path"),
+                "{path}"
+            );
+            assert!(result.is_empty());
+        }
     }
 }

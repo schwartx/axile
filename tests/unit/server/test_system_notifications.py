@@ -1,16 +1,13 @@
 """系统告警配置、试跑与真实结果的边界契约。"""
 
 import asyncio
-import importlib.util
 import io
 import json
+import sqlite3
 import urllib.request
-from pathlib import Path
+from contextlib import closing
 
 import pytest
-import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -18,9 +15,12 @@ import axile.common.config as cfg
 from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION_CODE
 from axile.common.notification_function import NotificationFunctionResult
 from axile.server import error_notifications
+from axile.server._native import _core
 from axile.server.api.routes import init as init_module
-from axile.server.db.models.system_notification import SystemNotificationState, SystemNotificationStatePublic
+from axile.server.core import db
+from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_state
+from tests.conftest import initialize_native_database, native_store_call
 
 
 @pytest.fixture
@@ -143,10 +143,8 @@ def test_default_trial_can_use_saved_key(client, monkeypatch):
     assert not client.post("/api/v1/init/test-feishu", json={"key": ""}).json()["ok"]
 
 
-def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monkeypatch, tmp_path):
-    engine = sa.create_engine(f"sqlite:///{tmp_path / 'results.db'}")
-    SystemNotificationState.__table__.create(engine)
-    monkeypatch.setattr(notification_state, "_notification_engine", lambda: engine)
+def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monkeypatch, native_database):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
     assert notification_state.get_system_notification_result().ok is None
     latest = SystemNotificationStatePublic(
         finished_at="2026-09-30T10:02:00+08:00",
@@ -160,32 +158,46 @@ def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monk
     notification_state.record_system_notification_result(
         SystemNotificationStatePublic(finished_at="2026-09-30T10:01:00+08:00", ok=True)
     )
-    engine.dispose()
     assert notification_state.get_system_notification_result() == latest
 
 
-def test_state_write_failure_does_not_escape_notification(client, monkeypatch):
-    monkeypatch.setattr(
-        error_notifications, "run_notification_function", lambda *args, **kwargs: NotificationFunctionResult(True)
-    )
+def test_state_write_failure_does_not_escape_notification(client, monkeypatch, native_database):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    calls = []
 
-    def fail(_):
-        raise OSError("disk unavailable")
+    def notify(*args, **kwargs):
+        calls.append(args)
+        return NotificationFunctionResult(True)
 
-    monkeypatch.setattr(error_notifications, "record_system_notification_result", fail)
+    monkeypatch.setattr(error_notifications, "run_notification_function", notify)
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        connection.execute(
+            "CREATE TRIGGER reject_system_result BEFORE INSERT ON system_notification_state "
+            "BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END"
+        )
+    with pytest.raises(_core.NativeError, match="disk unavailable"):
+        notification_state.record_system_notification_result(
+            SystemNotificationStatePublic(finished_at="2026-10-23T10:00:00", ok=True)
+        )
     asyncio.run(error_notifications.send_feishu_error(RuntimeError("error"), None, "saved-key"))
+    assert len(calls) == 1
+    assert notification_state.get_system_notification_result().ok is None
 
 
 def test_system_notification_migration_roundtrip(tmp_path):
-    path = Path(__file__).parents[3] / "axile/server/alembic/versions/0022_system_notification_state.py"
-    spec = importlib.util.spec_from_file_location("system_state_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    engine = sa.create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
-    with engine.begin() as connection:
-        module.op = Operations(MigrationContext.configure(connection))
-        module.upgrade()
-        assert "system_notification_state" in sa.inspect(connection).get_table_names()
-        connection.execute(sa.text("INSERT INTO system_notification_state (id, ok) VALUES (1, 0)"))
-        module.downgrade()
-        assert "system_notification_state" not in sa.inspect(connection).get_table_names()
+    path = tmp_path / "migration.db"
+    initialize_native_database(path, revision="0021")
+    initialize_native_database(path, revision="0022")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='system_notification_state'"
+        ).fetchone()
+        connection.execute("INSERT INTO system_notification_state (id, ok) VALUES (1, 0)")
+    native_store_call(path, "migration_downgrade", {"public": "0021"})
+    with closing(sqlite3.connect(path)) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='system_notification_state'"
+            ).fetchone()
+            is None
+        )

@@ -510,6 +510,68 @@ mod tests {
     }
 
     #[test]
+    fn summary_points_read_multiple_snapshots_and_selected_range() {
+        // 从 Python 私有 reader 用例迁移，保留缺失快照、缺失范围及空请求契约。
+        let connection = database();
+        connection.execute_batch(
+            "UPDATE performance_snapshot SET id='snapshot-a';
+             INSERT INTO performance_snapshot VALUES
+                ('snapshot-b','cs',0.0002,'poison settings','poison ranges');
+             DELETE FROM performance_result_point;
+             INSERT INTO performance_result_point VALUES
+                ('snapshot-a','all',1,'2026-01-02','2026-01-02T09:00:00',NULL,NULL,
+                 0.03,103,-0.02,0.03,-0.02,NULL,NULL,0.05,1),
+                ('snapshot-a','all',0,'2026-01-01','2026-01-01T09:00:00',7,'execution-7',
+                 0,100,0,NULL,NULL,0,NULL,0,0);
+             INSERT INTO performance_result_point
+                SELECT snapshot_id,'90',0,date,observed_at,record_id,execution_id,
+                    account_return,account_equity,portfolio_return,account_daily_return,
+                    portfolio_daily_return,target_portfolio_return,target_portfolio_daily_return,
+                    difference,sizing_fallback
+                FROM performance_result_point WHERE snapshot_id='snapshot-a' AND range_key='all' AND idx=1;"
+        ).unwrap();
+        let expected = json!([
+            {
+                "date": "2026-01-01", "observed_at": "2026-01-01T09:00:00",
+                "record_id": 7, "execution_id": "execution-7",
+                "account_return": 0.0, "account_equity": 100.0, "portfolio_return": 0.0,
+                "account_daily_return": null, "portfolio_daily_return": null,
+                "target_portfolio_return": 0.0, "target_portfolio_daily_return": null,
+                "sizing_fallback": false, "difference": 0.0,
+            },
+            {
+                "date": "2026-01-02", "observed_at": "2026-01-02T09:00:00",
+                "record_id": null, "execution_id": null,
+                "account_return": 0.03, "account_equity": 103.0, "portfolio_return": -0.02,
+                "account_daily_return": 0.03, "portfolio_daily_return": -0.02,
+                "target_portfolio_return": null, "target_portfolio_daily_return": null,
+                "sizing_fallback": true, "difference": 0.05,
+            }
+        ]);
+        let read = |ids: &[&str], range: &str| {
+            Value::Object(
+                ids.iter()
+                    .map(|id| {
+                        (
+                            (*id).to_owned(),
+                            Value::Array(points(&connection, id, range).unwrap()),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        assert_eq!(
+            read(&["snapshot-a", "snapshot-b", "missing"], "all"),
+            json!({"snapshot-a": expected, "snapshot-b": [], "missing": []})
+        );
+        assert_eq!(
+            read(&["snapshot-a", "snapshot-b"], "90"),
+            json!({"snapshot-a": [expected[1]], "snapshot-b": []})
+        );
+        assert_eq!(read(&[], "all"), json!({}));
+    }
+
+    #[test]
     fn performance_only_does_not_require_cost_or_event_tables() {
         let connection = database();
         connection

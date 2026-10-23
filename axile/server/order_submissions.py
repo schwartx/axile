@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
 from datetime import date, datetime, timedelta
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
-from sqlalchemy.engine import make_url
 
 from axile.common.config import settings
+from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissionRecorder
+from axile.server.native_store import native_operation_sync
 
 
 def create_order_submission_recorder(account_id: int, *, source: str = "script") -> OrderSubmissionRecorder:
@@ -30,28 +30,18 @@ def create_order_submission_recorder(account_id: int, *, source: str = "script")
 
 def submission_database() -> str:
     """返回共用服务数据库；不允许静默写入另一份临时数据库。"""
-    url = make_url(str(settings.sqlalchemy_database_uri))
-    if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
+    url = urlsplit(str(settings.sqlalchemy_database_uri))
+    database = url.path.removeprefix("/")
+    if url.scheme not in {"sqlite", "sqlite+aiosqlite"} or url.netloc or not database or database == ":memory:":
         raise ValueError("原生报单记录需要持久化 SQLite 服务数据库")
-    return url.database
+    return database
 
 
 def _save_fact(database: str, fact: OrderSubmissionFact) -> None:
-    """独立短事务可从 SDK 回调线程调用；旧回报不得覆盖更高版本事实。"""
-    with closing(sqlite3.connect(database, timeout=5)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute(
-            "INSERT INTO order_submission (submission_uid, account_id, occurred_at_ms, revision, data) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(submission_uid) DO UPDATE SET "
-            "occurred_at_ms=excluded.occurred_at_ms, revision=excluded.revision, data=excluded.data "
-            "WHERE excluded.revision > order_submission.revision",
-            (fact.submission_uid, fact.account_id, fact.occurred_at_ms, fact.revision, fact.model_dump_json()),
-        )
-
-        from axile.server.submission_monitor import record_submission_warnings
-
-        record_submission_warnings(connection, fact.account_id, fact.occurred_at_ms, fact=fact)
+    """同步原生短事务可从 SDK 回调线程调用；提交返回后才允许发送。"""
+    native_operation_sync(
+        "save_order_submission", {"fact": fact.model_dump(mode="json"), "now_ms": clock_now_ms()}, database=database
+    )
 
 
 class OrderSubmissionSummary(BaseModel):

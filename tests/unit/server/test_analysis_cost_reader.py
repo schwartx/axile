@@ -7,14 +7,19 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION, COST_FACT_TABLES, iter_cost_fact_batches
-from axile.server.db.models.analysis import analysis_snapshot as snapshots
-from axile.server.db.models.analysis import cost_execution as executions
-from axile.server.db.models.analysis import cost_trade as trades
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
-from axile.server.performance_costs import execution_list_payload, summarize, timestamp
-from axile.server.performance_details import CostQuery, _cursor, read_costs
+from axile.server.performance_details import CostQuery, _cursor
+from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
+from tests.fixtures.rust_store.oracle_tables import cost_execution as executions
+from tests.fixtures.rust_store.oracle_tables import cost_trade as trades
+from tests.unit.server._analysis_cost_details_oracle import read_costs
+from tests.unit.server._analysis_cost_facts_oracle import (
+    COST_FACT_SCHEMA_VERSION,
+    COST_FACT_TABLES,
+    iter_cost_fact_batches,
+)
 from tests.unit.server._business_analysis_support import record
+from tests.unit.server._performance_costs_oracle import execution_list_payload, summarize, timestamp
 from tests.unit.server.test_analysis_cost_facts import _project_rows, _ranges, _rich_projection
 
 
@@ -48,6 +53,9 @@ async def _database(path=None):
             await connection.run_sync(
                 lambda sync: snapshots.metadata.create_all(sync, tables=[snapshots, *COST_FACT_TABLES])
             )
+            await connection.execute(
+                sa.text("CREATE TABLE performance_result_range(snapshot_id TEXT,range_key TEXT,baseline TEXT,end TEXT)")
+            )
         async with sessions() as session:
             await session.execute(
                 snapshots.insert().values(
@@ -65,6 +73,11 @@ async def _database(path=None):
             )
             for table, rows in iter_cost_fact_batches("snapshot", projected, costs, ranges, batch_size=2):
                 await session.execute(table.insert(), rows)
+            for key, result in ranges.items():
+                await session.execute(
+                    sa.text("INSERT INTO performance_result_range VALUES(:snapshot,:key,:baseline,:end)"),
+                    {"snapshot": "snapshot", "key": key, **result["performance"]},
+                )
             await session.commit()
         yield engine, sessions, projected, costs, ranges
     finally:
@@ -287,7 +300,8 @@ def test_cost_reader_keeps_one_snapshot_during_concurrent_retention(tmp_path):
 
 @pytest.mark.parametrize("dimension", ["execution", "symbol", "trade", "summary"])
 @pytest.mark.parametrize("filters", [{}, {"limit": 1}, {"limit": 1, "symbol_search": "a", "side": "sell"}])
-def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, filters):
+@pytest.mark.parametrize("typed", [False, True], ids=["legacy", "typed"])
+def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, filters, typed):
     import json
     from unittest.mock import AsyncMock
 
@@ -295,14 +309,33 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
     from httpx import ASGITransport, AsyncClient
 
     from axile.server._native import _core
-    from axile.server.api.deps import get_db
     from axile.server.api.routes import account_performance as routes
+    from axile.server.execution.legacy_compat import normalize_legacy_result
 
     database = tmp_path / "native-costs.db"
 
+    def display(page):
+        if typed:
+            for item in page["data"]:
+                record = item.get("record")
+                if not isinstance(record, dict):
+                    continue
+                raw = normalize_legacy_result(record["raw_result"])
+                raw.pop("technical_detail", None)
+                for result in raw.get("symbol_results", {}).values():
+                    result.pop("memory", None)
+                    result.pop("technical_detail", None)
+                record["raw_result"] = raw
+                for attempt in item.get("attempts", []):
+                    attempt["reason"] = str(
+                        raw.get("symbol_results", {}).get(attempt["symbol"], {}).get("error") or ""
+                    )[:200]
+        return page
+
     async def check():
         async with _database(database) as (_, sessions, _, _, _):
-            await _discard_legacy_json(sessions)
+            if typed:
+                await _discard_legacy_json(sessions)
             query = CostQuery(snapshot_id="snapshot", dimension=dimension, **filters)
             content = _core.query_costs(
                 _core.Store(str(database)),
@@ -326,18 +359,13 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
             )
             assert isinstance(content, bytes)
             async with sessions() as session:
-                expected = await read_costs(session, 2, query)
+                expected = display(await read_costs(session, 2, query))
             assert json.loads(content) == expected
             monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(database)))
             monkeypatch.setattr(routes, "_get_account_or_404", AsyncMock())
 
-            async def get_session():
-                async with sessions() as session:
-                    yield session
-
             app = FastAPI()
             app.include_router(routes.router)
-            app.dependency_overrides[get_db] = get_session
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get("/performance/2/costs", params=query.model_dump(exclude_none=True))
                 assert response.status_code == 200, response.text
@@ -346,7 +374,7 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
                 if expected["next_cursor"] is not None:
                     next_query = query.model_copy(update={"cursor": expected["next_cursor"]})
                     async with sessions() as session:
-                        next_expected = await read_costs(session, 2, next_query)
+                        next_expected = display(await read_costs(session, 2, next_query))
                     response = await client.get("/performance/2/costs", params=next_query.model_dump(exclude_none=True))
                     assert response.status_code == 200, response.text
                     assert response.json() == next_expected

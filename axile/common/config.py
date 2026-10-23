@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     environment : Literal["local", "staging", "production"]
         当前运行环境标识。
     sqlalchemy_database_uri : SqliteDsn
-        SQLAlchemy 使用的数据库连接地址。
+        SQLite 文件地址，字段名保留旧配置兼容。
     exe_err_feishu_key : str
         执行异常通知使用的飞书机器人密钥。
     app_log_dir : Path

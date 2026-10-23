@@ -9,8 +9,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
-from alembic import command
-from alembic.config import Config
 from loguru import logger
 
 from axile.common.config import is_configured
@@ -19,10 +17,11 @@ from axile.server.app import (  # pyright: ignore[reportPrivateUsage]
     _app,
     set_algorithm_directories,
 )
+from axile.server.core.db import initialize_database
 from axile.server.core.log_config import setup_logging
 from axile.server.core.single_worker import MultiWorkerNotSupportedError, validate_workers_option
 
-__all__ = ["build_arg_parser", "run_server", "main", "command", "uvicorn"]
+__all__ = ["build_arg_parser", "run_server", "main", "uvicorn"]
 
 # 仅允许绑定回环地址，防止服务对外网暴露（尤其禁止 0.0.0.0 / :: 等通配地址）。
 _WILDCARD_HOSTS = frozenset({"", "0", "0.0.0.0", "::", "*"})
@@ -224,7 +223,7 @@ def run_server(
         port=port,
         workers=None if reload else workers,
         reload=reload,
-        reload_dirs=_get_reload_dirs(algorithm_dir, reload_dirs) if reload else None,
+        reload_dirs=[str(path) for path in _get_reload_dirs(algorithm_dir, reload_dirs)] if reload else None,
     )
 
     # Uvicorn 会在 Config 构造阶段准备自己的日志对象；自定义日志桥接若提前安装，
@@ -234,14 +233,7 @@ def run_server(
     # 进程真正开始接收请求前先追平 schema，避免 API 入口和后台任务看到不一致的表结构。
     # 未完成初始化配置时跳过迁移：此时数据库地址尚未由向导最终确定，触达数据库会生成无用的库文件。
     if is_configured():
-        alembic_cfg = Config()
-        here = Path(__file__).parent
-        alembic_cfg.set_main_option("script_location", f"{here}/alembic")
-        alembic_cfg.set_main_option("prepend_sys_path", ".")
-        if migration_runner is None:
-            command.upgrade(alembic_cfg, "head")
-        else:
-            migration_runner()
+        initialize_database(migration_runner)
     else:
         logger.warning("axile 未完成初始化配置，跳过数据库迁移，进入初始化向导模式。")
 

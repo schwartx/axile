@@ -2,10 +2,12 @@
 
 from typing import Literal
 
-from sqlmodel import Field, SQLModel
+from pydantic import Field
+
+from axile.server.db.models.base import Model
 
 
-class AccountOrderPublic(SQLModel):
+class AccountOrderPublic(Model):
     """一笔当前委托及可公开的原生身份。"""
 
     avg_price: float | None = None
@@ -29,7 +31,7 @@ class AccountOrderPublic(SQLModel):
     reason: str | None = None
 
 
-class OrderCancelRequest(SQLModel):
+class OrderCancelRequest(Model):
     """带幂等请求标识的单笔撤单；客户端不自动重试。"""
 
     request_id: str = Field(min_length=1, max_length=100)
@@ -37,7 +39,7 @@ class OrderCancelRequest(SQLModel):
     symbol: str = Field(min_length=1, max_length=100)
 
 
-class OrderCancelReceipt(SQLModel):
+class OrderCancelReceipt(Model):
     """请求受理与订单实际终态分别表达。"""
 
     request_id: str
@@ -49,7 +51,7 @@ class OrderCancelReceipt(SQLModel):
     order: AccountOrderPublic | None = None
 
 
-class AccountOrdersPublic(SQLModel):
+class AccountOrdersPublic(Model):
     """当前委托快照；不完整时不发布确定的笔数。"""
 
     data: list[AccountOrderPublic]
@@ -62,7 +64,7 @@ class AccountOrdersPublic(SQLModel):
     cancellations: list[OrderCancelReceipt] = Field(default_factory=list)
 
 
-class AccountTradePublic(SQLModel):
+class AccountTradePublic(Model):
     """账户逐笔成交的公开字段，不输出渠道原始载荷。"""
 
     trade_id: str
@@ -87,7 +89,7 @@ class AccountTradePublic(SQLModel):
     position_side: str | None = None
 
 
-class AccountOperationFailure(SQLModel):
+class AccountOperationFailure(Model):
     """操作失败记录与订单终态独立，失败不意味着订单已撤销。"""
 
     event_id: str
@@ -99,7 +101,7 @@ class AccountOperationFailure(SQLModel):
     message: str
 
 
-class AccountActivityPublic(SQLModel):
+class AccountActivityPublic(Model):
     """近期委托、成交和操作失败；查询范围与采集范围显式公开。"""
 
     channel: str = ""

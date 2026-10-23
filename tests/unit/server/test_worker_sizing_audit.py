@@ -1,6 +1,8 @@
 """Worker 执行路径的目标数量换算审计契约测试."""
 
+from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -8,14 +10,20 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
 from axile.server.execution.worker_backend import worker_audit
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import FakeExecutor, build_account, capture_worker_audit_batch
 
 
 def test_worker_target_reference_and_summary_keep_sizing(
+    native_database: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """目标使用不可变引用，执行摘要保留完整的 v2 换算证据。"""
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    seed_account(native_database)
     account = build_account()
     standard_input = UnifiedStandardInput.from_dict(
         {
@@ -43,8 +51,6 @@ def test_worker_target_reference_and_summary_keep_sizing(
     )
     result = cast("dict[str, object]", output.model_dump(mode="json"))
     artifacts: list[dict[str, object]] = []
-    frozen_inputs: list[dict[str, object]] = []
-    audit_variants: list[dict[str, object]] = []
 
     def capture_artifact(**kwargs: object) -> bool:
         artifacts.append(dict(kwargs))
@@ -53,31 +59,24 @@ def test_worker_target_reference_and_summary_keep_sizing(
     monkeypatch.setattr(
         worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch(artifact=capture_artifact)
     )
-    monkeypatch.setattr(worker_audit, "append_execution_event_sync", lambda **_kwargs: True)
-
-    def capture_input(**kwargs: object) -> tuple[str, str]:
-        frozen_inputs.append(cast("dict[str, object]", kwargs["payload"]))
-        audit_variants.append(cast("dict[str, object]", kwargs["audit_payload"]))
-        return "worker-sizing-input", "worker-sizing-audit"
-
-    monkeypatch.setattr(worker_audit, "persist_pre_execute_bundle_sync", capture_input)
-    monkeypatch.setattr(
-        worker_audit, "persist_post_execute_assets_sync", lambda **_kwargs: ("worker-sizing-input", "after-assets")
-    )
+    persist_input = Mock(wraps=worker_audit.persist_pre_execute_input_sync)
+    monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", persist_input)
+    audit_input = {
+        **sanitize_standard_input_for_audit(standard_input),
+        "strategy_target": {"m2701": -0.06},
+        "sizing_context": {
+            "long_leverage": 1.0,
+            "short_leverage": 3.0,
+            "weight_precision": 0.01,
+        },
+    }
 
     worker_audit._append_trade_pre_execute_audit(
         account=account,
         execution_id="exec-worker-sizing",
         algorithm_name="SINGLE-MAKER",
         trigger_source="manual",
-        audit_input={
-            "strategy_target": {"m2701": -0.06},
-            "sizing_context": {
-                "long_leverage": 1.0,
-                "short_leverage": 3.0,
-                "weight_precision": 0.01,
-            },
-        },
+        audit_input=audit_input,
         standard_input=standard_input,
         executor=executor,
     )
@@ -90,20 +89,34 @@ def test_worker_target_reference_and_summary_keep_sizing(
         executor=executor,
     )
 
+    standard = next(
+        artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.STANDARD_INPUT
+    )
     target = next(
         artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.TARGET_SNAPSHOT
     )
     summary = next(
         artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY
     )
-    assert target["schema_version"] == 3
-    assert target["content"] == {
-        "business_facts_ref": {"version": 1, "view": "targets", "input_id": "worker-sizing-audit"}
+    input_id = cast("dict[str, dict[str, object]]", standard["content"])["business_facts_ref"]["input_id"]
+    persist_input.assert_called_once_with(
+        account_id=account.id,
+        execution_id="exec-worker-sizing",
+        payload=audit_input,
+        before_account_assets=None,
+    )
+    assert standard["schema_version"] == target["schema_version"] == 3
+    assert standard["content"] == {"business_facts_ref": {"version": 1, "view": "input", "input_id": input_id}}
+    assert target["content"] == {"business_facts_ref": {"version": 1, "view": "targets", "input_id": input_id}}
+    frozen_input = native_store_call(native_database, "read_execution_input", {"input_id": input_id})
+    assert frozen_input["strategy_target"] == {"m2701": -0.06}
+    assert frozen_input["curr_target"] == {"m2701": -0.18}
+    assert "account_target" not in frozen_input
+    assert frozen_input["sizing_context"] == {
+        "long_leverage": 1.0,
+        "short_leverage": 3.0,
+        "weight_precision": 0.01,
     }
-    assert frozen_inputs[0]["strategy_target"] == {"m2701": -0.06}
-    assert "account_target" not in frozen_inputs[0]
-    assert "curr_target" not in frozen_inputs[0]
-    assert audit_variants[0]["account_target"] == {"m2701": -0.18}
     assert summary["schema_version"] == 2
     reconciliation = cast("dict[str, object]", cast("dict[str, object]", summary["content"])["reconciliation"])
     symbols = cast("list[dict[str, object]]", reconciliation["symbols"])

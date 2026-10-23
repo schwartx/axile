@@ -4,42 +4,21 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
-import sqlalchemy as sa
 
-from axile.server.business_facts.trades import (
-    TABLES,
-    decode_trades,
-    encode_trades,
-    trade,
-    trade_collection,
-    trade_conversion,
-)
+from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
+
+_TABLES = ("business_trade_collection", "business_trade", "business_trade_conversion")
 
 
-def _roundtrip(payload: dict, *, database: bool = False) -> tuple[dict, dict]:
-    batch = encode_trades(7, payload)
-    if not database:
-        return decode_trades({table.name: values for table, values in batch.items()}), batch
-    metadata = sa.MetaData()
-    sa.Table("executerecord", metadata, sa.Column("id", sa.Integer, primary_key=True))
-    copied = {table.name: table.to_metadata(metadata) for table in TABLES}
-    engine = sa.create_engine("sqlite://")
-    try:
-        metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(sa.text("PRAGMA foreign_keys=ON"))
-            connection.execute(metadata.tables["executerecord"].insert(), {"id": 7})
-            for table, values in batch.items():
-                if values:
-                    connection.execute(copied[table.name].insert(), values)
-            loaded = {name: connection.execute(sa.select(table)).mappings().all() for name, table in copied.items()}
-            result = decode_trades(loaded)
-        return result, batch
-    finally:
-        engine.dispose()
+def _roundtrip(path, payload, *, is_success=0):
+    record = persist_result(path, payload, is_success=is_success)
+    return read_result(path, record), {name: rows(path, name) for name in _TABLES}
 
 
 def _fill(**changes: object) -> dict:
@@ -57,8 +36,8 @@ def _fill(**changes: object) -> dict:
     }
 
 
-@pytest.mark.parametrize("database", [False, True])
-def test_occurrence_identity_preserves_root_nested_duplicates_and_paths(database: bool) -> None:
+@pytest.mark.parametrize("is_success", [0, 1])
+def test_occurrence_identity_preserves_root_nested_duplicates_and_paths(native_database, is_success: int) -> None:
     payload = {
         "trades": [_fill(), _fill(), _fill(trade_price=3511)],
         "symbol_results": {
@@ -67,17 +46,21 @@ def test_occurrence_identity_preserves_root_nested_duplicates_and_paths(database
             "rb2610": {"trades": []},
         },
     }
-    restored, batch = _roundtrip(payload, database=database)
+    restored, batch = _roundtrip(native_database, payload, is_success=is_success)
     assert business_evidence(restored) == business_evidence(payload)
-    assert business_evidence(len(batch[trade])) == business_evidence(6)
-    assert business_evidence(batch[trade][3]["path"]) == business_evidence("/symbol_results/BTC~1USDT~0demo/trades/0")
-    assert business_evidence(batch[trade_collection][1]["map_key"]) == business_evidence("BTC/USDT~demo")
-    assert business_evidence(batch[trade][3]["symbol"]) == business_evidence("BTCUSDT")
-    assert business_evidence(len({(row["record_id"], row["path"]) for row in batch[trade]})) == business_evidence(6)
+    assert business_evidence(len(batch["business_trade"])) == business_evidence(6)
+    assert business_evidence(batch["business_trade"][3]["path"]) == business_evidence(
+        "/symbol_results/BTC~1USDT~0demo/trades/0"
+    )
+    assert business_evidence(batch["business_trade_collection"][1]["map_key"]) == business_evidence("BTC/USDT~demo")
+    assert business_evidence(batch["business_trade"][3]["symbol"]) == business_evidence("BTCUSDT")
+    assert business_evidence(
+        len({(row["record_id"], row["path"]) for row in batch["business_trade"]})
+    ) == business_evidence(6)
 
 
-@pytest.mark.parametrize("database", [False, True])
-def test_fee_absent_null_zero_rebate_and_original_currency_remain_distinct(database: bool) -> None:
+@pytest.mark.parametrize("is_success", [0, 1])
+def test_fee_absent_null_zero_rebate_and_original_currency_remain_distinct(native_database, is_success: int) -> None:
     extras = [
         {},
         {"commission": None},
@@ -89,18 +72,18 @@ def test_fee_absent_null_zero_rebate_and_original_currency_remain_distinct(datab
         {"raw_trade_data": {"commission": 9.0, "tax": 0.0}},
     ]
     payload = {"trades": [_fill(extra=extra) for extra in extras]}
-    restored, batch = _roundtrip(payload, database=database)
+    restored, batch = _roundtrip(native_database, payload, is_success=is_success)
     assert business_evidence(restored) == business_evidence(payload)
-    assert business_evidence([row["fee"] for row in batch[trade]]) == business_evidence(
+    assert business_evidence([row["fee"] for row in batch["business_trade"]]) == business_evidence(
         [None, None, 0, -0.002, 1.25, None, None, None]
     )
-    assert business_evidence([row["fee_currency"] for row in batch[trade]]) == business_evidence(
+    assert business_evidence([row["fee_currency"] for row in batch["business_trade"]]) == business_evidence(
         [None, None, "BNB", "USDT", "", None, None, None]
     )
 
 
-@pytest.mark.parametrize("database", [False, True])
-def test_original_native_amount_time_and_value_conversion_are_never_derived(database: bool) -> None:
+@pytest.mark.parametrize("is_success", [0, 1])
+def test_original_native_amount_time_and_value_conversion_are_never_derived(native_database, is_success: int) -> None:
     observed = _fill(
         trade_time="2026-10-19T19:31:02Z",
         trade_value=98765,
@@ -113,19 +96,21 @@ def test_original_native_amount_time_and_value_conversion_are_never_derived(data
     )
     missing = {"trade_volume": 2, "trade_price": 3510}
     payload = {"trades": [observed, missing]}
-    restored, batch = _roundtrip(payload, database=database)
+    restored, batch = _roundtrip(native_database, payload, is_success=is_success)
     assert business_evidence(restored) == business_evidence(payload)
     assert business_evidence(restored["trades"][0]["trade_value"]) == business_evidence(98765)
     assert "trade_value" not in restored["trades"][1]
     assert "trade_time" not in restored["trades"][1]
     assert "symbol" not in restored["trades"][1]
-    assert business_evidence(len(batch[trade_conversion])) == business_evidence(1)
-    assert business_evidence(batch[trade_conversion][0]["rate"]) == business_evidence(7)
-    assert "value_conversion" not in batch[trade][0]["audit_evidence"].get("extensions", {})
+    assert business_evidence(len(batch["business_trade_conversion"])) == business_evidence(1)
+    assert business_evidence(batch["business_trade_conversion"][0]["rate"]) == business_evidence(7)
+    assert "value_conversion" not in batch["business_trade"][0]["audit_evidence"].get("extensions", {})
 
 
-@pytest.mark.parametrize("database", [False, True])
-def test_missing_null_empty_and_malformed_collections_and_members_are_lossless(database: bool) -> None:
+@pytest.mark.parametrize("is_success", [0, 1])
+def test_missing_null_empty_and_malformed_collections_and_members_are_lossless(
+    native_database, is_success: int
+) -> None:
     payload = {
         "trades": None,
         "symbol_results": {
@@ -136,15 +121,16 @@ def test_missing_null_empty_and_malformed_collections_and_members_are_lossless(d
             "members": {"trades": [None, 0, False, "bad", [], {}, {"trade_value": None}]},
         },
     }
-    restored, _ = _roundtrip(payload, database=database)
-    expected = copy.deepcopy(payload)
-    del expected["symbol_results"]["missing"]
-    assert business_evidence(restored) == business_evidence(expected)
-    assert business_evidence(_roundtrip({})[0]) == business_evidence({})
+    restored, _ = _roundtrip(native_database, payload, is_success=is_success)
+    assert business_evidence(restored) == business_evidence(payload)
+    assert "trades" not in restored["symbol_results"]["missing"]
+    assert business_evidence(_roundtrip(native_database, {})[0]) == business_evidence({})
 
 
-@pytest.mark.parametrize("database", [False, True])
-def test_malformed_stable_fields_and_conversion_preserve_original_representation(database: bool) -> None:
+@pytest.mark.parametrize("is_success", [0, 1])
+def test_malformed_stable_fields_and_conversion_preserve_original_representation(
+    native_database, is_success: int
+) -> None:
     payload = {
         "trades": [
             {
@@ -161,26 +147,35 @@ def test_malformed_stable_fields_and_conversion_preserve_original_representation
             {"value_conversion": {}},
         ]
     }
-    restored, _ = _roundtrip(payload, database=database)
+    restored, _ = _roundtrip(native_database, payload, is_success=is_success)
     assert business_evidence(restored) == business_evidence(payload)
     assert business_evidence(restored) == business_evidence(payload)
 
 
-def test_all_child_tables_cascade_from_terminal_record_without_native_id_uniqueness() -> None:
-    for table in TABLES:
-        assert business_evidence(next(iter(table.c.record_id.foreign_keys)).ondelete) == business_evidence("CASCADE")
-        assert "trade_id" not in {column.name for column in table.primary_key}
-    assert business_evidence(set(trade.primary_key.columns.keys())) == business_evidence({"record_id", "path"})
+def test_all_child_tables_cascade_from_terminal_record_without_native_id_uniqueness(native_database) -> None:
+    payload = {"trades": [_fill(value_conversion={"rate": 7}), _fill(value_conversion={"rate": 7})]}
+    record = persist_result(native_database, payload)
+    with closing(sqlite3.connect(native_database)) as connection:
+        for name in _TABLES:
+            keys = connection.execute(f'PRAGMA foreign_key_list("{name}")').fetchall()
+            assert any(key[2] == "executerecord" and key[3] == "record_id" and key[6] == "CASCADE" for key in keys)
+            columns = connection.execute(f'PRAGMA table_info("{name}")').fetchall()
+            assert "trade_id" not in {column[1] for column in columns if column[5]}
+        columns = connection.execute("PRAGMA table_info(business_trade)").fetchall()
+        assert {column[1] for column in columns if column[5]} == {"record_id", "path"}
+    assert all(rows(native_database, name) for name in _TABLES)
+    sql(native_database, "DELETE FROM executerecord WHERE id=?", (record["id"],))
+    assert all(not rows(native_database, name) for name in _TABLES)
 
 
-def test_encoder_does_not_mutate_supplied_evidence() -> None:
+def test_encoder_does_not_mutate_supplied_evidence(native_database) -> None:
     payload = {"trades": [_fill(extra={"commission": 0, "nested": [None, {}]})]}
     expected = copy.deepcopy(payload)
-    encode_trades(7, payload)
+    persist_result(native_database, payload)
     assert business_evidence(payload) == business_evidence(expected)
 
 
-def test_invalid_nonfinite_evidence_survives_sqlite_without_becoming_null() -> None:
+def test_invalid_nonfinite_evidence_survives_sqlite_without_becoming_null(native_database) -> None:
     payload = {
         "trades": [
             float("inf"),
@@ -189,7 +184,7 @@ def test_invalid_nonfinite_evidence_survives_sqlite_without_becoming_null() -> N
         ],
         "symbol_results": {"broken": {"trades": float("-inf")}},
     }
-    restored, batch = _roundtrip(payload, database=True)
+    restored, batch = _roundtrip(native_database, payload)
     assert business_evidence(restored["trades"][0]) == business_evidence(float("inf"))
     assert restored["trades"][1]["audit_evidence"]["invalid_fields"]["trade_price"] == {"invalid_number": "nan"}
     assert business_evidence(restored["trades"][1]["extra"]["commission"]) == business_evidence(float("-inf"))
@@ -200,18 +195,20 @@ def test_invalid_nonfinite_evidence_survives_sqlite_without_becoming_null() -> N
         json.dumps(values, allow_nan=False)
 
 
-def test_imprecise_fee_never_publishes_a_different_native_numeric_value() -> None:
+def test_imprecise_fee_never_publishes_a_different_native_numeric_value(native_database) -> None:
     native_fee = 2**53 + 1
-    restored, batch = _roundtrip({"trades": [_fill(extra={"commission": native_fee})]}, database=True)
+    restored, batch = _roundtrip(native_database, {"trades": [_fill(extra={"commission": native_fee})]})
     assert business_evidence(restored["trades"][0]["extra"]["commission"]) == business_evidence(native_fee)
-    assert batch[trade][0]["fee"] is None
+    assert batch["business_trade"][0]["fee"] is None
 
 
-def test_missing_typed_trade_facts_expose_corruption() -> None:
-    payload = {"trades": [_fill(value_conversion={"rate": 7.1})]}
-    batch = encode_trades(7, payload)
-    loaded = {table.name: rows for table, rows in batch.items()}
-    with pytest.raises(ValueError, match="Missing trade conversion facts"):
-        decode_trades({**loaded, trade_conversion.name: []})
-    with pytest.raises(ValueError, match="Incomplete trade collection"):
-        decode_trades({**loaded, trade.name: []})
+@pytest.mark.parametrize(
+    "missing_table, message",
+    [("business_trade_conversion", "missing trade conversion"), ("business_trade", "incomplete")],
+)
+def test_missing_typed_trade_facts_expose_corruption(native_database, missing_table, message) -> None:
+    record = persist_result(native_database, {"trades": [_fill(value_conversion={"rate": 7.1})]})
+    sql(native_database, f'DELETE FROM "{missing_table}" WHERE record_id=?', (record["id"],))
+
+    with pytest.raises(_core.NativeError, match=message):
+        read_result(native_database, record)

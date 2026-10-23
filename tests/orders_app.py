@@ -12,6 +12,7 @@ from threading import Thread
 from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
+from pydantic_core import MultiHostUrl
 
 _runtime = tempfile.TemporaryDirectory(prefix="axile-orders-browser-")
 _path = Path(_runtime.name)
@@ -20,8 +21,7 @@ _path = Path(_runtime.name)
 )
 os.environ["AXILE_CONFIG_TOML"] = str(_path / "config.toml")
 
-from sqlmodel import SQLModel
-
+from axile.common.config import settings
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_activity import AccountActivityBook
 from axile.executor.account_orders import AccountOrderBook
@@ -33,11 +33,14 @@ from axile.server.account_control.ipc import RemoteMonitor, serve
 from axile.server.account_orders_runtime import run_order_command
 from axile.server.api.routes.account_orders import router
 from axile.server.connection_state import ConnectionBinding, ConnectionCollector, connection_config_key
-from axile.server.core.db import SessionLocal, engine
 from axile.server.event_stream import stream_response
 from axile.server.execution.worker_backend.order_monitor import sample_orders
 from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+from axile.server.native_store import native_operation_sync
 from tests.unit.server._execution_test_support import build_account
+
+settings.sqlalchemy_database_uri = MultiHostUrl(f"sqlite+aiosqlite:///{_path / 'test.db'}")
+settings.app_log_dir = _path / "logs"
 
 book = AccountOrderBook()
 stats = {"queries": 0, "cancels": 0}
@@ -99,24 +102,29 @@ async def command(_account, payload):
 
 @asynccontextmanager
 async def lifespan(_app):
-    async with engine.begin() as connection:
-        await connection.run_sync(SQLModel.metadata.create_all)
-    async with SessionLocal() as session:
-        session.add(account)
-        await session.commit()
+    native_operation_sync("migration_upgrade", {})
+    receipt = native_operation_sync(
+        "account_create",
+        {"account": account.model_dump(mode="json"), "now": clock_now_iso(), "idempotency_key": "orders-browser"},
+    )
+    assert receipt["account"]["id"] == account.id
+    previous_command = account_orders._command
     account_orders._command = command
     connection_runtime.register_session(binding, lambda: True)
     collector.observe_session(ConnectionObservation("ok", clock_now_iso()))
     book.replace([native_order()], book.begin_sync())
     parent, child = Pipe()
-    Thread(target=serve, args=(child, 1, collector.snapshot, lambda: sample_orders(state)), daemon=True).start()
+    thread = Thread(target=serve, args=(child, 1, collector.snapshot, lambda: sample_orders(state)), daemon=True)
+    thread.start()
     remote = RemoteMonitor(parent, 1, lambda: True)
     remote.connection_binding = binding
     try:
         yield
     finally:
         remote.close()
-        await engine.dispose()
+        thread.join(timeout=1)
+        connection_runtime.forget_session(account.id)
+        account_orders._command = previous_command
 
 
 app = FastAPI(lifespan=lifespan)

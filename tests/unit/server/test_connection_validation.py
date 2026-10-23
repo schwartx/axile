@@ -203,23 +203,17 @@ def test_existing_account_uses_draft_and_saved_secrets_without_saving(
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from axile.server.api.deps import get_db
-
     stored = SimpleNamespace(trade_channel="ctp", account_config=CONFIG.copy())
-    session = SimpleNamespace(get=AsyncMock(return_value=stored), commit=AsyncMock())
-
-    async def db():
-        yield session
-
-    client.app.dependency_overrides[get_db] = db
+    read_account = AsyncMock(return_value=stored)
+    monkeypatch.setattr(routes, "_get_account_or_404", read_account)
     spawn = Mock()
     monkeypatch.setattr(service, "_start", spawn)
     response = client.post("/api/v1/account/42/connection-validation", json={"account_config": draft})
+    read_account.assert_awaited_once_with(42)
     if expected_password is None:
         assert response.status_code == 422
         spawn.assert_not_called()
         assert stored.account_config == CONFIG
-        session.commit.assert_not_called()
         return
     assert response.status_code == 202
     config = spawn.call_args.args[1]
@@ -227,6 +221,32 @@ def test_existing_account_uses_draft_and_saved_secrets_without_saving(
     assert config["auth_code"] == CONFIG["auth_code"]
     assert config["investor_id"] == "draftaccount"
     assert stored.account_config == CONFIG
-    session.commit.assert_not_called()
     assert "private-password" not in response.text
     assert "new-password" not in response.text
+
+
+@pytest.mark.parametrize(
+    "channel, status, detail",
+    [(None, 404, "账户不存在"), ("gm", 422, "渠道不支持连接验证")],
+)
+def test_existing_account_validation_rejects_missing_or_unsupported_account(
+    client, service, monkeypatch, channel, status, detail
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    read_account = AsyncMock(return_value=SimpleNamespace(trade_channel=channel, account_config=CONFIG.copy()))
+    if channel is None:
+        read_account.side_effect = routes.HTTPException(404, "账户不存在")
+    monkeypatch.setattr(routes, "_get_account_or_404", read_account)
+    plugin = SimpleNamespace(descriptor=SimpleNamespace(connection_validation=None))
+    monkeypatch.setattr(routes, "get_channel", lambda _channel: plugin)
+    spawn = Mock()
+    monkeypatch.setattr(service, "_start", spawn)
+
+    response = client.post("/api/v1/account/42/connection-validation", json={"account_config": {}})
+
+    assert response.status_code == status
+    assert response.json() == {"detail": detail}
+    read_account.assert_awaited_once_with(42)
+    spawn.assert_not_called()

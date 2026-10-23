@@ -10,7 +10,6 @@ from collections.abc import Callable, Coroutine
 from typing import TypedDict, TypeVar, cast
 
 import loguru
-from sqlalchemy.exc import IntegrityError
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
@@ -19,13 +18,13 @@ from axile.domain.execution import (
     ExecutionEventType,
     ExecutionReasonFamily,
 )
-from axile.server.core.db import SessionLocal
 from axile.server.db.models import (
     ExecutionArtifact,
     ExecutionEvent,
     now_str,
 )
 from axile.server.execution.live import live_hub
+from axile.server.native_store import native_operation
 
 T = TypeVar("T")
 
@@ -160,14 +159,6 @@ def build_event_uid(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _is_duplicate_integrity_error(exc: IntegrityError, *tokens: str) -> bool:
-    """识别已知唯一约束触发的重复键完整性错误."""
-    message = str(exc).lower()
-    if "unique" not in message:
-        return False
-    return any(token.lower() in message for token in tokens)
-
-
 def build_execution_event(
     *,
     execution_id: str,
@@ -189,7 +180,7 @@ def build_execution_event(
     schema_version: int = 1,
 ) -> ExecutionEvent:
     """构造单条与批次共用的事件模型，不执行持久化或广播。"""
-    return ExecutionEvent(
+    event = ExecutionEvent(
         execution_id=execution_id,
         account_id=account_id,
         channel=channel,
@@ -217,6 +208,9 @@ def build_execution_event(
         seq=seq,
         details=details if details is not None else {},
     )
+    if details is not None:
+        event.details = details
+    return event
 
 
 async def append_execution_event(
@@ -263,40 +257,22 @@ async def append_execution_event(
         schema_version=schema_version,
     )
 
-    async with SessionLocal() as session:
-        try:
-            session.add(event)
-            await session.commit()
-            if publish_live:
-                _notify_live_hub(
-                    execution_id=execution_id,
-                    account_id=account_id,
-                    event_type=event_type,
-                    symbol=symbol,
-                    seq=seq,
-                )
-            return True
-        except IntegrityError as exc:
-            await session.rollback()
-            if _is_duplicate_integrity_error(exc, "event_uid", "uq_execution_event_event_uid"):
-                logger.debug(
-                    "跳过重复执行事件: execution_id={}, event_type={}, symbol={}, seq={}",
-                    execution_id,
-                    event_type.value,
-                    symbol,
-                    seq,
-                )
-                return False
-            logger.error(f"写入执行事件失败: {exc}")
-            if raise_on_error:
-                raise
-            return False
-        except Exception as exc:
-            await session.rollback()
-            logger.error(f"写入执行事件失败: {exc}")
-            if raise_on_error:
-                raise
-            return False
+    try:
+        inserted = await native_operation("append_execution_event", event.model_dump(mode="python"))
+    except Exception as exc:
+        logger.error(f"写入执行事件失败: {exc}")
+        if raise_on_error:
+            raise
+        return False
+    if inserted and publish_live:
+        _notify_live_hub(
+            execution_id=execution_id,
+            account_id=account_id,
+            event_type=event_type,
+            symbol=symbol,
+            seq=seq,
+        )
+    return bool(inserted)
 
 
 class _AppendExecutionEventKwargs(TypedDict):
@@ -350,35 +326,13 @@ async def append_execution_artifact(
         created_at=now_str(),
     )
 
-    async with SessionLocal() as session:
-        try:
-            session.add(artifact)
-            await session.commit()
-            return True
-        except IntegrityError as exc:
-            await session.rollback()
-            if _is_duplicate_integrity_error(
-                exc,
-                "execution_id",
-                "artifact_type",
-                "uq_execution_artifact_execution_type",
-            ):
-                logger.debug(
-                    "跳过重复执行附件: execution_id={}, artifact_type={}",
-                    execution_id,
-                    artifact_type.value,
-                )
-                return False
-            logger.error(f"写入执行附件失败: {exc}")
-            if raise_on_error:
-                raise
-            return False
-        except Exception as exc:
-            await session.rollback()
-            logger.error(f"写入执行附件失败: {exc}")
-            if raise_on_error:
-                raise
-            return False
+    try:
+        return bool(await native_operation("append_execution_artifact", artifact.model_dump(mode="python")))
+    except Exception as exc:
+        logger.error(f"写入执行附件失败: {exc}")
+        if raise_on_error:
+            raise
+        return False
 
 
 class _AppendExecutionArtifactKwargs(TypedDict):

@@ -324,12 +324,9 @@ version = "0.22.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "aiosqlite" },
-    { name = "alembic" },
     { name = "apscheduler" },
     { name = "croniter" },
     { name = "fastapi", extra = ["standard"] },
-    { name = "greenlet" },
     { name = "loguru" },
     { name = "numpy" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple/" }, marker = "python_full_version >= '3.14'" },
@@ -338,8 +335,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "ruff" },
     { name = "shinny-calendar" },
-    { name = "sqlalchemy" },
-    { name = "sqlmodel" },
     { name = "streamlit" },
     { name = "tomlkit" },
     { name = "ty" },
@@ -364,8 +359,11 @@ tqsdk = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiosqlite" },
+    { name = "alembic" },
     { name = "basedpyright" },
     { name = "commitizen" },
+    { name = "greenlet" },
     { name = "hatchling" },
     { name = "ipython" },
     { name = "jupyter" },
@@ -376,13 +374,13 @@ dev = [
     { name = "pytest-cov" },
     { name = "requests" },
     { name = "ruff" },
+    { name = "sqlalchemy" },
+    { name = "sqlmodel" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10.11" },
-    { name = "aiosqlite", specifier = ">=0.21.0" },
-    { name = "alembic", specifier = ">=1.15.2" },
     { name = "apscheduler", specifier = ">=3.11.0" },
     { name = "axile", extras = ["ctp"], marker = "extra == 'all'" },
     { name = "axile", extras = ["gm"], marker = "extra == 'all'" },
@@ -390,7 +388,6 @@ requires-dist = [
     { name = "croniter", specifier = ">=5.0.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.12" },
     { name = "gm", marker = "sys_platform != 'darwin' and extra == 'gm'", specifier = ">=3.0.183" },
-    { name = "greenlet", specifier = ">=3.3.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = "==2.3.2" },
     { name = "openctp-ctp", marker = "extra == 'ctp'", specifier = "==6.7.11.*" },
@@ -399,8 +396,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "ruff", specifier = ">=0.11,<1" },
     { name = "shinny-calendar", specifier = ">=1.0.2026,<2", index = "https://pypi.org/simple/" },
-    { name = "sqlalchemy", specifier = ">=2.0.46" },
-    { name = "sqlmodel", specifier = ">=0.0.24" },
     { name = "streamlit", specifier = ">=1.41.0" },
     { name = "tomlkit", specifier = ">=0.15.0" },
     { name = "tqsdk", marker = "extra == 'tqsdk'", specifier = ">=3.10.2,<3.11" },
@@ -411,8 +406,11 @@ provides-extras = ["ctp", "gm", "tqsdk", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiosqlite", specifier = ">=0.21.0" },
+    { name = "alembic", specifier = ">=1.15.2" },
     { name = "basedpyright", specifier = ">=1.29.1" },
     { name = "commitizen", specifier = ">=4.11.1" },
+    { name = "greenlet", specifier = ">=3.3.0" },
     { name = "hatchling", specifier = ">=1.27.0" },
     { name = "ipython", specifier = ">=9.4.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
@@ -423,6 +421,8 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "ruff", specifier = ">=0.11.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.46" },
+    { name = "sqlmodel", specifier = ">=0.0.24" },
 ]
 
 [[package]]

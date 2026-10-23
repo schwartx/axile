@@ -1,4 +1,4 @@
-//! Bounded cost pages over typed SQLite facts. Historical JSON is never read.
+//! 成本快照分页；类型化事实不读取 JSON，版本零保留冻结 payload 的兼容语义。
 
 use std::collections::HashMap;
 
@@ -12,6 +12,14 @@ pub(crate) const AGGREGATES: &str = "COUNT(*), COUNT(value), SUM(value), SUM(cos
     SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN value ELSE 0 END), \
     SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN loss_bp * value ELSE 0 END), \
     SUM(CAST(estimated AS INTEGER))";
+const EXECUTION_AGGREGATES: &str = "SELECT record_id,COUNT(*) AS trade_rows,COUNT(value) AS valued, \
+    SUM(value) AS total_value,SUM(cost) AS total_cost, \
+    COUNT(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN 1 END) AS covered, \
+    SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN value ELSE 0 END) AS covered_value, \
+    SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN loss_bp*value ELSE 0 END) AS weighted_loss, \
+    SUM(CAST(estimated AS INTEGER)) AS estimated_count, \
+    COUNT(DISTINCT CASE WHEN quantity IS NOT NULL THEN symbol END) AS symbols \
+    FROM filtered_trades GROUP BY record_id";
 const RAW_KEYS: [&str; 8] = [
     "status",
     "task_status",
@@ -158,11 +166,15 @@ struct Scope {
     args: Vec<SqlValue>,
 }
 impl Scope {
-    fn new(conn: &Connection, request: &Value) -> Result<Self, String> {
+    fn new(conn: &Connection, request: &Value, legacy: bool) -> Result<Self, String> {
         let snapshot = string(request, "snapshot_id", "");
         let range = string(request, "range", "all");
-        let bounds = crate::native_publication::copy::range_bounds(conn,snapshot,range)?
-            .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: missing range bounds")?;
+        let bounds = if legacy {
+            legacy_bounds(conn, snapshot, range)?
+        } else {
+            crate::native_publication::copy::range_bounds(conn, snapshot, range)?
+                .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: missing range bounds")?
+        };
         let mut args = vec![
             SqlValue::Text(snapshot.to_owned()),
             SqlValue::Real(bounds.0.unwrap_or(0.0)),
@@ -242,9 +254,26 @@ impl Scope {
             }
             (false, None) => String::new(),
         };
+        let execution_columns = if legacy {
+            "snapshot_id,record_id,time,success,noop,payload"
+        } else {
+            "snapshot_id,record_id,time,success,noop,key,execution_id,created_at,is_success,duration_sec,trade_count,symbol_count,position_count,positions_present,reason,raw_present,has_symbol_results,raw_status,raw_task_status,raw_error,raw_outcome,raw_outcome_reason,raw_reason_code,raw_msg,raw_execution_kind"
+        };
+        let trade_columns = if legacy {
+            "snapshot_id,id,record_id,symbol,time,day,value,cost,loss_bp,fee,fee_currency,estimated,payload,json_extract(payload,'$.side') AS side,json_extract(payload,'$.quantity') AS quantity"
+        } else {
+            "snapshot_id,id,record_id,symbol,time,day,value,cost,loss_bp,fee,fee_currency,estimated,side,quantity,price,reference,reference_source"
+        };
+        // 旧表的 side/quantity 来自 payload，先投影再应用相同的过滤和聚合。
+        let trade_source = if legacy {
+            format!("(SELECT {trade_columns} FROM performance_cost_trade)")
+        } else {
+            "performance_cost_trade".to_owned()
+        };
+        let selected_trade_columns = if legacy { "*" } else { trade_columns };
         Ok(Self { cte: format!(
-            "WITH base_executions AS (SELECT snapshot_id,record_id,time,success,noop,key,execution_id,created_at,is_success,duration_sec,trade_count,symbol_count,position_count,positions_present,reason,raw_present,has_symbol_results,raw_status,raw_task_status,raw_error,raw_outcome,raw_outcome_reason,raw_reason_code,raw_msg,raw_execution_kind FROM performance_cost_execution WHERE {}), \
-             filtered_trades AS (SELECT snapshot_id,id,record_id,symbol,time,day,value,cost,loss_bp,fee,fee_currency,estimated,side,quantity,price,reference,reference_source FROM performance_cost_trade WHERE {}), \
+            "WITH base_executions AS (SELECT {execution_columns} FROM performance_cost_execution WHERE {}), \
+             filtered_trades AS (SELECT {selected_trade_columns} FROM {trade_source} WHERE {}), \
              filtered_executions AS (SELECT * FROM base_executions{}) ",
             execution_filters.join(" AND "), trade_filters.join(" AND "), execution_selection), args })
     }
@@ -273,6 +302,54 @@ impl Scope {
     }
 }
 
+fn legacy_bounds(
+    conn: &Connection,
+    snapshot: &str,
+    range: &str,
+) -> Result<(Option<f64>, Option<f64>), String> {
+    let path = format!("$.\"{range}\".performance");
+    let (bounds, lower, upper) = conn
+        .query_row(
+            "SELECT json_extract(ranges,?2||'.baseline',?2||'.end'),
+         json_type(ranges,?2||'.baseline'),json_type(ranges,?2||'.end')
+         FROM performance_snapshot WHERE id=?1",
+            (snapshot, path),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .map_err(sql_error)?;
+    if lower.is_none() || upper.is_none() {
+        return Err(failure(
+            "ANALYSIS_READ_ERROR",
+            "missing legacy range boundary",
+        ));
+    }
+    let bounds: Value = serde_json::from_str(&bounds)
+        .map_err(|error| failure("ANALYSIS_READ_ERROR", &error.to_string()))?;
+    let parse = |value: &Value| -> Result<Option<f64>, String> {
+        if value.is_null()
+            || value == &json!(false)
+            || value.as_f64() == Some(0.0)
+            || value.as_str() == Some("")
+            || value.as_array().is_some_and(Vec::is_empty)
+            || value.as_object().is_some_and(Map::is_empty)
+        {
+            return Ok(None);
+        }
+        let timestamp = value
+            .as_str()
+            .and_then(crate::snapshots::timestamp)
+            .ok_or_else(|| failure("ANALYSIS_READ_ERROR", "invalid legacy range timestamp"))?;
+        Ok(Some(timestamp as f64 / 1_000_000.0 * 1000.0))
+    };
+    Ok((parse(&bounds[0])?, parse(&bounds[1])?))
+}
+
 /// Return one version-bound API page without loading history into Rust objects.
 pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> {
     let account = request
@@ -293,7 +370,7 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
     let logic: String = row.get(1).map_err(sql_error)?;
     let engine: String = row.get(2).map_err(sql_error)?;
     let schema: i64 = row.get(3).map_err(sql_error)?;
-    if logic != expected_logic || engine != expected_engine || schema != 1 {
+    if logic != expected_logic || engine != expected_engine || ![0, 1].contains(&schema) {
         return Err(failure(
             "SNAPSHOT_EXPIRED",
             "快照版本已失效，请重新读取绩效",
@@ -345,7 +422,8 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
             return Err(failure("INVALID_COST_QUERY", "invalid trade side"));
         }
     }
-    let scope = Scope::new(conn, request)?;
+    let legacy = schema == 0;
+    let scope = Scope::new(conn, request, legacy)?;
     let totals = scope.summary(conn)?;
     let execution_counts = conn.query_row(
         &format!("{} SELECT COUNT(*),SUM(CAST(success AS INTEGER)),SUM(CAST(noop AS INTEGER)) FROM filtered_executions", scope.cte),
@@ -355,7 +433,11 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
         "summary" => (0, Vec::new()),
         "execution" => (
             execution_counts.0,
-            execution_page(conn, &scope, sort, limit, offset, false)?,
+            if legacy {
+                legacy_execution_page(conn, &scope, sort, limit, offset)?
+            } else {
+                display_execution_rows(execution_page(conn, &scope, sort, limit, offset, false)?)?
+            },
         ),
         "symbol" => {
             let count = conn
@@ -372,7 +454,11 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
         }
         _ => (
             totals["count"].as_i64().unwrap_or(0),
-            trade_page(conn, &scope, sort, limit, offset)?,
+            if legacy {
+                legacy_trade_page(conn, &scope, sort, limit, offset)?
+            } else {
+                trade_page(conn, &scope, sort, limit, offset)?
+            },
         ),
     };
     let next_offset = offset
@@ -420,6 +506,143 @@ fn cursor(request: &Value) -> Result<(String, i64), String> {
         }
     }
     Ok((digest, offset))
+}
+
+fn parse_payload(value: &str) -> Result<Value, String> {
+    let payload: Value = serde_json::from_str(value)
+        .map_err(|error| failure("ANALYSIS_READ_ERROR", &error.to_string()))?;
+    if !payload.is_object() {
+        return Err(failure(
+            "ANALYSIS_READ_ERROR",
+            "legacy payload must be an object",
+        ));
+    }
+    Ok(payload)
+}
+
+fn compact_execution(payload: &Value) -> Result<Value, String> {
+    crate::migrations::compact_execution_list(payload)
+        .map_err(|error| failure(&error.code, &error.error))
+}
+
+fn display_execution_rows(rows: Vec<Value>) -> Result<Vec<Value>, String> {
+    rows.into_iter()
+        .map(|row| {
+            let mut row = compact_execution(&row)?;
+            let reasons: HashMap<String, String> = row
+                .pointer("/record/raw_result/symbol_results")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .map(|(symbol, result)| {
+                    (
+                        symbol.clone(),
+                        result
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .chars()
+                            .take(200)
+                            .collect(),
+                    )
+                })
+                .collect();
+            if let Some(attempts) = row.get_mut("attempts").and_then(Value::as_array_mut) {
+                for attempt in attempts {
+                    let reason = attempt
+                        .get("symbol")
+                        .and_then(Value::as_str)
+                        .and_then(|symbol| reasons.get(symbol))
+                        .cloned()
+                        .unwrap_or_default();
+                    attempt["reason"] = json!(reason);
+                }
+            }
+            Ok(row)
+        })
+        .collect()
+}
+
+fn legacy_trade_page(
+    conn: &Connection,
+    scope: &Scope,
+    sort: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Value>, String> {
+    let ordering = if sort == "cost" {
+        "t.cost DESC NULLS LAST,t.time DESC,t.id ASC"
+    } else {
+        "t.time DESC,t.id ASC"
+    };
+    let sql = format!(
+        "{} SELECT t.payload,t.id,t.record_id,
+        json_extract(e.payload,'$.record.execution_id','$.record.id'),
+        json_type(e.payload,'$.record.execution_id') FROM filtered_trades t
+        JOIN base_executions e USING(snapshot_id,record_id)
+        ORDER BY {ordering} LIMIT {limit} OFFSET {offset}",
+        scope.cte
+    );
+    let mut statement = conn.prepare(&sql).map_err(sql_error)?;
+    let mut rows = statement
+        .query(params_from_iter(scope.args.iter()))
+        .map_err(sql_error)?;
+    let mut output = Vec::new();
+    while let Some(row) = rows.next().map_err(sql_error)? {
+        let mut payload = parse_payload(&row.get::<_, String>(0).map_err(sql_error)?)?;
+        let identity: Value = serde_json::from_str(&row.get::<_, String>(3).map_err(sql_error)?)
+            .map_err(|error| failure("ANALYSIS_READ_ERROR", &error.to_string()))?;
+        if row
+            .get::<_, Option<String>>(4)
+            .map_err(sql_error)?
+            .is_none()
+        {
+            return Err(failure("ANALYSIS_READ_ERROR", "missing execution_id"));
+        }
+        payload["trade_id"] = json!(row.get::<_, i64>(1).map_err(sql_error)?);
+        payload["record_id"] = json!(row.get::<_, i64>(2).map_err(sql_error)?);
+        payload["execution_id"] = identity[0].clone();
+        output.push(payload);
+    }
+    Ok(output)
+}
+
+fn legacy_execution_page(
+    conn: &Connection,
+    scope: &Scope,
+    sort: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Value>, String> {
+    let ordering = if sort == "cost" {
+        "a.total_cost DESC NULLS LAST,e.time DESC,e.record_id DESC"
+    } else {
+        "e.time DESC,e.record_id DESC"
+    };
+    let sql = format!("{}, per_record AS ({EXECUTION_AGGREGATES}) SELECT e.payload,
+        COALESCE(a.trade_rows,0),COALESCE(a.valued,0),a.total_value,a.total_cost,
+        COALESCE(a.covered,0),a.covered_value,a.weighted_loss,a.estimated_count,COALESCE(a.symbols,0)
+        FROM filtered_executions e LEFT JOIN per_record a USING(record_id)
+        ORDER BY {ordering} LIMIT {limit} OFFSET {offset}",scope.cte.trim_end());
+    let mut statement = conn.prepare(&sql).map_err(sql_error)?;
+    let mut rows = statement
+        .query(params_from_iter(scope.args.iter()))
+        .map_err(sql_error)?;
+    let mut output = Vec::new();
+    while let Some(row) = rows.next().map_err(sql_error)? {
+        let mut payload = compact_execution(&parse_payload(
+            &row.get::<_, String>(0).map_err(sql_error)?,
+        )?)?;
+        payload["summary"] = Summary::read(row, 1)
+            .map_err(sql_error)?
+            .output(Map::new(), 0);
+        payload["symbolCount"] = json!(row.get::<_, i64>(9).map_err(sql_error)?);
+        output.push(payload);
+    }
+    drop(rows);
+    drop(statement);
+    attach_page_fees(conn, scope, &mut output, "record_id", "record_id")?;
+    Ok(output)
 }
 
 fn trade_page(
@@ -502,8 +725,12 @@ fn attach_page_fees(
         };
         let sql_value = match &key {
             Value::String(text) => SqlValue::Text(text.clone()),
-            Value::Number(number) => SqlValue::Integer(number.as_i64().unwrap()),
-            _ => unreachable!(),
+            Value::Number(number) => SqlValue::Integer(
+                number
+                    .as_i64()
+                    .ok_or_else(|| failure("ANALYSIS_READ_ERROR", "invalid cost page identity"))?,
+            ),
+            _ => return Err(failure("ANALYSIS_READ_ERROR", "invalid cost page identity")),
         };
         placeholders.push(bind(&mut args, sql_value));
         lookup.insert(key.to_string(), index);
@@ -546,21 +773,13 @@ fn execution_page(
     } else {
         "e.time DESC,e.record_id DESC"
     };
-    let aggregate_sql = "SELECT record_id,COUNT(*) AS trade_rows,COUNT(value) AS valued, \
-        SUM(value) AS total_value,SUM(cost) AS total_cost, \
-        COUNT(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN 1 END) AS covered, \
-        SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN value ELSE 0 END) AS covered_value, \
-        SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN loss_bp*value ELSE 0 END) AS weighted_loss, \
-        SUM(CAST(estimated AS INTEGER)) AS estimated_count, \
-        COUNT(DISTINCT CASE WHEN quantity IS NOT NULL THEN symbol END) AS symbols \
-        FROM filtered_trades GROUP BY record_id";
     let aggregate_sql = if historical_summary {
-        aggregate_sql.replace(
+        EXECUTION_AGGREGATES.replace(
             "SUM(cost) AS total_cost",
             "SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN cost END) AS total_cost",
         )
     } else {
-        aggregate_sql.to_owned()
+        EXECUTION_AGGREGATES.to_owned()
     };
     let sql = format!("{}, per_record AS ({aggregate_sql}) SELECT e.record_id,e.key,e.execution_id,e.created_at,e.is_success,e.noop,e.duration_sec,e.trade_count,e.position_count,e.positions_present,e.reason,e.raw_present,e.has_symbol_results,e.raw_status,e.raw_task_status,e.raw_error,e.raw_outcome,e.raw_outcome_reason,e.raw_reason_code,e.raw_msg,e.raw_execution_kind,COALESCE(a.trade_rows,0),COALESCE(a.valued,0),a.total_value,a.total_cost,COALESCE(a.covered,0),a.covered_value,a.weighted_loss,a.estimated_count,COALESCE(a.symbols,0) FROM filtered_executions e LEFT JOIN per_record a USING(record_id) ORDER BY {ordering} LIMIT {limit} OFFSET {offset}", scope.cte.trim_end());
     let mut stmt = conn.prepare(&sql).map_err(sql_error)?;
@@ -785,6 +1004,201 @@ pub(crate) fn snapshot_executions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE performance_snapshot(id TEXT,account_id INTEGER,data_until TEXT,
+             logic_version TEXT,engine_version TEXT,cost_schema_version INTEGER,ranges TEXT);
+             CREATE TABLE performance_cost_execution(snapshot_id TEXT,record_id INTEGER,time REAL,
+             success INTEGER,noop INTEGER,payload TEXT);
+             CREATE TABLE performance_cost_trade(snapshot_id TEXT,id INTEGER,record_id INTEGER,symbol TEXT,
+             time REAL,day TEXT,value REAL,cost REAL,loss_bp REAL,fee REAL,fee_currency TEXT,estimated INTEGER,
+             payload TEXT);",
+        ).unwrap();
+        let ranges = json!({"all":{"performance":{"baseline":"2026-01-01T09:00:00",
+            "end":"2026-01-03T09:00:00"}},"30":{"performance":{"baseline":null,"end":null}}});
+        connection
+            .execute(
+                "INSERT INTO performance_snapshot VALUES('legacy',2,'2026-01-03T09:00:00',
+            '19','equity-ledger-1',0,?1)",
+                [ranges.to_string()],
+            )
+            .unwrap();
+        for (id, time, success, noop) in [
+            (1, "2026-01-02T09:00:00", true, false),
+            (2, "2026-01-03T09:00:00", false, false),
+            (3, "2026-01-01T09:00:00", true, true),
+        ] {
+            let payload = json!({"key":id.to_string(),"record":{"id":id,"execution_id":9007199254740993_i64,
+                "created_at":time,"is_success":i64::from(success),"raw_result":{"outcome":"completed",
+                    "symbol_results":{"A":{"status":"SUCCEEDED","trades":[{}]}}}},
+                "noop":noop,"tradeCount":null,"attempts":[{"symbol":"A","reason":"历史原因"}],
+                "positions":null,"transactions":[],"custom":true});
+            let timestamp = crate::snapshots::timestamp(time).unwrap() as f64 / 1000.0;
+            connection
+                .execute(
+                    "INSERT INTO performance_cost_execution VALUES('legacy',?1,?2,?3,?4,?5)",
+                    rusqlite::params![id, timestamp, success, noop, payload.to_string()],
+                )
+                .unwrap();
+        }
+        for (id, symbol, value, cost, side, quantity, fee, estimated) in [
+            (1, "A", Some(100.0), 2.0, "buy", Some(2.0), Some(0.0), false),
+            (2, "B", None, 7.0, "none", None, None, true),
+        ] {
+            let time = crate::snapshots::timestamp("2026-01-02T09:00:00").unwrap() as f64 / 1000.0;
+            let payload = json!({"symbol":symbol,"day":"2026-01-02","time":time,"timeEstimated":estimated,
+                "side":side,"quantity":quantity,"value":value,"cost":cost,"custom":9007199254740993_i64});
+            connection
+                .execute(
+                    "INSERT INTO performance_cost_trade VALUES('legacy',?1,1,?2,?3,'2026-01-02',
+                ?4,?5,200,?6,?7,?8,?9)",
+                    rusqlite::params![
+                        id,
+                        symbol,
+                        time,
+                        value,
+                        cost,
+                        fee,
+                        fee.map(|_| "CNY"),
+                        estimated,
+                        payload.to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        connection
+    }
+
+    fn legacy_request(dimension: &str) -> Value {
+        json!({"account_id":2,"snapshot_id":"legacy","range":"all","dimension":dimension,
+            "sort":"time","limit":100,"cursor_scope":"scope","logic_version":"19",
+            "engine_version":"equity-ledger-1"})
+    }
+
+    #[test]
+    fn legacy_pages_preserve_payloads_identity_and_empty_aggregates() {
+        let connection = legacy_database();
+        let value = query_costs(&connection, &legacy_request("execution")).unwrap();
+        assert_eq!(value["successful"], 2);
+        assert_eq!(value["noop"], 1);
+        assert_eq!(value["count"], 3);
+        assert_eq!(value["summary"]["cost"], 9.0);
+        assert_eq!(value["summary"]["coverage"], Value::Null);
+        assert_eq!(value["summary"]["fees"], json!({"CNY":0.0}));
+        assert_eq!(value["summary"]["estimated"], 1);
+        assert_eq!(value["data"][0]["record"]["id"], 2);
+        assert_eq!(value["data"][0]["summary"]["coveredValue"], Value::Null);
+        assert_eq!(value["data"][0]["summary"]["count"], 0);
+        assert_eq!(value["data"][1]["tradeCount"], 1);
+        assert_eq!(
+            value["data"][1]["record"]["raw_result"]["status"],
+            "SUCCEEDED"
+        );
+        assert_eq!(value["data"][1]["attempts"][0]["reason"], "历史原因");
+        assert_eq!(value["data"][1]["custom"], true);
+        let trades = query_costs(&connection, &legacy_request("trade")).unwrap();
+        assert_eq!(trades["data"][0]["execution_id"], 9007199254740993_i64);
+        assert_eq!(trades["data"][0]["custom"], 9007199254740993_i64);
+        assert!(trades["data"][0].get("price").is_none());
+        let symbols = query_costs(&connection, &legacy_request("symbol")).unwrap();
+        assert_eq!(symbols["data"][0]["buy"], 2.0);
+        assert_eq!(symbols["data"][1]["quantityIncomplete"], true);
+    }
+
+    #[test]
+    fn legacy_filters_and_cursor_share_the_version_bound_native_scope() {
+        let connection = legacy_database();
+        let mut request = legacy_request("execution");
+        request["limit"] = json!(1);
+        let first = query_costs(&connection, &request).unwrap();
+        request["cursor"] = first["next_cursor"].clone();
+        let second = query_costs(&connection, &request).unwrap();
+        assert_eq!(second["data"][0]["record"]["id"], 1);
+        request["cursor_scope"] = json!("changed");
+        assert!(query_costs(&connection, &request)
+            .unwrap_err()
+            .starts_with("INVALID_COST_CURSOR:"));
+        let mut request = legacy_request("execution");
+        request["symbol_search"] = json!("a");
+        request["side"] = json!("buy");
+        let filtered = query_costs(&connection, &request).unwrap();
+        assert_eq!(filtered["count"], 1);
+        assert_eq!(filtered["summary"]["cost"], 2.0);
+        request = legacy_request("execution");
+        request["day"] = json!("2026-01-03");
+        let filtered = query_costs(&connection, &request).unwrap();
+        assert_eq!(filtered["count"], 1);
+        assert_eq!(filtered["data"][0]["record"]["id"], 2);
+        request = legacy_request("trade");
+        request["range"] = json!("30");
+        assert_eq!(query_costs(&connection, &request).unwrap()["count"], 0);
+    }
+
+    #[test]
+    fn legacy_missing_identity_and_bounds_are_not_manufactured_as_null() {
+        let connection = legacy_database();
+        connection
+            .execute("UPDATE performance_snapshot SET ranges='{}'", [])
+            .unwrap();
+        assert!(query_costs(&connection, &legacy_request("trade"))
+            .unwrap_err()
+            .contains("missing legacy range boundary"));
+        let connection = legacy_database();
+        connection.execute("UPDATE performance_cost_execution SET payload=json_remove(payload,'$.record.execution_id')",[]).unwrap();
+        assert!(query_costs(&connection, &legacy_request("trade"))
+            .unwrap_err()
+            .contains("missing execution_id"));
+        let connection = legacy_database();
+        connection
+            .execute(
+                "UPDATE performance_cost_execution SET payload=json_remove(payload,'$.record.id')",
+                [],
+            )
+            .unwrap();
+        assert!(query_costs(&connection, &legacy_request("execution"))
+            .unwrap_err()
+            .contains("invalid cost page identity"));
+    }
+
+    #[test]
+    fn legacy_bounds_keep_microseconds_and_distinguish_null_from_missing() {
+        let connection = legacy_database();
+        let ranges = json!({"all":{"performance":{"baseline":"2026-01-01T09:00:00.000003",
+            "end":"2026-01-01T01:00:00.000003Z"}}});
+        connection
+            .execute(
+                "UPDATE performance_snapshot SET ranges=?1",
+                [ranges.to_string()],
+            )
+            .unwrap();
+        assert_eq!(
+            legacy_bounds(&connection, "legacy", "all").unwrap(),
+            (Some(1767229200000.0032), Some(1767229200000.0032))
+        );
+        assert!(legacy_bounds(&connection, "legacy", "30").is_err());
+        connection
+            .execute("UPDATE performance_snapshot SET ranges='{}'", [])
+            .unwrap();
+        assert!(legacy_bounds(&connection, "legacy", "all").is_err());
+    }
+
+    #[test]
+    fn native_display_uses_frozen_memory_and_drops_technical_details() {
+        let rows = display_execution_rows(vec![
+            json!({"record":{"id":1,"raw_result":{"symbol_results":{
+            "A":{"status":"PARTIAL","memory":{"message":"冻结未到目标"}}}}},
+            "attempts":[{"symbol":"A","reason":"RuntimeError: secret"}]}),
+        ])
+        .unwrap();
+        assert_eq!(rows[0]["attempts"][0]["reason"], "冻结未到目标");
+        let symbol = &rows[0]["record"]["raw_result"]["symbol_results"]["A"];
+        assert_eq!(symbol["error"], "冻结未到目标");
+        assert!(symbol.get("memory").is_none());
+        assert!(symbol.get("technical_detail").is_none());
+        assert!(!rows[0].to_string().contains("secret"));
+    }
     #[test]
     fn empty_cursor_matches_first_page() {
         let first_page = json!({"snapshot_id": "v1", "cursor_scope": "known"});

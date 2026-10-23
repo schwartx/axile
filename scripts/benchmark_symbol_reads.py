@@ -11,8 +11,14 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.benchmark_journal_pages import scale_copy
-from scripts.benchmark_performance_frames import emit, observe
+try:
+    from benchmark_business_fact_storage import initialize_benchmark_database
+    from benchmark_journal_pages import scale_copy
+    from benchmark_performance_frames import emit, observe
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import initialize_benchmark_database
+    from scripts.benchmark_journal_pages import scale_copy
+    from scripts.benchmark_performance_frames import emit, observe
 
 
 async def pages(client, results):
@@ -46,21 +52,25 @@ async def worker(args):
     import httpx
     import psutil
 
+    from axile.server.core import db
+
+    initialize_benchmark_database(args.output / "working.db")
     from axile.server.api.routes import account_schedule
     from axile.server.app import _app
-    from axile.server.core.db import engine
+
+    engine = getattr(db, "engine", None)
 
     if not Path(account_schedule.__file__).resolve().is_relative_to(args.root.resolve()):
         raise ValueError("Wrong imported source tree")
     decoded = []
 
     def deserialize(raw):
-        decoded.append(len(raw))
+        decoded.append(len(raw.encode("utf-8") if isinstance(raw, str) else raw))
         return json.loads(raw)
 
-    # Record the actual JSON sent from SQLite to Python, with the same decoder
-    # and constant-size instrumentation overhead in both arms.
-    engine.sync_engine.dialect._json_deserializer = deserialize
+    # Only legacy SQLAlchemy decoding is observable through this hook.
+    if engine is not None:
+        engine.sync_engine.dialect._json_deserializer = deserialize
     try:
         results = []
         emit("imported", source=str(Path(account_schedule.__file__).resolve()))
@@ -78,11 +88,13 @@ async def worker(args):
             peak_bytes=peak,
             steady_bytes=statistics.median(steady),
             results=results,
-            decoded_bytes=sum(decoded),
-            largest_decoded_bytes=max(decoded, default=0),
+            decoded_bytes=sum(decoded) if engine is not None else None,
+            largest_decoded_bytes=max(decoded, default=0) if engine is not None else None,
+            decoded_scope="SQLAlchemy DB JSON deserializer only; native decoding is unobserved",
         )
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 def main():
@@ -127,7 +139,9 @@ def main():
                         repeat=repeat,
                         seconds=phases["api_end"]["seconds"],
                         peak_mib=phases["done"]["peak_bytes"] / 2**20,
-                        decoded_mib=phases["done"]["decoded_bytes"] / 2**20,
+                        decoded_mib=phases["done"]["decoded_bytes"] / 2**20
+                        if phases["done"]["decoded_bytes"] is not None
+                        else None,
                     )
                 ),
                 flush=True,
@@ -147,10 +161,13 @@ def main():
             seconds=statistics.median(row["api_end"]["seconds"] for row in rows),
             peak_mib=statistics.median(row["done"]["peak_bytes"] / 2**20 for row in rows),
             steady_mib=statistics.median(row["done"]["steady_bytes"] / 2**20 for row in rows),
-            decoded_mib=statistics.median(row["done"]["decoded_bytes"] / 2**20 for row in rows),
+            decoded_mib=statistics.median(row["done"]["decoded_bytes"] / 2**20 for row in rows)
+            if rows[0]["done"]["decoded_bytes"] is not None
+            else None,
             largest_decoded_bytes=rows[0]["done"]["largest_decoded_bytes"],
         )
     summary.update(
+        decoded_scope="SQLAlchemy hook only; native unobserved; legacy timing includes decoder instrumentation",
         source_sha256=digest,
         original_sha256=original_digest,
         synthetic_records=args.scale_records,

@@ -2,9 +2,9 @@
 
 import sqlalchemy as sa
 
-from axile.server.analysis_cost_reader import READ_BATCH_SIZE, read_execution_payloads, scalar_columns
-from axile.server.db.models.analysis import cost_execution, cost_trade
-from axile.server.performance_costs import timestamp
+from tests.fixtures.rust_store.oracle_tables import cost_execution, cost_trade
+from tests.unit.server._analysis_cost_reader_oracle import READ_BATCH_SIZE, read_execution_payloads, scalar_columns
+from tests.unit.server._performance_costs_oracle import timestamp
 
 
 def _empty_summary() -> dict:

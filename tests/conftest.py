@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,6 +29,42 @@ _TEST_CONFIG_PATH.write_text(
     encoding="utf-8",
 )
 os.environ["AXILE_CONFIG_TOML"] = str(_TEST_CONFIG_PATH)
+
+
+def require_native_store(*operations: str) -> ModuleType:
+    """原生能力缺失时明确失败，避免旧二进制让持久化测试假通过。"""
+    try:
+        from axile.server._native import _core
+    except ImportError as error:
+        pytest.fail(f"需要当前源码构建的 Rust SQLite 扩展: {error}", pytrace=False)
+    missing = [name for name in operations if not callable(getattr(_core, name, None))]
+    if getattr(_core, "PUBLIC_HEAD", None) != "0039":
+        missing.append("PUBLIC_HEAD=0039")
+    if missing:
+        pytest.fail(f"Rust SQLite 扩展缺少能力: {', '.join(missing)}；请先构建当前源码", pytrace=False)
+    return _core
+
+
+def native_store_call(path: Path | str, operation: str, request: object) -> object:
+    """对隔离文件库调用真实原生业务阶段。"""
+    core = require_native_store(operation)
+    evidence_input = operation in getattr(core, "EVIDENCE_INPUT_STAGES", ())
+    return getattr(core, operation)(str(path), json.dumps(request, ensure_ascii=False, allow_nan=evidence_input))
+
+
+def initialize_native_database(path: Path | str, *, revision: str = "head") -> dict:
+    """通过完整公开迁移链创建文件库，包含索引、触发器和版本记录。"""
+    result = native_store_call(path, "migration_upgrade", {"public": revision})
+    assert isinstance(result, dict), "migration_upgrade 必须返回迁移回执"
+    return result
+
+
+@pytest.fixture
+def native_database(tmp_path: Path) -> Path:
+    """每个用例使用真实 Rust 迁移初始化的独立 SQLite 文件。"""
+    path = tmp_path / "native.db"
+    initialize_native_database(path)
+    return path
 
 
 @pytest.fixture(scope="session")

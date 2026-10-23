@@ -1,93 +1,111 @@
-"""执行记录并发收尾幂等：同 ``execution_id`` 二次落库保留首条而不抛 IntegrityError."""
+"""执行记录并发收尾幂等：同一执行保留首条已提交终态。"""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from typing import cast
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
+import pytest
 
 from axile.server.business_facts.repository import read_execution_result
-from axile.server.db.models import ExecuteRecord
-from axile.server.execution.records import SessionFactory, _persist_execute_record
-from tests.unit.server._execution_test_support import build_account
+from axile.server.core import db
+from axile.server.execution.records import _persist_execute_record
+from tests.conftest import native_store_call
+from tests.unit.server._execution_test_support import build_account, insert_account
 
 
-@asynccontextmanager
-async def _session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with factory() as session:
-            session.add(build_account(id=1))
-            await session.commit()
-        yield factory
-    finally:
-        await engine.dispose()
+@pytest.fixture
+def database(native_database, monkeypatch):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, build_account(id=1, portfolio_id=None))
+    return native_database
 
 
-def test_duplicate_execution_record_returns_first() -> None:
-    """同一执行的两条收尾路径并发落库时保留首条，不向调用方抛 IntegrityError。"""
+def test_duplicate_execution_record_returns_first(database) -> None:
+    """同一执行的两条收尾路径落库时保留首条，不抛唯一约束异常。"""
 
-    async def scenario() -> tuple[int | None, ExecuteRecord, object]:
-        async with _session_factory() as factory:
-            session_factory = cast("SessionFactory", factory)
-            first = await _persist_execute_record(
-                account_id=1,
-                execution_id="exec-dup-1",
-                raw_input={},
-                raw_result={"task_status": "TERMINATED"},
-                is_success=0,
-                session_factory=session_factory,
-            )
-            second = await _persist_execute_record(
-                account_id=1,
-                execution_id="exec-dup-1",
-                raw_input={},
-                raw_result={"task_status": "TERMINATED", "finalized": True},
-                is_success=0,
-                session_factory=session_factory,
-            )
-            async with factory() as session:
-                result = await read_execution_result(session, second)
-            return first.id, second, result
+    async def scenario():
+        first = await _persist_execute_record(
+            account_id=1,
+            execution_id="exec-dup-1",
+            raw_input={},
+            raw_result={"task_status": "TERMINATED"},
+            is_success=0,
+        )
+        second = await _persist_execute_record(
+            account_id=1,
+            execution_id="exec-dup-1",
+            raw_input={},
+            raw_result={"task_status": "TERMINATED", "finalized": True},
+            is_success=0,
+        )
+        return first.id, second, await read_execution_result(second)
 
     first_id, second, result = asyncio.run(scenario())
     assert first_id == second.id
-    # 首条记录原样保留，未被第二条覆盖。
     assert isinstance(result, dict)
     assert result == {"task_status": "TERMINATED"}
     assert "finalized" not in result
     assert second.task_status == "TERMINATED"
 
 
-def test_unique_id_conflict_without_execution_id_still_raises() -> None:
-    """无 execution_id 的记录不受唯一约束保护，冲突类异常应原样暴露。"""
+def test_native_concurrent_terminal_writers_share_one_committed_record(database) -> None:
+    """独立原生写连接竞争同一唯一索引，胜出的终态与事实始终一致。"""
+    barrier = threading.Barrier(2)
+    results = [{"task_status": "TERMINATED", "msg": f"writer-{index}"} for index in (1, 2)]
 
-    async def scenario() -> None:
-        async with _session_factory() as factory:
-            session_factory = cast("SessionFactory", factory)
-            await _persist_execute_record(
-                account_id=1,
-                execution_id=None,
-                raw_input={},
-                raw_result={},
-                is_success=1,
-                session_factory=session_factory,
-            )
-            await _persist_execute_record(
-                account_id=1,
-                execution_id=None,
-                raw_input={},
-                raw_result={},
-                is_success=1,
-                session_factory=session_factory,
-            )
+    def persist(result):
+        barrier.wait(timeout=2)
+        return native_store_call(
+            database,
+            "persist_execute_record",
+            {
+                "account_id": 1,
+                "execution_id": "exec-race",
+                "raw_input": {},
+                "raw_result": result,
+                "is_success": 0,
+                "created_at": "2026-10-23T10:00:00",
+                "input_id": str(uuid4()),
+                "result_input_id": str(uuid4()),
+            },
+        )
 
-    # execution_id 为 NULL 不触发唯一约束，两条都应成功落库（SQLite 允许多 NULL）。
-    asyncio.run(scenario())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = list(pool.map(persist, results))
+    assert first["id"] == second["id"]
+    stored = native_store_call(database, "read_execution_result", {"record_id": first["id"], "account_id": 1})
+    assert stored in results
+    assert native_store_call(database, "recent_execution_records", {"account_id": 1, "limit": 10}) == [first]
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM executerecord").fetchone()[0] == 1
+        indexes = {row[1]: row[2] for row in connection.execute("PRAGMA index_list(executerecord)")}
+        assert indexes["ix_executerecord_execution_id"] == 1
+
+
+def test_unique_id_conflict_without_execution_id_still_raises(database) -> None:
+    """execution_id 为 NULL 时允许两条独立记录，不能错误地合并终态。"""
+
+    async def scenario():
+        records = []
+        for _ in range(2):
+            records.append(
+                await _persist_execute_record(
+                    account_id=1,
+                    execution_id=None,
+                    raw_input={},
+                    raw_result={},
+                    is_success=1,
+                )
+            )
+        return records
+
+    first, second = asyncio.run(scenario())
+    assert first.id != second.id
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM executerecord WHERE execution_id IS NULL").fetchone()[0] == 2

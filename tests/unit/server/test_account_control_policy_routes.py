@@ -23,12 +23,12 @@ def _account(*, channel: TradeChannel = TradeChannel.CTP) -> SimpleNamespace:
 
 
 def test_policy_route_returns_chinese_catalog_and_effective_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_get_account(_session: object, _account_id: int) -> SimpleNamespace:
+    async def fake_get_account(_account_id: int) -> SimpleNamespace:
         return _account()
 
     monkeypatch.setattr(account_control_policy_routes, "_get_account_or_404", fake_get_account)
 
-    result = asyncio.run(account_control_policy_routes.get_account_control_policy(object(), 1, None))  # type: ignore[arg-type]
+    result = asyncio.run(account_control_policy_routes.get_account_control_policy(1, None))  # type: ignore[arg-type]
 
     assert result.preset_display_name == "默认"
     assert [item.display_name for item in result.compatible_presets] == ["默认", "CTP"]
@@ -46,12 +46,12 @@ def test_policy_route_returns_chinese_catalog_and_effective_override(monkeypatch
 def test_policy_route_previews_ctp_without_mutating_account(monkeypatch: pytest.MonkeyPatch) -> None:
     account = _account()
 
-    async def fake_get_account(_session: object, _account_id: int) -> SimpleNamespace:
+    async def fake_get_account(_account_id: int) -> SimpleNamespace:
         return account
 
     monkeypatch.setattr(account_control_policy_routes, "_get_account_or_404", fake_get_account)
 
-    result = asyncio.run(account_control_policy_routes.get_account_control_policy(object(), 1, "ctp"))  # type: ignore[arg-type]
+    result = asyncio.run(account_control_policy_routes.get_account_control_policy(1, "ctp"))  # type: ignore[arg-type]
 
     assert result.preset_display_name == "CTP"
     assert result.effective_policy.operations["place_order"].account.per_day is not None
@@ -65,23 +65,23 @@ def test_policy_route_roundtrips_daily_warning_without_losing_existing_quota(mon
     account = _account()
     account.account_control_override.operations["place_order"].daily_warning_percent = 80
 
-    async def get_account(_session, _account_id):
+    async def get_account(_account_id):
         return account
 
     monkeypatch.setattr(account_control_policy_routes, "_get_account_or_404", get_account)
-    result = asyncio.run(account_control_policy_routes.get_account_control_policy(object(), 1, None))
+    result = asyncio.run(account_control_policy_routes.get_account_control_policy(1, None))
     assert result.override.operations["place_order"].daily_warning_percent == 80
     assert result.effective_policy.operations["place_order"].daily_warning_percent == 80
     assert result.effective_policy.operations["place_order"].account.per_day.limit == 12
 
 
 def test_policy_route_rejects_incompatible_preset(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_get_account(_session: object, _account_id: int) -> SimpleNamespace:
+    async def fake_get_account(_account_id: int) -> SimpleNamespace:
         return _account(channel=TradeChannel("plugin-channel"))
 
     monkeypatch.setattr(account_control_policy_routes, "_get_account_or_404", fake_get_account)
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(account_control_policy_routes.get_account_control_policy(object(), 1, "ctp"))  # type: ignore[arg-type]
+        asyncio.run(account_control_policy_routes.get_account_control_policy(1, "ctp"))  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == 422

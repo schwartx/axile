@@ -1,41 +1,58 @@
 """使用真实 SQLite 验证最新状态、配置失效与跨进程观察去重。"""
 
+import json
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import asdict
 from multiprocessing import Pipe
 
 import pytest
-from sqlalchemy import create_engine
-from sqlmodel import Session, SQLModel, select
 
 from axile.executor.connection_state import ConnectionMonitor, ConnectionObservation, connection_observer_scope
 from axile.server import connection_state as service
+from axile.server.core import db
 from axile.server.db.models import Account
-from axile.server.db.models.account_connection import AccountConnectionState
+from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionState
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
 from axile.server.portfolio_function import PortfolioFunctionResult, portfolio_result_from_exception
-from tests.unit.server._execution_test_support import build_account
+from tests.conftest import native_store_call
+from tests.unit.server._execution_test_support import build_account, insert_account
+
+
+def _account(path):
+    value = native_store_call(path, "account_get", {"account_id": 1})
+    return Account.model_validate(value) if value is not None else None
+
+
+def _states(path):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = [dict(row) for row in connection.execute("SELECT * FROM account_connection_state")]
+    for row in rows:
+        for field in ("error", "presentation", "last_failure"):
+            if row[field] is not None:
+                row[field] = json.loads(row[field])
+    return [AccountConnectionState.model_validate(row) for row in rows]
+
+
+def _state(path):
+    rows = _states(path)
+    return rows[0] if rows else None
 
 
 @pytest.fixture
-def database(tmp_path, monkeypatch):
-    engine = create_engine(f"sqlite:///{tmp_path / 'connection.db'}")
-    SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(service, "connection_engine", lambda: engine)
-    with Session(engine) as session:
-        session.add(build_account(portfolio_id=None))
-        session.commit()
-        account = session.get(Account, 1)
-        account.account_config
-        session.expunge_all()
-    yield engine, account
-    engine.dispose()
+def database(native_database, monkeypatch):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, build_account(portfolio_id=None))
+    return native_database, _account(native_database)
 
 
 def test_single_row_overwrite_recovery_and_restart(database):
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     assert binding is not None
     collector = service.ConnectionCollector(binding, persist=True)
@@ -43,25 +60,23 @@ def test_single_row_overwrite_recovery_and_restart(database):
         monitor = ConnectionMonitor()
     monitor.failed(RuntimeError("旧错误"))
     monitor.failed(RuntimeError("最新错误"))
-    with Session(engine) as session:
-        rows = session.exec(select(AccountConnectionState)).all()
-        assert len(rows) == 1
-        assert rows[0].message == "最新错误"
-        assert "旧错误" not in str(rows[0].error)
+    rows = _states(path)
+    assert len(rows) == 1
+    assert rows[0].message == "最新错误"
+    assert "旧错误" not in str(rows[0].error)
     monitor.succeeded()
     # 独立连接模拟服务重新读取，正常结果不保留任何旧错误。
-    with Session(engine) as session:
-        current = session.get(Account, 1)
-        detail = service.public_connection(current, detail=True)
-        assert detail.status == "uninitialized"
-        assert detail.last_failure.message == "最新错误"
-        assert detail.error is None
-        assert detail.message is None
-        assert detail.observed_at is None
+    current = _account(path)
+    detail = service.public_connection(current, detail=True)
+    assert detail.status == "uninitialized"
+    assert detail.last_failure.message == "最新错误"
+    assert detail.error is None
+    assert detail.message is None
+    assert detail.observed_at is None
 
 
 def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
-    engine, account = database
+    path, account = database
     old = service.begin_connection_instance(account)
     new = service.begin_connection_instance(account)
     failure = ConnectionObservation("error", "2026-10-14T14:47:18", "新故障", {"technical_detail": "1026"})
@@ -69,29 +84,25 @@ def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
     service.record_connection_observation(old, 99, ConnectionObservation("ok", "2099-01-01"))
     service.record_connection_observation(new, 1, ConnectionObservation("ok", "2099-01-01"))
     service.consume_connection_snapshot({"binding": asdict(new), "sequence": 2, "observation": asdict(failure)})
-    with Session(engine) as session:
-        assert session.get(AccountConnectionState, 1).message == "新故障"
-        assert session.get(AccountConnectionState, 1).sequence == 2
+    assert _state(path).message == "新故障"
+    assert _state(path).sequence == 2
 
 
 def test_changed_config_rejects_old_runtime_and_clears_error(database):
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(binding, 1, ConnectionObservation("error", "now", "旧凭证失效", {}))
-    with Session(engine) as session:
-        current = session.get(Account, 1)
-        current.account_config = {**current.account_config, "password": "replacement"}
-        session.add(current)
-        session.commit()
-        assert service.public_connection(current).status == "uninitialized"
-        current.account_config
-        session.expunge_all()
+    current = _account(path)
+    current.account_config = {**current.account_config, "password": "replacement"}
+    native_store_call(
+        path, "account_update", {"account_id": 1, "patch": {"account_config": current.account_config}, "now": "changed"}
+    )
+    assert service.public_connection(current).status == "uninitialized"
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
     assert service.begin_connection_instance(account) is None
     assert service.begin_connection_instance(current) is not None
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, 1)
-        assert row.status == "unknown" and row.error is None and row.message is None
+    row = _state(path)
+    assert row.status == "unknown" and row.error is None and row.message is None
 
 
 def test_connection_scope_survives_worker_and_portfolio_wrapping():
@@ -111,7 +122,7 @@ def test_connection_scope_survives_worker_and_portfolio_wrapping():
 def test_idle_worker_monitor_persists_connection_without_flow_or_business_request(database, monkeypatch):
     from axile.server.account_control import ipc
 
-    engine, account = database
+    path, account = database
     collector = service.ConnectionCollector(service.begin_connection_instance(account))
     monkeypatch.setattr(ipc.providers, "snapshot", lambda _account_id: None)
     parent, child = Pipe()
@@ -122,11 +133,10 @@ def test_idle_worker_monitor_persists_connection_without_flow_or_business_reques
     try:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            with Session(engine) as session:
-                row = session.get(AccountConnectionState, 1)
-                if row.status == "error":
-                    assert row.message == "空闲期间断线"
-                    break
+            row = _state(path)
+            if row.status == "error":
+                assert row.message == "空闲期间断线"
+                break
             time.sleep(0.01)
         else:
             pytest.fail("空闲 worker 连接观察未通过独立监控通路保存")
@@ -135,48 +145,39 @@ def test_idle_worker_monitor_persists_connection_without_flow_or_business_reques
         server.join(timeout=2)
 
 
-def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(database, monkeypatch):
+def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(database):
     import asyncio
 
     from axile.server.api.routes import account_crud
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(
         binding, 1, ConnectionObservation("error", "now", "连接失败", {"technical_detail": "1026"})
     )
-    with Session(engine) as session:
-        current = session.get(Account, 1)
-        current.connection_state
-        session.expunge_all()
+    current = _account(path)
 
-    async def lookup(_session, _id):
-        return current
-
-    monkeypatch.setattr(account_crud, "_get_account_or_404", lookup)
-    detail = asyncio.run(account_crud.account_connection(None, 1))
+    before = _states(path)
+    response = asyncio.run(account_crud.account_connection(1))
+    detail = AccountConnectionDetail.model_validate_json(response.body)
+    assert _states(path) == before
     assert detail.last_failure.error["technical_detail"] == "1026"
     summary = account_crud._account_public(current).connection
     assert summary.status == "uninitialized" and summary.last_failure_at == "now"
 
 
 def test_account_deletion_cascades_latest_state_and_rejects_late_callback(database):
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(binding, 1, ConnectionObservation("error", "now", "连接失败", {}))
-    with Session(engine) as session:
-        session.delete(session.get(Account, 1))
-        session.commit()
+    native_store_call(path, "account_delete", {"account_id": 1})
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
     assert service.begin_connection_instance(account) is None
-    with Session(engine) as session:
-        assert session.get(AccountConnectionState, 1) is None
+    assert _state(path) is None
 
 
 def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(database):
-    import asyncio
-
-    engine, account = database
+    path, account = database
     with service.report_connection_for_account(account):
         monitor = ConnectionMonitor()
     content = {
@@ -184,14 +185,13 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
         "sections": [{"fields": [{"label": "本次事实", "value": "断开"}], "steps": ["检查目标"]}],
     }
     monitor.failed(RuntimeError("SDK 原始错误"), label="此前未注册的自由文案", presentation=content)
-    with Session(engine) as session:
-        current = session.get(Account, 1)
-        summary = service.public_connection(current).model_dump()
-        detail = service.public_connection(current, detail=True).model_dump()
-        assert summary["label"] is None
-        assert "error" not in summary and "presentation" not in summary
-        assert detail["last_failure"]["presentation"]["title"] == "测试渠道自由详情"
-        assert detail["last_failure"]["error"]["technical_detail"] == "SDK 原始错误"
+    current = _account(path)
+    summary = service.public_connection(current).model_dump()
+    detail = service.public_connection(current, detail=True).model_dump()
+    assert summary["label"] is None
+    assert "error" not in summary and "presentation" not in summary
+    assert detail["last_failure"]["presentation"]["title"] == "测试渠道自由详情"
+    assert detail["last_failure"]["error"]["technical_detail"] == "SDK 原始错误"
     # worker 业务响应与独立监控使用同一个 collector 载荷。
     worker = service.ConnectionCollector(service.begin_connection_instance(account))
     observation = ConnectionObservation("error", "2026-10-14T14:47:18", "worker故障", {}, "worker 自由文案", content)
@@ -201,44 +201,34 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
     assert worker.snapshot() == first
     service.consume_connection_snapshot(first)
     service.consume_connection_snapshot(first)
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, 1)
-        assert row.label == "worker 自由文案" and row.presentation["title"] == "测试渠道自由详情"
-        assert row.sequence == 1 and row.observed_at == observation.observed_at
+    row = _state(path)
+    assert row.label == "worker 自由文案" and row.presentation["title"] == "测试渠道自由详情"
+    assert row.sequence == 1 and row.observed_at == observation.observed_at
     # 同配置重连仍未成功，保留上一故障；新实例和序号保护整份内容。
     newer = service.begin_connection_instance(account)
     service.consume_connection_snapshot(first)
-    with Session(engine) as session:
-        assert session.get(AccountConnectionState, 1).label == "worker 自由文案"
+    assert _state(path).label == "worker 自由文案"
     service.record_connection_observation(newer, 1, ConnectionObservation("error", "later", "未知新故障", {}))
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, 1)
-        assert row.label is None and row.presentation is None
+    row = _state(path)
+    assert row.label is None and row.presentation is None
     service.record_connection_observation(newer, 2, observation)
-    # 用真实异步配置重置入口验证四个故障字段同时清除。
-    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+    # 配置更新与连接状态重置由同一个原生事务提交。
+    current = _account(path)
+    native_store_call(
+        path,
+        "account_update",
+        {"account_id": 1, "patch": {"account_config": current.account_config | {"password": "new"}}, "now": "reset"},
+    )
 
-    async def reset():
-        async_engine = create_async_engine(str(engine.url).replace("sqlite:", "sqlite+aiosqlite:"))
-        async with AsyncSession(async_engine) as session:
-            current = await session.get(Account, 1)
-            await session.refresh(current, ["settings"])
-            current.account_config = {**current.account_config, "password": "new"}
-            await service.reset_connection_for_config(session, current)
-            await session.commit()
-        await async_engine.dispose()
-
-    asyncio.run(reset())
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, 1)
-        assert row.status == "unknown"
-        assert all(getattr(row, field) is None for field in ("label", "presentation", "message", "error"))
+    row = _state(path)
+    assert row.status == "unknown"
+    assert all(getattr(row, field) is None for field in ("label", "presentation", "message", "error"))
 
 
 def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(database, monkeypatch):
     from axile.server.account_control import ipc
 
-    engine, account = database
+    path, account = database
     collector = service.ConnectionCollector(service.begin_connection_instance(account))
     monkeypatch.setattr(ipc.providers, "snapshot", lambda _account_id: None)
     parent, child = Pipe()
@@ -251,12 +241,11 @@ def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(datab
     try:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            with Session(engine) as session:
-                row = session.get(AccountConnectionState, 1)
-                if row.label == "自定义空闲故障":
-                    assert row.presentation["title"] == "空闲期间观察"
-                    assert row.observed_at == "confirmed"
-                    break
+            row = _state(path)
+            if row.label == "自定义空闲故障":
+                assert row.presentation["title"] == "空闲期间观察"
+                assert row.observed_at == "confirmed"
+                break
             time.sleep(0.01)
         else:
             pytest.fail("独立监控未保存展示内容")
@@ -266,28 +255,27 @@ def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(datab
 
 
 def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(
         binding,
         1,
         ConnectionObservation("error", "confirmed", "原始故障", {"technical_detail": "完整证据"}, "有效标签"),
     )
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, 1)
-        row.presentation = {"title": 123, "sections": "invalid"}
-        session.add(row)
-        session.commit()
-    with Session(engine) as session:
-        detail = service.public_connection(session.get(Account, 1), detail=True)
-        assert detail.presentation is None
-        assert detail.last_failure.label == "有效标签" and detail.last_failure.error["technical_detail"] == "完整证据"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "UPDATE account_connection_state SET presentation=? WHERE account_id=1",
+            (json.dumps({"title": 123, "sections": "invalid"}),),
+        )
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.presentation is None
+    assert detail.last_failure.label == "有效标签" and detail.last_failure.error["technical_detail"] == "完整证据"
 
 
 def test_current_session_requires_live_worker_and_host_reconciliation(database, monkeypatch):
     from axile.server import connection_runtime as runtime
 
-    engine, account = database
+    path, account = database
     alive, now = [True], [0.0]
     monkeypatch.setattr(runtime, "clock_monotonic", lambda: now[0])
     binding = service.begin_connection_instance(account)
@@ -296,35 +284,30 @@ def test_current_session_requires_live_worker_and_host_reconciliation(database, 
     collector.observe_session(ConnectionObservation("connecting", "start"))
     collector.observe(ConnectionObservation("ok", "sdk-initialized"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "connecting"
-        assert detail.last_success_at is None
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "connecting"
+    assert detail.last_success_at is None
     collector.observe(ConnectionObservation("ok", "account-read", kind="access"))
     collector.observe_session(ConnectionObservation("ok", "reconciled"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "ready" and detail.worker_alive
-        assert detail.last_success_at == "account-read"
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "ready" and detail.worker_alive
+    assert detail.last_success_at == "account-read"
     now[0] = 6
-    with Session(engine) as db:
-        assert service.public_connection(db.get(Account, 1)).status == "unknown"
+    assert service.public_connection(_account(path)).status == "unknown"
     # Heartbeat repeats the same evidence, restoring freshness without inventing access success.
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1))
-        assert detail.status == "ready" and detail.last_success_at == "account-read"
+    detail = service.public_connection(_account(path))
+    assert detail.status == "ready" and detail.last_success_at == "account-read"
     alive[0] = False
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1))
-        assert detail.status == "disconnected" and not detail.worker_alive
+    detail = service.public_connection(_account(path))
+    assert detail.status == "disconnected" and not detail.worker_alive
 
 
 def test_recovered_history_survives_success_and_does_not_advertise_old_failure(database):
     from axile.server import connection_runtime as runtime
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
@@ -334,26 +317,23 @@ def test_recovered_history_survives_success_and_does_not_advertise_old_failure(d
     collector.observe(ConnectionObservation("ok", "access", kind="access"))
     collector.observe_session(ConnectionObservation("ok", "ready"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "ready" and detail.error is None
-        assert detail.last_success_at == "access"
-        assert detail.last_failure.message == "native timeout"
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "ready" and detail.error is None
+    assert detail.last_success_at == "access"
+    assert detail.last_failure.message == "native timeout"
     collector.observe(ConnectionObservation("error", "disconnect", "trade disconnected", {}))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "unavailable" and detail.message == "trade disconnected"
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "unavailable" and detail.message == "trade disconnected"
     collector.observe(ConnectionObservation("ok", "native-login"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        assert service.public_connection(db.get(Account, 1)).status == "unavailable"
+    assert service.public_connection(_account(path)).status == "unavailable"
 
 
 def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure(database):
     from axile.server import connection_runtime as runtime
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
@@ -362,24 +342,22 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     service.end_connection_instance(binding, "连接准备超时", TimeoutError("original timeout"))
     collector.observe_session(ConnectionObservation("ok", "late success"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "unavailable" and not detail.worker_alive
-        assert detail.retry_after_seconds > 0
-        assert detail.last_failure.error["technical_detail"] == "original timeout"
-        assert db.get(AccountConnectionState, 1).instance_id == ""
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "unavailable" and not detail.worker_alive
+    assert detail.retry_after_seconds > 0
+    assert detail.last_failure.error["technical_detail"] == "original timeout"
+    assert _state(path).instance_id == ""
     newer = service.begin_connection_instance(account)
     runtime.register_session(newer, lambda: True)
     service.end_connection_instance(binding, "late old worker exit")
     assert runtime.current_session(1, newer.config_key).status == "uninitialized"
-    with Session(engine) as db:
-        assert db.get(AccountConnectionState, 1).instance_id == newer.instance_id
+    assert _state(path).instance_id == newer.instance_id
 
 
 def test_active_business_failure_does_not_change_connection(database):
     from axile.server import connection_runtime as runtime
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
@@ -387,19 +365,15 @@ def test_active_business_failure_does_not_change_connection(database):
     service.consume_connection_snapshot(collector.snapshot())
     # No connection event is published for a plain business rejection.
     assert "error_scope" not in exception_details(ValueError("余额不足"))
-    with Session(engine) as db:
-        assert service.public_connection(db.get(Account, 1)).status == "ready"
+    assert service.public_connection(_account(path)).status == "ready"
 
 
-def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(database, monkeypatch):
+def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(database):
     import asyncio
 
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
     from axile.server import connection_runtime as runtime
-    from axile.server.core import db as db_module
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
@@ -407,21 +381,12 @@ def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(
     collector.observe_session(ConnectionObservation("disconnected", "manual-stop"))
     service.consume_connection_snapshot(collector.snapshot())
 
-    async def restart():
-        async_engine = create_async_engine(str(engine.url).replace("sqlite:", "sqlite+aiosqlite:"))
-        monkeypatch.setattr(db_module, "SessionLocal", async_sessionmaker(async_engine))
-        try:
-            await service.recover_connection_sessions()
-        finally:
-            await async_engine.dispose()
-
-    asyncio.run(restart())
+    asyncio.run(service.recover_connection_sessions())
     collector.observe_session(ConnectionObservation("ok", "late-old-worker"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "disconnected" and not detail.worker_alive
-        assert detail.last_success_at == "last-access" and detail.manually_disconnected
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "disconnected" and not detail.worker_alive
+    assert detail.last_success_at == "last-access" and detail.manually_disconnected
     newer = service.begin_connection_instance(account)
     assert newer.manually_disconnected
 
@@ -474,14 +439,13 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
     from axile.server.execution.worker_backend import manager as manager_module
     from axile.server.execution.worker_backend.manager import WorkerBackendManager
 
-    engine, account = database
+    path, account = database
     monkeypatch.setattr(manager_module, "run_worker_backend_loop", _offline_session_worker)
     manager = WorkerBackendManager()
     snapshot = account.snapshot()
 
     def status():
-        with Session(engine) as db:
-            return service.public_connection(db.get(Account, 1), detail=True)
+        return service.public_connection(_account(path), detail=True)
 
     async def run():
         await manager.prepare_account(snapshot)
@@ -582,7 +546,7 @@ def test_host_cooldown_keeps_channel_presentation_and_original_evidence(database
     from axile.server import connection_runtime as runtime
     from axile.server.execution import resident_connection as resident
 
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
@@ -598,16 +562,15 @@ def test_host_cooldown_keeps_channel_presentation_and_original_evidence(database
     state = resident.ResidentConnectionState(account_id=1, connection_observer=collector.observe_session)
     resident._failed(state, wrapped)
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as db:
-        detail = service.public_connection(db.get(Account, 1), detail=True)
-        assert detail.status == "unavailable"
-        assert detail.label == "渠道原始标签"
-        assert detail.presentation.title == "渠道明确的故障"
-        assert detail.last_failure.presentation.title == "渠道明确的故障"
-        assert detail.error["technical_detail"] == "native timeout"
-        assert "reporting_stack" in detail.error
-        assert "host wrapper" in detail.error["propagation_traceback"]
-        assert detail.retry_after_seconds > 0
+    detail = service.public_connection(_account(path), detail=True)
+    assert detail.status == "unavailable"
+    assert detail.label == "渠道原始标签"
+    assert detail.presentation.title == "渠道明确的故障"
+    assert detail.last_failure.presentation.title == "渠道明确的故障"
+    assert detail.error["technical_detail"] == "native timeout"
+    assert "reporting_stack" in detail.error
+    assert "host wrapper" in detail.error["propagation_traceback"]
+    assert detail.retry_after_seconds > 0
 
 
 def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(database, monkeypatch):
@@ -658,7 +621,7 @@ def test_ended_worker_read_gate_and_recovery_cooldown_survive_process_removal(da
 
 
 def test_logout_snapshot_preserves_evidence_without_manual_disconnect(database):
-    engine, account = database
+    path, account = database
     binding = service.begin_connection_instance(account)
     collector = service.ConnectionCollector(binding)
     collector.observe_session(ConnectionObservation("ok", "ready"))
@@ -673,14 +636,12 @@ def test_logout_snapshot_preserves_evidence_without_manual_disconnect(database):
         )
     )
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, account.id)
-        assert not row.manually_disconnected
-        assert row.last_failure["error"]["reason_code"] == "CTP_USER_LOGOUT"
-        assert row.last_failure["presentation"]["title"] == "交易会话已登出"
+    row = _state(path)
+    assert not row.manually_disconnected
+    assert row.last_failure["error"]["reason_code"] == "CTP_USER_LOGOUT"
+    assert row.last_failure["presentation"]["title"] == "交易会话已登出"
     collector.observe_session(ConnectionObservation("ok", "recovered"))
     service.consume_connection_snapshot(collector.snapshot())
-    with Session(engine) as session:
-        row = session.get(AccountConnectionState, account.id)
-        assert row.error is None
-        assert row.last_failure["observed_at"] == "logout"
+    row = _state(path)
+    assert row.error is None
+    assert row.last_failure["observed_at"] == "logout"

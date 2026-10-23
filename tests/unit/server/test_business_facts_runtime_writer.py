@@ -3,49 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from axile.domain.execution import ExecutionTaskStatus
+from axile.server._native import _core
+from axile.server.business_facts.summary_refs import BusinessFactReferenceError
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import input_persistence, records
 from axile.server.execution.worker_backend import worker_audit
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import build_account
-
-
-class _WriteSession:
-    def __init__(self) -> None:
-        self.events: list[str] = []
-        self.existing: object | None = None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return None
-
-    def add(self, record):
-        record.id = 101
-        self.events.append("add")
-
-    async def flush(self):
-        self.events.append("flush")
-
-    async def commit(self):
-        self.events.append("commit")
-
-    async def rollback(self):
-        self.events.append("rollback")
-
-    async def refresh(self, _record):
-        self.events.append("refresh")
-
-    async def scalar(self, _statement):
-        return self.existing
 
 
 def test_pre_order_commit_hands_full_request_to_native_freeze(monkeypatch):
@@ -114,24 +84,21 @@ def test_post_order_assets_commit_is_required(monkeypatch):
 
 
 def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
-    session = _WriteSession()
-    seen: dict[str, object] = {}
-
-    async def store(_session, record, *, raw_input, raw_result):
-        session.events.append("facts")
-        record.input_id = "durable-normalized-input"
-        seen.update(input=raw_input, result=raw_result)
-
-    async def asset_history(_session, _record):
-        session.events.append("asset_history")
-
-    async def compact_journal(_session, _record, *, result):
-        assert business_evidence(result) == business_evidence(seen["result"])
-        session.events.append("compact_journal")
-
-    monkeypatch.setattr(records, "store_execution_facts", store)
-    monkeypatch.setattr(records, "ensure_execution_asset_snapshot", asset_history)
-    monkeypatch.setattr(records, "compact_execution_summary", compact_journal)
+    native = AsyncMock(
+        return_value={
+            "id": 101,
+            "account_id": 1,
+            "execution_id": "terminal",
+            "is_success": 1,
+            "task_status": "SUCCEEDED",
+            "input_id": "durable-normalized-input",
+            "created_at": "frozen-time",
+            "facts_complete": True,
+        }
+    )
+    monkeypatch.setattr(records, "native_operation", native)
+    monkeypatch.setattr(records, "now_str", lambda: "frozen-time")
+    raw_input = {"curr_target": {"A": 0.1}, "account_config": {"secret": "synthetic"}}
     result = {
         "status": "SUCCEEDED",
         "task_status": "SUCCEEDED",
@@ -141,40 +108,30 @@ def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
         records._persist_execute_record(
             account_id=1,
             execution_id="terminal",
-            raw_input={"curr_target": {"A": 0.1}, "account_config": {"secret": "synthetic"}},
+            raw_input=raw_input,
             raw_result=result,
             is_success=1,
-            session_factory=lambda: session,
         )
     )
     assert record.input_id == "durable-normalized-input"
-    assert business_evidence(seen["input"]) == business_evidence({"curr_target": {"A": 0.1}})
-    assert business_evidence(seen["result"]["inputs"]) == business_evidence({"curr_target": {}, "feishu_key": "***"})
-    assert business_evidence(session.events) == business_evidence(
-        [
-            "add",
-            "flush",
-            "facts",
-            "asset_history",
-            "compact_journal",
-            "flush",
-            "commit",
-            "refresh",
-        ]
-    )
+    native.assert_awaited_once()
+    command, request = native.await_args.args
+    assert command == "persist_execute_record"
+    assert request["raw_input"] is raw_input
+    assert request["raw_result"] is result
+    assert request["created_at"] == "frozen-time"
+    assert request["account_id"] == 1
+    assert request["execution_id"] == "terminal"
+    assert uuid.UUID(request["input_id"]) != uuid.UUID(request["result_input_id"])
     assert business_evidence(record.task_status) == business_evidence("SUCCEEDED")
-    assert "raw_input" not in record.__class__.__table__.c
-    assert "raw_result" not in record.__class__.__table__.c
     assert "account_config" in result["inputs"]
 
 
 def test_duplicate_terminal_never_returns_another_accounts_record(monkeypatch):
-    session = _WriteSession()
-    session.existing = SimpleNamespace(account_id=2, id=99)
     monkeypatch.setattr(
         records,
-        "store_execution_facts",
-        AsyncMock(side_effect=IntegrityError("insert", {}, RuntimeError("duplicate"))),
+        "native_operation",
+        AsyncMock(side_effect=_core.NativeError("BUSINESS_FACTS", "执行标识属于其他账户")),
     )
     with pytest.raises(ValueError, match="其他账户"):
         asyncio.run(
@@ -184,19 +141,15 @@ def test_duplicate_terminal_never_returns_another_accounts_record(monkeypatch):
                 raw_input=None,
                 raw_result={"status": "FAILED"},
                 is_success=0,
-                session_factory=lambda: session,
             )
         )
-    assert "rollback" in session.events
-    assert "commit" not in session.events
 
 
 def test_journal_compaction_failure_aborts_terminal_commit(monkeypatch):
-    session = _WriteSession()
-    monkeypatch.setattr(records, "store_execution_facts", AsyncMock())
-    monkeypatch.setattr(records, "ensure_execution_asset_snapshot", AsyncMock())
-    monkeypatch.setattr(records, "compact_execution_summary", AsyncMock(side_effect=RuntimeError("journal failure")))
-    with pytest.raises(RuntimeError, match="journal failure"):
+    failure = _core.NativeError("BUSINESS_FACTS_SQL", "journal failure")
+    native = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(records, "native_operation", native)
+    with pytest.raises(_core.NativeError, match="journal failure"):
         asyncio.run(
             records._persist_execute_record(
                 account_id=1,
@@ -204,10 +157,49 @@ def test_journal_compaction_failure_aborts_terminal_commit(monkeypatch):
                 raw_input=None,
                 raw_result={"status": "SUCCEEDED"},
                 is_success=1,
-                session_factory=lambda: session,
             )
         )
-    assert "commit" not in session.events
+    native.assert_awaited_once()
+
+
+def test_invalid_journal_reference_keeps_domain_error(monkeypatch):
+    monkeypatch.setattr(
+        records,
+        "native_operation",
+        AsyncMock(side_effect=_core.NativeError("BUSINESS_FACTS_REFERENCE", "执行摘要缺少结果引用")),
+    )
+    with pytest.raises(BusinessFactReferenceError, match="执行摘要缺少结果引用"):
+        asyncio.run(
+            records._persist_execute_record(
+                account_id=1, execution_id="invalid-ref", raw_input=None, raw_result={}, is_success=0
+            )
+        )
+
+
+def test_sync_pre_order_bundle_uses_one_native_stage(monkeypatch):
+    calls = []
+
+    def native(command, request):
+        calls.append((command, request))
+        return {"input_id": "before", "audit_id": "audit"}
+
+    monkeypatch.setattr(input_persistence, "native_operation_sync", native)
+    payload, audit, assets = {"curr_target": {}}, {"curr_target": {"A": 0}}, {"total_asset": 0}
+    assert input_persistence.persist_pre_execute_bundle_sync(
+        account_id=1, execution_id="e1", payload=payload, audit_payload=audit, before_account_assets=assets
+    ) == ("before", "audit")
+    assert len(calls) == 1
+    command, request = calls[0]
+    assert command == "freeze_execution_input"
+    assert request["payload"] is payload
+    assert request["audit_payload"] is audit
+    assert request["before_assets"] is assets
+
+
+def test_missing_required_audit_receipt_aborts_pre_order_bundle(monkeypatch):
+    monkeypatch.setattr(input_persistence, "_freeze_facts", lambda *_: {"input_id": "before"})
+    with pytest.raises(RuntimeError, match="目标规则证据未持久化"):
+        input_persistence.persist_pre_execute_bundle_sync(account_id=1, execution_id="e1", payload={}, audit_payload={})
 
 
 @pytest.mark.parametrize("status", ["SKIPPED", "PARTIAL", "TERMINATED"])

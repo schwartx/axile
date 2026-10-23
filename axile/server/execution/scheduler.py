@@ -1,35 +1,54 @@
 """账户执行任务的调度辅助函数."""
 
-from typing import Union, cast
+from datetime import datetime
+from typing import Union
 
 import loguru
 from apscheduler.job import Job  # type: ignore[import-not-found]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-not-found]
 
 from axile.executor.algorithms.utils.clock import clock_now
-from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
 from axile.server.core.scheduler import Scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr
-from axile.server.db.models import Account, ScheduleSkip
 from axile.server.db.models.account import AccountContext
-from axile.server.repositories import get_latest_portfolio_id_by_account_id
+from axile.server.native_store import native_operation
 from axile.server.trading_calendar import (
+    CalendarDayDecision,
     CalendarDecisionStatus,
     evaluate_channel_calendar_moment,
 )
 
 
+async def _record_schedule_skip(
+    account_id: int,
+    channel: str,
+    triggered_at: datetime,
+    decision: CalendarDayDecision | None,
+    reason_code: str,
+) -> None:
+    """日历判断完成后以独立短事务保存跳过原因。"""
+    await native_operation(
+        "runtime_sync_record_schedule_skip",
+        {
+            "account_id": account_id,
+            "channel": channel,
+            "triggered_at": triggered_at.isoformat(),
+            "calendar_id": decision.calendar_id if decision else "",
+            "calendar_day": (decision.day if decision else triggered_at.date()).isoformat(),
+            "calendar_label": decision.label if decision and decision.label else "",
+            "reason_code": reason_code,
+        },
+    )
+
+
 async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None = None) -> None:
     """在进入执行链路前按北京时间和渠道日历判断 Cron 触发。"""
-    from datetime import datetime
-
     triggered_at = datetime.fromisoformat(scheduled_at) if scheduled_at else clock_now(tz=SCHEDULER_TIMEZONE)
-    async with SessionLocal() as session:
-        account = await session.get(Account, account_id)
-        if account is None or not account.is_started or is_blank_cron_expr(account.cron_expr):
-            return
-        channel = account.trade_channel
+    account = await native_operation("runtime_sync_scheduler_account", {"account_id": account_id})
+    if account is None or not account["is_started"] or is_blank_cron_expr(account["cron_expr"]):
+        return
+    channel = account["trade_channel"]
 
     try:
         decision = evaluate_channel_calendar_moment(channel, triggered_at)
@@ -53,29 +72,14 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
             if decision is not None and decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED
             else "CALENDAR.UNAVAILABLE"
         )
-        calendar_id = decision.calendar_id if decision is not None else ""
-        calendar_day = decision.day if decision is not None else triggered_at.date()
-        calendar_label = decision.label if decision is not None and decision.label else ""
         try:
-            async with SessionLocal() as session:
-                session.add(
-                    ScheduleSkip(
-                        account_id=account_id,
-                        channel=str(channel),
-                        triggered_at=triggered_at.isoformat(),
-                        calendar_id=calendar_id,
-                        calendar_day=calendar_day,
-                        calendar_label=calendar_label,
-                        reason_code=reason_code,
-                    )
-                )
-                await session.commit()
+            await _record_schedule_skip(account_id, channel, triggered_at, decision, reason_code)
         except Exception:  # noqa: BLE001 - 审计写入失败不能改变休市决策
             account_logger.exception("休市跳过记录写入失败")
         account_logger.info("排程跳过", reason_code=reason_code)
         return
 
-    if getattr(account, "supplement", None) is not None:
+    if account["supplement"] is not None:
         from axile.server.execution.supplements import create_group
 
         await create_group(account_id, triggered_at)
@@ -92,19 +96,7 @@ async def execute_scheduled_rebalance(account_id: int, scheduled_at: str | None 
     )
     if result.outcome == "skipped_busy":
         try:
-            async with SessionLocal() as session:
-                session.add(
-                    ScheduleSkip(
-                        account_id=account_id,
-                        channel=str(channel),
-                        triggered_at=triggered_at.isoformat(),
-                        calendar_id=decision.calendar_id if decision is not None else "",
-                        calendar_day=(decision.day if decision else triggered_at.date()),
-                        calendar_label=decision.label if decision is not None and decision.label else "",
-                        reason_code="BUSY",
-                    )
-                )
-                await session.commit()
+            await _record_schedule_skip(account_id, channel, triggered_at, decision, "BUSY")
         except Exception:  # noqa: BLE001 - 审计写入失败不能改变 busy 决策
             account_logger.exception("BUSY 跳过记录写入失败")
         account_logger.info("排程因已有执行在途跳过")
@@ -160,11 +152,10 @@ async def create_job(
         return
 
     if not binding_checked:
-        async with SessionLocal() as session:
-            portfolio_id = await get_latest_portfolio_id_by_account_id(session, cast("int", account.id))
-            if portfolio_id is None:
-                acc_logger.info("跳过定时任务创建, 原因: 组合未绑定")
-                return
+        current = await native_operation("runtime_sync_scheduler_account", {"account_id": account.id})
+        if current is None or current["portfolio_id"] is None:
+            acc_logger.info("跳过定时任务创建, 原因: 组合未绑定")
+            return
 
     try:
         if getattr(account, "supplement", None):
@@ -240,4 +231,4 @@ def _install_supplement_listener(sched: Scheduler) -> None:
                 asyncio.create_task(execute_scheduled_rebalance(int(event.job_id), planned.isoformat()))
 
     sched.add_listener(submitted, EVENT_JOB_SUBMITTED)
-    sched._supplement_listener_installed = True
+    setattr(sched, "_supplement_listener_installed", True)

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
+from axile.server.core import db
 from axile.server.db.models import Account
 from axile.server.execution import intents as intents_module
 from axile.server.execution import registry as execution_registry
@@ -31,8 +31,10 @@ from axile.server.execution.registry import (
     clear_running_execution,
     get_execution_task_state,
     get_queued_execution_id,
+    get_running_execution_id,
     try_register_running_execution,
 )
+from axile.server.native_store import native_operation
 
 
 def _account(*, account_id: int = 1) -> Account:
@@ -61,22 +63,21 @@ def _account(*, account_id: int = 1) -> Account:
 
 
 @asynccontextmanager
-async def _intent_db(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        monkeypatch.setattr(intents_module, "SessionLocal", factory)
+async def _intent_db(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    with tempfile.TemporaryDirectory(prefix="axile-native-intent-") as directory:
+        database = str(Path(directory) / "intents.sqlite")
+        monkeypatch.setattr(db, "database_path", lambda: database)
         monkeypatch.setattr(intents_module, "_wake", lambda _account_id: None)
-        async with factory() as session:
-            session.add(_account())
-            await session.commit()
-        yield factory
-    finally:
-        await engine.dispose()
-        clear_queued_execution(1, get_queued_execution_id(1) or "")
-        clear_running_execution(1, "x")
+        await native_operation("migration_upgrade", {"public": "head"})
+        created = await native_operation(
+            "account_create", {"account": _account().model_dump(mode="json"), "now": "2026-10-23T10:00:00+08:00"}
+        )
+        assert created["account"]["id"] == 1
+        try:
+            yield None
+        finally:
+            clear_queued_execution(1, get_queued_execution_id(1) or "")
+            clear_running_execution(1, get_running_execution_id(1) or "")
 
 
 def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,7 +125,7 @@ def test_submit_intent_recovers_from_concurrent_initial_insert(monkeypatch: pyte
                 trigger_source=trigger_source,
                 payload=payload,
             )
-            raise IntegrityError("concurrent queued intent", {}, RuntimeError("unique constraint"))
+            raise RuntimeError("INTENT_CONFLICT", "concurrent queued intent")
         return await original_insert(
             account=account,
             kind=kind,

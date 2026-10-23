@@ -4,8 +4,6 @@ import asyncio
 from typing import cast
 
 from loguru import logger
-from sqlalchemy import update
-from sqlmodel import col
 
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
 from axile.executor.account_control.models import (
@@ -22,9 +20,7 @@ from axile.executor.account_control.snapshot import (
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.account_control import providers
 from axile.server.account_control.store import AccountControlStore
-from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_control_session import AccountControlSession
 
 
 async def build_account_control_guard(
@@ -70,17 +66,14 @@ async def build_account_control_guard(
         )
 
     control_window = resolve_control_window(policy.timezone)
-    async with SessionLocal() as session:
-        store = AccountControlStore(session)
-        baseline = await store.load_daily_counters(account.id, control_window.control_date)
-        recent_allowed_snapshot = await store.load_recent_allowed_timestamps(account.id)
-        active_guard = providers.active_guard(account.id)
-        incomplete = await store.has_incomplete_risk_history(
-            account.id,
-            control_window.control_date,
-            policy.timezone,
-            active_instance_id=None if active_guard is None else active_guard.instance_id,
-        )
+    store = AccountControlStore()
+    active_guard = providers.active_guard(account.id)
+    baseline, recent_allowed_snapshot, incomplete = await store.load_baseline(
+        account.id,
+        control_window.control_date,
+        policy.timezone,
+        active_instance_id=None if active_guard is None else active_guard.instance_id,
+    )
     guard = AccountControlGuard(
         account_id=account.id,
         execution_id=execution_id,
@@ -97,19 +90,15 @@ async def build_account_control_guard(
         guard.monitor_incomplete = True
 
     try:
-        async with SessionLocal() as session:
-            session.add(
-                AccountControlSession(
-                    instance_id=guard.instance_id,
-                    account_id=account.id,
-                    execution_id=execution_id,
-                    context_kind=context_kind.value,
-                    source=source.value,
-                    timezone=policy.timezone,
-                    started_at_ms=clock_now_ms(),
-                )
-            )
-            await session.commit()
+        await store.register_session(
+            instance_id=guard.instance_id,
+            account_id=account.id,
+            execution_id=execution_id,
+            context_kind=context_kind.value,
+            source=source.value,
+            timezone=policy.timezone,
+            started_at_ms=clock_now_ms(),
+        )
     except Exception:
         guard.monitor_incomplete = True
         guard.counter_integrity_unavailable = True
@@ -160,14 +149,13 @@ async def _flush_account_control_records(executor: object) -> None:
     getter = getattr(executor, "get_account_control_guard", None)
     guard = cast(AccountControlGuard | None, getter() if callable(getter) else None)
     try:
-        async with SessionLocal() as session:
-            if guard is not None:
-                await session.execute(
-                    update(AccountControlSession)
-                    .where(col(AccountControlSession.instance_id) == guard.instance_id)
-                    .values(status="closed", finished_at_ms=clock_now_ms())
-                )
-            await AccountControlStore(session).flush_execution_records(counter_deltas=counter_deltas, events=events)
+        await AccountControlStore().flush_execution_records(
+            counter_deltas=counter_deltas,
+            events=events,
+            close_session=None
+            if guard is None
+            else {"instance_id": guard.instance_id, "finished_at_ms": clock_now_ms()},
+        )
     except BaseException:
         if guard is not None:
             providers.finish(guard, committed=False)

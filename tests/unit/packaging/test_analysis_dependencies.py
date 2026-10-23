@@ -29,15 +29,17 @@ def test_analysis_runs_without_retired_wbt_packages():
         from axile.server.api.routes.account_performance import router
         from axile.server.db.models.performance import PerformanceSettings
         from axile.server import performance
-        from axile.server.performance import Observation
         from axile.server.performance_analysis import ENGINE_VERSION
 
         assert not hasattr(performance, "build_wbt_input")
         assert not hasattr(performance, "calculate_performance")
+        assert not hasattr(performance, "Observation")
+        assert not hasattr(performance, "observation")
         assert importlib.util.find_spec("axile.server.performance_replay") is None
         assert "tests.unit.server._performance_oracle" not in sys.modules
+        assert "tests.unit.server._performance_costs_oracle" not in sys.modules
         assert ENGINE_VERSION == "equity-ledger-1"
-        from tests.unit.server._performance_oracle import build_wbt_input, calculate_performance
+        from tests.unit.server._performance_oracle import Observation, build_wbt_input, calculate_performance
 
         items = [
             Observation(1, "first", datetime(2026, 1, 1), 100.0, {"A": 1.0}, {"A": 100.0}),

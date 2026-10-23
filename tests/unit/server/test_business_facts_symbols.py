@@ -1,29 +1,22 @@
 """品种事实在迁移和实时写入中保持原始证据。"""
 
-import asyncio
+import json
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
+from pathlib import Path
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.business_facts.symbols import (
-    TABLES,
-    decode_symbols,
-    encode_symbols,
-    read_outcome_symbols,
-    read_sizing_rows,
-    read_symbol_rows,
-    symbol_result,
-    symbol_sizing,
-    symbol_tick,
-)
+from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
 
 
-def _loaded(batch):
-    return {table.name: rows for table, rows in batch.items()}
+def _roundtrip(path, payload):
+    record = persist_result(path, payload)
+    return read_result(path, record)
 
 
 @pytest.mark.parametrize(
@@ -83,9 +76,8 @@ def _loaded(batch):
         },
     ],
 )
-def test_symbol_roundtrip_preserves_sparse_and_malformed_evidence(payload):
-    batch = encode_symbols(3, payload)
-    actual = decode_symbols(_loaded(batch))
+def test_symbol_roundtrip_preserves_sparse_and_malformed_evidence(native_database, payload):
+    actual = _roundtrip(native_database, payload)
     assert business_evidence(actual) == business_evidence(payload)
     if isinstance(payload.get("symbol_results"), Mapping):
         assert business_evidence(list(actual["symbol_results"])) == business_evidence(list(payload["symbol_results"]))
@@ -97,7 +89,7 @@ def test_symbol_roundtrip_preserves_sparse_and_malformed_evidence(payload):
                 assert actual["target_volume"][key] is None
 
 
-def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity():
+def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity(native_database):
     payload = {
         "symbol_results": {
             "alias/~B": {
@@ -110,71 +102,55 @@ def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity():
             }
         }
     }
-    batch = encode_symbols(9, payload)
-    row = batch[symbol_result][0]
+    record = persist_result(native_database, payload)
+    row = rows(native_database, "execution_symbol_result")[0]
     assert business_evidence(row["path"]) == business_evidence("/symbol_results/alias~1~0B")
     assert business_evidence(row["map_key"]) == business_evidence("alias/~B")
     assert business_evidence(row["symbol"]) == business_evidence("native.B")
     assert "orders" not in str(row["audit_evidence"].get("unrecognized_fields"))
     assert "trades" not in str(row["audit_evidence"].get("unrecognized_fields"))
     assert "account_assets" not in str(row["audit_evidence"].get("unrecognized_fields"))
-    assert business_evidence(batch[symbol_tick][0]["last_price"]) == business_evidence(1)
-    assert business_evidence(batch[symbol_sizing][0]["target_quantity"]) == business_evidence(2)
-    assert business_evidence(decode_symbols(_loaded(batch))) == business_evidence(
-        {
-            "symbol_results": {
-                "alias/~B": {"symbol": "native.B", "first_tick": {"last_price": 1}, "sizing": {"target_quantity": 2}}
-            }
-        }
+    assert business_evidence(rows(native_database, "execution_symbol_tick")[0]["last_price"]) == business_evidence(1)
+    assert business_evidence(
+        rows(native_database, "execution_symbol_sizing")[0]["target_quantity"]
+    ) == business_evidence(2)
+    assert business_evidence(read_result(native_database, record)) == business_evidence(payload)
+
+
+def test_roundtrip_keeps_every_sizing_and_five_level_tick_field(native_database):
+    fixture = Path(__file__).parents[3] / "rust/analysis/src/business_facts_ops/testdata/head_symbols_inputs_v0037.json"
+    case = next(
+        case for case in json.loads(fixture.read_text())["cases"] if case["name"] == "all-sizing-five-level-tick"
+    )
+    native = case["payload"]["symbol_results"]["Z/~"]
+    payload = {"symbol_results": {"A": {"sizing": native["sizing"], "first_tick": native["first_tick"]}}}
+
+    assert business_evidence(_roundtrip(native_database, payload)) == business_evidence(payload)
+    assert set(native["first_tick"]) <= rows(native_database, "execution_symbol_tick")[0].keys()
+    assert (
+        set(native["sizing"]).difference({"value_conversion"})
+        <= rows(native_database, "execution_symbol_sizing")[0].keys()
     )
 
 
-def test_roundtrip_keeps_every_sizing_and_five_level_tick_field():
-    from axile.server.business_facts.symbols import SIZING_FIELDS, TICK_FIELDS
-
-    sizing = {key: key if kind == "text" else 1.25 for key, kind in SIZING_FIELDS.items()}
-    tick = {
-        key: {"opaque": []}
-        if kind == "json"
-        else False
-        if kind == "boolean"
-        else 0
-        if kind == "integer"
-        else key
-        if kind == "text"
-        else 0.25
-        for key, kind in TICK_FIELDS.items()
-    }
-    payload = {"symbol_results": {"A": {"sizing": sizing, "first_tick": tick}}}
-    assert business_evidence(decode_symbols(_loaded(encode_symbols(1, payload)))) == business_evidence(payload)
-
-
-def test_delegated_fragments_merge_without_field_order_metadata():
-    from axile.server.business_facts.repository import merge_result_fragment
-
+def test_delegated_fragments_merge_without_field_order_metadata(native_database):
     source = {"symbol_results": {"A": {"status": "NOOP", "orders": [], "trades": []}}}
-    batch = encode_symbols(1, source)
-    fragment = decode_symbols(_loaded(batch))
-    merge_result_fragment(fragment, {"symbol_results": {"A": {"orders": [], "trades": []}}})
-    assert business_evidence(fragment) == business_evidence(source)
-    assert business_evidence(batch[symbol_result][0]["audit_evidence"]) == business_evidence({})
+    restored = _roundtrip(native_database, source)
+    assert business_evidence(restored) == business_evidence(source)
+    assert rows(native_database, "execution_symbol_result")[0]["audit_evidence"] == {}
 
 
-@pytest.mark.parametrize("missing_table", [symbol_result, symbol_sizing, symbol_tick])
-def test_missing_typed_facts_raise_instead_of_silently_omitting_evidence(missing_table):
-    payload = {"symbol_results": {"A": {"sizing": {}, "first_tick": {}}}}
-    batch = encode_symbols(1, payload)
-    batch[missing_table] = []
-    with pytest.raises(ValueError, match="Missing|Incomplete"):
-        decode_symbols(_loaded(batch))
+@pytest.mark.parametrize(
+    "missing_table", ["execution_symbol_result", "execution_symbol_sizing", "execution_symbol_tick"]
+)
+def test_missing_typed_facts_raise_instead_of_silently_omitting_evidence(native_database, missing_table):
+    record = persist_result(native_database, {"symbol_results": {"A": {"sizing": {}, "first_tick": {}}}})
+    sql(native_database, f'DELETE FROM "{missing_table}" WHERE record_id=?', (record["id"],))
+    with pytest.raises(_core.NativeError, match="missing|incomplete"):
+        read_result(native_database, record)
 
 
-def test_sql_roundtrip_and_narrow_readers_preserve_order_and_do_not_load_arrays():
-    asyncio.run(_sql_roundtrip_and_narrow_readers())
-
-
-async def _sql_roundtrip_and_narrow_readers():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+def test_sql_roundtrip_and_narrow_readers_preserve_order_and_do_not_load_arrays(native_database):
     payload = {
         "symbol_results": {
             "Z": {"status": "PARTIAL", "first_tick": {"timestamp": 0}, "sizing": {"target_quantity": 0}},
@@ -189,25 +165,27 @@ async def _sql_roundtrip_and_narrow_readers():
         },
         "target_volume": {"Z": 1, "alias/A": 1.0},
     }
-    async with engine.begin() as connection:
-        await connection.run_sync(lambda sync: SQLModel.metadata.create_all(sync, tables=list(TABLES)))
-    try:
-        async with AsyncSession(engine) as session:
-            for table, rows in encode_symbols(17, payload).items():
-                if rows:
-                    await session.execute(sa.insert(table), rows)
-            await session.commit()
-            loaded = {table.name: (await session.execute(sa.select(table))).mappings().all() for table in TABLES}
-            assert business_evidence(decode_symbols(loaded)) == business_evidence(payload)
-            assert business_evidence(await read_outcome_symbols(session, 17)) == business_evidence(["Z", "alias/A"])
-            assert business_evidence(await read_sizing_rows(session, 17)) == business_evidence(
-                {"Z": {"target_quantity": 0}}
-            )
-            assert business_evidence(
-                await read_symbol_rows(session, [17], fields=("target_volume",))
-            ) == business_evidence({17: {"Z": {}, "alias/A": {"target_volume": -2}, "completed": {}, "explicit": {}}})
-            assert business_evidence(await read_symbol_rows(session, [])) == business_evidence({})
-            with pytest.raises(ValueError, match="Unsupported"):
-                await read_symbol_rows(session, [17], fields=("orders",))
-    finally:
-        await engine.dispose()
+    record = persist_result(native_database, payload, execution_id="narrow-read")
+    assert business_evidence(read_result(native_database, record)) == business_evidence(payload)
+    assert native_store_call(
+        native_database, "execution_read", {"op": "outcome_symbols", "record_id": record["id"]}
+    ) == ["Z", "alias/A"]
+    sizing = native_store_call(
+        native_database, "execution_read", {"op": "target_sizing", "account_id": 1, "execution_id": "narrow-read"}
+    )
+    assert sizing["sizings"] == {"Z": {"target_quantity": 0}}
+    with closing(sqlite3.connect(native_database)) as connection:
+        typed = connection.execute(
+            "SELECT map_key,target_volume,target_volume_state FROM execution_symbol_result "
+            "WHERE record_id=? AND node_kind='object' ORDER BY ordinal",
+            (record["id"],),
+        ).fetchall()
+    assert typed == [
+        ("Z", None, "absent"),
+        ("alias/A", -2, "value"),
+        ("completed", None, "absent"),
+        ("explicit", None, "absent"),
+    ]
+    assert native_store_call(native_database, "execution_read", {"op": "outcome_symbols", "record_id": -1}) == []
+    with pytest.raises(_core.NativeError, match="未知执行读取阶段"):
+        native_store_call(native_database, "execution_read", {"op": "orders", "record_id": record["id"]})

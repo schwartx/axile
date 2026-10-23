@@ -6,8 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from axile.server.db.models.performance import PerformanceSettings
-from axile.server.performance import observation
-from tests.unit.server._performance_oracle import calculate_performance
+from tests.unit.server._performance_oracle import calculate_performance, observation
 
 
 def snapshot(index, price, quantity=1, *, asset=100, symbol="A", multiplier=1, weight=1, **sizing):

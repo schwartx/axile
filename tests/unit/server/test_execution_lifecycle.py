@@ -224,22 +224,6 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
     assert current_state.is_success == 0
 
 
-class _FakeAccountSession:
-    """伪造账户查询会话，供入队路径读取账户对象。"""
-
-    def __init__(self, account: object) -> None:
-        self._account = account
-
-    async def __aenter__(self) -> "_FakeAccountSession":
-        return self
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-    async def get(self, _model: object, _account_id: object) -> object:
-        return self._account
-
-
 def test_enqueue_empty_positions_delegates_to_submit_intent(monkeypatch) -> None:
     """清仓入队应走 submit_intent，不再直接占渠道锁。"""
     captured: dict[str, object] = {}
@@ -582,33 +566,26 @@ def test_timeout_termination_sends_alert(monkeypatch) -> None:
     async def fake_send_feishu_error(error: Exception, _account: object, _key: object, **_kwargs: object) -> None:
         sent.append(str(error))
 
-    class _FakeSession:
-        async def __aenter__(self) -> "_FakeSession":
-            return self
-
-        async def __aexit__(self, *_: object) -> None:
-            return None
-
-        async def get(self, _model: object, _pk: object) -> object:
-            return Account(
-                id=1,
-                name="acc-1",
-                market="期货",
-                trade_channel="ctp",
-                brokerage="test",
-                account_config={},
-                account_control_preset="default",
-                is_started=False,
-                cron_expr="",
-                weight_precision=0.01,
-                algorithm={"method": "SINGLE-MAKER"},
-                feishu_key=None,
-            )
+    async def load_account(_account_id: int):
+        return Account(
+            id=1,
+            name="acc-1",
+            market="期货",
+            trade_channel="ctp",
+            brokerage="test",
+            account_config={},
+            account_control_preset="default",
+            is_started=False,
+            cron_expr="",
+            weight_precision=0.01,
+            algorithm={"method": "SINGLE-MAKER"},
+            feishu_key=None,
+        ).snapshot()
 
     monkeypatch.setattr(execution_lifecycle, "append_terminated_execute_record", fake_append_terminated_execute_record)
     monkeypatch.setattr(execution_lifecycle, "append_execution_event", fake_append_execution_event)
     monkeypatch.setattr(execution_lifecycle, "send_feishu_error", fake_send_feishu_error)
-    monkeypatch.setattr(execution_lifecycle, "SessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(execution_lifecycle, "get_account_snapshot", load_account)
     monkeypatch.setattr(execution_lifecycle, "now_str", lambda: "2026-07-27T10:03:00")
 
     def _run_termination(trigger: str) -> None:

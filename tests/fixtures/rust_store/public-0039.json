@@ -1,0 +1,6031 @@
+{
+  "source_commit": "509b3627ca5fc6ee5f5a72e91b5ebebed3cf9879",
+  "public_head": "0039",
+  "revisions": [
+    "0001",
+    "0002",
+    "0003",
+    "0004",
+    "0005",
+    "0006",
+    "0007",
+    "0008",
+    "0009",
+    "0010",
+    "0011",
+    "0012",
+    "0013",
+    "0014",
+    "0015",
+    "0016",
+    "0017",
+    "0018",
+    "0019",
+    "0020",
+    "0021",
+    "0022",
+    "0023",
+    "0024",
+    "0025",
+    "0026",
+    "0027",
+    "0028",
+    "0029",
+    "0030",
+    "0031",
+    "0032",
+    "0033",
+    "0034",
+    "0035",
+    "0036",
+    "0037",
+    "0038",
+    "0039"
+  ],
+  "sql_sha256": "e25ddfad7e49e76fbcb9937b0c78150bdad2f69199f5f4f0a9b3cc9ae4eaef3a",
+  "objects": {
+    "table": 73,
+    "index": 45,
+    "trigger": 243,
+    "view": 0
+  },
+  "table_columns": {
+    "_futures_close_policy_backup": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "previous_execution",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "migrated_execution",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "account": [
+      {
+        "name": "name",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "remark",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "brokerage",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "copied_from_account_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "copied_from_account_name",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "account_analysis": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "source_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'1'",
+        "primary_key": false
+      },
+      {
+        "name": "published_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "current_snapshot",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "previous_snapshot",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "requested",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "running_version",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "failures",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "retry_at",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "logic_version",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "engine_version",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "running_token",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "account_asset_snapshot": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "asset_fact_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "account_connection_state": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "config_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "instance_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sequence",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "observed_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "message",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "label",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "presentation",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_success_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_failure",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "manually_disconnected",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": "0",
+        "primary_key": false
+      }
+    ],
+    "account_control_counter_delta": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "control_date",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bucket_type",
+        "type": "VARCHAR(6)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bucket_start",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "scope_type",
+        "type": "VARCHAR(7)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "operation",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "delta_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "delta_uid",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "context_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      }
+    ],
+    "account_control_event": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "control_date",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "seq",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "operation",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "metadata",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "decision",
+        "type": "VARCHAR(7)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "counted",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_uid",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "occurred_at_ms",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "context_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      }
+    ],
+    "account_control_session": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "instance_id",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "timezone",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "started_at_ms",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "finished_at_ms",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "context_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'unknown'",
+        "primary_key": false
+      }
+    ],
+    "account_notification_state": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "last_success_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_ok",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_event_type",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "account_settings": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "connection",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "schedule",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "notification",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "backtest",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "accountruntimesync": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "revision",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reset_worker",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "create_request_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "attempts",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "requested_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_attempt_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "synchronized_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "accountruntimesyncattempt": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "revision",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "succeeded",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "attempted_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "alembic_version": [
+      {
+        "name": "version_num",
+        "type": "VARCHAR(32)",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      }
+    ],
+    "analysis_calendar_day": [
+      {
+        "name": "channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "label",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "axile_0013_error_backup": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "table_name",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "row_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "json_column",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "path",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_present",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "after_present",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "after_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "rule",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "identity",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "axile_0014_market_value_backup": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "table_name",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "row_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "json_column",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "after",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "axile_0015_tq_market_value_backup": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "table_name",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "row_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "json_column",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "after",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_asset_binding": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "asset_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "scope",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_asset_position": [
+      {
+        "name": "asset_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "payload_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "volume_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "available_volume_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market_value_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "avg_price_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "available_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market_value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "direction",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "avg_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_asset_snapshot": [
+      {
+        "name": "asset_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "input_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_snapshot_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "scope",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cash_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "equity_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "positions_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "positions_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "positions_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "observation_valid",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "available_cash",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "total_asset",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market_value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "update_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_trade": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "collection_path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "malformed_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_id",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_id",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_id_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_id_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_recorded",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_trade_collection": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "parent_path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "member_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "malformed_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "business_trade_conversion": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "trade_path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "malformed_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "price_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "rate",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "executerecord": [
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "is_success",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "input_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "result_input_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "technical_detail",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "task_status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "msg",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_kind",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel_type",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_time",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "success",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "display_status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "display_error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "display_outcome",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "display_outcome_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_mode",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_trigger",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_requested_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_acked_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_finished_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_cancel_attempted",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_forced",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "termination_cancel_unconfirmed",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "result_input_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'absent'",
+        "primary_key": false
+      },
+      {
+        "name": "result_input_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": "'{}'",
+        "primary_key": false
+      },
+      {
+        "name": "termination_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": "'{}'",
+        "primary_key": false
+      },
+      {
+        "name": "termination_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'absent'",
+        "primary_key": false
+      },
+      {
+        "name": "termination_cancel_ids_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'absent'",
+        "primary_key": false
+      },
+      {
+        "name": "termination_cancel_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "facts_complete",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": "0",
+        "primary_key": false
+      }
+    ],
+    "execution_artifact": [
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "artifact_type",
+        "type": "VARCHAR(23)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "schema_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "content",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      }
+    ],
+    "execution_event": [
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "algorithm",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "schema_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_uid",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_type",
+        "type": "VARCHAR(31)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR(7)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_family",
+        "type": "VARCHAR(18)",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "intent_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "client_order_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ts_local_created",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ts_exchange",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ts_persisted",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "seq",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "details",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      }
+    ],
+    "execution_extension": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "memory",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reconciliation",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "root_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'object'",
+        "primary_key": false
+      },
+      {
+        "name": "root_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_input": [
+      {
+        "name": "id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "owner_execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "root_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "root_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel_type",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_timeout",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "algorithm",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol_algorithms",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_rules",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "futures_close_policy",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "feishu_key",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "feishu_account",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "long_leverage",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "short_leverage",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "weight_precision",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "curr_target_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_target_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "strategy_target_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "forbidden_symbols_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "risk_symbols_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_context_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantities_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_units_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "curr_target_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_target_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "strategy_target_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantities_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_units_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "forbidden_symbols_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "risk_symbols_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_input_plan": [
+      {
+        "name": "input_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "units",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantity_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "units_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_input_symbol": [
+      {
+        "name": "input_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "role",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_input_target": [
+      {
+        "name": "input_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "role",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_intent": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trigger_source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "algorithm",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "started_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "finished_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cancel_requested_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cancel_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "terminate_mode",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_order": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_id",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "direction",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_type",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "filled_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "avg_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "create_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "update_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "update_timestamp",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "remaining_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "filled_ratio",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "order_id_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_kind",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_price_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_value_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_rate",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_reference",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_evidence",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_order_collection": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "item_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_collection": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "member_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_conversion": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "price_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "rate",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_result": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_recorded",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "tick_recorded",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_volume_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "final_volume_state",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "algorithm",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "technical_detail",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "final_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "success",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "memory",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_sizing": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "conversion_recorded",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_mode",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_weight",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "equity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "unit_multiplier",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "unit_notional",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_notional",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "current_quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantity_step",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "min_quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "min_notional",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_target": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_symbol_tick": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "path",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "node_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_value",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_price_2",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_price_3",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_price_4",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_price_5",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_volume_2",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_volume_3",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_volume_4",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "bid_volume_5",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_price_2",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_price_3",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_price_4",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_price_5",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_volume_2",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_volume_3",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_volume_4",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ask_volume_5",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "volume",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "turnover",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "timestamp",
+        "type": "BIGINT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "update_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "timestamp_datetime",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "book_valid",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "extra",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "execution_termination_cancel_failure": [
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "ordinal",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "order_id",
+        "type": "JSON",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "notification_event": [
+      {
+        "name": "sequence",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_type",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "context",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "finished_at",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "order_submission": [
+      {
+        "name": "submission_uid",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "occurred_at_ms",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "revision",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "data",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "order_submission_monitor": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "data",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "order_submission_warning": [
+      {
+        "name": "event_uid",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "occurred_at_ms",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "data",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_attempt": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "planned",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "filled",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_execution": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "time",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "success",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "noop",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "key",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "is_success",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "duration_sec",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "position_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "positions_present",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_present",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "has_symbol_results",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "raw_status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_task_status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_outcome",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_outcome_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_msg",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_execution_kind",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cost",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "loss_bp",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "coverage",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "amount_complete",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "covered_value",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "estimated",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "has_transactions",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_execution_symbol": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "present",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "outcome_reason",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "memory_message",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "memory_reason_code",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_position": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "direction",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_trade": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "time",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cost",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "loss_bp",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "estimated",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "payload",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "side",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'none'",
+        "primary_key": false
+      },
+      {
+        "name": "quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference_source",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_transaction": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "side",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "price",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reference_source",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "time",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "end_time",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "time_estimated",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cost",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "loss_bp",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "coverage",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "amount_complete",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_cost_transaction_fee": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "transaction_idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_execution_fee": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_binding": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "time",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_calendar_range": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "start",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "end",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_daily_cost": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cost",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "loss_bp",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "coverage",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "covered_value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_covered",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "estimated",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "amount_complete",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "present",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_daily_fee": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_event": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "time",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "tag",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "text",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_fallback": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "start",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "end",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_point": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "idx",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "date",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "observed_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_equity",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_daily_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_daily_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_portfolio_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_portfolio_daily_return",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "difference",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_fallback",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_range": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "backtest_included",
+        "type": "BOOLEAN",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "engine_version",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "baseline",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "end",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "record_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "observation_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "used_record_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_used_record_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_asset_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_fallback_count",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_status",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_label",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_result_skip": [
+      {
+        "name": "snapshot_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "missing_target",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "missing_ticks",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "first_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_time",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "performance_snapshot": [
+      {
+        "name": "id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "source_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "logic_version",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "engine_version",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "computed_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "data_until",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "settings",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ranges",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cost_schema_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "result_schema_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      },
+      {
+        "name": "backtest_weight_type",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "backtest_fee_rate",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "read_view_schema_version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "'0'",
+        "primary_key": false
+      }
+    ],
+    "portfolio": [
+      {
+        "name": "name",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "market",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "description",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "custom_calc_py_code",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "tag",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "updated_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "portfolioaccount": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "created_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      }
+    ],
+    "schedule_skip": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "triggered_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_day",
+        "type": "DATE",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calendar_label",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "reason_code",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "supplement_group": [
+      {
+        "name": "id",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fingerprint",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "base_scheduled_at",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "expires_at",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "configured_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "effective_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "end_reason",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cancel_requested_at",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "supplement_step": [
+      {
+        "name": "id",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "group_id",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "index",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "scheduled_at",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "status",
+        "type": "VARCHAR",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "system_notification_state": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "finished_at",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "mode",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "event_type",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "ok",
+        "type": "BOOLEAN",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "error",
+        "type": "VARCHAR",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "target_weight_snapshot": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "portfolio_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "source",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "calculated_at",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "raw_weights_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'null'",
+        "primary_key": false
+      },
+      {
+        "name": "normalized_weights_kind",
+        "type": "TEXT",
+        "nullable": false,
+        "default": "'null'",
+        "primary_key": false
+      },
+      {
+        "name": "weights_metadata",
+        "type": "JSON",
+        "nullable": false,
+        "default": "'{}'",
+        "primary_key": false
+      }
+    ],
+    "target_weight_snapshot_weight": [
+      {
+        "name": "snapshot_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "role",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "map_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "value",
+        "type": "FLOAT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "audit_evidence",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "time_check_settings": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "data",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "time_check_state": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "data",
+        "type": "JSON",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ]
+  },
+  "source_sha256": {
+    "axile/server/alembic/analysis0035_cost_restore.py": "c7a99c99acf7160fd21f0b8818921aea3777049330c3a8c9c5997b1306cd6de0",
+    "axile/server/alembic/analysis0036_read_views.py": "9452d9183d564cdc54a7bd2888441992b8aa4241cefbc1185a9de4a1a6a91a4c",
+    "axile/server/alembic/business0037_invalidation.py": "2a07e11514f2bb09e34011dac6c1593426af2dc1e8227bee74df5f144e170749",
+    "axile/server/alembic/business0037_migration.py": "01e7a8dfa83ea9149f39ccd16c711344bd7aefac202eb1dc30b68b562a8f8c85",
+    "axile/server/alembic/business0037_schema.py": "e2596724ac14299a795a02b64a92148950e6dd7c9fdb18faca4ea4c5c60709bd",
+    "axile/server/alembic/env.py": "70bcee4dd3157ce6f70439eb07ac886428f786811bcfd51ba4d56c89d3b12978",
+    "axile/server/alembic/versions/0001_initial.py": "9698b4ec490d6032efa005e821c3e39260a163cd472adf1ac82b47c55bb1aa9c",
+    "axile/server/alembic/versions/0002_trading_calendar.py": "fd117d0ac1d2d3f2af207a915e8ca75ace91637c0ccad64afec08a192cc9353d",
+    "axile/server/alembic/versions/0003_plugin_network.py": "b30d72d12320e02ca61d86097fe6904ad0d9172cbc602468c943d2dce45fa4df",
+    "axile/server/alembic/versions/0004_account_asset_snapshot.py": "4772d8f6fd34619799e201732993b72947fe57901aad78733f44f16d2b8b79ff",
+    "axile/server/alembic/versions/0005_target_weight_snapshot.py": "76042f01c960b209f559989199d1a29bf432edb17d1a88f6366af4dfdd72e219",
+    "axile/server/alembic/versions/0006_drop_trading_calendar.py": "c4f97bbb8a3fc3b733d40be4aad336a8f0749f8ecf1005e36e64567869a9bb50",
+    "axile/server/alembic/versions/0007_execution_intent.py": "672413ae25d407633f7b026554ae00be37b1a9e424d3f42dc181023b6f127153",
+    "axile/server/alembic/versions/0008_feishu_card_config.py": "b3189eeab615890881ee8f95f8c63f7b6180a4f2e084a36729da60a10761ffee",
+    "axile/server/alembic/versions/0009_ctp_account_control_preset.py": "05ac5af0b2e7c9367ed8059307a6e2e908ba17dd27e6105a0f3a87d8bffd6975",
+    "axile/server/alembic/versions/0010_account_runtime_sync.py": "859f6677dbc9736a27761e0ea8950dc1088f3cc7ffe80d5ebdd9feb517b17c95",
+    "axile/server/alembic/versions/0011_account_performance.py": "59eb8793ce5df996a561f171dcc48f072bb565377fa211f444a64eb0f4403f31",
+    "axile/server/alembic/versions/0012_performance_snapshots.py": "817216d6b0239ff7cd66b32a635c3b6df5fdaac957b1df84cebafe7fd20e16d1",
+    "axile/server/alembic/versions/0013_legacy_execution_errors.py": "6709218684e71da67f2d5473a62a8ae96607547c14bd95707c5aceb9052f1f50",
+    "axile/server/alembic/versions/0014_ctp_market_value.py": "a93bff75ae9296a8486644f3a3dcce9dbfba93725aa23e3363cf65f146adb9a1",
+    "axile/server/alembic/versions/0015_tq_market_value.py": "341d13d14ecc3fc0a5d6eab2032df4a6cb52e06b3d21b48f1e87b2358025fb1d",
+    "axile/server/alembic/versions/0016_account_copy_source.py": "a87e8231fc4bb3b12c08f44c9fdc32faf98e6fb3884c5d03c2dc05ee0b7a2158",
+    "axile/server/alembic/versions/0017_notification_functions.py": "bb03ff8988790c85f50a627bf919ae2b4b6c8b5ad74055491e42588db3ca5d07",
+    "axile/server/alembic/versions/0018_single_account_notification.py": "70b45a87ff1214feff7ded05d8a91cd2cbebd30770283852545036fb502b4bae",
+    "axile/server/alembic/versions/0019_default_notification_card_type.py": "411e0a20baff4f20f1621b13bfd52fe6e14036faabe4ab7744b88152f3103aea",
+    "axile/server/alembic/versions/0020_account_settings.py": "0bf4ff7e37f0bf1ef5a4f2f39fe1611e70ddefba0d794a2f9c3b21cc21b33648",
+    "axile/server/alembic/versions/0021_notification_result.py": "0b8339c65eab8e7ef2673b30e5d094fbfc02d10719ebe7cea44860dcb8637e21",
+    "axile/server/alembic/versions/0022_system_notification_state.py": "faf55798a8e790914e12c457d510def13a97f370a1e3556a5e365426b0e1b242",
+    "axile/server/alembic/versions/0023_supplements.py": "28d4670011c41e2b9ba6f414d310bb4f143ffa61fd0aa54b7c8a0e5b0585f1a5",
+    "axile/server/alembic/versions/0024_account_control_monitor.py": "f799b05b37797c65abe77f11ad8a8aa0ea58085fd80265a1d1cbaa8e5ce58980",
+    "axile/server/alembic/versions/0025_account_connection_state.py": "5ba3dbfc5a35765f3d0c1ce9428b162ae8d1602df2ba99f035eadf65bc47b6ed",
+    "axile/server/alembic/versions/0026_connection_presentation.py": "fcaf39f6912c994f0c2f40c5b150ee7f96d941e004e8850dbd46dff2bee02909",
+    "axile/server/alembic/versions/0027_account_control_context.py": "d8faf5a6f757d98476965d6bae61de107a5acd1f4120f675ffea3d65ac76f4d5",
+    "axile/server/alembic/versions/0028_connection_history.py": "fba4c56da0de9c3ee43d192f510c9e9db40a726b6e577ff8c86e46e5bd5d4927",
+    "axile/server/alembic/versions/0029_futures_close_policy.py": "b80899b7ebc7cec8d6d4bf1ce8e736e915cb015682d56e16a61ead361c99b3e2",
+    "axile/server/alembic/versions/0030_partial_session_tasks.py": "bc2babd0dd7af41e39b18c6a9b4d6d5dafb5bea042d4444e8366aa9ec7537651",
+    "axile/server/alembic/versions/0031_time_check.py": "6c521c374a3f57594bfa4939047421e637c3570aa32de243a3e79658dc0a01af",
+    "axile/server/alembic/versions/0032_order_submission.py": "ff7a0ce0462d7f4326c9be5a2a865e14bc927b12397bedef4d2ffc2a40366035",
+    "axile/server/alembic/versions/0033_submission_monitor.py": "ef5d0c15d1335f50b2fb3aa3febb2e9f6d323a348ab60203294971b701877a88",
+    "axile/server/alembic/versions/0034_analysis_rust_facts.py": "42b3427d8da99a1dce8aa14f3bad5f6ab8f00c327e8826e57ca689429b8f7b57",
+    "axile/server/alembic/versions/0035_analysis_structured_results.py": "8f2a61154cd6661f3cd0a7246631e0df8b0e6b6a77de086f804ae244b09e57e8",
+    "axile/server/alembic/versions/0036_analysis_read_views.py": "f5a22e3ce5f86933ef9ea44c055f0f0c4f296f643278d8121264932cd8dfee0e",
+    "axile/server/alembic/versions/0037_business_execution_facts.py": "a8163316b72c675399679b488053c08987538a212e52b561f8fed512534aafc5",
+    "axile/server/alembic/versions/0038_summary_guard_prefilter.py": "7384d9aaec2b61d06781edf399cf22a2597404ef3d94f3c5cf72eeb1f834c6d6",
+    "axile/server/alembic/versions/0039_direct_analysis_facts.py": "7b908eeeb66f944b291c2132603c94432b508fa1890f0fe7d0116b9d413262c5",
+    "axile/server/business_facts/__init__.py": "1fe59d1a81e5c425da9d54b139dd1373d773a7827092c32bc6859c956d2ca58b",
+    "axile/server/business_facts/artifacts.py": "b28e6285aff840aa94a4009b8ed8967fd223188071f2708950cc7c073271f24f",
+    "axile/server/business_facts/assets.py": "04d5d90821982f592efb67a7c7a8dee0e5795833dd9937b6dc27f01ffe2b2dad",
+    "axile/server/business_facts/columns.py": "5b97a313c507e7ad001b09ff24805b05c455787ff9cf0a487ab7211317e1859e",
+    "axile/server/business_facts/extensions.py": "eb8433cf10442361f7c16ac830b8a9520ce0365d45f6b0311492e8cc76304999",
+    "axile/server/business_facts/head.py": "7712e31353a265fe743b152be04ebb49b48015942efe5294b31e1a8d090bfd59",
+    "axile/server/business_facts/inputs.py": "638d44ab8b15250c44fc79be8202b9a91f91423669e3c4258a6776e0cde19798",
+    "axile/server/business_facts/notification_context.py": "d7fd293c02b820e5663e859c6c2e1d262bcbefba8846b2d8fa9fef0e86f97656",
+    "axile/server/business_facts/orders.py": "498d4d4a2f40d890069566395ee43bff38439e64d136e8d4c0caf640ac2b761c",
+    "axile/server/business_facts/paths.py": "fcd542416b46463bc81f63fe133d7f277344b77a5d780dea96c26a4ae5228c92",
+    "axile/server/business_facts/repository.py": "8a299317d4db21b75613ed8ccce66e1f11fb9149ddb1b1a8cdd9959be0debf36",
+    "axile/server/business_facts/summary_refs.py": "ee71e7af24d97c8c24d074843a8ebe0267f0d975c6eea4497ba4226c95ceea2a",
+    "axile/server/business_facts/symbols.py": "ea80e401919dfe0c20bcb4330ff5291e104d28b449f6fedbe90142f55c407161",
+    "axile/server/business_facts/trades.py": "284de9f688c94469ce05c5515067987a9fdbdbca4ce8b17e6f7e974108549e96",
+    "axile/server/db/models/__init__.py": "7d873dc7890f62ff5ba1fc55eb9f534d69331fedcf26bb8be124ca6e881b419c",
+    "axile/server/db/models/account.py": "bd878ab600d5df75e7d618be074392a69027dda1d03a2ea23de393e5411bf7d6",
+    "axile/server/db/models/account_asset.py": "476d89c9a6e242c8cc6b857fa9e0b985892d5e7de7a62129f876b6f2a556b462",
+    "axile/server/db/models/account_connection.py": "0d51953d86b547c3101a3e2904cabf31270968f066277e18dba1a6ae34722c8c",
+    "axile/server/db/models/account_control.py": "32fb40acdf52a78f5d79304be7edab129616ab0926864e40df06035c4b015f38",
+    "axile/server/db/models/account_control_session.py": "1a780d68c280d6728c49e52ff9016018d407309e85e3599b3025d1ba562c978b",
+    "axile/server/db/models/account_notification.py": "fc35f45b239f23388bae6eb335f217badaa6dabade747e69d6a52a028cbef527",
+    "axile/server/db/models/account_order.py": "b6f1c12e4092f3aa1f34c0fd6756414721aa8e9b599b5d4aa720d07f3d35b05e",
+    "axile/server/db/models/account_runtime_sync.py": "25e516790b3547971ae35dc62c733905f3a8cc3bb4f531ff6648ba5aa4bba3b7",
+    "axile/server/db/models/account_settings.py": "56d96f85c6fbb0adc604705264cae08050673a1da76db00b04a8e8438e8fbd99",
+    "axile/server/db/models/account_validation.py": "dea24a51fcd24d00724cfb7ac8d2f617ad4e3dcefc01494a7feea80f26c08920",
+    "axile/server/db/models/analysis.py": "acb8f1a91095eabae276d3fc1dbc8e0a3e1d5b6979f9e4f9d07b9676686f620b",
+    "axile/server/db/models/analysis_calendar.py": "dfab68d986c93d22350111bb6569414cdf0b865917138a1af230baa220377681",
+    "axile/server/db/models/analysis_result.py": "7e0f5525b09c7a449cbf8d42aa877c8757d0aabe44291322d397177029c65467",
+    "axile/server/db/models/analysis_view.py": "f591872b2970fe0f703814bcd31c105944e2da1638d586597df2e07ab6c0e2e8",
+    "axile/server/db/models/base.py": "44bfc9c024f9223b51f1e3ef4d9d8e79745e98b14cae7bf41c47b512963e9537",
+    "axile/server/db/models/execution.py": "03c42c744d9484bff7d25f6b1016b28c822380347b18a1e32cb456d6b9b16275",
+    "axile/server/db/models/execution_intent.py": "f7eb1754599fc6bc8819f8d333c6df68a5312b1d636b434cc256413e2a56e80c",
+    "axile/server/db/models/order_submission.py": "6419086366f998a64cc876b870a768e7c0848046b9b4b5cf97d286ac4287087a",
+    "axile/server/db/models/performance.py": "d5316112408fc45628cdfaf403526a45f63af65366237a709ba0a84357a1470a",
+    "axile/server/db/models/portfolio.py": "229a07a495b9ce54aaacbe93044e149178ec4550bc7cc9c8c2ce8450f6cf105e",
+    "axile/server/db/models/schedule.py": "bd7ead89bdfafda1a54451b779efb9fad14049079560d6ab960c98a1bc80a828",
+    "axile/server/db/models/supplement.py": "ba074049392a4c0bb86904e07ed15c4af92ab98e0295454ff76024c19a28a9c0",
+    "axile/server/db/models/system_notification.py": "21edd3a5abc990d4b607302ed4db102d83b37c02f619d893fb669aebe6d77e7c",
+    "axile/server/db/models/target_weight_snapshot.py": "a5788a3669e2acafb397a6544094de3843e7ae6f190133733a3fdde76fc8b201",
+    "axile/server/db/models/time_check.py": "f542f3c6adb0fcb6d8dcb64896d0771b8485f342a2d0e0a109c0cdecefc27016",
+    "axile/server/migration_support/__init__.py": "db6c7aba32853921666805115f27bcc381c060bbab1cec2e39c36e678f9b804b",
+    "axile/server/migration_support/ctp_market_value.py": "b4a0fadd6fb77c8742e976eb8e05f8a354444cc64cd788b9886eeec78c9629e3",
+    "axile/server/migration_support/tq_market_value.py": "d808a14c710b13430cbb27ee59fa47cb29a9285e2ed1f0ba99253b7c4f97ab2b",
+    "axile/server/migration_support/v1.py": "8cc382907508999b059717f93344d830b6615315aa096116d55da73ad5a2d937"
+  }
+}

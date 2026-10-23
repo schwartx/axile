@@ -6,33 +6,25 @@ import asyncio
 from typing import Literal
 
 from loguru import logger
-from sqlmodel import col, select
 
 from axile.common.trade_channel import TradeChannel
-from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import Scheduler
-from axile.server.db.models import Account
 from axile.server.db.models.account import AccountContext
-from axile.server.db.models.account_settings import AccountSettings
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+from axile.server.native_store import native_operation
 
 CHINA_NIGHT_PREPARE_JOB_ID = "china-night-session-prepare"
 CHINA_DAY_PREPARE_JOB_ID = "china-day-session-prepare"
 _MAX_PREPARE_CONCURRENCY = 4
 
 
-async def _started_china_channel_accounts() -> list[Account]:
-    """返回已启用的 CTP 与天勤常驻账户."""
-    async with SessionLocal() as session:
-        statement = select(Account).where(
-            Account.settings.has(AccountSettings.schedule["is_started"].as_boolean().is_(True)),
-            col(Account.trade_channel).in_([TradeChannel.CTP, TradeChannel.TQ]),
-        )
-        return list((await session.execute(statement)).scalars().all())
+async def _started_china_channel_accounts() -> list[int]:
+    """批量取得已启用的 CTP 与天勤账户 ID，锁内再读取完整配置。"""
+    return await native_operation("runtime_sync_scan", {"started_china_only": True})
 
 
 async def _prepare_accounts(
-    accounts: list[Account],
+    accounts: list[int],
     mode: Literal["startup", "day", "night"],
 ) -> None:
     """并发准备账户；天勤在日夜盘窗口先强制重建 worker."""
@@ -42,16 +34,14 @@ async def _prepare_accounts(
 
     semaphore = asyncio.Semaphore(_MAX_PREPARE_CONCURRENCY)
 
-    async def prepare(account: AccountContext) -> None:
+    async def prepare(account_id: int) -> None:
         async with semaphore:
             try:
-                if account.id is None:
-                    return
-                sync = await reconcile_scheduled_account(account.id, scheduler, mode)
+                sync = await reconcile_scheduled_account(account_id, scheduler, mode)
                 if sync is not None and sync.status == "synchronized":
-                    logger.info("通道准备完成 account_id={} mode={}", account.id, mode)
+                    logger.info("通道准备完成 account_id={} mode={}", account_id, mode)
             except Exception:  # noqa: BLE001 - 单账户失败不得阻断其他账户
-                logger.exception("通道准备失败 account_id={} mode={}", account.id, mode)
+                logger.exception("通道准备失败 account_id={} mode={}", account_id, mode)
 
     await asyncio.gather(*(prepare(account) for account in accounts))
 

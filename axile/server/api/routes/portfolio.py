@@ -1,119 +1,108 @@
-"""自定义函数投资组合路由."""
+"""自定义函数投资组合路由。"""
 
 import asyncio
-from typing import cast
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
-from sqlmodel import select
 
-from axile.server.api.deps import SessionDep
+from axile.server._native import _core
 from axile.server.db.models import (
-    Account,
     Message,
     Portfolio,
     PortfolioCreate,
     PortfolioListPublic,
-    PortfolioLitePublic,
     PortfolioPublic,
     PortfolioUpdate,
     TargetWeightSnapshotPublic,
     ValidateCustomCalcRequest,
     ValidateCustomCalcResponse,
 )
-from axile.server.db.models.account import AccountContext
+from axile.server.db.models.account import AccountContext, AccountSnapshot
+from axile.server.db.models.base import now_str
 from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 from axile.server.error_details import exception_details
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import clear_target_refresh, try_register_target_refresh
+from axile.server.native_store import native_operation
 from axile.server.portfolio_runner import calculate_sample_portfolio
 from axile.server.portfolio_targets import (
     calculate_portfolio_for_account,
     portfolio_result_from_exception,
 )
-from axile.server.repositories import get_latest_account_id_by_portfolio_id
-from axile.server.target_weight_snapshots import (
-    append_target_weight_snapshot,
-    get_latest_portfolio_target_snapshot,
-    target_snapshot_public,
-)
+from axile.server.target_weight_snapshots import append_target_weight_snapshot, target_snapshot_public
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
-async def _portfolio_public(session: SessionDep, portfolio: Portfolio) -> PortfolioPublic:
-    """构造带当前绑定账户的组合公开响应."""
-    portfolio_id = cast("int", portfolio.id)
-    account_id = await get_latest_account_id_by_portfolio_id(session, portfolio_id)
-    return PortfolioPublic(**portfolio.model_dump(), account_id=account_id)
+async def _portfolio_native(name: str, request: object) -> Any:
+    try:
+        return await native_operation(name, request)
+    except _core.NativeError as exc:
+        code, detail = exc.args
+        http_status = {"NOT_FOUND": 404, "CONFLICT": 422, "VALIDATION": 422}.get(code)
+        if http_status is None:
+            raise
+        raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=PortfolioPublic)
-async def create_portfolio(session: SessionDep, portfolio: PortfolioCreate) -> PortfolioPublic:
-    """创建一个由自定义函数计算目标权重的组合."""
+async def create_portfolio(portfolio: PortfolioCreate) -> PortfolioPublic:
+    """创建一个由自定义函数计算目标权重的组合。"""
     try:
-        db_portfolio = Portfolio.model_validate(portfolio)
-        session.add(db_portfolio)
-        await session.commit()
-        await session.refresh(db_portfolio)
+        value = await _portfolio_native(
+            "portfolio_operation", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        await session.rollback()
         logger.exception("创建组合失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器错误: {exc}") from exc
-    return PortfolioPublic(**db_portfolio.model_dump(), account_id=None)
+        raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
+    return PortfolioPublic.model_validate(value)
 
 
 @router.get("/", response_model=PortfolioListPublic)
-async def list_portfolios(session: SessionDep) -> PortfolioListPublic:
-    """获取组合列表."""
-    portfolios = (await session.execute(select(Portfolio))).scalars().all()
-    return PortfolioListPublic(data=[PortfolioLitePublic.model_validate(portfolio) for portfolio in portfolios])
+async def list_portfolios() -> Response:
+    """获取组合列表。"""
+    return Response(await _portfolio_native("portfolio_query_json", {"op": "list"}), media_type="application/json")
 
 
 @router.get("/{portfolio_id:int}", response_model=PortfolioPublic)
-async def portfolio_info(session: SessionDep, portfolio_id: int) -> PortfolioPublic:
-    """获取组合详情和当前绑定账户."""
-    db_portfolio = await session.get(Portfolio, portfolio_id)
-    if db_portfolio is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
-    return await _portfolio_public(session, db_portfolio)
+async def portfolio_info(portfolio_id: int) -> Response:
+    """获取组合详情和当前绑定账户。"""
+    return Response(
+        await _portfolio_native("portfolio_query_json", {"op": "get", "portfolio_id": portfolio_id}),
+        media_type="application/json",
+    )
 
 
 @router.delete("/{portfolio_id:int}")
-async def delete_portfolio(session: SessionDep, portfolio_id: int) -> Message:
-    """删除未绑定账户的组合."""
-    db_portfolio = await session.get(Portfolio, portfolio_id)
-    if db_portfolio is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
-
-    if await get_latest_account_id_by_portfolio_id(session, portfolio_id) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="该组合与账户关联，必须解绑才能删除组合",
-        )
-
-    await session.delete(db_portfolio)
-    await session.commit()
-    return Message(message="成功删除组合")
+async def delete_portfolio(portfolio_id: int) -> Message:
+    """删除未绑定账户的组合。"""
+    return Message.model_validate(
+        await _portfolio_native("portfolio_operation", {"op": "delete", "portfolio_id": portfolio_id})
+    )
 
 
 @router.patch("/{portfolio_id:int}", response_model=PortfolioPublic)
-async def update_portfolio(session: SessionDep, portfolio_id: int, portfolio: PortfolioUpdate) -> PortfolioPublic:
-    """局部更新组合；自定义函数不可清空."""
-    db_portfolio = await session.get(Portfolio, portfolio_id)
-    if db_portfolio is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
-
+async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> PortfolioPublic:
+    """局部更新组合；自定义函数不可清空。"""
     try:
-        db_portfolio.sqlmodel_update(portfolio.model_dump(exclude_unset=True))
-        session.add(db_portfolio)
-        await session.commit()
-        await session.refresh(db_portfolio)
+        value = await _portfolio_native(
+            "portfolio_operation",
+            {
+                "op": "update",
+                "portfolio_id": portfolio_id,
+                "changes": portfolio.model_dump(exclude_unset=True),
+                "updated_at": now_str(),
+            },
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        await session.rollback()
         logger.exception("更新组合失败: {}", exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器错误: {exc}") from exc
-    return await _portfolio_public(session, db_portfolio)
+        raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
+    return PortfolioPublic.model_validate(value)
 
 
 async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> dict[str, float]:
@@ -137,39 +126,27 @@ async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext
 
 
 @router.get("/{portfolio_id:int}/target_snapshot", response_model=TargetWeightSnapshotPublic)
-async def portfolio_target_snapshot(session: SessionDep, portfolio_id: int) -> TargetWeightSnapshotPublic:
-    """只读组合最近成功计算的原始目标快照."""
-    if await session.get(Portfolio, portfolio_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
-    snapshot = await get_latest_portfolio_target_snapshot(session, portfolio_id)
-    return target_snapshot_public(snapshot, weight_kind="raw")
+async def portfolio_target_snapshot(portfolio_id: int) -> Response:
+    """只读组合最近成功计算的原始目标快照。"""
+    return Response(
+        await _portfolio_native("portfolio_query_json", {"op": "target_snapshot", "portfolio_id": portfolio_id}),
+        media_type="application/json",
+    )
 
 
 @router.post("/{portfolio_id:int}/target_snapshot/refresh", response_model=TargetWeightSnapshotPublic)
-async def refresh_portfolio_target_snapshot(session: SessionDep, portfolio_id: int) -> TargetWeightSnapshotPublic:
-    """按用户请求执行一次组合函数并持久化当前目标."""
-    portfolio = await session.get(Portfolio, portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组合不存在")
-
-    account_id = await get_latest_account_id_by_portfolio_id(session, portfolio_id)
+async def refresh_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSnapshotPublic:
+    """执行一次组合函数并持久化当前目标。"""
+    context = await _portfolio_native("portfolio_operation", {"op": "context", "portfolio_id": portfolio_id})
+    portfolio = Portfolio.model_validate(context["portfolio"])
+    account_id = context["account_id"]
+    account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
     if not try_register_target_refresh(portfolio_id, account_id):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="组合或上下文账户正在执行或刷新，请稍后再试")
+        raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
-        if account_id is None:
-            await session.close()
-            raw_target = await resolve_portfolio_target(portfolio, None)
-            normalized_target = None
-        else:
-            account = await session.get(Account, account_id)
-            if account is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="绑定账户不存在")
-            await session.close()
-            raw_target = await resolve_portfolio_target(portfolio, account)
-            normalized_target = _normalize_rebalance_target(account, raw_target)
-
+        raw_target = await resolve_portfolio_target(portfolio, account)
+        normalized_target = _normalize_rebalance_target(account, raw_target) if account is not None else None
         snapshot = await append_target_weight_snapshot(
-            session,
             portfolio_id=portfolio_id,
             account_id=account_id,
             raw_weights=raw_target,
@@ -209,50 +186,45 @@ async def _run_custom_calc_validation(
 
 
 @router.post("/validate_custom_calc", response_model=ValidateCustomCalcResponse)
-async def validate_custom_calc(session: SessionDep, payload: ValidateCustomCalcRequest) -> ValidateCustomCalcResponse:
-    """使用样例或真实账户上下文试跑自定义组合函数."""
-    if payload.account_id is None:
-        return await _run_custom_calc_validation(None, payload.custom_calc_py_code)
-
-    account = await session.get(Account, payload.account_id)
-    if account is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
-    await session.close()
+async def validate_custom_calc(payload: ValidateCustomCalcRequest) -> ValidateCustomCalcResponse:
+    """使用样例或真实账户上下文试跑自定义组合函数。"""
+    account = None
+    if payload.account_id is not None:
+        value = await _portfolio_native(
+            "portfolio_operation", {"op": "validation_context", "account_id": payload.account_id}
+        )
+        account = AccountSnapshot.model_validate(value)
     return await _run_custom_calc_validation(account, payload.custom_calc_py_code)
 
 
 @router.post("/{portfolio_id:int}/run_and_save", response_model=ValidateCustomCalcResponse)
-async def run_and_save_portfolio(
-    session: SessionDep, portfolio_id: int, payload: RunAndSavePortfolioRequest
-) -> ValidateCustomCalcResponse:
-    """只执行一次草稿；通过后在同一事务保存组合与原始快照。"""
-    portfolio = await session.get(Portfolio, portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="组合不存在")
+async def run_and_save_portfolio(portfolio_id: int, payload: RunAndSavePortfolioRequest) -> ValidateCustomCalcResponse:
+    """只执行一次草稿；通过后由 Rust 原子保存组合与原始快照。"""
+    context = await _portfolio_native(
+        "portfolio_operation", {"op": "context", "portfolio_id": portfolio_id, "account_id": payload.account_id}
+    )
     update = PortfolioUpdate(name=payload.name, custom_calc_py_code=payload.custom_calc_py_code)
-    account = await session.get(Account, payload.account_id) if payload.account_id is not None else None
-    if payload.account_id is not None and account is None:
-        raise HTTPException(status_code=404, detail="账户不存在")
+    account = AccountSnapshot.model_validate(context["account"]) if context["account"] is not None else None
     if not try_register_target_refresh(portfolio_id, payload.account_id):
         raise HTTPException(status_code=409, detail="组合或上下文账户正在执行或刷新，请稍后再试")
     try:
         result = await _run_custom_calc_validation(account, payload.custom_calc_py_code)
-        if not result.valid:
-            return result
-        portfolio.sqlmodel_update(update.model_dump(exclude_unset=True))
-        session.add(portfolio)
-        # 试跑只保存组合原始结果，不更新账户执行口径目标。
-        await append_target_weight_snapshot(
-            session,
-            portfolio_id=portfolio_id,
-            account_id=payload.account_id,
-            raw_weights=result.target,
-            normalized_weights=None,
-            source="manual",
-        )
+        if result.valid:
+            now = now_str()
+            await _portfolio_native(
+                "portfolio_operation",
+                {
+                    "op": "save_trial",
+                    "portfolio_id": portfolio_id,
+                    "changes": update.model_dump(exclude_unset=True),
+                    "updated_at": now,
+                    "account_id": payload.account_id,
+                    "raw_weights": result.target,
+                    "normalized_weights": None,
+                    "source": "manual",
+                    "calculated_at": now,
+                },
+            )
         return result
-    except Exception:
-        await session.rollback()
-        raise
     finally:
         clear_target_refresh(portfolio_id, payload.account_id)

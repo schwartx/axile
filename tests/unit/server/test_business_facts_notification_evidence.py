@@ -7,6 +7,8 @@ import csv
 import hashlib
 import io
 import json
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -14,10 +16,7 @@ from unittest.mock import AsyncMock
 from zipfile import ZipFile
 
 import pytest
-from sqlalchemy import func, inspect, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel
+import sqlalchemy as sa
 
 from axile.domain.execution import (
     ExecutionArtifactType,
@@ -29,6 +28,7 @@ from axile.domain.execution import (
 )
 from axile.executor import feishu_notifications
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.server._native import _core
 from axile.server.api.routes import account_feishu
 from axile.server.business_facts import repository as fact_repository
 from axile.server.business_facts.artifacts import (
@@ -37,16 +37,10 @@ from axile.server.business_facts.artifacts import (
     resolve_artifact_content,
 )
 from axile.server.business_facts.assets import (
-    encode_input_after_assets,
     input_after_asset_fact_id,
     input_asset_fact_id,
 )
-from axile.server.business_facts.repository import (
-    persist_execution_input,
-    read_execution_detail,
-    store_execution_facts,
-)
-from axile.server.core.db import register_sqlite_concurrency_pragmas
+from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
 from axile.server.db.models.execution_intent import ExecutionIntent
@@ -54,9 +48,12 @@ from axile.server.db.models.supplement import NotificationEvent, SupplementGroup
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.collect import collect_evidence
 from axile.server.evidence.models import EvidenceError, EvidenceLimits, EvidenceProfile, ExportBudget
-from axile.server.execution import records, supplement_notifications
+from axile.server.execution import records
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import initialize_native_database, native_store_call
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server.test_evidence_export import _seed
 
 _EXECUTION = "facts-notification-evidence"
 _CREATED = "2026-10-20T09:00:10+08:00"
@@ -65,23 +62,37 @@ _TECHNICAL_ERROR = "RuntimeError: native callback failed\n" + "  at channel.conf
 
 @pytest.fixture
 def facts_database(tmp_path, monkeypatch):
-    """独立 SQLite；测试只调用本地事实读取与归档。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'facts-evidence.db'}", poolclass=NullPool)
-    register_sqlite_concurrency_pragmas(engine)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+    """真实迁移初始化临时库，独立 SQL 连接在原生调用前关闭。"""
+    path = tmp_path / "facts-evidence.db"
+    initialize_native_database(path)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+    _seed(path, build_account(portfolio_id=None))
+    return path
 
-    async def initialize():
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        async with factory() as session:
-            session.add(build_account(portfolio_id=None))
-            await session.commit()
 
-    asyncio.run(initialize())
-    store = account_feishu._core.Store(str(tmp_path / "facts-evidence.db"))
-    monkeypatch.setattr(account_feishu, "analysis_store", lambda: store)
-    yield factory
-    asyncio.run(engine.dispose())
+def _get(path, model):
+    name = {
+        ExecuteRecord: "executerecord",
+        ExecutionArtifact: "execution_artifact",
+        ExecutionIntent: "execution_intent",
+        NotificationEvent: "notification_event",
+        SupplementStep: "supplement_step",
+    }[model]
+    values = rows(path, name)
+    return model.model_validate(values[0]) if values else None
+
+
+async def _finish(path):
+    return native_store_call(
+        path,
+        "intent_finish",
+        {
+            "execution_id": _EXECUTION,
+            "status": "PARTIAL",
+            "finished_at": _CREATED,
+            "now": _CREATED,
+        },
+    )
 
 
 def _input() -> dict:
@@ -176,43 +187,38 @@ def _result() -> dict:
     }
 
 
-async def _store(factory, *, result=None, event_context=None):
+async def _store(path, *, result=None, event_context=None):
     payload = _result() if result is None else result
-    async with factory() as session:
-        record = ExecuteRecord(account_id=1, execution_id=_EXECUTION, created_at=_CREATED, is_success=0)
-        session.add(record)
-        await session.flush()
-        await store_execution_facts(session, record, raw_input=_input(), raw_result=deepcopy(payload))
-        session.add(
-            ExecutionIntent(
+    record = persist_result(path, deepcopy(payload), execution_id=_EXECUTION, created_at=_CREATED, raw_input=_input())
+    _seed(
+        path,
+        ExecutionIntent(
+            account_id=1,
+            execution_id=_EXECUTION,
+            kind=ExecutionKind.REBALANCE,
+            trigger_source="manual",
+            status=ExecutionTaskStatus.RUNNING,
+            channel="ctp",
+            algorithm="SINGLE-MAKER",
+            created_at="2026-10-20T09:00:00+08:00",
+            started_at="2026-10-20T09:00:01+08:00",
+        ),
+    )
+    if event_context is not None:
+        _seed(
+            path,
+            NotificationEvent(
+                id=f"execution:{_EXECUTION}",
                 account_id=1,
-                execution_id=_EXECUTION,
-                kind=ExecutionKind.REBALANCE,
-                trigger_source="manual",
-                status=ExecutionTaskStatus.PARTIAL,
-                channel="ctp",
-                algorithm="SINGLE-MAKER",
-                created_at="2026-10-20T09:00:00+08:00",
-                started_at="2026-10-20T09:00:01+08:00",
-                finished_at=_CREATED,
-            )
+                event_type="execution.finished",
+                context=deepcopy(event_context),
+            ),
         )
-        if event_context is not None:
-            session.add(
-                NotificationEvent(
-                    id=f"execution:{_EXECUTION}",
-                    account_id=1,
-                    event_type="execution.finished",
-                    context=deepcopy(event_context),
-                )
-            )
-        await session.commit()
-        return record.id
+    return record["id"]
 
 
-async def _collect(factory, budget=None):
-    async with factory() as session:
-        return await collect_evidence(session, budget or ExportBudget(), execution_id=_EXECUTION)
+async def _collect(path, budget=None):
+    return await collect_evidence(budget or ExportBudget(), execution_id=_EXECUTION)
 
 
 def _csv(archive: ZipFile, path: str) -> list[dict]:
@@ -254,8 +260,7 @@ def test_roundtrip_preview_matches_prior_notification_semantics_without_channel(
     monkeypatch.setattr(account_feishu, "query_account_assets", channel)
 
     async def preview():
-        async with facts_database() as session:
-            return await account_feishu._load_notification_preview_context(session, account)
+        return await account_feishu._load_notification_preview_context(account)
 
     context = asyncio.run(preview())
 
@@ -287,29 +292,23 @@ def test_real_persisted_preview_context_is_deeply_detached(facts_database, conte
     asyncio.run(_store(facts_database, result=payload, event_context=saved if context_source == "outbox" else None))
 
     async def inspect_preview():
-        async with facts_database() as session:
-            context = await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
-            if context_source == "captured":
-                record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == _EXECUTION))
-                native = await account_feishu.run_in_threadpool(
-                    account_feishu._core.execution_business_detail, account_feishu.analysis_store(), 1, record.id
-                )
-                captured = native["result"]["extra"]["server_notification_context"]
-                assert list(captured) == list(saved)
-                assert list(captured["execution"]) == list(saved["execution"])
-                assert list(captured["assets"]) == list(saved["assets"])
-                assert list(captured["orders"][0]) == list(saved["orders"][0])
-            context["orders"][0]["extra"]["marker"] = "changed"
-            context["execution"]["supplements"][0]["is_last"] = False
-            await session.flush()
-            if context_source == "outbox":
-                event = await session.scalar(
-                    select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-                )
-                return event.context
-            record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == _EXECUTION))
-            detail = await read_execution_detail(session, record)
-            return detail["result"]["extra"]["server_notification_context"]
+        context = await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
+        if context_source == "captured":
+            record = _get(facts_database, ExecuteRecord)
+            native = await read_execution_detail(record)
+            captured = native["result"]["extra"]["server_notification_context"]
+            assert list(captured) == list(saved)
+            assert list(captured["execution"]) == list(saved["execution"])
+            assert list(captured["assets"]) == list(saved["assets"])
+            assert list(captured["orders"][0]) == list(saved["orders"][0])
+        context["orders"][0]["extra"]["marker"] = "changed"
+        context["execution"]["supplements"][0]["is_last"] = False
+        if context_source == "outbox":
+            event = _get(facts_database, NotificationEvent)
+            return event.context
+        record = _get(facts_database, ExecuteRecord)
+        detail = await read_execution_detail(record)
+        return detail["result"]["extra"]["server_notification_context"]
 
     assert business_evidence(asyncio.run(inspect_preview())) == business_evidence(saved)
 
@@ -319,9 +318,7 @@ def test_supplement_notification_keeps_full_error_after_facts_roundtrip(facts_da
     asyncio.run(_store(facts_database))
 
     async def context():
-        async with facts_database() as session:
-            row = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            return await supplement_notifications._execution_context(session, row, build_account(portfolio_id=None))
+        return await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
 
     result = asyncio.run(context())
 
@@ -341,8 +338,7 @@ def test_notification_uses_result_input_while_evidence_keeps_frozen_pretrade_inp
     monkeypatch.setattr(account_feishu, "query_account_assets", channel)
 
     async def preview():
-        async with facts_database() as session:
-            return await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
+        return await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
 
     context = asyncio.run(preview())
     item = asyncio.run(_collect(facts_database)).executions[_EXECUTION]
@@ -368,8 +364,7 @@ def test_notification_distinguishes_omitted_and_explicit_null_result_input(facts
     monkeypatch.setattr(account_feishu, "query_account_assets", channel)
 
     async def preview():
-        async with facts_database() as session:
-            return await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
+        return await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
 
     context = asyncio.run(preview())
     result = asyncio.run(_collect(facts_database)).executions[_EXECUTION].record["result"]
@@ -476,12 +471,11 @@ def test_oversized_malformed_child_json_is_rejected_before_decoding(facts_databa
     record_id = asyncio.run(_store(facts_database))
 
     async def corrupt_and_collect():
-        async with facts_database() as session:
-            await session.execute(
-                text("UPDATE execution_extension SET extra=:invalid WHERE record_id=:record_id"),
-                {"invalid": "malformed-extension" * 10000, "record_id": record_id},
-            )
-            await session.commit()
+        sql(
+            facts_database,
+            "UPDATE execution_extension SET extra=? WHERE record_id=?",
+            ("malformed-extension" * 10000, record_id),
+        )
         return await _collect(facts_database, ExportBudget(limits=replace(EvidenceLimits(), bytes=16000)))
 
     with pytest.raises(EvidenceError) as error:
@@ -491,7 +485,7 @@ def test_oversized_malformed_child_json_is_rejected_before_decoding(facts_databa
     assert business_evidence(error.value.code) == business_evidence("EVIDENCE_TOO_LARGE")
 
 
-async def _store_preterminal_observations(factory):
+async def _store_preterminal_observations(path):
     before = deepcopy(_result()["account_assets"])
     before.update(total_asset=100001.0, positions=[], update_time="2026-10-20T09:00:00+08:00")
     after = {
@@ -502,48 +496,54 @@ async def _store_preterminal_observations(factory):
         "source": "unavailable",
         "update_time": "2026-10-20T09:00:09+08:00",
     }
-    async with factory() as session:
-        input_id = await persist_execution_input(
-            session,
-            account_id=1,
-            execution_id=_EXECUTION,
-            payload=_preterminal_input(),
-            created_at="2026-10-20T09:00:00+08:00",
-            before_assets=before,
-        )
-        for table, values in encode_input_after_assets(input_id, {"account_assets": after}).items():
-            if values:
-                await session.execute(table.insert(), values)
-        session.add(
-            ExecutionIntent(
-                account_id=1,
+    input_id = freeze_input(
+        path,
+        _preterminal_input(),
+        execution_id=_EXECUTION,
+        created_at="2026-10-20T09:00:00+08:00",
+        before_assets=before,
+    )["input_id"]
+    native_store_call(
+        path,
+        "freeze_execution_after_assets",
+        {
+            "account_id": 1,
+            "execution_id": _EXECUTION,
+            "payload": {"account_assets": after},
+        },
+    )
+    _seed(path, _running_intent())
+    for view, kind, asset_id in (
+        ("input", ExecutionArtifactType.STANDARD_INPUT, None),
+        ("targets", ExecutionArtifactType.TARGET_SNAPSHOT, None),
+        ("rules", ExecutionArtifactType.TRADE_RULES_SNAPSHOT, None),
+        ("assets_before", ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE, input_asset_fact_id(input_id)),
+        ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, input_after_asset_fact_id(input_id)),
+    ):
+        _seed(
+            path,
+            ExecutionArtifact(
                 execution_id=_EXECUTION,
-                kind=ExecutionKind.REBALANCE,
-                trigger_source="manual",
-                status=ExecutionTaskStatus.RUNNING,
-                channel="ctp",
-                algorithm="SINGLE-MAKER",
-                created_at="2026-10-20T09:00:00+08:00",
-                started_at="2026-10-20T09:00:01+08:00",
-            )
+                artifact_type=kind,
+                schema_version=3,
+                content=make_artifact_reference(view=view, input_id=input_id, asset_id=asset_id),
+            ),
         )
-        for view, kind, asset_id in (
-            ("input", ExecutionArtifactType.STANDARD_INPUT, None),
-            ("targets", ExecutionArtifactType.TARGET_SNAPSHOT, None),
-            ("rules", ExecutionArtifactType.TRADE_RULES_SNAPSHOT, None),
-            ("assets_before", ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE, input_asset_fact_id(input_id)),
-            ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, input_after_asset_fact_id(input_id)),
-        ):
-            session.add(
-                ExecutionArtifact(
-                    execution_id=_EXECUTION,
-                    artifact_type=kind,
-                    schema_version=3,
-                    content=make_artifact_reference(view=view, input_id=input_id, asset_id=asset_id),
-                )
-            )
-        await session.commit()
     return input_id, before, after
+
+
+def _running_intent():
+    return ExecutionIntent(
+        account_id=1,
+        execution_id=_EXECUTION,
+        kind=ExecutionKind.REBALANCE,
+        trigger_source="manual",
+        status=ExecutionTaskStatus.RUNNING,
+        channel="ctp",
+        algorithm="SINGLE-MAKER",
+        created_at="2026-10-20T09:00:00+08:00",
+        started_at="2026-10-20T09:00:01+08:00",
+    )
 
 
 def _preterminal_input() -> dict:
@@ -607,52 +607,44 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
     after.update(total_asset=90000.0, update_time="2026-10-20T09:00:09+08:00")
 
     async def seed():
-        async with facts_database() as session:
-            input_id = await persist_execution_input(
-                session,
-                account_id=1,
-                execution_id=_EXECUTION,
-                payload=_preterminal_input(),
-                created_at="2026-10-20T09:00:00+08:00",
-                before_assets=before,
-            )
-            for table, values in encode_input_after_assets(input_id, {"account_assets": after}).items():
-                if values:
-                    await session.execute(table.insert(), values)
-            session.add(
-                ExecutionIntent(
-                    account_id=1,
+        input_id = freeze_input(
+            facts_database,
+            _preterminal_input(),
+            execution_id=_EXECUTION,
+            created_at="2026-10-20T09:00:00+08:00",
+            before_assets=before,
+        )["input_id"]
+        native_store_call(
+            facts_database,
+            "freeze_execution_after_assets",
+            {
+                "account_id": 1,
+                "execution_id": _EXECUTION,
+                "payload": {"account_assets": after},
+            },
+        )
+        _seed(facts_database, _running_intent())
+        if with_target_event:
+            _seed(
+                facts_database,
+                ExecutionEvent(
                     execution_id=_EXECUTION,
-                    kind=ExecutionKind.REBALANCE,
-                    trigger_source="manual",
-                    status=ExecutionTaskStatus.RUNNING,
+                    account_id=1,
                     channel="ctp",
                     algorithm="SINGLE-MAKER",
-                    created_at="2026-10-20T09:00:00+08:00",
-                    started_at="2026-10-20T09:00:01+08:00",
-                )
+                    event_uid="facts-target-event",
+                    event_type=ExecutionEventType.TARGET_COMPUTED,
+                    status=ExecutionEventStatus.INFO,
+                    reason_family=ExecutionReasonFamily.INPUT,
+                    reason_code="COMMON.TARGET_COMPUTED",
+                    details={
+                        "decision": make_artifact_reference(
+                            view="targets", input_id=input_id, select_fields=["curr_target"]
+                        )
+                    },
+                ),
             )
-            if with_target_event:
-                session.add(
-                    ExecutionEvent(
-                        execution_id=_EXECUTION,
-                        account_id=1,
-                        channel="ctp",
-                        algorithm="SINGLE-MAKER",
-                        event_uid="facts-target-event",
-                        event_type=ExecutionEventType.TARGET_COMPUTED,
-                        status=ExecutionEventStatus.INFO,
-                        reason_family=ExecutionReasonFamily.INPUT,
-                        reason_code="COMMON.TARGET_COMPUTED",
-                        details={
-                            "decision": make_artifact_reference(
-                                view="targets", input_id=input_id, select_fields=["curr_target"]
-                            )
-                        },
-                    )
-                )
-            await session.commit()
-            return input_id
+        return input_id
 
     input_id = asyncio.run(seed())
     snapshot = asyncio.run(_collect(facts_database))
@@ -718,8 +710,7 @@ def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database,
     }
 
     async def resolve():
-        async with facts_database() as session:
-            return await resolve_artifact_content(session, artifact, account_id=2 if fault == "account" else 1)
+        return await resolve_artifact_content(artifact, account_id=2 if fault == "account" else 1)
 
     with pytest.raises(BusinessFactReferenceError, match="时点" if fault == "observation_role" else "执行账户"):
         asyncio.run(resolve())
@@ -727,15 +718,17 @@ def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database,
 
 def test_business_storage_has_no_complete_raw_document_columns(facts_database):
     """持久化结果经新事实表可读取，数据库不再保存完整旧文档。"""
-    record_id = asyncio.run(_store(facts_database))
+    asyncio.run(_store(facts_database))
 
     async def inspect_storage():
-        async with facts_database() as session:
-            connection = await session.connection()
-            columns = await connection.run_sync(lambda conn: inspect(conn).get_columns("executerecord"))
-            record = await session.get(ExecuteRecord, record_id)
-            detail = await read_execution_detail(session, record)
-            return columns, detail
+        engine = sa.create_engine(f"sqlite:///{facts_database}")
+        try:
+            columns = sa.inspect(engine).get_columns("executerecord")
+        finally:
+            engine.dispose()
+        record = _get(facts_database, ExecuteRecord)
+        detail = await read_execution_detail(record)
+        return columns, detail
 
     columns, detail = asyncio.run(inspect_storage())
 
@@ -771,43 +764,23 @@ def _pending_summary(payload: dict) -> dict:
     }
 
 
-async def _seed_pending_summary(factory, summary):
-    async with factory() as session:
-        await persist_execution_input(
-            session, account_id=1, execution_id=_EXECUTION, payload=_input(), created_at="2026-10-20T09:00:00+08:00"
-        )
-        session.add(
-            ExecutionIntent(
-                account_id=1,
-                execution_id=_EXECUTION,
-                kind=ExecutionKind.REBALANCE,
-                trigger_source="manual",
-                status=ExecutionTaskStatus.RUNNING,
-                channel="ctp",
-                algorithm="SINGLE-MAKER",
-                created_at="2026-10-20T09:00:00+08:00",
-                started_at="2026-10-20T09:00:01+08:00",
-            )
-        )
-        session.add(
-            ExecutionArtifact(
-                execution_id=_EXECUTION,
-                artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-                schema_version=2,
-                content=deepcopy(summary),
-            )
-        )
-        await session.commit()
+async def _seed_pending_summary(path, summary):
+    freeze_input(path, _input(), execution_id=_EXECUTION, created_at="2026-10-20T09:00:00+08:00")
+    _seed(
+        path,
+        _running_intent(),
+        ExecutionArtifact(
+            execution_id=_EXECUTION,
+            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+            schema_version=2,
+            content=deepcopy(summary),
+        ),
+    )
 
 
-async def _write_real_terminal(factory, payload):
+async def _write_real_terminal(path, payload):
     return await records._persist_execute_record(
-        account_id=1,
-        execution_id=_EXECUTION,
-        raw_input=_input(),
-        raw_result=deepcopy(payload),
-        is_success=0,
-        session_factory=factory,
+        account_id=1, execution_id=_EXECUTION, raw_input=_input(), raw_result=deepcopy(payload), is_success=0
     )
 
 
@@ -819,16 +792,10 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
     record = asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_summary():
-        async with facts_database() as session:
-            artifact = await session.scalar(
-                select(ExecutionArtifact).where(
-                    ExecutionArtifact.execution_id == _EXECUTION,
-                    ExecutionArtifact.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY,
-                )
-            )
-            stored = deepcopy(artifact.content)
-            hydrated = await resolve_artifact_content(session, artifact, account_id=1)
-            return stored, hydrated
+        artifact = _get(facts_database, ExecutionArtifact)
+        stored = deepcopy(artifact.content)
+        hydrated = await resolve_artifact_content(artifact, account_id=1)
+        return stored, hydrated
 
     stored, hydrated = asyncio.run(read_summary())
     assert business_evidence(stored["business_facts_ref"]["view"]) == business_evidence("result")
@@ -853,42 +820,27 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
         bundle.close()
 
 
-def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database, monkeypatch):
+def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database):
     """引用已生成后提交失败，完整 worker 证据必须随同终态写入一起回滚。"""
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
 
-    compact = records.compact_execution_summary
-
-    async def fail_after_compaction(session, record, *, result):
-        await compact(session, record, result=result)
-        await session.flush()
-        artifact = await session.scalar(
-            select(ExecutionArtifact).where(
-                ExecutionArtifact.execution_id == _EXECUTION,
-                ExecutionArtifact.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY,
-            )
-        )
-        assert business_evidence(artifact.content["business_facts_ref"]["view"]) == business_evidence("result")
-        stored_symbol = artifact.content.get("symbol_results", {}).get("rb2610", {})
-        assert "orders" not in stored_symbol and "trades" not in stored_symbol
-        raise RuntimeError("synthetic post-compaction persistence failure")
-
-    monkeypatch.setattr(records, "compact_execution_summary", fail_after_compaction)
-    with pytest.raises(RuntimeError, match="post-compaction persistence failure"):
+    sql(
+        facts_database,
+        """CREATE TRIGGER reject_compacted_summary AFTER UPDATE OF content ON execution_artifact
+        WHEN json_extract(NEW.content,'$.business_facts_ref.view')='result'
+        AND json_type(NEW.content,'$.symbol_results.rb2610.orders') IS NULL
+        AND json_type(NEW.content,'$.symbol_results.rb2610.trades') IS NULL
+        BEGIN SELECT RAISE(ABORT,'synthetic post-compaction persistence failure'); END""",
+    )
+    with pytest.raises(_core.NativeError, match="post-compaction persistence failure"):
         asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_after_rollback():
-        async with facts_database() as session:
-            count = await session.scalar(select(func.count()).select_from(ExecuteRecord))
-            artifact = await session.scalar(
-                select(ExecutionArtifact).where(
-                    ExecutionArtifact.execution_id == _EXECUTION,
-                    ExecutionArtifact.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY,
-                )
-            )
-            return count, artifact.schema_version, artifact.content
+        count = len(rows(facts_database, "executerecord"))
+        artifact = _get(facts_database, ExecutionArtifact)
+        return count, artifact.schema_version, artifact.content
 
     count, version, retained = asyncio.run(read_after_rollback())
     assert business_evidence(count) == business_evidence(0)
@@ -908,14 +860,8 @@ def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
     asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_summary():
-        async with facts_database() as session:
-            artifact = await session.scalar(
-                select(ExecutionArtifact).where(
-                    ExecutionArtifact.execution_id == _EXECUTION,
-                    ExecutionArtifact.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY,
-                )
-            )
-            return artifact.content, await resolve_artifact_content(session, artifact, account_id=1)
+        artifact = _get(facts_database, ExecutionArtifact)
+        return artifact.content, await resolve_artifact_content(artifact, account_id=1)
 
     stored, hydrated = asyncio.run(read_summary())
     assert business_evidence(stored["symbol_results"]["rb2610"]["orders"]) == business_evidence(
@@ -940,38 +886,31 @@ def _large_captured_notification() -> dict:
     }
 
 
-async def _seed_supplement_step(factory):
-    async with factory() as session:
-        session.add(
-            SupplementGroup(
-                id="facts-notification-group",
-                account_id=1,
-                fingerprint="facts-notification-fingerprint",
-                base_scheduled_at="2026-10-20T09:00:00+08:00",
-                expires_at="2026-10-20T23:00:00+08:00",
-                configured_count=1,
-                effective_count=1,
-            )
-        )
-        await session.flush()
-        session.add(
-            SupplementStep(
-                id="facts-notification-step",
-                group_id="facts-notification-group",
-                index=1,
-                scheduled_at="2026-10-20T09:00:00+08:00",
-                status="running",
-                execution_id=_EXECUTION,
-            )
-        )
-        await session.commit()
+async def _seed_supplement_step(path):
+    _seed(
+        path,
+        SupplementGroup(
+            id="facts-notification-group",
+            account_id=1,
+            fingerprint="facts-notification-fingerprint",
+            base_scheduled_at="2026-10-20T09:00:00+08:00",
+            expires_at="2026-10-20T23:00:00+08:00",
+            configured_count=1,
+            effective_count=1,
+        ),
+        SupplementStep(
+            id="facts-notification-step",
+            group_id="facts-notification-group",
+            index=1,
+            scheduled_at="2026-10-20T09:00:00+08:00",
+            status="running",
+            execution_id=_EXECUTION,
+        ),
+    )
 
 
-async def _stored_captured_notification(session):
-    extension = fact_repository.extensions.execution_extension
-    record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == _EXECUTION))
-    extra = await session.scalar(select(extension.c.extra).where(extension.c.record_id == record.id))
-    return extra["server_notification_context"]
+async def _stored_captured_notification(path):
+    return rows(path, "execution_extension")[0]["extra"]["server_notification_context"]
 
 
 @pytest.mark.parametrize("existing_event", [False, True])
@@ -989,18 +928,12 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
     asyncio.run(_seed_supplement_step(facts_database))
 
     async def finish():
-        async with facts_database() as session:
-            intent = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            await supplement_notifications.finish_supplement_execution(session, intent)
-            await session.commit()
-        async with facts_database() as session:
-            stored = await _stored_captured_notification(session)
-            event = await session.scalar(
-                select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-            )
-            record = await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == _EXECUTION))
-            detail = await read_execution_detail(session, record)
-            return stored, event.context, detail
+        await _finish(facts_database)
+        stored = await _stored_captured_notification(facts_database)
+        event = _get(facts_database, NotificationEvent)
+        record = _get(facts_database, ExecuteRecord)
+        detail = await read_execution_detail(record)
+        return stored, event.context, detail
 
     stored, event_context, detail = asyncio.run(finish())
     assert len(json.dumps(stored)) < len(json.dumps(captured)) // 2
@@ -1012,19 +945,15 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
         assert business_evidence(event_context[key]) == business_evidence(captured[key])
 
     forbidden_detail = AsyncMock(side_effect=AssertionError("frozen outbox must be selected before canonical detail"))
-    monkeypatch.setattr(account_feishu, "run_in_threadpool", forbidden_detail)
+    monkeypatch.setattr(fact_repository, "read_execution_detail", forbidden_detail)
 
     async def preview():
-        async with facts_database() as session:
-            context = await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
-            assert business_evidence(context["account"]["name"]) == business_evidence("frozen-at-execution")
-            assert business_evidence(context["orders"]) == business_evidence(captured["orders"])
-            context["orders"][0]["order_id"] = "preview-only-edit"
-            await session.flush()
-            event = await session.scalar(
-                select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-            )
-            return event.context
+        context = await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
+        assert business_evidence(context["account"]["name"]) == business_evidence("frozen-at-execution")
+        assert business_evidence(context["orders"]) == business_evidence(captured["orders"])
+        context["orders"][0]["order_id"] = "preview-only-edit"
+        event = _get(facts_database, NotificationEvent)
+        return event.context
 
     assert business_evidence(asyncio.run(preview())) == business_evidence(event_context)
     forbidden_detail.assert_not_awaited()
@@ -1038,24 +967,20 @@ def test_context_compaction_rollback_retains_only_copy_when_outbox_is_not_commit
     asyncio.run(_store(facts_database, result=payload))
     asyncio.run(_seed_supplement_step(facts_database))
 
-    async def fail_after_compaction():
-        async with facts_database() as session:
-            intent = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            await supplement_notifications.finish_supplement_execution(session, intent)
-            await session.flush()
-            assert len(json.dumps(await _stored_captured_notification(session))) < len(json.dumps(captured)) // 2
-            raise RuntimeError("synthetic notification transaction failure")
-
-    with pytest.raises(RuntimeError, match="notification transaction failure"):
-        asyncio.run(fail_after_compaction())
+    sql(
+        facts_database,
+        f"""CREATE TRIGGER reject_compacted_context AFTER UPDATE OF extra ON execution_extension
+        WHEN json_extract(NEW.extra,'$.server_notification_context."$axile_notification_context"')=1
+        AND length(json_extract(NEW.extra,'$.server_notification_context')) < {len(json.dumps(captured)) // 2}
+        BEGIN SELECT RAISE(ABORT,'synthetic notification transaction failure'); END""",
+    )
+    with pytest.raises(_core.NativeError, match="notification transaction failure"):
+        asyncio.run(_finish(facts_database))
 
     async def inspect_after_rollback():
-        async with facts_database() as session:
-            event = await session.scalar(
-                select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-            )
-            step = await session.get(SupplementStep, "facts-notification-step")
-            return event, step.status, await _stored_captured_notification(session)
+        event = _get(facts_database, NotificationEvent)
+        step = _get(facts_database, SupplementStep)
+        return event, step.status, await _stored_captured_notification(facts_database)
 
     event, step_status, retained = asyncio.run(inspect_after_rollback())
     assert event is None
@@ -1075,25 +1000,18 @@ def test_distinct_frozen_outbox_wins_preview_without_erasing_captured_evidence(f
     asyncio.run(_seed_supplement_step(facts_database))
 
     async def finish():
-        async with facts_database() as session:
-            intent = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            await supplement_notifications.finish_supplement_execution(session, intent)
-            await session.commit()
-        async with facts_database() as session:
-            event = await session.scalar(
-                select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-            )
-            return await _stored_captured_notification(session), event.context
+        await _finish(facts_database)
+        event = _get(facts_database, NotificationEvent)
+        return await _stored_captured_notification(facts_database), event.context
 
     stored, retained_outbox = asyncio.run(finish())
     assert business_evidence(stored) == business_evidence(captured)
     assert business_evidence(retained_outbox) == business_evidence(outbox)
     forbidden_detail = AsyncMock(side_effect=AssertionError("existing outbox must win preview"))
-    monkeypatch.setattr(account_feishu, "run_in_threadpool", forbidden_detail)
+    monkeypatch.setattr(fact_repository, "read_execution_detail", forbidden_detail)
 
     async def preview():
-        async with facts_database() as session:
-            return await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
+        return await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
 
     context = asyncio.run(preview())
     assert business_evidence(context["account"]["name"]) == business_evidence("frozen-outbox-account")
@@ -1111,17 +1029,11 @@ def test_no_outbox_keeps_captured_notification_as_unique_historical_evidence(fac
     monkeypatch.setattr(account_feishu, "query_account_assets", channel)
 
     async def finish_without_step_and_preview():
-        async with facts_database() as session:
-            intent = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            await supplement_notifications.finish_supplement_execution(session, intent)
-            await session.commit()
-        async with facts_database() as session:
-            event = await session.scalar(
-                select(NotificationEvent).where(NotificationEvent.id == f"execution:{_EXECUTION}")
-            )
-            stored = await _stored_captured_notification(session)
-            preview = await account_feishu._load_notification_preview_context(session, build_account(portfolio_id=None))
-            return event, stored, preview
+        await _finish(facts_database)
+        event = _get(facts_database, NotificationEvent)
+        stored = await _stored_captured_notification(facts_database)
+        preview = await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
+        return event, stored, preview
 
     event, stored, preview = asyncio.run(finish_without_step_and_preview())
     assert event is None
@@ -1144,26 +1056,27 @@ def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_d
     asyncio.run(_seed_supplement_step(facts_database))
 
     async def finish_and_optionally_corrupt():
-        async with facts_database() as session:
-            intent = await session.scalar(select(ExecutionIntent).where(ExecutionIntent.execution_id == _EXECUTION))
-            await supplement_notifications.finish_supplement_execution(session, intent)
-            await session.commit()
-        async with facts_database() as session:
-            stored = await _stored_captured_notification(session)
-            assert not {"positions", "orders", "trades"}.intersection(stored)
-            assert len(json.dumps(stored)) < 21000
-            raw_size = await session.scalar(
-                text("SELECT length(CAST(context AS BLOB)) FROM notification_event WHERE id=:event_id"),
-                {"event_id": f"execution:{_EXECUTION}"},
-            )
-            assert raw_size > 64000
+        await _finish(facts_database)
+        stored = await _stored_captured_notification(facts_database)
+        assert not {"positions", "orders", "trades"}.intersection(stored)
+        assert len(json.dumps(stored)) < 21000
+        with closing(sqlite3.connect(facts_database)) as connection:
+            raw_size = connection.execute(
+                "SELECT length(CAST(context AS BLOB)) FROM notification_event WHERE id=?", (f"execution:{_EXECUTION}",)
+            ).fetchone()[0]
+        assert raw_size > 64000
         if malformed:
-            async with facts_database() as session:
-                await session.execute(
-                    text("UPDATE notification_event SET context=:invalid WHERE id=:event_id"),
-                    {"invalid": "malformed-notification-context" * 10000, "event_id": f"execution:{_EXECUTION}"},
+            with closing(sqlite3.connect(facts_database)) as connection, connection:
+                guard = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                    ("business_facts_0037_notification_outbox_update",),
+                ).fetchone()[0]
+                connection.execute("DROP TRIGGER business_facts_0037_notification_outbox_update")
+                connection.execute(
+                    "UPDATE notification_event SET context=? WHERE id=?",
+                    ("malformed-notification-context" * 10000, f"execution:{_EXECUTION}"),
                 )
-                await session.commit()
+                connection.execute(guard)
 
     asyncio.run(finish_and_optionally_corrupt())
     cold_reader = AsyncMock(side_effect=AssertionError("outbox budget preflight must precede canonical hydration"))

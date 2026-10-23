@@ -172,7 +172,7 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(
-            &summaries[1][2..],
+            &summaries[1][2..10],
             &[
                 Value::Null,
                 Value::Null,
@@ -182,12 +182,10 @@ pub(crate) mod tests {
                 json!(0),
                 json!(0),
                 json!(true),
-                json!(0.0),
-                json!(0),
-                json!(0),
-                json!(false)
             ]
         );
+        assert_eq!(summaries[1][10].as_f64(), Some(0.0));
+        assert_eq!(&summaries[1][11..], &[json!(0), json!(0), json!(false)]);
         assert_eq!(
             fees,
             vec![

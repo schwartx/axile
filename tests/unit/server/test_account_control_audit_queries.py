@@ -1,316 +1,212 @@
-"""账户控制审计查询服务测试。"""
-
-from __future__ import annotations
+"""原生控制审计的分组、分页、上下文和事件响应契约。"""
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import json
+import sqlite3
+from contextlib import closing
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.models import AccountControlDecision
 from axile.server import account_control_audit
-from axile.server.db.models import Account, AccountControlEvent
+from axile.server._native import _core
+from tests.unit.server.test_account_control_monitor import database
 
 
-def _build_account(*, account_id: int, name: str) -> Account:
-    return Account(
-        id=account_id,
-        name=name,
-        market="期货",
-        trade_channel=TradeChannel.CTP,
-        account_control_preset="default",
-        account_control_override=None,
-        account_config={"api_key": "key", "secret_key": "secret", "is_testnet": True},
-        is_started=True,
-        cron_expr="*/5 * * * *",
-        remark=None,
-        brokerage="ctp",
-        weight_precision=0.001,
-        long_leverage=1.0,
-        short_leverage=1.0,
-        algorithm={"method": "SINGLE-MAKER"},
-        empty_positions_algorithm=None,
-        trade_rules={},
-        forbidden_symbols=[],
-        risk_symbols=[],
-        feishu_key=None,
-        portfolio_id=1,
-        write_empty_record=0,
+def seed_event(path, **changes):
+    event = {
+        "account_id": 1,
+        "control_date": "2026-03-22",
+        "execution_id": "exec-newer",
+        "context_kind": "execution",
+        "source": "algorithm",
+        "seq": 1,
+        "channel": "ctp",
+        "operation": "place_order",
+        "symbol": "rb2610",
+        "metadata": '{"order_id":"oid-1","null":null}',
+        "decision": "ALLOWED",
+        "counted": True,
+        "outcome": "submitted",
+        "event_uid": "event-1",
+        "created_at": "2026-03-22T09:34:00",
+        "occurred_at_ms": 1763226660123,
+        **changes,
+    }
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            f"INSERT INTO account_control_event({','.join(event)}) VALUES ({','.join('?' for _ in event)})",
+            list(event.values()),
+        )
+
+
+def seed_events(path):
+    seed_event(
+        path,
+        event_uid="event-2",
+        seq=2,
+        operation="cancel_order",
+        symbol="ag2612",
+        outcome="downstream_error",
+        created_at="2026-03-22T09:35:00",
+    )
+    seed_event(path)
+    seed_event(
+        path,
+        event_uid="event-3",
+        seq=3,
+        decision="BLOCKED",
+        counted=False,
+        outcome="policy_blocked",
+        created_at="2026-03-22T09:36:00",
+    )
+    seed_event(
+        path,
+        event_uid="event-old",
+        execution_id="exec-older",
+        operation="query_order",
+        outcome="filled",
+        created_at="2026-03-22T09:32:00",
+    )
+    seed_event(
+        path,
+        event_uid="other-day",
+        execution_id="exec-other-date",
+        control_date="2026-03-21",
+        created_at="2026-03-21T09:32:00",
     )
 
 
-class _RecordingSession:
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-        self.statements: list[str] = []
-
-    async def execute(self, statement: object, *args: object, **kwargs: object) -> object:
-        self.statements.append(str(statement))
-        return await self._session.execute(statement, *args, **kwargs)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._session, name)
-
-
-@asynccontextmanager
-async def _session_scope() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as session:
-            yield session
-    finally:
-        await engine.dispose()
-
-
-async def _seed_events(session: AsyncSession) -> None:
-    session.add_all(
-        [
-            _build_account(account_id=1, name="primary"),
-            _build_account(account_id=2, name="secondary"),
-            AccountControlEvent(
-                account_id=1,
-                control_date="2026-03-22",
-                execution_id="exec-newer",
-                seq=2,
-                channel=TradeChannel.CTP,
-                operation="cancel_order",
-                symbol="ag2612",
-                metadata_={},
-                decision=AccountControlDecision.ALLOWED,
-                counted=True,
-                outcome="downstream_error",
-                event_uid="event-exec-newer-2",
-                created_at="2026-03-22T09:35:00",
-            ),
-            AccountControlEvent(
-                account_id=1,
-                control_date="2026-03-22",
-                execution_id="exec-newer",
-                seq=1,
-                channel=TradeChannel.CTP,
-                operation="place_order",
-                symbol="rb2610",
-                metadata_={"order_id": "oid-1"},
-                decision=AccountControlDecision.ALLOWED,
-                counted=True,
-                outcome="submitted",
-                event_uid="event-exec-newer-1",
-                created_at="2026-03-22T09:34:00",
-            ),
-            AccountControlEvent(
-                account_id=1,
-                control_date="2026-03-22",
-                execution_id="exec-newer",
-                seq=3,
-                channel=TradeChannel.CTP,
-                operation="place_order",
-                symbol="rb2610",
-                metadata_={},
-                decision=AccountControlDecision.BLOCKED,
-                counted=False,
-                outcome="policy_blocked",
-                event_uid="event-exec-newer-3",
-                created_at="2026-03-22T09:36:00",
-            ),
-            AccountControlEvent(
-                account_id=1,
-                control_date="2026-03-22",
-                execution_id="exec-older",
-                seq=1,
-                channel=TradeChannel.CTP,
-                operation="query_order",
-                symbol="rb2610",
-                metadata_={},
-                decision=AccountControlDecision.ALLOWED,
-                counted=True,
-                outcome="filled",
-                event_uid="event-exec-older-1",
-                created_at="2026-03-22T09:32:00",
-            ),
-            AccountControlEvent(
-                account_id=1,
-                control_date="2026-03-21",
-                execution_id="exec-other-date",
-                seq=1,
-                channel=TradeChannel.CTP,
-                operation="place_order",
-                symbol="rb2610",
-                metadata_={},
-                decision=AccountControlDecision.ALLOWED,
-                counted=True,
-                outcome="submitted",
-                event_uid="event-other-date",
-                created_at="2026-03-21T09:32:00",
-            ),
-            AccountControlEvent(
-                account_id=2,
-                control_date="2026-03-22",
-                execution_id="exec-other-account",
-                seq=1,
-                channel=TradeChannel.CTP,
-                operation="place_order",
-                symbol="rb2610",
-                metadata_={},
-                decision=AccountControlDecision.ALLOWED,
-                counted=True,
-                outcome="submitted",
-                event_uid="event-other-account",
-                created_at="2026-03-22T09:37:00",
-            ),
-        ]
-    )
-    await session.commit()
-
-
-def test_query_account_control_audit_summary_aggregates_by_operation_decision_and_outcome() -> None:
-    """账户日汇总应只基于事件表分组统计。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed_events(session)
-            recording_session = _RecordingSession(session)
-
-            rows = await account_control_audit.query_account_control_audit_summary(
-                recording_session,
-                account_id=1,
-                control_date="2026-03-22",
+def test_summary_groups_operation_decision_and_outcome(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (path, _, _):
+            seed_events(path)
+            rows = json.loads(
+                await account_control_audit.query_account_control_audit_summary(account_id=1, control_date="2026-03-22")
             )
-
-            assert [(row.operation, row.decision, row.outcome, row.count) for row in rows] == [
-                ("cancel_order", AccountControlDecision.ALLOWED, "downstream_error", 1),
-                ("place_order", AccountControlDecision.ALLOWED, "submitted", 1),
-                ("place_order", AccountControlDecision.BLOCKED, "policy_blocked", 1),
-                ("query_order", AccountControlDecision.ALLOWED, "filled", 1),
+            assert [(row["operation"], row["decision"], row["outcome"], row["count"]) for row in rows] == [
+                ("cancel_order", "allowed", "downstream_error", 1),
+                ("place_order", "allowed", "submitted", 1),
+                ("place_order", "blocked", "policy_blocked", 1),
+                ("query_order", "allowed", "filled", 1),
             ]
-            assert recording_session.statements
-            assert all("account_control_event" in stmt.lower() for stmt in recording_session.statements)
 
     asyncio.run(scenario())
 
 
-def test_query_account_control_audit_executions_returns_recent_first_with_counts_and_window() -> None:
-    """账户日 execution 列表应按最近事件倒序并返回首尾时间。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed_events(session)
-
-            page = await account_control_audit.query_account_control_audit_executions(
-                session,
-                account_id=1,
-                control_date="2026-03-22",
-                skip=0,
-                limit=1,
-            )
-
-            assert page.count == 2
-            assert len(page.data) == 1
-            assert page.data[0].execution_id == "exec-newer"
-            assert page.data[0].event_count == 3
-            assert page.data[0].first_event_at == "2026-03-22T09:34:00"
-            assert page.data[0].last_event_at == "2026-03-22T09:36:00"
-
-    asyncio.run(scenario())
-
-
-def test_query_account_control_execution_events_supports_filters_and_stable_seq_order() -> None:
-    """execution 事件流应支持 symbol 和 operation 过滤，并按 seq、id 稳定排序。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed_events(session)
-            recording_session = _RecordingSession(session)
-
-            page = await account_control_audit.query_account_control_execution_events(
-                recording_session,
-                execution_id="exec-newer",
-                symbol="rb2610",
-                operation="place_order",
-                skip=0,
-                limit=10,
-            )
-
-            assert page.count == 2
-            assert [event.seq for event in page.data] == [1, 3]
-            assert [event.outcome for event in page.data] == ["submitted", "policy_blocked"]
-            assert recording_session.statements
-            assert all("account_control_event" in stmt.lower() for stmt in recording_session.statements)
-
-    asyncio.run(scenario())
-
-
-def test_query_account_control_audit_service_rejects_limit_above_upper_bound() -> None:
-    """服务层应固定分页上限，避免一次读取整日全量事件。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            await _seed_events(session)
-
-            with pytest.raises(ValueError, match="limit"):
+def test_executions_orders_recent_first_and_preserves_page_count(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (path, _, _):
+            seed_events(path)
+            page = json.loads(
                 await account_control_audit.query_account_control_audit_executions(
-                    session,
-                    account_id=1,
-                    control_date="2026-03-22",
-                    limit=501,
+                    account_id=1, control_date="2026-03-22", limit=1
                 )
-
-            with pytest.raises(ValueError, match="limit"):
-                await account_control_audit.query_account_control_execution_events(
-                    session,
-                    execution_id="exec-newer",
-                    limit=501,
+            )
+            assert page == {
+                "data": [
+                    {
+                        "execution_id": "exec-newer",
+                        "event_count": 3,
+                        "first_event_at": "2026-03-22T09:34:00",
+                        "last_event_at": "2026-03-22T09:36:00",
+                        "context_kind": "execution",
+                        "sources": ["algorithm"],
+                    }
+                ],
+                "count": 2,
+            }
+            page = json.loads(
+                await account_control_audit.query_account_control_audit_executions(
+                    account_id=1, control_date="2026-03-22", skip=1, limit=1
                 )
+            )
+            assert page["data"][0]["execution_id"] == "exec-older" and page["count"] == 2
 
     asyncio.run(scenario())
 
 
-def test_query_account_control_audit_summary_keeps_min_interval_outcome_distinct() -> None:
-    """最小间隔阻断应单独保留 outcome，不能混成普通 policy_blocked。"""
-
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            session.add(_build_account(account_id=3, name="interval"))
-            session.add(
-                AccountControlEvent(
-                    account_id=3,
-                    control_date="2026-03-22",
-                    execution_id="exec-interval",
-                    seq=1,
-                    channel=TradeChannel.CTP,
-                    operation="place_order",
-                    symbol="rb2610",
-                    metadata_={},
-                    decision=AccountControlDecision.BLOCKED,
-                    counted=False,
-                    outcome="policy_blocked_min_interval",
-                    event_uid="event-interval-blocked",
-                    created_at="2026-03-22T09:40:00",
-                    occurred_at_ms=1_763_226_700_000,
+def test_events_filter_and_order_by_seq_then_id(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (path, _, _):
+            seed_events(path)
+            seed_event(path, event_uid="same-seq", created_at="2026-03-22T09:31:00")
+            page = json.loads(
+                await account_control_audit.query_account_control_execution_events(
+                    execution_id="exec-newer", symbol="rb2610", operation="place_order", limit=2
                 )
             )
-            await session.commit()
+            assert page["count"] == 3
+            assert [event["event_uid"] for event in page["data"]] == ["event-1", "same-seq"]
+            event = page["data"][0]
+            assert event["metadata"] == {"order_id": "oid-1", "null": None}
+            assert event["decision"] == "allowed" and event["counted"] is True
+            assert event["created_at"] == "2026-03-22T09:34:00"
+            assert event["occurred_at_ms"] == 1763226660123
 
-            rows = await account_control_audit.query_account_control_audit_summary(
-                session,
-                account_id=3,
-                control_date="2026-03-22",
+    asyncio.run(scenario())
+
+
+def test_context_descriptions_keep_exact_legacy_ids_and_sort_sources(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (path, _, _):
+            legacy = "catalog-" + "a" * 32
+            seed_event(path, execution_id=legacy, context_kind="unknown", source="instrument_catalog")
+            seed_event(
+                path, event_uid="second", execution_id=legacy, context_kind="account_operation", source="account_assets"
             )
-
-            assert [(row.operation, row.decision, row.outcome, row.count) for row in rows] == [
-                (
-                    "place_order",
-                    AccountControlDecision.BLOCKED,
-                    "policy_blocked_min_interval",
-                    1,
+            seed_event(path, event_uid="invalid", execution_id="catalog-short", context_kind="unknown")
+            page = json.loads(
+                await account_control_audit.query_account_control_audit_executions(
+                    account_id=1, control_date="2026-03-22"
                 )
+            )
+            descriptions = {row["execution_id"]: row for row in page["data"]}
+            assert descriptions[legacy]["context_kind"] == "account_operation"
+            assert descriptions[legacy]["sources"] == ["account_assets", "instrument_catalog"]
+            assert descriptions["catalog-short"]["context_kind"] == "unknown"
+
+    asyncio.run(scenario())
+
+
+def test_summary_keeps_min_interval_outcome_distinct_and_requires_account(monkeypatch):
+    async def scenario():
+        async with database(monkeypatch) as (path, _, _):
+            seed_event(path, decision="BLOCKED", counted=False, outcome="policy_blocked_min_interval")
+            rows = json.loads(
+                await account_control_audit.query_account_control_audit_summary(account_id=1, control_date="2026-03-22")
+            )
+            assert rows == [
+                {
+                    "operation": "place_order",
+                    "decision": "blocked",
+                    "outcome": "policy_blocked_min_interval",
+                    "count": 1,
+                }
             ]
+            with pytest.raises(_core.NativeError) as caught:
+                await account_control_audit.query_account_control_audit_summary(
+                    account_id=99, control_date="2026-03-22"
+                )
+            assert caught.value.args[0] == "ACCOUNT_NOT_FOUND"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("skip,limit", [(-1, 100), (0, 501)])
+def test_service_rejects_invalid_pagination_without_accessing_storage(monkeypatch, skip, limit):
+    async def unexpected(*_args):
+        raise AssertionError("invalid pagination reached native storage")
+
+    monkeypatch.setattr(account_control_audit, "native_operation", unexpected)
+
+    async def scenario():
+        with pytest.raises(ValueError):
+            await account_control_audit.query_account_control_audit_executions(
+                account_id=1, control_date="2026-03-22", skip=skip, limit=limit
+            )
+        with pytest.raises(ValueError):
+            await account_control_audit.query_account_control_execution_events(
+                execution_id="exec", skip=skip, limit=limit
+            )
 
     asyncio.run(scenario())

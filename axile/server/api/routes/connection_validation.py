@@ -5,9 +5,8 @@ import json
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from axile.channels import get_channel
-from axile.server.api.deps import SessionDep
+from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.connection_validation import ConnectionTable, ValidationJob, ValidationRejected, service
-from axile.server.db.models import Account
 from axile.server.error_details import exception_details
 
 router = APIRouter(prefix="/channel-validations", tags=["channel-validations"])
@@ -44,15 +43,11 @@ async def create_validation(request: Request, response: Response) -> ValidationJ
 
 
 @account_router.post("/{account_id}/connection-validation", response_model=ValidationJob, status_code=202)
-async def create_account_validation(
-    account_id: int, request: Request, response: Response, session: SessionDep
-) -> ValidationJob:
+async def create_account_validation(account_id: int, request: Request, response: Response) -> ValidationJob:
     """只读合并已保存凭据与当前草稿，运行验证但不保存、不改变账户运行状态。"""
     response.headers["Cache-Control"] = "no-store"
     payload = await _read_config(request)
-    account = await session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(404, "账户不存在")
+    account = await _get_account_or_404(account_id)
     channel = str(account.trade_channel)
     plugin = get_channel(channel)
     if plugin.descriptor.connection_validation is None:

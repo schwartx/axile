@@ -3,12 +3,14 @@
 import ast
 import json
 import socket
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import benchmark_business_fact_service as service
+from scripts import benchmark_business_fact_storage as storage
 from scripts.benchmark_business_fact_service import (
     aggregate,
     common_semantics,
@@ -18,8 +20,68 @@ from scripts.benchmark_business_fact_service import (
     prioritize_benchmark_routes,
     semantic_hash,
     source_identity,
+    source_tree_hash,
     verify_writes,
 )
+from scripts.benchmark_business_fact_storage import pinned_wal_reader, sqlite_settings, wal_commit_count
+
+
+def test_native_fixture_preserves_complete_account_defaults_without_create_dto(monkeypatch, tmp_path):
+    from axile.server._native import _core
+    from axile.server.db.models.account import AccountCreate
+
+    operations = []
+    database = tmp_path / "synthetic.sqlite"
+    monkeypatch.setattr(_core, "migration_upgrade", lambda *_args: None, raising=False)
+    monkeypatch.setattr(storage, "initialize_benchmark_database", lambda _path: None)
+    monkeypatch.setattr(
+        "axile.server.native_store.native_operation_sync",
+        lambda name, request, **options: operations.append((name, request, options)),
+    )
+    storage.prepare_database(database, tmp_path)
+    _, request, options = next(row for row in operations if row[0] == "account_create")
+    payload = request["account"]
+    required = {name for name, field in AccountCreate.model_fields.items() if field.is_required()}
+    assert required <= payload.keys()
+    assert payload["backtest_weight_type"] == "cs"
+    assert payload["backtest_fee_rate"] == 0.0002
+    assert payload["portfolio_id"] == 1
+    assert payload["created_at"] == "2025-01-01T09:00:00"
+    assert options["database"] == str(database)
+    assert not database.exists()
+
+
+def test_legacy_fixture_records_the_same_portfolio_binding_as_native_create(monkeypatch, tmp_path):
+    from axile.server._native import _core
+    from axile.server.db.models import PortfolioAccount
+
+    added = []
+
+    class Context:
+        attributes = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_error):
+            pass
+
+        def add(self, value):
+            added.append(value)
+
+        def flush(self):
+            pass
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(_core, "migration_upgrade", None, raising=False)
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_args: SimpleNamespace(begin=Context, dispose=lambda: None))
+    monkeypatch.setattr("sqlalchemy.orm.Session", lambda *_args: Context())
+    monkeypatch.setattr("alembic.command.upgrade", lambda *_args: None)
+    storage.prepare_database(tmp_path / "synthetic.sqlite", tmp_path)
+    binding = next(value for value in added if isinstance(value, PortfolioAccount))
+    assert (binding.account_id, binding.portfolio_id, binding.created_at) == (1, 1, "2025-01-01T09:00:00")
 
 
 def test_matching_detail_preserves_missing_null_and_nested_occurrences():
@@ -44,6 +106,60 @@ def test_history_compares_head_without_hiding_evidence_in_detail():
     config = {"account_id": 1, "record_id": 7, "arm": "baseline"}
     assert endpoint_paths(config)["detail"].endswith("/execute_records/1?record_id=7&limit=1")
     assert endpoint_paths({**config, "arm": "candidate"})["detail"].endswith("/execute_records/1/7")
+    assert endpoint_paths({**config, "response_layout": "typed"})["detail"].endswith("/execute_records/1/7")
+
+
+def test_fingerprint_includes_rust_sql_cargo_and_actual_native_artifact(tmp_path):
+    for name in (
+        "axile/writer.py",
+        "rust/analysis/src/store.rs",
+        "rust/analysis/src/migration.sql",
+        "rust/analysis/Cargo.lock",
+        "rust/analysis/build.rs",
+        "axile/server/_native/_core.abi3.so",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"before")
+    fingerprint = source_tree_hash(tmp_path)
+    for path in sorted(tmp_path.rglob("*")):
+        if path.is_file():
+            path.write_bytes(b"after")
+            assert source_tree_hash(tmp_path) != fingerprint
+            path.write_bytes(b"before")
+            assert source_tree_hash(tmp_path) == fingerprint
+
+
+def test_sqlite_settings_are_observed_per_connection(tmp_path):
+    with sqlite3.connect(tmp_path / "settings.sqlite") as connection:
+        connection.execute("PRAGMA busy_timeout=17")
+        connection.execute("PRAGMA synchronous=OFF")
+        settings = sqlite_settings(connection)
+    assert settings["busy_timeout"] == 17
+    assert settings["synchronous"] == 0
+    assert settings["journal_mode"] == "delete"
+
+
+def test_wal_commit_count_includes_native_and_python_commits_but_not_rollback(tmp_path):
+    from axile.server._native import _core
+
+    path = tmp_path / "commits.sqlite"
+    with sqlite3.connect(path) as monitor, sqlite3.connect(path) as writer:
+        monitor.execute("PRAGMA journal_mode=WAL")
+        monitor.executescript(
+            "CREATE TABLE marker(id INTEGER); CREATE TABLE account_analysis(account_id INTEGER PRIMARY KEY, requested INTEGER DEFAULT 0);"
+        )
+        monitor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        with pinned_wal_reader(path):
+            writer.execute("INSERT INTO marker VALUES(1)")
+            writer.commit()
+            _core.queue_enqueue(str(path), 1, False)
+            writer.execute("INSERT INTO marker VALUES(2)")
+            writer.rollback()
+            assert wal_commit_count(path) == 2
+    Path(str(path) + "-wal").write_bytes(b"partial")
+    with pytest.raises(AssertionError, match="WAL header"):
+        wal_commit_count(path)
 
 
 def test_memory_uses_simultaneous_sample_and_reports_unsampled_requests():

@@ -3,53 +3,27 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
-from types import ModuleType
-from typing import Any
 
 import pytest
-from sqlalchemy import JSON, Table, create_engine, select
+from sqlalchemy import JSON
 
-from axile.server.business_facts import assets, inputs, orders, trades
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import native_store_call
+from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, seed_account
 
-_DOMAINS = {"assets": assets, "inputs": inputs, "orders": orders, "trades": trades}
-
-
-def _domain(name: str) -> ModuleType:
-    """仅导入存储模块，避免依赖 GM SDK 或执行器初始化。"""
-    return _DOMAINS[name]
-
-
-def _persist_and_decode(
-    module: ModuleType,
-    batch: Mapping[Table, list[dict[str, object]]],
-    decode: Callable[[dict[str, list[dict[str, Any]]]], dict[str, object]],
-) -> tuple[dict[str, object], dict[str, list[dict[str, Any]]]]:
-    """经真实 SQLite 列类型和 JSON 编码后还原事实，检查 SQL 往返损失。"""
-    engine = create_engine("sqlite://")
-    try:
-        with engine.begin() as connection:
-            metadata = {table.metadata for table in module.TABLES}
-            for item in metadata:
-                item.create_all(connection)
-            for table, rows in batch.items():
-                for row in rows:
-                    connection.execute(table.insert().values(**row))
-            loaded = {
-                table.name: [dict(row) for row in connection.execute(select(table)).mappings()]
-                for table in module.TABLES
-            }
-        return decode(loaded), loaded
-    finally:
-        engine.dispose()
+_TABLES = {
+    "assets": ("business_asset_snapshot", "business_asset_position", "business_asset_binding"),
+    "orders": ("execution_order_collection", "execution_order"),
+    "trades": ("business_trade_collection", "business_trade", "business_trade_conversion"),
+    "inputs": ("execution_input", "execution_input_target", "execution_input_symbol", "execution_input_plan"),
+}
 
 
-def _roundtrip(name: str, payload: dict[str, object]) -> tuple[dict[str, object], dict[str, list[dict[str, Any]]]]:
-    module = _domain(name)
-    return _persist_and_decode(
-        module, getattr(module, f"encode_{name}")(240, payload), getattr(module, f"decode_{name}")
-    )
+def _roundtrip(path, name: str, payload: dict[str, object]):
+    """原生事务提交后重开独立连接，读取业务结果和实际类型列。"""
+    record = persist_result(path, payload)
+    return read_result(path, record), {name: rows(path, name) for name in _TABLES[name]}
 
 
 def _gm_assets() -> dict[str, object]:
@@ -178,9 +152,9 @@ def _gm_trade() -> dict[str, object]:
     }
 
 
-def test_gm_asset_roundtrip_retains_native_fields_without_inventing_average_price() -> None:
+def test_gm_asset_roundtrip_retains_native_fields_without_inventing_average_price(native_database) -> None:
     payload = {"account_assets": _gm_assets()}
-    decoded, loaded = _roundtrip("assets", payload)
+    decoded, loaded = _roundtrip(native_database, "assets", payload)
 
     assert business_evidence(decoded) == business_evidence(payload)
     positions = decoded["account_assets"]["positions"]
@@ -199,7 +173,7 @@ def test_gm_asset_roundtrip_retains_native_fields_without_inventing_average_pric
 
 
 @pytest.mark.parametrize("source", ["real", "gm", "assumed", "unavailable", "error"])
-def test_gm_zero_and_degraded_snapshot_sources_remain_distinct(source: str) -> None:
+def test_gm_zero_and_degraded_snapshot_sources_remain_distinct(native_database, source: str) -> None:
     payload = {
         "account_assets": {
             "available_cash": 0,
@@ -209,35 +183,37 @@ def test_gm_zero_and_degraded_snapshot_sources_remain_distinct(source: str) -> N
             "source": source,
         },
     }
-    decoded, _ = _roundtrip("assets", payload)
+    decoded, _ = _roundtrip(native_database, "assets", payload)
     assert business_evidence(decoded) == business_evidence(payload)
 
 
-def test_gm_pre_order_and_terminal_assets_are_independent_observations() -> None:
-    module = _domain("assets")
+def test_gm_pre_order_and_terminal_assets_are_independent_observations(native_database) -> None:
     before = {"account_assets": _gm_assets()}
     after = copy.deepcopy(before)
     after["account_assets"]["update_time"] = "2026-10-20T09:30:02.000001+08:00"
     after["account_assets"]["positions"][0]["available_volume"] = 600
 
-    before_decoded, before_rows = _persist_and_decode(
-        module, module.encode_input_assets("gm-input-240", before), module.decode_assets
-    )
-    after_decoded, after_rows = _roundtrip("assets", after)
+    freeze_input(native_database, {}, input_id="gm-input-240", before_assets=before["account_assets"])
+    observations = native_store_call(native_database, "asset_input_observations", {"input_id": "gm-input-240"})
+    assert len(observations) == 1
+    before_decoded = {"before_account_assets": observations[0]["account_assets"]}
+    before_rows = {name: rows(native_database, name) for name in _TABLES["assets"]}
+    after_decoded, after_rows = _roundtrip(native_database, "assets", after)
 
     assert business_evidence(before_decoded) == business_evidence({"before_account_assets": before["account_assets"]})
     assert business_evidence(after_decoded) == business_evidence(after)
     assert any(row.get("input_id") == "gm-input-240" for rows in before_rows.values() for row in rows)
-    assert any(row.get("record_id") == 240 for rows in after_rows.values() for row in rows)
+    record_id = rows(native_database, "executerecord")[0]["id"]
+    assert any(row.get("record_id") == record_id for rows in after_rows.values() for row in rows)
 
 
-def test_gm_order_roundtrip_preserves_occurrences_and_native_identity() -> None:
+def test_gm_order_roundtrip_preserves_occurrences_and_native_identity(native_database) -> None:
     first = _gm_order()
     empty_id = {**copy.deepcopy(first), "order_id": "", "status": "REJECTED", "filled_volume": 0}
     nested = {**copy.deepcopy(first), "filled_volume": 300, "status": "FILLED"}
     payload = {"orders": [first, empty_id, first], "symbol_results": {"600000.SH": {"orders": [nested]}}}
 
-    decoded, loaded = _roundtrip("orders", payload)
+    decoded, loaded = _roundtrip(native_database, "orders", payload)
 
     assert business_evidence(decoded) == business_evidence(payload)
     assert business_evidence([order["order_id"] for order in decoded["orders"]]) == business_evidence(
@@ -252,14 +228,14 @@ def test_gm_order_roundtrip_preserves_occurrences_and_native_identity() -> None:
     assert business_evidence(sum("order_id" in row for rows in loaded.values() for row in rows)) == business_evidence(4)
 
 
-def test_gm_fill_roundtrip_does_not_recompute_value_or_infer_missing_fee() -> None:
+def test_gm_fill_roundtrip_does_not_recompute_value_or_infer_missing_fee(native_database) -> None:
     first = _gm_trade()
     nested = copy.deepcopy(first)
     nested["extra"].pop("commission")
     nested["extra"]["tax"] = 0
     payload = {"trades": [first, first], "symbol_results": {"600000.SH": {"trades": [nested]}}}
 
-    decoded, loaded = _roundtrip("trades", payload)
+    decoded, loaded = _roundtrip(native_database, "trades", payload)
 
     assert business_evidence(decoded) == business_evidence(payload)
     assert business_evidence(decoded["trades"][0]["trade_value"]) == business_evidence(1002.4)
@@ -270,8 +246,8 @@ def test_gm_fill_roundtrip_does_not_recompute_value_or_infer_missing_fee() -> No
     assert business_evidence(sum("trade_id" in row for rows in loaded.values() for row in rows)) == business_evidence(3)
 
 
-def test_gm_input_roundtrip_keeps_strategy_account_and_quantity_targets_separate() -> None:
-    module = _domain("inputs")
+def test_gm_input_roundtrip_keeps_strategy_account_and_quantity_targets_separate(native_database) -> None:
+    seed_account(native_database, 24)
     payload = {
         "channel_type": "gm",
         "execution_timeout": 300,
@@ -286,10 +262,16 @@ def test_gm_input_roundtrip_keeps_strategy_account_and_quantity_targets_separate
         "trade_rules": {"600000.SH": {"volume_multiple": 100}},
         "extra": {"strategy_name": "gm synthetic fixture", "native_optional": None},
     }
-    batch = module.encode_inputs(
-        "gm-input-241", payload, account_id=24, execution_id="gm-exec-241", created_at="2026-10-20T09:29:59+08:00"
+    freeze_input(
+        native_database,
+        payload,
+        input_id="gm-input-241",
+        execution_id="gm-exec-241",
+        account_id=24,
+        created_at="2026-10-20T09:29:59+08:00",
     )
-    decoded, loaded = _persist_and_decode(module, batch, module.decode_inputs)
+    decoded = native_store_call(native_database, "read_execution_input", {"input_id": "gm-input-241"})
+    loaded = {name: rows(native_database, name) for name in _TABLES["inputs"]}
 
     assert business_evidence(decoded) == business_evidence(payload)
     assert business_evidence(list(decoded["last_target"])) == business_evidence(["000001.SZ", "600000.SH"])
@@ -299,10 +281,10 @@ def test_gm_input_roundtrip_keeps_strategy_account_and_quantity_targets_separate
     )
     typed_values = [
         row[column.name]
-        for table in module.TABLES
-        for column in table.c
+        for name in _TABLES["inputs"]
+        for column in table(name).c
         if not isinstance(column.type, JSON)
-        for row in loaded[table.name]
+        for row in loaded[name]
         if column.name in row
     ]
     assert 300 in typed_values

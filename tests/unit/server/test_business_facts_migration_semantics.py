@@ -9,14 +9,10 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts.business_facts_contract import business_evidence
-from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+from tests.conftest import initialize_native_database, native_store_call, require_native_store
 
-_MIGRATION_FILE = "0037_business_execution_facts.py"
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
 _BUSINESS_MAP_FIELDS = frozenset(
     {
@@ -302,20 +298,13 @@ def _channel_documents():
     ]
 
 
-def _upgrade_to_0036(connection):
-    """Use frozen historical revisions rather than the current runtime ORM schema."""
-    for path in sorted(_MIGRATIONS_DIR.glob("*.py")):
-        if path.stem[:4].isdigit() and int(path.stem[:4]) <= 36:
-            migration = _load_migration(path)
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.upgrade()
+def _apply_0037(database):
+    """Run the real Rust migration chain with every test-side connection closed."""
+    return initialize_native_database(database)
 
 
-def _apply_0037(connection):
-    migration = _load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE)
-    migration.op = Operations(MigrationContext.configure(connection))
-    migration.upgrade()
-    return migration
+def _downgrade(database):
+    return native_store_call(database, "migration_downgrade", {"public": "0036"})
 
 
 def _schema_signature(connection):
@@ -385,9 +374,9 @@ def _contains_document(value, document):
 def _migration_database(tmp_path: Path, *, channel_documents=False):
     """Prepare a real 0036 database with no production payloads or credentials."""
     database = tmp_path / "business-facts-migration.db"
-    engine = sa.create_engine(f"sqlite:///{database}")
+    initialize_native_database(database, revision="0036")
+    engine = sa.create_engine(f"sqlite:///{database}", poolclass=sa.pool.NullPool)
     with engine.begin() as connection:
-        _upgrade_to_0036(connection)
         expected = _seed_historical_records(connection, channel_documents=channel_documents)
     return database, engine, expected
 
@@ -648,8 +637,8 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
     """Historical records retain meaning through the actual one-time migration."""
     database, engine, expected = _migration_database(tmp_path, channel_documents=True)
     try:
+        _apply_0037(database)
         with engine.begin() as connection:
-            _apply_0037(connection)
             columns = {column["name"] for column in sa.inspect(connection).get_columns("executerecord")}
             assert "raw_input" not in columns
             assert "raw_result" not in columns
@@ -687,31 +676,21 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
             )
             assert business_evidence(asset_validity) == business_evidence({11: 0, 12: 1})
 
-        from axile.server.business_facts.repository import read_execution_detail
-        from axile.server.db.models.execution import ExecuteRecord
-
-        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        try:
-            sessions = async_sessionmaker(async_engine)
-            async with sessions() as session:
-                for record_id, source in expected.items():
-                    record = await session.get(ExecuteRecord, record_id)
-                    assert record is not None
-                    detail = await read_execution_detail(session, record)
-                    _assert_same_evidence(source["raw_input"], detail["input"], f"{source['name']}/input")
-                    _assert_same_evidence(source["raw_result"], detail["result"], f"{source['name']}/result")
-        finally:
-            await async_engine.dispose()
+        for record_id, source in expected.items():
+            detail = native_store_call(database, "read_execution_detail", {"account_id": 2, "record_id": record_id})
+            assert detail is not None
+            _assert_same_evidence(source["raw_input"], detail["input"], f"{source['name']}/input")
+            _assert_same_evidence(source["raw_result"], detail["result"], f"{source['name']}/result")
     finally:
         engine.dispose()
 
 
 def test_migration_shares_identical_input_and_keeps_differing_result_input(tmp_path):
     """Input references preserve the independently recorded input observations."""
-    _, engine, _ = _migration_database(tmp_path)
+    database, engine, _ = _migration_database(tmp_path)
     try:
+        _apply_0037(database)
         with engine.begin() as connection:
-            _apply_0037(connection)
             shared = connection.execute(sa.text("SELECT input_id, result_input_id FROM executerecord WHERE id=4")).one()
             different = connection.execute(
                 sa.text("SELECT input_id, result_input_id FROM executerecord WHERE id=7")
@@ -729,23 +708,26 @@ def test_migration_shares_identical_input_and_keeps_differing_result_input(tmp_p
 @pytest.mark.parametrize("invalid", [[{"synthetic": "nonempty"}]], ids=["nonempty-array"])
 def test_migration_rejects_unmappable_roots_before_dropping_legacy_columns(tmp_path, column, invalid):
     """Unsupported roots fail with safe record/path context and leave source evidence."""
-    _, engine, _ = _migration_database(tmp_path)
+    database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
             table = sa.Table("executerecord", sa.MetaData(), autoload_with=connection)
             connection.execute(table.update().where(table.c.id == 12).values({column: invalid}))
             original_schema = _schema_signature(connection)
-            with pytest.raises((ValueError, RuntimeError)) as failure:
-                _apply_0037(connection)
-            assert column in str(failure.value)
-            assert "12" in str(failure.value)
+        with pytest.raises(require_native_store("migration_upgrade").NativeError) as failure:
+            _apply_0037(database)
+        assert column in str(failure.value)
+        assert "12" in str(failure.value)
+        with engine.begin() as connection:
             columns = {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
             assert {"raw_input", "raw_result"} <= columns
             original = connection.execute(sa.select(table.c[column]).where(table.c.id == 12)).scalar_one()
             _assert_same_evidence(invalid, original, column)
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
             connection.execute(table.update().where(table.c.id == 12).values({column: {}}))
-            _apply_0037(connection)
+        _apply_0037(database)
+        with engine.begin() as connection:
             assert "raw_input" not in {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
     finally:
         engine.dispose()
@@ -754,23 +736,26 @@ def test_migration_rejects_unmappable_roots_before_dropping_legacy_columns(tmp_p
 @pytest.mark.parametrize("column", ["raw_input", "raw_result"])
 def test_migration_rejects_invalid_json_text_without_destroying_source(tmp_path, column):
     """Damaged legacy JSON reports its source location and leaves original bytes."""
-    _, engine, _ = _migration_database(tmp_path)
+    database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
             connection.execute(sa.text(f"UPDATE executerecord SET {column}=:value WHERE id=12"), {"value": "{"})
             original_schema = _schema_signature(connection)
-            with pytest.raises((ValueError, RuntimeError)) as failure:
-                _apply_0037(connection)
-            assert column in str(failure.value)
-            assert "12" in str(failure.value)
+        with pytest.raises(require_native_store("migration_upgrade").NativeError) as failure:
+            _apply_0037(database)
+        assert column in str(failure.value)
+        assert "12" in str(failure.value)
+        with engine.begin() as connection:
             columns = {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
             assert {"raw_input", "raw_result"} <= columns
             assert business_evidence(
                 connection.execute(sa.text(f"SELECT {column} FROM executerecord WHERE id=12")).scalar_one()
             ) == business_evidence("{")
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
             connection.execute(sa.text(f"UPDATE executerecord SET {column}=:value WHERE id=12"), {"value": "{}"})
-            _apply_0037(connection)
+        _apply_0037(database)
+        with engine.begin() as connection:
             assert "raw_result" not in {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
     finally:
         engine.dispose()
@@ -786,20 +771,11 @@ async def test_migration_preserves_small_malformed_root_states(tmp_path, column,
         with engine.begin() as connection:
             table = sa.Table("executerecord", sa.MetaData(), autoload_with=connection)
             connection.execute(table.update().where(table.c.id == 1).values({column: invalid}))
-            _apply_0037(connection)
+        _apply_0037(database)
 
-        from axile.server.business_facts.repository import read_execution_detail
-        from axile.server.db.models.execution import ExecuteRecord
-
-        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        try:
-            async with async_sessionmaker(async_engine)() as session:
-                record = await session.get(ExecuteRecord, 1)
-                assert record is not None
-                detail = await read_execution_detail(session, record)
-                _assert_same_evidence(invalid, detail[{"raw_input": "input", "raw_result": "result"}[column]], column)
-        finally:
-            await async_engine.dispose()
+        detail = native_store_call(database, "read_execution_detail", {"account_id": 2, "record_id": 1})
+        assert detail is not None
+        _assert_same_evidence(invalid, detail[{"raw_input": "input", "raw_result": "result"}[column]], column)
     finally:
         engine.dispose()
 
@@ -811,7 +787,8 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
     try:
         with engine.begin() as connection:
             expected_assets, expected_targets = _seed_historical_snapshots(connection)
-            _apply_0037(connection)
+        _apply_0037(database)
+        with engine.begin() as connection:
             inspector = sa.inspect(connection)
             assert "assets" not in {column["name"] for column in inspector.get_columns("account_asset_snapshot")}
             assert not {"raw_weights", "normalized_weights"} & {
@@ -831,8 +808,6 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
             child = metadata.tables["target_weight_snapshot_weight"]
             target_heads = {row["id"]: row for row in connection.execute(sa.select(parent)).mappings()}
             target_children = connection.execute(sa.select(child).order_by(child.c.map_key.desc())).mappings().all()
-            from axile.server.target_weight_snapshots import decode_snapshot_weights
-
             for source in expected_targets:
                 head = target_heads[source["id"]]
                 assert business_evidence(
@@ -840,42 +815,46 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
                 ) == business_evidence(
                     {key: value for key, value in source.items() if key not in {"raw_weights", "normalized_weights"}}
                 )
-                weights = decode_snapshot_weights(
-                    head, [row for row in target_children if row["snapshot_id"] == source["id"]]
-                )
+                weights = {}
+                for role in ("raw_weights", "normalized_weights"):
+                    assert head[f"{role}_kind"] in {"null", "mapping"}
+                    weights[role] = (
+                        None
+                        if head[f"{role}_kind"] == "null"
+                        else {
+                            row["map_key"]: row["value"]
+                            for row in target_children
+                            if row["snapshot_id"] == source["id"] and row["role"] == role
+                        }
+                    )
                 _assert_same_evidence(
                     {key: source[key] for key in ("raw_weights", "normalized_weights")},
                     weights,
                     f"snapshot/{source['id']}/weights",
                 )
 
-        from axile.server.business_facts.assets import read_snapshot_assets
-        from axile.server.db.models.account_asset import AccountAssetSnapshot
-
-        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        try:
-            async with async_sessionmaker(async_engine)() as session:
-                for source in expected_assets:
-                    snapshot = await session.get(AccountAssetSnapshot, source["id"])
-                    assert snapshot is not None
-                    assert snapshot.asset_fact_id is not None
-                    assert business_evidence(
-                        {key: getattr(snapshot, key) for key in source if key != "assets"}
-                    ) == business_evidence({key: value for key, value in source.items() if key != "assets"})
-                    payload = await read_snapshot_assets(session, snapshot)
-                    _assert_same_evidence(source["assets"], payload, f"snapshot/{source['id']}/assets")
-        finally:
-            await async_engine.dispose()
+        with engine.begin() as connection:
+            snapshots = sa.Table("account_asset_snapshot", sa.MetaData(), autoload_with=connection)
+            heads = {row["id"]: dict(row) for row in connection.execute(sa.select(snapshots)).mappings()}
+        for source in expected_assets:
+            snapshot = heads.get(source["id"])
+            assert snapshot is not None
+            assert snapshot["asset_fact_id"] is not None
+            assert business_evidence({key: snapshot[key] for key in source if key != "assets"}) == business_evidence(
+                {key: value for key, value in source.items() if key != "assets"}
+            )
+            payload = native_store_call(database, "asset_snapshots_read", {"snapshots": [snapshot]})[0]["assets"]
+            _assert_same_evidence(source["assets"], payload, f"snapshot/{source['id']}/assets")
     finally:
         engine.dispose()
 
 
 def test_migration_stores_valid_stable_domains_in_columns_without_shadow_documents(tmp_path):
     """Evidence reconstruction alone cannot excuse storing whole known trees in JSON."""
-    _, engine, expected = _migration_database(tmp_path)
+    database, engine, expected = _migration_database(tmp_path)
     try:
+        _apply_0037(database)
         with engine.begin() as connection:
-            _apply_0037(connection)
             for table, expected_count in (
                 ("execution_order", 4),
                 ("business_trade", 4),
@@ -963,7 +942,8 @@ async def test_migration_compacts_equivalent_summary_and_restores_original_journ
     try:
         with engine.begin() as connection:
             records, originals = _seed_summary_journals(connection)
-            migration = _apply_0037(connection)
+        _apply_0037(database)
+        with engine.begin() as connection:
             table = sa.Table("execution_artifact", sa.MetaData(), autoload_with=connection)
             compacted = {
                 row["id"]: dict(row) for row in connection.execute(sa.select(table).order_by(table.c.id)).mappings()
@@ -985,29 +965,22 @@ async def test_migration_compacts_equivalent_summary_and_restores_original_journ
             )
             _assert_same_evidence(originals[599], compacted[599], "orphan-journal")
 
-        from axile.server.business_facts.artifacts import hydrate_summary_content, resolve_artifact_content
-        from axile.server.business_facts.repository import read_execution_result
-        from axile.server.db.models.execution import ExecuteRecord, ExecutionArtifact
+        for artifact_id, record_id in ((531, 31), (532, 32)):
+            result = native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
+            hydrated = native_store_call(
+                database, "resolve_execution_artifact", {"artifact": compacted[artifact_id], "account_id": 2}
+            )
+            hydrated.pop("business_facts_ref", None)
+            _assert_same_evidence(originals[artifact_id]["content"], hydrated, "summary-cold-wire")
+            resolved = native_store_call(
+                database, "list_execution_artifacts", {"execution_id": records[record_id]["execution_id"]}
+            )["data"][0]["content"]
+            resolved.pop("business_facts_ref", None)
+            _assert_same_evidence(originals[artifact_id]["content"], resolved, "summary-owned-cold-read")
+            _assert_same_evidence(records[record_id]["raw_result"], result, "summary-source-result")
 
-        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        try:
-            async with async_sessionmaker(async_engine)() as session:
-                for artifact_id, record_id in ((531, 31), (532, 32)):
-                    artifact = await session.get(ExecutionArtifact, artifact_id)
-                    record = await session.get(ExecuteRecord, record_id)
-                    result = await read_execution_result(session, record)
-                    hydrated = hydrate_summary_content(artifact.content, result, include_reference=False)
-                    _assert_same_evidence(originals[artifact_id]["content"], hydrated, "summary-cold-wire")
-                    resolved = await resolve_artifact_content(session, artifact, account_id=2)
-                    resolved.pop("business_facts_ref", None)
-                    _assert_same_evidence(originals[artifact_id]["content"], resolved, "summary-owned-cold-read")
-                    _assert_same_evidence(records[record_id]["raw_result"], result, "summary-source-result")
-        finally:
-            await async_engine.dispose()
-
+        _downgrade(database)
         with engine.begin() as connection:
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.downgrade()
             table = sa.Table("execution_artifact", sa.MetaData(), autoload_with=connection)
             restored = {row["id"]: dict(row) for row in connection.execute(sa.select(table)).mappings()}
             for artifact_id, original in originals.items():
@@ -1023,7 +996,8 @@ async def test_migration_notification_references_require_matching_frozen_busines
     try:
         with engine.begin() as connection:
             records, original_events, matching = _seed_notification_outbox_evidence(connection)
-            migration = _apply_0037(connection)
+        _apply_0037(database)
+        with engine.begin() as connection:
             metadata = sa.MetaData()
             metadata.reflect(connection, only=["execution_extension", "notification_event"])
             extensions = {
@@ -1035,11 +1009,11 @@ async def test_migration_notification_references_require_matching_frozen_busines
                 for row in connection.execute(sa.select(metadata.tables["notification_event"])).mappings()
             }
             _assert_same_evidence(original_events, events, "outbox-after-upgrade")
-            from axile.server.business_facts.notification_context import is_notification_context_reference
-
             for record_id, source in records.items():
                 captured = extensions[record_id]["server_notification_context"]
-                assert is_notification_context_reference(captured) is (record_id in matching)
+                assert (isinstance(captured, dict) and "$axile_notification_context" in captured) is (
+                    record_id in matching
+                )
                 if record_id in matching:
                     assert "orders" not in captured
                     assert "assets" not in captured
@@ -1058,22 +1032,12 @@ async def test_migration_notification_references_require_matching_frozen_busines
                     "notification-extra",
                 )
 
-        from axile.server.business_facts.repository import read_execution_result
-        from axile.server.db.models.execution import ExecuteRecord
+        for record_id, source in records.items():
+            result = native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
+            _assert_same_evidence(source["raw_result"], result, "notification-cold-wire")
 
-        async_engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        try:
-            async with async_sessionmaker(async_engine)() as session:
-                for record_id, source in records.items():
-                    record = await session.get(ExecuteRecord, record_id)
-                    result = await read_execution_result(session, record)
-                    _assert_same_evidence(source["raw_result"], result, "notification-cold-wire")
-        finally:
-            await async_engine.dispose()
-
+        _downgrade(database)
         with engine.begin() as connection:
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.downgrade()
             metadata = sa.MetaData()
             metadata.reflect(connection, only=["executerecord", "notification_event"])
             restored = {
@@ -1092,12 +1056,18 @@ async def test_migration_notification_references_require_matching_frozen_busines
 
 
 def test_failed_migration_restores_summary_and_notification_evidence_before_retry(tmp_path, monkeypatch):
-    """A late verification failure rolls back all already compacted evidence atomically."""
-    _, engine, _ = _migration_database(tmp_path)
+    """A late failure rolls back already compacted evidence before a successful retry."""
+    database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
             _seed_summary_journals(connection)
             _seed_notification_outbox_evidence(connection)
+            # 版本落盘时失败，已转换的事实、摘要、通知引用和 DDL 必须一并回滚。
+            connection.exec_driver_sql(
+                "CREATE TRIGGER fail_after_backfill BEFORE UPDATE OF version_num ON alembic_version "
+                "WHEN NEW.version_num='0037' "
+                "BEGIN SELECT RAISE(ABORT,'synthetic evidence verification failure'); END"
+            )
             tables = {
                 name: sa.Table(name, sa.MetaData(), autoload_with=connection)
                 for name in ("execution_artifact", "notification_event", "executerecord")
@@ -1107,22 +1077,19 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
                 for name, table in tables.items()
             }
             original_schema = _schema_signature(connection)
-            from axile.server.alembic import business0037_migration as conversion
-
-            verify_conversion = conversion.verify_conversion
-
-            def fail_after_backfill(_connection):
-                raise ValueError("synthetic evidence verification failure")
-
-            monkeypatch.setattr(conversion, "verify_conversion", fail_after_backfill)
-            with pytest.raises(ValueError, match="synthetic evidence verification failure"):
-                _apply_0037(connection)
+        with pytest.raises(
+            require_native_store("migration_upgrade").NativeError, match="synthetic evidence verification failure"
+        ):
+            _apply_0037(database)
+        with engine.begin() as connection:
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
             for name, table in tables.items():
                 current = [dict(row) for row in connection.execute(sa.select(table)).mappings()]
                 _assert_same_evidence(original_rows[name], current, f"rollback/{name}")
-            monkeypatch.setattr(conversion, "verify_conversion", verify_conversion)
-            _apply_0037(connection)
+            connection.exec_driver_sql("DROP TRIGGER fail_after_backfill")
+        _apply_0037(database)
+        with engine.begin() as connection:
             assert "raw_result" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("executerecord")
             }

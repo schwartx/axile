@@ -2,81 +2,39 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
-from types import ModuleType
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.business_facts import assets, head, inputs, orders, symbols, trades
-from axile.server.db.models import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, seed_account
 
 _NIGHT_TIME = "2026-10-19T21:00:00.123456+08:00"
 _NIGHT_NANO = 1792414800123456789
 
 
 def _sqlite_round_trip(
-    domain: ModuleType,
+    path,
+    domain: str,
     payload: Mapping[str, object],
     *,
     input_owner: bool = False,
 ) -> dict[str, object]:
-    """经过 SQLite 类型及 JSON 编解码读取领域事实。"""
-    if domain is inputs:
-        batch = inputs.encode_inputs(
-            "tq-input",
-            payload,
-            account_id=23,
-            execution_id="tq-execution",
-            created_at=_NIGHT_TIME,
+    """通过完整原生事务及显式业务读取检查领域事实。"""
+    if domain == "inputs" or input_owner:
+        receipt = freeze_input(
+            path,
+            payload if not input_owner else {},
+            **({"before_assets": payload["account_assets"]} if input_owner else {}),
         )
-        decoder = inputs.decode_inputs
-    elif input_owner:
-        batch = assets.encode_input_assets("tq-input", payload)
-        decoder = assets.decode_assets
-    else:
-        encoder = getattr(domain, f"encode_{domain.__name__.rsplit('.', 1)[-1]}")
-        decoder = getattr(domain, f"decode_{domain.__name__.rsplit('.', 1)[-1]}")
-        batch = encoder(23, payload)
-
-    metadata = sa.MetaData()
-    tables = [table.to_metadata(metadata) for table in domain.TABLES]
-    # Parent rows belong to the repository tests. These minimal FK targets let
-    # this test exercise each domain's actual SQL column types independently.
-    missing_targets = {
-        foreign_key.target_fullname.rsplit(".", 1)[0]
-        for table in tables
-        for foreign_key in table.foreign_keys
-        if foreign_key.target_fullname.rsplit(".", 1)[0] not in metadata.tables
-    }
-    for table_name in missing_targets:
-        sa.Table(table_name, metadata, sa.Column("id", sa.Text, primary_key=True))
-    loaded = {}
-    engine = sa.create_engine("sqlite://")
-    try:
-        with engine.begin() as connection:
-            metadata.create_all(connection)
-            for source, rows in batch.items():
-                table = metadata.tables[source.name]
-                for row in rows:
-                    if source is head.execution_head:
-                        row = {
-                            "account_id": 23,
-                            "execution_id": "tq-execution",
-                            "created_at": _NIGHT_TIME,
-                            "is_success": 0,
-                            **row,
-                        }
-                    connection.execute(table.insert().values(**row))
-            for table in tables:
-                loaded[table.name] = [dict(row) for row in connection.execute(sa.select(table)).mappings()]
-        return decoder(loaded)
-    finally:
-        engine.dispose()
+        if input_owner:
+            observations = native_store_call(path, "asset_input_observations", {"input_id": receipt["input_id"]})
+            assert len(observations) == 1
+            assert observations[0]["path"] == "/before_account_assets"
+            return {"before_account_assets": observations[0]["account_assets"]}
+        return native_store_call(path, "read_execution_input", {"input_id": receipt["input_id"]})
+    return read_result(path, persist_result(path, payload))
 
 
 def tq_historical_payloads() -> tuple[dict[str, object], dict[str, object]]:
@@ -283,9 +241,9 @@ def _tq_sizing() -> dict[str, object]:
     }
 
 
-def test_tq_assets_preserve_native_sides_unknowns_and_valuation_evidence() -> None:
+def test_tq_assets_preserve_native_sides_unknowns_and_valuation_evidence(native_database) -> None:
     payload = {"account_assets": _tq_assets()}
-    restored = _sqlite_round_trip(assets, payload)
+    restored = _sqlite_round_trip(native_database, "assets", payload)
 
     assert business_evidence(restored) == business_evidence(payload)
     long, short = restored["account_assets"]["positions"]
@@ -298,22 +256,22 @@ def test_tq_assets_preserve_native_sides_unknowns_and_valuation_evidence() -> No
     assert type(long["extra"]["market_value_provenance"]["quote_time"]) is int
 
 
-def test_tq_input_keeps_lots_weight_empty_and_null_roles_separate() -> None:
+def test_tq_input_keeps_lots_weight_empty_and_null_roles_separate(native_database) -> None:
     payload, _ = tq_historical_payloads()
     payload.update({"strategy_target": {}, "account_target": None, "execution_timeout": 60})
 
-    assert business_evidence(_sqlite_round_trip(inputs, payload)) == business_evidence(payload)
+    assert business_evidence(_sqlite_round_trip(native_database, "inputs", payload)) == business_evidence(payload)
 
 
-def test_tq_before_assets_keep_their_own_observation_time_and_source() -> None:
+def test_tq_before_assets_keep_their_own_observation_time_and_source(native_database) -> None:
     observation = {**_tq_assets(), "update_time": "2026-10-19T20:59:58+08:00", "source": "worker_pre_execution"}
 
     assert business_evidence(
-        _sqlite_round_trip(assets, {"account_assets": observation}, input_owner=True)
+        _sqlite_round_trip(native_database, "assets", {"account_assets": observation}, input_owner=True)
     ) == business_evidence({"before_account_assets": observation})
 
 
-def test_tq_symbols_keep_multiplier_night_time_and_independent_root_views() -> None:
+def test_tq_symbols_keep_multiplier_night_time_and_independent_root_views(native_database) -> None:
     payload = {
         "symbol_results": {
             "rb2701": {
@@ -330,7 +288,7 @@ def test_tq_symbols_keep_multiplier_night_time_and_independent_root_views() -> N
         "first_ticks": {},
     }
 
-    restored = _sqlite_round_trip(symbols, payload)
+    restored = _sqlite_round_trip(native_database, "symbols", payload)
     assert business_evidence(restored) == business_evidence(payload)
     assert isinstance(restored["symbol_results"]["rb2701"]["target_volume"], (int, float)) and not isinstance(
         restored["symbol_results"]["rb2701"]["target_volume"], bool
@@ -338,7 +296,7 @@ def test_tq_symbols_keep_multiplier_night_time_and_independent_root_views() -> N
     assert type(restored["symbol_results"]["ag2612"]["target_volume"]) is float
 
 
-def test_tq_order_occurrences_keep_native_ids_offsets_and_nanoseconds() -> None:
+def test_tq_order_occurrences_keep_native_ids_offsets_and_nanoseconds(native_database) -> None:
     original = _tq_order()
     blank_id = {**original, "order_id": "", "extra": {"offset": "CLOSE", "is_error": None}}
     payload = {
@@ -346,11 +304,13 @@ def test_tq_order_occurrences_keep_native_ids_offsets_and_nanoseconds() -> None:
         "symbol_results": {"rb2701": {"orders": [original]}},
     }
 
-    assert business_evidence(_sqlite_round_trip(orders, payload)) == business_evidence(payload)
+    assert business_evidence(_sqlite_round_trip(native_database, "orders", payload)) == business_evidence(payload)
 
 
 @pytest.mark.parametrize("commission", [pytest.param(None, id="unknown"), 0, -0.5])
-def test_tq_trade_preserves_explicit_fee_without_inventing_missing_commission(commission: object) -> None:
+def test_tq_trade_preserves_explicit_fee_without_inventing_missing_commission(
+    native_database, commission: object
+) -> None:
     trade = _tq_trade()
     known_fee = {**trade, "extra": {**trade["extra"], "commission": commission}}
     payload = {
@@ -358,7 +318,7 @@ def test_tq_trade_preserves_explicit_fee_without_inventing_missing_commission(co
         "symbol_results": {"rb2701": {"trades": [{**trade, "trade_value": 123.0}]}},
     }
 
-    restored = _sqlite_round_trip(trades, payload)
+    restored = _sqlite_round_trip(native_database, "trades", payload)
     assert business_evidence(restored) == business_evidence(payload)
     assert "commission" not in restored["trades"][0]["extra"]
     assert business_evidence(restored["symbol_results"]["rb2701"]["trades"][0]["trade_value"]) == business_evidence(
@@ -367,13 +327,13 @@ def test_tq_trade_preserves_explicit_fee_without_inventing_missing_commission(co
 
 
 @pytest.mark.parametrize("state", [{}, None, []])
-def test_tq_positions_preserve_empty_null_and_degraded_container(state: object) -> None:
+def test_tq_positions_preserve_empty_null_and_degraded_container(native_database, state: object) -> None:
     payload = {"account_assets": {"positions": state, "market_value": None}}
 
-    assert business_evidence(_sqlite_round_trip(assets, payload)) == business_evidence(payload)
+    assert business_evidence(_sqlite_round_trip(native_database, "assets", payload)) == business_evidence(payload)
 
 
-def test_tq_closed_session_retains_task_and_business_status_without_defaults() -> None:
+def test_tq_closed_session_retains_task_and_business_status_without_defaults(native_database) -> None:
     payload = {
         "channel_type": "tq",
         "task_status": "SKIPPED",
@@ -383,50 +343,29 @@ def test_tq_closed_session_retains_task_and_business_status_without_defaults() -
         "execution_time": 0,
     }
 
-    assert business_evidence(_sqlite_round_trip(head, payload)) == business_evidence(payload)
+    assert business_evidence(_sqlite_round_trip(native_database, "head", payload)) == business_evidence(payload)
 
 
-def test_tq_canonical_detail_matches_historical_evidence_across_transactions() -> None:
-    from axile.server.business_facts.repository import (
-        read_execution_detail,
-        read_execution_input,
-        read_execution_result,
-        store_execution_facts,
-    )
-
+def test_tq_canonical_detail_matches_historical_evidence_across_transactions(native_database) -> None:
     raw_input, raw_result = tq_historical_payloads()
-
-    async def scenario() -> None:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-            async with factory() as session:
-                record = ExecuteRecord(
-                    account_id=23,
-                    execution_id="tq-canonical-roundtrip",
-                    created_at=_NIGHT_TIME,
-                    is_success=0,
-                )
-                session.add(record)
-                await session.flush()
-                await store_execution_facts(session, record, raw_input, raw_result)
-                await session.commit()
-                record_id = record.id
-            async with factory() as session:
-                stored = await session.get(ExecuteRecord, record_id)
-                assert stored is not None
-                assert stored.input_id is not None
-                assert business_evidence(await read_execution_input(session, stored.input_id)) == business_evidence(
-                    raw_input
-                )
-                assert business_evidence(await read_execution_result(session, stored)) == business_evidence(raw_result)
-                detail = await read_execution_detail(session, stored)
-                assert business_evidence(detail["input"]) == business_evidence(raw_input)
-                assert business_evidence(detail["result"]) == business_evidence(raw_result)
-                assert business_evidence(detail["account_id"]) == business_evidence(23)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(scenario())
+    seed_account(native_database, 23)
+    record = persist_result(
+        native_database,
+        raw_result,
+        raw_input=raw_input,
+        account_id=23,
+        execution_id="tq-canonical-roundtrip",
+        created_at=_NIGHT_TIME,
+    )
+    assert record["input_id"] is not None
+    assert business_evidence(
+        native_store_call(native_database, "read_execution_input", {"input_id": record["input_id"]})
+    ) == business_evidence(raw_input)
+    identity = {"account_id": 23, "record_id": record["id"]}
+    assert business_evidence(
+        native_store_call(native_database, "read_execution_result", identity)
+    ) == business_evidence(raw_result)
+    detail = native_store_call(native_database, "read_execution_detail", identity)
+    assert business_evidence(detail["input"]) == business_evidence(raw_input)
+    assert business_evidence(detail["result"]) == business_evidence(raw_result)
+    assert business_evidence(detail["account_id"]) == business_evidence(23)

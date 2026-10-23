@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from starlette.types import Receive, Scope, Send
 
 from axile.common.config import settings
-from axile.server.api.deps import SessionDep
 from axile.server.evidence.archive import EvidenceArchive, build_archive
 from axile.server.evidence.collect import collect_evidence
 from axile.server.evidence.logs import collect_logs
@@ -66,14 +65,14 @@ class EvidenceFileResponse(FileResponse):
             self.archive.close()
 
 
-async def _export(session: Any, profile: EvidenceProfile, include_logs: bool, **selection: Any) -> EvidenceFileResponse:
+async def _export(profile: EvidenceProfile, include_logs: bool, **selection: Any) -> EvidenceFileResponse:
     """异步采集，线程打包；取消时等待线程释放半成品后退出。"""
     budget = ExportBudget()
     task = None
     delivered = False
     try:
         async with asyncio.timeout(budget.limits.seconds):
-            snapshot = await collect_evidence(session, budget, **selection)
+            snapshot = await collect_evidence(budget, **selection)
             logs, report = [], None
             if include_logs:
                 logs, report = await asyncio.to_thread(collect_logs, settings.app_log_dir, snapshot, budget)
@@ -102,18 +101,16 @@ async def _export(session: Any, profile: EvidenceProfile, include_logs: bool, **
 @router.get("/executions/{execution_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
 async def export_execution_evidence(
     execution_id: str,
-    session: SessionDep,
     profile: EvidenceProfile = EvidenceProfile.SHAREABLE,
     include_logs: bool = False,
 ) -> FileResponse:
     """导出单次执行的全部已持久化证据，包括运行中和结果未知的执行。"""
-    return await _export(session, profile, include_logs, execution_id=execution_id)
+    return await _export(profile, include_logs, execution_id=execution_id)
 
 
 @router.get("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
 async def export_account_evidence(
     account_id: int,
-    session: SessionDep,
     start_date: date,
     end_date: date,
     timezone: str = "Asia/Shanghai",
@@ -126,16 +123,15 @@ async def export_account_evidence(
         window = EvidenceWindow(start_date, end_date, timezone, legacy_timezone)
     except EvidenceError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code, "message": str(exc)}) from exc
-    return await _export(session, profile, include_logs, account_id=account_id, window=window)
+    return await _export(profile, include_logs, account_id=account_id, window=window)
 
 
 @router.post("/{account_id}/evidence", response_class=FileResponse, responses=_RESPONSES)
 async def export_selected_execution_evidence(
     account_id: int,
     selection: EvidenceExecutionSelection,
-    session: SessionDep,
     profile: EvidenceProfile = EvidenceProfile.SHAREABLE,
     include_logs: bool = False,
 ) -> FileResponse:
     """只读导出同一账户的 1～100 个执行，不扫描整天或触发交易。"""
-    return await _export(session, profile, include_logs, account_id=account_id, execution_ids=selection.execution_ids)
+    return await _export(profile, include_logs, account_id=account_id, execution_ids=selection.execution_ids)

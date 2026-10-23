@@ -14,12 +14,9 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
@@ -35,11 +32,8 @@ from axile.executor.account_control.models import (
     AccountControlDecision,
     AccountControlScopeType,
 )
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account_evidence
-from axile.server.business_facts.repository import store_execution_facts
-from axile.server.core.db import register_sqlite_concurrency_pragmas
-from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
+from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
 from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
 from axile.server.db.models.execution_intent import ExecutionIntent
@@ -56,26 +50,20 @@ from axile.server.evidence.models import (
 )
 from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.execution.worker_backend import worker_audit
+from tests.conftest import initialize_native_database
+from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._business_facts_test_support import persist_result, sql
+from tests.unit.server._business_facts_test_support import rows as fact_rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
 
 
 @pytest.fixture
-def database(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'evidence.db'}", poolclass=NullPool)
-    register_sqlite_concurrency_pragmas(engine)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def create():
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        async with factory() as session:
-            session.add(_account(1))
-            session.add(_account(2))
-            await session.commit()
-
-    asyncio.run(create())
-    yield factory
-    asyncio.run(engine.dispose())
+def database(tmp_path, monkeypatch):
+    path = tmp_path / "evidence.db"
+    initialize_native_database(path)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+    _seed(path, _account(1), _account(2))
+    return path
 
 
 def _account(account_id=1):
@@ -227,36 +215,54 @@ def _record(execution_id="exec-1", **overrides):
     )
 
 
-def _seed(factory, *rows):
-    async def seed():
-        async with factory() as session:
-            for row in rows:
-                if not isinstance(row, _RecordFixture):
-                    session.add(row)
+def _seed(path, *items):
+    names = {
+        "Account": "account",
+        "ExecutionIntent": "execution_intent",
+        "ExecutionEvent": "execution_event",
+        "ExecutionArtifact": "execution_artifact",
+        "AccountControlEvent": "account_control_event",
+        "AccountControlCounterDelta": "account_control_counter_delta",
+        "AccountControlSession": "account_control_session",
+        "NotificationEvent": "notification_event",
+        "SupplementGroup": "supplement_group",
+        "SupplementStep": "supplement_step",
+    }
+    engine = sa.create_engine(f"sqlite:///{path}")
+    try:
+        with engine.begin() as connection:
+            for row in items:
+                if isinstance(row, _RecordFixture):
                     continue
-                record = ExecuteRecord(
-                    account_id=row.account_id,
-                    execution_id=row.execution_id,
-                    is_success=row.is_success,
-                    created_at=row.created_at,
-                )
-                session.add(record)
-                await session.flush()
-                await store_execution_facts(session, record, row.raw_input, row.raw_result)
-            await session.commit()
+                target = table(names[type(row).__name__])
+                values = row.model_dump(mode="json")
+                if "metadata_" in values:
+                    values["metadata"] = values.pop("metadata_")
+                values = {
+                    key: value
+                    for key, value in values.items()
+                    if key in target.c and not (key == "id" and value is None)
+                }
+                connection.execute(target.insert(), values)
+    finally:
+        engine.dispose()
+    for row in items:
+        if isinstance(row, _RecordFixture):
+            persist_result(
+                path,
+                row.raw_result,
+                account_id=row.account_id,
+                execution_id=row.execution_id,
+                is_success=row.is_success,
+                created_at=row.created_at,
+                raw_input=row.raw_input,
+            )
 
-    asyncio.run(seed())
 
-
-def _client(factory, *, raise_server_exceptions=True):
+def _client(path, *, raise_server_exceptions=True):
     app = FastAPI()
     app.include_router(account_evidence.router, prefix="/account")
 
-    async def dependency():
-        async with factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = dependency
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
@@ -469,24 +475,20 @@ def test_normal_download_removes_temp_archive(database, monkeypatch, tmp_path):
 
 
 def test_explicit_snapshot_does_not_mix_concurrent_commits(database, monkeypatch):
+    """原生回执冻结后追加事件，归档仍使用已固定的证据。"""
     _seed(database, _intent(), _event())
-    original = collect._load_sources
+    original = collect.native_evidence_operation
 
-    async def concurrent_write(session, snapshot, budget):
-        async with database() as writer:
-            writer.add(_event(seq=2))
-            await writer.commit()
-        await original(session, snapshot, budget)
+    async def concurrent_write(request, cancelled):
+        snapshot = await original(request, cancelled)
+        _seed(database, _event(seq=2))
+        return snapshot
 
-    monkeypatch.setattr(collect, "_load_sources", concurrent_write)
+    monkeypatch.setattr(collect, "native_evidence_operation", concurrent_write)
     archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
     assert len(archive.read("executions/exec-1/events.jsonl").splitlines()) == 1
 
-    async def count():
-        async with database() as session:
-            return len((await session.execute(select(ExecutionEvent))).scalars().all())
-
-    assert asyncio.run(count()) == 2
+    assert len(fact_rows(database, "execution_event")) == 2
 
 
 def test_logs_capture_bounds_owner_and_shareable_projection(database, tmp_path, monkeypatch):
@@ -635,11 +637,7 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert third["executions"][0]["business_outcome"] == "not_reached"
     assert first["executions"][0]["business_outcome"] == "unknown"
 
-    async def count():
-        async with database() as session:
-            return await session.scalar(select(func.count()).select_from(ExecutionIntent))
-
-    assert asyncio.run(count()) == 1
+    assert len(fact_rows(database, "execution_intent")) == 1
 
 
 def test_arbitrary_legacy_identifiers_cannot_escape_zip_paths(database):
@@ -683,14 +681,11 @@ def test_export_task_cancellation_cleans_finished_thread_archive(database, monke
             return archive
 
         monkeypatch.setattr(account_evidence, "build_archive", finish_after_cancel)
-        async with database() as session:
-            task = asyncio.create_task(
-                account_evidence._export(session, EvidenceProfile.SHAREABLE, False, execution_id="exec-1")
-            )
-            await asyncio.wait_for(ready.wait(), timeout=5)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+        task = asyncio.create_task(account_evidence._export(EvidenceProfile.SHAREABLE, False, execution_id="exec-1"))
+        await asyncio.wait_for(ready.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     asyncio.run(driver())
     assert paths and all(not path.exists() for path in paths)
@@ -717,7 +712,7 @@ def test_core_read_failure_does_not_return_success_zip(database, monkeypatch):
     async def fail(*args):
         raise RuntimeError("database read failed")
 
-    monkeypatch.setattr(collect, "_load_sources", fail)
+    monkeypatch.setattr(collect, "native_evidence_operation", fail)
     client = _client(database, raise_server_exceptions=False)
     assert client.get("/account/executions/exec-1/evidence").status_code == 500
 
@@ -793,16 +788,13 @@ def test_oversized_json_is_rejected_before_orm_decoding(database, table, column)
     _seed(database, _intent(), _record())
 
     async def driver():
-        async with database() as session:
-            await session.execute(text(f"UPDATE {table} SET {column}=:payload"), {"payload": "invalid-json" * 10000})
-            await session.commit()
-        async with database() as session:
-            with pytest.raises(EvidenceError) as error:
-                await collect.collect_evidence(
-                    session, ExportBudget(limits=replace(EvidenceLimits(), bytes=20_000)), execution_id="exec-1"
-                )
-            assert error.value.status == 413
-            assert error.value.code == "EVIDENCE_TOO_LARGE"
+        sql(database, f"UPDATE {table} SET {column}=?", ("invalid-json" * 10000,))
+        with pytest.raises(EvidenceError) as error:
+            await collect.collect_evidence(
+                ExportBudget(limits=replace(EvidenceLimits(), bytes=20_000)), execution_id="exec-1"
+            )
+        assert error.value.status == 413
+        assert error.value.code == "EVIDENCE_TOO_LARGE"
 
     asyncio.run(driver())
 

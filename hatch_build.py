@@ -1,4 +1,4 @@
-"""Tag optional native-executable wheels for the build host."""
+"""Validate native artifacts and tag wheels for the build host."""
 
 from __future__ import annotations
 
@@ -30,7 +30,9 @@ def verify_native_capabilities(binary: Path) -> None:
         or not isinstance(capabilities.get("commands"), list)
         or "publish_store" not in capabilities["commands"]
     ):
-        raise RuntimeError("Staged native analysis executable requires protocol 1 and command publish_store")
+        raise RuntimeError(
+            "Staged native analysis executable requires protocol 1, analysis fact schema 40 and command publish_store"
+        )
 
 
 def verify_native_extension(extension: Path) -> None:
@@ -44,7 +46,9 @@ spec = importlib.util.spec_from_file_location('_core', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
-    raise RuntimeError('Native extension requires direct business facts schema 0039')
+    raise RuntimeError('Native extension requires analysis fact schema 40')
+if getattr(module, 'PUBLIC_HEAD', None) != '0039':
+    raise RuntimeError('Native extension requires public migration head 0039')
 required = (
     'Store', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'execution_business_detail', 'asset_snapshots',
@@ -54,6 +58,7 @@ required = (
     'order_submissions', 'submission_monitor', 'publish_store',
     'freeze_execution_input', 'freeze_execution_after_assets',
     'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
+    'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

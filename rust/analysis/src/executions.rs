@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
+use crate::error::AnalysisError;
+
 const FILTER: &str = "r.account_id=?1 AND (?2 IS NULL OR r.execution_id=?2)
     AND (?3 IS NULL OR r.id=?3)";
 const INTEGER_FIELDS: &[&str] = &["id", "account_id", "is_success"];
@@ -65,6 +67,22 @@ fn account_exists(connection: &Connection, account_id: i64) -> Result<(), String
     Ok(())
 }
 
+pub(crate) fn public_symbol(
+    fields: Map<String, Value>,
+    node_kind: &str,
+) -> Result<Value, AnalysisError> {
+    if node_kind != "object" {
+        return Ok(json!({"outcome":null}));
+    }
+    let mut normalized =
+        crate::business_facts_ops::result_head::normalize_legacy_result(&Value::Object(fields))?;
+    normalized
+        .as_object_mut()
+        .expect("normalized symbol object")
+        .retain(|key, _| SYMBOL_FIELDS.contains(&key.as_str()));
+    Ok(normalized)
+}
+
 fn records(
     connection: &Connection,
     page_ids: &str,
@@ -72,7 +90,7 @@ fn records(
 ) -> Result<Vec<Value>, String> {
     let mut symbol_statement = connection.prepare(&format!(
         "WITH page AS ({page_ids})
-         SELECT s.record_id,s.map_key AS symbol,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+         SELECT s.record_id,s.map_key AS symbol,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
          FROM execution_symbol_result s JOIN page p ON p.id=s.record_id
          ORDER BY s.record_id,s.map_key"
     )).map_err(database)?;
@@ -92,10 +110,15 @@ fn records(
                     .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?,
             );
         }
+        let fields = public_symbol(
+            fields,
+            &row.get::<_, String>("node_kind").map_err(database)?,
+        )
+        .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get("record_id").map_err(database)?)
             .or_default()
-            .insert(row.get("symbol").map_err(database)?, Value::Object(fields));
+            .insert(row.get("symbol").map_err(database)?, fields);
     }
     let headers = TEXT_FIELDS
         .iter()
@@ -228,8 +251,7 @@ pub fn detail(connection: &Connection, account_id: i64, record_id: i64) -> Resul
 mod tests {
     use super::*;
 
-    #[test]
-    fn public_page_preserves_nulls_and_projection_fallback() {
+    fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
             "CREATE TABLE account(id INTEGER PRIMARY KEY);
@@ -238,7 +260,7 @@ mod tests {
              execution_time REAL,success INTEGER,termination_cancel_attempted INTEGER,
              termination_forced INTEGER,termination_cancel_unconfirmed INTEGER,facts_complete INTEGER DEFAULT 1);
              CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT);
-             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory TEXT);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory TEXT,node_kind TEXT DEFAULT 'object');
              CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
              CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,trade_volume REAL);"
         ).unwrap();
@@ -249,11 +271,17 @@ mod tests {
                 ))
                 .unwrap();
         }
+        connection
+    }
+
+    #[test]
+    fn public_page_preserves_nulls_and_projection_fallback() {
+        let connection = fixture();
         connection.execute_batch(
             "INSERT INTO executerecord(id,account_id,is_success,success,termination_forced,execution_id)
              VALUES(1,1,1,1,0,'one'),(2,1,0,NULL,NULL,'two'),(3,1,0,NULL,NULL,'three');
              INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');
-             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/BTC','BTC',NULL,'failed',NULL,NULL,NULL,NULL);"
+             INSERT INTO execution_symbol_result(record_id,path,map_key,status,error,outcome,outcome_reason,reason_code,memory) VALUES(1,'/symbol_results/BTC','BTC',NULL,'failed',NULL,NULL,NULL,NULL);"
         ).unwrap();
         let result = page(&connection, 1, 0, 500, None, None).unwrap();
         assert_eq!(result["count"], 3);
@@ -278,7 +306,10 @@ mod tests {
         .unwrap()
         .is_empty());
         let good = &result["data"][2];
-        assert_eq!(good["symbol_results"], json!({"BTC":{"error":"failed"}}));
+        assert_eq!(
+            good["symbol_results"],
+            json!({"BTC":{"error":"failed","outcome":null}})
+        );
         assert_eq!(good["success"], true);
         assert_eq!(good["termination_forced"], false);
         assert!(!good.as_object().unwrap().contains_key("audit_evidence"));
@@ -307,5 +338,29 @@ mod tests {
             page(&connection, 1, 0, 1, None, Some(1)).unwrap()["data"][0]["symbol_results"]
                 .is_null()
         );
+    }
+
+    #[test]
+    fn compact_symbols_match_python_display_without_backfilling_source_facts() {
+        let connection = fixture();
+        connection.execute_batch(
+            "INSERT INTO executerecord(id,account_id,is_success) VALUES(1,1,1);
+             INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');
+             INSERT INTO execution_symbol_result(record_id,path,map_key,status,memory,node_kind) VALUES
+             (1,'/symbol_results/noop','noop','NOOP','{\"secret\":\"private\"}','object'),
+             (1,'/symbol_results/partial','partial','PARTIAL','{\"message\":\"RuntimeError: SDK\",\"symbol_decision_reason_code\":\"CLOSED\"}','object'),
+             (1,'/symbol_results/malformed','malformed',NULL,NULL,'value');"
+        ).unwrap();
+        let records = page(&connection, 1, 0, 1, None, None).unwrap();
+        // 冻结 Python normalize_legacy_result 后的五字段列表投影。
+        assert_eq!(
+            records["data"][0]["symbol_results"],
+            json!({
+                "noop":{"status":"NOOP","outcome":"completed"},
+                "partial":{"status":"PARTIAL","outcome":"not_reached","error":"执行不到位","reason_code":"COMMON.SESSION.CLOSED"},
+                "malformed":{"outcome":null}
+            })
+        );
+        assert_eq!(connection.query_row("SELECT count(*) FROM execution_symbol_result WHERE outcome IS NULL AND error IS NULL AND reason_code IS NULL", [], |row| row.get::<_,i64>(0)).unwrap(),3);
     }
 }

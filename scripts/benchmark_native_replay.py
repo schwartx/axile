@@ -78,8 +78,7 @@ def python_child(database: Path) -> None:
     """Retain historical observations as the Python reference implementation does."""
     started = time.perf_counter()
     from axile.server.db.models.performance import PerformanceSettings
-    from axile.server.performance import Observation
-    from tests.unit.server._performance_oracle import calculate_performance
+    from tests.unit.server._performance_oracle import Observation, calculate_performance
 
     imported = time.perf_counter()
     request = json.load(sys.stdin)

@@ -1,17 +1,25 @@
-//! Bounded SQLite access for the native analysis process.
-//!
-//! Python owns business facts and migrations. Queries use a consistent read
-//! snapshot; publish_store stages and atomically writes analysis-owned results.
-//! No historical rows cross the Python/Rust process boundary in publish_store.
+//! Axile SQLite business operations and consistent analysis queries.
 
+pub(crate) mod accounts;
+pub(crate) mod analysis_ops;
 pub mod analysis_queue;
+pub(crate) mod asset_ops;
 pub mod assets;
+pub(crate) mod audit_ops;
 pub(crate) mod business_detail;
 pub(crate) mod business_facts_ops;
 pub mod calendar;
+pub(crate) mod connection_state;
+pub(crate) mod control_audit;
+pub(crate) mod control_monitor;
+pub(crate) mod control_store;
 pub mod costs;
 pub mod dashboard;
+pub(crate) mod database_probe;
 pub mod error;
+pub(crate) mod evidence_ops;
+pub(crate) mod execution_ops;
+pub(crate) mod execution_reads;
 pub(crate) mod execution_summary;
 pub mod executions;
 pub(crate) mod fact_attempts;
@@ -26,26 +34,34 @@ pub(crate) mod fact_sizing;
 pub(crate) mod fact_ticks;
 pub(crate) mod fact_trades;
 pub(crate) mod fact_transactions;
+pub(crate) mod intents;
 pub mod journal;
+pub(crate) mod maintenance_ops;
+pub(crate) mod migrations;
 pub mod native_publication;
+pub(crate) mod notifications;
 pub mod performance;
+pub(crate) mod portfolio_ops;
 pub mod publication;
 #[cfg(feature = "python")]
 pub mod python;
 pub mod replay;
 pub(crate) mod result_reader;
+pub(crate) mod runtime_sync;
 pub mod snapshots;
+pub(crate) mod storage_connection;
 pub mod submissions;
+pub(crate) mod supplements;
 pub mod symbols;
+pub(crate) mod target_ops;
+pub(crate) mod time_check;
 pub mod views;
 pub(crate) mod wire_result;
 pub(crate) mod writer_scope;
 
-use std::path::Path;
-use std::time::Duration;
-
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::path::Path;
 
 use crate::error::AnalysisError;
 
@@ -56,6 +72,7 @@ pub fn capabilities() -> Value {
     json!({
         "protocol": PROTOCOL_VERSION,
         "analysis_fact_schema": 40,
+        "public_head": migrations::PUBLIC_HEAD,
         "version": env!("CARGO_PKG_VERSION"),
         "commands": ["costs", "snapshot", "performance_result", "publish_store"],
         "read_only": false,
@@ -122,25 +139,9 @@ fn with_read_snapshot<T>(
 ) -> Result<T, AnalysisError> {
     // Read-only mode prevents accidental source writes, but deliberately avoids
     // immutable=1: live Python commits and WAL contents must remain visible.
-    let connection = Connection::open_with_flags(
-        database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
+    let connection = storage_connection::open_reader(database)?;
     connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
-    // Cap the worker page cache rather than relying on SQLite's build defaults.
-    // Sorting can use a temporary file; mapped database pages are disabled so
-    // process working-set comparisons include the actual read cache.
-    connection
-        .execute_batch(
-            "PRAGMA query_only = ON;
-             PRAGMA cache_size = -4096;
-             PRAGMA mmap_size = 0;
-             PRAGMA temp_store = FILE;
-             BEGIN DEFERRED;",
-        )
+        .execute_batch("BEGIN DEFERRED;")
         .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
 
     let result = task(&connection);

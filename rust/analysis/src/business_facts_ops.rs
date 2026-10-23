@@ -5,42 +5,37 @@
 //! transaction: equivalence checks, fact encoding and row inserts. Error
 //! messages stay identical to the previous Python ValueError contract.
 
-use rusqlite::{types::Value as SqlValue, Connection, OpenFlags, OptionalExtension};
+use std::path::Path;
+
+use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
 use crate::writer_scope;
 
-mod encode;
+pub(crate) mod encode;
+pub(crate) mod result_extensions;
+pub(crate) mod result_head;
+pub(crate) mod result_orders;
+pub(crate) mod result_symbols;
+pub(crate) mod result_trades;
+pub(crate) mod summary_refs;
 
 use encode::{
     canonical_input, encode_input_after_assets, encode_input_assets, encode_inputs, py_eq,
 };
 
-fn facts_error(message: impl Into<String>) -> AnalysisError {
+pub(crate) fn facts_error(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("BUSINESS_FACTS", message.into())
 }
 
-fn sql(error: rusqlite::Error) -> AnalysisError {
+pub(crate) fn sql(error: rusqlite::Error) -> AnalysisError {
     AnalysisError::new("BUSINESS_FACTS_SQL", error.to_string())
 }
 
-/// 与服务端 SQLAlchemy 引擎相同的忙等待上限,让事实写入在并发窗口内排队。
+/// 事实替换保留关闭外键约束的既有策略，清理由数据库触发器执行。
 fn open_connection(path: &str) -> Result<Connection, AnalysisError> {
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
-    connection
-        .busy_timeout(std::time::Duration::from_secs(30))
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
-    // 与服务端 SQLAlchemy 引擎对齐:事实写入不开外键约束(bundled SQLite 默认开,
-    // 且 RESTRICT 会阻断终态替换删除)。
-    connection
-        .execute_batch("PRAGMA foreign_keys=OFF; PRAGMA cache_size=-4096; PRAGMA mmap_size=0;")
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
-    Ok(connection)
+    crate::storage_connection::open_writer(Path::new(path), false)
 }
 
 /// 冻结执行前输入与观测,或在同事务内附带独立的审计输入变体。
@@ -89,7 +84,7 @@ pub fn freeze_execution_input(path: &str, request: &Value) -> Result<Value, Anal
         let audit_id = match audit_payload {
             None => Value::Null,
             Some(audit) => {
-                if same_audit_variant(payload, audit) {
+                if same_audit_variant(payload, audit)? {
                     json!(input_id)
                 } else {
                     json!(persist_owned_variant(
@@ -132,13 +127,13 @@ pub fn freeze_execution_after_assets(path: &str, request: &Value) -> Result<Valu
         if let Some(existing) = matching_after_asset(&connection, &input_id, payload)? {
             return Ok(json!({"input_id": input_id, "asset_id": existing}));
         }
-        let batch = encode_input_after_assets(&input_id, payload);
+        let batch = encode_input_after_assets(&input_id, payload).map_err(facts_error)?;
         insert_batch(&connection, &batch)?;
         Ok(json!({"input_id": input_id, "asset_id": asset_id}))
     })
 }
 
-fn persist_input(
+pub(crate) fn persist_input(
     connection: &Connection,
     account_id: i64,
     execution_id: Option<&str>,
@@ -233,7 +228,7 @@ fn persist_owned_variant(
 }
 
 /// 按执行标识定位冻结输入并校验归属;匿名输入的属主由 owner 字段决定。
-fn find_execution_input(
+pub(crate) fn find_execution_input(
     connection: &Connection,
     account_id: i64,
     execution_id: &str,
@@ -272,10 +267,16 @@ fn replay_matches(
     payload: &Value,
 ) -> Result<bool, AnalysisError> {
     let stored = load_input_value(connection, input_id)?;
-    Ok(py_eq(&stored, &canonical_input(payload)))
+    Ok(py_eq(
+        &stored,
+        &canonical_input(payload).map_err(facts_error)?,
+    ))
 }
 
-fn load_input_value(connection: &Connection, input_id: &str) -> Result<Value, AnalysisError> {
+pub(crate) fn load_input_value(
+    connection: &Connection,
+    input_id: &str,
+) -> Result<Value, AnalysisError> {
     let id = json!(input_id);
     let head = crate::business_detail::load(connection, "execution_input", "id", &id)
         .map_err(facts_error)?;
@@ -304,26 +305,27 @@ fn persist_before_assets(
         )
         .map_err(sql)?;
     if existing == 0 {
-        let batch = encode_input_assets(input_id, &json!({"account_assets": before_assets}));
+        let batch = encode_input_assets(input_id, &json!({"account_assets": before_assets}))
+            .map_err(facts_error)?;
         insert_batch(connection, &batch)?;
     }
     Ok(())
 }
 
 /// Python 侧 audit 判定:审计输入的归一化键在主输入上取值一致。
-fn same_audit_variant(payload: &Value, audit: &Value) -> bool {
-    let primary = canonical_input(payload);
+fn same_audit_variant(payload: &Value, audit: &Value) -> Result<bool, AnalysisError> {
+    let primary = canonical_input(payload).map_err(facts_error)?;
     let normalized = encode::normalize_targets(audit);
-    let audit_canonical = canonical_input(audit);
-    normalized.keys().all(|key| {
+    let audit_canonical = canonical_input(audit).map_err(facts_error)?;
+    Ok(normalized.keys().all(|key| {
         py_eq(
             primary.get(key).unwrap_or(&Value::Null),
             audit_canonical.get(key).unwrap_or(&Value::Null),
         )
-    })
+    }))
 }
 
-fn matching_after_asset(
+pub(crate) fn matching_after_asset(
     connection: &Connection,
     input_id: &str,
     payload: &Map<String, Value>,
@@ -340,10 +342,12 @@ fn matching_after_asset(
         crate::business_detail::load(connection, "business_asset_position", "asset_id", &id)
             .map_err(facts_error)?;
     let actual = crate::assets::observation_value(&root, &positions).map_err(facts_error)?;
-    let incoming = payload.get("account_assets").expect("checked by caller");
+    let incoming = payload
+        .get("account_assets")
+        .ok_or_else(|| facts_error("已持久化执行后观测，但终态结果缺少 account_assets"))?;
     let right = match incoming {
         Value::Object(map) if !map.contains_key("availability") => {
-            encode::business_asset_value(incoming)
+            encode::business_asset_value(incoming).map_err(facts_error)?
         }
         other => other.clone(),
     };
@@ -354,7 +358,10 @@ fn matching_after_asset(
 }
 
 /// 按声明列类型把编码行写入事实表,每条语句分批至多 100 行。
-fn insert_batch(connection: &Connection, batch: &encode::FactBatch) -> Result<(), AnalysisError> {
+pub(crate) fn insert_batch(
+    connection: &Connection,
+    batch: &encode::FactBatch,
+) -> Result<(), AnalysisError> {
     for (table, rows) in batch.statements() {
         if rows.is_empty() {
             continue;
@@ -372,7 +379,7 @@ fn insert_batch(connection: &Connection, batch: &encode::FactBatch) -> Result<()
             for row in chunk {
                 let values: Vec<SqlValue> = columns
                     .iter()
-                    .map(|name| encode::sql_value(name, row[*name].clone()))
+                    .map(|name| encode::sql_column_value(table, name, row[*name].clone()))
                     .collect::<Result<_, _>>()
                     .map_err(facts_error)?;
                 statement
@@ -457,6 +464,27 @@ mod tests {
     }
 
     #[test]
+    fn scalar_and_malformed_input_roots_round_trip_and_replay() {
+        let connection = schema();
+        for (index, payload) in [
+            json!(null),
+            json!(false),
+            json!(0),
+            json!("legacy"),
+            json!([]),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let input_id = format!("root-{index}");
+            let batch = encode_inputs(&input_id, payload, 7, None, "t", None).unwrap();
+            insert_batch(&connection, &batch).unwrap();
+            assert_eq!(load_input_value(&connection, &input_id).unwrap(), *payload);
+            assert!(replay_matches(&connection, &input_id, payload).unwrap());
+        }
+    }
+
+    #[test]
     fn sanitize_masks_credentials_before_freezing() {
         let payload = json!({"account_config": {"secret": 1}, "feishu_key": "live-key",
             "execution_notification_code": "code", "algorithm": "x"});
@@ -481,9 +509,15 @@ mod tests {
     fn audit_variant_key_rule_matches_python_semantics() {
         let payload = json!({"algorithm": "x", "extra": 1});
         let audit_same = json!({"algorithm": "x", "extra": 1.0});
-        assert!(same_audit_variant(&payload, &audit_same));
+        assert!(same_audit_variant(&payload, &audit_same).unwrap());
         let audit_differ = json!({"algorithm": "y", "extra": 1});
-        assert!(!same_audit_variant(&payload, &audit_differ));
+        assert!(!same_audit_variant(&payload, &audit_differ).unwrap());
+    }
+
+    #[test]
+    fn invalid_audit_variant_is_not_treated_as_null_input() {
+        let audit = json!({"execution_timeout":"invalid", "audit_evidence":{"invalid_fields":[]}});
+        assert!(same_audit_variant(&Value::Null, &audit).is_err());
     }
 
     #[test]
@@ -494,7 +528,7 @@ mod tests {
         insert_batch(&connection, &batch).unwrap();
         let after = json!({"account_assets": {"total_asset": 100.0, "positions": [
             {"symbol": "A", "volume": 2}]}});
-        let batch = encode_input_after_assets("i1", after.as_object().unwrap());
+        let batch = encode_input_after_assets("i1", after.as_object().unwrap()).unwrap();
         insert_batch(&connection, &batch).unwrap();
         let same = matching_after_asset(&connection, "i1", after.as_object().unwrap()).unwrap();
         assert_eq!(same.as_deref(), Some("input:i1:/after_account_assets"));

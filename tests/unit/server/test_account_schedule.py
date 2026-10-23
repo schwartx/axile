@@ -20,29 +20,23 @@ from axile.server.trading_calendar import (
     CalendarDecisionStatus,
     CalendarUnavailableReason,
 )
+from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 
 
-class _SessionContext:
-    def __init__(self, account: object | None = None) -> None:
-        self.account = account
-        self.added: list[object] = []
-        self.commit_error: Exception | None = None
+class _NativeContext:
+    def __init__(self, account: SimpleNamespace | None = None) -> None:
+        self.account = vars(account) if account is not None else None
+        self.added: list[SimpleNamespace] = []
+        self.audit_error: Exception | None = None
 
-    async def __aenter__(self) -> "_SessionContext":
-        return self
-
-    async def __aexit__(self, *_exc: object) -> bool:
-        return False
-
-    async def get(self, _model: object, _key: object) -> object | None:
-        return self.account
-
-    def add(self, value: object) -> None:
-        self.added.append(value)
-
-    async def commit(self) -> None:
-        if self.commit_error is not None:
-            raise self.commit_error
+    async def call(self, name: str, request: dict[str, object]) -> object:
+        if name == "runtime_sync_scheduler_account":
+            return self.account
+        assert name == "runtime_sync_record_schedule_skip"
+        if self.audit_error is not None:
+            raise self.audit_error
+        self.added.append(SimpleNamespace(**request))
+        return {"id": len(self.added)}
 
 
 def _account(*, started: bool = True) -> SimpleNamespace:
@@ -52,6 +46,7 @@ def _account(*, started: bool = True) -> SimpleNamespace:
         is_started=started,
         cron_expr="30 9 * * *",
         trade_channel=TradeChannel.CTP,
+        supplement=None,
     )
 
 
@@ -70,8 +65,8 @@ def _decision(status: CalendarDecisionStatus) -> CalendarDayDecision:
 
 
 def test_scheduled_rebalance_delegates_on_open_day(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -89,8 +84,8 @@ def test_scheduled_rebalance_delegates_on_open_day(monkeypatch: pytest.MonkeyPat
 
 
 def test_scheduled_rebalance_skips_closed_day_and_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -107,8 +102,8 @@ def test_scheduled_rebalance_skips_closed_day_and_records_reason(monkeypatch: py
 
 
 def test_scheduled_rebalance_skips_session_gap(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -124,8 +119,8 @@ def test_scheduled_rebalance_skips_session_gap(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_scheduled_rebalance_is_fail_closed_when_calendar_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -136,8 +131,8 @@ def test_scheduled_rebalance_is_fail_closed_when_calendar_is_unavailable(monkeyp
 
 
 def test_scheduled_rebalance_records_calendar_evaluator_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
 
     def fail(*_args: object) -> None:
         raise RuntimeError("calendar unavailable")
@@ -150,8 +145,8 @@ def test_scheduled_rebalance_records_calendar_evaluator_failure(monkeypatch: pyt
 
 
 def test_closed_day_without_reason_uses_closed_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -163,9 +158,9 @@ def test_closed_day_without_reason_uses_closed_fallback(monkeypatch: pytest.Monk
 
 
 def test_closed_day_stays_skipped_when_audit_write_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
-    session.commit_error = RuntimeError("database unavailable")
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: session)
+    session = _NativeContext(_account())
+    session.audit_error = RuntimeError("database unavailable")
+    monkeypatch.setattr(execution_scheduler, "native_operation", session.call)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -178,17 +173,17 @@ def test_closed_day_stays_skipped_when_audit_write_fails(monkeypatch: pytest.Mon
 
 
 def test_closed_day_stays_skipped_when_audit_session_cannot_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _SessionContext(_account())
+    session = _NativeContext(_account())
     calls = 0
 
-    def session_local() -> _SessionContext:
+    async def native_operation(name, request):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("database unavailable")
-        return session
+        return await session.call(name, request)
 
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", session_local)
+    monkeypatch.setattr(execution_scheduler, "native_operation", native_operation)
     monkeypatch.setattr(
         execution_scheduler,
         "evaluate_channel_calendar_moment",
@@ -200,11 +195,48 @@ def test_closed_day_stays_skipped_when_audit_session_cannot_open(monkeypatch: py
 
 
 def test_scheduled_rebalance_ignores_stale_job_for_stopped_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(execution_scheduler, "SessionLocal", lambda: _SessionContext(_account(started=False)))
+    monkeypatch.setattr(execution_scheduler, "native_operation", _NativeContext(_account(started=False)).call)
     execute_trade = MagicMock()
     monkeypatch.setattr(rebalance_execution, "execute_trade", execute_trade)
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
     execute_trade.assert_not_called()
+
+
+def test_busy_schedule_records_skip_after_intent_submission(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _NativeContext(_account())
+    monkeypatch.setattr(execution_scheduler, "native_operation", store.call)
+    monkeypatch.setattr(
+        execution_scheduler,
+        "evaluate_channel_calendar_moment",
+        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_OPEN),
+    )
+
+    async def submit(*_args, **_kwargs):
+        return SimpleNamespace(outcome="skipped_busy")
+
+    monkeypatch.setattr("axile.server.execution.intents.submit_intent", submit)
+    asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
+    assert [skip.reason_code for skip in store.added] == ["BUSY"]
+
+
+def test_native_schedule_reads_settings_and_commits_calendar_skip(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        execution_scheduler,
+        "evaluate_channel_calendar_moment",
+        lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
+    )
+
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db") as path:
+            await execution_scheduler.execute_scheduled_rebalance(1, "2026-08-29T09:30:00+08:00")
+            rows = runtime_rows(
+                path, "SELECT account_id,channel,triggered_at,calendar_day,reason_code FROM schedule_skip"
+            )
+            assert [tuple(row) for row in rows] == [
+                (1, "ctp", "2026-08-29T09:30:00+08:00", "2026-08-29", "CALENDAR.CLOSED")
+            ]
+
+    asyncio.run(scenario())
 
 
 def _patch_reconcile(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -234,7 +266,7 @@ def test_reconcile_recreates_when_compact_str_collides_but_hours_differ(
     existing = SimpleNamespace(trigger=combine_cron_triggers(parse_cron_expr("0 10 * * * | 0 15 * * *")))
     sched = SimpleNamespace(get_job=lambda _job_id: existing)
 
-    asyncio.run(account_support._reconcile_account_job(object(), sched, account))
+    asyncio.run(account_support._reconcile_account_job(sched, account))
 
     assert events == ["delete", "create"]
 

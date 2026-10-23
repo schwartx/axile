@@ -1,20 +1,18 @@
 """账户拆分的持久化、迁移与通知成功摘要契约。"""
 
-import importlib.util
-from pathlib import Path
+import json
+import sqlite3
+from contextlib import closing
 
 import pytest
-import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from pydantic import ValidationError
-from sqlmodel import Session, SQLModel, select
 
-from axile.server.db.models import Account, AccountNotificationState, AccountSettings, AccountSnapshot
+from axile.server.core import db
+from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
 from axile.server.db.models.account_settings import ExecutionSettings
 from axile.server.execution import notification_state
-
-MIGRATIONS = Path(__file__).parents[3] / "axile/server/alembic/versions"
+from tests.conftest import initialize_native_database, native_store_call
+from tests.unit.server._execution_test_support import insert_account
 
 
 def account_data() -> dict:
@@ -39,99 +37,92 @@ def account_data() -> dict:
     )
 
 
-def load_migration(path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def stored_account(path):
+    return Account.model_validate(native_store_call(path, "account_get", {"account_id": 1}))
 
 
-def test_settings_persist_patch_and_snapshot_are_independent():
-    engine = sa.create_engine("sqlite://")
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        account = Account(**account_data())
-        session.add(account)
-        session.commit()
-        session.expire_all()
-        loaded = session.get(Account, 1)
-        assert loaded.settings.account_id == 1
-        snapshot = loaded.snapshot()
-        assert isinstance(snapshot, AccountSnapshot)
-        snapshot.account_config["nested"]["secret"] = "changed"
-        assert loaded.account_config["nested"]["secret"] == "test-only"
-        loaded.sqlmodel_update({"long_leverage": 3, "execution_notification_code": None})
-        assert loaded.is_started
-        assert loaded.feishu_key == "test-key"
-        assert loaded.execution_notification_code is None
-        with pytest.raises(ValidationError):
-            loaded.sqlmodel_update({"name": "invalid", "weight_precision": -1, "cron_expr": "bad cron"})
-        assert loaded.name == "账户"
-        assert loaded.weight_precision == 0.01
-        session.commit()
-    with Session(engine) as session:
-        account = session.get(Account, 1)
-        assert account.long_leverage == 3
-        assert account.execution_notification_code is None
-        assert "algorithm" not in Account.__table__.columns
-        assert isinstance(account.settings.execution, ExecutionSettings)
-    engine.dispose()
+def test_settings_persist_patch_and_snapshot_are_independent(native_database):
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, Account(**account_data()))
+    loaded = stored_account(native_database)
+    assert loaded.settings.account_id == 1
+    snapshot = loaded.snapshot()
+    assert isinstance(snapshot, AccountSnapshot)
+    snapshot.account_config["nested"]["secret"] = "changed"
+    assert loaded.account_config["nested"]["secret"] == "test-only"
+    patch = {"long_leverage": 3, "execution_notification_code": None}
+    loaded.settings.apply_patch(patch)
+    assert loaded.is_started
+    assert loaded.feishu_key == "test-key"
+    assert loaded.execution_notification_code is None
+    with pytest.raises(ValidationError):
+        loaded.settings.apply_patch({"weight_precision": -1, "cron_expr": "bad cron"})
+    with pytest.raises(ValidationError):
+        AccountUpdate(name="invalid", weight_precision=-1, cron_expr="bad cron")
+    assert loaded.name == "账户"
+    assert loaded.weight_precision == 0.01
+    native_store_call(native_database, "account_update", {"account_id": 1, "patch": patch, "now": "updated"})
+    account = stored_account(native_database)
+    assert account.long_leverage == 3
+    assert account.execution_notification_code is None
+    with closing(sqlite3.connect(native_database)) as connection:
+        assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
+    assert isinstance(account.settings.execution, ExecutionSettings)
 
 
-def test_migration_preserves_all_settings_and_binding_rows():
-    engine = sa.create_engine("sqlite://")
-    migrations = [load_migration(path) for path in sorted(MIGRATIONS.glob("[0-9]*.py")) if path.name[:4] <= "0020"]
-    with engine.begin() as connection:
-        context = MigrationContext.configure(connection)
-        with Operations.context(context):
-            for migration in migrations[:-1]:
-                migration.upgrade()
-            metadata = sa.MetaData()
-            account = sa.Table("account", metadata, autoload_with=connection)
-            values = Account(**account_data()).model_dump()
-            values = {key: value for key, value in values.items() if key in account.c}
-            values["trade_channel"] = "ctp"
-            connection.execute(account.insert().values(**values))
-            connection.execute(
-                sa.text(
-                    "INSERT INTO portfolioaccount (account_id, portfolio_id, created_at) VALUES (1, NULL, '2026-09-30')"
-                )
-            )
-            before = dict(connection.execute(sa.select(account)).mappings().one())
-            migrations[-1].upgrade()
-            settings = sa.Table("account_settings", sa.MetaData(), autoload_with=connection)
-            stored = connection.execute(sa.select(settings)).mappings().one()
-            assert stored["connection"] == before["account_config"]
-            assert stored["notification"]["execution_notification_code"] == before["execution_notification_code"]
-            assert connection.scalar(sa.text("SELECT count(*) FROM portfolioaccount")) == 1
-            assert "algorithm" not in {c["name"] for c in sa.inspect(connection).get_columns("account")}
-            migrations[-1].downgrade()
-            restored = sa.Table("account", sa.MetaData(), autoload_with=connection)
-            assert dict(connection.execute(sa.select(restored)).mappings().one()) == before
-            assert connection.scalar(sa.text("SELECT count(*) FROM portfolioaccount")) == 1
-    engine.dispose()
+def test_migration_preserves_all_settings_and_binding_rows(tmp_path):
+    path = tmp_path / "settings-migration.db"
+    initialize_native_database(path, revision="0019")
+    values = Account(**account_data()).model_dump(mode="json")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        columns = {row[1]: row[2] for row in connection.execute("PRAGMA table_info(account)")}
+        json_fields = {name for name, kind in columns.items() if kind == "JSON"}
+        values = {
+            key: json.dumps(value) if key in json_fields else value for key, value in values.items() if key in columns
+        }
+        connection.execute(
+            f"INSERT INTO account ({','.join(values)}) VALUES ({','.join('?' for _ in values)})", list(values.values())
+        )
+        connection.execute(
+            "INSERT INTO portfolioaccount (account_id, portfolio_id, created_at) VALUES (1, NULL, '2026-09-30')"
+        )
+        before = dict(connection.execute("SELECT * FROM account").fetchone())
+    initialize_native_database(path, revision="0020")
+    with closing(sqlite3.connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        stored = connection.execute("SELECT * FROM account_settings").fetchone()
+        assert json.loads(stored["connection"]) == json.loads(before["account_config"])
+        assert (
+            json.loads(stored["notification"])["execution_notification_code"] == before["execution_notification_code"]
+        )
+        assert connection.execute("SELECT count(*) FROM portfolioaccount").fetchone()[0] == 1
+        assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
+    native_store_call(path, "migration_downgrade", {"public": "0019"})
+    with closing(sqlite3.connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        restored = dict(connection.execute("SELECT * FROM account").fetchone())
+        for row in (before, restored):
+            for field in json_fields & row.keys():
+                row[field] = json.loads(row[field]) if row[field] is not None else None
+        assert restored == before
+        assert connection.execute("SELECT count(*) FROM portfolioaccount").fetchone()[0] == 1
 
 
-def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch):
-    engine = sa.create_engine("sqlite://")
-    SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(notification_state, "_notification_engine", lambda: engine)
-    with Session(engine) as session:
-        session.add(Account(**account_data()))
-        session.commit()
+def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch, native_database):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, Account(**account_data()))
     notification_state.record_notification_result(1, "exec-new", "2026-09-30T10:01:00", True, None)
     notification_state.record_notification_result(1, "exec-old", "2026-09-30T10:00:00", True, None)
-    with Session(engine) as session:
-        account = session.get(Account, 1)
-        assert account.notification_state.execution_id == "exec-new"
-        assert account.notification_state.last_success_at == "2026-09-30T10:01:00"
-        session.delete(account)
-        session.commit()
+    account = stored_account(native_database)
+    assert account.notification_state.execution_id == "exec-new"
+    assert account.notification_state.last_success_at == "2026-09-30T10:01:00"
+    native_store_call(native_database, "account_delete", {"account_id": 1})
     notification_state.record_notification_result(1, "exec-deleted", "2026-09-30T10:02:00", True, None)
-    with Session(engine) as session:
-        assert session.exec(select(AccountNotificationState)).all() == []
-        assert session.exec(select(AccountSettings)).all() == []
-    engine.dispose()
+    with closing(sqlite3.connect(native_database)) as connection:
+        assert connection.execute("SELECT * FROM account_notification_state").fetchall() == []
+        assert connection.execute("SELECT * FROM account_settings").fetchall() == []
 
 
 def test_public_response_exposes_success_summary_without_credentials():
@@ -153,63 +144,47 @@ def test_public_response_exposes_success_summary_without_credentials():
     assert "remark" not in account.model_dump(exclude_none=True)
     before = account.settings.execution
     with pytest.raises(ValueError):
-        account.sqlmodel_update({"long_leverage": 3, "account_config": None})
+        account.settings.apply_patch({"long_leverage": 3, "account_config": None})
     assert account.settings.execution is before
 
 
-def test_notification_result_preserves_success_and_ignores_older_results(monkeypatch):
-    engine = sa.create_engine("sqlite://")
-    SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(notification_state, "_notification_engine", lambda: engine)
-    with Session(engine) as session:
-        session.add(Account(**account_data()))
-        session.commit()
+def test_notification_result_preserves_success_and_ignores_older_results(monkeypatch, native_database):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, Account(**account_data()))
     notification_state.record_notification_result(1, "first-fail", "2026-09-30T09:00:00", False, "timeout")
-    with Session(engine) as session:
-        state = session.get(AccountNotificationState, 1)
-        assert state.last_success_at is None
-        assert state.last_attempt_ok is False
+    state = stored_account(native_database).notification_state
+    assert state.last_success_at is None
+    assert state.last_attempt_ok is False
     notification_state.record_notification_result(1, "success", "2026-09-30T10:00:00", True, None)
     notification_state.record_notification_result(1, "failure", "2026-09-30T11:00:00", False, "timeout")
     notification_state.record_notification_result(1, "old", "2026-09-30T09:30:00", True, None)
-    with Session(engine) as session:
-        state = session.get(AccountNotificationState, 1)
-        assert state.execution_id == "success"
-        assert state.last_attempt_execution_id == "failure"
-        assert state.last_attempt_ok is False
-        assert state.last_attempt_error == "timeout"
+    state = stored_account(native_database).notification_state
+    assert state.execution_id == "success"
+    assert state.last_attempt_execution_id == "failure"
+    assert state.last_attempt_ok is False
+    assert state.last_attempt_error == "timeout"
     notification_state.record_notification_result(999, "missing", "2026-09-30T12:00:00", True, None)
-    engine.dispose()
 
 
-def test_notification_result_migration_preserves_legacy_success():
-    engine = sa.create_engine("sqlite://")
-    migrations = [load_migration(path) for path in sorted(MIGRATIONS.glob("[0-9]*.py")) if path.name[:4] <= "0021"]
-    with engine.begin() as connection:
-        with Operations.context(MigrationContext.configure(connection)):
-            for migration in migrations[:-1]:
-                migration.upgrade()
-            connection.execute(
-                sa.text(
-                    "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (1, 'test', '期货', 'ctp', 0, 'now', 'now')"
-                )
-            )
-            connection.execute(
-                sa.text("INSERT INTO account_notification_state VALUES (1, '2026-09-30T10:00:00', 'old')")
-            )
-            migrations[-1].upgrade()
-            connection.execute(
-                sa.text(
-                    "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (2, 'test2', '期货', 'ctp', 0, 'now', 'now')"
-                )
-            )
-            connection.execute(
-                sa.text("INSERT INTO account_notification_state (account_id, last_attempt_ok) VALUES (2, 0)")
-            )
-            assert (
-                connection.scalar(sa.text("SELECT execution_id FROM account_notification_state WHERE account_id = 1"))
-                == "old"
-            )
-            migrations[-1].downgrade()
-            assert connection.scalar(sa.text("SELECT count(*) FROM account_notification_state")) == 1
-    engine.dispose()
+def test_notification_result_migration_preserves_legacy_success(tmp_path):
+    path = tmp_path / "notification-migration.db"
+    initialize_native_database(path, revision="0020")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (1, 'test', '期货', 'ctp', 0, 'now', 'now')"
+        )
+        connection.execute("INSERT INTO account_notification_state VALUES (1, '2026-09-30T10:00:00', 'old')")
+    initialize_native_database(path, revision="0021")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (2, 'test2', '期货', 'ctp', 0, 'now', 'now')"
+        )
+        connection.execute("INSERT INTO account_notification_state (account_id, last_attempt_ok) VALUES (2, 0)")
+        assert (
+            connection.execute("SELECT execution_id FROM account_notification_state WHERE account_id = 1").fetchone()[0]
+            == "old"
+        )
+    native_store_call(path, "migration_downgrade", {"public": "0020"})
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT count(*) FROM account_notification_state").fetchone()[0] == 1
