@@ -447,8 +447,11 @@ def test_portfolio_trial_failure_preserves_code_and_prior_snapshot(database: Pat
 
 
 @pytest.mark.parametrize("stage", ["outbox_insert", "context_reference"])
-def test_intent_finish_supplement_outbox_and_reference_are_atomic(database: Path, stage: str) -> None:
-    core = require_native_store("intent_finish")
+@pytest.mark.parametrize("operation", ["intent_finish", "intent_cas"])
+def test_terminal_transition_supplement_outbox_and_reference_are_atomic(
+    database: Path, stage: str, operation: str
+) -> None:
+    core = require_native_store(operation)
     execution_id = "supplement-finish"
     _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
     _terminal(database, execution_id)
@@ -458,14 +461,22 @@ def test_intent_finish_supplement_outbox_and_reference_are_atomic(database: Path
     _sql(database, f"CREATE TRIGGER fail_finish BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'{stage}'); END")
     before = _snapshot(database)
     request = {"execution_id": execution_id, "status": "SUCCEEDED", "finished_at": _LATER, "now": _LATER}
+    if operation == "intent_cas":
+        request = {
+            "execution_id": execution_id,
+            "expected": "RUNNING",
+            "target": "SUCCEEDED",
+            "fields": {"finished_at": _LATER},
+            "now": _LATER,
+        }
     with pytest.raises(core.NativeError) as caught:
-        native_store_call(database, "intent_finish", request)
+        native_store_call(database, operation, request)
     assert caught.value.args[0]
     assert stage in caught.value.args[1]
     assert _snapshot(database) == before
 
     _sql(database, "DROP TRIGGER fail_finish")
-    assert native_store_call(database, "intent_finish", request)["changed"]
+    assert native_store_call(database, operation, request)["changed"]
     assert _rows(database, "execution_intent")[0]["status"] == "SUCCEEDED"
     assert _rows(database, "supplement_step")[0]["status"] == "finished"
     assert _rows(database, "supplement_group")[0]["status"] == "completed"
@@ -474,8 +485,27 @@ def test_intent_finish_supplement_outbox_and_reference_are_atomic(database: Path
     extra = json.loads(_rows(database, "execution_extension")[0]["extra"])
     assert extra["server_notification_context"]["$axile_notification_context"] == 1
     committed = _snapshot(database)
-    assert not native_store_call(database, "intent_finish", {**request, "status": "FAILED"})["changed"]
+    later = {**request, "target" if operation == "intent_cas" else "status": "FAILED"}
+    assert not native_store_call(database, operation, later)["changed"]
     assert _snapshot(database) == committed
+
+
+def test_frozen_notification_still_checks_execution_facts_before_finishing(database: Path) -> None:
+    core = require_native_store("intent_finish")
+    execution_id = "incomplete-frozen-result"
+    _intent(database, execution_id, step_id=_group(database, "incomplete-result"), running=True)
+    record = _terminal(database, execution_id)
+    _sql(database, "UPDATE executerecord SET facts_complete=0 WHERE id=?", (record["id"],))
+    before = _snapshot(database)
+
+    with pytest.raises(core.NativeError, match="execution facts are not complete"):
+        native_store_call(
+            database,
+            "intent_finish",
+            {"execution_id": execution_id, "status": "SUCCEEDED", "finished_at": _LATER, "now": _LATER},
+        )
+
+    assert _snapshot(database) == before
 
 
 def test_abandoned_notification_claim_recovers_once_without_resending(database: Path) -> None:

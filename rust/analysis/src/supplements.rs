@@ -958,13 +958,22 @@ fn rebuilt_context(now: &str, account: &Value, detail: &Value) -> Option<Value> 
         "summary":{"symbol_count":symbols.len(),"position_count":positions.as_array().map(Vec::len),"order_count":orders.len(),"filled_order_count":orders.iter().filter(|order| matches!(order["status"].as_str(),Some("已成交"|"已撤销"|"已拒绝"|"已过期"))).count(),"active_order_count":orders.iter().filter(|order| matches!(order["status"].as_str(),Some("待成交"|"已报"|"部分成交"))).count(),"trade_count":trades.len(),"trade_value":trades.iter().map(|trade| trade["trade_value"].as_f64().unwrap_or(0.0)).sum::<f64>(),"succeeded_symbol_count":succeeded,"failed_symbol_count":symbols.len()-succeeded},"orders":orders,"trades":trades,"symbols":projected_symbols,"default_feishu_variables":defaults,"is_test":false}))
 }
 
-fn execution_context(row: &Value, account: &Value, detail: Option<&Value>, now: &str) -> Value {
+fn execution_context(row: &Value, account: &Value, mut detail: Option<Value>, now: &str) -> Value {
     let captured = detail
-        .and_then(|detail| detail["result"]["extra"]["server_notification_context"].as_object())
-        .filter(|context| !context.is_empty());
+        .as_mut()
+        .and_then(|detail| detail.pointer_mut("/result/extra/server_notification_context"))
+        .filter(|context| {
+            context
+                .as_object()
+                .is_some_and(|context| !context.is_empty())
+        });
     let mut context = captured
-        .map(|value| Value::Object(value.clone()))
-        .or_else(|| detail.and_then(|detail| rebuilt_context(now, account, detail)))
+        .map(Value::take)
+        .or_else(|| {
+            detail
+                .as_ref()
+                .and_then(|detail| rebuilt_context(now, account, detail))
+        })
         .unwrap_or_else(|| empty_context(row, account));
     if !context["execution"].is_object() {
         context["execution"] = json!({});
@@ -1032,43 +1041,40 @@ fn notification_detail(
 ) -> Result<Value, AnalysisError> {
     let result = crate::business_detail::read_result(connection, account_id, record_id)
         .map_err(AnalysisError::from)?;
-    if result["extra"]["server_notification_context"]
+    let needs_input = !result["extra"]["server_notification_context"]
         .as_object()
         .is_some_and(|context| !context.is_empty())
-        || result.get("inputs").is_some()
-    {
-        return Ok(json!({"result":result,"input":null}));
-    }
-    let record = load(connection, "executerecord", "id", &json!(record_id))?
-        .ok_or_else(|| invalid("execution record does not exist"))?;
-    let input = if record["input_id"].is_null() {
-        Value::Null
-    } else {
-        crate::business_detail::input(connection, &record["input_id"], record.as_object().unwrap())
+        && result.get("inputs").is_none();
+    let mut detail = Map::new();
+    detail.insert("result".into(), result);
+    let input = if needs_input {
+        let record = load(connection, "executerecord", "id", &json!(record_id))?
+            .ok_or_else(|| invalid("execution record does not exist"))?;
+        if record["input_id"].is_null() {
+            Value::Null
+        } else {
+            crate::business_detail::input(
+                connection,
+                &record["input_id"],
+                record.as_object().unwrap(),
+            )
             .map_err(AnalysisError::from)?
+        }
+    } else {
+        Value::Null
     };
-    Ok(json!({"result":result,"input":input}))
+    detail.insert("input".into(), input);
+    Ok(Value::Object(detail))
 }
 
-pub(crate) fn finish_supplement_execution(
+fn finish_steps(
     connection: &Connection,
-    row: &Value,
-    request: &Value,
-) -> Result<(), AnalysisError> {
-    let execution_id = text(row, "execution_id")?;
-    let steps = linked_steps(connection, execution_id)?;
-    if steps.is_empty() {
-        return Ok(());
-    }
-    let account_id = integer(row, "account_id")?;
-    let account = connection.query_row("SELECT id,name,trade_channel FROM account WHERE id=?1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"name":row.get::<_,String>(1)?,"trade_channel":row.get::<_,String>(2)?}))).optional().map_err(database)?;
-    let Some(account) = account else {
-        return Ok(());
-    };
-    let now = text(request, "now")?;
+    execution_id: &str,
+    steps: &[Value],
+) -> Result<Map<String, Value>, AnalysisError> {
     connection.execute("UPDATE supplement_step SET status='finished' WHERE execution_id=?1 AND status!='cancelled'",[execution_id]).map_err(database)?;
     let mut groups = Map::new();
-    for step in &steps {
+    for step in steps {
         let Some(mut group) = load(connection, "supplement_group", "id", &step["group_id"])? else {
             continue;
         };
@@ -1088,14 +1094,20 @@ pub(crate) fn finish_supplement_execution(
         }
         groups.insert(id, group);
     }
-    let record = connection
-        .query_row(
-            "SELECT id FROM executerecord WHERE execution_id=?1",
-            [execution_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(database)?;
+    Ok(groups)
+}
+
+fn enqueue_execution_finished(
+    connection: &Connection,
+    row: &Value,
+    account: &Value,
+    steps: &[Value],
+    groups: &Map<String, Value>,
+    record: Option<i64>,
+    now: &str,
+) -> Result<(Option<Value>, bool), AnalysisError> {
+    let execution_id = text(row, "execution_id")?;
+    let account_id = integer(row, "account_id")?;
     let ran = !row["started_at"].is_null() || row["status"] == "FAILED";
     let event_id = format!("execution:{execution_id}");
     let existing = if ran {
@@ -1108,39 +1120,68 @@ pub(crate) fn finish_supplement_execution(
         .filter(|_| needs_result)
         .map(|record_id| notification_detail(connection, account_id, record_id))
         .transpose()?;
-    if ran {
-        let event = if let Some(event) = existing {
-            if event["account_id"] != row["account_id"]
-                || event["event_type"] != "execution.finished"
-            {
-                return Err(invalid("notification and intent identities differ"));
-            }
-            event
-        } else {
-            let mut context = execution_context(row, &account, detail.as_ref(), now);
-            context["execution"]["supplements"] = json!(steps
-                .iter()
-                .filter(|step| step["status"] != "cancelled")
-                .filter_map(|step| groups
-                    .get(step["group_id"].as_str().unwrap_or(""))
-                    .map(|group| supplement_context(group, step)))
-                .collect::<Vec<_>>());
-            crate::notifications::enqueue_in_connection(
-                connection,
-                &json!({"id":event_id,"account_id":account_id,"event_type":"execution.finished","context":context,"created_at":now}),
-            )?
-        };
-        if let Some(record_id) = record {
-            crate::business_facts_ops::summary_refs::compact_record_notification_context(
-                connection, record_id, &event,
-            )?;
-        }
-    }
-    if row["status"] == "SKIPPED"
+    let session_closed = row["status"] == "SKIPPED"
         && detail
             .as_ref()
-            .is_some_and(|detail| session_closed_all(&detail["result"]))
-    {
+            .is_some_and(|detail| session_closed_all(&detail["result"]));
+    if !ran {
+        return Ok((None, session_closed));
+    }
+    if let Some(event) = existing {
+        if event["account_id"] != row["account_id"] || event["event_type"] != "execution.finished" {
+            return Err(invalid("notification and intent identities differ"));
+        }
+        return Ok((Some(event), session_closed));
+    }
+    let mut context = execution_context(row, account, detail, now);
+    context["execution"]["supplements"] = json!(steps
+        .iter()
+        .filter(|step| step["status"] != "cancelled")
+        .filter_map(|step| groups
+            .get(step["group_id"].as_str().unwrap_or(""))
+            .map(|group| supplement_context(group, step)))
+        .collect::<Vec<_>>());
+    let event = crate::notifications::enqueue_in_connection(
+        connection,
+        &json!({"id":event_id,"account_id":account_id,"event_type":"execution.finished","context":context,"created_at":now}),
+    )?;
+    Ok((Some(event), session_closed))
+}
+
+/// 补发终态的步骤、通知、引用与组结算沿用同一个调用方事务。
+pub(crate) fn finish_supplement_execution(
+    connection: &Connection,
+    row: &Value,
+    request: &Value,
+) -> Result<(), AnalysisError> {
+    let execution_id = text(row, "execution_id")?;
+    let steps = linked_steps(connection, execution_id)?;
+    if steps.is_empty() {
+        return Ok(());
+    }
+    let account_id = integer(row, "account_id")?;
+    let account = connection.query_row("SELECT id,name,trade_channel FROM account WHERE id=?1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"name":row.get::<_,String>(1)?,"trade_channel":row.get::<_,String>(2)?}))).optional().map_err(database)?;
+    let Some(account) = account else {
+        return Ok(());
+    };
+    let now = text(request, "now")?;
+    let groups = finish_steps(connection, execution_id, &steps)?;
+    let record = connection
+        .query_row(
+            "SELECT id FROM executerecord WHERE execution_id=?1",
+            [execution_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(database)?;
+    let (event, session_closed) =
+        enqueue_execution_finished(connection, row, &account, &steps, &groups, record, now)?;
+    if let (Some(record_id), Some(event)) = (record, event) {
+        crate::business_facts_ops::summary_refs::compact_record_notification_context(
+            connection, record_id, &event,
+        )?;
+    }
+    if session_closed {
         for group_id in groups.keys() {
             cancel_groups_in_connection(
                 connection,
@@ -1370,7 +1411,7 @@ mod tests {
         let captured = json!({"positions":null,"orders":[],"trades":[],"assets":{"total_assets":0.0,"market_value":null},"execution":{"status":"PARTIAL","success":false,"execution_time":0.0,"error":"captured"}});
         let detail = json!({"result":{"extra":{"server_notification_context":captured}}});
         let before = detail.clone();
-        let context = execution_context(&row, &account, Some(&detail), NOW);
+        let context = execution_context(&row, &account, Some(detail.clone()), NOW);
         assert_eq!(detail, before);
         assert_eq!(context["assets"], captured["assets"]);
         assert_eq!(context["positions"], Value::Null);
@@ -1392,7 +1433,7 @@ mod tests {
         let row = json!({"execution_id":"execution","kind":"rebalance","trigger_source":"scheduler","status":"FAILED","finished_at":NOW,"error":null});
         let account = json!({"id":1,"name":"test","trade_channel":"ctp"});
         let detail = json!({"input":{"curr_target":{"rb":0.0},"algorithm":{"method":"market","api_key":"secret","nested":{"token":"secret","safe":0}}},"result":{"channel_type":"ctp","status":"PARTIAL","error":"RuntimeError: callback\nfailed","execution_time":0.0,"account_assets":{"total_asset":0.0,"available_cash":0.0,"market_value":null,"positions":[],"source":"real"},"symbol_results":{"rb":{"status":"PARTIAL","target_volume":0,"orders":[{"order_id":"o","symbol":"rb","direction":"BUY","volume":1.0,"filled_volume":0.0,"update_time":null,"status":"已撤销"}],"trades":[{"trade_id":"t","symbol":"rb","order_id":"o","trade_volume":1.0,"trade_price":2.0,"trade_value":2.0,"trade_time":NOW}]}}}});
-        let context = execution_context(&row, &account, Some(&detail), NOW);
+        let context = execution_context(&row, &account, Some(detail), NOW);
         assert_eq!(
             context["execution"]["error"],
             "RuntimeError: callback\nfailed"

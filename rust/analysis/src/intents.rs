@@ -279,7 +279,6 @@ fn update_in_connection(
     expected: &str,
     target: &str,
     fields: &Map<String, Value>,
-    request: &Value,
 ) -> Result<Option<Value>, AnalysisError> {
     if TERMINAL.contains(&expected) {
         return Ok(None);
@@ -324,9 +323,6 @@ fn update_in_connection(
         return Ok(None);
     }
     let row = get_in_connection(connection, execution_id)?.expect("updated intent");
-    if TERMINAL.contains(&target) {
-        crate::supplements::finish_supplement_execution(connection, &row, request)?;
-    }
     Ok(Some(row))
 }
 
@@ -339,8 +335,10 @@ pub fn intent_cas(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         .ok_or_else(|| AnalysisError::new("INVALID_REQUEST", "intent fields must be an object"))?;
     let connection = open_writer(Path::new(path))?;
     immediate(&connection, || {
-        let row =
-            update_in_connection(&connection, execution_id, expected, target, fields, request)?;
+        let row = update_in_connection(&connection, execution_id, expected, target, fields)?;
+        if let Some(row) = row.as_ref().filter(|_| TERMINAL.contains(&target)) {
+            crate::supplements::finish_supplement_execution(&connection, row, request)?;
+        }
         Ok(json!({"changed": row.is_some(), "intent": row}))
     })
 }
@@ -368,8 +366,10 @@ fn finish_in_connection(connection: &Connection, request: &Value) -> Result<Valu
         current["status"].as_str().expect("stored status"),
         target,
         &fields,
-        request,
     )?;
+    if let Some(row) = &updated {
+        crate::supplements::finish_supplement_execution(connection, row, request)?;
+    }
     Ok(json!({"changed": updated.is_some(), "intent": updated.unwrap_or(current)}))
 }
 
@@ -399,8 +399,8 @@ pub(crate) fn cancel_queued_in_connection(
             "QUEUED",
             "TERMINATED",
             fields.as_object().unwrap(),
-            &request,
         )? {
+            crate::supplements::finish_supplement_execution(connection, &row, &request)?;
             changed.push(row);
         }
     }
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(error.code, "INTENT_CONFLICT");
         let empty = Map::new();
         immediate(&connection, || {
-            update_in_connection(&connection, "one", "QUEUED", "RUNNING", &empty, &json!({}))
+            update_in_connection(&connection, "one", "QUEUED", "RUNNING", &empty)
         })
         .unwrap();
         immediate(&connection, || {
@@ -462,7 +462,7 @@ mod tests {
         })
         .unwrap();
         let error = immediate(&connection, || {
-            update_in_connection(&connection, "two", "QUEUED", "RUNNING", &empty, &json!({}))
+            update_in_connection(&connection, "two", "QUEUED", "RUNNING", &empty)
         })
         .unwrap_err();
         assert_eq!(error.code, "INTENT_CONFLICT");
@@ -506,16 +506,11 @@ mod tests {
         assert_eq!(receipt["intent"]["status"], "FAILED");
         assert_eq!(receipt["intent"]["error"], "first");
         assert_eq!(receipt["intent"]["finished_at"], finish["finished_at"]);
-        assert!(update_in_connection(
-            &connection,
-            "one",
-            "FAILED",
-            "RUNNING",
-            &Map::new(),
-            &json!({})
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            update_in_connection(&connection, "one", "FAILED", "RUNNING", &Map::new())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
