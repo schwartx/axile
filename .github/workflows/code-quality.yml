@@ -10,10 +10,40 @@ on:
     branches: [ main, develop ]
 
 jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: astral-sh/setup-uv@v6
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Build native extension
+      run: |
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-analysis-target"
+        echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+        cargo build --manifest-path rust/analysis/Cargo.toml --release --locked --lib --features python
+    - name: Stage and verify native extension
+      run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: axile-native-core
+        path: axile/server/_native/_core.abi3.so
+        if-no-files-found: error
+
   editor-ui:
+    needs: native
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: axile-native-core
+        path: axile/server/_native
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -36,11 +66,17 @@ jobs:
         name: editor-browser-traces
         path: ui/test-results/
   lint:
+    needs: native
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: axile-native-core
+        path: axile/server/_native
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -72,11 +108,17 @@ jobs:
       continue-on-error: false
 
   type-check:
+    needs: native
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: axile-native-core
+        path: axile/server/_native
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -99,6 +141,7 @@ jobs:
         uv run basedpyright
 
   test:
+    needs: native
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,6 +153,11 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: axile-native-core
+        path: axile/server/_native
 
     - name: Set up Python
       uses: actions/setup-python@v5
