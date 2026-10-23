@@ -657,7 +657,7 @@ async def _publish_fixture(database: Path, binary: Path) -> None:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session:
-            await enqueue(session, 1, force=True)
+            await enqueue(session.get_bind().url.database, 1, force=True)
         if not await AnalysisManager(sessions).run_once():
             raise AssertionError("Synthetic analysis task was not claimed")
     finally:

@@ -396,9 +396,46 @@ fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<
     Ok(json_to_py(py, &receipt))
 }
 
+#[pyfunction]
+fn queue_enqueue(py: Python<'_>, path: &str, account_id: i64, force: bool) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::enqueue(path, account_id, force)).map_err(raise)
+}
+
+#[pyfunction]
+fn queue_status(py: Python<'_>, path: &str, account_id: i64, logic: &str, engine: &str) -> PyResult<String> {
+    py.detach(|| crate::analysis_queue::status(path, account_id, logic, engine)).map_err(raise)
+}
+
+#[pyfunction]
+fn queue_recover(py: Python<'_>, path: &str, logic: &str, engine: &str) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::recover(path, logic, engine)).map_err(raise)
+}
+
+#[pyfunction]
+fn queue_claim(py: Python<'_>, path: &str, now: f64, token: &str) -> PyResult<Py<PyAny>> {
+    let result = py.detach(|| crate::analysis_queue::claim(path, now, token)).map_err(raise)?;
+    Ok(json_to_py(py, &result.unwrap_or(Value::Null)))
+}
+
+#[pyfunction]
+fn queue_release(py: Python<'_>, path: &str, account_id: i64, version: i64, token: &str) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::release(path, account_id, version, token)).map_err(raise)
+}
+
+#[pyfunction]
+fn queue_fail(py: Python<'_>, path: &str, account_id: i64, version: i64, token: &str, now: f64) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::fail(path, account_id, version, token, now)).map_err(raise)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(queue_enqueue, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_status, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_recover, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_release, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_fail, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;
     m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;

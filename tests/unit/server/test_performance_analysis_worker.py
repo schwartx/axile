@@ -18,6 +18,19 @@ from tests.unit.server._business_analysis_support import install_analysis_trigge
 from tests.unit.server._execution_test_support import build_account
 
 
+@pytest.fixture(autouse=True)
+def queue_native(monkeypatch):
+    path = os.environ.get("AXILE_TEST_NATIVE_EXTENSION")
+    native = analysis._core
+    if path:
+        spec = importlib.util.spec_from_file_location("_core", path)
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+    if not hasattr(native, "queue_enqueue"):
+        pytest.skip("Queue slice requires a rebuilt native extension; old native is not tested")
+    monkeypatch.setattr(analysis, "_core", native)
+
+
 @asynccontextmanager
 async def database(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'analysis.sqlite'}")
@@ -27,7 +40,7 @@ async def database(tmp_path):
     async with factory() as session:
         session.add(build_account(id=1))
         await session.commit()
-        await analysis.enqueue(session, 1)
+        await analysis.enqueue(session.get_bind().url.database, 1)
     yield factory
     await engine.dispose()
 
@@ -68,7 +81,7 @@ async def test_real_native_publication_ready_and_readable(sessions, monkeypatch)
     assert row["published_version"] == row["source_version"]
     assert row["running_token"] is None and row["failures"] == 0
     async with sessions() as session:
-        assert await analysis.read_snapshot_status(session, 1) == "ready"
+        assert await analysis.read_snapshot_status(session.get_bind().url.database, 1) == "ready"
         store = native.Store(session.get_bind().url.database)
     payload = native.snapshot(store, 1, "all", analysis.LOGIC_VERSION, analysis.ENGINE_VERSION)
     if isinstance(payload, bytes):

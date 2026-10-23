@@ -225,14 +225,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.warning("axile 未完成初始化配置，进入初始化向导模式（跳过调度与账户加载）。")
         yield
         return
-    from axile.server._native import _core
     from axile.server.core.db import SessionLocal
-    from axile.server.performance_analysis import AnalysisManager
+    from axile.server.performance_analysis import AnalysisManager, ensure_native_capabilities
 
+    ensure_native_capabilities()
     analysis = AnalysisManager(SessionLocal)
-    # Reject an obsolete wheel before starting any background services.
-    if not hasattr(_core, "publish_store"):
-        raise RuntimeError("Native analysis extension must export publish_store; rebuild the wheel")
     from axile.server.account_control.monitor import monitor, recover_sessions
     from axile.server.connection_state import recover_connection_sessions
 
