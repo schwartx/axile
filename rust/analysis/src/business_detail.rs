@@ -470,7 +470,10 @@ fn read_detail(
         hydrate(conn, head, &mut result)?;
         Value::Object(result)
     };
-    Ok(json!({"input":primary,"result":result}))
+    let mut detail = Object::new();
+    detail.insert("input".into(), primary);
+    detail.insert("result".into(), result);
+    Ok(Value::Object(detail))
 }
 
 type Object = Map<String, Value>;

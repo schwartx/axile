@@ -725,12 +725,13 @@ pub(crate) fn compact_record_notification_context(
     {
         return Err(invalid("冻结通知与执行记录身份不一致"));
     }
-    let rows = business_detail::load(conn, "execution_extension", "record_id", &json!(record_id))
-        .map_err(invalid)?;
+    let mut rows =
+        business_detail::load(conn, "execution_extension", "record_id", &json!(record_id))
+            .map_err(invalid)?;
     let Some(extra) = rows
-        .first()
-        .and_then(|row| row.get("extra"))
-        .and_then(Value::as_object)
+        .first_mut()
+        .and_then(|row| row.get_mut("extra"))
+        .and_then(Value::as_object_mut)
     else {
         return Ok(false);
     };
@@ -746,7 +747,6 @@ pub(crate) fn compact_record_notification_context(
     else {
         return Ok(false);
     };
-    let mut extra = extra.clone();
     extra.insert("server_notification_context".into(), reference);
     conn.execute(
         "UPDATE execution_extension SET extra=?1 WHERE record_id=?2",
