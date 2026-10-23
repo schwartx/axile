@@ -5,8 +5,8 @@ import uuid
 
 import pytest
 
+from axile.server._native import _core
 from axile.server.business_facts import repository
-from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._business_facts_test_support import freeze_input, rows, seed_account, sql
 
@@ -18,7 +18,7 @@ def database(native_database, monkeypatch):
     return native_database
 
 
-def test_pre_execute_bundle_preserves_primary_and_independent_audit_variant(database, monkeypatch):
+def test_pre_execute_bundle_preserves_primary_and_independent_audit_variant(database):
     async def check():
         primary = {"curr_target": {"A": 0}, "account_config": {"password": "synthetic"}}
         audit = {
@@ -32,31 +32,29 @@ def test_pre_execute_bundle_preserves_primary_and_independent_audit_variant(data
             "execution_notification_code": "synthetic",
         }
         before = {"total_asset": 0.0, "positions": [], "source": "real"}
-        calls = []
-        native = input_persistence.native_operation_sync
-
-        def freeze(command, request):
-            calls.append(command)
-            return native(command, request)
-
-        monkeypatch.setattr(input_persistence, "native_operation_sync", freeze)
-        primary_id, audit_id = await input_persistence._persist_pre_execute_bundle(
-            account_id=1,
+        audit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "axile.input-evidence:1:bundle:pre_execute_audit"))
+        receipt = freeze_input(
+            database,
+            primary,
             execution_id="bundle",
-            payload=primary,
             audit_payload=audit,
-            before_account_assets=before,
+            audit_input_id=audit_id,
+            before_assets=before,
         )
-        assert calls == ["freeze_execution_input"]
+        primary_id = receipt["input_id"]
+        assert receipt["audit_id"] == audit_id
         assert primary_id != audit_id
-        assert await input_persistence._persist_pre_execute_bundle(
-            account_id=1,
-            execution_id="bundle",
-            payload=primary,
-            audit_payload=audit,
-            before_account_assets=before,
-        ) == (primary_id, audit_id)
-        assert audit_id == str(uuid.uuid5(uuid.NAMESPACE_URL, "axile.input-evidence:1:bundle:pre_execute_audit"))
+        assert (
+            freeze_input(
+                database,
+                primary,
+                execution_id="bundle",
+                audit_payload=audit,
+                audit_input_id=audit_id,
+                before_assets=before,
+            )
+            == receipt
+        )
         assert await repository.read_execution_input(primary_id) == {"curr_target": {"A": 0}}
         restored = await repository.read_execution_input(audit_id)
         assert business_evidence(restored) == business_evidence(
@@ -81,18 +79,20 @@ def test_variant_replay_with_different_content_is_rejected(database):
 
     async def check():
         payload = {"curr_target": {"A": 0}}
-        await input_persistence._persist_pre_execute_bundle(
-            account_id=1,
+        freeze_input(
+            database,
+            payload,
             execution_id="bundle-replay",
-            payload=payload,
             audit_payload={"curr_target": {"A": 1}},
+            audit_input_id="audit-replay",
         )
-        with pytest.raises(ValueError, match="Execution input variant replay differs from frozen input"):
-            await input_persistence._persist_pre_execute_bundle(
-                account_id=1,
+        with pytest.raises(_core.NativeError, match="Execution input variant replay differs from frozen input"):
+            freeze_input(
+                database,
+                payload,
                 execution_id="bundle-replay",
-                payload=payload,
                 audit_payload={"curr_target": {"A": 2}},
+                audit_input_id="audit-replay",
             )
 
     asyncio.run(check())
@@ -106,13 +106,14 @@ def test_variant_identity_conflict_rolls_back_primary_and_before_assets(database
         variant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"axile.input-evidence:1:{execution_id}:pre_execute_audit"))
         freeze_input(database, {"algorithm": "x"}, input_id=variant_id, execution_id="other-execution")
         sql(database, "UPDATE execution_input SET execution_id=NULL WHERE id=?", (variant_id,))
-        with pytest.raises(ValueError, match="Execution input variant identity has a different owner"):
-            await input_persistence._persist_pre_execute_bundle(
-                account_id=1,
+        with pytest.raises(_core.NativeError, match="Execution input variant identity has a different owner"):
+            freeze_input(
+                database,
+                {"curr_target": {}},
                 execution_id=execution_id,
-                payload={"curr_target": {}},
                 audit_payload={"account_target": {"A": 0.3}},
-                before_account_assets={"total_asset": 0.0, "positions": []},
+                audit_input_id=variant_id,
+                before_assets={"total_asset": 0.0, "positions": []},
             )
         assert [row["id"] for row in rows(database, "execution_input")] == [variant_id]
         assert rows(database, "business_asset_snapshot") == []

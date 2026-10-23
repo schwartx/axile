@@ -15,11 +15,6 @@ from axile.server.api.routes.account_feishu import router as account_feishu_rout
 from axile.server.api.routes.account_orders import router as account_orders_router
 from axile.server.api.routes.account_performance import router as account_performance_router
 from axile.server.api.routes.account_schedule import router as account_schedule_router
-from axile.server.api.routes.account_support import (
-    _build_empty_positions_algorithm,
-    _reconcile_account_job,
-    _validate_account_control_binding,
-)
 
 router = APIRouter(prefix="/account", tags=["account"])
 router.include_router(account_control_monitor_router)
@@ -35,10 +30,3 @@ router.include_router(account_feishu_router)
 router.include_router(account_schedule_router)
 router.include_router(account_control_audit_router)
 router.include_router(account_control_policy_router)
-
-__all__ = [
-    "router",
-    "_build_empty_positions_algorithm",
-    "_reconcile_account_job",
-    "_validate_account_control_binding",
-]

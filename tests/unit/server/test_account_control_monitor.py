@@ -21,18 +21,13 @@ from axile.executor.account_control.models import (
 from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
-from axile.server.db.models.account_settings import SETTINGS_FIELDS
 from axile.server.execution import execution_account_control as persistence
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
 def save_account(path, account):
     """测试 oracle 直接保存账户配置，生产路径不调用 SQLite。"""
-    raw = account.model_dump(mode="json")
-    groups = {group: {} for group in ("execution", "schedule", "notification", "backtest")}
-    for field, group in SETTINGS_FIELDS.items():
-        if field in raw and group in groups:
-            groups[group][field] = raw[field]
+    groups = account_settings_values(account)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "INSERT OR REPLACE INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
@@ -50,7 +45,7 @@ def save_account(path, account):
         connection.execute(
             "INSERT OR REPLACE INTO account_settings(account_id,connection,execution,schedule,notification,backtest) "
             "VALUES (?,?,?,?,?,?)",
-            (account.id, json.dumps(raw["account_config"]), *(json.dumps(groups[key]) for key in groups)),
+            (account.id, *(json.dumps(value) for value in groups.values())),
         )
 
 

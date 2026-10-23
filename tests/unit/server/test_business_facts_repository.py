@@ -63,8 +63,8 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
             created_at="2026-10-20T09:00:00",
         )
         input_id = receipt["input_id"]
-        after_ref = await input_persistence._persist_post_execute_assets(
-            account_id=2, execution_id="frozen", payload=output
+        after_ref = await asyncio.to_thread(
+            input_persistence.persist_post_execute_assets_sync, account_id=2, execution_id="frozen", payload=output
         )
         record = persist_result(
             database,
@@ -96,8 +96,11 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
         assert rows(database, "business_asset_position") == []
         if foreign_after_asset:
             other_input = freeze_input(database, {}, account_id=2, execution_id="other", input_id="other-input")
-            await input_persistence._persist_post_execute_assets(
-                account_id=2, execution_id="other", payload={"account_assets": {"total_asset": 99}}
+            await asyncio.to_thread(
+                input_persistence.persist_post_execute_assets_sync,
+                account_id=2,
+                execution_id="other",
+                payload={"account_assets": {"total_asset": 99}},
             )
             sql(
                 database,
@@ -122,8 +125,11 @@ def test_input_reuse_preserves_failure_finalization_after_assets(database, is_su
         if result_assets != "absent":
             output["account_assets"] = observed if result_assets == "matching" else {"total_asset": 1}
         freeze_input(database, frozen, account_id=2, execution_id="after-assets")
-        await input_persistence._persist_post_execute_assets(
-            account_id=2, execution_id="after-assets", payload={"account_assets": observed}
+        await asyncio.to_thread(
+            input_persistence.persist_post_execute_assets_sync,
+            account_id=2,
+            execution_id="after-assets",
+            payload={"account_assets": observed},
         )
         if result_assets == "different" or (is_success and result_assets == "absent"):
             with pytest.raises(_core.NativeError, match="终态结果"):

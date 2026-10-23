@@ -24,7 +24,7 @@ from axile.server.performance_analysis import (
     enqueue,
     read_snapshot_status,
 )
-from axile.server.performance_details import CostQuery, _cursor
+from axile.server.performance_details import CostQuery, cost_query_scope
 
 router = APIRouter()
 
@@ -139,7 +139,6 @@ async def refresh_performance(account_id: int) -> dict:
 async def get_costs(account_id: int, query: Annotated[CostQuery, Query()]) -> Response:
     """按不可变快照版本聚合、排序并分页读取成本投影."""
     await _get_account_or_404(account_id)
-    cursor_scope, _ = _cursor(query, account_id)
     content = await _op(
         _core.query_costs,
         analysis_store(),
@@ -156,7 +155,7 @@ async def get_costs(account_id: int, query: Annotated[CostQuery, Query()]) -> Re
         query.symbol_search,
         query.side,
         query.limit,
-        cursor_scope,
+        cost_query_scope(query, account_id),
         query.cursor,
         LOGIC_VERSION,
         ENGINE_VERSION,

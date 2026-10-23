@@ -47,7 +47,7 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         assert bindings[0]["path"] == "/account_assets"
         assert snapshot.asset_fact_id == bindings[0]["asset_id"]
         assert len(rows(native_database, "business_asset_snapshot")) == 1
-        assets = await read_snapshot_assets(None, snapshot)
+        assets = await read_snapshot_assets(snapshot)
         canonical_result = await read_execution_result(record)
         assert assets == canonical_result["account_assets"]
         assert assets == {

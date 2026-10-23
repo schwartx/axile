@@ -8,7 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
-from axile.server.performance_details import CostQuery, _cursor
+from axile.server.performance_details import CostQuery, cost_query_scope
 from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
 from tests.fixtures.rust_store.oracle_tables import cost_execution as executions
 from tests.fixtures.rust_store.oracle_tables import cost_trade as trades
@@ -352,7 +352,7 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
                 query.symbol_search,
                 query.side,
                 query.limit,
-                _cursor(query, 2)[0],
+                cost_query_scope(query, 2),
                 query.cursor,
                 LOGIC_VERSION,
                 ENGINE_VERSION,

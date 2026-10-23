@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -55,7 +56,14 @@ def test_native_dispatch_prepares_calendar_before_publication(manager, claim, mo
         "first_day": "2026-01-01",
         "last_day": "2026-01-03",
     }
-    native = AsyncMock(return_value=prepared)
+    operation = analysis.native_operation
+
+    async def dispatch(name, request, **kwargs):
+        if name == "analysis_context":
+            return prepared
+        return await operation(name, request, **kwargs)
+
+    native = AsyncMock(side_effect=dispatch)
     calendar = AsyncMock(return_value=3)
     requests = []
 
@@ -68,7 +76,9 @@ def test_native_dispatch_prepares_calendar_before_publication(manager, claim, mo
     monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", calendar)
     monkeypatch.setattr(analysis._core, "publish_store", publish)
     asyncio.run(manager._run_native(claim))
-    native.assert_awaited_once_with("analysis_context", {"account_id": 7})
+    assert native.await_args_list[0].args == ("analysis_context", {"account_id": 7})
+    assert native.await_args_list[1].args[0] == "publish_store"
+    assert native.await_count == 2
     path, request = requests[0]
     assert path == "/isolated/analysis.sqlite"
     assert request["snapshot_id"] == request["claim_token"] == "claim-token"
@@ -121,6 +131,60 @@ def test_cancelled_calculation_releases_claim_and_propagates(manager, claim, mon
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(manager.run_once())
     release.assert_awaited_once_with(claim)
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes(
+    manager, claim, monkeypatch, committed
+):
+    entered, release, finished = (threading.Event() for _ in range(3))
+    releases = []
+    operation = analysis.native_operation
+
+    async def dispatch(name, request, **kwargs):
+        if name == "analysis_context":
+            return {"settings": {}, "trade_channel": "ctp", "first_day": "2026-01-01", "last_day": "2026-01-02"}
+        if name == "analysis_publication_committed":
+            assert finished.is_set()
+            return committed
+        return await operation(name, request, **kwargs)
+
+    def publish(*_args):
+        entered.set()
+        assert release.wait(2)
+        finished.set()
+        return {"published": committed}
+
+    def release_claim(*args):
+        assert finished.is_set()
+        releases.append(args)
+
+    monkeypatch.setattr(manager, "_claim", AsyncMock(return_value=claim))
+    monkeypatch.setattr(analysis, "native_operation", dispatch)
+    monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", AsyncMock())
+    monkeypatch.setattr(analysis._core, "publish_store", publish)
+    monkeypatch.setattr(analysis._core, "queue_release", release_claim)
+
+    async def run():
+        caller = asyncio.create_task(manager.run_once())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            caller.cancel()
+            await asyncio.sleep(0)
+            caller.cancel()
+            await asyncio.sleep(0)
+            assert not caller.done()
+            assert manager.compute_lock.locked()
+            assert releases == []
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert finished.is_set()
+        assert not manager.compute_lock.locked()
+
+    asyncio.run(run())
+    assert len(releases) == (0 if committed else 1)
 
 
 @pytest.mark.parametrize("committed", [False, True])

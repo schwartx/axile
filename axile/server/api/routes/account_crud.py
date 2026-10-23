@@ -15,6 +15,7 @@ from axile.channels import get_channel, list_channels
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.presets import ensure_account_control_preset_compatible
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
@@ -139,12 +140,6 @@ def _validate_channel_account_config(channel: TradeChannel | str, config: dict[s
         if condition is not None and normalized.get(condition.field) != condition.equals:
             normalized.pop(field.name, None)
     return normalized
-
-
-def _account_route_module() -> Any:
-    from axile.server.api.routes import account as account_routes
-
-    return account_routes
 
 
 def _next_job_run_times(job: Any, *, limit: int = 3) -> list[str]:
@@ -280,7 +275,6 @@ async def create_account(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> AccountPublic:
     """创建账户."""
-    account_routes = _account_route_module()
     try:
         if idempotency_key:
             existing = await _account_operation("account_create_replay", {"idempotency_key": idempotency_key})
@@ -289,7 +283,7 @@ async def create_account(
                 if sync.status != "synchronized":
                     response.status_code = status.HTTP_202_ACCEPTED
                 return _account_public_with_runtime_sync(Account.model_validate(existing), sync)
-        account_routes._validate_account_control_binding(account.trade_channel, account.account_control_preset)
+        ensure_account_control_preset_compatible(account.account_control_preset, account.trade_channel)
         account.futures_close_policy.validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
         _check_algorithm_channel_compat(account.algorithm, str(account.trade_channel), "下单算法")
@@ -369,8 +363,7 @@ async def copy_account(
                 )
                 | {"name": request.name.strip(), "is_started": False}
             )
-            routes = _account_route_module()
-            routes._validate_account_control_binding(payload.trade_channel, payload.account_control_preset)
+            ensure_account_control_preset_compatible(payload.account_control_preset, payload.trade_channel)
             config = _validate_channel_account_config(payload.trade_channel, payload.account_config)
             _check_algorithm_channel_compat(payload.algorithm, str(payload.trade_channel), "下单算法")
             _check_algorithm_channel_compat(payload.empty_positions_algorithm, str(payload.trade_channel), "清仓算法")
@@ -689,12 +682,11 @@ async def _update_account(
 ) -> AccountPublic:
     """更新账户."""
     db_account = await _get_account_or_404(account_id)
-    account_routes = _account_route_module()
 
     try:
         # 账户控制 binding 要按“更新后的目标状态”校验，不能只看当前库里的旧值。
         next_trade_channel, next_preset = _resolve_next_account_control_binding(db_account, account)
-        account_routes._validate_account_control_binding(next_trade_channel, next_preset)
+        ensure_account_control_preset_compatible(next_preset, next_trade_channel)
         # 同渠道 PATCH 保留未提交的凭证；切换渠道则以新配置替换，避免旧渠道
         # 专属字段混入新模型校验。
         next_account_config = (
@@ -737,7 +729,7 @@ async def _update_account(
             validate_notification_function(str(next_notification_code))
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
-        db_account.settings.model_copy(deep=True).apply_patch(data)
+        Account.model_validate(db_account.model_dump() | data)
         saved = await _account_operation(
             "account_update",
             {

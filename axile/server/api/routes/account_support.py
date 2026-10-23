@@ -7,8 +7,6 @@ from typing import cast
 
 from fastapi import HTTPException, status
 
-from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.presets import ensure_account_control_preset_compatible
 from axile.server.api.deps import SchedDep
 from axile.server.cron import (
     combine_cron_triggers,
@@ -28,11 +26,6 @@ async def _get_account_or_404(account_id: int) -> Account:
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     return account
-
-
-def _validate_account_control_binding(trade_channel: TradeChannel, preset_key: str) -> None:
-    """校验账户控制 preset 与交易渠道是否匹配."""
-    ensure_account_control_preset_compatible(preset_key, trade_channel)
 
 
 def _build_empty_positions_algorithm(

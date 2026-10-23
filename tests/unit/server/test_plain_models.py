@@ -11,7 +11,6 @@ from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import (
     Account,
     AccountPublic,
-    AccountSettings,
     AccountSnapshot,
     AccountUpdate,
     ExecuteRecord,
@@ -23,7 +22,6 @@ from axile.server.db.models import (
     PortfolioLitePublic,
     PortfolioUpdate,
 )
-from axile.server.db.models.account_settings import ExecutionSettings
 
 
 def account_data() -> dict:
@@ -83,11 +81,10 @@ def test_native_account_hydrates_flat_configuration_and_states():
         "runtime_sync": {"status": "pending", "revision": 2, "attempts": 0},
     }
     account = Account.model_validate(data)
-    assert account.settings.account_id == account.id
-    assert isinstance(account.settings.execution, ExecutionSettings)
     assert account.is_started
     assert account.weight_precision == 0.01
-    assert account.settings.connection == data["account_config"]
+    assert account.account_config == data["account_config"]
+    assert "settings" not in Account.model_fields
     assert account.has_pending_supplement
     assert account.notification_state.last_attempt_ok is False
     assert account.connection_state.sequence == 3
@@ -99,28 +96,27 @@ def test_native_account_hydrates_flat_configuration_and_states():
 
 
 @pytest.mark.parametrize("account_id", [None, "2"])
-def test_account_settings_link_uses_validated_parent_id(account_id):
-    settings = AccountSettings(account_id=99)
-    account = Account.model_validate(account_data() | {"id": account_id, "settings": settings})
-    assert account.settings.account_id == account.id
-    assert settings.account_id == 99
+def test_account_uses_validated_id(account_id):
+    account = Account.model_validate(account_data() | {"id": account_id})
+    assert account.id == (int(account_id) if account_id is not None else None)
 
 
-def test_account_snapshot_and_settings_patch_do_not_partially_mutate():
-    settings = AccountSettings()
-    account = Account.model_validate(account_data() | {"settings": settings})
-    assert settings.connection == {}
+def test_account_snapshot_and_validated_patch_do_not_mutate_original():
+    account = Account.model_validate(account_data())
     snapshot = account.snapshot()
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert account.account_config["nested"]["secret"] == "test-only"
-    before = account.settings.execution
+    before = account.model_dump()
     with pytest.raises(ValidationError):
-        account.settings.apply_patch({"long_leverage": 3, "cron_expr": "invalid"})
-    assert account.settings.execution is before
+        Account.model_validate(before | {"long_leverage": 3, "cron_expr": "invalid"})
+    assert account.model_dump() == before
     with pytest.raises(ValueError):
-        account.settings.apply_patch({"long_leverage": 3, "account_config": None})
-    assert account.settings.execution is before
+        Account.model_validate(before | {"long_leverage": 3, "account_config": None})
+    assert account.model_dump() == before
+    with pytest.raises(ValidationError):
+        account.long_leverage = -1
+    assert account.model_dump() == before
     account.long_leverage = 3
     assert account.long_leverage == 3
     assert snapshot.long_leverage is None

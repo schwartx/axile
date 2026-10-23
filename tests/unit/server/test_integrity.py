@@ -1,7 +1,7 @@
 """在位性：可执行数量口径与权重回退."""
 
 from axile.channels.cn_futures import canonicalize_cn_futures_symbol, quantize_cn_futures_quantity
-from axile.server.integrity import REBALANCE_THRESHOLD, count_off_symbols, plan_executable_target
+from axile.server.integrity import REBALANCE_THRESHOLD, plan_executable_target
 
 TONIGHT_EQUITY = 992_670.6124999999
 TONIGHT_POSITIONS = [
@@ -112,24 +112,24 @@ def test_one_tradable_lot_delta_is_off() -> None:
     assert not plan.rows[0].aligned
 
 
-def test_count_off_symbols_weight_fallback_still_splits_alias() -> None:
+def test_plan_weight_fallback_without_canonicalization_keeps_alias() -> None:
     """权重回退不合并别名，保持旧口径。"""
     positions = [{"symbol": "RM611", "market_value": 46000, "direction": "空头"}]
     target = {"TA701": -0.07, "c2611": 0.03, "m2701": -0.06, "rb2610": 0.12}
-    assert count_off_symbols(positions, target, 993_114.59) == 5
+    assert plan_executable_target(positions, target, 993_114.59).off_symbol_count == 5
 
 
-def test_count_off_symbols_aligned_within_threshold() -> None:
+def test_plan_weight_fallback_aligned_within_threshold() -> None:
     """当前权重与目标相差不超过 0.5 个百分点视为到位。"""
     positions = [{"symbol": "rb2610", "market_value": 120, "direction": "多头"}]
-    assert count_off_symbols(positions, {"rb2610": 0.12}, 1000) == 0
+    assert plan_executable_target(positions, {"rb2610": 0.12}, 1000).off_symbol_count == 0
 
 
-def test_count_off_symbols_ignores_both_zero() -> None:
+def test_plan_weight_fallback_ignores_both_zero() -> None:
     positions = [{"symbol": "ghost", "market_value": 0, "direction": "多头"}]
-    assert count_off_symbols(positions, {"ghost": 0.0}, 1000) == 0
+    assert plan_executable_target(positions, {"ghost": 0.0}, 1000).off_symbol_count == 0
 
 
-def test_count_off_symbols_short_direction_english() -> None:
+def test_plan_weight_fallback_short_direction_english() -> None:
     positions = [{"symbol": "RM611", "market_value": 50_000, "direction": "short"}]
-    assert count_off_symbols(positions, {}, 100_000) == 1
+    assert plan_executable_target(positions, {}, 100_000).off_symbol_count == 1

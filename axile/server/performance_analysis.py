@@ -1,18 +1,16 @@
 """Single-worker, durable performance queue and atomic snapshot publication."""
 
 import asyncio
-import json
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.server._native import _core
 from axile.server.core.db import database_path
 from axile.server.db.models.account_settings import BacktestSettings
-from axile.server.native_store import native_operation
+from axile.server.native_store import native_call, native_operation
 
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
 LOGIC_VERSION = "19"
@@ -44,12 +42,12 @@ def ensure_native_capabilities() -> None:
 
 async def enqueue(path: str, account_id: int, force: bool = False) -> None:
     """Coalesce requests after the caller has closed its database transaction."""
-    await run_in_threadpool(_core.queue_enqueue, path, account_id, force)
+    await native_call(_core.queue_enqueue, path, account_id, force)
 
 
 async def read_snapshot_status(path: str, account_id: int) -> str:
     """Read committed publication state on an independent native connection."""
-    return await run_in_threadpool(_core.queue_status, path, account_id, LOGIC_VERSION, ENGINE_VERSION)
+    return await native_call(_core.queue_status, path, account_id, LOGIC_VERSION, ENGINE_VERSION)
 
 
 class AnalysisManager:
@@ -67,7 +65,7 @@ class AnalysisManager:
             return
         ensure_native_capabilities()
         path = self._database_path()
-        await run_in_threadpool(_core.queue_recover, path, LOGIC_VERSION, ENGINE_VERSION)
+        await native_call(_core.queue_recover, path, LOGIC_VERSION, ENGINE_VERSION)
         self.stopping = False
         self.task = asyncio.create_task(self._loop(), name="performance-analysis")
 
@@ -96,9 +94,7 @@ class AnalysisManager:
         return database_path()
 
     async def _claim(self):
-        return await run_in_threadpool(
-            _core.queue_claim, self._database_path(), get_default_clock().time(), uuid4().hex
-        )
+        return await native_call(_core.queue_claim, self._database_path(), get_default_clock().time(), uuid4().hex)
 
     async def _run_native(self, row) -> None:
         """Python 准备渠道日历；Rust 直接读取业务事实并原子发布。"""
@@ -123,7 +119,7 @@ class AnalysisManager:
             "settings": settings,
             "trade_channel": channel,
         }
-        receipt = await run_in_threadpool(_core.publish_store, self._database_path(), json.dumps(request))
+        receipt = await native_operation("publish_store", request, database=self._database_path())
         if receipt["published"] and not await self._native_publication_committed(row):
             raise RuntimeError("Native publication receipt has no committed snapshot")
 
@@ -152,7 +148,7 @@ class AnalysisManager:
             try:
                 await self._run_native(row)
             except asyncio.CancelledError:
-                await asyncio.shield(self._release_claim(row))
+                await self._release_claim(row)
                 raise
             except Exception:
                 if await self._native_publication_committed(row):
@@ -168,7 +164,7 @@ class AnalysisManager:
         """只释放本次仍占有的任务；已提交发布或较新任务的状态保持不变。"""
         if await self._native_publication_committed(row):
             return
-        await run_in_threadpool(
+        await native_call(
             _core.queue_release, self._database_path(), row["account_id"], row["source_version"], row["running_token"]
         )
 
@@ -176,7 +172,7 @@ class AnalysisManager:
         """Only fail the claim still owned by this worker."""
         if await self._native_publication_committed(row):
             return
-        await run_in_threadpool(
+        await native_call(
             _core.queue_fail,
             self._database_path(),
             row["account_id"],

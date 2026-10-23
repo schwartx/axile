@@ -160,9 +160,6 @@ def test_coalescing_preserves_all_steps_and_last_marker(database):
         rows = query(path, 'SELECT * FROM supplement_step ORDER BY "index"')
         assert len({row["execution_id"] for row in rows}) == 1
         assert all(row["status"] == "queued" for row in rows)
-        assert [
-            supplements.supplement_context(planned, SupplementStep.model_validate(row))["is_last"] for row in rows
-        ] == [False, False, True]
 
     asyncio.run(run())
 

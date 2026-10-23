@@ -170,21 +170,6 @@ async def _after_cancel(account_id: int) -> None:
     wake_notifications(account_id)
 
 
-def supplement_context(group: SupplementGroup, step: SupplementStep) -> dict[str, Any]:
-    """通知使用的步骤身份及组终态。"""
-    return {
-        "group_id": group.id,
-        "base_scheduled_at": group.base_scheduled_at,
-        "scheduled_at": step.scheduled_at,
-        "index": step.index,
-        "configured_count": group.configured_count,
-        "effective_count": group.effective_count,
-        "is_last": step.index == group.effective_count,
-        "group_status": group.status,
-        "end_reason": group.end_reason,
-    }
-
-
 async def recover_supplements() -> None:
     """原子跳过错过的步骤，提交后只恢复未来唤醒。"""
     result = await native_operation("supplement_recover", {"now": clock_now(tz=SCHEDULER_TIMEZONE).isoformat()})

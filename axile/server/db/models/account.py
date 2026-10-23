@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
@@ -12,7 +12,7 @@ from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECOND
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
-from axile.server.db.models.account_settings import SETTINGS_FIELDS, AccountSettings, SupplementSettings
+from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.account_validation import (
     _MAX_EXECUTION_TIMEOUT,
     _validate_algorithm_config,
@@ -111,73 +111,38 @@ class AccountSnapshot(AccountBase):
     created_at: str = Field(default_factory=now_str)
 
 
-class Account(Model):
+class Account(AccountSnapshot):
     """账户身份、配置及当前状态的普通数据对象。"""
 
-    id: int | None = None
-    name: str
-    market: str
-    trade_channel: TradeChannel
-    brokerage: str
+    model_config = ConfigDict(from_attributes=True, validate_assignment=True)
+
+    account_control_preset: str = "default"
+    account_config: dict[str, Any] = Field(default_factory=dict)
+    is_started: bool = False
+    cron_expr: str = ""
     remark: str | None = None
-    portfolio_id: int | None = None
-    copied_from_account_id: int | None = None
-    copied_from_account_name: str | None = None
-    updated_at: str = Field(default_factory=now_str)
-    created_at: str = Field(default_factory=now_str)
-    settings: AccountSettings = Field(default_factory=AccountSettings, exclude=True)
+    weight_precision: float = 0.01
+    algorithm: dict[str, Any] = Field(default_factory=dict)
+    trade_rules: dict[str, Any] | None = None
+    forbidden_symbols: list[str] | None = None
+    risk_symbols: list[str] | None = None
+    feishu_key: str | None = None
     has_pending_supplement: bool = Field(default=False, exclude=True)
     notification_state: AccountNotificationState | None = Field(default=None, exclude=True)
     connection_state: AccountConnectionState | None = Field(default=None, exclude=True)
     runtime_sync: AccountRuntimeSyncPublic | None = Field(default=None, exclude=True)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _collect_settings(cls, values: Any) -> Any:
-        """将扁平配置合并为同一份有类型设置。"""
-        if isinstance(values, BaseModel):
-            values = values.model_dump()
-        if not isinstance(values, dict):
-            return values
-        data = dict(values)
-        patch = {key: data.pop(key) for key in list(data) if key in SETTINGS_FIELDS}
-        settings = AccountSettings.model_validate(data.get("settings") or {}).model_copy(deep=True)
-        settings.apply_patch(patch)
-        data["settings"] = settings
-        return data
-
-    @model_validator(mode="after")
-    def _link_settings(self) -> "Account":
-        """将设置绑定到已校验的账户 ID。"""
-        self.settings.account_id = self.id
-        return self
-
-    def __getattr__(self, name: str) -> Any:
-        """通过账户属性读取所属配置组。"""
-        group = SETTINGS_FIELDS.get(name)
-        if group:
-            return self.settings.connection if group == "connection" else getattr(getattr(self.settings, group), name)
-        return getattr(super(), "__getattr__")(name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """校验配置后替换所属设置，并刷新修改时间。"""
-        if name in SETTINGS_FIELDS:
-            self.settings.apply_patch({name: value})
-            super().__setattr__("updated_at", now_str())
-        else:
-            super().__setattr__(name, value)
-
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        """按账户快照字段输出扁平配置。"""
-        values = super().model_dump() | self.settings.flat_values()
-        return AccountSnapshot.model_construct(**values).model_dump(**kwargs)
+    @field_validator("algorithm")
+    def _check_algorithm_field(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """允许历史未配置账户的空算法，已配置算法保留参数校验。"""
+        return super()._check_algorithm_field(value) if value else value
 
     def snapshot(self) -> AccountSnapshot:
         """复制为可独立修改的执行账户快照。"""
         return AccountSnapshot.model_validate(self.model_dump()).model_copy(deep=True)
 
 
-type AccountContext = Account | AccountSnapshot
+type AccountContext = AccountSnapshot
 
 
 class AccountPublic(Model):

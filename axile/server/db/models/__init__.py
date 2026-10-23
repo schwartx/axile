@@ -44,7 +44,6 @@ from axile.server.db.models.account_runtime_sync import (
     AccountRuntimeSyncAttempt,
     AccountRuntimeSyncPublic,
 )
-from axile.server.db.models.account_settings import AccountSettings
 from axile.server.db.models.base import new_execution_id, now_ms, now_str
 from axile.server.db.models.execution import (
     ExecuteRecord,
@@ -108,7 +107,6 @@ __all__ = [
     "SupplementStep",
     "SystemNotificationState",
     "SystemNotificationStatePublic",
-    "AccountSettings",
     "AccountSnapshot",
     "AccountNotificationState",
     "AccountNotificationStatePublic",

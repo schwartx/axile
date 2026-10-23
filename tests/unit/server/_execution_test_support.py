@@ -296,8 +296,36 @@ def build_account(**overrides: object) -> Account:
     return Account(**payload)
 
 
+def account_settings_values(account: Account) -> dict[str, object]:
+    """按 SQLite 夹具的列分组保存扁平账户配置。"""
+    values = account.model_dump(mode="json")
+    groups = {
+        "execution": (
+            "account_control_preset",
+            "account_control_override",
+            "weight_precision",
+            "long_leverage",
+            "short_leverage",
+            "algorithm",
+            "empty_positions_algorithm",
+            "trade_rules",
+            "futures_close_policy",
+            "forbidden_symbols",
+            "risk_symbols",
+            "write_empty_record",
+            "execution_timeout",
+        ),
+        "schedule": ("is_started", "cron_expr", "supplement"),
+        "notification": ("feishu_key", "execution_notification_code"),
+        "backtest": ("backtest_weight_type", "backtest_fee_rate"),
+    }
+    return {"connection": values["account_config"]} | {
+        group: {name: values[name] for name in fields} for group, fields in groups.items()
+    }
+
+
 def insert_account(connection: sqlite3.Connection, account: Account) -> None:
-    """为已迁移的测试库设置显式账户 ID；配置使用 DTO 的完整设置分组。"""
+    """为已迁移的测试库设置显式账户 ID 与分组配置。"""
     values = account.model_dump(mode="json")
     names = (
         "id",
@@ -316,7 +344,7 @@ def insert_account(connection: sqlite3.Connection, account: Account) -> None:
         f"INSERT INTO account ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
         [values.get(name) for name in names],
     )
-    settings = account.settings.model_dump(mode="json")
+    settings = account_settings_values(account)
     groups = ("connection", "execution", "schedule", "notification", "backtest")
     connection.execute(
         "INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) VALUES (?,?,?,?,?,?)",

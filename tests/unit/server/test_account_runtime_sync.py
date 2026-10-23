@@ -145,8 +145,18 @@ def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path):
 
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db", wal=True) as path:
-            await runtime.enqueue_account_runtime_sync(1, reset_worker=True, create_request_key="create-1")
-            await asyncio.gather(*(runtime.enqueue_account_runtime_sync(1, reset_worker=False) for _ in range(4)))
+            await native_operation(
+                "runtime_sync_enqueue",
+                {"account_id": 1, "reset_worker": True, "create_request_key": "create-1", "now": "2026-10-01"},
+            )
+            await asyncio.gather(
+                *(
+                    native_operation(
+                        "runtime_sync_enqueue", {"account_id": 1, "reset_worker": False, "now": "2026-10-01"}
+                    )
+                    for _ in range(4)
+                )
+            )
             sync = runtime_sync(path)
             assert (sync.revision, sync.reset_worker, sync.create_request_key) == (5, True, "create-1")
 
@@ -158,7 +168,9 @@ def test_startup_retries_synchronized_accounts_and_isolates_failure(tmp_path, mo
 
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db") as path:
-            await runtime.enqueue_account_runtime_sync(1, reset_worker=False)
+            await native_operation(
+                "runtime_sync_enqueue", {"account_id": 1, "reset_worker": False, "now": "2026-10-01"}
+            )
             runtime_rows(path, "UPDATE accountruntimesync SET status='synchronized' WHERE account_id=1")
             calls = []
 
@@ -205,7 +217,7 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                     raise WorkerBackendExecutionError("technical", execution_error="CTP 登录校验失败")
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            await runtime.enqueue_account_runtime_sync(1, reset_worker=True)
+            await native_operation("runtime_sync_enqueue", {"account_id": 1, "reset_worker": True, "now": "2026-10-01"})
             sync = await runtime.reconcile_account_runtime(1, MagicMock())
             assert (sync.status, sync.reset_worker) == ("pending", True)
             assert reason in sync.last_error and "Traceback" in sync.last_error

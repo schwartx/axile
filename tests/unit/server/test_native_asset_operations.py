@@ -196,9 +196,7 @@ def test_snapshot_facade_batches_identity_and_propagates_read_failure(monkeypatc
 
     monkeypatch.setattr(native_store, "native_operation", operation)
     snapshot = SimpleNamespace(id=7, account_id=1, asset_fact_id="snapshot:7:/account_assets", execution_id=None)
-    assert asyncio.run(assets.read_snapshots_assets(None, [snapshot], include_positions=False)) == {
-        7: {"total_asset": 0}
-    }
+    assert asyncio.run(assets.read_snapshots_assets([snapshot], include_positions=False)) == {7: {"total_asset": 0}}
     assert requests == [
         (
             "asset_snapshots_read",
@@ -210,7 +208,7 @@ def test_snapshot_facade_batches_identity_and_propagates_read_failure(monkeypatc
             },
         )
     ]
-    assert asyncio.run(assets.read_snapshots_assets(None, [])) == {}
+    assert asyncio.run(assets.read_snapshots_assets([])) == {}
     assert len(requests) == 1
 
     async def failure(*_args):
@@ -218,7 +216,7 @@ def test_snapshot_facade_batches_identity_and_propagates_read_failure(monkeypatc
 
     monkeypatch.setattr(native_store, "native_operation", failure)
     with pytest.raises(ValueError, match="wrong owner"):
-        asyncio.run(assets.read_snapshot_assets(None, snapshot))
+        asyncio.run(assets.read_snapshot_assets(snapshot))
 
 
 def test_asset_facade_preserves_value_error_for_corrupt_facts(monkeypatch):

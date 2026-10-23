@@ -357,7 +357,8 @@ def test_committed_input_and_before_assets_survive_without_terminal_record(
                 "update_time": "2026-10-20T10:00:00.123+08:00",
                 "positions": [{"symbol": "short", "volume": -2, "available_volume": 0}],
             }
-            input_id = await input_persistence._persist_pre_execute_input(
+            input_id = await asyncio.to_thread(
+                input_persistence.persist_pre_execute_input_sync,
                 account_id=1,
                 execution_id="semantic-crash-before-result",
                 payload=input_payload,
@@ -382,7 +383,8 @@ def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: 
     async def scenario() -> None:
         with _database(monkeypatch, tmp_path, "semantic-rollback") as path:
             input_payload = _input({"one": 0.5})
-            input_id = await input_persistence._persist_pre_execute_input(
+            input_id = await asyncio.to_thread(
+                input_persistence.persist_pre_execute_input_sync,
                 account_id=1,
                 execution_id="semantic-result-rollback",
                 payload=input_payload,

@@ -129,8 +129,11 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
         input_id = freeze_input(
             path, {}, execution_id="contract", created_at="2026-09-15T10:00:00", before_assets=before_assets
         )["input_id"]
-        after_reference = await input_persistence._persist_post_execute_assets(
-            account_id=1, execution_id="contract", payload=worker_raw
+        after_reference = await asyncio.to_thread(
+            input_persistence.persist_post_execute_assets_sync,
+            account_id=1,
+            execution_id="contract",
+            payload=worker_raw,
         )
         artifacts = []
         post_writer = Mock(return_value=after_reference)

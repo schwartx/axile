@@ -36,8 +36,12 @@ def test_pre_order_commit_hands_full_request_to_native_freeze(monkeypatch):
     }
     before = {"total_asset": 0.0, "positions": []}
     input_id = asyncio.run(
-        input_persistence._persist_pre_execute_input(
-            account_id=1, execution_id="before-final", payload=payload, before_account_assets=before
+        asyncio.to_thread(
+            input_persistence.persist_pre_execute_input_sync,
+            account_id=1,
+            execution_id="before-final",
+            payload=payload,
+            before_account_assets=before,
         )
     )
     request = captured["request"]
@@ -174,32 +178,6 @@ def test_invalid_journal_reference_keeps_domain_error(monkeypatch):
                 account_id=1, execution_id="invalid-ref", raw_input=None, raw_result={}, is_success=0
             )
         )
-
-
-def test_sync_pre_order_bundle_uses_one_native_stage(monkeypatch):
-    calls = []
-
-    def native(command, request):
-        calls.append((command, request))
-        return {"input_id": "before", "audit_id": "audit"}
-
-    monkeypatch.setattr(input_persistence, "native_operation_sync", native)
-    payload, audit, assets = {"curr_target": {}}, {"curr_target": {"A": 0}}, {"total_asset": 0}
-    assert input_persistence.persist_pre_execute_bundle_sync(
-        account_id=1, execution_id="e1", payload=payload, audit_payload=audit, before_account_assets=assets
-    ) == ("before", "audit")
-    assert len(calls) == 1
-    command, request = calls[0]
-    assert command == "freeze_execution_input"
-    assert request["payload"] is payload
-    assert request["audit_payload"] is audit
-    assert request["before_assets"] is assets
-
-
-def test_missing_required_audit_receipt_aborts_pre_order_bundle(monkeypatch):
-    monkeypatch.setattr(input_persistence, "_freeze_facts", lambda *_: {"input_id": "before"})
-    with pytest.raises(RuntimeError, match="目标规则证据未持久化"):
-        input_persistence.persist_pre_execute_bundle_sync(account_id=1, execution_id="e1", payload={}, audit_payload={})
 
 
 @pytest.mark.parametrize("status", ["SKIPPED", "PARTIAL", "TERMINATED"])

@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
-from axile.server.db.models.account_settings import ExecutionSettings
 from axile.server.execution import notification_state
 from tests.conftest import initialize_native_database, native_store_call
 from tests.unit.server._execution_test_support import insert_account
@@ -45,18 +44,17 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     with closing(sqlite3.connect(native_database)) as connection, connection:
         insert_account(connection, Account(**account_data()))
     loaded = stored_account(native_database)
-    assert loaded.settings.account_id == 1
     snapshot = loaded.snapshot()
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert loaded.account_config["nested"]["secret"] == "test-only"
     patch = {"long_leverage": 3, "execution_notification_code": None}
-    loaded.settings.apply_patch(patch)
+    loaded = Account.model_validate(loaded.model_dump() | patch)
     assert loaded.is_started
     assert loaded.feishu_key == "test-key"
     assert loaded.execution_notification_code is None
     with pytest.raises(ValidationError):
-        loaded.settings.apply_patch({"weight_precision": -1, "cron_expr": "bad cron"})
+        Account.model_validate(loaded.model_dump() | {"weight_precision": -1, "cron_expr": "bad cron"})
     with pytest.raises(ValidationError):
         AccountUpdate(name="invalid", weight_precision=-1, cron_expr="bad cron")
     assert loaded.name == "账户"
@@ -67,7 +65,7 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     assert account.execution_notification_code is None
     with closing(sqlite3.connect(native_database)) as connection:
         assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
-    assert isinstance(account.settings.execution, ExecutionSettings)
+    assert account.model_dump()["algorithm"] == account_data()["algorithm"]
 
 
 def test_migration_preserves_all_settings_and_binding_rows(tmp_path):
@@ -142,10 +140,10 @@ def test_public_response_exposes_success_summary_without_credentials():
     assert "test-key" not in str(public)
     assert account.model_dump(include={"name", "feishu_key"}) == {"name": "账户", "feishu_key": "test-key"}
     assert "remark" not in account.model_dump(exclude_none=True)
-    before = account.settings.execution
+    before = account.model_dump()
     with pytest.raises(ValueError):
-        account.settings.apply_patch({"long_leverage": 3, "account_config": None})
-    assert account.settings.execution is before
+        Account.model_validate(before | {"long_leverage": 3, "account_config": None})
+    assert account.model_dump() == before
 
 
 def test_notification_result_preserves_success_and_ignores_older_results(monkeypatch, native_database):

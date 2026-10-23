@@ -1,6 +1,5 @@
 """以真实原生业务事实验证精简存储，不要求恢复旧 JSON 表示。"""
 
-import asyncio
 import json
 import sqlite3
 from contextlib import closing
@@ -8,7 +7,6 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
-from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import (
@@ -256,15 +254,14 @@ def test_equal_audit_targets_share_one_frozen_input(monkeypatch, native_database
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     payload = {"curr_target": {"A": 0}, "last_target": {}, "strategy_target": {"A": 0.3}, "trade_rules": {}}
-    primary, audit = asyncio.run(
-        input_persistence._persist_pre_execute_bundle(
-            account_id=1,
-            execution_id="one",
-            payload=payload,
-            audit_payload={**payload, "account_target": {"A": 0.0}},
-        )
+    receipt = freeze_input(
+        native_database,
+        payload,
+        execution_id="one",
+        audit_payload={**payload, "account_target": {"A": 0.0}},
+        audit_input_id="audit-one",
     )
-    assert primary == audit
+    assert receipt["input_id"] == receipt["audit_id"]
     assert len(rows(native_database, "execution_input")) == 1
     assert len(rows(native_database, "execution_input_target")) == 2
 

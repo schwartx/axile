@@ -16,7 +16,6 @@ dependencies = [
     "pydantic-settings>=2.8.1",
     "python-dotenv>=1.1.0",
     "shinny-calendar>=1.0.2026,<2",
-    "streamlit>=1.41.0",
     "typer>=0.20.1",
     "tomlkit>=0.15.0",
     "ty>=0.0.83,<0.1",

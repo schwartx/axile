@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from axile.server.db.models import AccountRuntimeSync
 from axile.server.native_store import native_operation
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
 def runtime_rows(path: Path, statement: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
@@ -51,11 +51,7 @@ async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Pa
                         account.created_at,
                     ),
                 )
-                settings = account.settings
-                groups = [settings.connection] + [
-                    getattr(settings, name).model_dump(mode="json")
-                    for name in ("execution", "schedule", "notification", "backtest")
-                ]
+                groups = account_settings_values(account).values()
                 connection.execute(
                     "INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) "
                     "VALUES (?,?,?,?,?,?)",

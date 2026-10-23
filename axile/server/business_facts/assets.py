@@ -57,13 +57,13 @@ async def latest_asset_snapshot(account_id: int) -> dict[str, Any] | None:
     return await _asset_operation("asset_snapshot_latest", {"account_id": account_id})
 
 
-async def read_input_asset_observations(_session: Any, input_id: str) -> list[dict[str, object]]:
+async def read_input_asset_observations(input_id: str) -> list[dict[str, object]]:
     """读取已提交输入的原始前后观测，不依赖终态记录存续。"""
     return await _asset_operation("asset_input_observations", {"input_id": input_id})
 
 
 async def read_snapshots_assets(
-    _session: Any, snapshots: Sequence[Any], *, include_positions: bool = True
+    snapshots: Sequence[Any], *, include_positions: bool = True
 ) -> dict[int, dict[str, object]]:
     """一次读取已提交资产快照；标量读取不装载持仓子表。"""
     if not snapshots:
@@ -86,9 +86,9 @@ async def read_snapshots_assets(
     return {row["id"]: row["assets"] for row in rows}
 
 
-async def read_snapshot_assets(_session: Any, snapshot: Any, *, include_positions: bool = True) -> dict[str, object]:
+async def read_snapshot_assets(snapshot: Any, *, include_positions: bool = True) -> dict[str, object]:
     """显式读取一条已提交资产观测，拒绝不完整或越权引用。"""
-    return (await read_snapshots_assets(None, [snapshot], include_positions=include_positions))[snapshot.id]
+    return (await read_snapshots_assets([snapshot], include_positions=include_positions))[snapshot.id]
 
 
 async def _asset_operation(name: str, request: object) -> Any:

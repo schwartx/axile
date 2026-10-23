@@ -1,11 +1,9 @@
 """Version-bound cost pagination over compact indexed projections."""
 
-import base64
 import hashlib
 import json
 from typing import Literal
 
-from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from axile.server.db.models.performance import RangeKey
@@ -46,18 +44,7 @@ class CostQuery(BaseModel):
         return self
 
 
-def _cursor(query: CostQuery, account_id: int) -> tuple[str, int]:
+def cost_query_scope(query: CostQuery, account_id: int) -> str:
+    """生成查询摘要，游标的解码与校验由原生读取负责。"""
     scope = query.model_dump(exclude={"cursor"}) | {"account_id": account_id}
-    digest = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
-    offset = 0
-    if query.cursor:
-        try:
-            payload = json.loads(base64.urlsafe_b64decode(query.cursor))
-            offset = payload["offset"]
-            if payload["scope"] != digest or type(offset) is not int or offset < 0:
-                raise ValueError
-        except (ValueError, KeyError, TypeError):
-            raise HTTPException(
-                400, detail={"code": "INVALID_COST_CURSOR", "message": "游标与查询条件不匹配"}
-            ) from None
-    return digest, offset
+    return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()

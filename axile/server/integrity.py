@@ -100,53 +100,34 @@ def _action(current: float, target: float, aligned: bool) -> tuple[str, str]:
     return action, "buy" if current < target else "sell"
 
 
-def count_off_symbols(
-    positions: list[object],
-    target: Mapping[str, float],
-    equity: float,
-) -> int:
-    """
-    按权重残差统计待调整品种数（无数量口径时的回退）.
-
-    Parameters
-    ----------
-    positions : list[object]
-        账户快照持仓列表，元素为含 ``symbol`` / ``market_value`` / ``direction`` 的字典。
-    target : Mapping[str, float]
-        账户口径目标权重（分数，可负=做空）。
-    equity : float
-        账户总权益，作为归一分母；``<= 0`` 时当前权重按 0 处理。
-
-    Returns
-    -------
-    int
-        待调整品种数；当前与目标都接近 0 的品种不计。
-    """
+def _position_totals(
+    positions: list[object], canonicalize_symbol: CanonicalizeSymbol
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, bool]]:
+    """汇总同一合约的净仓、市值和单位名义价值。"""
+    cur_lots: dict[str, float] = {}
     cur_mv: dict[str, float] = {}
+    notional_per_unit: dict[str, float] = {}
+    has_book: dict[str, bool] = {}
+
     for row in positions:
         if not isinstance(row, dict):
             continue
         symbol = row.get("symbol")
         if not isinstance(symbol, str) or not symbol:
             continue
+        native = canonicalize_symbol(symbol)
         mag = abs(_to_float(row.get("market_value")))
-        signed = -mag if _is_short(row.get("direction")) else mag
-        cur_mv[symbol] = cur_mv.get(symbol, 0.0) + signed
-    return _count_off_by_weight(cur_mv, target, equity)
-
-
-def _count_off_by_weight(cur_mv: Mapping[str, float], target: Mapping[str, float], equity: float) -> int:
-    symbols = set(cur_mv) | {key for key in target if isinstance(key, str) and key}
-    base = equity if equity > 0 else 0.0
-    off = 0
-    for symbol in symbols:
-        cur = ((cur_mv.get(symbol, 0.0) / base) * 100.0) if base > 0 else 0.0
-        tgt = float(target.get(symbol, 0.0) or 0.0) * 100.0
-        if abs(cur) < _ZERO and abs(tgt) < _ZERO:
-            continue
-        if abs(_round2(cur - tgt)) > REBALANCE_THRESHOLD:
-            off += 1
-    return off
+        signed_mv = -mag if _is_short(row.get("direction")) else mag
+        cur_mv[native] = cur_mv.get(native, 0.0) + signed_mv
+        lots = _signed_lots(row)
+        if lots is not None:
+            cur_lots[native] = cur_lots.get(native, 0.0) + lots
+        volume = abs(_to_float(row.get("volume")))
+        if volume > 0 and mag > 0:
+            notional_per_unit[native] = mag / volume
+        if lots is not None or mag > 0:
+            has_book[native] = True
+    return cur_lots, cur_mv, notional_per_unit, has_book
 
 
 def plan_executable_target(
@@ -178,29 +159,7 @@ def plan_executable_target(
     ExecutableTarget
         ``weights`` 已是持仓代码空间；有量化钩子时带 ``quantities``。
     """
-    cur_lots: dict[str, float] = {}
-    cur_mv: dict[str, float] = {}
-    notional_per_unit: dict[str, float] = {}
-    has_book: dict[str, bool] = {}
-
-    for row in positions:
-        if not isinstance(row, dict):
-            continue
-        symbol = row.get("symbol")
-        if not isinstance(symbol, str) or not symbol:
-            continue
-        native = canonicalize_symbol(symbol)
-        mag = abs(_to_float(row.get("market_value")))
-        signed_mv = -mag if _is_short(row.get("direction")) else mag
-        cur_mv[native] = cur_mv.get(native, 0.0) + signed_mv
-        lots = _signed_lots(row)
-        if lots is not None:
-            cur_lots[native] = cur_lots.get(native, 0.0) + lots
-        volume = abs(_to_float(row.get("volume")))
-        if volume > 0 and mag > 0:
-            notional_per_unit[native] = mag / volume
-        if lots is not None or mag > 0:
-            has_book[native] = True
+    cur_lots, cur_mv, notional_per_unit, has_book = _position_totals(positions, canonicalize_symbol)
 
     weights: dict[str, float] = {}
     for key, value in target.items():
@@ -270,6 +229,5 @@ __all__ = [
     "REBALANCE_THRESHOLD",
     "ExecutableTarget",
     "ExecutableTargetRow",
-    "count_off_symbols",
     "plan_executable_target",
 ]

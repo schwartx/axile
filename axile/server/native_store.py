@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import Callable
 from threading import Event
 from typing import Any
 
@@ -20,7 +21,12 @@ def native_operation_sync(name: str, request: object, *, database: str | None = 
 
 async def native_operation(name: str, request: object, *, database: str | None = None) -> Any:
     """在线程中调用完整业务阶段，避免 SQLite 等待阻塞事件循环。"""
-    worker = asyncio.create_task(asyncio.to_thread(native_operation_sync, name, request, database=database))
+    return await native_call(native_operation_sync, name, request, database=database)
+
+
+async def native_call(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """等待原生调用结束再传播取消，保留调用方的锁和任务占用。"""
+    worker = asyncio.create_task(asyncio.to_thread(call, *args, **kwargs))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:

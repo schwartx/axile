@@ -15,7 +15,7 @@ from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
 from axile.server.api.deps import HistoryPaginationDep, SchedDep
-from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.api.routes.account_support import _build_empty_positions_algorithm, _get_account_or_404
 from axile.server.api.routes.portfolio import resolve_portfolio_target
 from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.db.models import (
@@ -320,12 +320,6 @@ async def _account_target_public(
     )
 
 
-def _account_route_module() -> Any:
-    from axile.server.api.routes import account as account_routes
-
-    return account_routes
-
-
 @router.post("/execute/{account_id}", response_model=ExecutionTriggerResponse)
 async def execute(account_id: int) -> ExecutionTriggerResponse:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
@@ -518,10 +512,9 @@ async def empty_all_positions(
 ) -> ExecutionTriggerResponse:
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
     db_account = await _get_account_or_404(account_id)
-    account_routes = _account_route_module()
 
     try:
-        algorithm = account_routes._build_empty_positions_algorithm(
+        algorithm = _build_empty_positions_algorithm(
             algorithm_method=algorithm_method,
             algorithm_params=algorithm_params,
         )

@@ -198,7 +198,7 @@ def test_worker_after_observation_binds_without_duplicate_snapshot(database):
     after = {"account_assets": {"total_asset": 0, "update_time": "after", "positions": [{"symbol": "A", "volume": 0}]}}
     freeze_input(database, {}, input_id="pre-order-input", before_assets=before["account_assets"])
     receipt = _after(database, after)
-    occurrences = asyncio.run(read_input_asset_observations(None, "pre-order-input"))
+    occurrences = asyncio.run(read_input_asset_observations("pre-order-input"))
     assert business_evidence({row["path"]: row["account_assets"] for row in occurrences}) == business_evidence(
         {"/before_account_assets": before["account_assets"], "/after_account_assets": after["account_assets"]}
     )
@@ -251,9 +251,9 @@ def test_account_snapshot_reference_rejects_another_manual_snapshot(database):
     other = _manual(database, {"total_asset": 99})
     first.asset_fact_id = other.asset_fact_id
     with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets(None, [first]))
+        asyncio.run(read_snapshots_assets([first]))
     with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets(None, [first], include_positions=False))
+        asyncio.run(read_snapshots_assets([first], include_positions=False))
 
 
 def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zero(database):
@@ -277,20 +277,20 @@ def test_manual_snapshot_batch_reader_and_scalar_query_are_selective(database):
         snapshot.id: {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]}
         for snapshot, key in zip(snapshots, (5, 6), strict=True)
     }
-    scalar = asyncio.run(read_snapshots_assets(None, snapshots, include_positions=False))
+    scalar = asyncio.run(read_snapshots_assets(snapshots, include_positions=False))
     assert business_evidence(scalar) == business_evidence(
         {snapshot.id: {"total_asset": key} for snapshot, key in zip(snapshots, (5, 6), strict=True)}
     )
-    assert business_evidence(asyncio.run(read_snapshots_assets(None, snapshots))) == business_evidence(payloads)
+    assert business_evidence(asyncio.run(read_snapshots_assets(snapshots))) == business_evidence(payloads)
     _corrupt(database, "DELETE FROM business_asset_position")
     assert business_evidence(
-        asyncio.run(read_snapshots_assets(None, snapshots, include_positions=False))
+        asyncio.run(read_snapshots_assets(snapshots, include_positions=False))
     ) == business_evidence(scalar)
     with pytest.raises(ValueError, match="[Ii]ncomplete position facts"):
-        asyncio.run(read_snapshots_assets(None, snapshots))
+        asyncio.run(read_snapshots_assets(snapshots))
     snapshots[0].asset_fact_id = asset_fact_id(999)
     with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets(None, snapshots))
+        asyncio.run(read_snapshots_assets(snapshots))
 
 
 @pytest.mark.parametrize("input_owned", [False, True])
@@ -346,7 +346,7 @@ def test_execution_asset_history_reuses_valid_canonical_root(database, input_own
         assert snapshot.source == "execution"
         assert snapshot.execution_id == execution_id
         assert snapshot.created_at == created_at
-        assert business_evidence(asyncio.run(read_snapshots_assets(None, [snapshot]))) == business_evidence(
+        assert business_evidence(asyncio.run(read_snapshots_assets([snapshot]))) == business_evidence(
             {snapshot.id: payload["account_assets"]}
         )
         expected = 1

@@ -38,25 +38,6 @@ class _RuntimeTarget:
     last_execution: str = ""
 
 
-async def enqueue_account_runtime_sync(
-    account_id: int,
-    *,
-    reset_worker: bool,
-    create_request_key: str | None = None,
-) -> AccountRuntimeSync:
-    """登记独立重试目标；账户保存通过原生同连接 helper 完成相同操作。"""
-    value = await native_operation(
-        "runtime_sync_enqueue",
-        {
-            "account_id": account_id,
-            "reset_worker": reset_worker,
-            "create_request_key": create_request_key,
-            "now": now_str(),
-        },
-    )
-    return AccountRuntimeSync.model_validate(value)
-
-
 async def _begin_attempt(
     account_id: int,
     *,
