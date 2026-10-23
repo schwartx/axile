@@ -107,7 +107,8 @@ def test_batch_failure_rolls_back_audit_but_keeps_committed_business_facts(tmp_p
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rollback.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
-        monkeypatch.setattr(input_persistence, "SessionLocal", sessions)
+        # 原生冻结入口按路径开独立写连接,与审计批处理共用同一个测试文件。
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "rollback.db"))
         before = {"total_asset": 100.0, "positions": []}
         after = {"total_asset": 101.0, "positions": []}
         payload = {"curr_target": {"A": 0.0}}

@@ -360,15 +360,17 @@ mod tests {
     #[test]
     fn invalid_row_types_and_emitter_errors_are_propagated() {
         let connection = fixture();
-        let error = write(&connection, 2, &mut |_, _, _| Err("sink failed".into()))
-            .unwrap_err();
+        let error = write(&connection, 2, &mut |_, _, _| Err("sink failed".into())).unwrap_err();
         assert_eq!(error, "sink failed");
-        connection.execute("UPDATE analysis_source_execution SET time='invalid'", []).unwrap();
+        connection
+            .execute("UPDATE analysis_source_execution SET time='invalid'", [])
+            .unwrap();
         let mut emitted = false;
         let error = write(&connection, 2, &mut |_, _, _| {
             emitted = true;
             Ok(())
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert!(error.starts_with("ANALYSIS_READ_ERROR:"), "{error}");
         assert!(!emitted);
     }

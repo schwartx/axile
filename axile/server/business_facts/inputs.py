@@ -498,68 +498,6 @@ async def persist_input(
     return input_id
 
 
-async def persist_owned_input_variant(
-    session: Any,
-    *,
-    account_id: int,
-    owner_execution_id: str,
-    payload: object,
-    created_at: str,
-    variant_key: str = "pre_execute_audit",
-) -> str:
-    """以明确执行归属和变体名称冻结独立输入，重放必须保持原文一致。"""
-    payload = sanitize_input_payload(payload)
-    identity = f"axile.input-evidence:{account_id}:{owner_execution_id}:{variant_key}"
-    input_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
-
-    async def existing() -> bool:
-        row = (
-            (
-                await session.execute(
-                    sa.select(
-                        execution_input.c.id,
-                        execution_input.c.account_id,
-                        execution_input.c.execution_id,
-                        execution_input.c.owner_execution_id,
-                    ).where(execution_input.c.id == input_id)
-                )
-            )
-            .mappings()
-            .first()
-        )
-        if row is None:
-            return False
-        if (
-            row["account_id"] != account_id
-            or row["execution_id"] is not None
-            or row["owner_execution_id"] != owner_execution_id
-        ):
-            raise ValueError("Execution input variant identity has a different owner")
-        if not _same_payload(await read_input(session, input_id), payload):
-            raise ValueError("Execution input variant replay differs from frozen input")
-        return True
-
-    if await existing():
-        return input_id
-    facts = encode_inputs(
-        input_id,
-        payload,
-        account_id=account_id,
-        execution_id=None,
-        owner_execution_id=owner_execution_id,
-        created_at=created_at,
-    )
-    try:
-        async with session.begin_nested():
-            for table, batch in facts.items():
-                if batch:
-                    await session.execute(table.insert(), batch)
-    except IntegrityError:
-        if not await existing():
-            raise
-    return input_id
-
-
 async def load_input_target(session: Any, input_id: str, *, role: str = "curr_target") -> tuple[bool, object]:
     """只读取一种业务目标；不从当前配置反推历史缺值。"""
     role = _TARGET_ALIASES.get(role, role)

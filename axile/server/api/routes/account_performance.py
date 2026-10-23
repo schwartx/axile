@@ -85,12 +85,14 @@ async def get_performance(
 ) -> AccountPerformance:
     """完整绩效等待当前快照；纯账户收益不依赖回测成功."""
     await _get_account_or_404(session, account_id)
+    path = session.get_bind().url.database
+    await session.rollback()
     store = analysis_store()
     deadline = clock_monotonic() + 120
     enqueued = False
     while True:
         await session.rollback()
-        status = await read_snapshot_status(session, account_id)
+        status = await read_snapshot_status(path, account_id)
         if status == "ready":
             try:
                 async with asyncio.timeout(deadline - clock_monotonic()):
@@ -119,7 +121,7 @@ async def get_performance(
         if clock_monotonic() >= deadline:
             raise _NOT_READY
         if not enqueued and status != "ready":
-            await enqueue(session, account_id)
+            await enqueue(path, account_id)
             enqueued = True
         await clock_async_sleep(min(0.1, max(0.0, deadline - clock_monotonic())))
 
@@ -135,7 +137,9 @@ async def get_snapshot(session: SessionDep, account_id: int, range: RangeKey = "
 async def refresh_performance(session: SessionDep, account_id: int) -> dict:
     """幂等排队；已有成功结果在新批次发布前保持可读."""
     await _get_account_or_404(session, account_id)
-    await enqueue(session, account_id, force=True)
+    path = session.get_bind().url.database
+    await session.rollback()
+    await enqueue(path, account_id, force=True)
     return {"status": "pending", "account_id": account_id}
 
 

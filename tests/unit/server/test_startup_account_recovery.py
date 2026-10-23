@@ -1,6 +1,7 @@
 """服务生命周期与账户连接解耦，不接真实柜台或启动实际交易任务。"""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -12,6 +13,62 @@ from axile.server.account_control import monitor as control_monitor
 from axile.server.api.routes import utils
 from axile.server.connection_validation import service as validation_service
 from axile.server.execution import notification_outbox, supplements
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "publish_store",
+        "freeze_execution_input",
+        "freeze_execution_after_assets",
+        "queue_enqueue",
+        "queue_status",
+        "queue_recover",
+        "queue_claim",
+        "queue_fail",
+        "queue_release",
+    ],
+)
+@pytest.mark.parametrize("entrypoint", ["lifespan", "manager"])
+def test_obsolete_native_rejected_before_background_services(monkeypatch, missing, entrypoint):
+    from axile.server import performance_analysis
+
+    names = (
+        "publish_store",
+        "freeze_execution_input",
+        "freeze_execution_after_assets",
+        "queue_enqueue",
+        "queue_status",
+        "queue_recover",
+        "queue_claim",
+        "queue_fail",
+        "queue_release",
+    )
+    native = SimpleNamespace(**{name: MagicMock() for name in names if name != missing})
+    monkeypatch.setattr(performance_analysis, "_core", native)
+    monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
+    monkeypatch.setattr(server_app, "is_configured", lambda: True)
+    monkeypatch.setattr(server_app.live_hub, "bind_loop", lambda _loop: None)
+    monitor = MagicMock()
+    scheduler = MagicMock()
+    sessions = MagicMock()
+    monkeypatch.setattr(control_monitor, "monitor", monitor)
+    monkeypatch.setattr(server_app, "scheduler", scheduler)
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match=f"{missing}.*rebuild the wheel"):
+            if entrypoint == "lifespan":
+                async with server_app.lifespan(FastAPI()):
+                    pytest.fail("Obsolete extension accepted")
+            else:
+                await performance_analysis.AnalysisManager(sessions).start()
+
+    asyncio.run(scenario())
+    monitor.start.assert_not_called()
+    scheduler.start.assert_not_called()
+    sessions.assert_not_called()
+    for operation in vars(native).values():
+        operation.assert_not_called()
 
 
 @pytest.fixture

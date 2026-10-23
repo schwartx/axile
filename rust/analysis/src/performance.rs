@@ -181,7 +181,12 @@ struct RangeState {
 }
 
 impl RangeState {
-    fn push(&mut self, item: &Observation, time: &str, include_backtest: bool) -> Result<(), String> {
+    fn push(
+        &mut self,
+        item: &Observation,
+        time: &str,
+        include_backtest: bool,
+    ) -> Result<(), String> {
         if time < self.start.as_str() {
             return Ok(());
         }
@@ -721,7 +726,14 @@ mod tests {
             true,
             Some(12.0),
         );
-        insert(&connection, 3, "2026-02-15T10:00:00.000003", Some(121.0), true, Some(12.1));
+        insert(
+            &connection,
+            3,
+            "2026-02-15T10:00:00.000003",
+            Some(121.0),
+            true,
+            Some(12.1),
+        );
         for include_backtest in [false, true] {
             let batched = calculate(&connection, include_backtest);
             for key in ["30", "90", "all"] {

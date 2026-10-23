@@ -247,7 +247,7 @@ async def worker(args) -> None:
         for round_number in range(1, 4):
             emit("refresh_start", round=round_number)
             async with sessions() as session:
-                await analysis.enqueue(session, 1, force=True)
+                await analysis.enqueue(session.get_bind().url.database, 1, force=True)
             if not await asyncio.wait_for(manager.run_once(), timeout=PROCESS_TIMEOUT):
                 raise AssertionError("The queued refresh was not executed")
             emit("refresh_end", round=round_number, python_rss_bytes=psutil.Process().memory_info().rss)

@@ -86,6 +86,31 @@ def test_incompatible_extension_rejects_wheel(wheel_project: Path, native_proces
         build_wheel(wheel_project)
 
 
+def test_wheel_probe_requires_business_freeze_and_queue_entrypoints(
+    wheel_project: Path, native_process: dict[str, Any]
+) -> None:
+    import ast
+
+    build_wheel(wheel_project)
+    probe = next(command[3] for command in native_process["calls"] if command[0] == sys.executable)
+    required = next(
+        ast.literal_eval(node.value)
+        for node in ast.parse(probe).body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
+    )
+    assert {
+        "freeze_execution_input",
+        "freeze_execution_after_assets",
+        "queue_enqueue",
+        "queue_status",
+        "queue_recover",
+        "queue_claim",
+        "queue_fail",
+        "queue_release",
+    } <= set(required)
+
+
 def test_native_wheel_is_platform_tagged_and_preserves_executable(wheel_project: Path) -> None:
     name = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
     binary = wheel_project / "axile" / "server" / "_native" / name

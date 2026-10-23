@@ -6,6 +6,8 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -22,8 +24,12 @@ from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION, rea
 class _RouteSession:
     """账户存在、无分析状态行:read_snapshot_status 返回 empty,不触发等待."""
 
-    def __init__(self, account: Account | None = None) -> None:
+    def __init__(self, account: Account | None = None, path: str = "unused") -> None:
+        self.path = path
         self.account = account
+
+    def get_bind(self):
+        return SimpleNamespace(url=SimpleNamespace(database=self.path))
 
     async def get(self, _model: object, account_id: int) -> Account | None:
         if self.account is not None and self.account.id == account_id:
@@ -60,33 +66,27 @@ class _RouteSession:
         ("s1", False, None, False, None, 1, "pending"),
     ],
 )
-def test_wait_status_uses_native_rules_in_caller_session(
-    snapshot_id, compatible, error, requested, running, published, expected
+def test_wait_status_uses_native_rules_in_committed_database(
+    tmp_path, snapshot_id, compatible, error, requested, running, published, expected
 ) -> None:
-    """等待路径保留调用方事务，仅将标量交给原生统一判断。"""
-    row = {
-        "snapshot_id": snapshot_id,
-        "snapshot_logic_version": LOGIC_VERSION if compatible else "old",
-        "snapshot_engine_version": ENGINE_VERSION,
-        "error": error,
-        "requested": requested,
-        "running_version": running,
-        "published_version": published,
-        "source_version": 1,
-    }
-
-    class Session:
-        async def execute(self, statement):
-            assert "ranges" not in str(statement)
-            return self
-
-        def mappings(self):
-            return self
-
-        def first(self):
-            return row
-
-    assert asyncio.run(read_snapshot_status(Session(), 1)) == expected
+    if not hasattr(_core, "queue_status"):
+        pytest.skip("Queue status requires rebuilt native extension")
+    path = str(tmp_path / "status.sqlite")
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+        CREATE TABLE account_analysis(account_id INTEGER, current_snapshot TEXT, error TEXT,
+          requested INTEGER, running_version INTEGER, published_version INTEGER, source_version INTEGER);
+        CREATE TABLE performance_snapshot(id TEXT, logic_version TEXT, engine_version TEXT);
+        """)
+        connection.execute(
+            "INSERT INTO account_analysis VALUES (1,?,?,?,?,?,1)", (snapshot_id, error, requested, running, published)
+        )
+        if snapshot_id is not None:
+            connection.execute(
+                "INSERT INTO performance_snapshot VALUES (?,?,?)",
+                (snapshot_id, LOGIC_VERSION if compatible else "old", ENGINE_VERSION),
+            )
+    assert asyncio.run(read_snapshot_status(path, 1)) == expected
 
 
 def _build_account() -> Account:
@@ -159,7 +159,8 @@ def test_performance_route_computes_synchronously_without_backtest(tmp_path: Pat
     database = tmp_path / "analysis.db"
     _seed_database(database)
     monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(database)))
-    client = TestClient(_build_app(_RouteSession(_build_account())))
+    monkeypatch.setattr(routes, "read_snapshot_status", AsyncMock(return_value="empty"))
+    client = TestClient(_build_app(_RouteSession(_build_account(), str(database))))
 
     response = client.get("/performance/1", params={"include_backtest": False})
 

@@ -9,6 +9,7 @@ from sqlmodel import SQLModel
 
 from axile.server.business_facts import assets, inputs, repository
 from axile.server.db.models import ExecuteRecord
+from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import build_account
 
@@ -28,10 +29,12 @@ def test_nonempty_result_root_array_is_rejected_before_writing():
 @pytest.mark.parametrize("attached_input", [False, True])
 @pytest.mark.parametrize("result_inputs", [False, True])
 def test_final_result_reuses_durable_normalized_input_and_after_asset(
-    tmp_path, foreign_after_asset, attached_input, result_inputs
+    tmp_path, monkeypatch, foreign_after_asset, attached_input, result_inputs
 ):
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'facts.db'}")
+        # 执行后观测经原生入口冻结,须指向同一测试文件。
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "facts.db"))
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         frozen = {"curr_target": {"normalized": 0}, "channel_type": "tq"}
         observed = {"total_asset": 0.0, "positions": [], "extra": {}}
@@ -54,10 +57,9 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
                     session, account_id=2, execution_id="frozen", payload=frozen, created_at="2026-10-20T09:00:00"
                 )
                 await session.commit()
-                after_ref = await repository.persist_execution_after_assets(
-                    session, account_id=2, execution_id="frozen", payload=output
+                after_ref = await input_persistence._persist_post_execute_assets(
+                    account_id=2, execution_id="frozen", payload=output
                 )
-                await session.commit()
                 record = ExecuteRecord(
                     account_id=2, execution_id="frozen", is_success=1, input_id=input_id if attached_input else None
                 )
@@ -102,8 +104,10 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
                     other_input = await repository.persist_execution_input(
                         session, account_id=2, execution_id="other", payload={}, created_at=record.created_at
                     )
-                    await repository.persist_execution_after_assets(
-                        session, account_id=2, execution_id="other", payload={"account_assets": {"total_asset": 99}}
+                    # 原生入口另开连接,需先提交使冻结输入对外可见。
+                    await session.commit()
+                    await input_persistence._persist_post_execute_assets(
+                        account_id=2, execution_id="other", payload={"account_assets": {"total_asset": 99}}
                     )
                     await session.execute(
                         assets.asset_binding.update()
@@ -124,9 +128,10 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
 
 @pytest.mark.parametrize("is_success", [0, 1])
 @pytest.mark.parametrize("result_assets", ["absent", "matching", "different"])
-def test_input_reuse_preserves_failure_finalization_after_assets(tmp_path, is_success, result_assets):
+def test_input_reuse_preserves_failure_finalization_after_assets(tmp_path, monkeypatch, is_success, result_assets):
     async def check():
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'after-assets.db'}")
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "after-assets.db"))
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         frozen = {"curr_target": {"A": 0}, "last_target": None}
         observed = {"total_asset": 0, "positions": []}
@@ -142,10 +147,11 @@ def test_input_reuse_preserves_failure_finalization_after_assets(tmp_path, is_su
                 await repository.persist_execution_input(
                     session, account_id=2, execution_id="after-assets", payload=frozen, created_at="2026-10-20"
                 )
-                await repository.persist_execution_after_assets(
-                    session, account_id=2, execution_id="after-assets", payload={"account_assets": observed}
-                )
+                # 原生入口另开连接,需先提交冻结输入。
                 await session.commit()
+                await input_persistence._persist_post_execute_assets(
+                    account_id=2, execution_id="after-assets", payload={"account_assets": observed}
+                )
                 record = ExecuteRecord(account_id=2, execution_id="after-assets", is_success=is_success)
                 session.add(record)
                 await session.flush()

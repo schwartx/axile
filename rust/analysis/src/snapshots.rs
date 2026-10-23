@@ -559,7 +559,11 @@ WHERE s.account_id IN ({placeholders})"
             ranges
                 .as_deref()
                 .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|mut value| value.pointer_mut("/all/performance/points").map(Value::take))
+                .and_then(|mut value| {
+                    value
+                        .pointer_mut("/all/performance/points")
+                        .map(Value::take)
+                })
                 .unwrap_or_else(|| Value::Array(Vec::new()))
         };
         let last = points.as_array().and_then(|items| items.last());
@@ -1006,16 +1010,22 @@ mod tests {
         let connection = database();
         for ids in [json!([]), json!([null, true, "1", 1.5])] {
             let mut request = json!({"account_ids": ids});
-            assert_eq!(summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: logic_version must be a nonempty string");
+            assert_eq!(
+                summaries(&connection, &request).unwrap_err(),
+                "INVALID_REQUEST: logic_version must be a nonempty string"
+            );
             request["logic_version"] = json!("");
-            assert_eq!(summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: engine_version must be a nonempty string");
+            assert_eq!(
+                summaries(&connection, &request).unwrap_err(),
+                "INVALID_REQUEST: engine_version must be a nonempty string"
+            );
             request["engine_version"] = json!("");
             assert_eq!(summaries(&connection, &request).unwrap(), json!({}));
         }
-        assert_eq!(summaries(&connection, &json!({"account_ids": 1})).unwrap_err(),
-            "INVALID_REQUEST: account_ids must be an array of integers");
+        assert_eq!(
+            summaries(&connection, &json!({"account_ids": 1})).unwrap_err(),
+            "INVALID_REQUEST: account_ids must be an array of integers"
+        );
     }
 
     #[test]
@@ -1036,7 +1046,10 @@ mod tests {
             "logic_version":"18","engine_version":"e"}),
         )
         .unwrap();
-        assert_eq!(result, summaries_for_accounts(&connection, &[1,2,3,4], "18", "e").unwrap());
+        assert_eq!(
+            result,
+            summaries_for_accounts(&connection, &[1, 2, 3, 4], "18", "e").unwrap()
+        );
         assert_eq!(result, summaries(&connection, &json!({"account_ids":[1,null,"2",2,true,3,4,1.5], "logic_version":"18", "engine_version":"e"})).unwrap());
         assert_eq!(result["1"]["points"][0]["account_equity"], 10.0);
         assert_eq!(result["1"]["account_equity"], 20.0);
@@ -1079,15 +1092,25 @@ mod tests {
         assert_eq!(result["4"]["status"], "empty");
         assert_eq!(result["5"]["status"], "pending");
         assert!(result.get("6").is_none());
-        assert_eq!(result, summaries_for_accounts(&connection, &[1,2,3,4,5,6], "18", "equity-ledger-1").unwrap());
+        assert_eq!(
+            result,
+            summaries_for_accounts(&connection, &[1, 2, 3, 4, 5, 6], "18", "equity-ledger-1")
+                .unwrap()
+        );
         for (ranges, expected) in [
             ("invalid", json!([])),
             ("{}", json!([])),
             (r#"{"all":{"performance":{"points":null}}}"#, Value::Null),
             (r#"{"all":{"performance":{"points":42}}}"#, json!(42)),
         ] {
-            connection.execute("UPDATE performance_snapshot SET ranges=?1 WHERE id='s1'", [ranges]).unwrap();
-            let result = summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap();
+            connection
+                .execute(
+                    "UPDATE performance_snapshot SET ranges=?1 WHERE id='s1'",
+                    [ranges],
+                )
+                .unwrap();
+            let result =
+                summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap();
             assert_eq!(result["1"]["points"], expected);
             assert_eq!(result["1"]["account_equity"], Value::Null);
         }

@@ -300,14 +300,7 @@ fn execution_records(
     record_id: Option<i64>,
 ) -> PyResult<Py<PyBytes>> {
     store.json_bytes(py, |connection| {
-        crate::executions::page(
-            connection,
-            account_id,
-            skip,
-            limit,
-            execution_id,
-            record_id,
-        )
+        crate::executions::page(connection, account_id, skip, limit, execution_id, record_id)
     })
 }
 
@@ -396,10 +389,101 @@ fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<
     Ok(json_to_py(py, &receipt))
 }
 
+/// Freeze the pre-execution input and observations in one native transaction.
+#[pyfunction]
+fn freeze_execution_input(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<PyAny>> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| raise(AnalysisError::new("INVALID_REQUEST", error.to_string())))?;
+    let receipt = py
+        .detach(|| crate::business_facts_ops::freeze_execution_input(path, &request))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &receipt))
+}
+
+/// Freeze the post-execution asset observation before the worker result arrives.
+#[pyfunction]
+fn freeze_execution_after_assets(
+    py: Python<'_>,
+    path: &str,
+    request_json: &str,
+) -> PyResult<Py<PyAny>> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| raise(AnalysisError::new("INVALID_REQUEST", error.to_string())))?;
+    let receipt = py
+        .detach(|| crate::business_facts_ops::freeze_execution_after_assets(path, &request))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &receipt))
+}
+
+#[pyfunction]
+fn queue_enqueue(py: Python<'_>, path: &str, account_id: i64, force: bool) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::enqueue(path, account_id, force))
+        .map_err(raise)
+}
+
+#[pyfunction]
+fn queue_status(
+    py: Python<'_>,
+    path: &str,
+    account_id: i64,
+    logic: &str,
+    engine: &str,
+) -> PyResult<String> {
+    py.detach(|| crate::analysis_queue::status(path, account_id, logic, engine))
+        .map_err(raise)
+}
+
+#[pyfunction]
+fn queue_recover(py: Python<'_>, path: &str, logic: &str, engine: &str) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::recover(path, logic, engine))
+        .map_err(raise)
+}
+
+#[pyfunction]
+fn queue_claim(py: Python<'_>, path: &str, now: f64, token: &str) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| crate::analysis_queue::claim(path, now, token))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &result.unwrap_or(Value::Null)))
+}
+
+#[pyfunction]
+fn queue_release(
+    py: Python<'_>,
+    path: &str,
+    account_id: i64,
+    version: i64,
+    token: &str,
+) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::release(path, account_id, version, token))
+        .map_err(raise)
+}
+
+#[pyfunction]
+fn queue_fail(
+    py: Python<'_>,
+    path: &str,
+    account_id: i64,
+    version: i64,
+    token: &str,
+    now: f64,
+) -> PyResult<()> {
+    py.detach(|| crate::analysis_queue::fail(path, account_id, version, token, now))
+        .map_err(raise)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
+    m.add_function(wrap_pyfunction!(queue_enqueue, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_status, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_recover, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_release, m)?)?;
+    m.add_function(wrap_pyfunction!(queue_fail, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;
+    m.add_function(wrap_pyfunction!(freeze_execution_input, m)?)?;
+    m.add_function(wrap_pyfunction!(freeze_execution_after_assets, m)?)?;
     m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
@@ -539,7 +623,10 @@ fn summaries(
     let result = store
         .with_snapshot(|connection| {
             snapshots::summaries_for_accounts(
-                connection, &account_ids, logic_version, engine_version,
+                connection,
+                &account_ids,
+                logic_version,
+                engine_version,
             )
         })
         .map_err(raise)?;

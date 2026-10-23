@@ -49,6 +49,8 @@ required = (
     'performance_result', 'status', 'publication_status', 'chart',
     'execution_summary', 'execution_detail', 'order_submission_summary',
     'order_submissions', 'submission_monitor', 'publish_store',
+    'freeze_execution_input', 'freeze_execution_after_assets',
+    'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

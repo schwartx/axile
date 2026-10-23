@@ -177,14 +177,15 @@ def test_all_business_tables_have_no_generic_field_metadata():
         assert "numeric_kinds" not in table.c
 
 
-def test_equal_audit_targets_share_one_frozen_input(monkeypatch):
+def test_equal_audit_targets_share_one_frozen_input(monkeypatch, tmp_path):
     async def check():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        path = tmp_path / "slim.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(SQLModel.metadata.create_all)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
-            monkeypatch.setattr(input_persistence, "SessionLocal", sessions)
+            monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
             payload = {"curr_target": {"A": 0}, "last_target": {}, "strategy_target": {"A": 0.3}, "trade_rules": {}}
             primary, audit = await input_persistence._persist_pre_execute_bundle(
                 account_id=1,

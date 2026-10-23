@@ -978,7 +978,10 @@ mod tests {
         assert_eq!(value["tables"]["transaction_fees"]["rows"][0][2], -0.25);
         assert_eq!(value["total"], 1);
         assert_eq!(value["next_offset"], Value::Null);
-        assert_eq!(value["next_offsets"], json!({"positions":null,"attempts":null,"symbols":null}));
+        assert_eq!(
+            value["next_offsets"],
+            json!({"positions":null,"attempts":null,"symbols":null})
+        );
         connection.execute("INSERT INTO performance_cost_transaction(snapshot_id,record_id,idx,symbol) VALUES('s1',1,1,'B')", []).unwrap();
         let first = execution_detail(&connection, 2, "s1", 1, 1, 0).unwrap();
         assert_eq!(first["next_offset"], 1);

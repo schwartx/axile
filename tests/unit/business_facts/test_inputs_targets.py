@@ -16,7 +16,6 @@ from axile.server.business_facts.inputs import (
     load_input_target,
     load_sizing_context,
     persist_input,
-    persist_owned_input_variant,
     read_input,
     sanitize_input_payload,
 )
@@ -222,35 +221,7 @@ def test_persist_replays_identity_and_selective_target_reads():
                             "payload": {"curr_target": {"rb2610": 1.0}, "sizing_context": {"weight_precision": 0.01}},
                         },
                     )
-                variant_kwargs = dict(
-                    account_id=1,
-                    owner_execution_id="same-execution",
-                    payload={"curr_target": {"rb2610": 2}},
-                    created_at="2026-10-20",
-                )
-                audit_id = await persist_owned_input_variant(session, **variant_kwargs)
-                assert business_evidence(
-                    await persist_owned_input_variant(session, **variant_kwargs)
-                ) == business_evidence(audit_id)
-                other_key_id = await persist_owned_input_variant(session, **variant_kwargs, variant_key="another-view")
-                assert other_key_id != audit_id
-                other_owner_id = await persist_owned_input_variant(
-                    session, **{**variant_kwargs, "owner_execution_id": "another-execution"}
-                )
-                assert other_owner_id not in (audit_id, other_key_id)
-                other_account_id = await persist_owned_input_variant(session, **{**variant_kwargs, "account_id": 2})
-                assert other_account_id not in (audit_id, other_key_id, other_owner_id)
-                with pytest.raises(ValueError, match="variant replay differs"):
-                    await persist_owned_input_variant(
-                        session, **{**variant_kwargs, "payload": {"curr_target": {"rb2610": 3}}}
-                    )
-                variant_row = (
-                    (await session.execute(sa.select(execution_input).where(execution_input.c.id == audit_id)))
-                    .mappings()
-                    .one()
-                )
-                assert variant_row["execution_id"] is None
-                assert business_evidence(variant_row["owner_execution_id"]) == business_evidence("same-execution")
+                # 审计变体身份与重放一致性由原生入口保证(见 test_pre_execute_input_bundle)。
                 await session.commit()
         finally:
             await engine.dispose()
