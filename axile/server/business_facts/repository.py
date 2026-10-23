@@ -261,22 +261,6 @@ async def _delete_result_assets(session: Any, record_id: int) -> None:
     await session.execute(assets.asset_snapshot.delete().where(assets.asset_snapshot.c.record_id == record_id))
 
 
-async def persist_execution_after_assets(
-    session: Any, *, account_id: int, execution_id: str, payload: Mapping[str, object]
-) -> tuple[str, str] | None:
-    """在 worker 返回前冻结执行后资产，使审计可引用同一份不可变观测。"""
-    input_id = await find_execution_input(session, account_id=account_id, execution_id=execution_id)
-    if input_id is None:
-        raise ValueError("执行后资产观测缺少已冻结输入")
-    if "account_assets" not in payload:
-        return None
-    existing = await assets.find_matching_after_asset(session, input_id, payload)
-    if existing is not None:
-        return input_id, existing
-    await _write_batch(session, assets.encode_input_after_assets(input_id, payload, result=payload))
-    return input_id, assets.input_after_asset_fact_id(input_id)
-
-
 def _asset_scope(record_ids: Sequence[int], input_ids: Sequence[str], asset_ids: Sequence[str] = ()) -> Any:
     predicates = []
     if record_ids:

@@ -6,6 +6,7 @@
 
 pub mod assets;
 pub(crate) mod business_detail;
+pub(crate) mod business_facts_ops;
 pub mod calendar;
 pub mod costs;
 pub mod dashboard;
@@ -25,7 +26,8 @@ pub(crate) mod source;
 pub mod submissions;
 pub mod symbols;
 pub mod views;
-pub mod wire_result;
+pub(crate) mod wire_result;
+pub(crate) mod writer_scope;
 
 use std::path::Path;
 use std::time::Duration;
@@ -164,5 +166,4 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().code, "DATABASE_OPEN");
     }
-
 }

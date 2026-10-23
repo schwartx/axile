@@ -300,14 +300,7 @@ fn execution_records(
     record_id: Option<i64>,
 ) -> PyResult<Py<PyBytes>> {
     store.json_bytes(py, |connection| {
-        crate::executions::page(
-            connection,
-            account_id,
-            skip,
-            limit,
-            execution_id,
-            record_id,
-        )
+        crate::executions::page(connection, account_id, skip, limit, execution_id, record_id)
     })
 }
 
@@ -396,10 +389,38 @@ fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<
     Ok(json_to_py(py, &receipt))
 }
 
+/// Freeze the pre-execution input and observations in one native transaction.
+#[pyfunction]
+fn freeze_execution_input(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<PyAny>> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| raise(AnalysisError::new("INVALID_REQUEST", error.to_string())))?;
+    let receipt = py
+        .detach(|| crate::business_facts_ops::freeze_execution_input(path, &request))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &receipt))
+}
+
+/// Freeze the post-execution asset observation before the worker result arrives.
+#[pyfunction]
+fn freeze_execution_after_assets(
+    py: Python<'_>,
+    path: &str,
+    request_json: &str,
+) -> PyResult<Py<PyAny>> {
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| raise(AnalysisError::new("INVALID_REQUEST", error.to_string())))?;
+    let receipt = py
+        .detach(|| crate::business_facts_ops::freeze_execution_after_assets(path, &request))
+        .map_err(raise)?;
+    Ok(json_to_py(py, &receipt))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;
+    m.add_function(wrap_pyfunction!(freeze_execution_input, m)?)?;
+    m.add_function(wrap_pyfunction!(freeze_execution_after_assets, m)?)?;
     m.add_function(wrap_pyfunction!(journal, m)?)?;
     m.add_function(wrap_pyfunction!(activity_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(execution_records, m)?)?;
@@ -539,7 +560,10 @@ fn summaries(
     let result = store
         .with_snapshot(|connection| {
             snapshots::summaries_for_accounts(
-                connection, &account_ids, logic_version, engine_version,
+                connection,
+                &account_ids,
+                logic_version,
+                engine_version,
             )
         })
         .map_err(raise)?;

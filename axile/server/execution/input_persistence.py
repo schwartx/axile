@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Mapping
+from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
-from axile.server.business_facts.inputs import canonical_input, normalize_targets, persist_owned_input_variant
-from axile.server.business_facts.repository import persist_execution_after_assets, persist_execution_input
-from axile.server.core.db import SessionLocal
 from axile.server.db.models.base import now_str
 from axile.server.execution_audit import _run_coroutine_sync
 
@@ -23,16 +23,16 @@ def sanitize_execution_input(payload: Mapping[str, object]) -> dict[str, object]
     return sanitized
 
 
-async def _begin_input_transaction(session: AsyncSession) -> None:
-    """确保 SQLite 外层事务已开始，避免首次 SAVEPOINT 单独提交输入。"""
-    connection = await session.connection()
-    if connection.dialect.name == "sqlite":
-        raw_connection = await connection.get_raw_connection()
-        driver_connection = raw_connection.driver_connection
-        if driver_connection is None:
-            raise RuntimeError("SQLite 驱动连接不可用")
-        if not driver_connection.in_transaction:
-            await connection.exec_driver_sql("BEGIN")
+def _freeze_facts(command: str, request: Mapping[str, Any]) -> Any:
+    """单次原生调用完成整个冻结事务;业务错误还原为既有 ValueError 语义。"""
+    from axile.server._native import _core
+    from axile.server.core.db import database_path
+
+    payload = json.dumps(request, ensure_ascii=False)
+    try:
+        return getattr(_core, command)(database_path(), payload)
+    except _core.NativeError as error:
+        raise ValueError(str(error.args[1]) if len(error.args) > 1 else str(error)) from None
 
 
 async def _persist_pre_execute_input(
@@ -61,44 +61,22 @@ async def _persist_pre_execute_bundle(
     before_account_assets: Mapping[str, object] | None = None,
 ) -> tuple[str, str | None]:
     """原子冻结一份业务输入与执行前观测；不同来源的历史证据独立保留。"""
-    async with SessionLocal() as session:
-        await _begin_input_transaction(session)
-        created_at = now_str()
-        input_id = await persist_execution_input(
-            session,
-            account_id=account_id,
-            execution_id=execution_id,
-            payload=sanitize_execution_input(payload),
-            created_at=created_at,
-            before_assets=before_account_assets,
-        )
-        same_audit = False
-        if audit_payload is not None:
-            primary = canonical_input(payload)
-            audit = canonical_input(audit_payload)
-            keys = normalize_targets(audit_payload)
-            same_audit = (
-                isinstance(primary, Mapping)
-                and isinstance(audit, Mapping)
-                and all(primary.get(key) == audit.get(key) for key in keys)
-            )
-        audit_id = (
-            input_id
-            if same_audit
-            else (
-                await persist_owned_input_variant(
-                    session,
-                    account_id=account_id,
-                    owner_execution_id=execution_id,
-                    payload=sanitize_execution_input(audit_payload),
-                    created_at=created_at,
-                )
-                if audit_payload is not None
-                else None
-            )
-        )
-        await session.commit()
-        return input_id, audit_id
+    created_at = now_str()
+    request: dict[str, Any] = {
+        "account_id": account_id,
+        "execution_id": execution_id,
+        "input_id": str(uuid.uuid4()),
+        "created_at": created_at,
+        "payload": payload,
+    }
+    if audit_payload is not None:
+        identity = f"axile.input-evidence:{account_id}:{execution_id}:pre_execute_audit"
+        request["audit_payload"] = audit_payload
+        request["audit_input_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+    if before_account_assets is not None:
+        request["before_assets"] = before_account_assets
+    receipt = await run_in_threadpool(_freeze_facts, "freeze_execution_input", request)
+    return receipt["input_id"], receipt.get("audit_id")
 
 
 def persist_pre_execute_bundle_sync(
@@ -146,15 +124,12 @@ async def _persist_post_execute_assets(
     *, account_id: int, execution_id: str, payload: Mapping[str, object]
 ) -> tuple[str, str] | None:
     """提交执行后的账户观测，先于 worker 回传结果保留故障恢复证据。"""
-    async with SessionLocal() as session:
-        reference = await persist_execution_after_assets(
-            session,
-            account_id=account_id,
-            execution_id=execution_id,
-            payload=payload,
-        )
-        await session.commit()
-        return reference
+    receipt = await run_in_threadpool(
+        _freeze_facts,
+        "freeze_execution_after_assets",
+        {"account_id": account_id, "execution_id": execution_id, "payload": payload},
+    )
+    return (receipt["input_id"], receipt["asset_id"]) if receipt else None
 
 
 def persist_post_execute_assets_sync(

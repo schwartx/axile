@@ -48,12 +48,14 @@ class _WriteSession:
         return self.existing
 
 
-def test_pre_order_commit_uses_sanitized_input_and_preserves_zero(monkeypatch):
-    session = _WriteSession()
-    store = AsyncMock(return_value="durable-input")
-    monkeypatch.setattr(input_persistence, "SessionLocal", lambda: session)
-    monkeypatch.setattr(input_persistence, "persist_execution_input", store)
-    monkeypatch.setattr(input_persistence, "_begin_input_transaction", AsyncMock())
+def test_pre_order_commit_hands_full_request_to_native_freeze(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def freeze(command, request):
+        captured.update(command=command, request=request)
+        return {"input_id": "durable-input"}
+
+    monkeypatch.setattr(input_persistence, "_freeze_facts", freeze)
     payload = {
         "account_config": {"password": "synthetic"},
         "execution_notification_code": "synthetic-source",
@@ -68,17 +70,14 @@ def test_pre_order_commit_uses_sanitized_input_and_preserves_zero(monkeypatch):
             account_id=1, execution_id="before-final", payload=payload, before_account_assets=before
         )
     )
+    request = captured["request"]
+    assert captured["command"] == "freeze_execution_input"
     assert business_evidence(input_id) == business_evidence("durable-input")
-    assert business_evidence(session.events) == business_evidence(["commit"])
-    assert business_evidence(store.await_args.kwargs["payload"]) == business_evidence(
-        {
-            "feishu_key": "***",
-            "curr_target": {"A": 0.0},
-            "last_target": {},
-            "execution_timeout": None,
-        }
-    )
-    assert store.await_args.kwargs["before_assets"] is before
+    # 原始负载原样交原生事务脱敏,调用侧对象不被修改。
+    assert request["payload"] is payload
+    assert request["before_assets"] is before
+    assert request["execution_id"] == "before-final"
+    assert "audit_payload" not in request
     assert "account_config" in payload
 
 
@@ -104,18 +103,14 @@ def test_clear_pre_order_failure_prevents_later_audit_and_submit(monkeypatch):
 
 
 def test_post_order_assets_commit_is_required(monkeypatch):
-    session = _WriteSession()
-    monkeypatch.setattr(input_persistence, "SessionLocal", lambda: session)
-    monkeypatch.setattr(
-        input_persistence,
-        "persist_execution_after_assets",
-        AsyncMock(side_effect=RuntimeError("cannot commit after assets")),
-    )
+    def fail_freeze(_command, _request):
+        raise RuntimeError("cannot commit after assets")
+
+    monkeypatch.setattr(input_persistence, "_freeze_facts", fail_freeze)
     with pytest.raises(RuntimeError, match="cannot commit after assets"):
         input_persistence.persist_post_execute_assets_sync(
             account_id=1, execution_id="after-before-final", payload={"account_assets": {"total_asset": 0.0}}
         )
-    assert "commit" not in session.events
 
 
 def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):

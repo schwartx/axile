@@ -123,7 +123,7 @@ pub(super) fn skip(
     task: &Task,
     initial_reason: &str,
 ) -> Result<Value, AnalysisError> {
-    transaction(connection, || {
+    crate::writer_scope::immediate(connection, || {
         if let Some(receipt) = already_published(connection, task)? {
             return Ok(receipt);
         }
@@ -138,7 +138,7 @@ pub(super) fn publish(
     task: &Task,
     complete: &Value,
 ) -> Result<Value, AnalysisError> {
-    transaction(connection, || {
+    crate::writer_scope::immediate(connection, || {
         if let Some(receipt) = already_published(connection, task)? {
             return Ok(receipt);
         }
@@ -164,26 +164,6 @@ pub(super) fn publish(
         receipt["row_counts"] = complete["row_counts"].clone();
         Ok(receipt)
     })
-}
-
-fn transaction(
-    connection: &Connection,
-    work: impl FnOnce() -> Result<Value, AnalysisError>,
-) -> Result<Value, AnalysisError> {
-    connection.execute_batch("BEGIN IMMEDIATE;").map_err(sql)?;
-    match work() {
-        Ok(value) => {
-            if let Err(error) = connection.execute_batch("COMMIT;") {
-                let _ = connection.execute_batch("ROLLBACK;");
-                return Err(sql(error));
-            }
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK;");
-            Err(error)
-        }
-    }
 }
 
 fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<(), AnalysisError> {
@@ -548,7 +528,7 @@ mod tests {
                     .unwrap();
             }
         }
-        transaction(&connection, || {
+        crate::writer_scope::immediate(&connection, || {
             cleanup(&connection, &task(), Some("old"))?;
             Ok(Value::Null)
         })

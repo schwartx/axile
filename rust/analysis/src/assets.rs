@@ -185,6 +185,115 @@ pub(crate) fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<V
     Ok(Value::Object(view))
 }
 
+fn map_cell(row: &Map<String, Value>, name: &str) -> Result<Value, String> {
+    Ok(row.get(name).cloned().unwrap_or(Value::Null))
+}
+
+fn map_columns(row: &Map<String, Value>, fields: &[&str]) -> Result<Map<String, Value>, String> {
+    let mut view = Map::new();
+    for &name in fields {
+        let value = map_cell(row, name)?;
+        if !value.is_null() {
+            view.insert(name.into(), value);
+        }
+    }
+    let evidence = map_cell(row, "audit_evidence")?;
+    if let Some(evidence) = evidence.as_object() {
+        if !evidence.is_empty() {
+            view.insert("audit_evidence".into(), Value::Object(evidence.clone()));
+        }
+    }
+    Ok(view)
+}
+
+fn map_availability(
+    view: &mut Map<String, Value>,
+    row: &Map<String, Value>,
+    fields: &[(&str, &str, &str)],
+) -> Result<(), String> {
+    let mut states = Map::new();
+    for &(label, field, column) in fields {
+        let state = map_cell(row, column)?;
+        let Some(state) = state.as_str() else {
+            return Err(invalid("invalid availability"));
+        };
+        if !["absent", "null", "value", "invalid"].contains(&state) {
+            return Err(invalid("invalid availability"));
+        }
+        states.insert(label.into(), json!(state));
+        if state == "null" {
+            view.insert(field.into(), Value::Null);
+        }
+    }
+    view.insert("availability".into(), Value::Object(states));
+    Ok(())
+}
+
+/// 已解码事实行上的观测还原,供写入端等价比较复用,不必经过 SQL 行。
+pub(crate) fn observation_value(
+    root: &Map<String, Value>,
+    positions: &[Map<String, Value>],
+) -> Result<Value, String> {
+    if map_cell(root, "payload_kind")?.as_str() != Some("object") {
+        return map_cell(root, "payload_value");
+    }
+    let mut view = map_columns(root, ASSET_FIELDS)?;
+    map_availability(
+        &mut view,
+        root,
+        &[
+            ("cash", "available_cash", "cash_state"),
+            ("equity", "total_asset", "equity_state"),
+            ("market_value", "market_value", "market_state"),
+        ],
+    )?;
+    match map_cell(root, "positions_kind")?.as_str() {
+        Some("array") => {
+            let count = map_cell(root, "positions_count")?.as_i64();
+            if count != Some(positions.len() as i64) {
+                return Err(invalid("incomplete position facts"));
+            }
+            let mut sorted: Vec<&Map<String, Value>> = positions.iter().collect();
+            sorted.sort_by_key(|row| row.get("ordinal").and_then(Value::as_i64).unwrap_or(-1));
+            let mut values = Vec::with_capacity(sorted.len());
+            for (ordinal, row) in sorted.iter().enumerate() {
+                if row.get("ordinal").and_then(Value::as_i64) != Some(ordinal as i64) {
+                    return Err(invalid("invalid position occurrence sequence"));
+                }
+                values.push(position_value(row)?);
+            }
+            view.insert("positions".into(), Value::Array(values));
+        }
+        Some("absent") => {}
+        _ => {
+            view.insert("positions".into(), map_cell(root, "positions_value")?);
+        }
+    }
+    Ok(Value::Object(view))
+}
+
+fn position_value(row: &Map<String, Value>) -> Result<Value, String> {
+    if map_cell(row, "payload_kind")?.as_str() != Some("object") {
+        return map_cell(row, "payload_value");
+    }
+    let mut view = map_columns(row, POSITION_FIELDS)?;
+    map_availability(
+        &mut view,
+        row,
+        &[
+            ("volume", "volume", "volume_state"),
+            (
+                "available_volume",
+                "available_volume",
+                "available_volume_state",
+            ),
+            ("market_value", "market_value", "market_value_state"),
+            ("avg_price", "avg_price", "avg_price_state"),
+        ],
+    )?;
+    Ok(Value::Object(view))
+}
+
 pub fn page(
     connection: &Connection,
     account_id: i64,

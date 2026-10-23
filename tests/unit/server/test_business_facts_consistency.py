@@ -792,16 +792,16 @@ def test_account_delete_cleans_its_pending_and_final_graph_only(tmp_path, foreig
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
 @pytest.mark.parametrize("asset_account", [1, 2], ids=["other-execution", "other-account"])
-def test_result_asset_binding_cannot_read_another_execution_observation(tmp_path, foreign_keys, asset_account):
+def test_result_asset_binding_cannot_read_another_execution_observation(
+    tmp_path, monkeypatch, foreign_keys, asset_account
+):
     """合法外键指向其他执行的资产时，数据库或业务读取必须拒绝该关联。"""
     from axile.server.business_facts.assets import asset_binding
-    from axile.server.business_facts.repository import (
-        persist_execution_after_assets,
-        persist_execution_input,
-        read_execution_detail,
-    )
+    from axile.server.business_facts.repository import persist_execution_input, read_execution_detail
+    from axile.server.execution import input_persistence
 
     async def check():
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "fact-consistency.db"))
         async with _database(tmp_path, foreign_keys=foreign_keys) as (_, sessions, _):
             async with sessions() as session:
                 await persist_execution_input(
@@ -811,8 +811,9 @@ def test_result_asset_binding_cannot_read_another_execution_observation(tmp_path
                     payload=_input(0.75),
                     created_at=_CREATED,
                 )
-                reference = await persist_execution_after_assets(
-                    session,
+                # 原生入口另开连接,需先提交冻结输入。
+                await session.commit()
+                reference = await input_persistence._persist_post_execute_assets(
                     account_id=asset_account,
                     execution_id="unrelated-observation",
                     payload={"account_assets": {"total_asset": 123456.0, "positions": []}},
@@ -842,13 +843,17 @@ def test_result_asset_binding_cannot_read_another_execution_observation(tmp_path
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
 @pytest.mark.parametrize("asset_account", [1, 2], ids=["other-execution", "other-account"])
 @pytest.mark.parametrize("include_positions", [False, True], ids=["scalar", "positions"])
-def test_account_snapshot_cannot_read_another_execution_asset(tmp_path, foreign_keys, asset_account, include_positions):
+def test_account_snapshot_cannot_read_another_execution_asset(
+    tmp_path, monkeypatch, foreign_keys, asset_account, include_positions
+):
     """资产观测引用被改为其他执行时，标量读取和持仓读取都必须拒绝。"""
     from axile.server.business_facts.assets import read_snapshot_assets, write_snapshot_assets
-    from axile.server.business_facts.repository import persist_execution_after_assets, persist_execution_input
+    from axile.server.business_facts.repository import persist_execution_input
     from axile.server.db.models import AccountAssetSnapshot
+    from axile.server.execution import input_persistence
 
     async def check():
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "fact-consistency.db"))
         async with _database(tmp_path, foreign_keys=foreign_keys) as (_, sessions, _):
             async with sessions() as session:
                 snapshot = AccountAssetSnapshot(
@@ -862,8 +867,9 @@ def test_account_snapshot_cannot_read_another_execution_asset(tmp_path, foreign_
                     payload=_input(),
                     created_at=_CREATED,
                 )
-                reference = await persist_execution_after_assets(
-                    session,
+                # 原生入口另开连接,需先提交冻结输入。
+                await session.commit()
+                reference = await input_persistence._persist_post_execute_assets(
                     account_id=asset_account,
                     execution_id="unrelated-observation",
                     payload={"account_assets": {"total_asset": 123456.0, "positions": []}},
@@ -1167,7 +1173,9 @@ def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second
 
 @pytest.mark.parametrize("new_snapshot", ["manual", "execution-index"])
 @pytest.mark.parametrize("mutation", ["asset", "binding"])
-def test_new_account_asset_observation_preserves_unrelated_record_projection(tmp_path, new_snapshot, mutation):
+def test_new_account_asset_observation_preserves_unrelated_record_projection(
+    tmp_path, monkeypatch, new_snapshot, mutation
+):
     """新账户观测只推动账户版本；真实执行资产或绑定变化才失效其拥有者。"""
     from axile.server.business_facts.assets import (
         asset_binding,
@@ -1175,17 +1183,20 @@ def test_new_account_asset_observation_preserves_unrelated_record_projection(tmp
         ensure_execution_asset_snapshot,
         write_snapshot_assets,
     )
-    from axile.server.business_facts.repository import persist_execution_after_assets
     from axile.server.db.models import AccountAssetSnapshot
+    from axile.server.execution import input_persistence
 
     async def check():
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "fact-consistency.db"))
         async with _database(tmp_path) as (_, sessions, _):
             async with sessions() as session:
                 first = await _store(session)
                 alternate = _result()
                 alternate["account_assets"]["total_asset"] = 1500.0
-                after = await persist_execution_after_assets(
-                    session, account_id=1, execution_id="facts-one", payload=alternate
+                # 原生入口另开连接,需先提交终态与冻结输入。
+                await session.commit()
+                after = await input_persistence._persist_post_execute_assets(
+                    account_id=1, execution_id="facts-one", payload=alternate
                 )
                 assert after is not None
                 _, alternate_asset_id = after

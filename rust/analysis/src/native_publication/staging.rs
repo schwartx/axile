@@ -209,7 +209,10 @@ fn create_table(
         .map_err(sql)
 }
 
-fn checked_columns<'a>(names: &[&str], table: &'a [Column]) -> Result<Vec<&'a Column>, AnalysisError> {
+fn checked_columns<'a>(
+    names: &[&str],
+    table: &'a [Column],
+) -> Result<Vec<&'a Column>, AnalysisError> {
     let mut seen = BTreeSet::new();
     let mut columns = Vec::new();
     for &name in names {

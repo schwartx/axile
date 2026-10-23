@@ -13,7 +13,7 @@ from axile.domain.execution import ExecutionArtifactType, ExecutionKind, Executi
 from axile.server.business_facts import assets, repository
 from axile.server.business_facts.artifacts import make_artifact_reference, resolve_artifact_content
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord, ExecutionArtifact
-from axile.server.execution import records
+from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import build_account
 
@@ -34,8 +34,10 @@ _WORKER_RESULT = {"status": "SUCCEEDED", "success": True, "account_assets": _AFT
 
 
 @asynccontextmanager
-async def _frozen_after(tmp_path):
+async def _frozen_after(tmp_path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'terminal-race.db'}")
+    # 执行后观测经原生入口冻结,须指向同一测试文件。
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "terminal-race.db"))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with engine.begin() as connection:
@@ -52,8 +54,8 @@ async def _frozen_after(tmp_path):
             )
             await session.commit()
         async with sessions() as session:
-            reference = await repository.persist_execution_after_assets(
-                session, account_id=_ACCOUNT_ID, execution_id=_EXECUTION_ID, payload=_WORKER_RESULT
+            reference = await input_persistence._persist_post_execute_assets(
+                account_id=_ACCOUNT_ID, execution_id=_EXECUTION_ID, payload=_WORKER_RESULT
             )
             assert reference is not None
             asset_id = reference[1]
@@ -113,9 +115,9 @@ async def _append_terminal(sessions, terminal, raw_result=None):
 
 
 @pytest.mark.parametrize("terminal", ["terminated", "exception"])
-def test_missing_worker_response_persists_failure_without_inventing_result_assets(tmp_path, terminal):
+def test_missing_worker_response_persists_failure_without_inventing_result_assets(tmp_path, monkeypatch, terminal):
     async def check():
-        async with _frozen_after(tmp_path) as (sessions, input_id, asset_id):
+        async with _frozen_after(tmp_path, monkeypatch) as (sessions, input_id, asset_id):
             async with sessions() as session:
                 frozen_evidence = await _asset_evidence(session)
             record = await _append_terminal(sessions, terminal)
@@ -156,9 +158,9 @@ def test_missing_worker_response_persists_failure_without_inventing_result_asset
 
 
 @pytest.mark.parametrize("terminal", ["success", "terminated", "exception"])
-def test_matching_after_observation_reuses_immutable_fact(tmp_path, terminal):
+def test_matching_after_observation_reuses_immutable_fact(tmp_path, monkeypatch, terminal):
     async def check():
-        async with _frozen_after(tmp_path) as (sessions, input_id, asset_id):
+        async with _frozen_after(tmp_path, monkeypatch) as (sessions, input_id, asset_id):
             async with sessions() as session:
                 frozen_evidence = await _asset_evidence(session)
             payload = {"account_assets": deepcopy(_AFTER_ASSETS)}
@@ -180,9 +182,11 @@ def test_matching_after_observation_reuses_immutable_fact(tmp_path, terminal):
 
 @pytest.mark.parametrize("terminal", ["success", "terminated", "exception"])
 @pytest.mark.parametrize("change", ["equity", "time", "position", "null"])
-def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_evidence(tmp_path, terminal, change):
+def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_evidence(
+    tmp_path, monkeypatch, terminal, change
+):
     async def check():
-        async with _frozen_after(tmp_path) as (sessions, _input_id, _asset_id):
+        async with _frozen_after(tmp_path, monkeypatch) as (sessions, _input_id, _asset_id):
             async with sessions() as session:
                 frozen_evidence = await _asset_evidence(session)
             changed = deepcopy(_AFTER_ASSETS)
@@ -208,9 +212,9 @@ def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_e
     asyncio.run(check())
 
 
-def test_success_missing_frozen_after_observation_is_still_rejected(tmp_path):
+def test_success_missing_frozen_after_observation_is_still_rejected(tmp_path, monkeypatch):
     async def check():
-        async with _frozen_after(tmp_path) as (sessions, _input_id, _asset_id):
+        async with _frozen_after(tmp_path, monkeypatch) as (sessions, _input_id, _asset_id):
             async with sessions() as session:
                 frozen_evidence = await _asset_evidence(session)
             with pytest.raises(ValueError, match="终态结果缺少 account_assets"):

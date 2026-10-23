@@ -423,7 +423,12 @@ fn one(rows: &Rows) -> Result<&Object, String> {
     }
     Ok(&rows[0])
 }
-fn load(conn: &Connection, table: &str, column: &str, value: &Value) -> Result<Rows, String> {
+pub(crate) fn load(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    value: &Value,
+) -> Result<Rows, String> {
     let mut statement = conn
         .prepare(&format!("SELECT * FROM {table} WHERE {column}=?1"))
         .map_err(db)?;
@@ -441,7 +446,7 @@ fn load(conn: &Connection, table: &str, column: &str, value: &Value) -> Result<R
     }
     Ok(result)
 }
-fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
+pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
     let mut item = Object::new();
     for (index, name) in row.as_ref().column_names().iter().enumerate() {
         // Frozen business0037 schema; algorithm is JSON only on execution_input.
@@ -484,6 +489,7 @@ fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
                     "business_asset_snapshot",
                     "payload_value" | "positions_value" | "extra"
                 )
+                | ("business_asset_position", "payload_value" | "extra")
                 | ("execution_order_collection", "invalid_value")
                 | (
                     "execution_order",
@@ -745,6 +751,16 @@ fn input(conn: &Connection, id: &Value, record: &Object) -> Result<Value, String
     let targets = load(conn, "execution_input_target", "input_id", id)?;
     let symbols = load(conn, "execution_input_symbol", "input_id", id)?;
     let plans = load(conn, "execution_input_plan", "input_id", id)?;
+    decode_input(head, &targets, &symbols, &plans)
+}
+
+/// 冻结输入的读端口径:事实行到业务 DTO,供详情与重放比较共用。
+pub(crate) fn decode_input(
+    head: &Object,
+    targets: &Rows,
+    symbols: &Rows,
+    plans: &Rows,
+) -> Result<Value, String> {
     let mut result = fields(head, INPUT)?;
     for role in [
         "curr_target",
@@ -825,7 +841,7 @@ fn input(conn: &Connection, id: &Value, record: &Object) -> Result<Value, String
     }
     if !plans.is_empty() {
         let mut states = Object::new();
-        for row in &plans {
+        for row in plans.iter() {
             states.insert(
                 text(row, "symbol")?.into(),
                 json!({"quantity":get(row,"quantity_state")?,"units":get(row,"units_state")?}),
@@ -948,7 +964,9 @@ fn node(row: &Object, specs: &[&str]) -> Result<Value, String> {
     }
 }
 fn find<'a>(rows: &'a Rows, key: &str, value: &str) -> Result<Option<&'a Object>, String> {
-    let mut matches = rows.iter().filter(|r| r.get(key).and_then(Value::as_str) == Some(value));
+    let mut matches = rows
+        .iter()
+        .filter(|r| r.get(key).and_then(Value::as_str) == Some(value));
     let found = matches.next();
     if matches.next().is_some() {
         return Err(invalid("duplicate fact path"));
@@ -1103,10 +1121,22 @@ fn collections(
     let state_field = if trade { "state" } else { "kind" };
     let path_field = if trade { "collection_path" } else { "path" };
     let count_field = if trade { "member_count" } else { "item_count" };
-    let invalid_field = if trade { "malformed_value" } else { "invalid_value" };
+    let invalid_field = if trade {
+        "malformed_value"
+    } else {
+        "invalid_value"
+    };
     let specs = if trade { TRADE } else { ORDER };
-    let ids: &[&str] = if trade { &["trade_id", "order_id"] } else { &["order_id"] };
-    let invalid_states: &[&str] = if trade { &["malformed"] } else { &["null", "invalid"] };
+    let ids: &[&str] = if trade {
+        &["trade_id", "order_id"]
+    } else {
+        &["order_id"]
+    };
+    let invalid_states: &[&str] = if trade {
+        &["malformed"]
+    } else {
+        &["null", "invalid"]
+    };
     let roots = load(conn, collection_table, "record_id", id)?;
     let items = load(conn, item_table, "record_id", id)?;
     let conversions = if trade {
@@ -1220,12 +1250,22 @@ mod tests {
 
     #[test]
     fn find_preserves_missing_unique_and_duplicate_paths() {
-        let mut rows: Rows = vec![json!({"path":null}), json!({"path":7}), json!({}), json!({"path":"/a"})]
-            .into_iter().map(|value| value.as_object().unwrap().clone()).collect();
+        let mut rows: Rows = vec![
+            json!({"path":null}),
+            json!({"path":7}),
+            json!({}),
+            json!({"path":"/a"}),
+        ]
+        .into_iter()
+        .map(|value| value.as_object().unwrap().clone())
+        .collect();
         assert!(find(&rows, "path", "/missing").unwrap().is_none());
         assert_eq!(find(&rows, "path", "/a").unwrap(), rows.last());
         rows.push(rows.last().unwrap().clone());
-        assert_eq!(find(&rows, "path", "/a").unwrap_err(), invalid("duplicate fact path"));
+        assert_eq!(
+            find(&rows, "path", "/a").unwrap_err(),
+            invalid("duplicate fact path")
+        );
     }
 
     #[test]

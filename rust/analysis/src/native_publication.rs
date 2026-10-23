@@ -8,12 +8,12 @@ mod staging;
 mod task;
 mod writer;
 
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 
-use crate::{error::AnalysisError, publication, with_read_snapshot};
+use crate::error::AnalysisError;
+use crate::{publication, with_read_snapshot, writer_scope};
 
 use staging::Staging;
 use task::Task;
@@ -21,7 +21,7 @@ use task::Task;
 /// Calculate outside the durable writer transaction, then compare-and-publish.
 pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
     let task = Task::parse(request)?;
-    let connection = open_writer(database)?;
+    let connection = writer_scope::open_writer(database)?;
     if let Some(receipt) = writer::already_published(&connection, &task)? {
         return Ok(receipt);
     }
@@ -53,27 +53,6 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
     };
     let complete = staged.finish(complete, task.account_id, task.source_version)?;
     writer::publish(&connection, &task, &complete)
-}
-
-fn open_writer(database: &Path) -> Result<Connection, AnalysisError> {
-    // Deliberately omit CREATE: an invalid path must never create a business DB.
-    let connection = Connection::open_with_flags(
-        database,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
-    connection
-        .execute_batch(
-            "PRAGMA foreign_keys=ON;
-         PRAGMA cache_size=-4096;
-         PRAGMA mmap_size=0;
-         PRAGMA temp_store=FILE;",
-        )
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
-    Ok(connection)
 }
 
 #[cfg(test)]

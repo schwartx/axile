@@ -44,6 +44,27 @@ async def _database() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         await engine.dispose()
 
 
+@asynccontextmanager
+async def _file_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, name: str
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """文件数据库:原生冻结入口另开写连接,须与异步引擎共用同一文件。"""
+    path = tmp_path / f"{name}.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(SQLModel.metadata.create_all)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            session.add(build_account(id=1, portfolio_id=None, account_config={}))
+            session.add(build_account(id=2, portfolio_id=None, account_config={}))
+            await session.commit()
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+        yield factory
+    finally:
+        await engine.dispose()
+
+
 def _input(target: object) -> dict[str, object]:
     return {"channel_type": "TQ", "curr_target": target, "last_target": {}, "algorithm": {"method": "TEST"}}
 
@@ -342,12 +363,13 @@ def test_latest_success_target_does_not_fall_back_to_older_nonempty_target(
     asyncio.run(scenario())
 
 
-def test_committed_input_and_before_assets_survive_without_terminal_record(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_committed_input_and_before_assets_survive_without_terminal_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     """在最终结果产生前中断时，独立输入和执行前观测仍可从新会话读取。"""
 
     async def scenario() -> None:
-        async with _database() as factory:
-            monkeypatch.setattr(input_persistence, "SessionLocal", factory)
+        async with _file_database(monkeypatch, tmp_path, "semantic-crash") as factory:
             input_payload = _input({"zero": 0, "short": -0.25})
             before = {
                 "available_cash": 0,
@@ -389,15 +411,14 @@ def test_committed_input_and_before_assets_survive_without_terminal_record(monke
     asyncio.run(scenario())
 
 
-def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """分析事实写入失败时回滚整份终态，已提交的下单前输入继续可查。"""
 
     async def fail_source_write(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("synthetic source write failure")
 
     async def scenario() -> None:
-        async with _database() as factory:
-            monkeypatch.setattr(input_persistence, "SessionLocal", factory)
+        async with _file_database(monkeypatch, tmp_path, "semantic-rollback") as factory:
             input_payload = _input({"one": 0.5})
             input_id = await input_persistence._persist_pre_execute_input(
                 account_id=1,
