@@ -6,7 +6,6 @@ from threading import Event, Lock
 from typing import cast
 
 import loguru
-from sqlmodel import desc, select
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
@@ -18,8 +17,6 @@ from axile.domain.execution import (
     ExecutionTerminateMode,
 )
 from axile.executor.termination import ExecutionTerminationController
-from axile.server.business_facts.symbols import read_outcome_symbols
-from axile.server.core.db import SessionLocal
 from axile.server.db.models import (
     ExecuteRecord,
     new_execution_id,
@@ -28,6 +25,7 @@ from axile.server.db.models import (
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
 from axile.server.execution_audit import append_execution_event
+from axile.server.native_store import native_operation
 
 
 @dataclass
@@ -428,8 +426,7 @@ async def load_record_outcome_symbols(record: ExecuteRecord | None) -> list[str]
     """仅读取未到位或受阻的品种键，不组装完整执行结果。"""
     if record is None or record.id is None:
         return []
-    async with SessionLocal() as session:
-        return await read_outcome_symbols(session, record.id)
+    return await native_operation("execution_read", {"op": "outcome_symbols", "record_id": record.id})
 
 
 def _build_persisted_execution_status(
@@ -563,20 +560,13 @@ async def get_execution_status(execution_id: str) -> dict[str, object] | None:
     }:
         return serialize_intent(intent)
 
-    async with SessionLocal() as session:
-        statement = (
-            select(ExecuteRecord)
-            .where(ExecuteRecord.execution_id == execution_id)
-            .order_by(desc(ExecuteRecord.id))
-            .limit(1)
-        )
-        record = (await session.execute(statement)).scalar_one_or_none()
-        outcome_symbols = [] if record is None else await read_outcome_symbols(session, cast("int", record.id))
+    persisted = await native_operation("execution_read", {"op": "status", "execution_id": execution_id})
+    record = None if persisted["record"] is None else ExecuteRecord.model_validate(persisted["record"])
 
     if record is None:
         return serialize_intent(intent) if intent is not None else None
 
-    payload = _build_persisted_execution_status(record, outcome_symbols=outcome_symbols)
+    payload = _build_persisted_execution_status(record, outcome_symbols=persisted["outcome_symbols"])
     # 业务记录写入后，任务收尾仍可能异常；重启不能用休市结果掩盖该异常。
     if (
         payload["status"] == ExecutionTaskStatus.PARTIAL

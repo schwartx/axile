@@ -217,7 +217,6 @@ def test_target_sizing_uses_immutable_audit_input_context():
                 calculated_at=record.created_at,
             )
             evidence = await account_execution._sizing_evidence_for_snapshot(
-                session,
                 snapshot,
                 canonicalize=lambda symbol: symbol,
                 strategy_weights={"rb2610": 1},
@@ -225,7 +224,7 @@ def test_target_sizing_uses_immutable_audit_input_context():
             )
             assert evidence.status == "available"
             assert evidence.rows["rb2610"].weight_precision == 0.01
-            assert await read_execution_input(session, record.input_id) == terminal_input
+            assert await read_execution_input(record.input_id) == terminal_input
 
     asyncio.run(scenario())
 
@@ -291,10 +290,10 @@ def test_delete_execution_records_preserves_independent_summary_journal(monkeypa
                 await session.commit()
 
                 if delete_account:
-                    message = await account_crud.delete_account(session, sched=SimpleNamespace(), account_id=1)
+                    message = await account_crud.delete_account(sched=SimpleNamespace(), account_id=1)
                     assert message.message == "成功删除账户"
                 else:
-                    message = await account_crud.delete_execute_records(session, account_id=1)
+                    message = await account_crud.delete_execute_records(account_id=1)
                     assert message.message == "成功删除"
                 assert await session.get(ExecuteRecord, record.id, populate_existing=True) is None
                 assert await session.get(ExecuteRecord, other.id, populate_existing=True) is not None

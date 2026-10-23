@@ -98,3 +98,26 @@ def test_changed_event_or_metadata_reference_is_rejected() -> None:
     reference["root_metadata"] = {"orders": []}
     with pytest.raises(ValueError, match="非元数据覆盖"):
         hydrate_captured_context(reference, event_id="execution:execution-facts", event_context=event)
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1", None])
+def test_reference_version_keeps_exact_integer_identity(version) -> None:
+    captured = _capture()
+    event = _event(captured)
+    reference = compact_captured_context(captured, event, event_id="execution:execution-facts")
+    assert reference is not None
+    reference["$axile_notification_context"] = version
+    with pytest.raises(ValueError, match="引用无效"):
+        hydrate_captured_context(reference, event_id="execution:execution-facts", event_context=event)
+
+
+def test_duplicate_field_order_and_nested_supplement_overrides_are_rejected() -> None:
+    captured = _capture()
+    event = _event(captured)
+    reference = compact_captured_context(captured, event, event_id="execution:execution-facts")
+    assert reference is not None
+    reference["root_order"][0] = reference["root_order"][1]
+    with pytest.raises(ValueError, match="字段顺序无效"):
+        hydrate_captured_context(reference, event_id="execution:execution-facts", event_context=event)
+    captured["execution"]["supplements"] = [{"index": 1, "end_reason": {"orders": []}}]
+    assert compact_captured_context(captured, event, event_id="execution:execution-facts") is None

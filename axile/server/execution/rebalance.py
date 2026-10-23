@@ -16,8 +16,6 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
-from axile.server.business_facts.inputs import load_input_target
-from axile.server.core.db import SessionLocal
 from axile.server.core.log_config import execution_log_context
 from axile.server.db.models import Account, ExecuteRecord, Portfolio
 from axile.server.db.models.account import AccountContext, AccountSnapshot
@@ -36,11 +34,9 @@ from axile.server.execution.registry import (
     clear_running_execution,
     register_inline_execution,
 )
+from axile.server.native_store import native_operation
 from axile.server.portfolio_targets import calculate_portfolio_for_account
-from axile.server.repositories import (
-    get_latest_portfolio_id_by_account_id,
-    get_latest_success_execute_record_by_account_id,
-)
+from axile.server.repositories import get_account_snapshot
 from axile.server.target_weight_snapshots import append_target_weight_snapshot
 from axile.server.utils import trade_channel_check
 
@@ -80,18 +76,14 @@ async def _load_bound_portfolio(
     ValueError
         当账户未绑定组合或绑定记录已失效时抛出。
     """
-    async with SessionLocal() as session:
-        curr_portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
-        if curr_portfolio_id is None:
-            msg = "无法调仓，该账户未绑定组合"
-            await append_error_execute_record(
-                account_id=account.id,
-                msg=msg,
-                execution_id=execution_id,
-            )
-            raise ValueError(msg)
+    context = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
+    curr_portfolio_id = context["portfolio_id"]
+    if curr_portfolio_id is None:
+        msg = "无法调仓，该账户未绑定组合"
+        await append_error_execute_record(account_id=account.id, msg=msg, execution_id=execution_id)
+        raise ValueError(msg)
 
-        portfolio = await session.get(Portfolio, curr_portfolio_id)
+    portfolio = context["portfolio"]
 
     if portfolio is None:
         msg = f"无法调仓，该账户绑定的组合不存在, 组合id: {curr_portfolio_id}"
@@ -102,7 +94,7 @@ async def _load_bound_portfolio(
         )
         raise ValueError(msg)
 
-    return portfolio
+    return Portfolio.model_validate(portfolio)
 
 
 async def _execute_portfolio_function(
@@ -163,14 +155,13 @@ async def _load_rebalance_account(
     account_id: int,
     logger: "loguru.Logger",
 ) -> AccountSnapshot:
-    """在 session 内加载配置并复制为独立执行快照。"""
-    async with SessionLocal() as session:
-        account = await session.get(Account, account_id)
-        if not account:
-            msg = f"无法执行任务 账户id: {account_id} 不存在"
-            logger.error("{}", msg)
-            raise ValueError(msg)
-        return account.snapshot()
+    """读取不持有数据库会话的独立执行快照。"""
+    account = await get_account_snapshot(account_id)
+    if account is None:
+        msg = f"无法执行任务 账户id: {account_id} 不存在"
+        logger.error("{}", msg)
+        raise ValueError(msg)
+    return account
 
 
 async def _resolve_rebalance_request(
@@ -221,16 +212,12 @@ def _normalize_rebalance_target(
 async def _load_last_target_snapshot(account: AccountContext) -> dict[str, object]:
     """加载上一次成功调仓记录中的目标快照."""
     try:
-        async with SessionLocal() as session:
-            last_record = await get_latest_success_execute_record_by_account_id(session, account.id)
-            if last_record is None or last_record.is_success != 1 or last_record.input_id is None:
-                return {}
-            present, target = await load_input_target(session, last_record.input_id, role="curr_target")
+        evidence = await native_operation("execution_read", {"op": "last_target", "account_id": account.id})
     except Exception as e:
         loguru.logger.opt(exception=e).error("{}", e)
         raise
 
-    return cast("dict[str, object]", target) if present else {}
+    return cast("dict[str, object]", evidence["target"]) if evidence["present"] else {}
 
 
 def _build_rebalance_standard_input(
@@ -357,10 +344,9 @@ async def _build_rebalance_backend_request(
     if execution_id and account.supplement:
         from axile.server.execution.supplement_notifications import execution_steps
 
-        async with SessionLocal() as session:
-            if await execution_steps(session, execution_id):
-                standard_input.execution_notification_code = None
-                standard_input.extra = {**standard_input.extra, "server_notification": True}
+        if await execution_steps(execution_id):
+            standard_input.execution_notification_code = None
+            standard_input.extra = {**standard_input.extra, "server_notification": True}
     long_leverage, short_leverage = resolve_account_leverages(account)
     audit_input = sanitize_standard_input_for_audit(standard_input)
     audit_input["strategy_target"] = dict(curr_target)
@@ -418,16 +404,14 @@ async def _run_account_rebalance(
     request = await _resolve_rebalance_request(account, execution_id, logger)
 
     normalized_target = _normalize_rebalance_target(account, request.curr_target)
-    async with SessionLocal() as session:
-        await append_target_weight_snapshot(
-            session,
-            portfolio_id=request.portfolio_id,
-            account_id=cast("int", account.id),
-            raw_weights=request.curr_target,
-            normalized_weights=normalized_target,
-            source="execution",
-            execution_id=execution_id,
-        )
+    await append_target_weight_snapshot(
+        portfolio_id=request.portfolio_id,
+        account_id=cast("int", account.id),
+        raw_weights=request.curr_target,
+        normalized_weights=normalized_target,
+        source="execution",
+        execution_id=execution_id,
+    )
 
     return await trade(
         account,
@@ -515,12 +499,7 @@ async def execute_trade(
     account: AccountContext | None = None
     tracked_execution_id = execution_id
     if not lock_acquired:
-        async with SessionLocal() as session:
-            account = await session.get(Account, account_id)
-        if not account:
-            msg = f"无法执行任务 账户id: {account_id} 不存在"
-            loguru.logger.error("{}", msg)
-            raise ValueError(msg)
+        account = await _load_rebalance_account(account_id, loguru.logger)
         tracked_execution_id = register_inline_execution(
             account=account,
             execution_kind=ExecutionKind.REBALANCE,
@@ -532,12 +511,7 @@ async def execute_trade(
         # 当调用方已持有运行锁时，这里只复用既有 execution 上下文，不重复做
         # 注册和释放；否则会打乱上层对 execution 生命周期的单点管理。
         if account is None:
-            async with SessionLocal() as session:
-                account = await session.get(Account, account_id)
-                if not account:
-                    msg = f"无法执行任务 账户id: {account_id} 不存在"
-                    loguru.logger.error("{}", msg)
-                    raise ValueError(msg)
+            account = await _load_rebalance_account(account_id, loguru.logger)
 
         with loguru.logger.contextualize(
             **execution_log_context(

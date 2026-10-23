@@ -16,17 +16,25 @@ from axile.domain.execution import (
 )
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import registry as execution_registry
-from tests.unit.server._execution_test_support import FakeSession, build_account
+from tests.unit.server._execution_test_support import build_account
 
 
 @pytest.fixture(autouse=True)
-def _isolate_persisted_symbol_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    """状态编排用例不访问真实品种表；定向读取另有数据库测试。"""
+def _no_persisted_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from axile.server.execution import intents
 
-    async def read_symbols(_session: object, _record_id: int) -> list[str]:
-        return []
+    async def get_intent(_execution_id: str):
+        return None
 
-    monkeypatch.setattr(execution_registry, "read_outcome_symbols", read_symbols)
+    monkeypatch.setattr(intents, "get_intent", get_intent)
+
+
+def _persisted_record(monkeypatch: pytest.MonkeyPatch, record: ExecuteRecord) -> None:
+    async def read(name: str, request: dict[str, object]) -> dict[str, object]:
+        assert name == "execution_read" and request == {"op": "status", "execution_id": record.execution_id}
+        return {"record": record.model_dump(), "outcome_symbols": []}
+
+    monkeypatch.setattr(execution_registry, "native_operation", read)
 
 
 def test_get_execution_status_prefers_in_memory_task_state() -> None:
@@ -66,7 +74,7 @@ def test_get_execution_status_falls_back_to_execute_record(
         task_status="SUCCEEDED",
     )
 
-    monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
+    _persisted_record(monkeypatch, record)
 
     payload = asyncio.run(execution_registry.get_execution_status(execution_id))
 
@@ -94,7 +102,7 @@ def test_get_execution_status_uses_persisted_task_status_and_termination_metadat
         termination_finished_at="2026-03-12T13:05:03",
     )
 
-    monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
+    _persisted_record(monkeypatch, record)
 
     payload = asyncio.run(execution_registry.get_execution_status(execution_id))
 
@@ -673,7 +681,7 @@ def test_terminal_intent_does_not_hide_persisted_outcome(monkeypatch):
         display_outcome="not_reached",
     )
     monkeypatch.setattr(intents, "get_intent", get_intent)
-    monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
+    _persisted_record(monkeypatch, record)
     payload = asyncio.run(execution_registry.get_execution_status(record.execution_id))
     assert payload["record_id"] == 1000
     assert payload["output_status"] == "PARTIAL"
@@ -702,7 +710,7 @@ def test_partial_session_replay_preserves_later_task_exception(monkeypatch):
         display_outcome="not_reached",
     )
     monkeypatch.setattr(intents, "get_intent", get_intent)
-    monkeypatch.setattr(execution_registry, "SessionLocal", lambda: FakeSession(record=record))
+    _persisted_record(monkeypatch, record)
     payload = asyncio.run(execution_registry.get_execution_status(record.execution_id))
     assert payload["status"] == ExecutionTaskStatus.FAILED
     assert payload["error"] == "收尾异常"

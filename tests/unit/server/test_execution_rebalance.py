@@ -20,9 +20,7 @@ from axile.server.execution import rebalance as rebalance_execution
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
-    AccountSession,
     FakeExecutor,
-    FakeSession,
     FakeWorkerBackendManager,
     WarningLogger,
     WorkerCommandHarness,
@@ -86,6 +84,12 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
         calls.append((execution_id, account_id))
 
     monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
+
+    async def read(name: str, request: dict[str, object]) -> dict[str, object]:
+        assert name == "execution_read" and request["op"] == "last_target"
+        return {"present": False, "target": None}
+
+    monkeypatch.setattr(rebalance_execution, "native_operation", read)
     return calls
 
 
@@ -106,46 +110,15 @@ def test_last_target_reads_only_selected_input_target(
 ) -> None:
     """上次目标只读取成功记录关联的目标；缺失与显式空值保持不同。"""
     account = build_account()
-    session = FakeSession()
-    record = SimpleNamespace(is_success=1, input_id="frozen-input", execution_id=None)
-    calls: list[tuple[object, str, str]] = []
+    calls: list[tuple[str, object]] = []
 
-    async def latest(actual_session: object, account_id: int) -> SimpleNamespace:
-        assert actual_session is session
-        assert account_id == account.id
-        return record
+    async def read(name: str, request: object) -> object:
+        calls.append((name, request))
+        return {"present": present, "target": target}
 
-    async def load_target(actual_session: object, input_id: str, *, role: str) -> tuple[bool, object]:
-        calls.append((actual_session, input_id, role))
-        return present, target
-
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: session)
-    monkeypatch.setattr(rebalance_execution, "get_latest_success_execute_record_by_account_id", latest)
-    monkeypatch.setattr(rebalance_execution, "load_input_target", load_target)
-
-    actual = asyncio.run(rebalance_execution._load_last_target_snapshot(account))
-    assert actual == expected
-    assert calls == [(session, "frozen-input", "curr_target")]
-
-
-def test_last_target_missing_input_does_not_search_older_record(monkeypatch: pytest.MonkeyPatch) -> None:
-    """最新成功记录没有输入时返回缺失目标，不借用另一条历史记录。"""
-    calls = 0
-
-    async def latest(_session: object, _account_id: int) -> SimpleNamespace:
-        nonlocal calls
-        calls += 1
-        return SimpleNamespace(is_success=1, input_id=None)
-
-    async def unexpected_target(*_args: object, **_kwargs: object) -> tuple[bool, object]:
-        raise AssertionError("缺失输入不应触发目标读取")
-
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(rebalance_execution, "get_latest_success_execute_record_by_account_id", latest)
-    monkeypatch.setattr(rebalance_execution, "load_input_target", unexpected_target)
-
-    assert asyncio.run(rebalance_execution._load_last_target_snapshot(build_account())) == {}
-    assert calls == 1
+    monkeypatch.setattr(rebalance_execution, "native_operation", read)
+    assert asyncio.run(rebalance_execution._load_last_target_snapshot(account)) == expected
+    assert calls == [("execution_read", {"op": "last_target", "account_id": account.id})]
 
 
 def test_calculate_target_volume_does_not_restore_forbidden_symbols_from_last_target() -> None:
@@ -194,9 +167,6 @@ def test_trade_serializes_success_result_to_json_safe_dict(
     account = build_account()
     captured: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -212,12 +182,6 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         captured["execution_id"] = execution_id
         return SimpleNamespace(id=101, is_success=1), result
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -255,9 +219,6 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     fake_executor = FakeExecutor()
     captured: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -274,12 +235,6 @@ def test_trade_builds_model_before_execute_and_persists_dict(
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -317,9 +272,6 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     )
     manager = FakeWorkerBackendManager()
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -334,12 +286,6 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -377,9 +323,6 @@ def test_trade_routes_gm_account_to_worker_manager(
     manager = FakeWorkerBackendManager()
     captured: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -405,12 +348,6 @@ def test_trade_routes_gm_account_to_worker_manager(
     async def unexpected_append_execution_artifact(**_kwargs: object) -> bool:
         raise AssertionError("GM worker 路径不应在主进程写 execution artifact")
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
@@ -446,9 +383,6 @@ def test_trade_routes_ctp_account_to_worker_manager(
     account = build_account()
     manager = FakeWorkerBackendManager()
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -466,12 +400,6 @@ def test_trade_routes_ctp_account_to_worker_manager(
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("PROCESS 策略下不应走线程执行器")
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
@@ -533,9 +461,6 @@ def test_trade_persists_failed_gm_worker_output(
     )
     captured_error_record: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -557,12 +482,6 @@ def test_trade_persists_failed_gm_worker_output(
         )
         return SimpleNamespace(id=401, is_success=0), raw_result
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
@@ -622,7 +541,10 @@ def test_execute_trade_rejects_overlapping_runs(
         assert record is completed_record
         return []
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: AccountSession(account))
+    async def load_account(_account_id: int):
+        return account.snapshot()
+
+    monkeypatch.setattr(rebalance_execution, "get_account_snapshot", load_account)
     monkeypatch.setattr(rebalance_execution, "_run_account_rebalance", fake_execute_trade_inner)
     monkeypatch.setattr(rebalance_execution.execution_lifecycle, "load_record_outcome_symbols", read_outcome_symbols)
 
@@ -663,7 +585,7 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     async def fake_resolve(_account: Account, _execution_id: str | None, _logger: object):
         return rebalance_execution._ResolvedRebalanceRequest(portfolio_id=7, curr_target=raw_target)
 
-    async def fake_append(_session: object, **kwargs: object) -> SimpleNamespace:
+    async def fake_append(**kwargs: object) -> SimpleNamespace:
         captured.update(kwargs)
         return SimpleNamespace(id=1)
 
@@ -676,7 +598,6 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     monkeypatch.setattr(rebalance_execution, "_resolve_rebalance_request", fake_resolve)
     monkeypatch.setattr(rebalance_execution, "append_target_weight_snapshot", fake_append)
     monkeypatch.setattr(rebalance_execution, "trade", fake_trade)
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
 
     result = asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="exec-target-1"))
 
@@ -694,9 +615,6 @@ def test_trade_passes_execution_id_to_persisted_record(
     account = build_account()
     captured: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -712,12 +630,6 @@ def test_trade_passes_execution_id_to_persisted_record(
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
     monkeypatch.setattr(
@@ -747,9 +659,6 @@ def test_trade_emits_execution_events_and_artifacts(
     artifact_versions: dict[str, int] = {}
     execution_summary_content: dict[str, object] | None = None
     target_snapshot_content: dict[str, object] | None = None
-
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
 
     async def fake_append_execution_event(**kwargs: object) -> bool:
         event_type = cast(ExecutionEventType, kwargs["event_type"])
@@ -782,12 +691,6 @@ def test_trade_emits_execution_events_and_artifacts(
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
         )
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
@@ -887,9 +790,6 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
             self.execute_seq = self.next_audit_seq()
             return super().execute(_standard_input, cleanup=cleanup)
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_execution_event(**kwargs: object) -> bool:
         captured_event_seqs.append(cast(int, kwargs["seq"]))
         return True
@@ -911,13 +811,6 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
             SimpleNamespace(id=107, is_success=1),
             cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json")),
         )
-
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
 
     def fake_create_executor_instance(_account: Account) -> _RuntimeAwareExecutor:
         nonlocal fake_executor
@@ -1001,9 +894,6 @@ def test_trade_completion_event_matches_output_status(
                 success=False,
             )
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_execution_event(**kwargs: object) -> bool:
         captured_events.append(dict(kwargs))
         return True
@@ -1032,12 +922,6 @@ def test_trade_completion_event_matches_output_status(
         )
         return SimpleNamespace(id=301, is_success=expected_is_success), raw_result
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: _UnsuccessfulExecutor())
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(fake_append_execution_event(**kw))
@@ -1089,9 +973,6 @@ def test_trade_binds_account_control_guard(
     fake_guard = object()
     captured: dict[str, object] = {}
 
-    async def fake_get_latest_success_execute_record_by_account_id(_session: object, _account_id: int) -> None:
-        return None
-
     async def fake_append_output_record(
         *,
         account: object,
@@ -1113,12 +994,6 @@ def test_trade_binds_account_control_guard(
         captured["execution_id"] = execution_id
         return fake_guard
 
-    monkeypatch.setattr(rebalance_execution, "SessionLocal", lambda: FakeSession())
-    monkeypatch.setattr(
-        rebalance_execution,
-        "get_latest_success_execute_record_by_account_id",
-        fake_get_latest_success_execute_record_by_account_id,
-    )
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
     monkeypatch.setattr(worker_state, "build_account_control_guard", fake_build_account_control_guard)

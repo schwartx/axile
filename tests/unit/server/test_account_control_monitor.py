@@ -1,72 +1,88 @@
 """流控监控的数据库交接、异常边界和广播验证。"""
 
 import asyncio
+import json
+import re
+import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import resolve_control_window
 from axile.executor.account_control.models import (
     AccountControlBucketType,
     AccountControlContextKind,
-    AccountControlScopeType,
     AccountControlSource,
 )
 from axile.executor.algorithms.utils.clock import clock_now_ms
-from axile.server._native import _core
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
-from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
-from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.db.models.account_settings import SETTINGS_FIELDS
 from axile.server.execution import execution_account_control as persistence
 from tests.unit.server._execution_test_support import build_account
 
 
+def save_account(path, account):
+    """测试 oracle 直接保存账户配置，生产路径不调用 SQLite。"""
+    raw = account.model_dump(mode="json")
+    groups = {group: {} for group in ("execution", "schedule", "notification", "backtest")}
+    for field, group in SETTINGS_FIELDS.items():
+        if field in raw and group in groups:
+            groups[group][field] = raw[field]
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                account.id,
+                account.name,
+                account.market,
+                str(account.trade_channel),
+                account.brokerage,
+                account.created_at,
+                account.updated_at,
+            ),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO account_settings(account_id,connection,execution,schedule,notification,backtest) "
+            "VALUES (?,?,?,?,?,?)",
+            (account.id, json.dumps(raw["account_config"]), *(json.dumps(groups[key]) for key in groups)),
+        )
+
+
 @asynccontextmanager
 async def database(monkeypatch):
-    temporary = tempfile.TemporaryDirectory()
-    path = Path(temporary.name) / "monitor.sqlite"
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-    monkeypatch.setattr(monitor_module, "analysis_store", lambda: _core.Store(str(path)))
-    async with engine.begin() as connection:
-        await connection.run_sync(SQLModel.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(monitor_module, "SessionLocal", factory)
-    monkeypatch.setattr(persistence, "SessionLocal", factory)
-    monkeypatch.setattr(monitor_module, "sample", lambda _: None)
-    monkeypatch.setattr(providers, "_guards", {})
-    monkeypatch.setattr(providers, "_final", {})
-    monkeypatch.setattr(providers, "_updates", {})
-    account = build_account(id=1, portfolio_id=None, account_control_preset="default", account_control_override=None)
-    async with factory() as db:
-        db.add(account)
-        window = resolve_control_window("Asia/Shanghai")
-        db.add(
-            AccountControlCounterDelta(
-                account_id=1,
-                execution_id="history",
-                control_date=window.control_date,
-                bucket_type=AccountControlBucketType.DAY,
-                bucket_start=window.day_bucket_start,
-                scope_type=AccountControlScopeType.ACCOUNT,
-                operation="place_order",
-                delta_count=120,
-                delta_uid="baseline",
-            )
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "monitor.sqlite"
+        schema = (Path(__file__).parents[2] / "fixtures/rust_store/v0.22.0.sql").read_text()
+        with sqlite3.connect(path) as connection:
+            connection.executescript("\n".join(re.findall(r"CREATE TABLE .*?;", schema, re.DOTALL)))
+        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+        monkeypatch.setattr(monitor_module, "sample", lambda _: None)
+        monkeypatch.setattr(monitor_module, "wake_pending_quota_warnings", _ignore_warnings)
+        for name in ("_guards", "_final", "_updates"):
+            monkeypatch.setattr(providers, name, {})
+        account = build_account(
+            id=1, portfolio_id=None, account_control_preset="default", account_control_override=None
         )
-        await db.commit()
-    try:
-        yield factory, account, monitor_module.AccountControlMonitor()
-    finally:
-        await engine.dispose()
-        temporary.cleanup()
+        save_account(path, account)
+        window = resolve_control_window("Asia/Shanghai")
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "INSERT INTO account_control_counter_delta(account_id,execution_id,control_date,bucket_type,"
+                "bucket_start,scope_type,operation,delta_count,delta_uid) VALUES (1,'history',?,'DAY',?,'ACCOUNT',"
+                "'place_order',120,'baseline')",
+                (window.control_date, window.day_bucket_start),
+            )
+        yield path, account, monitor_module.AccountControlMonitor()
+
+
+async def _ignore_warnings(_account_ids):
+    pass
 
 
 def used(frame):
@@ -89,21 +105,19 @@ def test_reconnecting_to_expired_cache_does_not_make_monitor_values_fresh(monkey
 
 def test_snapshot_cannot_observe_half_completed_sampling_round(monkeypatch):
     async def scenario():
-        async with database(monkeypatch) as (factory, _, monitor):
+        async with database(monkeypatch) as (path, _, monitor):
             await monitor.refresh()
             before = monitor.snapshot()
-            async with factory() as db:
-                db.add(build_account(id=2, portfolio_id=None))
-                await db.commit()
+            save_account(path, build_account(id=2, portfolio_id=None))
             entered = asyncio.Event()
             release = asyncio.Event()
             original = monitor._account_frame
 
-            async def delayed_frame(db, account, sessions):
-                if account.id == 2:
+            async def delayed_frame(account, sessions, persisted):
+                if account["id"] == 2:
                     entered.set()
                     await release.wait()
-                frame = await original(db, account, sessions)
+                frame = await original(account, sessions, persisted)
                 frame["waiting_total"] = 99
                 return frame
 
@@ -170,7 +184,7 @@ def test_catalog_session_does_not_hide_running_execution_or_report_duplicate_exe
 
 def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
     async def scenario():
-        async with database(monkeypatch) as (factory, account, monitor):
+        async with database(monkeypatch) as (path, account, monitor):
             first = await persistence.build_account_control_guard(account, "same-execution")
             first.policy.operations["place_order"].account.min_interval_ms = None
             for _ in range(3):
@@ -199,12 +213,16 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
             first.update_event_outcome(0, outcome="broker_rejected", metadata={"error_id": 31})
             await monitor.refresh()
             assert used(monitor.frames[1]) == 124
-            async with factory() as db:
-                events = (await db.execute(select(AccountControlEvent))).scalars().all()
+            with sqlite3.connect(path) as connection:
+                events = connection.execute("SELECT outcome FROM account_control_event").fetchall()
                 assert len(events) == 4
-                assert any(e.outcome == "broker_rejected" for e in events)
-                sessions = (await db.execute(select(AccountControlSession))).scalars().all()
-                assert all(s.status == "closed" for s in sessions)
+                assert ("broker_rejected",) in events
+                assert (
+                    connection.execute(
+                        "SELECT count(*) FROM account_control_session WHERE status!='closed'"
+                    ).fetchone()[0]
+                    == 0
+                )
             assert len(monitor.frames[1]["records"]) == 4
             assert any(e["outcome"] == "broker_rejected" for e in monitor.frames[1]["records"])
 
@@ -274,17 +292,17 @@ def test_crash_preserves_last_known_value_and_restart_marks_confirmed_history_in
 
 def test_saved_policy_does_not_replace_active_policy(monkeypatch):
     async def scenario():
-        async with database(monkeypatch) as (factory, account, monitor):
+        async with database(monkeypatch) as (path, account, monitor):
             await persistence.build_account_control_guard(account, "old-policy")
             await monitor.refresh()
             old = monitor.frames[1]["actual_fingerprint"]
-            async with factory() as db:
-                saved = await db.get(Account, 1)
-                saved.account_control_override = {
-                    "operations": {"place_order": {"account": {"per_day": {"limit": 700}}}}
-                }
-                db.add(saved)
-                await db.commit()
+            changed = account.model_copy(deep=True)
+            from axile.executor.account_control.models import AccountControlOverride
+
+            changed.account_control_override = AccountControlOverride.model_validate(
+                {"operations": {"place_order": {"account": {"per_day": {"limit": 700}}}}}
+            )
+            save_account(path, changed)
             await monitor.refresh()
             assert monitor.frames[1]["actual_fingerprint"] == old
             assert monitor.frames[1]["pending_policy"]
@@ -368,13 +386,12 @@ def test_orphan_session_warns_without_blocking_and_known_quota_still_applies(mon
     from axile.executor.account_control.models import AccountControlOverride
 
     async def scenario():
-        async with database(monkeypatch) as (factory, account, _):
+        async with database(monkeypatch) as (path, account, _):
             account.account_control_override = AccountControlOverride.model_validate(
                 {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
             )
-            async with factory() as db:
-                await db.execute(delete(AccountControlCounterDelta))
-                await db.commit()
+            with sqlite3.connect(path) as connection:
+                connection.execute("DELETE FROM account_control_counter_delta")
             first = await persistence.build_account_control_guard(account, "lost")
             first.begin_operation("place_order").record_outcome(outcome)  # 模拟发送前／受理后未刷盘被杀。
             providers._guards.clear()
@@ -396,9 +413,13 @@ def test_orphan_session_warns_without_blocking_and_known_quota_still_applies(mon
             deltas, events = second.flush_records()
             assert not any(event.outcome == "counter_incomplete" for event in events)
             assert any(delta.operation == "place_order" for delta in deltas)
-            async with factory() as db:
-                persisted = (await db.scalars(select(AccountControlCounterDelta))).all()
-                assert sum(row.delta_count for row in persisted) == 0  # 绝不伪造恢复出丢失的一次。
+            with sqlite3.connect(path) as connection:
+                assert (
+                    connection.execute(
+                        "SELECT coalesce(sum(delta_count),0) FROM account_control_counter_delta"
+                    ).fetchone()[0]
+                    == 0
+                )
 
     asyncio.run(scenario())
 
@@ -409,23 +430,15 @@ def test_prior_day_gap_does_not_permanently_block_and_known_active_guard_is_not_
     from axile.executor.algorithms.utils.clock import clock_now
 
     async def scenario():
-        async with database(monkeypatch) as (factory, account, _):
+        async with database(monkeypatch) as (path, account, _):
             yesterday = int((clock_now() - timedelta(days=1)).timestamp() * 1000)
-            async with factory() as db:
-                db.add(
-                    AccountControlSession(
-                        instance_id="yesterday",
-                        account_id=1,
-                        execution_id="old",
-                        context_kind="execution",
-                        source="algorithm",
-                        timezone="Asia/Shanghai",
-                        started_at_ms=yesterday - 1000,
-                        finished_at_ms=yesterday,
-                        status="incomplete",
-                    )
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
+                    "timezone,started_at_ms,finished_at_ms,status) "
+                    "VALUES ('yesterday',1,'old','execution','algorithm','Asia/Shanghai',?,?,'incomplete')",
+                    (yesterday - 1000, yesterday),
                 )
-                await db.commit()
             first = await persistence.build_account_control_guard(account, "today")
             assert not first.incomplete_control_dates
             second = await persistence.build_account_control_guard(account, "known-active")
@@ -440,10 +453,9 @@ def test_commit_response_loss_and_duplicate_flush_do_not_restore_daily_quota(mon
     from axile.server.account_control.store import AccountControlStore
 
     async def scenario():
-        async with database(monkeypatch) as (factory, account, _):
-            async with factory() as db:
-                await db.execute(delete(AccountControlCounterDelta))
-                await db.commit()
+        async with database(monkeypatch) as (path, account, _):
+            with sqlite3.connect(path) as connection:
+                connection.execute("DELETE FROM account_control_counter_delta")
             account.account_control_override = AccountControlOverride.model_validate(
                 {"operations": {"place_order": {"account": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
             )
@@ -452,8 +464,7 @@ def test_commit_response_loss_and_duplicate_flush_do_not_restore_daily_quota(mon
             deltas, events = first.flush_records()
             await persistence.flush_account_control_records(executor(first))
             # 模拟提交成功但响应丢失后的同一记录重试；delta/event 唯一标识防止重复累计。
-            async with factory() as db:
-                await AccountControlStore(db).flush_execution_records(counter_deltas=deltas, events=events)
+            await AccountControlStore().flush_execution_records(counter_deltas=deltas, events=events)
             providers._guards.clear()
             second = await persistence.build_account_control_guard(account, "retry")
             assert not second.incomplete_control_dates

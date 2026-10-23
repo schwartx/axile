@@ -20,6 +20,7 @@ from axile.server.db.models.account_order import (
     OrderCancelReceipt,
     OrderCancelRequest,
 )
+from axile.server.native_store import native_operation
 
 
 @dataclass
@@ -144,29 +145,11 @@ async def _snapshot_result(account: AccountContext, state: _OrdersState, result:
 
 async def _link_executions(account: AccountContext, result: AccountOrdersPublic) -> None:
     """REST 与 SSE 复用同一订单执行关联，外部终端委托保持未关联。"""
-    from sqlalchemy import tuple_
-    from sqlmodel import col, select
-
-    from axile.server.core.db import SessionLocal
-    from axile.server.db.models.execution import ExecutionEvent
-
     identities = [(order.symbol, order.order_id) for order in result.data if order.execution_id is None]
     if not identities:
         return
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(ExecutionEvent.symbol, ExecutionEvent.order_id, ExecutionEvent.execution_id)
-                .where(
-                    col(ExecutionEvent.account_id) == account.id,
-                    tuple_(col(ExecutionEvent.symbol), col(ExecutionEvent.order_id)).in_(identities),
-                )
-                .order_by(col(ExecutionEvent.id).desc())
-            )
-        ).all()
-    linked = {}
-    for symbol, order_id, execution_id in rows:
-        linked.setdefault((symbol, order_id), execution_id)
+    rows = await native_operation("order_execution_links", {"account_id": account.id, "identities": identities})
+    linked = {(symbol, order_id): execution_id for symbol, order_id, execution_id in rows}
     for order in result.data:
         if order.execution_id is None:
             order.execution_id = linked.get((order.symbol, order.order_id))

@@ -11,26 +11,21 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import select, update
-from sqlmodel import col
-from starlette.concurrency import run_in_threadpool
 
 from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
-from axile.executor.account_control.models import AccountControlContextKind
+from axile.executor.account_control.models import AccountControlContextKind, AccountControlOverride
 from axile.executor.account_control.monitor import policy_fingerprint
 from axile.executor.account_control.presets import resolve_account_control_policy
-from axile.executor.algorithms.utils.clock import clock_now_ms
-from axile.server._native import _core
+from axile.executor.account_control.warnings import AccountControlQuotaWarning
+from axile.executor.algorithms.utils.clock import clock_now_iso, clock_now_ms
 from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import AccountControlMonitorPublic
-from axile.server.account_control.store import AccountControlStore
-from axile.server.account_control.warnings import enqueue_quota_warnings, wake_pending_quota_warnings
-from axile.server.core.db import SessionLocal, analysis_store
-from axile.server.db.models.account import Account
-from axile.server.db.models.account_control import AccountControlEvent
+from axile.server.account_control.store import snapshots_from_baseline
+from axile.server.account_control.warnings import wake_pending_quota_warnings
 from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.native_store import native_operation
 from axile.server.order_submissions import submission_window
 
 
@@ -43,13 +38,7 @@ def _affected(session: AccountControlSession, control_date: str) -> bool:
 
 async def recover_sessions() -> None:
     """启动时把上个服务进程未提交的会话标记为不完整。"""
-    async with SessionLocal() as db:
-        await db.execute(
-            update(AccountControlSession)
-            .where(col(AccountControlSession.status) == "active")
-            .values(status="incomplete", finished_at_ms=clock_now_ms())
-        )
-        await db.commit()
+    await native_operation("control_monitor_recover", {"now_ms": clock_now_ms()})
 
 
 class AccountControlMonitor:
@@ -65,7 +54,7 @@ class AccountControlMonitor:
         self._local_tasks: dict[int, asyncio.Task[Any]] = {}
         self._sources: dict[int, list[tuple[Any, Any, bool]]] = {}
         self._outcomes: dict[str, str] = {}
-        self._history: dict[int, tuple[object, AccountControlGuard, list[dict[str, Any]]]] = {}
+        self._history: dict[int, tuple[tuple, AccountControlGuard, list[dict[str, Any]]]] = {}
         self._refresh_lock = asyncio.Lock()
         self._queued_warnings: dict[tuple[str, str], None] = {}
 
@@ -133,60 +122,145 @@ class AccountControlMonitor:
             await self._refresh()
 
     async def _refresh(self) -> None:
-        async with SessionLocal() as db:
-            accounts = (await db.execute(select(Account))).scalars().all()
-            sessions = (await db.execute(select(AccountControlSession))).scalars().all()
-            await asyncio.gather(*(self._read_source(a.id) for a in accounts if a.id is not None))
-            changed = []
-            frames = {}
-            present = set()
-            for account in accounts:
-                assert account.id is not None
-                present.add(account.id)
-                related = [s for s in sessions if s.account_id == account.id]
-                frame = AccountControlMonitorPublic.model_validate(
-                    await self._account_frame(db, account, related)
-                ).model_dump(mode="json")
-                await self._enqueue_warnings(db, account, related)
-                previous = self.frames.get(account.id)
-                if self._content(previous) != self._content(frame):
-                    changed.append(frame)
-                frames[account.id] = frame
-            removed = [key for key in self.frames if key not in present]
-            for key in removed:
-                self._history.pop(key, None)
-            await wake_pending_quota_warnings(db)
-        # 整轮采样完成后同步提交，快照不会读到跨版本的半轮账户数据。
+        inputs = await native_operation("control_monitor_inputs", {})
+        accounts = inputs["accounts"]
+        sessions = [AccountControlSession.model_validate(raw) for raw in inputs["sessions"]]
+        await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
+        requests = [self._persistence_request(account, sessions) for account in accounts]
+        receipt = await native_operation(
+            "control_monitor_refresh", {"accounts": requests, "created_at": clock_now_iso()}
+        )
+        if receipt.get("warning_error"):
+            logger.error("运行中额度预警入队失败，等待下次采样: {}", receipt["warning_error"])
+        if receipt["warnings_committed"]:
+            for request in requests:
+                for source in request["warning_sources"]:
+                    for raw in source["warnings"]:
+                        key = AccountControlQuotaWarning.model_validate(raw).event_id, source["instance_id"]
+                        self._queued_warnings[key] = None
+            while len(self._queued_warnings) > 2048:
+                self._queued_warnings.pop(next(iter(self._queued_warnings)))
+        updated = set(receipt["updated_uids"])
+        for request in requests:
+            for event in request["outcomes"]:
+                if event["event_uid"] in updated:
+                    self._outcomes[event["event_uid"]] = str((event["outcome"], event["metadata"]))
+        while len(self._outcomes) > 1000:
+            self._outcomes.pop(next(iter(self._outcomes)))
+        states = {state["account_id"]: state for state in receipt["data"]}
+        changed = []
+        frames = {}
+        for account in accounts:
+            state = states[account["id"]]
+            related = [AccountControlSession.model_validate(raw) for raw in state["sessions"]]
+            if state["history"] is not None:
+                self._historical(account, self._policy(account), related, state)
+                state["history"] = None
+            frame = AccountControlMonitorPublic.model_validate(
+                await self._account_frame(account, related, state)
+            ).model_dump(mode="json")
+            if self._content(self.frames.get(account["id"])) != self._content(frame):
+                changed.append(frame)
+            frames[account["id"]] = frame
+        removed = [key for key in self.frames if key not in frames]
+        for key in removed:
+            self._history.pop(key, None)
+        await wake_pending_quota_warnings(receipt["pending_accounts"])
+        # 整轮采样完成后同步发布，订阅者只看到完整的一轮。
         self.frames = frames
         self._publish(changed, removed)
 
-    async def _enqueue_warnings(self, db: Any, account: Account, sessions: list[AccountControlSession]) -> None:
-        """采样冻结的触发事实，不从页面用量或当前保存配置推测预警。"""
-        from axile.executor.account_control.warnings import AccountControlQuotaWarning
+    @staticmethod
+    def _policy(account: dict[str, Any]) -> Any:
+        raw = account["account_control_override"]
+        override = None if raw is None else AccountControlOverride.model_validate(raw)
+        return resolve_account_control_policy(account["account_control_preset"], override)
 
-        assert account.id is not None
-        pending = {}
-        known_instances = {session.instance_id for session in sessions}
-        for frame, _, _ in self._sources.get(account.id, []):
-            if frame is None or frame.get("instance_id") not in known_instances:
+    def _live_source(self, account_id: int, sessions: list[AccountControlSession]) -> tuple[Any, Any, bool]:
+        execution_sessions = [
+            session
+            for session in sessions
+            if control_context_kind(session.context_kind, session.execution_id)
+            != AccountControlContextKind.ACCOUNT_OPERATION
+        ]
+        latest = max(execution_sessions, key=lambda session: session.id or 0, default=None)
+        sources = self._sources.get(account_id, [])
+        valid = [
+            source
+            for source in sources
+            if source[0] is not None
+            and (latest is None or source[0]["instance_id"] == latest.instance_id or source[0].get("incomplete", False))
+        ]
+        return valid[0] if valid else (None, None, any(source[2] for source in sources))
+
+    @staticmethod
+    def _history_signature(policy: Any, sessions: list[AccountControlSession]) -> tuple:
+        window = resolve_control_window(policy.timezone)
+        return (
+            policy_fingerprint(policy.model_dump(mode="json")),
+            window.minute_bucket_start,
+            tuple((session.instance_id, session.status) for session in sessions),
+        )
+
+    def _persistence_request(self, account: dict[str, Any], sessions: list[AccountControlSession]) -> dict[str, Any]:
+        account_id = account["id"]
+        sessions = [session for session in sessions if session.account_id == account_id]
+        policy = self._policy(account)
+        window = resolve_control_window(policy.timezone)
+        start, end = submission_window(window.control_date, policy.timezone)
+        live, _, failed = self._live_source(account_id, sessions)
+        executions = [
+            session
+            for session in sessions
+            if control_context_kind(session.context_kind, session.execution_id)
+            != AccountControlContextKind.ACCOUNT_OPERATION
+        ]
+        latest = max(executions, key=lambda session: session.id or 0, default=None)
+        mark = (
+            latest.instance_id
+            if latest is not None
+            and latest.status == "active"
+            and (failed or bool(live and live["status"] == "incomplete"))
+            else None
+        )
+        cached = self._history.get(account_id)
+        warning_sources = []
+        known = {session.instance_id for session in sessions}
+        for source, _, _ in self._sources.get(account_id, []):
+            if source is None or source.get("instance_id") not in known:
                 continue
-            for raw in frame.get("quota_warnings", []):
-                warning = AccountControlQuotaWarning.model_validate(raw)
-                key = warning.event_id, frame["instance_id"]
-                if key not in self._queued_warnings:
-                    pending[key] = raw
-        if not pending:
-            return
-        try:
-            await enqueue_quota_warnings(db, account, pending.values())
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            logger.exception("运行中额度预警入队失败，等待下次采样")
-        else:
-            self._queued_warnings.update(dict.fromkeys(pending))
-            while len(self._queued_warnings) > 2048:
-                self._queued_warnings.pop(next(iter(self._queued_warnings)))
+            warnings = [
+                raw
+                for raw in source.get("quota_warnings", [])
+                if (AccountControlQuotaWarning.model_validate(raw).event_id, source["instance_id"])
+                not in self._queued_warnings
+            ]
+            if warnings:
+                warning_sources.append({"instance_id": source["instance_id"], "warnings": warnings})
+        outcomes = (
+            []
+            if live is None
+            else [
+                event
+                for event in live.get("outcome_updates", [])
+                if self._outcomes.get(event["event_uid"]) != str((event["outcome"], event["metadata"]))
+            ]
+        )
+        return {
+            "account_id": account_id,
+            "trade_channel": account["trade_channel"],
+            "control_date": window.control_date,
+            "timezone": policy.timezone,
+            "start_ms": start,
+            "end_ms": end,
+            "now_ms": clock_now_ms(),
+            "active_instance_id": None if live is None else live.get("instance_id"),
+            "mark_incomplete": mark,
+            "outcomes": outcomes,
+            "warning_sources": warning_sources,
+            "read_history": cached is None or cached[0] != self._history_signature(policy, sessions),
+            "history_sessions": [] if cached is None else cached[0][2],
+        }
 
     @staticmethod
     def _content(frame: dict[str, Any] | None) -> object:
@@ -214,45 +288,22 @@ class AccountControlMonitor:
                 sources.insert(0, (frame, clock_now_ms(), False))
         self._sources[account_id] = sources
 
-    async def _account_frame(self, db: Any, account: Account, sessions: list[AccountControlSession]) -> dict[str, Any]:
-        assert account.id is not None
-        policy = resolve_account_control_policy(account.account_control_preset, account.account_control_override)
+    async def _account_frame(
+        self, account: dict[str, Any], sessions: list[AccountControlSession], persisted: dict[str, Any]
+    ) -> dict[str, Any]:
+        account_id = account["id"]
+        policy = self._policy(account)
         window = resolve_control_window(policy.timezone)
-        # 目录查询可与交易并行；它的新会话不能接管交易实例或构成重复执行。
         execution_sessions = [
             session
             for session in sessions
             if control_context_kind(session.context_kind, session.execution_id)
             != AccountControlContextKind.ACCOUNT_OPERATION
         ]
-        latest = max(execution_sessions, key=lambda s: s.id or 0, default=None)
-        sources = self._sources.get(account.id, [])
-        valid = [
-            source
-            for source in sources
-            if source[0] is not None
-            and (latest is None or source[0]["instance_id"] == latest.instance_id or source[0].get("incomplete", False))
-        ]
-        live, sampled, failed = valid[0] if valid else (None, None, any(source[2] for source in sources))
-        if live is not None:
-            closed = {s.instance_id for s in sessions if s.status != "active"}
-            updates = [
-                event
-                for event in live.get("outcome_updates", [])
-                if any(f":{instance}:" in event["event_uid"] for instance in closed)
-            ]
-            await self._update_outcomes(db, account.id, updates)
+        latest = max(execution_sessions, key=lambda session: session.id or 0, default=None)
+        live, sampled, failed = self._live_source(account_id, sessions)
         incomplete = any(s.status == "incomplete" and _affected(s, window.control_date) for s in sessions)
         incomplete = incomplete or sum(s.status == "active" for s in execution_sessions) > 1
-        if (
-            (failed or (live is not None and live["status"] == "incomplete"))
-            and latest is not None
-            and latest.status == "active"
-        ):
-            latest.status = "incomplete"
-            latest.finished_at_ms = clock_now_ms()
-            await db.commit()
-            incomplete = True
         active = (latest is not None and latest.status == "active") or (
             live is not None and live["status"] == "running" and live.get("incomplete", False)
         )
@@ -260,11 +311,11 @@ class AccountControlMonitor:
             frame = dict(live)
             frame["sampled_at_ms"] = sampled
         elif active:
-            frame = dict(self.frames.get(account.id) or await self._historical(db, account, policy, sessions))
+            frame = dict(self.frames.get(account_id) or self._historical(account, policy, sessions, persisted))
             frame.update(status="unknown", sampled_at_ms=frame.get("sampled_at_ms"))
         else:
-            frame = await self._historical(db, account, policy, sessions)
-            previous = live or self.frames.get(account.id)
+            frame = self._historical(account, policy, sessions, persisted)
+            previous = live or self.frames.get(account_id)
             if (
                 incomplete
                 and previous is not None
@@ -276,12 +327,7 @@ class AccountControlMonitor:
         frame.pop("outcome_updates", None)
         now = clock_now_ms()
         gaps = [s for s in sessions if s.status == "incomplete" and _affected(s, window.control_date)]
-        risk_unknown = await AccountControlStore(db).has_incomplete_risk_history(
-            account.id,
-            window.control_date,
-            policy.timezone,
-            active_instance_id=None if not live else live.get("instance_id"),
-        )
+        risk_unknown = persisted["incomplete"]
         risk_unknown = risk_unknown or bool(live and live.get("incomplete", False))
         frame.update(
             history_incomplete=incomplete,
@@ -312,88 +358,33 @@ class AccountControlMonitor:
         if not active:
             frame["actual_policy"] = None
             frame["actual_fingerprint"] = None
-        if str(account.trade_channel) == "ctp":
-            start, end = submission_window(window.control_date, policy.timezone)
-            store = analysis_store()
-            frame["order_submissions"] = await run_in_threadpool(
-                _core.order_submission_summary, store, account.id, start, end
-            )
-            frame["submission_monitor"] = await run_in_threadpool(
-                _core.submission_monitor, store, account.id, window.control_date, policy.timezone, start, end, now
-            )
+        if account["trade_channel"] == "ctp":
+            frame["order_submissions"] = persisted["order_submissions"]
+            frame["submission_monitor"] = persisted["submission_monitor"]
         return frame
 
-    async def _update_outcomes(self, db: Any, account_id: int, events: list[dict[str, Any]]) -> None:
-        changed = False
-        latest_events = {event["event_uid"]: event for event in events}
-        for uid, event in latest_events.items():
-            signature = str((event["outcome"], event["metadata"]))
-            if self._outcomes.get(uid) == signature:
-                continue
-            result = await db.execute(
-                update(AccountControlEvent)
-                .where(col(AccountControlEvent.event_uid) == uid, col(AccountControlEvent.account_id) == account_id)
-                .values(outcome=event["outcome"], metadata_=event["metadata"])
-            )
-            if result.rowcount:
-                self._outcomes[uid] = signature
-                changed = True
-        if changed:
-            await db.commit()
-            self._history.pop(account_id, None)
-        while len(self._outcomes) > 1000:
-            self._outcomes.pop(next(iter(self._outcomes)))
-
-    async def _historical(
-        self, db: Any, account: Account, policy: Any, sessions: list[AccountControlSession]
+    def _historical(
+        self, account: dict[str, Any], policy: Any, sessions: list[AccountControlSession], persisted: dict[str, Any]
     ) -> dict[str, Any]:
-        assert account.id is not None
-        window = resolve_control_window(policy.timezone)
-        signature = (
-            policy_fingerprint(policy.model_dump(mode="json")),
-            window.minute_bucket_start,
-            tuple((s.instance_id, s.status) for s in sessions),
-        )
-        cached = self._history.get(account.id)
-        if cached is not None and cached[0] == signature:
+        account_id = account["id"]
+        signature = self._history_signature(policy, sessions)
+        cached = self._history.get(account_id)
+        raw = persisted["history"]
+        if raw is None:
+            assert cached is not None and cached[0] == signature
             guard, records = cached[1:]
         else:
-            store = AccountControlStore(db)
-            baseline = await store.load_daily_counters(account.id, window.control_date)
-            recent = await store.load_recent_allowed_timestamps(account.id)
+            baseline, recent = snapshots_from_baseline(raw)
             guard = AccountControlGuard(
-                account_id=account.id,
+                account_id=account_id,
                 execution_id=None,
-                channel=account.trade_channel,
+                channel=account["trade_channel"],
                 policy=policy,
                 baseline=baseline,
                 recent_allowed_snapshot=recent,
             )
-            events = (
-                (
-                    await db.execute(
-                        select(AccountControlEvent)
-                        .where(col(AccountControlEvent.account_id) == account.id)
-                        .order_by(col(AccountControlEvent.occurred_at_ms).desc(), col(AccountControlEvent.id).desc())
-                        .limit(100)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            records = [
-                {
-                    "event_uid": event.event_uid,
-                    "occurred_at_ms": event.occurred_at_ms,
-                    "operation": event.operation,
-                    "symbol": event.symbol,
-                    "decision": event.decision.value,
-                    "outcome": event.outcome,
-                    "metadata": event.metadata_,
-                }
-                for event in events
-            ]
-            self._history[account.id] = signature, guard, records
+            records = raw["records"]
+            self._history[account_id] = signature, guard, records
         # 仅缓存持久化输入；间隔用量和预计等待随每次采样的当前时间重算。
         frame = guard.monitor_snapshot()
         frame.update(

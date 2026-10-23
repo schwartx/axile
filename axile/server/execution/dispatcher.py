@@ -9,8 +9,7 @@ import loguru
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_async_sleep
-from axile.server.core.db import SessionLocal
-from axile.server.db.models import Account, now_str
+from axile.server.db.models import now_str
 from axile.server.execution.intents import (
     IntentNotRunnable,
     IntentSnapshot,
@@ -26,6 +25,7 @@ from axile.server.execution.registry import (
     get_running_execution_id,
     set_execution_task_state,
 )
+from axile.server.repositories import get_account_snapshot
 
 _dispatch_tasks: dict[int, asyncio.Task[None]] = {}
 _dispatch_guard = Lock()
@@ -122,10 +122,34 @@ async def _run_claimed_intent(intent: IntentSnapshot) -> None:
     sync_account_live(intent.account_id)
 
 
-async def recover_intents_on_startup() -> None:
-    """启动时中断 RUNNING/TERMINATING，续跑 QUEUED."""
-    from axile.server.execution.intents import PROCESS_INTERRUPTED_REASON, list_intents_by_status
+async def _append_interrupted_record(intent: IntentSnapshot) -> None:
+    """幂等补写进程中断的终态，不重复结算 intent 或通知。"""
+    from axile.server.execution.intents import PROCESS_INTERRUPTED_REASON
     from axile.server.execution.records import append_error_execute_record
+
+    await append_error_execute_record(
+        account_id=intent.account_id,
+        msg=PROCESS_INTERRUPTED_REASON,
+        raw_result={
+            "status": "FAILED",
+            "error": PROCESS_INTERRUPTED_REASON,
+            "interrupt_reason": "process_interrupted",
+            "outcome": "error",
+            "outcome_reason": PROCESS_INTERRUPTED_REASON,
+            "task_status": ExecutionTaskStatus.FAILED.value,
+            "execution_kind": intent.kind.value,
+        },
+        execution_id=intent.execution_id,
+    )
+
+
+async def recover_intents_on_startup() -> None:
+    """启动时中断 RUNNING/TERMINATING，修复中断终态并续跑 QUEUED."""
+    from axile.server.execution.intents import (
+        PROCESS_INTERRUPTED_REASON,
+        list_intents_by_status,
+        list_interrupted_intents_without_record,
+    )
 
     interrupted = await list_intents_by_status(
         ExecutionTaskStatus.RUNNING,
@@ -139,28 +163,19 @@ async def recover_intents_on_startup() -> None:
             error=PROCESS_INTERRUPTED_REASON,
             finished_at=now_str(),
         )
-        await append_error_execute_record(
-            account_id=intent.account_id,
-            msg=PROCESS_INTERRUPTED_REASON,
-            raw_result={
-                "status": "FAILED",
-                "error": PROCESS_INTERRUPTED_REASON,
-                "interrupt_reason": "process_interrupted",
-                "outcome": "error",
-                "outcome_reason": PROCESS_INTERRUPTED_REASON,
-                "task_status": ExecutionTaskStatus.FAILED.value,
-                "execution_kind": intent.kind.value,
-            },
-            execution_id=intent.execution_id,
-        )
+        await _append_interrupted_record(intent)
+        clear_running_execution(intent.account_id, intent.execution_id)
+        clear_queued_execution(intent.account_id, intent.execution_id)
+
+    for intent in await list_interrupted_intents_without_record():
+        await _append_interrupted_record(intent)
         clear_running_execution(intent.account_id, intent.execution_id)
         clear_queued_execution(intent.account_id, intent.execution_id)
 
     queued = await list_intents_by_status(ExecutionTaskStatus.QUEUED)
     accounts: set[int] = set()
     for intent in queued:
-        async with SessionLocal() as session:
-            account = await session.get(Account, intent.account_id)
+        account = await get_account_snapshot(intent.account_id)
         if account is None:
             await mark_intent_finished(
                 intent.execution_id,

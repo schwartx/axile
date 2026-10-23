@@ -23,8 +23,8 @@ class AnalysisRecord:
         return cls(**{name: detail[name] for name in cls.__dataclass_fields__})
 
 
-async def read_analysis_record(session, record: Any) -> AnalysisRecord:
+async def read_analysis_record(record: Any) -> AnalysisRecord:
     """为冷补齐或显式不支持的兼容计算，组装一条规范业务记录。"""
     from axile.server.business_facts.repository import read_execution_detail
 
-    return AnalysisRecord.from_detail(await read_execution_detail(session, record))
+    return AnalysisRecord.from_detail(await read_execution_detail(record))

@@ -10,32 +10,19 @@ from typing import Any, cast
 from fastapi import APIRouter, HTTPException, Response, status
 from loguru import logger
 from pydantic import ValidationError
-from sqlmodel import col, func, select
 
 from axile.channels import get_channel
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionTaskStatus
-from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
+from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.api.routes.portfolio import resolve_portfolio_target
-from axile.server.asset_observations import valid_asset_snapshot_condition
-from axile.server.business_facts.artifacts import (
-    read_artifact_input_id,
-    resolve_artifact_content,
-    resolve_event_details,
-)
-from axile.server.business_facts.assets import read_snapshot_assets
-from axile.server.business_facts.inputs import find_input_id, load_sizing_context
-from axile.server.business_facts.symbols import read_sizing_rows
+from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.db.models import (
-    AccountAssetSnapshot,
     AccountRebalancePlanPublic,
     AccountRebalancePlanRowPublic,
-    ExecuteRecord,
-    ExecutionArtifact,
     ExecutionArtifactListPublic,
     ExecutionArtifactPublic,
-    ExecutionEvent,
     ExecutionEventListPublic,
     ExecutionEventPublic,
     ExecutionStatusPublic,
@@ -63,7 +50,8 @@ from axile.server.execution.registry import (
 )
 from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
-from axile.server.repositories import get_latest_portfolio_id_by_account_id
+from axile.server.native_store import native_operation
+from axile.server.repositories import get_latest_portfolio_id_by_account_id, stop_account_for_clear_positions
 from axile.server.target_weight_snapshots import (
     TargetWeightSnapshotData,
     append_target_weight_snapshot,
@@ -76,27 +64,20 @@ router = APIRouter()
 
 
 @router.get("/{account_id}/rebalance_plan", response_model=AccountRebalancePlanPublic)
-async def account_rebalance_plan(session: SessionDep, account_id: int) -> AccountRebalancePlanPublic:
+async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
     """按当前渠道可执行规则返回账户持仓对照，不在前端重算偏离."""
-    account = await _get_account_or_404(session, account_id)
-    portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
+    account = await _get_account_or_404(account_id)
+    portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
     if portfolio_id is None:
         return AccountRebalancePlanPublic()
-    snapshot = await get_latest_account_target_snapshot(session, account_id, portfolio_id)
-    assets_snapshot = (
-        await session.execute(
-            select(AccountAssetSnapshot)
-            .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
-            .order_by(col(AccountAssetSnapshot.id).desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    snapshot = await get_latest_account_target_snapshot(account_id, portfolio_id)
+    assets_snapshot = await latest_asset_snapshot(account_id)
     if snapshot is None or assets_snapshot is None or not isinstance(snapshot.normalized_weights, dict):
         return AccountRebalancePlanPublic(
-            observed_at=None if assets_snapshot is None else assets_snapshot.created_at,
+            observed_at=None if assets_snapshot is None else assets_snapshot["created_at"],
             target_calculated_at=None if snapshot is None else snapshot.calculated_at,
         )
-    assets = await read_snapshot_assets(session, assets_snapshot)
+    assets = assets_snapshot["assets"]
     total_asset = assets.get("total_asset")
     raw_positions = assets.get("positions")
     positions = raw_positions if isinstance(raw_positions, list) else []
@@ -107,7 +88,7 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
         or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
     ):
         return AccountRebalancePlanPublic(
-            observed_at=assets_snapshot.created_at,
+            observed_at=assets_snapshot["created_at"],
             target_calculated_at=snapshot.calculated_at,
         )
     plugin = get_channel(account.trade_channel)
@@ -133,7 +114,7 @@ async def account_rebalance_plan(session: SessionDep, account_id: int) -> Accoun
             for row in plan.rows
         ],
         off_symbol_count=plan.off_symbol_count,
-        observed_at=assets_snapshot.created_at,
+        observed_at=assets_snapshot["created_at"],
         target_calculated_at=snapshot.calculated_at,
     )
 
@@ -217,21 +198,7 @@ def _sizing_rows_from_facts(
     return rows
 
 
-async def _load_execution_artifact_versions(session: SessionDep, execution_id: str) -> dict[str, int]:
-    """只用协议版本判别历史缺失证据，不读取附件正文。"""
-    rows = await session.execute(
-        select(ExecutionArtifact.artifact_type, ExecutionArtifact.schema_version).where(
-            ExecutionArtifact.execution_id == execution_id,
-            col(ExecutionArtifact.artifact_type).in_(
-                [ExecutionArtifactType.TARGET_SNAPSHOT, ExecutionArtifactType.EXECUTION_SUMMARY]
-            ),
-        )
-    )
-    return {kind: version for kind, version in rows}
-
-
 async def _sizing_evidence_for_snapshot(
-    session: SessionDep,
     snapshot: TargetWeightSnapshotData,
     *,
     canonicalize: _Canonicalize,
@@ -243,34 +210,19 @@ async def _sizing_evidence_for_snapshot(
     null_target_quantity = False
     inflight = False
     if snapshot.execution_id:
-        versions = await _load_execution_artifact_versions(session, snapshot.execution_id)
-        record = (
-            await session.execute(
-                select(ExecuteRecord.id, ExecuteRecord.input_id).where(
-                    ExecuteRecord.execution_id == snapshot.execution_id,
-                    ExecuteRecord.account_id == snapshot.account_id,
-                )
-            )
-        ).first()
-        input_id = await read_artifact_input_id(
-            session, execution_id=snapshot.execution_id, view="targets", account_id=snapshot.account_id
+        evidence = await native_operation(
+            "execution_read",
+            {"op": "target_sizing", "execution_id": snapshot.execution_id, "account_id": snapshot.account_id},
         )
-        if input_id is None and record is not None:
-            input_id = record.input_id
-        if input_id is None and snapshot.account_id is not None:
-            input_id = await find_input_id(session, account_id=snapshot.account_id, execution_id=snapshot.execution_id)
-        target_context: dict[str, object] = {}
-        if input_id is not None:
-            _, raw_context = await load_sizing_context(session, input_id)
-            if isinstance(raw_context, dict):
-                target_context = cast("dict[str, object]", raw_context)
-        if record is not None:
+        versions = evidence["artifact_versions"]
+        input_id = evidence["input_id"]
+        if evidence["record_id"] is not None:
             rows = _sizing_rows_from_facts(
-                await read_sizing_rows(session, record.id),
+                evidence["sizings"],
                 canonicalize=canonicalize,
                 strategy_weights=strategy_weights,
                 account_weights=account_weights,
-                target_context=target_context,
+                target_context=evidence["target_context"],
             )
             status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
             if not rows and versions.get(ExecutionArtifactType.EXECUTION_SUMMARY, 1) < 2:
@@ -311,7 +263,6 @@ async def _sizing_evidence_for_snapshot(
 
 
 async def _account_target_public(
-    session: SessionDep,
     account: object,
     snapshot: TargetWeightSnapshotData | None,
 ) -> TargetWeightSnapshotPublic:
@@ -322,7 +273,6 @@ async def _account_target_public(
     strategy_weights = _canonical_weight_map(snapshot.raw_weights, plugin.canonicalize_symbol)
     account_weights = _canonical_weight_map(snapshot.normalized_weights, plugin.canonicalize_symbol)
     evidence = await _sizing_evidence_for_snapshot(
-        session,
         snapshot,
         canonicalize=plugin.canonicalize_symbol,
         strategy_weights=strategy_weights,
@@ -330,7 +280,6 @@ async def _account_target_public(
     )
     if evidence.status != "available" and not evidence.inflight and snapshot.id is not None and snapshot.account_id:
         previous_snapshots = await get_previous_account_target_snapshots(
-            session,
             snapshot.account_id,
             snapshot.portfolio_id,
             before_id=snapshot.id,
@@ -343,7 +292,6 @@ async def _account_target_public(
             ):
                 continue
             previous_evidence = await _sizing_evidence_for_snapshot(
-                session,
                 previous,
                 canonicalize=plugin.canonicalize_symbol,
                 strategy_weights=strategy_weights,
@@ -379,9 +327,9 @@ def _account_route_module() -> Any:
 
 
 @router.post("/execute/{account_id}", response_model=ExecutionTriggerResponse)
-async def execute(session: SessionDep, account_id: int) -> ExecutionTriggerResponse:
+async def execute(account_id: int) -> ExecutionTriggerResponse:
     """异步触发立即执行，并返回可用于轮询的执行标识."""
-    await _get_account_or_404(session, account_id)
+    await _get_account_or_404(account_id)
 
     try:
         submitted = await enqueue_execute_trade(account_id)
@@ -413,42 +361,41 @@ async def execute(session: SessionDep, account_id: int) -> ExecutionTriggerRespo
 
 
 @router.get("/{account_id}/target_snapshot", response_model=TargetWeightSnapshotPublic)
-async def account_target_snapshot(session: SessionDep, account_id: int) -> TargetWeightSnapshotPublic:
+async def account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic:
     """只读账户当前绑定组合下最近成功计算的目标快照."""
-    account = await _get_account_or_404(session, account_id)
-    portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
+    account = await _get_account_or_404(account_id)
+    portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
     if portfolio_id is None:
         return TargetWeightSnapshotPublic()
-    snapshot = await get_latest_account_target_snapshot(session, account_id, portfolio_id)
-    return await _account_target_public(session, account, snapshot)
+    snapshot = await get_latest_account_target_snapshot(account_id, portfolio_id)
+    return await _account_target_public(account, snapshot)
 
 
 @router.post("/{account_id}/target_snapshot/refresh", response_model=TargetWeightSnapshotPublic)
-async def refresh_account_target_snapshot(session: SessionDep, account_id: int) -> TargetWeightSnapshotPublic:
+async def refresh_account_target_snapshot(account_id: int) -> TargetWeightSnapshotPublic:
     """按用户请求使用真实账户上下文重新计算并保存目标权重."""
-    account = await _get_account_or_404(session, account_id)
-    portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
+    account = await _get_account_or_404(account_id)
+    context = await native_operation("portfolio_operation", {"op": "bound_context", "account_id": account_id})
+    portfolio_id = context["portfolio_id"]
     if portfolio_id is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户未绑定组合")
-    portfolio = await session.get(Portfolio, portfolio_id)
+    portfolio = context["portfolio"]
     if portfolio is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户绑定的组合不存在")
     if not try_register_target_refresh(portfolio_id, account_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="账户正在执行或刷新，请稍后再试")
 
     try:
-        await session.close()
-        raw_target = await resolve_portfolio_target(portfolio, account)
+        raw_target = await resolve_portfolio_target(Portfolio.model_validate(portfolio), account)
         normalized_target = _normalize_rebalance_target(account, raw_target)
         snapshot = await append_target_weight_snapshot(
-            session,
             portfolio_id=portfolio_id,
             account_id=account_id,
             raw_weights=raw_target,
             normalized_weights=normalized_target,
             source="manual",
         )
-        return await _account_target_public(session, account, snapshot)
+        return await _account_target_public(account, snapshot)
     finally:
         clear_target_refresh(portfolio_id, account_id)
 
@@ -468,7 +415,6 @@ async def execution_status(execution_id: str) -> ExecutionStatusPublic:
 
 @router.post("/{account_id}/terminate", response_model=ExecutionTerminateResponse)
 async def terminate_account_execution(
-    session: SessionDep,
     account_id: int,
     payload: ExecutionTerminateRequest,
     response: Response,
@@ -477,17 +423,16 @@ async def terminate_account_execution(
     from axile.server.execution.supplements import account_lock
 
     async with account_lock(account_id):
-        return await _terminate_account_execution(session, account_id, payload, response)
+        return await _terminate_account_execution(account_id, payload, response)
 
 
 async def _terminate_account_execution(
-    session: SessionDep,
     account_id: int,
     payload: ExecutionTerminateRequest,
     response: Response,
 ) -> ExecutionTerminateResponse:
     """终止账户当前正在运行的执行任务."""
-    await _get_account_or_404(session, account_id)
+    await _get_account_or_404(account_id)
 
     running_execution_id = get_running_execution_id(account_id) or get_queued_execution_id(account_id)
     current_status = None if running_execution_id is None else await get_execution_status(running_execution_id)
@@ -523,82 +468,56 @@ async def _terminate_account_execution(
 
 @router.get("/executions/{execution_id}/events", response_model=ExecutionEventListPublic)
 async def execution_events(
-    session: SessionDep,
     execution_id: str,
     pagination: HistoryPaginationDep,
 ) -> ExecutionEventListPublic:
     """查询指定执行标识对应的事件流."""
-    count_stmt = select(func.count()).select_from(ExecutionEvent).where(ExecutionEvent.execution_id == execution_id)
-    total = (await session.execute(count_stmt)).scalar_one()
-    stmt = (
-        select(ExecutionEvent)
-        .where(ExecutionEvent.execution_id == execution_id)
-        # 按 id（自增=落库/发生顺序）排序，而非 seq：终止类事件 seq=0 会排到 started(seq=1) 之前，
-        # 令接口原始序列读作「先终止后开始」。id 单调递增即真实时序，正常事件的 seq 顺序与之一致。
-        .order_by(cast("Any", ExecutionEvent.id))
-        .offset(pagination.skip)
-        .limit(pagination.limit)
+    page = await native_operation(
+        "list_execution_events", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
     )
-    rows = (await session.execute(stmt)).scalars().all()
-    data = []
-    for row in rows:
-        details = await resolve_event_details(session, row)
-        data.append(
-            # 旧事件的 debug.error 读时提升到公共层；技术原文不提升。
-            ExecutionEventPublic.model_validate(row).model_copy(
-                update={"details": normalize_execution_event_details(details)}
-            )
+    data = [
+        ExecutionEventPublic.model_validate(row).model_copy(
+            update={"details": normalize_execution_event_details(row["details"])}
         )
+        for row in page["data"]
+    ]
     return ExecutionEventListPublic(
         data=data,
-        count=total,
+        count=page["count"],
     )
 
 
 @router.get("/executions/{execution_id}/artifacts", response_model=ExecutionArtifactListPublic)
 async def execution_artifacts(
-    session: SessionDep,
     execution_id: str,
     pagination: HistoryPaginationDep,
 ) -> ExecutionArtifactListPublic:
     """查询指定执行标识对应的执行附件."""
-    count_stmt = (
-        select(func.count()).select_from(ExecutionArtifact).where(ExecutionArtifact.execution_id == execution_id)
+    page = await native_operation(
+        "list_execution_artifacts", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
     )
-    total = (await session.execute(count_stmt)).scalar_one()
-    stmt = (
-        select(ExecutionArtifact)
-        .where(ExecutionArtifact.execution_id == execution_id)
-        .order_by(cast("Any", ExecutionArtifact.id))
-        .offset(pagination.skip)
-        .limit(pagination.limit)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
     artifact_data: list[ExecutionArtifactPublic] = []
-    for row in rows:
+    for row in page["data"]:
         item = ExecutionArtifactPublic.model_validate(row)
-        content = await resolve_artifact_content(session, row)
-        # 旧执行摘要附件读时归一；其他附件形状不同，不做推断。
-        if row.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY and isinstance(content, dict):
+        content = item.content
+        if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY and isinstance(content, dict):
             content = normalize_legacy_result(content)
-        item = item.model_copy(update={"content": content})
-        artifact_data.append(item)
+        artifact_data.append(item.model_copy(update={"content": content}))
     return ExecutionArtifactListPublic(
         data=artifact_data,
-        count=total,
+        count=page["count"],
     )
 
 
 @router.post("/empty_positions/{account_id}", response_model=ExecutionTriggerResponse)
 async def empty_all_positions(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
     algorithm_method: str | None = None,
     algorithm_params: str | None = None,
 ) -> ExecutionTriggerResponse:
     """异步触发一键平仓，并返回可用于轮询的执行标识."""
-    db_account = await _get_account_or_404(session, account_id)
+    db_account = await _get_account_or_404(account_id)
     account_routes = _account_route_module()
 
     try:
@@ -613,15 +532,10 @@ async def empty_all_positions(
         ) from exc
 
     # 先停调度，再入队一次性清仓，避免 CRON 在人工清仓期间再次拉起执行。
-    from axile.server.execution.supplements import cancel_groups_in_session
-
-    await cancel_groups_in_session(session, account_id, "account_stopped")
-    db_account.sqlmodel_update({"is_started": False})
-    session.add(db_account)
-    await session.commit()
+    db_account = await stop_account_for_clear_positions(account_id)
     delete_job(sched, account_id)
     if db_account.trade_channel in {TradeChannel.CTP, TradeChannel.TQ}:
-        await reconcile_china_channel_account(db_account.snapshot())
+        await reconcile_china_channel_account(db_account)
 
     try:
         submitted = await enqueue_empty_positions(account_id, algorithm=algorithm)
