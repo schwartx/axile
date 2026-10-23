@@ -721,6 +721,7 @@ def test_business_storage_has_no_complete_raw_document_columns(facts_database):
     asyncio.run(_store(facts_database))
 
     async def inspect_storage():
+        _core.close_database(str(facts_database))
         engine = sa.create_engine(f"sqlite:///{facts_database}")
         try:
             columns = sa.inspect(engine).get_columns("executerecord")
@@ -1060,6 +1061,7 @@ def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_d
         stored = await _stored_captured_notification(facts_database)
         assert not {"positions", "orders", "trades"}.intersection(stored)
         assert len(json.dumps(stored)) < 21000
+        _core.close_database(str(facts_database))
         with closing(sqlite3.connect(facts_database)) as connection:
             raw_size = connection.execute(
                 "SELECT length(CAST(context AS BLOB)) FROM notification_event WHERE id=?", (f"execution:{_EXECUTION}",)

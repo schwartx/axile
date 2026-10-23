@@ -16,6 +16,7 @@ from axile.server.execution import intents, notification_outbox, records, supple
 from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.conftest import require_native_store
 
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
 
@@ -27,6 +28,8 @@ def call(path, operation, request):
 
 
 def query(path, sql, args=()):
+    # 串行功能夹具交给 Python SQLite 前释放原生空闲句柄；复用与并发另由子进程 oracle 验证。
+    require_native_store("close_database").close_database(str(path))
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         result = [dict(row) for row in connection.execute(sql, args)]
@@ -37,6 +40,7 @@ def query(path, sql, args=()):
 
 
 def execute(path, sql, args=()):
+    require_native_store("close_database").close_database(str(path))
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(sql, args)
 

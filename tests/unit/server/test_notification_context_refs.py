@@ -165,6 +165,7 @@ def test_changed_event_is_rejected(native_database) -> None:
     with pytest.raises(sqlite3.IntegrityError, match="Frozen notification context"):
         sql(native_database, "UPDATE notification_event SET context=? WHERE id=?", (json.dumps(changed), _EVENT))
     # 坏样本绕过写保护后恢复触发器，再让真实原生读取校验哈希。
+    _core.close_database(str(native_database))
     with closing(sqlite3.connect(native_database)) as connection, connection:
         guard = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",

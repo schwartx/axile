@@ -50,7 +50,7 @@ from axile.server.evidence.models import (
 )
 from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.execution.worker_backend import worker_audit
-from tests.conftest import initialize_native_database
+from tests.conftest import initialize_native_database, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._business_facts_test_support import persist_result, sql
 from tests.unit.server._business_facts_test_support import rows as fact_rows
@@ -228,6 +228,7 @@ def _seed(path, *items):
         "SupplementGroup": "supplement_group",
         "SupplementStep": "supplement_step",
     }
+    require_native_store("close_database").close_database(str(path))
     engine = sa.create_engine(f"sqlite:///{path}")
     try:
         with engine.begin() as connection:

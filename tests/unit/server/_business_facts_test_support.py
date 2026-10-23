@@ -6,16 +6,19 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 
-from tests.conftest import native_store_call
+from tests.conftest import native_store_call, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
 
 
 def sql(path, statement, parameters=()):
+    # 串行 oracle 使用另一套 SQLite 内核，接管文件前必须释放原生空闲句柄。
+    require_native_store("close_database").close_database(str(path))
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(statement, parameters)
 
 
 def rows(path, name):
+    require_native_store("close_database").close_database(str(path))
     engine = sa.create_engine(f"sqlite:///{path}")
     try:
         with engine.connect() as connection:
