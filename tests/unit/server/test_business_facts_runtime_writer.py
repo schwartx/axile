@@ -113,26 +113,14 @@ def test_post_order_assets_commit_is_required(monkeypatch):
         )
 
 
-def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
+def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
     session = _WriteSession()
     seen: dict[str, object] = {}
-    frozen_input = {"curr_target": {"EXCHANGE.A": 0.1}}
 
     async def store(_session, record, *, raw_input, raw_result):
         session.events.append("facts")
         record.input_id = "durable-normalized-input"
         seen.update(input=raw_input, result=raw_result)
-        return frozen_input
-
-    async def observation(_session, record):
-        session.events.append("observation")
-        assert record.input is frozen_input
-        assert business_evidence(record.input) == business_evidence({"curr_target": {"EXCHANGE.A": 0.1}})
-        assert business_evidence(record.result["inputs"]) == business_evidence({"curr_target": {}, "feishu_key": "***"})
-
-    async def source(_session, record):
-        session.events.append("source")
-        assert record.input is frozen_input
 
     async def asset_history(_session, _record):
         session.events.append("asset_history")
@@ -142,8 +130,6 @@ def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
         session.events.append("compact_journal")
 
     monkeypatch.setattr(records, "store_execution_facts", store)
-    monkeypatch.setattr(records, "write_observation_fact", observation)
-    monkeypatch.setattr(records, "write_source_facts", source)
     monkeypatch.setattr(records, "ensure_execution_asset_snapshot", asset_history)
     monkeypatch.setattr(records, "compact_execution_summary", compact_journal)
     result = {
@@ -161,7 +147,9 @@ def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
             session_factory=lambda: session,
         )
     )
+    assert record.input_id == "durable-normalized-input"
     assert business_evidence(seen["input"]) == business_evidence({"curr_target": {"A": 0.1}})
+    assert business_evidence(seen["result"]["inputs"]) == business_evidence({"curr_target": {}, "feishu_key": "***"})
     assert business_evidence(session.events) == business_evidence(
         [
             "add",
@@ -170,8 +158,6 @@ def test_terminal_projection_uses_durable_input_and_commits_once(monkeypatch):
             "asset_history",
             "compact_journal",
             "flush",
-            "observation",
-            "source",
             "commit",
             "refresh",
         ]
@@ -207,13 +193,9 @@ def test_duplicate_terminal_never_returns_another_accounts_record(monkeypatch):
 
 def test_journal_compaction_failure_aborts_terminal_commit(monkeypatch):
     session = _WriteSession()
-    observation = AsyncMock()
-    source = AsyncMock()
     monkeypatch.setattr(records, "store_execution_facts", AsyncMock())
     monkeypatch.setattr(records, "ensure_execution_asset_snapshot", AsyncMock())
     monkeypatch.setattr(records, "compact_execution_summary", AsyncMock(side_effect=RuntimeError("journal failure")))
-    monkeypatch.setattr(records, "write_observation_fact", observation)
-    monkeypatch.setattr(records, "write_source_facts", source)
     with pytest.raises(RuntimeError, match="journal failure"):
         asyncio.run(
             records._persist_execute_record(
@@ -226,8 +208,6 @@ def test_journal_compaction_failure_aborts_terminal_commit(monkeypatch):
             )
         )
     assert "commit" not in session.events
-    observation.assert_not_awaited()
-    source.assert_not_awaited()
 
 
 @pytest.mark.parametrize("status", ["SKIPPED", "PARTIAL", "TERMINATED"])

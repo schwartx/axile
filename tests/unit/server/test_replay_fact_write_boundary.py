@@ -142,6 +142,7 @@ def test_late_target_refreshes_only_matching_execution_fact() -> None:
                 )
             async with sessions() as session:
                 from axile.server.target_weight_snapshots import read_target_snapshot_weights
+
                 assert await read_target_snapshot_weights(session, account_id=1, execution_id="late") == {"A": 0.6}
                 assert await read_target_snapshot_weights(session, account_id=1, execution_id="unrelated") is None
 

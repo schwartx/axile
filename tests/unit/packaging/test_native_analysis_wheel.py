@@ -19,7 +19,7 @@ from hatchling.builders.wheel import WheelBuilder
 @pytest.fixture(autouse=True)
 def native_process(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {
-        "capabilities": {"protocol": 1, "commands": ["publish_store"]},
+        "capabilities": {"protocol": 1, "analysis_fact_schema": 40, "commands": ["publish_store"]},
         "calls": [],
         "allow_cargo": False,
     }

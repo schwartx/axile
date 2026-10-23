@@ -203,4 +203,6 @@ def _cost_response(content: bytes | str) -> Response:
         for attempt in item.get("attempts", []):
             symbol = symbols.get(attempt.get("symbol"), {})
             attempt["reason"] = str(symbol.get("error") or "")[:200]
-    return Response(content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), media_type="application/json")
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), media_type="application/json"
+    )

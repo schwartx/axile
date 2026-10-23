@@ -119,21 +119,30 @@ def prepare(args) -> None:
         try:
             factory = async_sessionmaker(engine, expire_on_commit=False)
             async with factory() as session:
-                session.add(Account(id=1,name="synthetic-analysis",market="期货",trade_channel="ctp",brokerage="synthetic"))
+                session.add(
+                    Account(id=1, name="synthetic-analysis", market="期货", trade_channel="ctp", brokerage="synthetic")
+                )
                 await session.commit()
-            for start in range(0,args.observations,100):
+            for start in range(0, args.observations, 100):
                 async with factory() as session:
-                    for index in range(start,min(start+100,args.observations)):
-                        item = record(index,args.symbols)
-                        head = ExecuteRecord(**{key:value for key,value in vars(item).items() if key not in {"raw_input","raw_result"}})
+                    for index in range(start, min(start + 100, args.observations)):
+                        item = record(index, args.symbols)
+                        head = ExecuteRecord(
+                            **{
+                                key: value
+                                for key, value in vars(item).items()
+                                if key not in {"raw_input", "raw_result"}
+                            }
+                        )
                         session.add(head)
                         await session.flush()
-                        await store_execution_facts(session,head,raw_input=item.raw_input,raw_result=item.raw_result)
+                        await store_execution_facts(session, head, raw_input=item.raw_input, raw_result=item.raw_result)
                     await session.commit()
         finally:
             await engine.dispose()
+
     asyncio.run(populate())
-    emit("prepared",observations=args.observations,symbols=args.symbols)
+    emit("prepared", observations=args.observations, symbols=args.symbols)
 
 
 def verify(database: Path, expected_records: int, expected_trades: int) -> dict:

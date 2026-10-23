@@ -82,7 +82,9 @@ async def test_real_native_publication_ready_and_readable(sessions, monkeypatch)
         await connection.run_sync(install_analysis_triggers)
         execution = record()
         execution.account_id = 1
-        execution.result["symbol_results"]["A"].update(status="PARTIAL", memory={"message": "冻结未到目标", "symbol_decision_reason_code": "CLOSED"})
+        execution.result["symbol_results"]["A"].update(
+            status="PARTIAL", memory={"message": "冻结未到目标", "symbol_decision_reason_code": "CLOSED"}
+        )
         await persist_records(session, [execution])
         await session.commit()
 
@@ -117,12 +119,22 @@ async def test_real_native_publication_ready_and_readable(sessions, monkeypatch)
         assert await session.scalar(sa.text("SELECT count(*) FROM performance_cost_trade")) == 1
     assert not await manager.run_once()
     async with sessions() as session:
-        frozen = (await session.execute(sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol"))).one()
+        frozen = (
+            await session.execute(
+                sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol")
+            )
+        ).one()
         assert frozen == ("冻结未到目标", "CLOSED")
-        await session.execute(sa.text("UPDATE execution_symbol_result SET memory='{}' WHERE record_id=:id"), {"id": execution.id})
+        await session.execute(
+            sa.text("UPDATE execution_symbol_result SET memory='{}' WHERE record_id=:id"), {"id": execution.id}
+        )
         await session.commit()
     async with sessions() as session:
-        assert (await session.execute(sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol"))).one() == frozen
+        assert (
+            await session.execute(
+                sa.text("SELECT memory_message,memory_reason_code FROM performance_cost_execution_symbol")
+            )
+        ).one() == frozen
 
 
 async def state(sessions):

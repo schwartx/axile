@@ -32,7 +32,6 @@ _EXECUTION = "notification-compaction-projections"
 _CREATED = "2026-10-20T09:00:10+08:00"
 
 
-
 def _result():
     return {
         "status": "PARTIAL",
@@ -111,7 +110,10 @@ async def _projection_rows(session, record_id):
                 )
             ).mappings()
         )
-        for table in (SQLModel.metadata.tables[name] for name in ("execution_symbol_result", "execution_symbol_sizing", "business_trade"))
+        for table in (
+            SQLModel.metadata.tables[name]
+            for name in ("execution_symbol_result", "execution_symbol_sizing", "business_trade")
+        )
     }
 
 
@@ -223,6 +225,7 @@ def test_distinct_business_context_is_not_compacted_or_reprojected(tmp_path):
 
 def test_compaction_rolls_back_with_outbox(tmp_path):
     """外层失败回滚 outbox、引用及业务事实，不内部提交。"""
+
     async def scenario():
         async with _database(tmp_path) as factory:
             record_id = await _seed(factory)

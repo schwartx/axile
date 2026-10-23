@@ -44,7 +44,7 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
         "queue_fail",
         "queue_release",
     )
-    native = SimpleNamespace(**{name: MagicMock() for name in names if name != missing})
+    native = SimpleNamespace(ANALYSIS_FACT_SCHEMA=40, **{name: MagicMock() for name in names if name != missing})
     monkeypatch.setattr(performance_analysis, "_core", native)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
@@ -68,7 +68,8 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
     scheduler.start.assert_not_called()
     sessions.assert_not_called()
     for operation in vars(native).values():
-        operation.assert_not_called()
+        if callable(operation):
+            operation.assert_not_called()
 
 
 @pytest.fixture

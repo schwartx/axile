@@ -22,14 +22,22 @@ from axile.server.db.models import Account
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION, read_snapshot_status
 
 
-@pytest.mark.parametrize("memory", [{}, {"message": None}, {"message": ""}, {"message": "未达到目标"}, {"message": "RuntimeError: secret"}])
+@pytest.mark.parametrize(
+    "memory", [{}, {"message": None}, {"message": ""}, {"message": "未达到目标"}, {"message": "RuntimeError: secret"}]
+)
 def test_frozen_cost_display_uses_existing_normalization(memory):
     from axile.server.execution.legacy_compat import normalize_legacy_result
 
     symbol = {"status": "PARTIAL", "memory": memory}
     expected = normalize_legacy_result(symbol)
-    payload = {"data": [{"record": {"raw_result": {"symbol_results": {"A": symbol}}},
-                         "attempts": [{"symbol": "A", "reason": "RuntimeError: secret"}]}]}
+    payload = {
+        "data": [
+            {
+                "record": {"raw_result": {"symbol_results": {"A": symbol}}},
+                "attempts": [{"symbol": "A", "reason": "RuntimeError: secret"}],
+            }
+        ]
+    }
     response = routes._cost_response(json.dumps(payload))
     item = json.loads(response.body)["data"][0]
     assert item["attempts"][0]["reason"] == expected["error"]
@@ -156,15 +164,27 @@ def _seed_database(path: Path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(SQLModel.metadata.create_all)
             async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-                session.add(build_account(id=1,portfolio_id=None))
+                session.add(build_account(id=1, portfolio_id=None))
                 await session.flush()
-                await persist_records(session,[analysis_record(id=i,account_id=1,execution_id=f"e-{i}",
-                    created_at=f"2026-01-0{i}T10:00:00",is_success=1,input={"curr_target":{}},
-                    result={"account_assets":{"total_asset":asset,"positions":[]}})
-                    for i,asset in [(1,100.0),(2,110.0)]])
+                await persist_records(
+                    session,
+                    [
+                        analysis_record(
+                            id=i,
+                            account_id=1,
+                            execution_id=f"e-{i}",
+                            created_at=f"2026-01-0{i}T10:00:00",
+                            is_success=1,
+                            input={"curr_target": {}},
+                            result={"account_assets": {"total_asset": asset, "positions": []}},
+                        )
+                        for i, asset in [(1, 100.0), (2, 110.0)]
+                    ],
+                )
                 await session.commit()
         finally:
             await engine.dispose()
+
     asyncio.run(seed())
 
 

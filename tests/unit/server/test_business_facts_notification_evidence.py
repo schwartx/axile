@@ -811,15 +811,8 @@ async def _write_real_terminal(factory, payload):
     )
 
 
-def _isolate_analysis_projection(monkeypatch):
-    """事务仍使用真实 SQLite；本组只隔离与审计去重无关的分析投影。"""
-    monkeypatch.setattr(records, "write_observation_fact", AsyncMock())
-    monkeypatch.setattr(records, "write_source_facts", AsyncMock())
-
-
-def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidence(facts_database, monkeypatch):
+def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidence(facts_database):
     """终态及摘要引用同事务提交，冷读和下载仍保留原始 journal 内容。"""
-    _isolate_analysis_projection(monkeypatch)
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
@@ -862,7 +855,6 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
 
 def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database, monkeypatch):
     """引用已生成后提交失败，完整 worker 证据必须随同终态写入一起回滚。"""
-    _isolate_analysis_projection(monkeypatch)
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
@@ -907,9 +899,8 @@ def test_failed_terminal_transaction_keeps_original_worker_journal(facts_databas
     assert business_evidence(snapshot.executions[_EXECUTION].artifacts[0]["content"]) == business_evidence(journal)
 
 
-def test_terminal_compaction_keeps_distinct_journal_observation(facts_database, monkeypatch):
+def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
     """不同的历史观测不能被最终结果引用覆盖。"""
-    _isolate_analysis_projection(monkeypatch)
     payload = _summary_result()
     journal = _pending_summary(payload)
     journal["symbol_results"]["rb2610"]["orders"][0]["filled_volume"] = 0

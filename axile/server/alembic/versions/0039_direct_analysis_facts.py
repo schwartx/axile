@@ -25,9 +25,16 @@ _TABLES = (
 )
 _OUTPUT_TABLES = ("performance_cost_range", "performance_execution_summary")
 _SUMMARY_COLUMNS = {
-    "value": "REAL", "cost": "REAL", "loss_bp": "REAL", "coverage": "REAL",
-    "covered": "INTEGER", "count": "INTEGER", "fee_covered": "INTEGER",
-    "amount_complete": "BOOLEAN", "covered_value": "REAL", "estimated": "INTEGER",
+    "value": "REAL",
+    "cost": "REAL",
+    "loss_bp": "REAL",
+    "coverage": "REAL",
+    "covered": "INTEGER",
+    "count": "INTEGER",
+    "fee_covered": "INTEGER",
+    "amount_complete": "BOOLEAN",
+    "covered_value": "REAL",
+    "estimated": "INTEGER",
     "has_transactions": "BOOLEAN",
 }
 _DELETE = re.compile(
@@ -129,7 +136,9 @@ def _merge_outputs(connection):
             SELECT {columns} FROM performance_execution_summary s
             WHERE s.snapshot_id=e.snapshot_id AND s.record_id=e.record_id)""")
         connection.exec_driver_sql("DROP INDEX IF EXISTS ix_performance_execution_summary_time")
-    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_performance_execution_summary_time ON performance_cost_execution(snapshot_id,time,record_id)")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_performance_execution_summary_time ON performance_cost_execution(snapshot_id,time,record_id)"
+    )
     if "performance_cost_range" in names:
         rows = connection.exec_driver_sql("""SELECT c.snapshot_id,c.range_key,c.baseline,c.end,r.snapshot_id,r.baseline,r.end
             FROM performance_cost_range c LEFT JOIN performance_result_range r
@@ -143,12 +152,18 @@ def _restore_outputs(connection):
     replay = import_module("axile.server.alembic.versions.0034_analysis_rust_facts")
     views = import_module("axile.server.alembic.versions.0036_analysis_read_views")
     connection.exec_driver_sql("DROP INDEX IF EXISTS ix_performance_execution_summary_time")
-    for migration, name in ((replay,"performance_cost_range"),(views,"performance_execution_summary")):
+    for migration, name in ((replay, "performance_cost_range"), (views, "performance_execution_summary")):
         migration._schema().tables[name].create(connection, checkfirst=True)
-    columns = ",".join(['snapshot_id','record_id','time',*_SUMMARY_COLUMNS,'symbol_count'])
-    connection.exec_driver_sql(f"INSERT INTO performance_execution_summary ({columns}) SELECT {columns} FROM performance_cost_execution WHERE amount_complete IS NOT NULL")
-    for snapshot, key, lower, upper in connection.exec_driver_sql("SELECT snapshot_id,range_key,baseline,end FROM performance_result_range"):
-        connection.exec_driver_sql("INSERT INTO performance_cost_range VALUES(?,?,?,?)",(snapshot,key,_millis(lower),_millis(upper)))
+    columns = ",".join(["snapshot_id", "record_id", "time", *_SUMMARY_COLUMNS, "symbol_count"])
+    connection.exec_driver_sql(
+        f"INSERT INTO performance_execution_summary ({columns}) SELECT {columns} FROM performance_cost_execution WHERE amount_complete IS NOT NULL"
+    )
+    for snapshot, key, lower, upper in connection.exec_driver_sql(
+        "SELECT snapshot_id,range_key,baseline,end FROM performance_result_range"
+    ):
+        connection.exec_driver_sql(
+            "INSERT INTO performance_cost_range VALUES(?,?,?,?)", (snapshot, key, _millis(lower), _millis(upper))
+        )
     for name in _SUMMARY_COLUMNS:
         connection.exec_driver_sql(f'ALTER TABLE performance_cost_execution DROP COLUMN "{name}"')
     # Reinstall only frozen output cleanup triggers whose bodies changed above.

@@ -471,8 +471,11 @@ def inspect_database(path: Path, account_id: int, range_key: str, record_id: int
             row = database.execute(
                 "SELECT record_id FROM performance_cost_execution WHERE snapshot_id=? "
                 "AND time BETWEEN ? AND ? ORDER BY time DESC,record_id DESC LIMIT 1",
-                (identity, timestamp(bounds[0]) if bounds and bounds[0] else None,
-                 timestamp(bounds[1]) if bounds and bounds[1] else None),
+                (
+                    identity,
+                    timestamp(bounds[0]) if bounds and bounds[0] else None,
+                    timestamp(bounds[1]) if bounds and bounds[1] else None,
+                ),
             ).fetchone()
             record_id = row[0] if row else None
         return {"snapshot_id": identity, "record_id": record_id, "row_counts": counts}

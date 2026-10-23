@@ -412,10 +412,10 @@ def test_committed_input_and_before_assets_survive_without_terminal_record(
 
 
 def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    """分析事实写入失败时回滚整份终态，已提交的下单前输入继续可查。"""
+    """终态证据写入失败时回滚整份终态，已提交的下单前输入继续可查。"""
 
-    async def fail_source_write(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("synthetic source write failure")
+    async def fail_terminal_write(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic terminal write failure")
 
     async def scenario() -> None:
         async with _file_database(monkeypatch, tmp_path, "semantic-rollback") as factory:
@@ -425,8 +425,8 @@ def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: 
                 execution_id="semantic-result-rollback",
                 payload=input_payload,
             )
-            monkeypatch.setattr(records, "write_source_facts", fail_source_write)
-            with pytest.raises(RuntimeError, match="synthetic source write failure"):
+            monkeypatch.setattr(records, "compact_execution_summary", fail_terminal_write)
+            with pytest.raises(RuntimeError, match="synthetic terminal write failure"):
                 await records.append_success_execute_record(
                     build_account(),
                     input_payload,

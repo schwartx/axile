@@ -13,8 +13,8 @@ from axile.server.analysis_cost_facts import COST_FACT_SCHEMA_VERSION
 from axile.server.analysis_cost_reader import read_execution_payloads, scalar_columns, trade_payload
 from axile.server.db.models.analysis import analysis_snapshot as snapshots
 from axile.server.db.models.analysis import cost_execution as executions
-from axile.server.db.models.analysis_result import result_range as ranges
 from axile.server.db.models.analysis import cost_trade as trades
+from axile.server.db.models.analysis_result import result_range as ranges
 from axile.server.db.models.performance import RangeKey
 from axile.server.performance_costs import execution_list_payload, timestamp
 

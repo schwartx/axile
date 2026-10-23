@@ -184,7 +184,8 @@ async def _version(session, account_id=1):
 async def _projection_rows(session, record_id):
     return {
         table.name: list((await session.execute(sa.select(table).where(table.c.record_id == record_id))).mappings())
-        for table in _fact_tables() if "record_id" in table.c
+        for table in _fact_tables()
+        if "record_id" in table.c
     }
 
 
@@ -432,6 +433,7 @@ def test_child_change_invalidation_and_source_version_are_atomic(tmp_path, commi
                 assert business_evidence(
                     (await session.execute(sa.select(trade.c.trade_price))).scalar_one()
                 ) == business_evidence(101.0 if commit else 100.0)
+
     asyncio.run(check())
 
 
@@ -456,6 +458,7 @@ def test_result_input_target_mutation_invalidates_its_execution(tmp_path):
                 await session.commit()
             async with sessions() as session:
                 assert await _version(session) > original_version
+
     asyncio.run(check())
 
 
@@ -487,6 +490,7 @@ def test_target_reparenting_invalidates_both_accounts(tmp_path):
             async with sessions() as session:
                 for account_id in (1, 2):
                     assert await _version(session, account_id) > before[account_id]
+
     asyncio.run(check())
 
 
@@ -1069,6 +1073,7 @@ def test_summary_reference_freezes_child_until_journal_is_materialized(tmp_path,
 def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second_account):
     """不同执行可使用相同订单路径；新写入或修改只失效真正拥有该行的执行。"""
     from axile.server.business_facts.orders import order
+
     frozen_projection = _projection_rows
 
     async def check():
@@ -1093,6 +1098,7 @@ def test_composite_order_paths_cannot_invalidate_another_record(tmp_path, second
                 assert business_evidence(await frozen_projection(session, first.id)) == business_evidence(expected)
                 if second_account != 1:
                     assert business_evidence(await _version(session, 1)) == business_evidence(first_version)
+
     asyncio.run(check())
 
 

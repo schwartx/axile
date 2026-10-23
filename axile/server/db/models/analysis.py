@@ -127,7 +127,18 @@ cost_execution_symbol = _cost_child(
     "performance_cost_execution_symbol",
     [sa.Column("record_id", sa.Integer, primary_key=True), sa.Column("symbol", sa.Text, primary_key=True)],
     [sa.Column("present", sa.Integer, nullable=False)]
-    + [sa.Column(field, sa.Text) for field in ("status", "error", "outcome", "outcome_reason", "reason_code", "memory_message", "memory_reason_code")],
+    + [
+        sa.Column(field, sa.Text)
+        for field in (
+            "status",
+            "error",
+            "outcome",
+            "outcome_reason",
+            "reason_code",
+            "memory_message",
+            "memory_reason_code",
+        )
+    ],
 )
 cost_position = _cost_child(
     "performance_cost_position",

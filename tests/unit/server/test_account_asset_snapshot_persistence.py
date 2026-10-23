@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import ClassVar
-from unittest.mock import AsyncMock
 
-import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
@@ -14,7 +12,6 @@ from sqlmodel import SQLModel, select
 from axile.server.business_facts.assets import asset_binding, asset_snapshot, read_snapshot_assets
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
-from axile.server.execution import records as execution_records
 from axile.server.execution.records import append_success_execute_record
 from tests.unit.server._execution_test_support import build_account
 
@@ -27,9 +24,7 @@ class _Session(AsyncSession):
         type(self).commits += 1
 
 
-def test_success_record_persists_matching_asset_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(execution_records, "write_observation_fact", AsyncMock())
-    monkeypatch.setattr(execution_records, "write_source_facts", AsyncMock())
+def test_success_record_persists_matching_asset_snapshot() -> None:
     account = build_account(id=51)
     result = {
         "account_assets": {
@@ -76,7 +71,11 @@ def test_success_record_persists_matching_asset_snapshot(monkeypatch: pytest.Mon
                 assert await session.scalar(sa.select(sa.func.count()).select_from(asset_snapshot)) == 1
                 assets = await read_snapshot_assets(session, snapshot)
                 canonical_result = await read_execution_result(session, record)
-                assert assets == result["account_assets"] == canonical_result["account_assets"]
+                assert assets == canonical_result["account_assets"]
+                assert assets == {
+                    **result["account_assets"],
+                    "availability": {"cash": "value", "equity": "value", "market_value": "value"},
+                }
         finally:
             await engine.dispose()
 
