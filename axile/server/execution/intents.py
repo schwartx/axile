@@ -9,6 +9,8 @@ import loguru
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
+from axile.server._native import _core
+from axile.server.business_facts.summary_refs import raise_business_fact_error
 from axile.server.db.models import new_execution_id, now_str
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.execution.execution_algorithms import resolve_execution_algorithm_name
@@ -122,12 +124,6 @@ async def list_intents_by_status(*statuses: ExecutionTaskStatus) -> list[IntentS
     return [_snapshot(row) for row in rows]
 
 
-async def load_intents_for_recovery() -> tuple[list[IntentSnapshot], list[IntentSnapshot]]:
-    """在同一只读快照中读取遗留执行和队列，收尾仍逐阶段提交。"""
-    rows = await native_operation("intent_recovery", {})
-    return ([_snapshot(row) for row in rows["interrupted"]], [_snapshot(row) for row in rows["queued"]])
-
-
 async def list_interrupted_intents_without_record() -> list[IntentSnapshot]:
     """读取历史中断留下的缺失终态；修复只补结果，不重复结算通知。"""
     rows = await native_operation("intent_recovery", {})
@@ -137,18 +133,12 @@ async def list_interrupted_intents_without_record() -> list[IntentSnapshot]:
 async def _intent_operation(name: str, request: dict[str, object]) -> Any:
     try:
         return await native_operation(name, request)
-    except Exception as error:
+    except _core.NativeError as error:
         if error.args[:1] == ("SUPPLEMENT_NOT_RUNNABLE",):
             from axile.server.execution.supplements import SupplementNotRunnable
 
             raise SupplementNotRunnable(str(error.args[1])) from error
-        if error.args[:1] == ("BUSINESS_FACTS_REFERENCE",):
-            from axile.server.business_facts.summary_refs import BusinessFactReferenceError
-
-            raise BusinessFactReferenceError(error.args[1]) from None
-        if error.args[:1] == ("BUSINESS_FACTS",):
-            raise ValueError(error.args[1]) from None
-        raise
+        raise_business_fact_error(error)
 
 
 async def cas_intent_status(

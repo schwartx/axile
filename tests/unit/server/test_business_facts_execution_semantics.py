@@ -18,7 +18,8 @@ from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
 from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.db.models import ExecuteRecord
-from axile.server.execution import execution_records_output, input_persistence, lifecycle, rebalance, records, registry
+from axile.server.execution import execution_records_output, input_persistence, rebalance, records, registry
+from axile.server.execution.records import resolve_record_task_status
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
 from tests.sqlite_oracle import connect as oracle_connect
@@ -143,7 +144,7 @@ def test_terminal_facts_keep_output_lifecycle_and_outcome_distinct(
             assert reconstructed["success"] is bool(is_success)
             assert business_evidence(reconstructed["execution_time"]) == business_evidence(0)
             assert business_evidence(reconstructed["execution_kind"]) == business_evidence(kind)
-            assert business_evidence(lifecycle._resolve_completion_status(persisted)) == business_evidence(
+            assert business_evidence(resolve_record_task_status(persisted)) == business_evidence(
                 ExecutionTaskStatus(task_status)
             )
             replay = registry._build_persisted_execution_status(persisted)

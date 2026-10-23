@@ -9,7 +9,8 @@ from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
-from axile.server.execution import lifecycle, records, registry
+from axile.server.execution import records, registry
+from axile.server.execution.records import resolve_record_task_status
 from tests.unit.server._business_facts_test_support import persist_result, seed_account
 
 
@@ -51,7 +52,7 @@ def test_real_errors_alongside_closed_symbols_are_not_session_skips(native_datab
     raw["symbol_results"]["ag2612"] = {"status": failure, "reason_code": "CHANNEL.QUERY_FAILED"}
     assert session_closed_scope(raw) is None
     record = _record(native_database, raw)
-    assert lifecycle._resolve_completion_status(record) == ExecutionTaskStatus.FAILED
+    assert resolve_record_task_status(record) == ExecutionTaskStatus.FAILED
 
 
 def test_order_evidence_and_termination_prevent_session_skip():
@@ -102,7 +103,7 @@ def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target(native_datab
     raw["status"] = "PARTIAL"
     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "final_volume": -6, "target_volume": -6}
     assert session_closed_scope(raw) == "partial"
-    assert lifecycle._resolve_completion_status(_record(native_database, raw)) == ExecutionTaskStatus.PARTIAL
+    assert resolve_record_task_status(_record(native_database, raw)) == ExecutionTaskStatus.PARTIAL
 
 
 @pytest.mark.parametrize("partial", [False, True])
@@ -143,7 +144,7 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
     assert result["status"] == raw["status"]
     assert result["symbol_results"]["m2701"]["final_volume"] is None
     assert not hasattr(record, "raw_result")
-    assert lifecycle._resolve_completion_status(record) == expected
+    assert resolve_record_task_status(record) == expected
     replay = registry._build_persisted_execution_status(record)
     assert replay["status"] == expected
     assert replay["output_status"] == raw["status"]

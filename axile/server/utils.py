@@ -47,9 +47,11 @@ async def trade_channel_check(account: AccountContext, execution_id: str | None 
     """
     if missing_packages(account.trade_channel):
         msg = f"请先安装 {TradeChannel(account.trade_channel).name} 对应的依赖"
+        error = ValueError(msg)
         await execution_records.append_error_execute_record(
             account_id=account.id,
             msg=msg,
             execution_id=execution_id,
+            error=error,
         )
-        raise ValueError(msg)
+        raise error

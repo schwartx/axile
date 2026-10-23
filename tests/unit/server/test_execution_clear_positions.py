@@ -71,11 +71,11 @@ def test_empty_positions_uses_default_algorithm_when_not_provided(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
         result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
         captured["result"] = result
-        return SimpleNamespace(id=102, is_success=1), result
+        return SimpleNamespace(id=102, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
@@ -124,12 +124,9 @@ def test_empty_positions_uses_account_level_algorithm_when_present(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=103, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
+        return SimpleNamespace(id=103, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
@@ -168,11 +165,11 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
         result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
         captured["result"] = result
-        return SimpleNamespace(id=206, is_success=1), result
+        return SimpleNamespace(id=206, is_success=1)
 
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("GM 路径不应在主进程创建执行器")
@@ -220,11 +217,11 @@ def test_empty_positions_routes_ctp_account_to_worker_manager(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
         result = cast("dict[str, object]", cast(object, output).model_dump(mode="json"))
         captured["result"] = result
-        return SimpleNamespace(id=306, is_success=1), result
+        return SimpleNamespace(id=306, is_success=1)
 
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("PROCESS 策略下不应走线程执行器")
@@ -302,12 +299,9 @@ def test_empty_positions_uses_custom_algorithm_when_provided(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=104, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
+        return SimpleNamespace(id=104, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
@@ -345,12 +339,9 @@ def test_empty_positions_binds_account_control_guard(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=202, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
+        return SimpleNamespace(id=202, is_success=1)
 
     async def fake_build_account_control_guard(_account: Account, execution_id: str | None, **kwargs) -> object:
         assert kwargs == {"context_kind": "execution", "source": "algorithm"}
@@ -445,12 +436,9 @@ def test_empty_positions_captures_before_account_snapshot(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> tuple[SimpleNamespace, dict[str, object]]:
+    ) -> SimpleNamespace:
         _ = account, raw_input, execution_id
-        return (
-            SimpleNamespace(id=205, is_success=1),
-            cast("dict[str, object]", cast(object, output).model_dump(mode="json")),
-        )
+        return SimpleNamespace(id=205, is_success=1)
 
     async def capture_artifact(**kwargs: object) -> bool:
         artifacts.append(kwargs)

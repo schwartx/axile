@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
@@ -11,6 +14,8 @@ from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.business_facts.repository import read_execution_result
+from axile.server.db.models import ExecuteRecord
+from axile.server.execution import records
 from axile.server.execution.execution_records_output import append_execute_record_from_output
 from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import build_account
@@ -136,3 +141,42 @@ def test_not_reached_clear_keeps_conclusion_and_kind_on_error_record_path(native
     assert record.outcome == "not_reached"
     assert record.execution_kind == "clear_positions"
     assert record.is_success == 0
+
+
+@pytest.mark.parametrize(
+    ("account_id", "execution_id", "expected_calls"),
+    [(1, "failed", 1), (2, "failed", 2), (1, "other", 2), (1, None, 2)],
+)
+def test_error_record_reuse_is_scoped_to_execution(monkeypatch, account_id, execution_id, expected_calls):
+    record = ExecuteRecord(id=7, account_id=1, execution_id="failed", is_success=0)
+    persist = AsyncMock(return_value=record)
+    monkeypatch.setattr(records, "_persist_execute_record", persist)
+    cause = RuntimeError("SDK failure")
+    wrapped = ValueError("execution failure")
+    wrapped.__cause__ = cause
+
+    async def run():
+        assert await records.append_error_execute_record(account_id=1, execution_id="failed", error=cause) is record
+        assert (
+            await records.append_error_execute_record(account_id=account_id, execution_id=execution_id, error=wrapped)
+            is record
+        )
+
+    asyncio.run(run())
+    assert persist.await_count == expected_calls
+
+
+def test_failed_error_record_commit_is_retried_without_hanging_on_cause_cycle(monkeypatch):
+    record = ExecuteRecord(id=7, account_id=1, execution_id="failed", is_success=0)
+    persist = AsyncMock(side_effect=[RuntimeError("commit failed"), record])
+    monkeypatch.setattr(records, "_persist_execute_record", persist)
+    error = ValueError("execution failure")
+    error.__cause__ = error
+
+    async def run():
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await records.append_error_execute_record(account_id=1, execution_id="failed", error=error)
+        assert await records.append_error_execute_record(account_id=1, execution_id="failed", error=error) is record
+
+    asyncio.run(run())
+    assert persist.await_count == 2
