@@ -1,15 +1,16 @@
 """时间诊断的协议、告警恢复、持久化与生命周期契约。"""
 
 import asyncio
+import json
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from axile.server.db.models.time_check import TimeCheckSettingsRow, TimeCheckStateRow
+from axile.common.config import settings
 from axile.server.time_check import probes
 from axile.server.time_check import service as runtime
 from axile.server.time_check.models import TimeCheckSettings
@@ -97,18 +98,16 @@ def test_alerts_preserve_unverified_offset_and_recover_independently():
 
 @asynccontextmanager
 async def database(path: Path, monkeypatch):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-    async with engine.begin() as connection:
-        await connection.run_sync(lambda conn: TimeCheckSettingsRow.__table__.create(conn))
-        await connection.run_sync(lambda conn: TimeCheckStateRow.__table__.create(conn))
-    monkeypatch.setattr(runtime, "SessionLocal", async_sessionmaker(engine, expire_on_commit=False))
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            "CREATE TABLE time_check_settings(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,data JSON NOT NULL);"
+            "CREATE TABLE time_check_state(id INTEGER PRIMARY KEY,data JSON NOT NULL);"
+        )
+    monkeypatch.setattr(settings, "sqlalchemy_database_uri", f"sqlite+aiosqlite:///{path}")
     sched = MagicMock()
     sched.get_job.return_value = None
     monkeypatch.setattr(runtime, "scheduler", sched)
-    try:
-        yield sched
-    finally:
-        await engine.dispose()
+    yield sched
 
 
 def test_new_install_once_old_upgrade_and_restart(tmp_path, monkeypatch):
@@ -129,6 +128,38 @@ def test_new_install_once_old_upgrade_and_restart(tmp_path, monkeypatch):
             assert restart.task is None
             assert restart.state["result"]["trigger"] == "first"
             assert ntp.await_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_first_check_is_claimed_once(tmp_path, monkeypatch):
+    async def scenario():
+        async with database(tmp_path / "claim.db", monkeypatch):
+            ntp = AsyncMock(return_value={"status": "ok", "offset_ms": 0, "delay_ms": 1})
+            monkeypatch.setattr(runtime, "ntp_probe", ntp)
+            services = [runtime.TimeCheckService(), runtime.TimeCheckService()]
+            await asyncio.gather(*(service.start(first_run=True) for service in services))
+            tasks = [service.task for service in services if service.task is not None]
+            await asyncio.gather(*tasks)
+            assert len(tasks) == ntp.await_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_stale_service_cannot_overwrite_database_settings(tmp_path, monkeypatch):
+    async def scenario():
+        async with database(tmp_path / "versions.db", monkeypatch):
+            first, stale = runtime.TimeCheckService(), runtime.TimeCheckService()
+            await first.start()
+            await stale.start()
+            await first.save(TimeCheckSettings(source="tencent"))
+            with pytest.raises(ValueError, match="其他窗口"):
+                await stale.save(TimeCheckSettings(source="tuna"))
+            restored = runtime.TimeCheckService()
+            await restored.start()
+            assert restored.settings.source == "tencent"
+            assert restored.settings.version == 1
+            assert stale.settings.version == 0
 
     asyncio.run(scenario())
 
@@ -233,26 +264,33 @@ def test_shutdown_cancellation_recovers_as_warning(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_time_check_migration_roundtrip():
-    import importlib.util
+def test_start_removes_legacy_system_evidence(tmp_path, monkeypatch):
+    async def scenario():
+        path = tmp_path / "legacy.db"
+        async with database(path, monkeypatch):
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "INSERT INTO time_check_state(id,data) VALUES(1,?)",
+                    (
+                        json.dumps(
+                            {
+                                "alerts": {"system": {"message": "旧告警"}, "reference": {"message": "timeout"}},
+                                "result": {"system": {"status": "old"}, "ntp": {"status": "error"}},
+                                "first_claimed": True,
+                            }
+                        ),
+                    ),
+                )
+            service = runtime.TimeCheckService()
+            await service.start(first_run=True)
+            assert service.task is None
+            assert service.state["alerts"] == {"reference": {"message": "timeout"}}
+            assert service.state["result"] == {"ntp": {"status": "error"}}
+            with sqlite3.connect(path) as connection:
+                stored = json.loads(connection.execute("SELECT data FROM time_check_state WHERE id=1").fetchone()[0])
+            assert stored == service.state
 
-    import sqlalchemy as sa
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    path = Path(__file__).parents[3] / "axile/server/alembic/versions/0031_time_check.py"
-    spec = importlib.util.spec_from_file_location("time_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    engine = sa.create_engine("sqlite://")
-    with engine.begin() as connection:
-        module.op = Operations(MigrationContext.configure(connection))
-        module.upgrade()
-        assert set(sa.inspect(connection).get_table_names()) == {"time_check_settings", "time_check_state"}
-        assert connection.execute(sa.text("SELECT count(*) FROM time_check_state")).scalar() == 0
-        module.downgrade()
-        assert sa.inspect(connection).get_table_names() == []
-    engine.dispose()
+    asyncio.run(scenario())
 
 
 def test_udp_wire_request_and_response():

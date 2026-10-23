@@ -9,7 +9,7 @@ from fastapi import HTTPException, status
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.presets import ensure_account_control_preset_compatible
-from axile.server.api.deps import SchedDep, SessionDep
+from axile.server.api.deps import SchedDep
 from axile.server.cron import (
     combine_cron_triggers,
     cron_triggers_equivalent,
@@ -19,12 +19,12 @@ from axile.server.cron import (
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.scheduler import create_job, delete_job
-from axile.server.repositories import get_latest_portfolio_id_by_account_id
+from axile.server.repositories import get_account, get_latest_portfolio_id_by_account_id
 
 
-async def _get_account_or_404(session: SessionDep, account_id: int) -> Account:
+async def _get_account_or_404(account_id: int) -> Account:
     """读取账户，不存在时抛出 404."""
-    account = await session.get(Account, account_id)
+    account = await get_account(account_id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     return account
@@ -86,7 +86,6 @@ def _build_empty_positions_algorithm(
 
 
 async def _reconcile_account_job(
-    session: SessionDep,
     sched: SchedDep,
     account: AccountContext,
 ) -> None:
@@ -95,15 +94,13 @@ async def _reconcile_account_job(
 
     Parameters
     ----------
-    session : SessionDep
-        当前数据库会话。
     sched : SchedDep
         当前调度器实例。
     account : Account
         需要对齐调度状态的账户对象。
     """
     account_id = cast("int", account.id)
-    latest_portfolio_id = await get_latest_portfolio_id_by_account_id(session, account_id)
+    latest_portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
     await _apply_account_job(sched, account, latest_portfolio_id)
 
 

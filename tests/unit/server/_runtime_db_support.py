@@ -1,51 +1,64 @@
-"""运行态并发测试使用的真实文件库与事务观测器。"""
+"""运行态测试使用原生建库，独立 SQLite 连接只负责准备和核验数据。"""
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import json
+import sqlite3
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
-
+from axile.server.db.models import AccountRuntimeSync
+from axile.server.native_store import native_operation
 from tests.unit.server._execution_test_support import build_account
 
 
+def runtime_rows(path: Path, statement: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
+    """每次重新连接并提交，短超时使生产事务泄漏直接暴露为测试失败。"""
+    with closing(sqlite3.connect(path, timeout=0.5)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        return connection.execute(statement, parameters).fetchall()
+
+
+def runtime_sync(path: Path, account_id: int = 1) -> AccountRuntimeSync:
+    """从独立连接观察生产操作已提交的同步状态。"""
+    rows = runtime_rows(path, "SELECT * FROM accountruntimesync WHERE account_id=?", (account_id,))
+    assert len(rows) == 1
+    return AccountRuntimeSync.model_validate(dict(rows[0]))
+
+
 @asynccontextmanager
-async def runtime_database(
-    path: Path, *, wal: bool = False
-) -> AsyncIterator[tuple[async_sessionmaker[AsyncSession], list[AsyncSession]]]:
-    """提供两个账户及已打开会话，使用真实 BEGIN 暴露读事务升级与锁等待问题。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", connect_args={"timeout": 0.5})
-    sessions: list[AsyncSession] = []
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def configure(connection: Any, _record: Any) -> None:
-        connection.isolation_level = None
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        if wal:
-            cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
-
-    @event.listens_for(engine.sync_engine, "begin")
-    def begin(connection: Any) -> None:
-        connection.exec_driver_sql("BEGIN")
-
-    class Session(AsyncSession):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
-            sessions.append(self)
-
-    factory = async_sessionmaker(engine, class_=Session, expire_on_commit=False)
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        async with factory() as session, session.begin():
-            session.add_all([build_account(id=1, portfolio_id=None), build_account(id=2, portfolio_id=None)])
-        yield factory, sessions
-    finally:
-        for session in sessions:
-            await session.close()
-        await engine.dispose()
+async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Path]:
+    """提供两个账户与隔离文件库；生产入口自行持有原生连接和事务。"""
+    with patch("axile.server.core.db.database_path", return_value=str(path)):
+        await native_operation("migration_upgrade", {})
+        with closing(sqlite3.connect(path)) as connection, connection:
+            # 只固定初始模式；生产 writer 会按服务约定切换到 WAL。
+            connection.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
+            for account_id in (1, 2):
+                account = build_account(id=account_id, portfolio_id=None)
+                connection.execute(
+                    "INSERT INTO account(id,name,market,trade_channel,remark,brokerage,updated_at,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        account_id,
+                        account.name,
+                        account.market,
+                        str(account.trade_channel),
+                        account.remark,
+                        account.brokerage,
+                        account.updated_at,
+                        account.created_at,
+                    ),
+                )
+                settings = account.settings
+                groups = [settings.connection] + [
+                    getattr(settings, name).model_dump(mode="json")
+                    for name in ("execution", "schedule", "notification", "backtest")
+                ]
+                connection.execute(
+                    "INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (account_id, *(json.dumps(group, ensure_ascii=False) for group in groups)),
+                )
+        yield path

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import io
 import json
+import sqlite3
 import urllib.request
 from pathlib import Path
 
@@ -19,7 +20,8 @@ from axile.common.default_system_notification import DEFAULT_SYSTEM_NOTIFICATION
 from axile.common.notification_function import NotificationFunctionResult
 from axile.server import error_notifications
 from axile.server.api.routes import init as init_module
-from axile.server.db.models.system_notification import SystemNotificationState, SystemNotificationStatePublic
+from axile.server.core import db
+from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_state
 
 
@@ -144,9 +146,13 @@ def test_default_trial_can_use_saved_key(client, monkeypatch):
 
 
 def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monkeypatch, tmp_path):
-    engine = sa.create_engine(f"sqlite:///{tmp_path / 'results.db'}")
-    SystemNotificationState.__table__.create(engine)
-    monkeypatch.setattr(notification_state, "_notification_engine", lambda: engine)
+    path = tmp_path / "results.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE system_notification_state(id INTEGER PRIMARY KEY,finished_at TEXT,mode TEXT,event_type TEXT,"
+            "execution_id TEXT,account_id INTEGER,ok BOOLEAN,error TEXT)"
+        )
+    monkeypatch.setattr(db, "database_path", lambda: str(path))
     assert notification_state.get_system_notification_result().ok is None
     latest = SystemNotificationStatePublic(
         finished_at="2026-09-30T10:02:00+08:00",
@@ -160,7 +166,6 @@ def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monk
     notification_state.record_system_notification_result(
         SystemNotificationStatePublic(finished_at="2026-09-30T10:01:00+08:00", ok=True)
     )
-    engine.dispose()
     assert notification_state.get_system_notification_result() == latest
 
 

@@ -1,81 +1,83 @@
-"""组合绑定仓储查询测试。"""
-
-from __future__ import annotations
+"""账户原生读取与当前组合绑定契约。"""
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import sqlite3
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.server.api.routes.portfolio import delete_portfolio
-from axile.server.db.models import Account, Portfolio, PortfolioAccount
-from axile.server.repositories import get_latest_account_id_by_portfolio_id
-
-CODE = "def calculate_portfolio(context):\n    return {}\n"
-
-
-@asynccontextmanager
-async def _session_scope() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        async with factory() as session:
-            yield session
-    finally:
-        await engine.dispose()
+from axile.server.core import db
+from axile.server.db.models import AccountSnapshot
+from axile.server.repositories import (
+    get_account,
+    get_account_snapshot,
+    get_latest_account_id_by_portfolio_id,
+    get_latest_portfolio_id_by_account_id,
+)
+from tests.conftest import native_store_call
+from tests.unit.server.test_account_control_routes import _build_account
 
 
-def _account(name: str) -> Account:
-    return Account(
-        name=name,
-        market="demo-market",
-        trade_channel="ctp",
-        account_control_preset="default",
-        account_config={},
-        is_started=False,
-        cron_expr="",
-        brokerage="ctp",
-        weight_precision=0.001,
-        algorithm={"method": "SINGLE-MAKER"},
+def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch) -> None:
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with sqlite3.connect(native_database) as connection:
+        connection.execute(
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES(1,'p','期货',?,'now','now')",
+            ("def calculate_portfolio(context): return {}",),
+        )
+    for name in ("first", "second"):
+        native_store_call(
+            native_database,
+            "account_create",
+            {
+                "account": _build_account(name=name, portfolio_id=None).model_dump(mode="json"),
+                "now": "2026-10-23T09:00:00",
+            },
+        )
+    with sqlite3.connect(native_database) as connection:
+        connection.executemany(
+            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(?,?,'now')",
+            [(1, 1), (2, 1), (1, None)],
+        )
+
+    async def scenario():
+        assert await get_latest_account_id_by_portfolio_id(1) == 2
+        assert await get_latest_portfolio_id_by_account_id(1) is None
+        with pytest.raises(HTTPException) as exc:
+            await delete_portfolio(1)
+        assert exc.value.status_code == 422
+        with sqlite3.connect(native_database) as connection:
+            connection.execute("INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(2,NULL,'now')")
+        assert await get_latest_account_id_by_portfolio_id(1) is None
+        await delete_portfolio(1)
+        with pytest.raises(HTTPException) as exc:
+            await delete_portfolio(1)
+        assert exc.value.status_code == 404
+
+    asyncio.run(scenario())
+
+
+def test_account_read_hydrates_independent_snapshot_and_missing(native_database, monkeypatch) -> None:
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    native_store_call(
+        native_database,
+        "account_create",
+        {
+            "account": _build_account(portfolio_id=None).model_dump(mode="json"),
+            "now": "2026-10-23T09:00:00",
+        },
     )
 
-
-def test_latest_portfolio_bindings_are_returned() -> None:
-    async def scenario() -> None:
-        async with _session_scope() as session:
-            portfolio = Portfolio(name="p", market="demo-market", custom_calc_py_code=CODE)
-            first = _account("first")
-            second = _account("second")
-            session.add_all([portfolio, first, second])
-            await session.flush()
-            session.add_all(
-                [
-                    PortfolioAccount(account_id=first.id, portfolio_id=portfolio.id),
-                    PortfolioAccount(account_id=second.id, portfolio_id=portfolio.id),
-                    PortfolioAccount(account_id=first.id, portfolio_id=None),
-                ]
-            )
-            await session.commit()
-
-            assert await get_latest_account_id_by_portfolio_id(session, portfolio.id) == second.id
-            with pytest.raises(HTTPException) as error:
-                await delete_portfolio(session, portfolio.id)
-            assert error.value.status_code == 422
-            assert await session.get(Portfolio, portfolio.id) is portfolio
-
-            session.add(PortfolioAccount(account_id=second.id, portfolio_id=None))
-            await session.commit()
-            assert await get_latest_account_id_by_portfolio_id(session, portfolio.id) is None
-            await delete_portfolio(session, portfolio.id)
-            assert await session.get(Portfolio, portfolio.id) is None
-            with pytest.raises(HTTPException) as error:
-                await delete_portfolio(session, portfolio.id)
-            assert error.value.status_code == 404
+    async def scenario():
+        account = await get_account(1)
+        snapshot = await get_account_snapshot(1)
+        assert isinstance(snapshot, AccountSnapshot)
+        assert account.runtime_sync.revision == 1
+        snapshot.account_config["password"] = "changed"
+        assert account.account_config["password"] == "test"
+        assert (await get_account_snapshot(1)).account_config["password"] == "test"
+        assert await get_account(999) is None
+        assert await get_account_snapshot(999) is None
 
     asyncio.run(scenario())

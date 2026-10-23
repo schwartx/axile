@@ -9,10 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from axile.server.execution import account_runtime_sync as runtime
 from axile.server.execution import ctp_channels
-from tests.unit.server._execution_test_support import build_account
-from tests.unit.server._runtime_db_support import runtime_database
+from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 
 
 def test_register_china_channel_jobs_uses_fixed_session_windows() -> None:
@@ -30,7 +28,7 @@ def test_register_china_channel_jobs_uses_fixed_session_windows() -> None:
 
 
 def test_prepare_china_accounts_isolates_account_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    accounts = [build_account(id=1), build_account(id=2)]
+    accounts = [1, 2]
     prepared: list[tuple[int | None, str | None]] = []
 
     class Manager:
@@ -43,17 +41,31 @@ def test_prepare_china_accounts_isolates_account_failures(tmp_path: Path, monkey
                 raise RuntimeError("offline")
             return {"trading_day": expected or ""}
 
-    async def started() -> list[object]:
+    async def started() -> list[int]:
         return accounts
 
     monkeypatch.setattr(ctp_channels, "_started_china_channel_accounts", started)
 
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
-            monkeypatch.setattr(runtime, "SessionLocal", factory)
+        async with runtime_database(tmp_path / "runtime.db"):
             monkeypatch.setattr(ctp_channels, "get_worker_backend_manager", Manager)
             await ctp_channels.prepare_china_channel_accounts("night")
 
     asyncio.run(scenario())
 
     assert sorted(prepared) == [(1, None), (2, None)]
+
+
+def test_started_china_scan_filters_disabled_and_other_channels(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with runtime_database(tmp_path / "runtime.db") as path:
+            assert await ctp_channels._started_china_channel_accounts() == [1, 2]
+            runtime_rows(path, "UPDATE account SET trade_channel='gm' WHERE id=2")
+            assert await ctp_channels._started_china_channel_accounts() == [1]
+            runtime_rows(
+                path,
+                "UPDATE account_settings SET schedule=json_set(schedule,'$.is_started',json('false')) WHERE account_id=1",
+            )
+            assert await ctp_channels._started_china_channel_accounts() == []
+
+    asyncio.run(scenario())

@@ -9,10 +9,9 @@ from typing import Any, Literal
 from loguru import logger
 
 from axile.executor.algorithms.utils.clock import clock_now
-from axile.server.core.db import SessionLocal
 from axile.server.core.scheduler import scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, parse_cron_expr
-from axile.server.db.models.time_check import TimeCheckSettingsRow, TimeCheckStateRow
+from axile.server.native_store import native_operation
 from axile.server.time_check.models import TimeCheckSettings
 from axile.server.time_check.probes import ntp_probe
 
@@ -69,39 +68,22 @@ class TimeCheckService:
 
     async def start(self, first_run: bool = False) -> None:
         """迁移完成后恢复状态；首次标记只有新安装入口才设置。"""
-        async with SessionLocal() as session:
-            config = await session.get(TimeCheckSettingsRow, 1)
-            if config:
-                self.settings = TimeCheckSettings(**config.data, version=config.version)
-            else:
-                session.add(TimeCheckSettingsRow(data=self.settings.model_dump(exclude={"version"})))
-            state = await session.get(TimeCheckStateRow, 1)
-            self.state = dict(state.data) if state else {"alerts": {}, "first_claimed": False}
-            # 兼容已有 JSON 证据：退出使用操作系统自报状态，清除其旧结果和告警。
-            self.state["alerts"] = {
-                key: value for key, value in self.state.get("alerts", {}).items() if key != "system"
-            }
-            if self.state.get("result"):
-                self.state["result"] = {key: value for key, value in self.state["result"].items() if key != "system"}
-            if state:
-                state.data = dict(self.state)
-                session.add(state)
-            else:
-                session.add(TimeCheckStateRow(data=self.state))
-            await session.commit()
-        if self.state.get("running"):
-            self.state["running"] = False
-            self.state.setdefault("alerts", {})["interrupted"] = {
-                "message": "上次检查因服务退出而中断",
+        restored = await native_operation(
+            "time_check_start",
+            {
+                "settings": self.settings.model_dump(exclude={"version"}),
                 "checked_at": clock_now(tz=SCHEDULER_TIMEZONE).isoformat(),
-            }
-            await self.persist()
+            },
+        )
+        self.settings = TimeCheckSettings.model_validate(restored["settings"])
+        self.state = restored["state"]
         self.ready = True
         self.schedule()
         if first_run and not self.state.get("first_claimed"):
-            self.state["first_claimed"] = True
-            await self.persist()
-            await self.run("first")
+            claim = await native_operation("time_check_claim", {})
+            self.state = claim["state"]
+            if claim["claimed"]:
+                await self.run("first")
 
     def snapshot(self) -> dict[str, Any]:
         """同时返回状态及其版本，方便重连恢复和多窗口同步。"""
@@ -142,14 +124,8 @@ class TimeCheckService:
             self.subscribers.discard(queue)
 
     async def persist(self) -> None:
-        """替换 JSON 列，保证 SQLAlchemy 能识别内部字段变化。"""
-        async with SessionLocal() as session:
-            row = await session.get(TimeCheckStateRow, 1)
-            if row is None:
-                row = TimeCheckStateRow()
-            row.data = dict(self.state)
-            session.add(row)
-            await session.commit()
+        """提交完整状态，完成后才广播或启动外部探测。"""
+        await native_operation("time_check_persist", {"state": self.state})
 
     def schedule(self) -> None:
         """关闭只取消未来触发；不打断正在检查的任务。"""
@@ -175,14 +151,11 @@ class TimeCheckService:
             if config.version != self.settings.version:
                 raise ValueError("设置已被其他窗口更新，请重新读取")
             updated = config.model_copy(update={"version": config.version + 1})
-            async with SessionLocal() as session:
-                row = await session.get(TimeCheckSettingsRow, 1)
-                if row is None:
-                    row = TimeCheckSettingsRow()
-                row.version = updated.version
-                row.data = updated.model_dump(exclude={"version"})
-                session.add(row)
-                await session.commit()
+            saved = await native_operation(
+                "time_check_save", {"version": config.version, "settings": config.model_dump(exclude={"version"})}
+            )
+            if not saved:
+                raise ValueError("设置已被其他窗口更新，请重新读取")
             self.settings = updated
             self.schedule()
             self.publish()

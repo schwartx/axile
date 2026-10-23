@@ -1,29 +1,26 @@
-"""真实数据库上的版本并发、取消与恢复回归。"""
+"""真实原生数据库上的版本并发、取消与恢复回归。"""
 
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from sqlmodel import select
 
-from axile.server.db.models import Account, AccountRuntimeSync
-from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncAttempt
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import account_runtime_sync as runtime
-from tests.unit.server._runtime_db_support import runtime_database
+from axile.server.native_store import native_operation
+from tests.unit.server._runtime_db_support import runtime_database, runtime_rows, runtime_sync
 
 
 @pytest.mark.parametrize("old_fails", [False, True, "pending"])
 @pytest.mark.parametrize("wal", [False, True])
-def test_old_result_cannot_overwrite_new_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old_fails: bool | str, wal: bool
-) -> None:
+def test_old_result_cannot_overwrite_new_revision(tmp_path, monkeypatch, old_fails, wal):
     """旧成功和旧失败都只审计旧版本，随后使用最新账户快照继续对齐。"""
 
-    async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db", wal=wal) as (factory, sessions):
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db", wal=wal) as path:
             entered, release = asyncio.Event(), asyncio.Event()
-            observed: list[tuple[str, bool]] = []
+            observed = []
             finish = runtime._finish_attempt
 
             async def observe_finish(*args, **kwargs):
@@ -35,8 +32,10 @@ def test_old_result_cannot_overwrite_new_revision(
 
             monkeypatch.setattr(runtime, "_finish_attempt", observe_finish)
 
-            async def prepare(account: Account, *, reset: bool, last_execution: str = "") -> None:
-                assert all(not session.in_transaction() for session in sessions)
+            async def prepare(account, *, reset, last_execution=""):
+                assert isinstance(account, AccountSnapshot)
+                # 独立连接可以提交，运行态等待期间不能留原生事务。
+                runtime_rows(path, "UPDATE account SET remark='worker wrote' WHERE id=2")
                 observed.append((account.name, reset))
                 if len(observed) == 1:
                     entered.set()
@@ -53,46 +52,40 @@ def test_old_result_cannot_overwrite_new_revision(
                     if old_fails:
                         raise RuntimeError("old prepare failed")
                 else:
-                    async with factory() as session:
-                        sync = await session.scalar(
-                            select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == 1)
-                        )
-                        assert sync is not None and sync.status == "pending" and sync.last_error is None
+                    current = runtime_sync(path)
+                    assert current.status == "pending" and current.last_error is None
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory))
+            task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
             await asyncio.wait_for(entered.wait(), 5)
-            async with factory() as session, session.begin():
-                account = await session.get(Account, 1)
-                assert account is not None
-                account.name = "latest"
-                await runtime.enqueue_account_runtime_sync(session, 1, reset_worker=True)
+            # 配置和新 revision 由账户业务操作一次提交。
+            await native_operation(
+                "account_update",
+                {
+                    "account_id": 1,
+                    "now": runtime.now_str(),
+                    "patch": {"name": "latest", "account_config": {"password": "changed"}},
+                },
+            )
             release.set()
             sync = await asyncio.wait_for(task, 5)
             assert observed == [("ctp-sim", False), ("latest", True)]
             assert (sync.revision, sync.attempts, sync.status, sync.reset_worker) == (2, 2, "synchronized", False)
-            async with factory() as session:
-                attempts = list(
-                    (
-                        await session.scalars(select(AccountRuntimeSyncAttempt).order_by(AccountRuntimeSyncAttempt.id))
-                    ).all()
-                )
-            assert [(row.revision, row.succeeded) for row in attempts] == [(1, not old_fails), (2, True)]
+            attempts = runtime_rows(path, "SELECT revision,succeeded FROM accountruntimesyncattempt ORDER BY id")
+            assert [tuple(row) for row in attempts] == [(1, not old_fails), (2, True)]
 
     asyncio.run(scenario())
 
 
-def test_failure_and_cancellation_release_lock_and_retry_converges(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """失败不回滚配置，取消保留 pending；两者都能通过原有手动入口重试。"""
+def test_failure_and_cancellation_release_lock_and_retry_converges(tmp_path, monkeypatch):
+    """失败不回滚配置；取消也有持久尝试，pending 可由原入口重试。"""
 
-    async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db") as path:
             entered = asyncio.Event()
             mode = "fail"
 
-            async def prepare(*_args: object, **_kwargs: object) -> None:
+            async def prepare(*_args, **_kwargs):
                 if mode == "fail":
                     raise TimeoutError("worker timeout")
                 if mode == "cancel":
@@ -100,52 +93,45 @@ def test_failure_and_cancellation_release_lock_and_retry_converges(
                     await asyncio.Event().wait()
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            failed = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
+            failed = await runtime.reconcile_account_runtime(1, MagicMock())
             assert failed.status == "failed"
-            assert "worker timeout" in failed.last_error
-            assert "Traceback" in failed.last_error
+            assert "worker timeout" in failed.last_error and "Traceback" in failed.last_error
             mode = "cancel"
-            task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory))
+            task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
             await asyncio.wait_for(entered.wait(), 5)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            async with factory() as session:
-                pending = await session.scalar(select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == 1))
-                assert pending is not None and pending.status == "pending"
-                assert await session.get(Account, 1) is not None
+            assert runtime_sync(path).status == "pending"
+            assert runtime_rows(path, "SELECT id FROM account WHERE id=1")
+            attempts = runtime_rows(path, "SELECT succeeded FROM accountruntimesyncattempt ORDER BY id")
+            assert [row[0] for row in attempts] == [False, False]
             mode = "success"
-            recovered = await asyncio.wait_for(
-                runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory), 5
-            )
+            recovered = await asyncio.wait_for(runtime.reconcile_account_runtime(1, MagicMock()), 5)
             assert (recovered.status, recovered.attempts) == ("synchronized", 3)
 
     asyncio.run(scenario())
 
 
-def test_same_account_serializes_without_blocking_other_accounts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """重复重试排队，但其他账户仍能完成自己的数据库写入和准备。"""
+def test_same_account_serializes_without_blocking_other_accounts(tmp_path, monkeypatch):
+    """重复重试排队，其他账户仍可完成独立准备与提交。"""
 
-    async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db", wal=True) as (factory, _sessions):
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db", wal=True):
             entered, release = asyncio.Event(), asyncio.Event()
-            calls: list[int | None] = []
+            calls = []
 
-            async def prepare(account: Account, **_kwargs: object) -> None:
+            async def prepare(account, **_kwargs):
                 calls.append(account.id)
                 if calls == [1]:
                     entered.set()
                     await release.wait()
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            first = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory))
+            first = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
             await asyncio.wait_for(entered.wait(), 5)
-            duplicate = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory))
-            other = await asyncio.wait_for(
-                runtime.reconcile_account_runtime(2, MagicMock(), session_factory=factory), 5
-            )
+            duplicate = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
+            other = await asyncio.wait_for(runtime.reconcile_account_runtime(2, MagicMock()), 5)
             assert other.status == "synchronized" and calls == [1, 2]
             release.set()
             await asyncio.wait_for(asyncio.gather(first, duplicate), 5)
@@ -154,51 +140,38 @@ def test_same_account_serializes_without_blocking_other_accounts(
     asyncio.run(scenario())
 
 
-def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path: Path) -> None:
-    """独立连接同时登记目标不丢版本、不清除待处理 reset 或创建幂等键。"""
+def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path):
+    """独立连接同时登记目标不丢版本、reset 或创建幂等键。"""
 
-    async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db", wal=True) as (factory, _sessions):
-            async with factory() as session, session.begin():
-                await runtime.enqueue_account_runtime_sync(session, 1, reset_worker=True, create_request_key="create-1")
-
-            async def enqueue() -> None:
-                async with factory() as session, session.begin():
-                    await runtime.enqueue_account_runtime_sync(session, 1, reset_worker=False)
-
-            await asyncio.gather(*(enqueue() for _ in range(4)))
-            async with factory() as session:
-                sync = await session.scalar(select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == 1))
-                assert sync is not None
-                assert (sync.revision, sync.reset_worker, sync.create_request_key) == (5, True, "create-1")
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db", wal=True) as path:
+            await runtime.enqueue_account_runtime_sync(1, reset_worker=True, create_request_key="create-1")
+            await asyncio.gather(*(runtime.enqueue_account_runtime_sync(1, reset_worker=False) for _ in range(4)))
+            sync = runtime_sync(path)
+            assert (sync.revision, sync.reset_worker, sync.create_request_key) == (5, True, "create-1")
 
     asyncio.run(scenario())
 
 
-def test_startup_retries_synchronized_accounts_and_isolates_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """重启重建内存态，即使上次成功也准备；首个账户失败不污染后续连接。"""
+def test_startup_retries_synchronized_accounts_and_isolates_failure(tmp_path, monkeypatch):
+    """重启重建内存态，即使上次成功也准备；单账户失败不影响后续提交。"""
 
-    async def scenario() -> None:
-        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
-            async with factory() as session, session.begin():
-                session.add(AccountRuntimeSync(account_id=1, status="synchronized"))
-            calls: list[int | None] = []
+    async def scenario():
+        async with runtime_database(tmp_path / "runtime.db") as path:
+            await runtime.enqueue_account_runtime_sync(1, reset_worker=False)
+            runtime_rows(path, "UPDATE accountruntimesync SET status='synchronized' WHERE account_id=1")
+            calls = []
 
-            async def prepare(account: Account, **_kwargs: object) -> None:
+            async def prepare(account, **_kwargs):
                 calls.append(account.id)
                 if account.id == 1:
                     raise RuntimeError("offline")
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            await runtime.recover_account_runtime_on_startup(MagicMock(), session_factory=factory)
+            await runtime.recover_account_runtime_on_startup(MagicMock())
             assert sorted(calls) == [1, 2]
-            async with factory() as session:
-                rows = list(
-                    (await session.scalars(select(AccountRuntimeSync).order_by(AccountRuntimeSync.account_id))).all()
-                )
-                assert [row.status for row in rows] == ["failed", "synchronized"]
+            rows = runtime_rows(path, "SELECT status FROM accountruntimesync ORDER BY account_id")
+            assert [row[0] for row in rows] == ["failed", "synchronized"]
 
     asyncio.run(scenario())
 
@@ -214,13 +187,12 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
     records = []
 
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db") as (factory, sessions):
-            monkeypatch.setattr(runtime, "SessionLocal", factory)
+        async with runtime_database(tmp_path / "runtime.db") as path:
             mode = "pending"
             resets = []
 
             async def prepare(account, *, reset, last_execution=""):
-                assert all(not session.in_transaction() for session in sessions)
+                runtime_rows(path, "UPDATE account SET remark='worker wrote' WHERE id=2")
                 resets.append(reset)
                 if mode == "pending":
                     raise WorkerBackendExecutionError(
@@ -233,22 +205,18 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                     raise WorkerBackendExecutionError("technical", execution_error="CTP 登录校验失败")
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            async with factory() as session, session.begin():
-                await runtime.enqueue_account_runtime_sync(session, 1, reset_worker=True)
-                account = await session.get(Account, 1)
-            sync = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
+            await runtime.enqueue_account_runtime_sync(1, reset_worker=True)
+            sync = await runtime.reconcile_account_runtime(1, MagicMock())
             assert (sync.status, sync.reset_worker) == ("pending", True)
-            assert reason in sync.last_error
-            assert "Traceback" in sync.last_error
+            assert reason in sync.last_error and "Traceback" in sync.last_error
             assert sync.synchronized_at is None
             warnings = [record for record in records if record["level"].name == "WARNING"]
             assert len(warnings) == 1 and warnings[0]["exception"] is None
             assert not any(record["level"].name in {"ERROR", "CRITICAL"} for record in records)
             mode = next_result
-            await asyncio.wait_for(ctp_channels._prepare_accounts([account], "day"), 5)
-            async with factory() as session:
-                sync = await session.scalar(select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == 1))
-                attempts = list((await session.scalars(select(AccountRuntimeSyncAttempt))).all())
+            await asyncio.wait_for(ctp_channels._prepare_accounts([1], "day"), 5)
+            sync = runtime_sync(path)
+            attempts = runtime_rows(path, "SELECT succeeded,error FROM accountruntimesyncattempt ORDER BY id")
             assert sync.status == {"success": "synchronized", "pending": "pending", "failed": "failed"}[mode]
             if mode == "success":
                 assert sync.last_error is None
@@ -257,9 +225,8 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                 assert "Traceback" in sync.last_error
             assert sync.reset_worker is (mode != "success")
             assert bool(sync.synchronized_at) is (mode == "success")
-            assert [attempt.succeeded for attempt in attempts] == [False, mode == "success"]
-            assert reason in attempts[0].error
-            assert resets == [True, True]
+            assert [row[0] for row in attempts] == [False, mode == "success"]
+            assert reason in attempts[0][1] and resets == [True, True]
 
     sink = logger.add(lambda message: records.append(message.record))
     try:
@@ -270,15 +237,12 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
 
 @pytest.mark.parametrize("boundary", ["scheduler", "other_channel", "unknown", "retryable"])
 def test_only_explicit_ctp_prepare_error_is_pending(tmp_path, monkeypatch, boundary):
-    from axile.common.trade_channel import TradeChannel
     from axile.server.execution.worker_backend.manager import WorkerBackendExecutionError
 
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
+        async with runtime_database(tmp_path / "runtime.db") as path:
             if boundary == "other_channel":
-                async with factory() as session, session.begin():
-                    account = await session.get(Account, 1)
-                    account.trade_channel = TradeChannel.TQ
+                runtime_rows(path, "UPDATE account SET trade_channel='tq' WHERE id=1")
 
             async def fail(*args, **kwargs):
                 raise WorkerBackendExecutionError(
@@ -291,10 +255,9 @@ def test_only_explicit_ctp_prepare_error_is_pending(tmp_path, monkeypatch, bound
             monkeypatch.setattr(
                 runtime, "_apply_account_job" if boundary == "scheduler" else "reconcile_china_channel_account", fail
             )
-            sync = await runtime.reconcile_account_runtime(1, MagicMock(), session_factory=factory)
+            sync = await runtime.reconcile_account_runtime(1, MagicMock())
             assert sync.status == "failed"
-            assert "账户通道准备未完成" in sync.last_error
-            assert "SDK" in sync.last_error
+            assert "账户通道准备未完成" in sync.last_error and "SDK" in sync.last_error
 
     asyncio.run(scenario())
 
@@ -304,7 +267,7 @@ def test_slow_startup_account_does_not_block_another_account(tmp_path, monkeypat
     """首个账户卡在柜台时，其他账户仍独立恢复并提交 synchronized 状态。"""
 
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db", wal=wal) as (factory, _sessions):
+        async with runtime_database(tmp_path / "runtime.db", wal=wal) as path:
             slow_started, release_slow, healthy_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
             original_finish = runtime._finish_attempt
 
@@ -322,39 +285,33 @@ def test_slow_startup_account_does_not_block_another_account(tmp_path, monkeypat
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
             monkeypatch.setattr(runtime, "_finish_attempt", finish)
-            recovery = asyncio.create_task(
-                runtime.recover_account_runtime_on_startup(MagicMock(), session_factory=factory)
-            )
+            recovery = asyncio.create_task(runtime.recover_account_runtime_on_startup(MagicMock()))
             try:
                 await asyncio.wait_for(slow_started.wait(), 2)
                 await asyncio.wait_for(healthy_finished.wait(), 2)
                 assert not recovery.done()
-                async with factory() as session:
-                    states = {
-                        row.account_id: row.status for row in (await session.scalars(select(AccountRuntimeSync))).all()
-                    }
-                assert states == {1: "pending", 2: "synchronized"}
+                rows = runtime_rows(path, "SELECT account_id,status FROM accountruntimesync")
+                assert dict(rows) == {1: "pending", 2: "synchronized"}
             finally:
                 release_slow.set()
                 await asyncio.wait_for(recovery, 2)
-            async with factory() as session:
-                states = {
-                    row.account_id: row.status for row in (await session.scalars(select(AccountRuntimeSync))).all()
-                }
-            assert states == {1: "failed", 2: "synchronized"}
+            assert dict(runtime_rows(path, "SELECT account_id,status FROM accountruntimesync")) == {
+                1: "failed",
+                2: "synchronized",
+            }
 
     asyncio.run(scenario())
 
 
-def test_runtime_target_keeps_latest_execution_time_for_catalog_preference(tmp_path):
-    from axile.server.db.models.execution import ExecuteRecord
-
+def test_runtime_target_keeps_latest_execution_time_for_catalog_preference(tmp_path: Path):
     async def scenario():
-        async with runtime_database(tmp_path / "runtime.db") as (factory, _sessions):
-            async with factory() as session, session.begin():
-                session.add(ExecuteRecord(account_id=1, is_success=1, created_at="2026-10-13 20:00:00"))
-                session.add(ExecuteRecord(account_id=1, is_success=0, created_at="2026-10-13 21:00:00"))
-            target = await runtime._begin_attempt(1, factory)
+        async with runtime_database(tmp_path / "runtime.db") as path:
+            for succeeded, at in [(1, "2026-10-13 20:00:00"), (0, "2026-10-13 21:00:00")]:
+                runtime_rows(
+                    path, "INSERT INTO executerecord(account_id,is_success,created_at) VALUES (1,?,?)", (succeeded, at)
+                )
+            target = await runtime._begin_attempt(1)
             assert target.last_execution == "2026-10-13 21:00:00"
+            assert runtime_rows(path, "SELECT id FROM accountruntimesyncattempt WHERE id=?", (target.attempt_id,))
 
     asyncio.run(scenario())

@@ -1,25 +1,18 @@
-"""目标权重快照的结构化持久化与显式读取。"""
+"""目标权重快照的原生持久化与显式读取。"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, desc, select
-
-from axile.server.business_facts.columns import read_columns, store_columns
-from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshot, TargetWeightSnapshotPublic
-from axile.server.db.models.target_weight_snapshot import target_weight_snapshot_weight
-
-_WEIGHT_ROLES = ("raw_weights", "normalized_weights")
+from axile.server.db.models import TargetSizingPublic, TargetWeightSnapshotPublic
+from axile.server.db.models.base import now_str
+from axile.server.native_store import native_operation
 
 
 @dataclass(frozen=True, slots=True)
 class TargetWeightSnapshotData:
-    """已经显式读取权重明细的快照视图，不触发隐式数据库查询。"""
+    """已经显式读取权重明细的快照视图。"""
 
     id: int
     portfolio_id: int
@@ -31,123 +24,20 @@ class TargetWeightSnapshotData:
     calculated_at: str
 
 
-def encode_snapshot_weights(
-    snapshot_id: int,
-    payload: Mapping[str, object],
-) -> tuple[dict[str, object], dict[sa.Table, list[dict[str, object]]]]:
-    """实时写入和历史迁移共用的权重映射，不规范化策略与账户权重。"""
-    columns: dict[str, object] = {}
-    states: dict[str, object] = {}
-    rows = []
-    for role in _WEIGHT_ROLES:
-        if role not in payload:
-            columns[role + "_kind"] = "missing"
-            continue
-        value = payload[role]
-        if value is None:
-            columns[role + "_kind"] = "null"
-        elif isinstance(value, dict) and all(isinstance(key, str) for key in value):
-            columns[role + "_kind"] = "mapping"
-            for key, weight in value.items():
-                typed, metadata = store_columns({"value": weight}, {"value": "number"})
-                rows.append(
-                    {
-                        "snapshot_id": snapshot_id,
-                        "role": role,
-                        "map_key": key,
-                        **typed,
-                        "audit_evidence": metadata,
-                    }
-                )
-        else:
-            columns[role + "_kind"] = "invalid"
-            invalid_columns, invalid_metadata = store_columns({"value": value}, {"value": "json"})
-            states[role] = {"columns": invalid_columns, "audit_evidence": invalid_metadata}
-    columns["weights_metadata"] = states
-    return columns, {target_weight_snapshot_weight: rows}
-
-
-def decode_snapshot_weights(
-    head: Mapping[str, Any],
-    rows: Sequence[Mapping[str, Any]],
-) -> dict[str, object]:
-    """保留快照中未提供、空值、空映射、异常值及原始品种键。"""
-    result = {}
-    for role in _WEIGHT_ROLES:
-        kind = head[role + "_kind"]
-        if kind == "missing":
-            continue
-        if kind == "null":
-            result[role] = None
-        elif kind == "invalid":
-            invalid = head["weights_metadata"][role]
-            result[role] = read_columns(invalid["columns"], invalid["audit_evidence"], {"value": "json"})["value"]
-        elif kind == "mapping":
-            ordered = sorted((row for row in rows if row["role"] == role), key=lambda row: row["map_key"])
-            result[role] = {
-                row["map_key"]: read_columns(dict(row), row["audit_evidence"], {"value": "number"})["value"]
-                for row in ordered
-            }
-        else:
-            raise ValueError("Unknown target weight snapshot container state")
-    invalid = {}
-    for row in rows:
-        if row.get("audit_evidence"):
-            invalid.setdefault(row["role"], {})[row["map_key"]] = row["audit_evidence"]
-    if invalid:
-        result["audit_evidence"] = {"invalid_target_values": invalid}
-    return result
-
-
-async def _snapshot_views(
-    session: AsyncSession,
-    snapshots: Sequence[TargetWeightSnapshot],
-) -> list[TargetWeightSnapshotData]:
-    if not snapshots:
-        return []
-    ids = [snapshot.id for snapshot in snapshots]
-    grouped: dict[int, list[Mapping[str, Any]]] = {}
-    rows = (
-        await session.execute(
-            sa.select(target_weight_snapshot_weight)
-            .where(
-                target_weight_snapshot_weight.c.snapshot_id.in_(ids),
-            )
-            .order_by(target_weight_snapshot_weight.c.map_key)
-        )
-    ).mappings()
-    for row in rows:
-        grouped.setdefault(row["snapshot_id"], []).append(dict(row))
-    result = []
-    for snapshot in snapshots:
-        snapshot_id = snapshot.id
-        if snapshot_id is None:
-            raise ValueError("Target snapshot must be persisted before reading weights")
-        weights = decode_snapshot_weights(
-            {
-                "raw_weights_kind": snapshot.raw_weights_kind,
-                "normalized_weights_kind": snapshot.normalized_weights_kind,
-                "weights_metadata": snapshot.weights_metadata,
-            },
-            grouped.get(snapshot_id, ()),
-        )
-        result.append(
-            TargetWeightSnapshotData(
-                id=snapshot_id,
-                portfolio_id=snapshot.portfolio_id,
-                account_id=snapshot.account_id,
-                raw_weights=cast(dict[str, float] | None, weights.get("raw_weights")),
-                normalized_weights=cast(dict[str, float] | None, weights.get("normalized_weights")),
-                source=snapshot.source,
-                execution_id=snapshot.execution_id,
-                calculated_at=snapshot.calculated_at,
-            )
-        )
-    return result
+def _snapshot_view(value: dict[str, Any]) -> TargetWeightSnapshotData:
+    return TargetWeightSnapshotData(
+        id=value["id"],
+        portfolio_id=value["portfolio_id"],
+        account_id=value["account_id"],
+        raw_weights=value.get("raw_weights"),
+        normalized_weights=value.get("normalized_weights"),
+        source=value["source"],
+        execution_id=value["execution_id"],
+        calculated_at=value["calculated_at"],
+    )
 
 
 async def append_target_weight_snapshot(
-    session: AsyncSession,
     *,
     portfolio_id: int,
     account_id: int | None,
@@ -156,140 +46,64 @@ async def append_target_weight_snapshot(
     source: Literal["manual", "execution"],
     execution_id: str | None = None,
 ) -> TargetWeightSnapshotData:
-    """追加计算快照和类型化明细后提交，返回已显式读取的快照视图。"""
-    columns, batches = encode_snapshot_weights(
-        0, {"raw_weights": raw_weights, "normalized_weights": normalized_weights}
+    """由 Rust 一次提交快照头和权重明细。"""
+    value = await native_operation(
+        "target_operation",
+        {
+            "op": "append",
+            "portfolio_id": portfolio_id,
+            "account_id": account_id,
+            "raw_weights": raw_weights,
+            "normalized_weights": normalized_weights,
+            "source": source,
+            "execution_id": execution_id,
+            "calculated_at": now_str(),
+        },
     )
-    snapshot = TargetWeightSnapshot(
-        portfolio_id=portfolio_id,
-        account_id=account_id,
-        source=source,
-        execution_id=execution_id,
-        **cast(dict[str, Any], columns),
-    )
-    session.add(snapshot)
-    await session.flush()
-    for table, rows in batches.items():
-        if rows:
-            for row in rows:
-                row["snapshot_id"] = snapshot.id
-            await session.execute(table.insert(), rows)
-    await session.commit()
-    await session.refresh(snapshot)
-    return (await _snapshot_views(session, [snapshot]))[0]
+    return _snapshot_view(value)
 
 
-async def get_latest_portfolio_target_snapshot(
-    session: AsyncSession,
-    portfolio_id: int,
-) -> TargetWeightSnapshotData | None:
+async def get_latest_portfolio_target_snapshot(portfolio_id: int) -> TargetWeightSnapshotData | None:
     """读取组合最近一条具有原始权重的计算快照。"""
-    snapshot = await session.scalar(
-        select(TargetWeightSnapshot)
-        .where(
-            TargetWeightSnapshot.portfolio_id == portfolio_id,
-            TargetWeightSnapshot.raw_weights_kind != "null",
-            TargetWeightSnapshot.raw_weights_kind != "missing",
-        )
-        .order_by(desc(TargetWeightSnapshot.id))
-        .limit(1)
-    )
-    return (await _snapshot_views(session, [snapshot]))[0] if snapshot is not None else None
+    value = await native_operation("target_operation", {"op": "latest_portfolio", "portfolio_id": portfolio_id})
+    return _snapshot_view(value) if value is not None else None
 
 
-async def get_latest_account_target_snapshot(
-    session: AsyncSession,
-    account_id: int,
-    portfolio_id: int,
-) -> TargetWeightSnapshotData | None:
+async def get_latest_account_target_snapshot(account_id: int, portfolio_id: int) -> TargetWeightSnapshotData | None:
     """读取账户在当前组合下最近一条归一化权重快照。"""
-    snapshot = await session.scalar(
-        select(TargetWeightSnapshot)
-        .where(
-            TargetWeightSnapshot.account_id == account_id,
-            TargetWeightSnapshot.portfolio_id == portfolio_id,
-            TargetWeightSnapshot.normalized_weights_kind != "null",
-            TargetWeightSnapshot.normalized_weights_kind != "missing",
-        )
-        .order_by(desc(TargetWeightSnapshot.id))
-        .limit(1)
+    value = await native_operation(
+        "target_operation", {"op": "latest_account", "account_id": account_id, "portfolio_id": portfolio_id}
     )
-    return (await _snapshot_views(session, [snapshot]))[0] if snapshot is not None else None
+    return _snapshot_view(value) if value is not None else None
 
 
 async def get_previous_account_target_snapshots(
-    session: AsyncSession,
     account_id: int,
     portfolio_id: int,
     *,
     before_id: int,
     limit: int = 50,
 ) -> list[TargetWeightSnapshotData]:
-    """读取同一账户组合下早于指定快照的近期目标，批量读取对应明细。"""
-    result = await session.execute(
-        select(TargetWeightSnapshot)
-        .where(
-            TargetWeightSnapshot.account_id == account_id,
-            TargetWeightSnapshot.portfolio_id == portfolio_id,
-            TargetWeightSnapshot.normalized_weights_kind != "null",
-            TargetWeightSnapshot.normalized_weights_kind != "missing",
-            col(TargetWeightSnapshot.execution_id).is_not(None),
-            col(TargetWeightSnapshot.id) < before_id,
-        )
-        .order_by(desc(TargetWeightSnapshot.id))
-        .limit(limit)
+    """读取同一账户组合下早于指定快照的近期执行目标。"""
+    values = await native_operation(
+        "target_operation",
+        {
+            "op": "previous_account",
+            "account_id": account_id,
+            "portfolio_id": portfolio_id,
+            "before_id": before_id,
+            "limit": limit,
+        },
     )
-    return await _snapshot_views(session, list(result.scalars()))
+    return [_snapshot_view(value) for value in values]
 
 
-async def read_target_snapshot_weights(
-    session: AsyncSession,
-    *,
-    account_id: int,
-    execution_id: str | None,
-) -> dict[str, float] | None:
-    """按执行定位账户权重，不加载整个目标历史或原始权重。"""
+async def read_target_snapshot_weights(*, account_id: int, execution_id: str | None) -> dict[str, float] | None:
+    """按执行定位账户权重，不加载整个目标历史。"""
     if execution_id is None:
         return None
-    head = (
-        (
-            await session.execute(
-                sa.select(
-                    col(TargetWeightSnapshot.id),
-                    col(TargetWeightSnapshot.normalized_weights_kind),
-                    col(TargetWeightSnapshot.weights_metadata),
-                )
-                .where(
-                    col(TargetWeightSnapshot.account_id) == account_id,
-                    col(TargetWeightSnapshot.execution_id) == execution_id,
-                )
-                .order_by(desc(TargetWeightSnapshot.id))
-                .limit(1)
-            )
-        )
-        .mappings()
-        .first()
-    )
-    if head is None or head["normalized_weights_kind"] in {"null", "missing"}:
-        return None
-    if head["normalized_weights_kind"] == "invalid":
-        invalid = head["weights_metadata"]["normalized_weights"]
-        return cast(
-            dict[str, float], read_columns(invalid["columns"], invalid["audit_evidence"], {"value": "json"})["value"]
-        )
-    rows = (
-        await session.execute(
-            sa.select(target_weight_snapshot_weight)
-            .where(
-                target_weight_snapshot_weight.c.snapshot_id == head["id"],
-                target_weight_snapshot_weight.c.role == "normalized_weights",
-            )
-            .order_by(target_weight_snapshot_weight.c.map_key)
-        )
-    ).mappings()
-    return cast(
-        dict[str, float],
-        {row["map_key"]: read_columns(dict(row), row["audit_evidence"], {"value": "number"})["value"] for row in rows},
+    return await native_operation(
+        "target_operation", {"op": "read_execution", "account_id": account_id, "execution_id": execution_id}
     )
 
 

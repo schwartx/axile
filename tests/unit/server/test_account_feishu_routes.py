@@ -10,24 +10,22 @@ from tests.unit.server._execution_test_support import build_account
 
 
 def test_notification_preview_rebuilds_standard_output(monkeypatch) -> None:
-    monkeypatch.setattr(account_feishu, "_core", SimpleNamespace(execution_business_detail=object()))
-    monkeypatch.setattr(account_feishu, "analysis_store", lambda: "preview-store")
     account = build_account()
-    session = SimpleNamespace(scalar=AsyncMock(return_value=None))
     monkeypatch.setattr(account_feishu, "get_latest_account_target_snapshot", AsyncMock(return_value=None))
-    output = asyncio.run(account_feishu._build_sample_output(session, account, _sample_assets()))
+    output = asyncio.run(account_feishu._build_sample_output(account, _sample_assets()))
     record = SimpleNamespace(
         id=1,
         execution_id="historical",
         created_at="2026-10-12T09:00:00",
     )
-    monkeypatch.setattr(account_feishu, "get_recent_execute_records_by_account_id", AsyncMock(return_value=[record]))
     monkeypatch.setattr(
         account_feishu,
-        "run_in_threadpool",
-        AsyncMock(return_value={"input": {}, "result": output.model_dump(mode="json")}),
+        "native_operation",
+        AsyncMock(
+            return_value={"record": vars(record), "detail": {"input": {}, "result": output.model_dump(mode="json")}}
+        ),
     )
-    context = asyncio.run(account_feishu._load_notification_preview_context(session, account))
+    context = asyncio.run(account_feishu._load_notification_preview_context(account))
     assert context["assets"]["total_assets"] == 100000
     assert context["positions"][0]["market_value"] == 35000
     assert len(context["trades"]) == 2
@@ -76,7 +74,6 @@ def test_custom_notification_uses_saved_key_without_saving(monkeypatch) -> None:
         account.feishu_key = key
         result = asyncio.run(
             account_feishu.test_account_notification_function(
-                SimpleNamespace(close=AsyncMock()),
                 1,
                 account_feishu.AccountNotificationFunctionTestRequest(code="def notify(context): pass"),
             )

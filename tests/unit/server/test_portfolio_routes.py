@@ -18,6 +18,27 @@ def test_target_must_be_finite_symbol_weight_mapping(target: object) -> None:
         _normalize_target(target)
 
 
+def _account_payload(account_id: int) -> dict[str, object]:
+    return {
+        "id": account_id,
+        "name": "account",
+        "market": "futures",
+        "trade_channel": "ctp",
+        "account_control_preset": "default",
+        "account_config": {},
+        "is_started": False,
+        "cron_expr": "",
+        "remark": None,
+        "brokerage": "ctp",
+        "weight_precision": 0.01,
+        "algorithm": {"method": "SINGLE-MAKER", "params": {}},
+        "trade_rules": {},
+        "forbidden_symbols": [],
+        "risk_symbols": [],
+        "feishu_key": None,
+    }
+
+
 @pytest.mark.parametrize("account_id", [None, 7])
 @pytest.mark.parametrize("valid", [True, False])
 def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, valid):
@@ -25,43 +46,108 @@ def test_run_and_save_persists_only_successful_trial(monkeypatch, account_id, va
 
     from axile.server.api.routes import portfolio as routes
     from axile.server.db.models import Portfolio, ValidateCustomCalcResponse
+    from axile.server.db.models.account import AccountSnapshot
     from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
 
-    original_code = CODE + "# original\n"
-    portfolio = Portfolio(name="before", market="futures", custom_calc_py_code=original_code)
-    account = Mock()
-    session = Mock()
-    session.get = AsyncMock(side_effect=[portfolio] + ([account] if account_id else []))
-    session.rollback = AsyncMock()
-    run = AsyncMock(return_value=ValidateCustomCalcResponse(valid=valid, target={"rb2610": 1.0} if valid else None))
-    append = AsyncMock()
+    portfolio = Portfolio(id=3, name="before", market="futures", custom_calc_py_code=CODE + "# original\n")
+    account = _account_payload(account_id) if account_id is not None else None
+    stages = []
+
+    async def native(name, request):
+        assert name == "portfolio_operation"
+        stages.append(request["op"])
+        if request["op"] == "context":
+            return {"portfolio": portfolio.model_dump(), "account_id": account_id, "account": account}
+        assert stages == ["context", "run", "save_trial"]
+        assert request["portfolio_id"] == 3
+        assert request["changes"] == {"name": "after", "custom_calc_py_code": CODE}
+        assert request["raw_weights"] == {"rb2610": 1.0}
+        assert request["normalized_weights"] is None
+        assert request["account_id"] == account_id
+        assert request["source"] == "manual"
+        assert request["updated_at"] == request["calculated_at"]
+
+    async def trial(context, code):
+        assert stages == ["context"]
+        assert (context is None) is (account_id is None)
+        if context is not None:
+            assert isinstance(context, AccountSnapshot) and context.id == account_id
+        assert code == CODE
+        stages.append("run")
+        return ValidateCustomCalcResponse(valid=valid, target={"rb2610": 1.0} if valid else None)
+
+    run = AsyncMock(side_effect=trial)
     clear = Mock()
+    monkeypatch.setattr(routes, "native_operation", native)
     monkeypatch.setattr(routes, "_run_custom_calc_validation", run)
-    monkeypatch.setattr(routes, "append_target_weight_snapshot", append)
     monkeypatch.setattr(routes, "try_register_target_refresh", Mock(return_value=True))
     monkeypatch.setattr(routes, "clear_target_refresh", clear)
 
     result = asyncio.run(
         routes.run_and_save_portfolio(
-            session, 3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE, account_id=account_id)
+            3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE, account_id=account_id)
         )
     )
 
     assert result.valid is valid
-    run.assert_awaited_once_with(account if account_id else None, CODE)
+    expected = ["context", "run", "save_trial"] if valid else ["context", "run"]
+    assert stages == expected
+    run.assert_awaited_once()
     clear.assert_called_once_with(3, account_id)
-    if valid:
-        assert portfolio.name == "after"
-        assert portfolio.custom_calc_py_code == CODE
-        append.assert_awaited_once_with(
-            session,
-            portfolio_id=3,
-            account_id=account_id,
-            raw_weights={"rb2610": 1.0},
-            normalized_weights=None,
-            source="manual",
+    assert portfolio.name == "before"
+
+
+def test_run_and_save_releases_refresh_reservation_when_native_save_fails(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    from axile.server.api.routes import portfolio as routes
+    from axile.server.db.models import ValidateCustomCalcResponse
+    from axile.server.db.models.portfolio import RunAndSavePortfolioRequest
+
+    native = AsyncMock(side_effect=[{"account": None}, RuntimeError("write failed")])
+    clear = Mock()
+    monkeypatch.setattr(routes, "native_operation", native)
+    monkeypatch.setattr(
+        routes,
+        "_run_custom_calc_validation",
+        AsyncMock(return_value=ValidateCustomCalcResponse(valid=True, target={"rb2610": 1.0})),
+    )
+    monkeypatch.setattr(routes, "try_register_target_refresh", Mock(return_value=True))
+    monkeypatch.setattr(routes, "clear_target_refresh", clear)
+    with pytest.raises(RuntimeError, match="write failed"):
+        asyncio.run(
+            routes.run_and_save_portfolio(3, RunAndSavePortfolioRequest(name="after", custom_calc_py_code=CODE))
         )
-    else:
-        assert portfolio.name == "before"
-        assert portfolio.custom_calc_py_code == original_code
-        append.assert_not_awaited()
+    clear.assert_called_once_with(3, None)
+
+
+def test_portfolio_native_errors_keep_http_status_and_details(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from axile.server.api.routes import portfolio as routes
+
+    for code, http_status, detail in [
+        ("NOT_FOUND", 404, "组合不存在"),
+        ("CONFLICT", 422, "该组合与账户关联，必须解绑才能删除组合"),
+    ]:
+        monkeypatch.setattr(routes, "native_operation", AsyncMock(side_effect=routes._core.NativeError(code, detail)))
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(routes.delete_portfolio(3))
+        assert caught.value.status_code == http_status
+        assert caught.value.detail == detail
+
+
+def test_portfolio_queries_forward_native_json_without_decoding(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from axile.server.api.routes import portfolio as routes
+
+    body = b'{"data": []}'
+    native = AsyncMock(return_value=body)
+    monkeypatch.setattr(routes, "native_operation", native)
+    response = asyncio.run(routes.list_portfolios())
+    assert response.body == body
+    assert response.media_type == "application/json"
+    native.assert_awaited_once_with("portfolio_query_json", {"op": "list"})
