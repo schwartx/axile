@@ -1,6 +1,5 @@
 """离线验证资产控制上下文、同日批次选择及计数时间证据。"""
 
-import asyncio
 import io
 import json
 from dataclasses import replace
@@ -8,23 +7,21 @@ from datetime import UTC, datetime
 from zipfile import ZipFile
 
 import pytest
+import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel, select
 
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account_evidence
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
-from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.evidence.models import EvidenceLimits, ExportBudget
-from axile.server.execution import execution_account_control
 from axile.server.execution.worker_backend import worker, worker_state
 from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
+from tests.conftest import native_store_call
+from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._business_facts_test_support import rows as stored_rows
 
 pytestmark = pytest.mark.slow
 DAY = "/account/1/evidence?start_date=2026-10-15&end_date=2026-10-15"
@@ -49,40 +46,59 @@ def account(identifier):
 
 
 @pytest.fixture
-def evidence_db(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'evidence.db'}", poolclass=NullPool)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def initialize():
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        async with factory() as session:
-            session.add_all([account(1), account(2)])
-            await session.commit()
-
-    asyncio.run(initialize())
-    yield factory
-    asyncio.run(engine.dispose())
+def evidence_db(native_database, monkeypatch):
+    for identifier in (1, 2):
+        receipt = native_store_call(
+            native_database,
+            "account_create",
+            {"account": account(identifier).model_dump(mode="json"), "now": "2026-10-15T09:00:00+08:00"},
+        )
+        assert receipt["account"]["id"] == identifier
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    return native_database
 
 
-def seed(factory, *rows):
-    async def write():
-        async with factory() as session:
-            session.add_all(rows)
-            await session.commit()
+def seed(database, *rows):
+    names = {
+        ExecutionIntent: "execution_intent",
+        ExecutionEvent: "execution_event",
+        ExecutionArtifact: "execution_artifact",
+        AccountControlEvent: "account_control_event",
+        AccountControlCounterDelta: "account_control_counter_delta",
+    }
+    engine = sa.create_engine(f"sqlite:///{database}")
+    try:
+        with engine.begin() as connection:
+            for row in rows:
+                if isinstance(row, ExecuteRecord):
+                    continue
+                values = row.model_dump(mode="json", exclude={"id"})
+                if "metadata_" in values:
+                    values["metadata"] = values.pop("metadata_")
+                connection.execute(table(names[type(row)]).insert(), values)
+    finally:
+        engine.dispose()
+    for row in rows:
+        if isinstance(row, ExecuteRecord):
+            native_store_call(
+                database,
+                "persist_execute_record",
+                {
+                    "account_id": row.account_id,
+                    "execution_id": row.execution_id,
+                    "is_success": row.is_success,
+                    "created_at": row.created_at,
+                    "input_id": f"input-{row.execution_id}",
+                    "result_input_id": f"result-{row.execution_id}",
+                    "raw_result": {},
+                },
+            )
 
-    asyncio.run(write())
 
-
-def client(factory):
+def client(_database):
     app = FastAPI()
     app.include_router(account_evidence.router, prefix="/account")
 
-    async def database():
-        async with factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = database
     return TestClient(app)
 
 
@@ -150,7 +166,6 @@ def complete_execution(key="exec-1", **overrides):
             execution_id=key,
             is_success=1,
             created_at=values["created_at"],
-            raw_result={},
         ),
         ExecutionEvent(
             account_id=values["account_id"],
@@ -202,7 +217,6 @@ def test_worker_persists_operation_type_without_losing_execution_association(
             return UnifiedAccountAssets(available_cash=1, total_asset=1, market_value=0, positions=[])
 
     executor = AssetsExecutor()
-    monkeypatch.setattr(execution_account_control, "SessionLocal", evidence_db)
     monkeypatch.setattr(worker_state, "reuse_resident_connection", lambda *_: executor)
 
     def prepare_connection(*args, **kwargs):
@@ -221,19 +235,15 @@ def test_worker_persists_operation_type_without_losing_execution_association(
     response = worker._handle_worker_request(request, worker_state._WorkerBackendState())
     assert response.kind == "result", response.error
 
-    async def verify():
-        async with evidence_db() as session:
-            rows = (await session.execute(select(AccountControlSession))).scalars().all()
-            assert len(rows) == 1
-            assert rows[0].execution_id == (execution_id or "assets-request")
-            assert rows[0].context_kind == ("execution" if execution_id else "account_operation")
-            source = "account_assets" if command == "get_account_assets" else "connection_prepare"
-            assert rows[0].source == ("algorithm" if execution_id else source)
-            assert rows[0].status == "closed"
-            events = (await session.execute(select(AccountControlEvent))).scalars().all()
-            assert events and all(row.context_kind == rows[0].context_kind for row in events)
-
-    asyncio.run(verify())
+    rows = stored_rows(evidence_db, "account_control_session")
+    assert len(rows) == 1
+    assert rows[0]["execution_id"] == (execution_id or "assets-request")
+    assert rows[0]["context_kind"] == ("execution" if execution_id else "account_operation")
+    source = "account_assets" if command == "get_account_assets" else "connection_prepare"
+    assert rows[0]["source"] == ("algorithm" if execution_id else source)
+    assert rows[0]["status"] == "closed"
+    events = stored_rows(evidence_db, "account_control_event")
+    assert events and all(row["context_kind"] == rows[0]["context_kind"] for row in events)
 
 
 def test_many_asset_contexts_do_not_consume_execution_budget(evidence_db):

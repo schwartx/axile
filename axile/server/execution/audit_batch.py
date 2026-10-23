@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 from loguru import logger
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
-from axile.server.core.db import SessionLocal
 from axile.server.db.models import ExecutionArtifact, ExecutionEvent, now_str
 from axile.server.execution_audit import (
-    _is_duplicate_integrity_error,
     _notify_live_hub,
     _run_coroutine_sync,
 )
+from axile.server.native_store import native_operation
 
 PRE_EXECUTE_AUDIT_LIMIT = 8
 POST_EXECUTE_AUDIT_LIMIT = 3
@@ -54,15 +52,15 @@ class ExecutionAuditBatch:
         schema_version: int = 1,
     ) -> None:
         """入批附件并直接复用 payload 引用，不额外序列化。"""
-        self._add(
-            ExecutionArtifact(
-                execution_id=execution_id,
-                artifact_type=artifact_type,
-                content=content,
-                schema_version=schema_version,
-                created_at=now_str(),
-            )
+        artifact = ExecutionArtifact(
+            execution_id=execution_id,
+            artifact_type=artifact_type,
+            content=content,
+            schema_version=schema_version,
+            created_at=now_str(),
         )
+        artifact.content = content
+        self._add(artifact)
 
     def _add(self, entry: ExecutionEvent | ExecutionArtifact) -> None:
         if len(self._entries) >= self.max_entries:
@@ -99,69 +97,39 @@ class _CommittedBatch:
         return self.count
 
 
-async def _begin_audit_transaction(session: AsyncSession) -> None:
-    """显式开启 SQLite 外层事务，防止首次 RELEASE SAVEPOINT 提前提交。"""
-    connection = await session.connection()
-    if connection.dialect.name == "sqlite":
-        raw_connection = await connection.get_raw_connection()
-        driver_connection = raw_connection.driver_connection
-        if driver_connection is None:
-            raise RuntimeError("SQLite 驱动连接不可用")
-        if not driver_connection.in_transaction:
-            await connection.exec_driver_sql("BEGIN")
-
-
-async def _append_isolated(session: AsyncSession, entry: ExecutionEvent | ExecutionArtifact) -> bool:
-    """在独立 SAVEPOINT 中 flush 一条记录，失败不污染同批其余行。"""
-    try:
-        async with session.begin_nested():
-            session.add(entry)
-            await session.flush()
-        return True
-    except IntegrityError as exc:
-        tokens = (
-            ("event_uid", "uq_execution_event_event_uid")
-            if isinstance(entry, ExecutionEvent)
-            else ("execution_id", "artifact_type", "uq_execution_artifact_execution_type")
-        )
-        if _is_duplicate_integrity_error(exc, *tokens):
-            logger.debug("跳过批次中重复的执行审计: {}", exc)
-        else:
-            logger.error("写入批次审计行失败: {}", exc)
-    except Exception as exc:
-        logger.error("写入批次审计行失败: {}", exc)
-    return False
+def _batch_request(batch: ExecutionAuditBatch) -> dict[str, object]:
+    """坏载荷只标记对应行，其余行一次交给原生事务。"""
+    entries = []
+    for entry in batch:
+        try:
+            row = entry.model_dump(mode="python")
+            json.dumps(row, ensure_ascii=False, allow_nan=False)
+            entries.append(
+                {
+                    "kind": "event" if isinstance(entry, ExecutionEvent) else "artifact",
+                    "row": row,
+                }
+            )
+        except Exception as exc:
+            entries.append({"kind": "invalid", "error": str(exc)})
+    return {"entries": entries}
 
 
 async def _persist_batch(batch: ExecutionAuditBatch) -> _CommittedBatch:
-    """只负责事务，返回不含 payload 的已提交通知描述。"""
+    """只等待持久化回执，返回不含 payload 的已提交通知描述。"""
     if not batch:
         return _CommittedBatch()
     try:
-        async with SessionLocal() as session:
-            try:
-                await _begin_audit_transaction(session)
-                count = 0
-                notifications: list[_Notification] = []
-                for entry in batch:
-                    if not await _append_isolated(session, entry):
-                        continue
-                    count += 1
-                    if isinstance(entry, ExecutionEvent):
-                        notifications.append(
-                            _Notification(
-                                execution_id=entry.execution_id,
-                                account_id=entry.account_id,
-                                event_type=entry.event_type,
-                                symbol=entry.symbol,
-                                seq=entry.seq,
-                            )
-                        )
-                await session.commit()
-            except BaseException:
-                await session.rollback()
-                raise
-        return _CommittedBatch(count, tuple(notifications))
+        receipt = await native_operation("append_execution_audit_batch", _batch_request(batch))
+        for failure in receipt["failures"]:
+            logger.error("写入批次审计行失败: {}", failure["error"])
+        return _CommittedBatch(
+            receipt["count"],
+            tuple(
+                _Notification(**{**row, "event_type": ExecutionEventType(row["event_type"])})
+                for row in receipt["notifications"]
+            ),
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:

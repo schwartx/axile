@@ -4,14 +4,16 @@ from collections.abc import Sequence
 from typing import Any
 
 import sqlalchemy as sa
-from sqlmodel import SQLModel
 
-from axile.server.business_facts.assets import asset_binding, asset_snapshot
 from axile.server.db.models import ExecuteRecord, ExecutionActivity
 from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import ActivityExecutionRecord
-from axile.server.performance_costs import summarize
+from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
+from tests.unit.server._performance_costs_oracle import summarize
+
+asset_binding = table("business_asset_binding")
+asset_snapshot = table("business_asset_snapshot")
 
 
 def _text_or_none(value: object) -> str | None:
@@ -51,8 +53,8 @@ async def read_result_asset_totals(session: Any, record_ids: Sequence[int]) -> d
     """只读取终态执行后的有效权益，不加载扩展或持仓。"""
     if not record_ids:
         return {}
-    records = SQLModel.metadata.tables["executerecord"]
-    inputs = SQLModel.metadata.tables["execution_input"]
+    records = table("executerecord")
+    inputs = table("execution_input")
     record_owned = sa.and_(
         asset_snapshot.c.record_id == records.c.id,
         asset_snapshot.c.path == asset_binding.c.path,

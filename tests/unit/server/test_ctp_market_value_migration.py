@@ -1,42 +1,18 @@
 """Historical CTP valuation migration integration tests."""
 
+import json
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
 import pytest
-import sqlalchemy as sa
 
-from axile.server.migration_support.ctp_market_value import downgrade, upgrade
+from tests.conftest import initialize_native_database, native_store_call, require_native_store
 
 
-def test_repairs_joined_ctp_observations_and_restores_exact_originals() -> None:
-    engine = sa.create_engine("sqlite://")
-    metadata = sa.MetaData()
-    accounts = sa.Table(
-        "account", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("trade_channel", sa.Text)
-    )
-    records = sa.Table(
-        "executerecord",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("raw_input", sa.JSON),
-        sa.Column("raw_result", sa.JSON),
-    )
-    snapshots = sa.Table(
-        "account_asset_snapshot",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("assets", sa.JSON),
-    )
-    artifacts = sa.Table(
-        "execution_artifact",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("artifact_type", sa.Text),
-        sa.Column("content", sa.JSON),
-    )
+def test_repairs_joined_ctp_observations_and_restores_exact_originals(tmp_path: Path) -> None:
+    path = tmp_path / "ctp-market-value.db"
+    initialize_native_database(path, revision="0013")
     assets = {
         "market_value": 33,
         "total_asset": 500,
@@ -51,48 +27,37 @@ def test_repairs_joined_ctp_observations_and_restores_exact_originals() -> None:
             "rb": {"first_tick": {"last_price": 100, "timestamp": 1780000000000}, "sizing": {"unit_multiplier": 10}}
         },
     }
-    with engine.begin() as connection:
-        metadata.create_all(connection)
-        connection.execute(accounts.insert(), [{"id": 1, "trade_channel": "ctp"}, {"id": 2, "trade_channel": "gm"}])
-        connection.execute(
-            records.insert(),
-            [
-                {"id": 1, "account_id": 1, "execution_id": "ctp-1", "raw_input": {}, "raw_result": result},
-                {"id": 2, "account_id": 2, "execution_id": "gm-1", "raw_input": {}, "raw_result": result},
-            ],
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executemany(
+            "INSERT INTO account (id, name, market, trade_channel, account_control_preset, account_config, "
+            "is_started, cron_expr, brokerage, weight_precision, updated_at, created_at) "
+            "VALUES (?, 'account', 'future', ?, 'default', '{}', 0, '', '', 0.001, 'now', 'now')",
+            ((1, "ctp"), (2, "gm")),
         )
-        connection.execute(
-            snapshots.insert(),
-            [
-                {"id": 1, "account_id": 1, "execution_id": "ctp-1", "assets": assets},
-                {"id": 2, "account_id": 2, "execution_id": "gm-1", "assets": assets},
-            ],
+        connection.executemany(
+            "INSERT INTO executerecord (id, account_id, execution_id, raw_input, raw_result, is_success, created_at) "
+            "VALUES (?, ?, ?, '{}', ?, 1, 'now')",
+            ((1, 1, "ctp-1", json.dumps(result)), (2, 2, "gm-1", json.dumps(result))),
         )
-        connection.execute(
-            artifacts.insert(),
-            [
-                {
-                    "id": 1,
-                    "execution_id": "ctp-1",
-                    "artifact_type": "ACCOUNT_SNAPSHOT",
-                    "content": {"account_assets": assets},
-                },
-                {
-                    "id": 3,
-                    "execution_id": "ctp-1",
-                    "artifact_type": "ACCOUNT_SNAPSHOT_BEFORE",
-                    "content": {"account_assets": assets},
-                },
-                {
-                    "id": 2,
-                    "execution_id": "gm-1",
-                    "artifact_type": "ACCOUNT_SNAPSHOT",
-                    "content": {"account_assets": assets},
-                },
-            ],
+        connection.executemany(
+            "INSERT INTO account_asset_snapshot (id, account_id, execution_id, assets, source, created_at) "
+            "VALUES (?, ?, ?, ?, 'execution', 'now')",
+            ((1, 1, "ctp-1", json.dumps(assets)), (2, 2, "gm-1", json.dumps(assets))),
         )
-        upgrade(connection)
-        repaired = connection.scalar(sa.select(snapshots.c.assets).where(snapshots.c.id == 1))
+        connection.executemany(
+            "INSERT INTO execution_artifact (id, execution_id, artifact_type, schema_version, content, created_at) "
+            "VALUES (?, ?, ?, 1, ?, 'now')",
+            (
+                (1, "ctp-1", "ACCOUNT_SNAPSHOT", json.dumps({"account_assets": assets})),
+                (3, "ctp-1", "ACCOUNT_SNAPSHOT_BEFORE", json.dumps({"account_assets": assets})),
+                (2, "gm-1", "ACCOUNT_SNAPSHOT", json.dumps({"account_assets": assets})),
+            ),
+        )
+    initialize_native_database(path, revision="0014")
+    with closing(sqlite3.connect(path)) as connection:
+        repaired = json.loads(
+            connection.execute("SELECT assets FROM account_asset_snapshot WHERE id = 1").fetchone()[0]
+        )
         assert repaired["positions"][0]["market_value"] == 2000
         assert repaired["positions"][1]["market_value"] is None
         assert repaired["market_value"] is None
@@ -103,70 +68,75 @@ def test_repairs_joined_ctp_observations_and_restores_exact_originals() -> None:
                 "quote_timestamp": 1780000000000,
             },
         }
-        assert connection.scalar(sa.select(records.c.raw_result).where(records.c.id == 1))["account_assets"] == repaired
         assert (
-            connection.scalar(sa.select(artifacts.c.content).where(artifacts.c.id == 1))["account_assets"] == repaired
+            json.loads(connection.execute("SELECT raw_result FROM executerecord WHERE id = 1").fetchone()[0])[
+                "account_assets"
+            ]
+            == repaired
         )
         assert (
-            connection.scalar(sa.select(artifacts.c.content).where(artifacts.c.id == 3))["account_assets"] == repaired
+            json.loads(connection.execute("SELECT content FROM execution_artifact WHERE id = 1").fetchone()[0])[
+                "account_assets"
+            ]
+            == repaired
         )
-        assert connection.scalar(sa.select(snapshots.c.assets).where(snapshots.c.id == 2)) == assets
-        assert connection.scalar(sa.select(records.c.raw_result).where(records.c.id == 2)) == result
-        downgrade(connection)
-        assert connection.scalar(sa.select(snapshots.c.assets).where(snapshots.c.id == 1)) == assets
-        assert connection.scalar(sa.select(records.c.raw_result).where(records.c.id == 1)) == result
-        assert connection.scalar(sa.select(artifacts.c.content).where(artifacts.c.id == 1)) == {
+        assert (
+            json.loads(connection.execute("SELECT content FROM execution_artifact WHERE id = 3").fetchone()[0])[
+                "account_assets"
+            ]
+            == repaired
+        )
+        assert (
+            json.loads(connection.execute("SELECT assets FROM account_asset_snapshot WHERE id = 2").fetchone()[0])
+            == assets
+        )
+        assert (
+            json.loads(connection.execute("SELECT raw_result FROM executerecord WHERE id = 2").fetchone()[0]) == result
+        )
+    native_store_call(path, "migration_downgrade", {"public": "0013"})
+    with closing(sqlite3.connect(path)) as connection:
+        assert (
+            json.loads(connection.execute("SELECT assets FROM account_asset_snapshot WHERE id = 1").fetchone()[0])
+            == assets
+        )
+        assert (
+            json.loads(connection.execute("SELECT raw_result FROM executerecord WHERE id = 1").fetchone()[0]) == result
+        )
+        assert json.loads(connection.execute("SELECT content FROM execution_artifact WHERE id = 1").fetchone()[0]) == {
             "account_assets": assets
         }
 
 
-def test_downgrade_refuses_external_edits() -> None:
-    engine = sa.create_engine("sqlite://")
-    metadata = sa.MetaData()
-    accounts = sa.Table(
-        "account", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("trade_channel", sa.Text)
-    )
-    records = sa.Table(
-        "executerecord",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("raw_input", sa.JSON),
-        sa.Column("raw_result", sa.JSON),
-    )
-    sa.Table(
-        "account_asset_snapshot",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("assets", sa.JSON),
-    )
-    sa.Table(
-        "execution_artifact",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("artifact_type", sa.Text),
-        sa.Column("content", sa.JSON),
-    )
+def test_downgrade_refuses_external_edits(tmp_path: Path) -> None:
+    core = require_native_store("migration_downgrade")
+    path = tmp_path / "ctp-conflict.db"
+    initialize_native_database(path, revision="0013")
     result = {
         "account_assets": {"positions": [{"symbol": "rb", "volume": 1, "market_value": 8}], "market_value": 8},
         "symbol_results": {
             "rb": {"first_tick": {"last_price": 100, "timestamp": 1780000000000}, "sizing": {"unit_multiplier": 10}}
         },
     }
-    with engine.begin() as connection:
-        metadata.create_all(connection)
-        connection.execute(accounts.insert().values(id=1, trade_channel="ctp"))
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
-            records.insert().values(id=1, account_id=1, execution_id="one", raw_input={}, raw_result=result)
+            "INSERT INTO account (id, name, market, trade_channel, account_control_preset, account_config, "
+            "is_started, cron_expr, brokerage, weight_precision, updated_at, created_at) "
+            "VALUES (1, 'account', 'future', 'ctp', 'default', '{}', 0, '', '', 0.001, 'now', 'now')"
         )
-        upgrade(connection)
-        changed = connection.scalar(sa.select(records.c.raw_result))
+        connection.execute(
+            "INSERT INTO executerecord (id, account_id, execution_id, raw_input, raw_result, is_success, created_at) "
+            "VALUES (1, 1, 'one', '{}', ?, 1, 'now')",
+            (json.dumps(result),),
+        )
+    initialize_native_database(path, revision="0014")
+    with closing(sqlite3.connect(path)) as connection, connection:
+        changed = json.loads(connection.execute("SELECT raw_result FROM executerecord").fetchone()[0])
         changed["account_assets"]["total_asset"] = 999
-        connection.execute(records.update().values(raw_result=changed))
-        with pytest.raises(RuntimeError, match="restore conflict"):
-            downgrade(connection)
-        assert "axile_0014_market_value_backup" in sa.inspect(connection).get_table_names()
+        connection.execute("UPDATE executerecord SET raw_result = ?", (json.dumps(changed),))
+    with pytest.raises(core.NativeError, match="restore conflict"):
+        native_store_call(path, "migration_downgrade", {"public": "0013"})
+    with closing(sqlite3.connect(path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert "axile_0014_market_value_backup" in tables
+        assert json.loads(connection.execute("SELECT raw_result FROM executerecord").fetchone()[0]) == changed
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0014"

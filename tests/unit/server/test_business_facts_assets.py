@@ -3,96 +3,103 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from axile.server._native import _core
 from axile.server.business_facts.assets import (
-    TABLES,
-    asset_binding,
     asset_fact_id,
-    asset_position,
-    asset_snapshot,
-    decode_assets,
-    encode_assets,
-    encode_input_after_assets,
-    encode_input_assets,
-    encode_snapshot_assets,
-    ensure_execution_asset_snapshot,
-    find_matching_after_asset,
     input_after_asset_fact_id,
-    load_result_asset_rows,
     read_input_asset_observations,
     read_snapshots_assets,
-    snapshot_asset_fact_id,
-    validate_result_asset_ownership,
 )
+from axile.server.core import db
 from scripts.business_facts_contract import business_evidence
-from tests.unit.server._journal_oracle import read_result_asset_totals
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, sql
+from tests.unit.server._execution_test_support import build_account
 
 
-def _metadata():
-    metadata = sa.MetaData()
-    sa.Table(
-        "executerecord",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer, server_default="1"),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("input_id", sa.Text),
-        sa.Column("result_input_id", sa.Text),
+@pytest.fixture
+def database(native_database, monkeypatch):
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    for account_id in (1, 2):
+        receipt = native_store_call(
+            native_database,
+            "account_create",
+            {"now": "2026-10-20", "account": build_account(id=account_id, portfolio_id=None).model_dump(mode="json")},
+        )
+        assert receipt["account"]["id"] == account_id
+    return native_database
+
+
+def _asset_view(result):
+    view = {"account_assets": result["account_assets"]} if "account_assets" in result else {}
+    if "symbol_results" in result:
+        view["symbol_results"] = {
+            key: {"account_assets": item["account_assets"]}
+            for key, item in result["symbol_results"].items()
+            if isinstance(item, dict) and "account_assets" in item
+        }
+    return view
+
+
+def _roundtrip(database, payload):
+    record = persist_result(database, payload)
+    loaded = {
+        name: [row for row in rows(database, name) if row.get("record_id") == record["id"]]
+        for name in ("business_asset_snapshot", "business_asset_binding")
+    }
+    identities = {row["asset_id"] for row in loaded["business_asset_snapshot"]}
+    loaded["business_asset_position"] = [
+        row for row in rows(database, "business_asset_position") if row["asset_id"] in identities
+    ]
+    return _asset_view(read_result(database, record)), loaded
+
+
+def _after(database, payload, *, execution_id="execution-1"):
+    return native_store_call(
+        database,
+        "freeze_execution_after_assets",
+        {"account_id": 1, "execution_id": execution_id, "payload": payload},
     )
-    sa.Table(
-        "execution_input",
-        metadata,
-        sa.Column("id", sa.Text, primary_key=True),
-        sa.Column("account_id", sa.Integer, server_default="1"),
-        sa.Column("execution_id", sa.Text),
-        sa.Column("owner_execution_id", sa.Text),
-    )
-    sa.Table(
-        "account_asset_snapshot",
-        metadata,
-        sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("account_id", sa.Integer),
-        sa.Column("asset_fact_id", sa.Text),
-        sa.Column("source", sa.Text),
-        sa.Column("execution_id", sa.Text, unique=True),
-        sa.Column("created_at", sa.Text),
-    )
-    for table in TABLES:
-        table.to_metadata(metadata)
-    return metadata
 
 
-def _roundtrip(payload):
-    metadata = _metadata()
-    engine = sa.create_engine("sqlite://")
-    metadata.create_all(engine)
-    batch = encode_assets(17, payload)
-    with engine.begin() as connection:
-        connection.execute(metadata.tables["executerecord"].insert(), {"id": 17})
-        for table, rows in batch.items():
-            if rows:
-                connection.execute(table.insert(), rows)
-        loaded = {table.name: list(connection.execute(table.select()).mappings()) for table in TABLES}
-    engine.dispose()
-    return decode_assets(loaded), loaded
+def _manual(database, assets):
+    return SimpleNamespace(
+        **native_store_call(
+            database, "asset_snapshot_write", {"account_id": 1, "created_at": "2026-10-20", "account_assets": assets}
+        )
+    )
+
+
+def _corrupt(database, statement, parameters=()):
+    # 历史损坏夹具跳过当前写入触发器，读取仍经过真实原生完整性检查。
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
+        connection.execute(statement, parameters)
+
+
+def _totals(database):
+    page = json.loads(_core.journal(_core.Store(str(database)), 1, 0, 100))
+    return {row["record"]["id"]: row["record"]["total_asset"] for row in page["data"] if row["kind"] == "execution"}
 
 
 @pytest.mark.parametrize(
     "value", [None, 0, "missing", [], {}, {"positions": None}, {"positions": {}}, {"positions": []}]
 )
-def test_asset_container_and_positions_presence_roundtrip(value):
+def test_asset_container_and_positions_presence_roundtrip(database, value):
     payload = {"account_assets": value}
-    restored, _ = _roundtrip(payload)
+    restored, _ = _roundtrip(database, payload)
     assert business_evidence(restored) == business_evidence(payload)
 
 
-def test_position_identity_and_native_channel_fields_are_not_merged():
+def test_position_identity_and_native_channel_fields_are_not_merged(database):
     payload = {
         "account_assets": {
             "positions": [
@@ -116,25 +123,27 @@ def test_position_identity_and_native_channel_fields_are_not_merged():
             "update_time": "2026-10-19T21:00:00.123456789+08:00",
         }
     }
-    restored, loaded = _roundtrip(payload)
+    restored, loaded = _roundtrip(database, payload)
     assert business_evidence(restored) == business_evidence(payload)
     assert restored["account_assets"]["positions"][0]["volume"] == payload["account_assets"]["positions"][0]["volume"]
     assert type(restored["account_assets"]["positions"][1]["volume"]) is float
-    assert business_evidence([row["ordinal"] for row in loaded[asset_position.name]]) == business_evidence([0, 1, 2, 3])
-    assert loaded[asset_snapshot.name][0]["observation_valid"]
+    assert business_evidence([row["ordinal"] for row in loaded["business_asset_position"]]) == business_evidence(
+        [0, 1, 2, 3]
+    )
+    assert loaded["business_asset_snapshot"][0]["observation_valid"]
     assert "realized_profit" not in restored["account_assets"]["positions"][0]["extra"]["position_attributes"]
 
 
 @pytest.mark.parametrize(
     "source,valid", [("real", True), ("gm", True), ("assumed", False), ("error", False), ("unavailable", False)]
 )
-def test_real_zero_is_distinct_from_unavailable(source, valid):
-    restored, loaded = _roundtrip({"account_assets": {"total_asset": 0, "source": source}})
+def test_real_zero_is_distinct_from_unavailable(database, source, valid):
+    restored, loaded = _roundtrip(database, {"account_assets": {"total_asset": 0, "source": source}})
     assert business_evidence(restored["account_assets"]["total_asset"]) == business_evidence(0)
-    assert loaded[asset_snapshot.name][0]["observation_valid"] is valid
+    assert loaded["business_asset_snapshot"][0]["observation_valid"] is valid
 
 
-def test_exact_legacy_placeholder_is_frozen_without_dropping_evidence():
+def test_exact_legacy_placeholder_is_frozen_without_dropping_evidence(database):
     payload = {
         "account_assets": {
             "available_cash": 0,
@@ -150,16 +159,16 @@ def test_exact_legacy_placeholder_is_frozen_without_dropping_evidence():
         "execution_time": 0,
         "symbol_results": {},
     }
-    _, loaded = _roundtrip(payload)
-    assert loaded[asset_snapshot.name][0]["observation_valid"] is False
-    assert business_evidence(decode_assets(loaded)["account_assets"]) == business_evidence(payload["account_assets"])
+    restored, loaded = _roundtrip(database, payload)
+    assert loaded["business_asset_snapshot"][0]["observation_valid"] is False
+    assert business_evidence(restored["account_assets"]) == business_evidence(payload["account_assets"])
     changed = deepcopy(payload)
     changed["extra"] = {}
-    _, real = _roundtrip(changed)
-    assert real[asset_snapshot.name][0]["observation_valid"] is True
+    _, real = _roundtrip(database, changed)
+    assert real["business_asset_snapshot"][0]["observation_valid"] is True
 
 
-def test_symbol_map_key_path_and_embedded_position_symbol_are_separate():
+def test_symbol_map_key_path_and_embedded_position_symbol_are_separate(database):
     payload = {
         "account_assets": {"total_asset": 10},
         "symbol_results": {
@@ -169,9 +178,9 @@ def test_symbol_map_key_path_and_embedded_position_symbol_are_separate():
             "": {"account_assets": None},
         },
     }
-    restored, loaded = _roundtrip(payload)
+    restored, loaded = _roundtrip(database, payload)
     assert business_evidence(restored) == business_evidence(payload)
-    paths = [row["path"] for row in loaded[asset_snapshot.name]]
+    paths = [row["path"] for row in loaded["business_asset_snapshot"]]
     assert business_evidence(paths) == business_evidence(
         [
             "/account_assets",
@@ -179,277 +188,167 @@ def test_symbol_map_key_path_and_embedded_position_symbol_are_separate():
             "/symbol_results//account_assets",
         ]
     )
-    assert business_evidence(len(set(row["asset_id"] for row in loaded[asset_snapshot.name]))) == business_evidence(3)
+    assert business_evidence(
+        len(set(row["asset_id"] for row in loaded["business_asset_snapshot"]))
+    ) == business_evidence(3)
 
 
-def test_worker_after_observation_binds_without_duplicate_snapshot(tmp_path):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'after.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(metadata.tables["execution_input"].insert(), {"id": "pre-order-input"})
-            await connection.execute(
-                metadata.tables["executerecord"].insert(), {"id": 17, "input_id": "pre-order-input"}
-            )
-        sessions = async_sessionmaker(engine)
-        before = {"account_assets": {"total_asset": 100, "update_time": "before", "positions": []}}
-        after = {
-            "account_assets": {"total_asset": 0, "update_time": "after", "positions": [{"symbol": "A", "volume": 0}]}
-        }
-        async with sessions() as session:
-            for batch in (
-                encode_input_assets("pre-order-input", before),
-                encode_input_after_assets("pre-order-input", after),
-            ):
-                for table, rows in batch.items():
-                    if rows:
-                        await session.execute(table.insert(), rows)
-            await session.commit()
-            occurrences = await read_input_asset_observations(session, "pre-order-input")
-            assert business_evidence({row["path"]: row["account_assets"] for row in occurrences}) == business_evidence(
-                {
-                    "/before_account_assets": before["account_assets"],
-                    "/after_account_assets": after["account_assets"],
-                }
-            )
-            linked_id = await find_matching_after_asset(session, "pre-order-input", after)
-            assert business_evidence(linked_id) == business_evidence(input_after_asset_fact_id("pre-order-input"))
-            batch = encode_assets(17, after, root_asset_id=linked_id)
-            assert not batch[asset_snapshot]
-            assert not batch[asset_position]
-            assert business_evidence(batch[asset_binding][0]["asset_id"]) == business_evidence(linked_id)
-            await session.execute(asset_binding.insert(), batch[asset_binding])
-            await session.commit()
-            loaded = await load_result_asset_rows(session, 17)
-            assert business_evidence(decode_assets(loaded)) == business_evidence(after)
-            statements = []
-            sa.event.listen(
-                engine.sync_engine,
-                "before_cursor_execute",
-                lambda _, _cursor, statement, *_args: statements.append(statement),
-            )
-            await validate_result_asset_ownership(session, 17)
-            assert not any("field_metadata" in statement or "payload_value" in statement for statement in statements)
-            assert business_evidence(await read_result_asset_totals(session, [17])) == business_evidence({17: 0})
-            assert business_evidence(
-                await session.scalar(sa.select(sa.func.count()).select_from(asset_snapshot))
-            ) == business_evidence(2)
-            with pytest.raises(ValueError, match="不一致"):
-                await find_matching_after_asset(session, "pre-order-input", before)
-            changed_representation = deepcopy(after)
-            changed_representation["account_assets"]["total_asset"] = 0.0
-            assert await find_matching_after_asset(session, "pre-order-input", changed_representation) == linked_id
-        await engine.dispose()
-
-    asyncio.run(check())
+def test_worker_after_observation_binds_without_duplicate_snapshot(database):
+    before = {"account_assets": {"total_asset": 100, "update_time": "before", "positions": []}}
+    after = {"account_assets": {"total_asset": 0, "update_time": "after", "positions": [{"symbol": "A", "volume": 0}]}}
+    freeze_input(database, {}, input_id="pre-order-input", before_assets=before["account_assets"])
+    receipt = _after(database, after)
+    occurrences = asyncio.run(read_input_asset_observations(None, "pre-order-input"))
+    assert business_evidence({row["path"]: row["account_assets"] for row in occurrences}) == business_evidence(
+        {"/before_account_assets": before["account_assets"], "/after_account_assets": after["account_assets"]}
+    )
+    linked_id = receipt["asset_id"]
+    assert linked_id == input_after_asset_fact_id("pre-order-input")
+    record = persist_result(database, after, execution_id="execution-1", created_at="2026-10-20T09:00:00")
+    assert rows(database, "business_asset_binding")[0]["asset_id"] == linked_id
+    assert business_evidence(_asset_view(read_result(database, record))) == business_evidence(after)
+    assert business_evidence(_totals(database)) == business_evidence({record["id"]: 0})
+    assert len(rows(database, "business_asset_snapshot")) == 2
+    assert len(rows(database, "business_asset_position")) == 1
+    with pytest.raises(_core.NativeError, match="不一致"):
+        _after(database, before)
+    changed_representation = deepcopy(after)
+    changed_representation["account_assets"]["total_asset"] = 0.0
+    assert _after(database, changed_representation)["asset_id"] == linked_id
+    _corrupt(database, "UPDATE business_asset_snapshot SET audit_evidence='invalid-json'")
+    assert _totals(database) == {record["id"]: 0}
 
 
 @pytest.mark.parametrize("mode", ["other_account", "other_execution", "before"])
-def test_result_binding_and_scalar_read_reject_foreign_observation(tmp_path, mode):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'foreign.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(
-                metadata.tables["execution_input"].insert(),
-                [
-                    {"id": "local", "account_id": 1, "execution_id": "exec-local"},
-                    {
-                        "id": "foreign",
-                        "account_id": 2 if mode == "other_account" else 1,
-                        "execution_id": "exec-foreign",
-                    },
-                ],
-            )
-            await connection.execute(
-                metadata.tables["executerecord"].insert(),
-                {"id": 17, "account_id": 1, "execution_id": "exec-local", "input_id": "local"},
-            )
-        sessions = async_sessionmaker(engine)
-        payload = {"account_assets": {"total_asset": 42}}
-        batch = (
-            encode_input_assets("local", payload) if mode == "before" else encode_input_after_assets("foreign", payload)
+def test_result_binding_and_scalar_read_reject_foreign_observation(database, mode):
+    payload = {"account_assets": {"total_asset": 42}}
+    freeze_input(database, {}, input_id="local", execution_id="exec-local", before_assets=payload["account_assets"])
+    if mode == "before":
+        actual_id = "input:local:/before_account_assets"
+    else:
+        account_id = 2 if mode == "other_account" else 1
+        freeze_input(database, {}, input_id="foreign", execution_id="exec-foreign", account_id=account_id)
+        receipt = native_store_call(
+            database,
+            "freeze_execution_after_assets",
+            {"account_id": account_id, "execution_id": "exec-foreign", "payload": payload},
         )
-        actual_id = batch[asset_snapshot][0]["asset_id"]
-        async with sessions() as session:
-            for table, rows in batch.items():
-                if rows:
-                    await session.execute(table.insert(), rows)
-            bindings = encode_assets(17, payload, root_asset_id=actual_id)[asset_binding]
-            await session.execute(asset_binding.insert(), bindings)
-            await session.commit()
-            with pytest.raises(ValueError):
-                await load_result_asset_rows(session, 17)
-            with pytest.raises(ValueError):
-                await read_result_asset_totals(session, [17])
-        await engine.dispose()
-
-    asyncio.run(check())
+        actual_id = receipt["asset_id"]
+    record = persist_result(database, payload, execution_id="exec-local", created_at="2026-10-20T09:00:00")
+    _corrupt(
+        database,
+        "UPDATE business_asset_binding SET asset_id=? WHERE record_id=? AND path='/account_assets'",
+        (actual_id, record["id"]),
+    )
+    with pytest.raises(_core.NativeError, match="资产|[Aa]sset"):
+        read_result(database, record)
+    with pytest.raises(_core.NativeError, match="资产|[Aa]sset"):
+        _totals(database)
 
 
-def test_account_snapshot_reference_rejects_another_manual_snapshot(tmp_path):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'foreign-manual.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(metadata.tables["account_asset_snapshot"].insert(), [{"id": 1}, {"id": 2}])
-        sessions = async_sessionmaker(engine)
-        async with sessions() as session:
-            for table, rows in encode_snapshot_assets(2, {"account_assets": {"total_asset": 99}}).items():
-                if rows:
-                    await session.execute(table.insert(), rows)
-            await session.commit()
-            aliased = SimpleNamespace(id=1, asset_fact_id=snapshot_asset_fact_id(2))
-            with pytest.raises(ValueError, match="其他快照"):
-                await read_snapshots_assets(session, [aliased])
-            with pytest.raises(ValueError, match="其他快照"):
-                await read_snapshots_assets(session, [aliased], include_positions=False)
-        await engine.dispose()
-
-    asyncio.run(check())
+def test_account_snapshot_reference_rejects_another_manual_snapshot(database):
+    first = _manual(database, {"total_asset": 1})
+    other = _manual(database, {"total_asset": 99})
+    first.asset_fact_id = other.asset_fact_id
+    with pytest.raises(ValueError):
+        asyncio.run(read_snapshots_assets(None, [first]))
+    with pytest.raises(ValueError):
+        asyncio.run(read_snapshots_assets(None, [first], include_positions=False))
 
 
-def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zero(tmp_path):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'nonfinite.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(metadata.tables["execution_input"].insert(), {"id": "input-nonfinite"})
-        sessions = async_sessionmaker(engine)
-        after = {"account_assets": {"total_asset": 0, "extra": {"diagnostic": float("nan"), "native": -0.0}}}
-        async with sessions() as session:
-            for table, rows in encode_input_after_assets("input-nonfinite", after).items():
-                if rows:
-                    await session.execute(table.insert(), rows)
-            await session.commit()
-            assert await find_matching_after_asset(session, "input-nonfinite", deepcopy(after))
-            changed = deepcopy(after)
-            changed["account_assets"]["extra"]["native"] = 0.0
-            assert await find_matching_after_asset(session, "input-nonfinite", changed) == input_after_asset_fact_id(
-                "input-nonfinite"
-            )
-            changed["account_assets"]["extra"]["native"] = 1
-            with pytest.raises(ValueError, match="不一致"):
-                await find_matching_after_asset(session, "input-nonfinite", changed)
-        await engine.dispose()
-
-    asyncio.run(check())
+def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zero(database):
+    freeze_input(database, {}, input_id="input-nonfinite")
+    after = {"account_assets": {"total_asset": 0, "extra": {"diagnostic": float("nan"), "native": -0.0}}}
+    assert _after(database, after)["asset_id"] == input_after_asset_fact_id("input-nonfinite")
+    assert _after(database, deepcopy(after))["asset_id"] == input_after_asset_fact_id("input-nonfinite")
+    changed = deepcopy(after)
+    changed["account_assets"]["extra"]["native"] = 0.0
+    assert _after(database, changed)["asset_id"] == input_after_asset_fact_id("input-nonfinite")
+    changed["account_assets"]["extra"]["native"] = 1
+    with pytest.raises(_core.NativeError, match="不一致"):
+        _after(database, changed)
 
 
-def test_manual_snapshot_batch_reader_and_scalar_query_are_selective(tmp_path):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'manual.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(metadata.tables["account_asset_snapshot"].insert(), [{"id": 5}, {"id": 6}])
-        sessions = async_sessionmaker(engine)
-        snapshots = [SimpleNamespace(id=key, asset_fact_id=snapshot_asset_fact_id(key)) for key in (5, 6)]
-        payloads = {key: {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]} for key in (5, 6)}
-        async with sessions() as session:
-            for key, payload in payloads.items():
-                for table, rows in encode_snapshot_assets(key, {"account_assets": payload}).items():
-                    if rows:
-                        await session.execute(table.insert(), rows)
-            await session.commit()
-            statements = []
-            sa.event.listen(
-                engine.sync_engine,
-                "before_cursor_execute",
-                lambda _, _cursor, statement, *_args: statements.append(statement),
-            )
-            scalar = await read_snapshots_assets(session, snapshots, include_positions=False)
-            assert business_evidence(scalar) == business_evidence({5: {"total_asset": 5}, 6: {"total_asset": 6}})
-            assert business_evidence(len(statements)) == business_evidence(1)
-            statements.clear()
-            assert business_evidence(await read_snapshots_assets(session, snapshots)) == business_evidence(payloads)
-            assert business_evidence(len(statements)) == business_evidence(2)
-            snapshots[0].asset_fact_id = asset_fact_id(999)
-            with pytest.raises(ValueError, match="缺失"):
-                await read_snapshots_assets(session, snapshots)
-        await engine.dispose()
-
-    asyncio.run(check())
+def test_manual_snapshot_batch_reader_and_scalar_query_are_selective(database):
+    snapshots = [
+        _manual(database, {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]}) for key in (5, 6)
+    ]
+    payloads = {
+        snapshot.id: {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]}
+        for snapshot, key in zip(snapshots, (5, 6), strict=True)
+    }
+    scalar = asyncio.run(read_snapshots_assets(None, snapshots, include_positions=False))
+    assert business_evidence(scalar) == business_evidence(
+        {snapshot.id: {"total_asset": key} for snapshot, key in zip(snapshots, (5, 6), strict=True)}
+    )
+    assert business_evidence(asyncio.run(read_snapshots_assets(None, snapshots))) == business_evidence(payloads)
+    _corrupt(database, "DELETE FROM business_asset_position")
+    assert business_evidence(
+        asyncio.run(read_snapshots_assets(None, snapshots, include_positions=False))
+    ) == business_evidence(scalar)
+    with pytest.raises(ValueError, match="[Ii]ncomplete position facts"):
+        asyncio.run(read_snapshots_assets(None, snapshots))
+    snapshots[0].asset_fact_id = asset_fact_id(999)
+    with pytest.raises(ValueError):
+        asyncio.run(read_snapshots_assets(None, snapshots))
 
 
 @pytest.mark.parametrize("input_owned", [False, True])
 @pytest.mark.parametrize("execution_id", [None, "execution-history-17"])
 @pytest.mark.parametrize("source", ["real", "unavailable"])
-def test_execution_asset_history_reuses_valid_canonical_root(tmp_path, input_owned, execution_id, source):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'history.db'}")
-        metadata = _metadata()
-        async with engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
-            await connection.execute(
-                metadata.tables["execution_input"].insert(),
-                {
-                    "id": "history-input",
-                    "account_id": 1,
-                    "execution_id": execution_id,
-                },
-            )
-            await connection.execute(
-                metadata.tables["executerecord"].insert(),
-                {
-                    "id": 17,
-                    "account_id": 1,
-                    "execution_id": execution_id,
-                    "input_id": "history-input",
-                },
-            )
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        payload = {
-            "account_assets": {
-                "available_cash": 0,
-                "total_asset": 0,
-                "market_value": None,
-                "source": source,
-                "positions": [],
-            }
+def test_execution_asset_history_reuses_valid_canonical_root(database, input_owned, execution_id, source):
+    payload = {
+        "account_assets": {
+            "available_cash": 0,
+            "total_asset": 0,
+            "market_value": None,
+            "source": source,
+            "positions": [],
         }
-        record = SimpleNamespace(
-            id=17, account_id=1, execution_id=execution_id, created_at="2026-10-20T01:02:03.123456+08:00"
+    }
+    created_at = "2026-10-20T01:02:03.123456+08:00"
+    terminal_execution_id = execution_id if execution_id is not None else "history-owner" if input_owned else None
+    if input_owned:
+        freeze_input(database, {}, input_id="history-input", execution_id=terminal_execution_id)
+        _after(database, payload, execution_id=terminal_execution_id)
+    failure_point = (
+        "AFTER INSERT ON account_asset_snapshot"
+        if source == "real"
+        else "BEFORE UPDATE OF facts_complete ON executerecord WHEN NEW.facts_complete=1"
+    )
+    sql(database, f"CREATE TRIGGER fail_terminal {failure_point} BEGIN SELECT RAISE(ABORT, 'history rollback'); END")
+    with pytest.raises(_core.NativeError, match="history rollback"):
+        persist_result(database, payload, execution_id=terminal_execution_id, created_at=created_at)
+    assert rows(database, "account_asset_snapshot") == []
+    assert rows(database, "executerecord") == []
+    sql(database, "DROP TRIGGER fail_terminal")
+    record = persist_result(database, payload, execution_id=terminal_execution_id, created_at=created_at)
+    reference = input_after_asset_fact_id("history-input") if input_owned else asset_fact_id(record["id"])
+    if input_owned and execution_id is None:
+        # 旧记录可无执行标识；事实仍由真实冻结和终态阶段生成。
+        _corrupt(database, "UPDATE executerecord SET execution_id=NULL WHERE id=?", (record["id"],))
+        _corrupt(
+            database, "UPDATE execution_input SET execution_id=NULL,owner_execution_id=NULL WHERE id='history-input'"
         )
-        async with sessions() as session:
-            if input_owned:
-                for table, rows in encode_input_after_assets("history-input", payload).items():
-                    if rows:
-                        await session.execute(table.insert(), rows)
-            reference = input_after_asset_fact_id("history-input") if input_owned else asset_fact_id(17)
-            for table, rows in encode_assets(17, payload, root_asset_id=reference if input_owned else None).items():
-                if rows:
-                    await session.execute(table.insert(), rows)
-            first = await ensure_execution_asset_snapshot(session, record)
-            second = await ensure_execution_asset_snapshot(session, record)
-            if source == "unavailable":
-                assert first is second is None
-                expected = 0
-            else:
-                assert first is second
-                assert business_evidence(first.asset_fact_id) == business_evidence(reference)
-                assert business_evidence(first.source) == business_evidence("execution")
-                assert business_evidence(first.execution_id) == business_evidence(execution_id)
-                assert business_evidence(first.created_at) == business_evidence(record.created_at)
-                assert business_evidence(await read_snapshots_assets(session, [first])) == business_evidence(
-                    {first.id: payload["account_assets"]}
-                )
-                expected = 1
-            assert business_evidence(
-                await session.scalar(sa.select(sa.func.count()).select_from(metadata.tables["account_asset_snapshot"]))
-            ) == business_evidence(expected)
-            assert business_evidence(
-                await session.scalar(sa.select(sa.func.count()).select_from(asset_snapshot))
-            ) == business_evidence(1)
-            await session.rollback()
-        async with sessions() as session:
-            assert business_evidence(
-                await session.scalar(sa.select(sa.func.count()).select_from(metadata.tables["account_asset_snapshot"]))
-            ) == business_evidence(0)
-        await engine.dispose()
-
-    asyncio.run(check())
+        _corrupt(database, "UPDATE account_asset_snapshot SET execution_id=NULL WHERE account_id=1")
+    first = rows(database, "account_asset_snapshot")
+    if execution_id is not None:
+        assert persist_result(database, payload, execution_id=execution_id, created_at=created_at)["id"] == record["id"]
+    second = rows(database, "account_asset_snapshot")
+    assert first == second
+    if source == "unavailable":
+        assert first == []
+        expected = 0
+    else:
+        assert len(first) == 1
+        snapshot = SimpleNamespace(**first[0])
+        assert snapshot.asset_fact_id == reference
+        assert snapshot.source == "execution"
+        assert snapshot.execution_id == execution_id
+        assert snapshot.created_at == created_at
+        assert business_evidence(asyncio.run(read_snapshots_assets(None, [snapshot]))) == business_evidence(
+            {snapshot.id: payload["account_assets"]}
+        )
+        expected = 1
+    assert len(rows(database, "account_asset_snapshot")) == expected
+    assert len(rows(database, "business_asset_snapshot")) == 1

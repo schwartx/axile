@@ -5,14 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
-
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
-from axile.server.business_facts.repository import store_execution_facts
-from axile.server.db.models import ExecuteRecord
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._business_facts_test_support import persist_result
 
 _FAT_RAW = {
     "status": "SUCCEEDED",
@@ -49,53 +44,35 @@ _FAT_RAW = {
 }
 
 
-def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch, tmp_path):
+def test_activity_symbols_include_fills_when_one_symbol_is_requested(monkeypatch, native_database):
     """展开某个品种时，同一接口带上该品种成交。"""
 
-    path = tmp_path / "activity.db"
-    monkeypatch.setattr(account_schedule, "analysis_store", lambda: _core.Store(str(path)))
+    monkeypatch.setattr(account_schedule, "analysis_store", lambda: _core.Store(str(native_database)))
+    record = persist_result(
+        native_database,
+        dict(_FAT_RAW),
+        execution_id="exec-7",
+        is_success=1,
+        created_at="2026-09-01T09:00:00",
+        raw_input={"curr_target": {"rb2610": 1}, "algorithm": {"method": "TWAP"}},
+    )
 
     async def scenario():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-                session.add(build_account(id=1, portfolio_id=None))
-                await session.flush()
-                record = ExecuteRecord(
-                    id=7,
+        payload = json.loads(
+            (
+                await account_schedule.account_activity_symbols(
                     account_id=1,
-                    execution_id="exec-7",
-                    is_success=1,
-                    created_at="2026-09-01T09:00:00",
+                    since="2026-09-01T00:00:00",
+                    until="2026-09-02T00:00:00",
+                    symbol="rb2610",
                 )
-                session.add(record)
-                await session.flush()
-                await store_execution_facts(
-                    session,
-                    record,
-                    raw_input={"curr_target": {"rb2610": 1}, "algorithm": {"method": "TWAP"}},
-                    raw_result=dict(_FAT_RAW),
-                )
-                await session.commit()
-                payload = json.loads(
-                    (
-                        await account_schedule.account_activity_symbols(
-                            account_id=1,
-                            since="2026-09-01T00:00:00",
-                            until="2026-09-02T00:00:00",
-                            symbol="rb2610",
-                        )
-                    ).body
-                )
-                assert payload["count"] == 1
-                row = payload["data"][0]
-                assert row["symbol"] == "rb2610"
-                assert len(row["trades"]) == 1
-                assert row["trades"][0]["value"] == 1000.0
-                assert row["trades"][0]["record_id"] == 7
-        finally:
-            await engine.dispose()
+            ).body
+        )
+        assert payload["count"] == 1
+        row = payload["data"][0]
+        assert row["symbol"] == "rb2610"
+        assert len(row["trades"]) == 1
+        assert row["trades"][0]["value"] == 1000.0
+        assert row["trades"][0]["record_id"] == record["id"]
 
     asyncio.run(scenario())

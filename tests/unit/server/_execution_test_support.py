@@ -1,6 +1,8 @@
 """服务端 execution 测试的共享伪对象与辅助函数。"""
 
 import asyncio
+import json
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace, TracebackType
@@ -292,6 +294,34 @@ def build_account(**overrides: object) -> Account:
     }
     payload.update(overrides)
     return Account(**payload)
+
+
+def insert_account(connection: sqlite3.Connection, account: Account) -> None:
+    """为已迁移的测试库设置显式账户 ID；配置使用 DTO 的完整设置分组。"""
+    values = account.model_dump(mode="json")
+    names = (
+        "id",
+        "name",
+        "market",
+        "trade_channel",
+        "remark",
+        "brokerage",
+        "portfolio_id",
+        "created_at",
+        "updated_at",
+        "copied_from_account_id",
+        "copied_from_account_name",
+    )
+    connection.execute(
+        f"INSERT INTO account ({','.join(names)}) VALUES ({','.join('?' for _ in names)})",
+        [values.get(name) for name in names],
+    )
+    settings = account.settings.model_dump(mode="json")
+    groups = ("connection", "execution", "schedule", "notification", "backtest")
+    connection.execute(
+        "INSERT INTO account_settings(account_id,connection,execution,schedule,notification,backtest) VALUES (?,?,?,?,?,?)",
+        [account.id, *[json.dumps(settings[group], ensure_ascii=False, allow_nan=False) for group in groups]],
+    )
 
 
 async def noop_account_control_guard(*_args: object, **_kwargs: object) -> object:

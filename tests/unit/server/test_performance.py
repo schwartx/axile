@@ -1,31 +1,34 @@
 """验证独立权益回放、缺口与回测设置持久化."""
 
 import asyncio
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-import sqlalchemy as sa
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel
 
 from axile.server._native import _core
-from axile.server.api.deps import get_db
+from axile.server.api.routes import account_performance
 from axile.server.api.routes.account_performance import router
-from axile.server.db.models import PortfolioAccount
 from axile.server.db.models.performance import PerformanceSettings
-from axile.server.performance import Observation, close_before, observation
+from axile.server.performance import close_before
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
-from tests.unit.server._business_analysis_support import analysis_record, install_analysis_triggers, persist_records
-from tests.unit.server._execution_test_support import build_account
-from tests.unit.server._performance_oracle import build_wbt_input, calculate_performance, performance_calendar
-from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+from tests.conftest import initialize_native_database, native_store_call
+from tests.unit.server._business_analysis_support import analysis_record, database, persist_records
+from tests.unit.server._business_analysis_support import schema_template as schema_template
+from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._performance_oracle import (
+    Observation,
+    build_wbt_input,
+    calculate_performance,
+    observation,
+    performance_calendar,
+)
+from tests.unit.server.test_initial_migration import _connection, _insert_account
 
 
 def obs(day, prices=None, target=None, asset=100, **kwargs):
@@ -588,31 +591,39 @@ def test_only_explicit_degraded_asset_sources_are_excluded(source, expected):
 
 
 def test_migration_roundtrip_defaults(tmp_path):
-    engine = sa.create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
-    migration = _load_migration(_MIGRATIONS_DIR / "0011_account_performance.py")
-    with engine.begin() as conn:
-        conn.execute(sa.text("CREATE TABLE account (id INTEGER PRIMARY KEY)"))
-        conn.execute(sa.text("INSERT INTO account VALUES (2)"))
-        migration.op = Operations(MigrationContext.configure(conn))
-        migration.upgrade()
-        assert conn.execute(sa.text("SELECT backtest_weight_type, backtest_fee_rate FROM account")).one() == ("ts", 0)
-        migration.downgrade()
-        assert conn.execute(sa.text("SELECT id FROM account")).scalar() == 2
-        migration.upgrade()
+    path = tmp_path / "migration.db"
+    initialize_native_database(path, revision="0010")
+    with _connection(path) as connection:
+        _insert_account(connection, id=2)
+    initialize_native_database(path, revision="0011")
+    with _connection(path) as connection:
+        assert tuple(connection.execute("SELECT backtest_weight_type, backtest_fee_rate FROM account").fetchone()) == (
+            "ts",
+            0,
+        )
+    native_store_call(path, "migration_downgrade", {"public": "0010"})
+    with _connection(path) as connection:
+        assert connection.execute("SELECT id FROM account").fetchone()[0] == 2
+        assert "backtest_weight_type" not in {row["name"] for row in connection.execute("PRAGMA table_info(account)")}
+    initialize_native_database(path, revision="0011")
+    with _connection(path) as connection:
+        assert tuple(connection.execute("SELECT backtest_weight_type, backtest_fee_rate FROM account").fetchone()) == (
+            "ts",
+            0,
+        )
 
 
-def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, monkeypatch):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'account.db'}", poolclass=NullPool)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, schema_template, monkeypatch):
+    path = tmp_path / "analysis.db"
 
     async def setup():
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-            await conn.run_sync(install_analysis_triggers)
-        async with sessions() as session:
-            session.add(build_account(id=2, account_control_preset="default"))
-            session.add(build_account(id=3, account_control_preset="default"))
-            for i, price in enumerate([100, 110, 99]):
+        async with database(tmp_path, schema_template, count=0) as (_, sessions, _):
+            with closing(sqlite3.connect(path)) as connection, connection:
+                insert_account(connection, build_account(id=3, account_control_preset="default"))
+                connection.execute(
+                    "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES (2,NULL,'2026-01-02T09:00:00')"
+                )
+            async with sessions() as session:
                 await persist_records(
                     session,
                     [
@@ -628,25 +639,17 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
                                 "first_ticks": {"A": {"bid_price": price, "ask_price": price}},
                             },
                         )
+                        for i, price in enumerate([100, 110, 99])
                     ],
                 )
-            session.add(PortfolioAccount(account_id=2, portfolio_id=None, created_at="2026-01-02T09:00:00"))
-            await session.commit()
 
     asyncio.run(setup())
-
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+    monkeypatch.setattr(account_performance, "database_path", lambda: str(path))
+    monkeypatch.setattr(account_performance, "analysis_store", lambda: _core.Store(str(path)))
     app = FastAPI()
     app.include_router(router, prefix="/account")
 
-    async def db():
-        async with sessions() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = db
-    monkeypatch.setattr(
-        "axile.server.api.routes.account_performance.analysis_store",
-        lambda: _core.Store(str(tmp_path / "account.db")),
-    )
     with TestClient(app) as client:
         # worker 重建前仅同步路径可用;带回测读取依赖快照发布,写路径阶段恢复。
         initial = client.get("/account/performance/2?include_backtest=false").json()
@@ -672,4 +675,3 @@ def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, mon
             ).status_code
             == 422
         )
-    asyncio.run(engine.dispose())

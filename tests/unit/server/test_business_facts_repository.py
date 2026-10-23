@@ -1,262 +1,200 @@
 """业务事实事务保留下单前输入及统一资产观测引用。"""
 
 import asyncio
+import sqlite3
+from contextlib import closing
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.business_facts import assets, inputs, repository
-from axile.server.db.models import ExecuteRecord
+from axile.server._native import _core
+from axile.server.business_facts import repository
 from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
-from tests.unit.server._execution_test_support import build_account
+from tests.conftest import native_store_call
+from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, seed_account, sql
 
 
-def test_domains_cannot_replace_malformed_symbol_container():
-    destination = {"symbol_results": {"A": None}}
-    with pytest.raises(ValueError, match="字段冲突"):
-        repository.merge_result_fragment(destination, {"symbol_results": {"A": {"orders": []}}})
+@pytest.fixture
+def database(native_database, monkeypatch):
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    for account_id in (2, 3):
+        seed_account(native_database, account_id)
+    return native_database
 
 
-def test_nonempty_result_root_array_is_rejected_before_writing():
-    with pytest.raises(ValueError, match="Unsupported historical result root"):
-        repository.encode_result_facts(1, [{"orders": []}])
+def test_domains_cannot_replace_malformed_symbol_container(native_database):
+    record = persist_result(native_database, {"symbol_results": {"A": None}})
+    sql(
+        native_database,
+        "INSERT INTO execution_order_collection(record_id,path,ordinal,map_key,kind,item_count,audit_evidence) "
+        "VALUES (?,'/symbol_results/A/orders',0,'A','array',0,'{}')",
+        (record["id"],),
+    )
+    with pytest.raises(_core.NativeError, match="conflicting fact field"):
+        native_store_call(native_database, "read_execution_result", {"account_id": 1, "record_id": record["id"]})
+
+
+def test_nonempty_result_root_array_is_rejected_before_writing(native_database):
+    with pytest.raises(_core.NativeError, match="Unsupported historical result root"):
+        persist_result(native_database, [{"orders": []}])
+    assert rows(native_database, "executerecord") == []
+    assert rows(native_database, "execution_extension") == []
 
 
 @pytest.mark.parametrize("foreign_after_asset", [False, True])
 @pytest.mark.parametrize("attached_input", [False, True])
 @pytest.mark.parametrize("result_inputs", [False, True])
 def test_final_result_reuses_durable_normalized_input_and_after_asset(
-    tmp_path, monkeypatch, foreign_after_asset, attached_input, result_inputs
+    database, foreign_after_asset, attached_input, result_inputs
 ):
     async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'facts.db'}")
-        # 执行后观测经原生入口冻结,须指向同一测试文件。
-        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "facts.db"))
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
         frozen = {"curr_target": {"normalized": 0}, "channel_type": "tq"}
         observed = {"total_asset": 0.0, "positions": [], "extra": {}}
         output = {"status": "NOOP", "account_assets": observed, "symbol_results": {}}
         if result_inputs:
             output["inputs"] = frozen
-        input_reads = []
-
-        def track_input_reads(_connection, _cursor, statement, _parameters, _context, _executemany):
-            if statement.lstrip().upper().startswith("SELECT"):
-                input_reads.extend(table.name for table in inputs.TABLES if f"FROM {table.name} \n" in statement)
-
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with sessions() as session:
-                session.add(build_account(id=2, account_control_preset="default"))
-                await session.commit()
-                input_id = await repository.persist_execution_input(
-                    session, account_id=2, execution_id="frozen", payload=frozen, created_at="2026-10-20T09:00:00"
-                )
-                await session.commit()
-                after_ref = await input_persistence._persist_post_execute_assets(
-                    account_id=2, execution_id="frozen", payload=output
-                )
-                record = ExecuteRecord(
-                    account_id=2, execution_id="frozen", is_success=1, input_id=input_id if attached_input else None
-                )
-                session.add(record)
-                await session.flush()
-                sa.event.listen(engine.sync_engine, "before_cursor_execute", track_input_reads)
-                canonical_input = await repository.store_execution_facts(
-                    session, record, raw_input={"curr_target": {"stale": 1}}, raw_result=output
-                )
-                sa.event.remove(engine.sync_engine, "before_cursor_execute", track_input_reads)
-                assert business_evidence(canonical_input) == business_evidence(frozen)
-                assert input_reads == [table.name for table in inputs.TABLES]
-                await session.commit()
-                detail = await repository.read_execution_detail(session, record)
-                assert business_evidence(detail["input"]) == business_evidence(frozen)
-                assert business_evidence(detail["result"]) == business_evidence(output)
-                async with engine.connect() as connection:
-                    assert business_evidence(
-                        await connection.run_sync(repository.read_execution_result_sync, record.id)
-                    ) == business_evidence(output)
-                    assert business_evidence(
-                        await connection.run_sync(repository.read_execution_input_sync, input_id)
-                    ) == business_evidence(frozen)
-                assert record.input_id == input_id
-                assert record.result_input_id == (input_id if result_inputs else None)
-                assert business_evidence(after_ref) == business_evidence(
-                    (input_id, assets.input_after_asset_fact_id(input_id))
-                )
-                assert business_evidence(
-                    await session.scalar(sa.select(sa.func.count()).select_from(inputs.execution_input))
-                ) == business_evidence(1)
-                assert business_evidence(
-                    await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_snapshot))
-                ) == business_evidence(1)
-                assert business_evidence(
-                    await session.scalar(sa.select(assets.asset_binding.c.asset_id))
-                ) == business_evidence(after_ref[1])
-                sources = dict(repository.execution_fact_sources(record_ids=(record.id,)))
-                assert assets.asset_position in sources
-                assert assets.asset_snapshot in sources
-                if foreign_after_asset:
-                    other_input = await repository.persist_execution_input(
-                        session, account_id=2, execution_id="other", payload={}, created_at=record.created_at
-                    )
-                    # 原生入口另开连接,需先提交使冻结输入对外可见。
-                    await session.commit()
-                    await input_persistence._persist_post_execute_assets(
-                        account_id=2, execution_id="other", payload={"account_assets": {"total_asset": 99}}
-                    )
-                    await session.execute(
-                        assets.asset_binding.update()
-                        .where(assets.asset_binding.c.record_id == record.id)
-                        .values(asset_id=assets.input_after_asset_fact_id(other_input))
-                    )
-                    await session.commit()
-                    with pytest.raises(ValueError):
-                        await repository.read_execution_result(session, record)
-                    async with engine.connect() as connection:
-                        with pytest.raises(ValueError):
-                            await connection.run_sync(repository.read_execution_result_sync, record.id)
-        finally:
-            await engine.dispose()
+        receipt = freeze_input(
+            database,
+            frozen,
+            account_id=2,
+            execution_id="frozen",
+            input_id="normalized-input",
+            created_at="2026-10-20T09:00:00",
+        )
+        input_id = receipt["input_id"]
+        after_ref = await input_persistence._persist_post_execute_assets(
+            account_id=2, execution_id="frozen", payload=output
+        )
+        record = persist_result(
+            database,
+            output,
+            raw_input={"curr_target": {"stale": 1}},
+            account_id=2,
+            execution_id="frozen",
+            is_success=1,
+            input_id=input_id if attached_input else "unused-input",
+        )
+        canonical_input = await repository.read_execution_input(record["input_id"])
+        assert business_evidence(canonical_input) == business_evidence(frozen)
+        detail = await repository.read_execution_detail(record)
+        assert business_evidence(detail["input"]) == business_evidence(frozen)
+        assert business_evidence(detail["result"]) == business_evidence(output)
+        identity = {"record_id": record["id"], "account_id": 2}
+        assert business_evidence(native_store_call(database, "read_execution_result", identity)) == business_evidence(
+            output
+        )
+        assert business_evidence(
+            native_store_call(database, "read_execution_input", {"input_id": input_id})
+        ) == business_evidence(frozen)
+        assert record["input_id"] == input_id
+        assert record["result_input_id"] == (input_id if result_inputs else None)
+        assert business_evidence(after_ref) == business_evidence((input_id, f"input:{input_id}:/after_account_assets"))
+        assert len(rows(database, "execution_input")) == 1
+        assert len(rows(database, "business_asset_snapshot")) == 1
+        assert rows(database, "business_asset_binding")[0]["asset_id"] == after_ref[1]
+        assert rows(database, "business_asset_position") == []
+        if foreign_after_asset:
+            other_input = freeze_input(database, {}, account_id=2, execution_id="other", input_id="other-input")
+            await input_persistence._persist_post_execute_assets(
+                account_id=2, execution_id="other", payload={"account_assets": {"total_asset": 99}}
+            )
+            sql(
+                database,
+                "UPDATE business_asset_binding SET asset_id=? WHERE record_id=?",
+                (f"input:{other_input['input_id']}:/after_account_assets", record["id"]),
+            )
+            with pytest.raises(ValueError):
+                await repository.read_execution_result(record)
+            with pytest.raises(_core.NativeError):
+                native_store_call(database, "read_execution_result", identity)
 
     asyncio.run(check())
 
 
 @pytest.mark.parametrize("is_success", [0, 1])
 @pytest.mark.parametrize("result_assets", ["absent", "matching", "different"])
-def test_input_reuse_preserves_failure_finalization_after_assets(tmp_path, monkeypatch, is_success, result_assets):
+def test_input_reuse_preserves_failure_finalization_after_assets(database, is_success, result_assets):
     async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'after-assets.db'}")
-        monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "after-assets.db"))
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
         frozen = {"curr_target": {"A": 0}, "last_target": None}
         observed = {"total_asset": 0, "positions": []}
         output = {"status": "SUCCEEDED" if is_success else "FAILED"}
         if result_assets != "absent":
             output["account_assets"] = observed if result_assets == "matching" else {"total_asset": 1}
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with sessions() as session:
-                session.add(build_account(id=2, account_control_preset="default"))
-                await session.commit()
-                await repository.persist_execution_input(
-                    session, account_id=2, execution_id="after-assets", payload=frozen, created_at="2026-10-20"
-                )
-                # 原生入口另开连接,需先提交冻结输入。
-                await session.commit()
-                await input_persistence._persist_post_execute_assets(
-                    account_id=2, execution_id="after-assets", payload={"account_assets": observed}
-                )
-                record = ExecuteRecord(account_id=2, execution_id="after-assets", is_success=is_success)
-                session.add(record)
-                await session.flush()
-                if result_assets == "different" or (is_success and result_assets == "absent"):
-                    with pytest.raises(ValueError, match="终态结果"):
-                        await repository.store_execution_facts(session, record, raw_input=None, raw_result=output)
-                    await session.rollback()
-                    assert await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord)) == 0
-                    return
-                canonical_input = await repository.store_execution_facts(
-                    session, record, raw_input=None, raw_result=output
-                )
-                assert canonical_input == frozen
-                await session.commit()
-                result = await repository.read_execution_result(session, record)
-                assert business_evidence(result) == business_evidence(output)
-                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_snapshot)) == 1
-                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_binding)) == (
-                    1 if result_assets == "matching" else 0
-                )
-        finally:
-            await engine.dispose()
+        freeze_input(database, frozen, account_id=2, execution_id="after-assets")
+        await input_persistence._persist_post_execute_assets(
+            account_id=2, execution_id="after-assets", payload={"account_assets": observed}
+        )
+        if result_assets == "different" or (is_success and result_assets == "absent"):
+            with pytest.raises(_core.NativeError, match="终态结果"):
+                persist_result(database, output, account_id=2, execution_id="after-assets", is_success=is_success)
+            assert rows(database, "executerecord") == []
+            assert len(rows(database, "execution_input")) == 1
+            assert len(rows(database, "business_asset_snapshot")) == 1
+            assert rows(database, "business_asset_binding") == []
+            return
+        record = persist_result(database, output, account_id=2, execution_id="after-assets", is_success=is_success)
+        canonical_input = await repository.read_execution_input(record["input_id"])
+        assert canonical_input == frozen
+        result = await repository.read_execution_result(record)
+        assert business_evidence(result) == business_evidence(output)
+        assert len(rows(database, "business_asset_snapshot")) == 1
+        assert len(rows(database, "business_asset_binding")) == (1 if result_assets == "matching" else 0)
 
     asyncio.run(check())
 
 
 @pytest.mark.parametrize("reference", ["input_id", "result_input_id"])
 @pytest.mark.parametrize("input_account", [2, 3])
-def test_foreign_input_is_rejected_on_read_and_write(tmp_path, reference, input_account):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'owners.db'}")
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with sessions() as session:
-                session.add(build_account(id=2, account_control_preset="default"))
-                await session.commit()
-                session.add(build_account(id=3, account_control_preset="default"))
-                await session.commit()
-                unrelated = await repository.persist_execution_input(
-                    session,
-                    account_id=input_account,
-                    execution_id="other",
-                    payload={},
-                    created_at="2026-10-20T09:00:00",
-                )
-                record = ExecuteRecord(account_id=2, execution_id="own", is_success=1)
-                session.add(record)
-                await session.flush()
-                await repository.store_execution_facts(session, record, raw_input={}, raw_result={"inputs": {}})
-                await session.commit()
-                await session.execute(
-                    ExecuteRecord.__table__.update()
-                    .where(ExecuteRecord.__table__.c.id == record.id)
-                    .values(**{reference: unrelated})
-                )
-                await session.commit()
-                await session.refresh(record)
-                message = "其他执行" if input_account == 2 else "其他账户"
-                with pytest.raises(ValueError, match=message):
-                    await repository.read_execution_detail(session, record)
-                async with engine.connect() as connection:
-                    with pytest.raises(ValueError, match=message):
-                        await connection.run_sync(repository.read_execution_result_sync, record.id)
-                with pytest.raises(ValueError, match=message):
-                    await repository.store_execution_facts(session, record, raw_input=None, raw_result={})
-                await session.rollback()
-                await session.execute(
-                    inputs.execution_input.update()
-                    .where(inputs.execution_input.c.id == unrelated)
-                    .values(owner_execution_id="another-execution")
-                )
-                with pytest.raises(ValueError, match=message):
-                    await repository.find_execution_input(session, account_id=2, execution_id="other")
-        finally:
-            await engine.dispose()
+def test_foreign_input_is_rejected_on_read_and_write(database, reference, input_account):
+    unrelated = freeze_input(database, {}, account_id=input_account, execution_id="other", input_id="unrelated")
+    record = persist_result(database, {"inputs": {}}, account_id=2, execution_id="own", raw_input={}, is_success=1)
+    if input_account == 3:
+        with pytest.raises(sqlite3.IntegrityError, match="Execution input owner mismatch"):
+            sql(database, f"UPDATE executerecord SET {reference}=? WHERE id=?", (unrelated["input_id"], record["id"]))
+        # 模拟历史损坏需临时移开写保护；读取仍使用完整原生校验。
+        with closing(sqlite3.connect(database)) as connection:
+            trigger = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name='business_facts_0037_record_input_update'"
+            ).fetchone()[0]
+        sql(database, "DROP TRIGGER business_facts_0037_record_input_update")
+    sql(database, f"UPDATE executerecord SET {reference}=? WHERE id=?", (unrelated["input_id"], record["id"]))
+    if input_account == 3:
+        sql(database, trigger)
+    with pytest.raises(ValueError, match="input belongs to another account or execution"):
+        asyncio.run(repository.read_execution_detail(record))
+    with pytest.raises(_core.NativeError, match="input belongs to another account or execution"):
+        native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record["id"]})
 
-    asyncio.run(check())
+    # 终态只能首次提交；在新终态中验证发现冻结输入时的相同归属边界。
+    sql(database, "UPDATE execution_input SET execution_id='write-attempt' WHERE id=?", (unrelated["input_id"],))
+    message = "其他执行" if input_account == 2 else "another account"
+    with pytest.raises(_core.NativeError, match=message):
+        persist_result(database, {}, account_id=2, execution_id="write-attempt")
+    assert len(rows(database, "executerecord")) == 1
+    sql(
+        database,
+        "UPDATE execution_input SET execution_id='other',owner_execution_id='another-execution' WHERE id=?",
+        (unrelated["input_id"],),
+    )
+    with pytest.raises(_core.NativeError, match=message):
+        freeze_input(database, {}, account_id=2, execution_id="other", input_id="new-input")
 
 
-def test_null_execution_ids_cannot_share_one_legacy_input(tmp_path):
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'null-owners.db'}")
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with sessions() as session:
-                session.add(build_account(id=2, account_control_preset="default"))
-                await session.commit()
-                input_id = await repository.persist_execution_input(
-                    session, account_id=2, execution_id=None, payload={}, created_at="2026-10-20T09:00:00"
-                )
-                first = ExecuteRecord(account_id=2, execution_id=None, is_success=1, input_id=input_id)
-                session.add(first)
-                await session.flush()
-                await repository.store_execution_facts(session, first, raw_input=None, raw_result={})
-                await session.commit()
-                second = ExecuteRecord(account_id=2, execution_id=None, is_success=1, input_id=input_id)
-                session.add(second)
-                await session.flush()
-                with pytest.raises(ValueError, match="历史输入不能属于其他执行记录"):
-                    await repository.store_execution_facts(session, second, raw_input=None, raw_result={})
-        finally:
-            await engine.dispose()
+def test_null_execution_ids_cannot_share_one_legacy_input(database):
+    first = persist_result(database, {}, account_id=2, raw_input={}, input_id="legacy-input", is_success=1)
+    with pytest.raises(_core.NativeError, match="UNIQUE constraint failed: execution_input.id"):
+        persist_result(database, {}, account_id=2, raw_input={}, input_id="legacy-input", is_success=1)
+    assert len(rows(database, "executerecord")) == 1
+    assert len(rows(database, "execution_input")) == 1
 
-    asyncio.run(check())
+    # 人为损坏历史数据后，完整读取同样禁止匿名执行共享输入。
+    columns = ",".join(column.name for column in table("executerecord").c if column.name != "id")
+    sql(
+        database,
+        f"INSERT INTO executerecord ({columns}) SELECT {columns} FROM executerecord WHERE id=?",
+        (first["id"],),
+    )
+    for record in rows(database, "executerecord"):
+        with pytest.raises(ValueError, match="anonymous execution input is shared"):
+            asyncio.run(repository.read_execution_detail(record))

@@ -8,11 +8,8 @@ from contextlib import asynccontextmanager
 from threading import RLock
 from uuid import uuid4
 
-from sqlalchemy import select
-from sqlmodel import col
-
-from axile.server.core.db import SessionLocal
 from axile.server.db.models.account import Account
+from axile.server.native_store import native_operation
 
 type Change = tuple[int, set[int] | None]
 
@@ -98,12 +95,13 @@ async def connection_frames(account_ids: set[int] | None = None) -> list[dict[st
     """只读取账户与运行态缓存，绝不初始化执行器或探测交易连接。"""
     from axile.server.connection_state import public_connection
 
-    statement = select(Account)
-    if account_ids is not None:
-        statement = statement.where(col(Account.id).in_(account_ids))
-    async with SessionLocal() as session:
-        accounts = (await session.execute(statement)).scalars().all()
-        return [
-            {"account_id": account.id, "connection": public_connection(account, detail=True).model_dump(mode="json")}
-            for account in accounts
-        ]
+    accounts = await native_operation(
+        "connection_accounts", {"account_ids": sorted(account_ids) if account_ids is not None else None}
+    )
+    return [
+        {
+            "account_id": value["id"],
+            "connection": public_connection(Account.model_validate(value), detail=True).model_dump(mode="json"),
+        }
+        for value in accounts
+    ]

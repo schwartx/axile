@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import sqlite3
+from contextlib import closing
 from unittest.mock import patch
 
 import pytest
@@ -11,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
-from axile.server.performance_costs import project_execution, summarize
 from tests.unit.server._business_analysis_support import database, persist_records, record
 from tests.unit.server._business_analysis_support import schema_template as schema_template
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._performance_costs_oracle import project_execution, summarize
 
 
 def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, schema_template, monkeypatch):
@@ -27,15 +29,16 @@ def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, s
                 for row in [record(index) for index in range(205, 0, -1)]
                 for trade in project_execution(row)[1]
             ]
+            with closing(sqlite3.connect(tmp_path / "analysis.db")) as connection, connection:
+                insert_account(connection, build_account(id=3, account_control_preset="default"))
+                connection.execute(
+                    "UPDATE execution_input SET algorithm=? WHERE id=(SELECT input_id FROM executerecord WHERE id=1)",
+                    (json.dumps({"params": {"unused": "x" * 2_000_000}}),),
+                )
             async with sessions() as session:
-                bulky = record(1)
-                bulky.input["algorithm"] = {"params": {"unused": "x" * 2_000_000}}
                 other = record(206)
                 other.account_id = 3
-                session.add(build_account(id=3, account_control_preset="default"))
-                await session.flush()
-                await persist_records(session, [bulky, other])
-                await session.commit()
+                await persist_records(session, [other])
             with (
                 patch.object(AsyncSession, "execute", side_effect=AssertionError("no Python session reads")),
                 patch.object(AsyncSession, "stream", side_effect=AssertionError("no Python trade stream")),

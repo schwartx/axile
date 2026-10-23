@@ -6,59 +6,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Protocol, cast
+import uuid
+from typing import cast
 
 import loguru
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
-from axile.server.business_facts.artifacts import compact_execution_summary
-from axile.server.business_facts.assets import ensure_execution_asset_snapshot
-from axile.server.business_facts.head import execution_head_values
-from axile.server.business_facts.repository import store_execution_facts
-from axile.server.core.db import SessionLocal
+from axile.server._native import _core
+from axile.server.business_facts.summary_refs import BusinessFactReferenceError
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
-from axile.server.execution.input_persistence import sanitize_execution_input
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-
-class _WriteSessionProtocol(Protocol):
-    """描述执行记录写入时需要的最小 session 能力."""
-
-    async def __aenter__(self) -> "_WriteSessionProtocol":
-        """进入异步会话上下文."""
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """退出异步会话上下文."""
-
-    def add(self, obj: object) -> None:
-        """将对象加入当前会话."""
-
-    async def flush(self) -> None:
-        """写入待提交对象以取得执行记录 ID。"""
-
-    async def commit(self) -> None:
-        """提交当前事务."""
-
-    async def rollback(self) -> None:
-        """回滚当前事务."""
-
-    async def scalar(self, statement: object) -> object | None:
-        """执行语句并返回首行首列值."""
-
-    async def refresh(self, obj: object) -> None:
-        """刷新指定对象."""
-
-
-type SessionFactory = Callable[[], _WriteSessionProtocol]
+from axile.server.db.models.base import now_str
+from axile.server.native_store import native_operation
 
 
 async def _persist_execute_record(
@@ -68,57 +30,29 @@ async def _persist_execute_record(
     raw_input: dict[str, object] | None,
     raw_result: dict[str, object],
     is_success: int,
-    session_factory: SessionFactory,
 ) -> ExecuteRecord:
-    """将执行记录写入数据库并返回刷新后的记录对象."""
-    persisted_result = dict(raw_result)
-    result_input = persisted_result.get("inputs")
-    if isinstance(result_input, Mapping):
-        persisted_result["inputs"] = sanitize_execution_input(result_input)
-    async with session_factory() as session:
-        record = ExecuteRecord(
-            account_id=account_id,
-            execution_id=execution_id,
-            is_success=is_success,
-            **execution_head_values(persisted_result, is_success=is_success),
+    """一次原生事务提交终态、输入、结果事实、资产历史与摘要引用。"""
+    try:
+        stored = await native_operation(
+            "persist_execute_record",
+            {
+                "account_id": account_id,
+                "execution_id": execution_id,
+                "raw_input": raw_input,
+                "raw_result": raw_result,
+                "is_success": is_success,
+                "created_at": now_str(),
+                "input_id": str(uuid.uuid4()),
+                "result_input_id": str(uuid.uuid4()),
+            },
         )
-        session.add(record)
-        try:
-            # 业务明细与终态、分析事实同一事务提交，原生读取不会看到半份结果。
-            await session.flush()
-            await store_execution_facts(
-                cast("AsyncSession", session),
-                record,
-                raw_input=None if raw_input is None else sanitize_execution_input(raw_input),
-                raw_result=persisted_result,
-            )
-            await ensure_execution_asset_snapshot(cast("AsyncSession", session), record)
-            await compact_execution_summary(cast("AsyncSession", session), record, result=persisted_result)
-            await session.flush()
-            await session.commit()
-        except IntegrityError:
-            # 同一执行的两条收尾路径（如终止确认与脚本失败）可能并发落库，
-            # ``execution_id`` 唯一约束下以首条为准；否则冲突会把终止接口
-            # 之类的调用方打穿成 IntegrityError。
-            await session.rollback()
-            if execution_id is None:
-                raise
-            existing = cast(
-                "ExecuteRecord | None",
-                await session.scalar(select(ExecuteRecord).where(ExecuteRecord.execution_id == execution_id)),
-            )
-            if existing is None:
-                raise
-            if existing.account_id != account_id:
-                raise ValueError("执行标识属于其他账户") from None
-            loguru.logger.warning(
-                "执行记录已存在，保留首条 | execution_id={} record_id={}",
-                execution_id,
-                existing.id,
-            )
-            return existing
-        await session.refresh(record)
-        return record
+    except _core.NativeError as error:
+        if error.args and error.args[0] == "BUSINESS_FACTS":
+            raise ValueError(error.args[1]) from None
+        if error.args and error.args[0] == "BUSINESS_FACTS_REFERENCE":
+            raise BusinessFactReferenceError(error.args[1]) from None
+        raise
+    return ExecuteRecord.model_validate(stored)
 
 
 def resolve_record_task_status(record: ExecuteRecord | None) -> ExecutionTaskStatus:
@@ -137,7 +71,6 @@ async def append_error_execute_record(
     msg: str = "",
     execution_id: str | None = None,
     logger: "loguru.Logger" = loguru.logger,
-    session_factory: SessionFactory = SessionLocal,
 ) -> ExecuteRecord:
     """
     添加失败的执行记录.
@@ -156,8 +89,6 @@ async def append_error_execute_record(
         当前执行 ID。
     logger : loguru.Logger, optional
         用于输出错误日志的 logger。
-    session_factory : SessionFactory, optional
-        创建数据库写会话的工厂函数。
 
     Returns
     -------
@@ -188,7 +119,6 @@ async def append_error_execute_record(
         raw_input=raw_input,
         raw_result=persisted_raw_result,
         is_success=0,
-        session_factory=session_factory,
     )
 
 
@@ -198,7 +128,6 @@ async def append_success_execute_record(
     result: dict[str, object],
     execution_id: str | None = None,
     execution_kind: ExecutionKind | None = None,
-    session_factory: SessionFactory = SessionLocal,
 ) -> ExecuteRecord:
     """
     添加成功的执行记录.
@@ -216,8 +145,6 @@ async def append_success_execute_record(
     execution_kind : ExecutionKind | None, optional
         本次执行类型（``rebalance`` / ``clear_positions``）。写入 ``raw_result`` 供上层区分，
         避免成功清仓被按调仓口径误判为「空跑」。
-    session_factory : SessionFactory, optional
-        创建数据库写会话的工厂函数。
 
     Returns
     -------
@@ -234,7 +161,6 @@ async def append_success_execute_record(
         raw_input=raw_input,
         raw_result=persisted_raw_result,
         is_success=1,
-        session_factory=session_factory,
     )
 
 
@@ -255,7 +181,6 @@ async def append_terminated_execute_record(
     cancel_unconfirmed: bool = False,
     raw_input: dict[str, object] | None = None,
     raw_result: dict[str, object] | None = None,
-    session_factory: SessionFactory = SessionLocal,
 ) -> ExecuteRecord:
     """
     添加 terminated 状态的执行记录.
@@ -289,8 +214,6 @@ async def append_terminated_execute_record(
         需要持久化的输入快照。
     raw_result : dict[str, object] | None, optional
         需要持久化的结果快照。
-    session_factory : SessionFactory, optional
-        创建数据库写会话的工厂函数。
 
     Returns
     -------
@@ -320,5 +243,4 @@ async def append_terminated_execute_record(
         raw_input=raw_input,
         raw_result=persisted_raw_result,
         is_success=0,
-        session_factory=session_factory,
     )

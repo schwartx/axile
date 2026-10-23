@@ -3,6 +3,7 @@
 import json
 import socket
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -71,7 +72,7 @@ def test_historical_repeated_input_is_separate_and_hash_preserves_missing_types(
 
 def test_storage_accounts_utf8_json_indexes_and_checkpointed_main_file(tmp_path):
     path = tmp_path / "measurement.sqlite"
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         database.execute("PRAGMA journal_mode=WAL")
         database.execute("CREATE TABLE facts(id INTEGER PRIMARY KEY,payload JSON,label TEXT)")
         database.execute("CREATE INDEX ix_facts_label ON facts(label)")
@@ -107,7 +108,7 @@ def test_latency_and_network_guard_do_not_silently_fabricate_measurements():
 
 
 def test_analysis_fingerprints_include_values_and_preserve_primary_key_order():
-    with sqlite3.connect(":memory:") as database:
+    with closing(sqlite3.connect(":memory:")) as database, database:
         database.executescript(
             "CREATE TABLE analysis_source_trade(record_id INTEGER,ordinal INTEGER,price REAL,PRIMARY KEY(record_id,ordinal));"
             "CREATE TABLE replay_observation(record_id INTEGER PRIMARY KEY,equity REAL);"

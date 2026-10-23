@@ -2,16 +2,12 @@
 
 import asyncio
 import json
-import pathlib
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
@@ -24,21 +20,21 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Unifi
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server.business_facts.artifacts import parse_artifact_reference, resolve_artifact_content
 from axile.server.business_facts.assets import input_after_asset_fact_id, input_asset_fact_id
-from axile.server.business_facts.repository import (
-    persist_execution_input,
-    read_execution_result,
-    store_execution_facts,
-)
-from axile.server.db.models import ExecuteRecord, ExecutionArtifact
+from axile.server.business_facts.repository import read_execution_result
+from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
 from axile.server.execution.backend import _dump_output_result
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
-from axile.server.performance_costs import project_execution
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import initialize_native_database
+from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
 from tests.unit.server._business_analysis_support import _events
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
+from tests.unit.server._performance_costs_oracle import project_execution
+from tests.unit.server.test_evidence_export import _seed
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "execution_evidence_contract.json"
 
@@ -127,91 +123,72 @@ def _algorithm_result(case):
 async def _persist_contract_result(output, worker_raw, before_assets, monkeypatch):
     """实际写入类型化事实和 v3 附件，再从唯一业务读取路径回放。"""
     with tempfile.TemporaryDirectory() as directory:
-        path = pathlib.Path(directory) / "contract.db"
-        # 执行后观测经原生入口冻结,须指向同一测试文件。
+        path = Path(directory) / "contract.db"
         monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
-        db = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        try:
-            async with db.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with async_sessionmaker(db, class_=AsyncSession, expire_on_commit=False)() as session:
-                input_id = await persist_execution_input(
-                    session,
-                    account_id=1,
-                    execution_id="contract",
-                    payload={},
-                    created_at="2026-09-15T10:00:00",
-                    before_assets=before_assets,
-                )
-                await session.commit()
-                after_reference = await input_persistence._persist_post_execute_assets(
-                    account_id=1, execution_id="contract", payload=worker_raw
-                )
-                artifacts = []
-                post_writer = Mock(return_value=after_reference)
-                with monkeypatch.context() as patch:
-                    patch.setattr(
-                        worker_audit,
-                        "append_execution_audit_batch_sync",
-                        capture_worker_audit_batch(
-                            artifact=lambda **values: artifacts.append(ExecutionArtifact(**values))
-                        ),
-                    )
-                    patch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
-                    patch.setattr(worker_audit, "persist_post_execute_assets_sync", post_writer)
-                    worker_audit._append_success_audit(
-                        account=SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),
-                        execution_id="contract",
-                        algorithm_name="contract",
-                        output=output,
-                        result=worker_raw,
-                        executor=object(),
-                        before_account_assets=before_assets,
-                    )
-                post_writer.assert_called_once_with(account_id=1, execution_id="contract", payload=worker_raw)
-                record = ExecuteRecord(
-                    account_id=1,
-                    execution_id="contract",
-                    is_success=int(output.success),
-                    created_at="2026-09-15T10:00:00",
-                )
-                session.add(record)
-                await session.flush()
-                await store_execution_facts(session, record, raw_input={}, raw_result=worker_raw)
-                session.add_all(artifacts)
-                await session.commit()
-                assert record.input_id == input_id
-                result = await read_execution_result(session, record)
-                assert business_evidence(result) == business_evidence(worker_raw)
-                stored_artifacts = (await session.scalars(select(ExecutionArtifact))).all()
-                after = next(
-                    item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.ACCOUNT_SNAPSHOT
-                )
-                assert after.schema_version == 3
-                assert parse_artifact_reference(after.content) == {
-                    "version": 1,
-                    "view": "assets_after",
-                    "input_id": input_id,
-                    "asset_id": input_after_asset_fact_id(input_id),
-                }
-                assert "account_assets" not in after.content
-                resolved = await resolve_artifact_content(session, after, account_id=1)
-                assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
-                summary = next(
-                    item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY
-                )
-                assert summary.schema_version == 2
-                assert "raw_input" not in ExecuteRecord.__table__.c
-                assert "raw_result" not in ExecuteRecord.__table__.c
-                return SimpleNamespace(
-                    id=record.id,
-                    execution_id=record.execution_id,
-                    created_at=record.created_at,
-                    is_success=record.is_success,
-                    result=result,
-                ), summary.content
-        finally:
-            await db.dispose()
+        initialize_native_database(path)
+        input_id = freeze_input(
+            path, {}, execution_id="contract", created_at="2026-09-15T10:00:00", before_assets=before_assets
+        )["input_id"]
+        after_reference = await input_persistence._persist_post_execute_assets(
+            account_id=1, execution_id="contract", payload=worker_raw
+        )
+        artifacts = []
+        post_writer = Mock(return_value=after_reference)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                worker_audit,
+                "append_execution_audit_batch_sync",
+                capture_worker_audit_batch(artifact=lambda **values: artifacts.append(ExecutionArtifact(**values))),
+            )
+            patch.setattr(worker_audit, "append_execution_event_sync", lambda **kwargs: None)
+            patch.setattr(worker_audit, "persist_post_execute_assets_sync", post_writer)
+            worker_audit._append_success_audit(
+                account=SimpleNamespace(id=1, trade_channel=TradeChannel.CTP),
+                execution_id="contract",
+                algorithm_name="contract",
+                output=output,
+                result=worker_raw,
+                executor=object(),
+                before_account_assets=before_assets,
+            )
+        post_writer.assert_called_once_with(account_id=1, execution_id="contract", payload=worker_raw)
+        record = persist_result(
+            path,
+            worker_raw,
+            execution_id="contract",
+            is_success=int(output.success),
+            created_at="2026-09-15T10:00:00",
+            raw_input={},
+        )
+        _seed(path, *artifacts)
+        assert record["input_id"] == input_id
+        result = await read_execution_result(record)
+        assert business_evidence(result) == business_evidence(worker_raw)
+        stored_artifacts = [ExecutionArtifact.model_validate(row) for row in rows(path, "execution_artifact")]
+        after = next(item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.ACCOUNT_SNAPSHOT)
+        assert after.schema_version == 3
+        assert parse_artifact_reference(after.content) == {
+            "version": 1,
+            "view": "assets_after",
+            "input_id": input_id,
+            "asset_id": input_after_asset_fact_id(input_id),
+        }
+        assert "account_assets" not in after.content
+        resolved = await resolve_artifact_content(after, account_id=1)
+        assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
+        summary = next(
+            item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY
+        )
+        assert summary.schema_version == 2
+        assert "raw_input" not in table("executerecord").c
+        assert "raw_result" not in table("executerecord").c
+        return SimpleNamespace(
+            id=record["id"],
+            execution_id=record["execution_id"],
+            created_at=record["created_at"],
+            is_success=record["is_success"],
+            result=result,
+        ), summary.content
 
 
 def build_contract_wire(case, monkeypatch):

@@ -14,44 +14,36 @@ from axile.server.api.routes import utils
 from axile.server.connection_validation import service as validation_service
 from axile.server.execution import notification_outbox, supplements
 
-
-@pytest.mark.parametrize(
-    "missing",
-    [
-        "publish_store",
-        "freeze_execution_input",
-        "freeze_execution_after_assets",
-        "queue_enqueue",
-        "queue_status",
-        "queue_recover",
-        "queue_claim",
-        "queue_fail",
-        "queue_release",
-    ],
+NATIVE_OPERATIONS = (
+    "publish_store",
+    "freeze_execution_input",
+    "freeze_execution_after_assets",
+    "queue_enqueue",
+    "queue_status",
+    "queue_recover",
+    "queue_claim",
+    "queue_fail",
+    "queue_release",
+    "analysis_context",
+    "analysis_calendar_save",
+    "analysis_publication_committed",
 )
+
+
+@pytest.mark.parametrize("missing", NATIVE_OPERATIONS)
 @pytest.mark.parametrize("entrypoint", ["lifespan", "manager"])
 def test_obsolete_native_rejected_before_background_services(monkeypatch, missing, entrypoint):
     from axile.server import performance_analysis
 
-    names = (
-        "publish_store",
-        "freeze_execution_input",
-        "freeze_execution_after_assets",
-        "queue_enqueue",
-        "queue_status",
-        "queue_recover",
-        "queue_claim",
-        "queue_fail",
-        "queue_release",
+    native = SimpleNamespace(
+        ANALYSIS_FACT_SCHEMA=40, **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing}
     )
-    native = SimpleNamespace(ANALYSIS_FACT_SCHEMA=40, **{name: MagicMock() for name in names if name != missing})
     monkeypatch.setattr(performance_analysis, "_core", native)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
     monkeypatch.setattr(server_app.live_hub, "bind_loop", lambda _loop: None)
     monitor = MagicMock()
     scheduler = MagicMock()
-    sessions = MagicMock()
     monkeypatch.setattr(control_monitor, "monitor", monitor)
     monkeypatch.setattr(server_app, "scheduler", scheduler)
 
@@ -61,12 +53,11 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
                 async with server_app.lifespan(FastAPI()):
                     pytest.fail("Obsolete extension accepted")
             else:
-                await performance_analysis.AnalysisManager(sessions).start()
+                await performance_analysis.AnalysisManager().start()
 
     asyncio.run(scenario())
     monitor.start.assert_not_called()
     scheduler.start.assert_not_called()
-    sessions.assert_not_called()
     for operation in vars(native).values():
         if callable(operation):
             operation.assert_not_called()
@@ -74,20 +65,25 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
 
 @pytest.fixture
 def isolated_lifespan(monkeypatch):
-    from axile.server import performance_analysis
+    from axile.server import connection_state, performance_analysis
+    from axile.server.execution import catalog_preheat
+    from axile.server.time_check import service as time_check
 
     manager = MagicMock(start=AsyncMock(), stop=AsyncMock())
-    monkeypatch.setattr(performance_analysis, "AnalysisManager", lambda _sessions: manager)
+    monkeypatch.setattr(performance_analysis, "AnalysisManager", lambda: manager)
     monkeypatch.setattr(performance_analysis._core, "publish_store", MagicMock(), raising=False)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
     monkeypatch.setattr(server_app.live_hub, "bind_loop", lambda _loop: None)
     monkeypatch.setattr(control_monitor, "recover_sessions", AsyncMock())
+    monkeypatch.setattr(connection_state, "recover_connection_sessions", AsyncMock())
     monkeypatch.setattr(control_monitor, "monitor", MagicMock(close=AsyncMock()))
     monkeypatch.setattr(server_app, "_load_configured_algorithm_directories", lambda: None)
     monkeypatch.setattr(server_app, "_load_configured_algorithm_modules", lambda: None)
     monkeypatch.setattr(server_app, "register_china_channel_jobs", lambda _scheduler: None)
     monkeypatch.setattr(server_app, "scheduler", MagicMock())
+    monkeypatch.setattr(time_check, "service", MagicMock(start=AsyncMock(), close=AsyncMock()))
+    monkeypatch.setattr(catalog_preheat, "arm_catalog_preheat", MagicMock())
     monkeypatch.setattr(supplements, "recover_supplements", AsyncMock())
     monkeypatch.setattr(server_app, "recover_intents_on_startup", AsyncMock())
     monkeypatch.setattr(notification_outbox, "recover_notifications", AsyncMock())

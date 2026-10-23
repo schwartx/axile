@@ -168,32 +168,48 @@ def current_session(account_id: int, config_key: str) -> AccountConnectionPublic
         session = _sessions.get(account_id)
         if session is None or session.config_key != config_key:
             return AccountConnectionPublic()
-        observation = session.observation
-        alive = not session.ended and session.alive()
-        if not alive:
-            status = "unavailable" if observation and observation.status == "error" else "disconnected"
-            message = observation.message if session.ended and observation else "账户执行器已退出，会话已结束"
-        elif clock_monotonic() - session.sampled > _STALE_SECONDS:
-            status, message = "unknown", "执行器监控已过期，当前会话状态待确认"
-        elif observation is None:
-            status, message = "uninitialized", "执行器尚未建立账户会话"
-        else:
-            status = _STATUS[observation.status]
-            message = observation.message
-        if status != session.view_status:
-            session.view_status, session.updated_at = status, clock_now_iso()
-        return AccountConnectionPublic(
-            progress=ConnectionRun.model_validate(session.progress) if session.progress else None,
-            status=status,
-            message=message,
-            worker_alive=alive,
-            observed_at=session.updated_at,
-            sampled_at=session.sampled_at,
-            label=observation.label if observation and status == "unavailable" else None,
-            retry_after_seconds=max(0, math.ceil(session.retry_deadline - clock_monotonic()))
-            if status == "unavailable"
-            else 0,
-        )
+        return _public_session(session)
+
+
+def _public_session(session: _LiveSession) -> AccountConnectionPublic:
+    observation = session.observation
+    alive = not session.ended and session.alive()
+    if not alive:
+        status = "unavailable" if observation and observation.status == "error" else "disconnected"
+        message = observation.message if session.ended and observation else "账户执行器已退出，会话已结束"
+    elif clock_monotonic() - session.sampled > _STALE_SECONDS:
+        status, message = "unknown", "执行器监控已过期，当前会话状态待确认"
+    elif observation is None:
+        status, message = "uninitialized", "执行器尚未建立账户会话"
+    else:
+        status = _STATUS[observation.status]
+        message = observation.message
+    if status != session.view_status:
+        session.view_status, session.updated_at = status, clock_now_iso()
+    return AccountConnectionPublic(
+        progress=ConnectionRun.model_validate(session.progress) if session.progress else None,
+        status=status,
+        message=message,
+        worker_alive=alive,
+        observed_at=session.updated_at,
+        sampled_at=session.sampled_at,
+        label=observation.label if observation and status == "unavailable" else None,
+        retry_after_seconds=max(0, math.ceil(session.retry_deadline - clock_monotonic()))
+        if status == "unavailable"
+        else 0,
+    )
+
+
+def public_session_views() -> dict[str, dict[str, object]]:
+    """沿用当前会话的展示缓存，返回供原生查询合并历史的独立数据。"""
+    with _lock:
+        return {
+            str(account_id): {
+                "config_key": session.config_key,
+                "connection": _public_session(session).model_dump(mode="json"),
+            }
+            for account_id, session in _sessions.items()
+        }
 
 
 def matches_session(binding) -> bool:

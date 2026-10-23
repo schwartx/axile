@@ -1,11 +1,8 @@
 """账户设置的有类型配置与一对一持久化。"""
 
-from typing import Any, ClassVar
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
-from sqlalchemy import JSON as SA_JSON
-from sqlalchemy import Column, ForeignKey, Integer
-from sqlmodel import Field, SQLModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.futures_close_policy import FuturesClosePolicy
@@ -17,7 +14,7 @@ from axile.server.db.models.account_validation import (
     _validate_leverage,
     _validate_weight_precision,
 )
-from axile.server.db.models.base import PydanticJSONType
+from axile.server.db.models.base import Model
 from axile.server.db.models.performance import FeeRate, WeightType
 
 
@@ -96,28 +93,15 @@ SETTINGS_FIELDS = {field: group for group, model in SETTINGS_GROUPS.items() for 
 }
 
 
-class AccountSettings(SQLModel, table=True):
+class AccountSettings(Model):
     """与账户一对一的配置；运行结果不写入本表。"""
 
-    __tablename__: ClassVar[str] = "account_settings"
-
-    account_id: int | None = Field(
-        default=None,
-        sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), primary_key=True),
-    )
-    connection: dict[str, Any] = Field(default_factory=dict, sa_column=Column(SA_JSON, nullable=False))
-    execution: ExecutionSettings = Field(
-        default_factory=ExecutionSettings, sa_column=Column(PydanticJSONType(ExecutionSettings), nullable=False)
-    )
-    schedule: ScheduleSettings = Field(
-        default_factory=ScheduleSettings, sa_column=Column(PydanticJSONType(ScheduleSettings), nullable=False)
-    )
-    notification: NotificationSettings = Field(
-        default_factory=NotificationSettings, sa_column=Column(PydanticJSONType(NotificationSettings), nullable=False)
-    )
-    backtest: BacktestSettings = Field(
-        default_factory=BacktestSettings, sa_column=Column(PydanticJSONType(BacktestSettings), nullable=False)
-    )
+    account_id: int | None = Field(default=None)
+    connection: dict[str, Any] = Field(default_factory=dict)
+    execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
+    schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
+    notification: NotificationSettings = Field(default_factory=NotificationSettings)
+    backtest: BacktestSettings = Field(default_factory=BacktestSettings)
 
     def flat_values(self) -> dict[str, Any]:
         """提供旧 API 和执行快照的兼容字段。"""

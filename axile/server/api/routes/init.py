@@ -11,14 +11,13 @@ import asyncio
 import os
 import signal
 from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from axile.common.config import (
     CONFIG_TOML_PATH,
@@ -35,6 +34,7 @@ from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.error_notifications import build_system_notification_context, build_test_card
 from axile.server.execution.notification_state import get_system_notification_result
+from axile.server.native_store import native_operation
 
 router = APIRouter(prefix="/init", tags=["init"])
 
@@ -172,20 +172,53 @@ async def test_db(payload: DbTestRequest) -> TestResult:
 
     Notes
     -----
-    用给定地址临时建立异步引擎并执行 ``SELECT 1``；无论成功与否都会释放引擎。
+    由原生层用给定地址临时建立连接并执行 ``SELECT 1``，结束后关闭连接。
     对 SQLite 而言该操作可能顺带创建库文件（即目标库位置），属预期副作用。
     """
-    engine = None
     try:
-        engine = create_async_engine(payload.uri)
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
+        path, options = _database_probe_target(payload.uri)
+        await native_operation("database_probe", options, database=path)
     except Exception as exc:  # noqa: BLE001 - 连接异常统一转为失败结果
         return TestResult(ok=False, message=f"数据库连接失败：{exc}")
-    finally:
-        if engine is not None:
-            await engine.dispose()
     return TestResult(ok=True, message="数据库连接成功")
+
+
+def _sqlite_boolean(value: str) -> bool:
+    """沿用 SQLite DSN 查询参数接受的布尔拼写。"""
+    normalized = value.strip().lower()
+    if normalized not in {"true", "yes", "on", "y", "t", "1", "false", "no", "off", "n", "f", "0"}:
+        raise ValueError(f"无效的布尔参数：{value}")
+    return normalized in {"true", "yes", "on", "y", "t", "1"}
+
+
+def _database_probe_target(uri: str) -> tuple[str, dict[str, Any]]:
+    """保留 SQLite 文件名及原生 URI 参数，不打开配置中的业务库。"""
+    _DSN_ADAPTER.validate_python(uri)
+    parsed = urlsplit(uri, allow_fragments=False)
+    if parsed.netloc or not uri.startswith("sqlite+aiosqlite://"):
+        raise ValueError("SQLite 地址不能包含主机或认证信息")
+    query = dict(parse_qsl(parsed.query))
+    use_uri = _sqlite_boolean(query.pop("uri", "false"))
+    timeout = max(float(query.pop("timeout", "5")), 0)
+    if "check_same_thread" in query:
+        _sqlite_boolean(query.pop("check_same_thread"))
+    for key in ("detect_types", "cached_statements"):
+        if key in query:
+            int(query.pop(key))
+    isolation = query.pop("isolation_level", "")
+    if isolation.upper() not in {"", "DEFERRED", "IMMEDIATE", "EXCLUSIVE"}:
+        raise ValueError("无效的 SQLite isolation_level")
+    path = parsed.path.removeprefix("/")
+    if use_uri:
+        if not path:
+            raise ValueError("SQLite URI 缺少数据库路径")
+        if query:
+            path += "?" + "&".join(f"{key}={value}" for key, value in sorted(query.items()))
+    else:
+        path = path or ":memory:"
+        if path != ":memory:":
+            path = os.path.abspath(path)
+    return path, {"uri": use_uri, "timeout": timeout}
 
 
 @router.post("/test-feishu")

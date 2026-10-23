@@ -6,6 +6,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from axile.server._native import _core
 from axile.server.business_facts import artifacts as fact_artifacts
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.models import (
@@ -16,6 +17,16 @@ from axile.server.evidence.models import (
     ExportBudget,
 )
 from axile.server.evidence.report import execution_report, result_payload
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import freeze_input
+from tests.unit.server.test_evidence_export import _event
+
+
+def _event_details(path, event):
+    native_store_call(path, "append_execution_event", _event(**event).model_dump(mode="json"))
+    return native_store_call(path, "list_execution_events", {"execution_id": event["execution_id"]})["data"][0][
+        "details"
+    ]
 
 
 def test_canonical_result_preserves_native_occurrences_and_truthful_source():
@@ -109,7 +120,7 @@ def test_archive_marks_canonical_assembly_and_preserves_missing_asset_values():
         archive.close()
 
 
-def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(monkeypatch):
+def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(monkeypatch, native_database):
     payload = {
         "curr_target": {"rb2610": 0},
         "last_target": {},
@@ -118,16 +129,19 @@ def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(mo
         "sizing_context": {"short_leverage": 3},
     }
 
-    async def frozen_input(*_args, **_kwargs):
-        return payload
-
-    monkeypatch.setattr(fact_artifacts, "_read_owned_input", frozen_input)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    freeze_input(
+        native_database,
+        {key: value for key, value in payload.items() if key != "account_target"},
+        execution_id="typed-1",
+        input_id="typed-input",
+    )
     reference = fact_artifacts.make_artifact_reference(
         view="targets", input_id="typed-input", select_fields=["curr_target"]
     )
     decision = {**reference, "reason_code": "frozen-native-code"}
     event = {"execution_id": "typed-1", "event_type": "target_computed", "details": {"decision": decision}}
-    resolved = asyncio.run(fact_artifacts.resolve_event_details(None, event, account_id=1))
+    resolved = _event_details(native_database, event)
     public = {key: value for key, value in resolved["decision"].items() if key != "business_facts_ref"}
     assert public == {"reason_code": "frozen-native-code", "curr_target": {"rb2610": 0}}
     assert event["details"] == {"decision": decision}
@@ -138,17 +152,15 @@ def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(mo
         "artifact_type": "target_snapshot",
         "content": fact_artifacts.make_artifact_reference(view="targets", input_id="typed-input"),
     }
-    target = asyncio.run(fact_artifacts.resolve_artifact_content(None, artifact, account_id=1))
+    target = asyncio.run(fact_artifacts.resolve_artifact_content(artifact, account_id=1))
     assert {key: value for key, value in target.items() if key != "business_facts_ref"} == {
         key: value for key, value in payload.items() if key != "account_target"
     }
 
 
-def test_target_event_missing_selected_field_is_not_inferred_from_another_target(monkeypatch):
-    async def frozen_input(*_args, **_kwargs):
-        return {"account_target": {"rb2610": 0.25}}
-
-    monkeypatch.setattr(fact_artifacts, "_read_owned_input", frozen_input)
+@pytest.mark.parametrize("other_target", ["last_target", "strategy_target"])
+def test_target_event_missing_selected_field_is_not_inferred_from_another_target(native_database, other_target):
+    freeze_input(native_database, {other_target: {"rb2610": 0.25}}, execution_id="typed-1", input_id="typed-input")
     event = {
         "execution_id": "typed-1",
         "event_type": "target_computed",
@@ -158,8 +170,25 @@ def test_target_event_missing_selected_field_is_not_inferred_from_another_target
             )
         },
     }
-    with pytest.raises(fact_artifacts.BusinessFactReferenceError, match="选定字段缺失"):
-        asyncio.run(fact_artifacts.resolve_event_details(None, event, account_id=1))
+    with pytest.raises(_core.NativeError, match="选定字段缺失") as error:
+        _event_details(native_database, event)
+    assert error.value.args[0] == "BUSINESS_FACTS_REFERENCE"
+
+
+def test_frozen_legacy_account_target_is_selected_as_canonical_current_target(native_database):
+    freeze_input(native_database, {"account_target": {"rb2610": 0.25}}, execution_id="typed-1", input_id="typed-input")
+    event = {
+        "execution_id": "typed-1",
+        "event_type": "target_computed",
+        "details": {
+            "decision": fact_artifacts.make_artifact_reference(
+                view="targets", input_id="typed-input", select_fields=["curr_target"]
+            )
+        },
+    }
+    decision = _event_details(native_database, event)["decision"]
+    assert decision["curr_target"] == {"rb2610": 0.25}
+    assert "account_target" not in decision
 
 
 @pytest.mark.parametrize("selected", [[], None, ["account_config"], ["curr_target", "curr_target"], "curr_target"])
@@ -170,11 +199,13 @@ def test_reference_rejects_invalid_explicit_field_selector(selected):
         fact_artifacts.parse_artifact_reference(content)
 
 
-def test_target_event_reference_requires_an_explicit_field_selector():
+def test_target_event_reference_requires_an_explicit_field_selector(native_database):
+    freeze_input(native_database, {}, execution_id="typed-1", input_id="typed-input")
     event = {
         "execution_id": "typed-1",
         "event_type": "target_computed",
         "details": {"decision": fact_artifacts.make_artifact_reference(view="targets", input_id="typed-input")},
     }
-    with pytest.raises(fact_artifacts.BusinessFactReferenceError):
-        asyncio.run(fact_artifacts.resolve_event_details(None, event, account_id=1))
+    with pytest.raises(_core.NativeError) as error:
+        _event_details(native_database, event)
+    assert error.value.args[0] == "BUSINESS_FACTS_REFERENCE"

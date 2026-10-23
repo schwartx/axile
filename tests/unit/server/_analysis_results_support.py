@@ -4,10 +4,10 @@ from collections.abc import Iterator, Mapping
 
 import sqlalchemy as sa
 
-from axile.server.db.models.analysis_result import (
+from tests.fixtures.rust_store.oracle_tables import (
     RESULT_TABLES as RESULT_TABLES,
 )
-from axile.server.db.models.analysis_result import (
+from tests.fixtures.rust_store.oracle_tables import (
     result_binding,
     result_calendar_range,
     result_daily_cost,

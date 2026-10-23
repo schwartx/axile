@@ -4,34 +4,17 @@ import json
 from copy import deepcopy
 
 import pytest
-import sqlalchemy as sa
 
-from axile.server.business_facts.orders import (
-    ORDER_FIELDS,
-    TABLES,
-    decode_orders,
-    encode_orders,
-    order,
-    order_collection,
-)
-from axile.server.db.models.execution import ExecuteRecord  # noqa: F401
+from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
+
+_TABLES = ("execution_order_collection", "execution_order")
 
 
-def _sql_roundtrip(payload):
-    engine = sa.create_engine("sqlite://")
-    batch = encode_orders(19, payload)
-    with engine.begin() as connection:
-        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-        connection.exec_driver_sql("CREATE TABLE executerecord (id INTEGER PRIMARY KEY)")
-        connection.exec_driver_sql("INSERT INTO executerecord (id) VALUES (19)")
-        for table in TABLES:
-            table.create(connection)
-            if batch[table]:
-                connection.execute(table.insert(), batch[table])
-        loaded = {table.name: connection.execute(sa.select(table)).mappings().all() for table in TABLES}
-    engine.dispose()
-    return decode_orders(loaded), loaded
+def _sql_roundtrip(path, payload):
+    record = persist_result(path, payload)
+    return read_result(path, record), {name: rows(path, name) for name in _TABLES}
 
 
 def _snapshot(**changes):
@@ -68,7 +51,7 @@ def _snapshot(**changes):
     return result
 
 
-def test_orders_sql_roundtrip_preserves_each_origin_and_snapshot():
+def test_orders_sql_roundtrip_preserves_each_origin_and_snapshot(native_database):
     original = _snapshot()
     payload = {
         "orders": [original, _snapshot(status="CANCELED"), _snapshot(order_id="")],
@@ -80,14 +63,14 @@ def test_orders_sql_roundtrip_preserves_each_origin_and_snapshot():
         },
     }
 
-    result, loaded = _sql_roundtrip(payload)
+    result, loaded = _sql_roundtrip(native_database, payload)
 
     assert business_evidence(result) == business_evidence(payload)
-    assert business_evidence(len(loaded[order.name])) == business_evidence(5)
+    assert business_evidence(len(loaded["execution_order"])) == business_evidence(5)
     assert business_evidence(
-        [row["ordinal"] for row in loaded[order.name] if row["path"] == "/orders"]
+        [row["ordinal"] for row in loaded["execution_order"] if row["path"] == "/orders"]
     ) == business_evidence([0, 1, 2])
-    nested = [row for row in loaded[order.name] if row["map_key"] == "alias/~key"]
+    nested = [row for row in loaded["execution_order"] if row["map_key"] == "alias/~key"]
     assert business_evidence(nested[0]["path"]) == business_evidence("/symbol_results/alias~1~0key/orders")
     assert business_evidence(nested[0]["symbol"]) == business_evidence("SHFE.au2606")
     assert result["orders"][0]["volume"] == payload["orders"][0]["volume"]
@@ -95,25 +78,28 @@ def test_orders_sql_roundtrip_preserves_each_origin_and_snapshot():
 
 
 @pytest.mark.parametrize("value", [None, [], "unknown", {}, [None, False, 0, "unknown", [], {}]])
-def test_orders_preserve_container_and_member_shapes(value):
+def test_orders_preserve_container_and_member_shapes(native_database, value):
     payload = {"orders": value, "symbol_results": {"": {"orders": value}}}
 
-    result, _ = _sql_roundtrip(payload)
+    result, _ = _sql_roundtrip(native_database, payload)
 
     assert business_evidence(result) == business_evidence(payload)
 
 
-def test_orders_missing_does_not_manufacture_empty_collection_or_defaults():
-    result, loaded = _sql_roundtrip({"symbol_results": {"valid": {}, "bad": None}, "unrelated": 1})
+def test_orders_missing_does_not_manufacture_empty_collection_or_defaults(native_database):
+    result, loaded = _sql_roundtrip(native_database, {"symbol_results": {"valid": {}, "bad": None}, "unrelated": 1})
 
-    assert business_evidence(result) == business_evidence({})
-    assert not loaded[order_collection.name]
-    assert not loaded[order.name]
-    empty_result, _ = _sql_roundtrip({"orders": [{}]})
+    assert business_evidence(result) == business_evidence(
+        {"symbol_results": {"valid": {}, "bad": None}, "unrelated": 1}
+    )
+    assert "orders" not in result
+    assert not loaded["execution_order_collection"]
+    assert not loaded["execution_order"]
+    empty_result, _ = _sql_roundtrip(native_database, {"orders": [{}]})
     assert business_evidence(empty_result) == business_evidence({"orders": [{}]})
 
 
-def test_orders_keep_explicit_missing_null_zero_empty_and_invalid_known_fields():
+def test_orders_keep_explicit_missing_null_zero_empty_and_invalid_known_fields(native_database):
     snapshot = {
         "order_id": "",
         "symbol": None,
@@ -130,10 +116,10 @@ def test_orders_keep_explicit_missing_null_zero_empty_and_invalid_known_fields()
         "value_conversion": {"price_currency": "", "rate": "0.14", "reference": None, "unknown": False},
     }
 
-    result, loaded = _sql_roundtrip({"orders": [snapshot]})
+    result, loaded = _sql_roundtrip(native_database, {"orders": [snapshot]})
 
     assert business_evidence(result) == business_evidence({"orders": [snapshot]})
-    row = loaded[order.name][0]
+    row = loaded["execution_order"][0]
     assert business_evidence(row["price"]) == business_evidence(0)
     assert row["volume"] is None
     assert row["avg_price"] is None
@@ -142,20 +128,20 @@ def test_orders_keep_explicit_missing_null_zero_empty_and_invalid_known_fields()
 
 
 @pytest.mark.parametrize("conversion", [None, [], "missing native evidence", {}, {"rate": 0}])
-def test_orders_conversion_scope_preserves_historical_shape(conversion):
+def test_orders_conversion_scope_preserves_historical_shape(native_database, conversion):
     payload = {"orders": [{"order_id": "one", "value_conversion": conversion}]}
 
-    result, _ = _sql_roundtrip(payload)
+    result, _ = _sql_roundtrip(native_database, payload)
 
     assert business_evidence(result) == business_evidence(payload)
 
 
-def test_orders_valid_stable_fields_live_in_columns_and_read_column_updates():
+def test_orders_valid_stable_fields_live_in_columns_and_read_column_updates(native_database):
     snapshot = _snapshot()
-    batch = encode_orders(19, {"orders": [snapshot]})
-    row = batch[order][0]
+    record = persist_result(native_database, {"orders": [snapshot]})
+    row = rows(native_database, "execution_order")[0]
 
-    assert all(name in row for name in ORDER_FIELDS)
+    assert set(snapshot).difference({"value_conversion"}) <= row.keys()
     assert business_evidence(row["order_id"]) == business_evidence(snapshot["order_id"])
     assert business_evidence(row["price"]) == business_evidence(snapshot["price"])
     assert business_evidence(row["conversion_rate"]) == business_evidence(0.14)
@@ -165,37 +151,43 @@ def test_orders_valid_stable_fields_live_in_columns_and_read_column_updates():
     )
     assert row["invalid_value"] is None
     assert row["conversion_invalid_value"] is None
-    row["price"] = 613.75
-    decoded = decode_orders({table.name: values for table, values in batch.items()})
-    assert business_evidence(decoded["orders"][0]["price"]) == business_evidence(613.75)
+    sql(native_database, "UPDATE execution_order SET price=613.75 WHERE record_id=?", (record["id"],))
+    assert read_result(native_database, record)["orders"][0]["price"] == 613.75
 
 
-def test_orders_incomplete_typed_collection_fails_instead_of_using_hidden_payload():
-    batch = encode_orders(19, {"orders": [_snapshot(), _snapshot(order_id="second")]})
-    batch[order].pop()
+def test_orders_incomplete_typed_collection_fails_instead_of_using_hidden_payload(native_database):
+    record = persist_result(native_database, {"orders": [_snapshot(), _snapshot(order_id="second")]})
+    sql(native_database, "DELETE FROM execution_order WHERE record_id=? AND ordinal=1", (record["id"],))
 
-    with pytest.raises(ValueError, match="成员不完整"):
-        decode_orders({table.name: values for table, values in batch.items()})
-
-
-def test_orders_broken_parent_link_fails():
-    batch = encode_orders(19, {"orders": [_snapshot()]})
-    batch[order_collection].clear()
-
-    with pytest.raises(ValueError, match="缺少所属集合"):
-        decode_orders({table.name: values for table, values in batch.items()})
+    with pytest.raises(_core.NativeError, match="incomplete"):
+        read_result(native_database, record)
 
 
-def test_orders_encode_does_not_change_live_or_migration_payload():
+def test_orders_broken_parent_link_fails(native_database):
+    record = persist_result(native_database, {"orders": [_snapshot()]})
+    other = persist_result(native_database, {})
+    # 移到有效属主，保留孤立订单，避免删除触发器同时清理子行。
+    sql(
+        native_database,
+        "UPDATE execution_order_collection SET record_id=? WHERE record_id=?",
+        (other["id"], record["id"]),
+    )
+    assert rows(native_database, "execution_order")
+
+    with pytest.raises(_core.NativeError, match="orphan order facts"):
+        read_result(native_database, record)
+
+
+def test_orders_encode_does_not_change_live_or_migration_payload(native_database):
     payload = {"orders": [_snapshot()], "symbol_results": {"native": {"orders": [None, {}]}}}
     before = deepcopy(payload)
 
-    encode_orders(19, payload)
+    persist_result(native_database, payload)
 
     assert business_evidence(payload) == business_evidence(before)
 
 
-def test_orders_nonfinite_historical_evidence_uses_valid_json_metadata():
+def test_orders_nonfinite_historical_evidence_uses_valid_json_metadata(native_database):
     payload = {
         "orders": [
             float("nan"),
@@ -205,7 +197,7 @@ def test_orders_nonfinite_historical_evidence_uses_valid_json_metadata():
         "symbol_results": {"invalid": {"orders": float("inf")}},
     }
 
-    result, loaded = _sql_roundtrip(payload)
+    result, loaded = _sql_roundtrip(native_database, payload)
 
     assert result["orders"][0] == {"invalid_number": "nan"}
     assert result["orders"][1]["audit_evidence"]["invalid_fields"]["price"] == {"invalid_number": "inf"}
@@ -220,16 +212,10 @@ def test_orders_nonfinite_historical_evidence_uses_valid_json_metadata():
             json.dumps(dict(row), allow_nan=False)
 
 
-def test_orders_deleting_execution_cascades_all_occurrences():
-    batch = encode_orders(19, {"orders": [_snapshot()], "symbol_results": {"native": {"orders": [{}]}}})
-    engine = sa.create_engine("sqlite://")
-    with engine.begin() as connection:
-        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-        connection.exec_driver_sql("CREATE TABLE executerecord (id INTEGER PRIMARY KEY)")
-        connection.exec_driver_sql("INSERT INTO executerecord (id) VALUES (19)")
-        for table in TABLES:
-            table.create(connection)
-            connection.execute(table.insert(), batch[table])
-        connection.exec_driver_sql("DELETE FROM executerecord WHERE id=19")
-        assert all(connection.scalar(sa.select(sa.func.count()).select_from(table)) == 0 for table in TABLES)
-    engine.dispose()
+def test_orders_deleting_execution_cascades_all_occurrences(native_database):
+    record = persist_result(native_database, {"orders": [_snapshot()], "symbol_results": {"native": {"orders": [{}]}}})
+    assert all(rows(native_database, name) for name in _TABLES)
+
+    sql(native_database, "DELETE FROM executerecord WHERE id=?", (record["id"],))
+
+    assert all(not rows(native_database, name) for name in _TABLES)

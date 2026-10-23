@@ -1,21 +1,21 @@
 """worker 后观测提交后，丢失成功回包不应阻断失败终态。"""
 
 import asyncio
-from contextlib import asynccontextmanager
+import json
+import sqlite3
+from contextlib import closing, contextmanager
 from copy import deepcopy
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.domain.execution import ExecutionArtifactType, ExecutionKind, ExecutionTerminateMode
-from axile.server.business_facts import assets, repository
-from axile.server.business_facts.artifacts import make_artifact_reference, resolve_artifact_content
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord, ExecutionArtifact
+from axile.server.business_facts import repository
+from axile.server.business_facts.artifacts import make_artifact_reference
+from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
-from tests.unit.server._execution_test_support import build_account
+from tests.conftest import initialize_native_database, native_store_call
+from tests.unit.server._execution_test_support import build_account, insert_account
 
 _ACCOUNT_ID = 2
 _EXECUTION_ID = "after-assets-before-response"
@@ -33,54 +33,57 @@ _AFTER_ASSETS = {
 _WORKER_RESULT = {"status": "SUCCEEDED", "success": True, "account_assets": _AFTER_ASSETS}
 
 
-@asynccontextmanager
-async def _frozen_after(tmp_path, monkeypatch):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'terminal-race.db'}")
-    # 执行后观测经原生入口冻结,须指向同一测试文件。
-    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(tmp_path / "terminal-race.db"))
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        async with sessions() as session:
-            session.add(build_account(id=_ACCOUNT_ID))
-            input_id = await repository.persist_execution_input(
-                session,
-                account_id=_ACCOUNT_ID,
-                execution_id=_EXECUTION_ID,
-                payload=_FROZEN_INPUT,
-                created_at=_CREATED_AT,
-                before_assets=_BEFORE_ASSETS,
-            )
-            await session.commit()
-        async with sessions() as session:
-            reference = await input_persistence._persist_post_execute_assets(
-                account_id=_ACCOUNT_ID, execution_id=_EXECUTION_ID, payload=_WORKER_RESULT
-            )
-            assert reference is not None
-            asset_id = reference[1]
-            session.add(
-                ExecutionArtifact(
-                    execution_id=_EXECUTION_ID,
-                    artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
-                    schema_version=3,
-                    content=make_artifact_reference(view="assets_after", input_id=input_id, asset_id=asset_id),
-                )
-            )
-            await session.commit()
-        yield sessions, input_id, asset_id
-    finally:
-        await engine.dispose()
+def _rows(path, table):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')]
 
 
-async def _asset_evidence(session):
-    return {
-        table.name: [dict(row) for row in (await session.execute(sa.select(table))).mappings()]
-        for table in (assets.asset_snapshot, assets.asset_position)
-    }
+@contextmanager
+def _frozen_after(tmp_path, monkeypatch):
+    path = tmp_path / "terminal-race.db"
+    initialize_native_database(path)
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+    with closing(sqlite3.connect(path)) as connection, connection:
+        insert_account(connection, build_account(id=_ACCOUNT_ID, portfolio_id=None))
+    input_id = native_store_call(
+        path,
+        "freeze_execution_input",
+        {
+            "account_id": _ACCOUNT_ID,
+            "execution_id": _EXECUTION_ID,
+            "input_id": "race-input",
+            "payload": _FROZEN_INPUT,
+            "created_at": _CREATED_AT,
+            "before_assets": _BEFORE_ASSETS,
+        },
+    )["input_id"]
+    reference = input_persistence.persist_post_execute_assets_sync(
+        account_id=_ACCOUNT_ID, execution_id=_EXECUTION_ID, payload=_WORKER_RESULT
+    )
+    assert reference is not None
+    asset_id = reference[1]
+    artifact = ExecutionArtifact(
+        execution_id=_EXECUTION_ID,
+        artifact_type=ExecutionArtifactType.ACCOUNT_SNAPSHOT,
+        schema_version=3,
+        content=make_artifact_reference(view="assets_after", input_id=input_id, asset_id=asset_id),
+    )
+    assert native_store_call(path, "append_execution_artifact", artifact.model_dump(mode="json"))
+    yield path, input_id, asset_id
 
 
-async def _append_terminal(sessions, terminal, raw_result=None):
+def _asset_evidence(path):
+    return {table: _rows(path, table) for table in ("business_asset_snapshot", "business_asset_position")}
+
+
+def _resolved_artifact(path):
+    artifacts = native_store_call(path, "list_execution_artifacts", {"execution_id": _EXECUTION_ID})
+    assert artifacts["count"] == 1
+    return artifacts["data"][0]["content"]
+
+
+async def _append_terminal(terminal, raw_result=None):
     if terminal == "terminated":
         return await records.append_terminated_execute_record(
             account_id=_ACCOUNT_ID,
@@ -94,7 +97,6 @@ async def _append_terminal(sessions, terminal, raw_result=None):
             cancel_attempted=False,
             cancel_failed_order_ids=[],
             raw_result=raw_result,
-            session_factory=sessions,
         )
     if terminal == "exception":
         return await records.append_error_execute_record(
@@ -102,7 +104,6 @@ async def _append_terminal(sessions, terminal, raw_result=None):
             execution_id=_EXECUTION_ID,
             msg="synthetic exception before worker response",
             raw_result=raw_result,
-            session_factory=sessions,
         )
     assert terminal == "success"
     return await records.append_success_execute_record(
@@ -110,49 +111,47 @@ async def _append_terminal(sessions, terminal, raw_result=None):
         execution_id=_EXECUTION_ID,
         raw_input={},
         result=raw_result,
-        session_factory=sessions,
     )
 
 
 @pytest.mark.parametrize("terminal", ["terminated", "exception"])
 def test_missing_worker_response_persists_failure_without_inventing_result_assets(tmp_path, monkeypatch, terminal):
     async def check():
-        async with _frozen_after(tmp_path, monkeypatch) as (sessions, input_id, asset_id):
-            async with sessions() as session:
-                frozen_evidence = await _asset_evidence(session)
-            record = await _append_terminal(sessions, terminal)
-            async with sessions() as session:
-                stored = await session.get(ExecuteRecord, record.id)
-                assert stored is not None and stored.facts_complete
-                assert stored.is_success == 0
-                assert stored.task_status == ("TERMINATED" if terminal == "terminated" else "FAILED")
-                assert stored.input_id == input_id
-                result = await repository.read_execution_result(session, stored)
-                assert "account_assets" not in result
-                assert "success" not in result
-                if terminal == "terminated":
-                    assert result["outcome"] == "terminated"
-                    assert result["termination"]["reason"] == "synthetic termination before worker response"
-                else:
-                    assert result["status"] == "FAILED"
-                    assert result["error"] == "synthetic exception before worker response"
-                assert await _asset_evidence(session) == frozen_evidence
-                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_binding)) == 0
-                assert await session.scalar(sa.select(sa.func.count()).select_from(AccountAssetSnapshot)) == 0
-                artifact = (await session.scalars(sa.select(ExecutionArtifact))).one()
-                assert artifact.content == make_artifact_reference(
-                    view="assets_after", input_id=input_id, asset_id=asset_id
-                )
-                resolved = await resolve_artifact_content(session, artifact, account_id=_ACCOUNT_ID)
-                assert business_evidence(resolved["account_assets"]) == business_evidence(_AFTER_ASSETS)
-            late_success = await _append_terminal(sessions, "success", _WORKER_RESULT)
+        with _frozen_after(tmp_path, monkeypatch) as (path, input_id, asset_id):
+            frozen_evidence = _asset_evidence(path)
+            record = await _append_terminal(terminal)
+            stored_row = _rows(path, "executerecord")[0]
+            for field in ("audit_evidence", "termination_evidence"):
+                stored_row[field] = json.loads(stored_row[field])
+            stored = ExecuteRecord.model_validate(stored_row)
+            assert stored.facts_complete
+            assert stored.is_success == 0
+            assert stored.task_status == ("TERMINATED" if terminal == "terminated" else "FAILED")
+            assert stored.input_id == input_id
+            result = await repository.read_execution_result(stored)
+            assert "account_assets" not in result
+            assert "success" not in result
+            if terminal == "terminated":
+                assert result["outcome"] == "terminated"
+                assert result["termination"]["reason"] == "synthetic termination before worker response"
+            else:
+                assert result["status"] == "FAILED"
+                assert result["error"] == "synthetic exception before worker response"
+            assert _asset_evidence(path) == frozen_evidence
+            assert _rows(path, "business_asset_binding") == []
+            assert _rows(path, "account_asset_snapshot") == []
+            artifact = _rows(path, "execution_artifact")[0]
+            assert json.loads(artifact["content"]) == make_artifact_reference(
+                view="assets_after", input_id=input_id, asset_id=asset_id
+            )
+            assert business_evidence(_resolved_artifact(path)["account_assets"]) == business_evidence(_AFTER_ASSETS)
+            late_success = await _append_terminal("success", _WORKER_RESULT)
             assert late_success.id == record.id
             assert late_success.is_success == 0
             assert late_success.task_status == stored.task_status
-            async with sessions() as session:
-                result = await repository.read_execution_result(session, late_success)
-                assert "account_assets" not in result
-                assert await _asset_evidence(session) == frozen_evidence
+            result = await repository.read_execution_result(late_success)
+            assert "account_assets" not in result
+            assert _asset_evidence(path) == frozen_evidence
 
     asyncio.run(check())
 
@@ -160,22 +159,20 @@ def test_missing_worker_response_persists_failure_without_inventing_result_asset
 @pytest.mark.parametrize("terminal", ["success", "terminated", "exception"])
 def test_matching_after_observation_reuses_immutable_fact(tmp_path, monkeypatch, terminal):
     async def check():
-        async with _frozen_after(tmp_path, monkeypatch) as (sessions, input_id, asset_id):
-            async with sessions() as session:
-                frozen_evidence = await _asset_evidence(session)
+        with _frozen_after(tmp_path, monkeypatch) as (path, input_id, asset_id):
+            frozen_evidence = _asset_evidence(path)
             payload = {"account_assets": deepcopy(_AFTER_ASSETS)}
-            record = await _append_terminal(sessions, terminal, payload)
+            record = await _append_terminal(terminal, payload)
             assert payload == {"account_assets": _AFTER_ASSETS}
-            async with sessions() as session:
-                assert record.facts_complete
-                assert record.is_success == int(terminal == "success")
-                assert record.input_id == input_id
-                result = await repository.read_execution_result(session, record)
-                assert business_evidence(result["account_assets"]) == business_evidence(_AFTER_ASSETS)
-                assert await _asset_evidence(session) == frozen_evidence
-                assert (await session.scalars(sa.select(assets.asset_binding.c.asset_id))).one() == asset_id
-                history = (await session.scalars(sa.select(AccountAssetSnapshot))).one()
-                assert history.asset_fact_id == asset_id
+            assert record.facts_complete
+            assert record.is_success == int(terminal == "success")
+            assert record.input_id == input_id
+            result = await repository.read_execution_result(record)
+            assert business_evidence(result["account_assets"]) == business_evidence(_AFTER_ASSETS)
+            assert _asset_evidence(path) == frozen_evidence
+            assert [row["asset_id"] for row in _rows(path, "business_asset_binding")] == [asset_id]
+            history = _rows(path, "account_asset_snapshot")
+            assert len(history) == 1 and history[0]["asset_fact_id"] == asset_id
 
     asyncio.run(check())
 
@@ -186,9 +183,8 @@ def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_e
     tmp_path, monkeypatch, terminal, change
 ):
     async def check():
-        async with _frozen_after(tmp_path, monkeypatch) as (sessions, _input_id, _asset_id):
-            async with sessions() as session:
-                frozen_evidence = await _asset_evidence(session)
+        with _frozen_after(tmp_path, monkeypatch) as (path, _input_id, _asset_id):
+            frozen_evidence = _asset_evidence(path)
             changed = deepcopy(_AFTER_ASSETS)
             if change == "equity":
                 changed["total_asset"] = 101.0
@@ -199,28 +195,23 @@ def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_e
             else:
                 changed = None
             with pytest.raises(ValueError, match="与已持久化执行后资产观测不一致"):
-                await _append_terminal(sessions, terminal, {"account_assets": changed})
-            async with sessions() as session:
-                assert await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord)) == 0
-                assert await session.scalar(sa.select(sa.func.count()).select_from(assets.asset_binding)) == 0
-                assert await session.scalar(sa.select(sa.func.count()).select_from(AccountAssetSnapshot)) == 0
-                assert await _asset_evidence(session) == frozen_evidence
-                artifact = (await session.scalars(sa.select(ExecutionArtifact))).one()
-                resolved = await resolve_artifact_content(session, artifact, account_id=_ACCOUNT_ID)
-                assert business_evidence(resolved["account_assets"]) == business_evidence(_AFTER_ASSETS)
+                await _append_terminal(terminal, {"account_assets": changed})
+            assert _rows(path, "executerecord") == []
+            assert _rows(path, "business_asset_binding") == []
+            assert _rows(path, "account_asset_snapshot") == []
+            assert _asset_evidence(path) == frozen_evidence
+            assert business_evidence(_resolved_artifact(path)["account_assets"]) == business_evidence(_AFTER_ASSETS)
 
     asyncio.run(check())
 
 
 def test_success_missing_frozen_after_observation_is_still_rejected(tmp_path, monkeypatch):
     async def check():
-        async with _frozen_after(tmp_path, monkeypatch) as (sessions, _input_id, _asset_id):
-            async with sessions() as session:
-                frozen_evidence = await _asset_evidence(session)
+        with _frozen_after(tmp_path, monkeypatch) as (path, _input_id, _asset_id):
+            frozen_evidence = _asset_evidence(path)
             with pytest.raises(ValueError, match="终态结果缺少 account_assets"):
-                await _append_terminal(sessions, "success", {"status": "SUCCEEDED", "success": True})
-            async with sessions() as session:
-                assert await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord)) == 0
-                assert await _asset_evidence(session) == frozen_evidence
+                await _append_terminal("success", {"status": "SUCCEEDED", "success": True})
+            assert _rows(path, "executerecord") == []
+            assert _asset_evidence(path) == frozen_evidence
 
     asyncio.run(check())

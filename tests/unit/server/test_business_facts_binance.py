@@ -6,35 +6,27 @@ from collections.abc import Mapping
 from copy import deepcopy
 
 import pytest
-import sqlalchemy as sa
 
-from axile.server.business_facts import assets, orders, symbols, trades
 from scripts.business_facts_contract import business_evidence
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, sql
 
 
-def _sql_round_trip(module, payload: Mapping[str, object]):
-    """经过 SQLite 类型转换后读取，防止仅在内存字典中看似无损。"""
-    name = module.__name__.rsplit(".", 1)[-1]
-    batch = getattr(module, f"encode_{name}")(25, deepcopy(payload))
-    return _sql_batch_round_trip(module, batch)
-
-
-def _sql_batch_round_trip(module, batch):
-    name = module.__name__.rsplit(".", 1)[-1]
-    engine = sa.create_engine("sqlite://")
-    try:
-        next(iter(batch)).metadata.create_all(engine)
-        with engine.begin() as connection:
-            for table, rows in batch.items():
-                for row in rows:
-                    connection.execute(table.insert().values(**row))
-            # SELECT 不保证顺序；原始数组顺序必须由事实中的 ordinal 恢复。
-            loaded = {
-                table.name: list(reversed(connection.execute(sa.select(table)).mappings().all())) for table in batch
-            }
-        return getattr(module, f"decode_{name}")(loaded), loaded
-    finally:
-        engine.dispose()
+def _sql_round_trip(path, payload: Mapping[str, object]):
+    """实际提交全部领域事实，并经原生完整读取还原数组发生顺序。"""
+    record = persist_result(path, deepcopy(payload))
+    # 反向索引使原生加载先看到逆序发生，数组顺序必须依照 ordinal 还原。
+    for name, owner in (
+        ("execution_order", "record_id"),
+        ("business_trade", "record_id"),
+        ("business_asset_position", "asset_id"),
+    ):
+        sql(path, f"CREATE INDEX IF NOT EXISTS oracle_reverse_{name} ON {name}({owner},ordinal DESC)")
+    loaded = {
+        name: rows(path, name)
+        for name in ("execution_order", "business_trade", "business_asset_snapshot", "business_asset_position")
+    }
+    return read_result(path, record), loaded
 
 
 def _conversion() -> dict[str, object]:
@@ -115,7 +107,7 @@ def _trade(*, symbol="ETHUSDC", trade_id="9007199254740995", day="20261020", ext
     return value
 
 
-def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order():
+def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order(native_database):
     pending = _order(filled_volume=0.0, avg_price=0.0, status="待成交")
     filled = _order(filled_volume=0.125, status="已成交")
     nested = [pending, filled, deepcopy(filled), _order(order_id=""), _order(day="20261019")]
@@ -127,7 +119,7 @@ def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order
         },
     }
 
-    actual, loaded = _sql_round_trip(orders, payload)
+    actual, loaded = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     assert business_evidence(list(actual["symbol_results"])) == business_evidence(["ETH/USDC~SHORT", "BTCUSDT"])
@@ -141,16 +133,16 @@ def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order
     assert business_evidence(snapshots[0]["update_time"]) == business_evidence("2026-10-19T16:00:01.000Z")
     assert business_evidence(snapshots[0]["price"]) == business_evidence(3210.125)
     assert business_evidence(snapshots[0]["value_conversion"]) == business_evidence(_conversion())
-    assert business_evidence(len(loaded[orders.order.name])) == business_evidence(8)
+    assert business_evidence(len(loaded["execution_order"])) == business_evidence(8)
 
 
 @pytest.mark.parametrize("native_id", [0, "0", "", None, "000001", "900719925474099312345"])
-def test_binance_native_order_and_trade_ids_are_not_coerced(native_id):
+def test_binance_native_order_and_trade_ids_are_not_coerced(native_database, native_id):
     order_payload = {"orders": [_order(order_id=native_id)]}
     trade_payload = {"trades": [_trade(trade_id=native_id, order_id=native_id)]}
 
-    decoded_order, _ = _sql_round_trip(orders, order_payload)
-    decoded_trade, _ = _sql_round_trip(trades, trade_payload)
+    decoded_order, _ = _sql_round_trip(native_database, order_payload)
+    decoded_trade, _ = _sql_round_trip(native_database, trade_payload)
 
     assert business_evidence(decoded_order) == business_evidence(order_payload)
     assert business_evidence(decoded_trade) == business_evidence(trade_payload)
@@ -170,10 +162,10 @@ def test_binance_native_order_and_trade_ids_are_not_coerced(native_id):
         {"commission": None, "commission_asset": ""},
     ],
 )
-def test_binance_fees_preserve_missing_unknown_zero_rebate_and_native_asset(fee):
+def test_binance_fees_preserve_missing_unknown_zero_rebate_and_native_asset(native_database, fee):
     payload = {"trades": [_trade(extra=fee)]}
 
-    actual, _ = _sql_round_trip(trades, payload)
+    actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     decoded = actual["trades"][0]
@@ -186,7 +178,7 @@ def test_binance_fees_preserve_missing_unknown_zero_rebate_and_native_asset(fee)
         assert type(decoded["extra"]["commission"]) is type(fee["commission"])
 
 
-def test_binance_trades_keep_duplicate_ids_symbols_days_and_root_evidence():
+def test_binance_trades_keep_duplicate_ids_symbols_days_and_root_evidence(native_database):
     first = _trade(extra={"commission": 0.0, "commission_asset": "USDT"})
     prior_day = _trade(day="20261019", trade_time="2026-10-19T16:00:00.000Z")
     payload = {
@@ -197,7 +189,7 @@ def test_binance_trades_keep_duplicate_ids_symbols_days_and_root_evidence():
         },
     }
 
-    actual, loaded = _sql_round_trip(trades, payload)
+    actual, loaded = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     nested = actual["symbol_results"]["ETH/USDC~SHORT"]["trades"]
@@ -206,7 +198,7 @@ def test_binance_trades_keep_duplicate_ids_symbols_days_and_root_evidence():
         ["20261020", "20261020", "20261019"]
     )
     assert business_evidence(nested[2]["trade_time"]) == business_evidence("2026-10-19T16:00:00.000Z")
-    assert business_evidence(len(loaded[trades.trade.name])) == business_evidence(6)
+    assert business_evidence(len(loaded["business_trade"])) == business_evidence(6)
 
 
 def _asset_snapshot():
@@ -281,10 +273,10 @@ def _asset_snapshot():
     }
 
 
-def test_binance_assets_preserve_hedged_positions_native_fields_and_unavailable_cash():
+def test_binance_assets_preserve_hedged_positions_native_fields_and_unavailable_cash(native_database):
     payload = {"account_assets": _asset_snapshot()}
 
-    actual, _ = _sql_round_trip(assets, payload)
+    actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     snapshot = actual["account_assets"]
@@ -307,21 +299,20 @@ def test_binance_assets_preserve_hedged_positions_native_fields_and_unavailable_
     assert business_evidence(long["liquidation_price"]) == business_evidence(0.0)
 
 
-def test_binance_before_and_after_assets_are_independent_observations():
+def test_binance_before_and_after_assets_are_independent_observations(native_database):
     before = _asset_snapshot()
     after = deepcopy(before)
     after["update_time"] = "2026-10-20T00:00:03.000Z"
     after["total_asset"] = 5048.0
     after["positions"][0]["volume"] = 0.25
-    batch = assets.encode_assets(25, {"account_assets": after})
-    input_batch = assets.encode_input_assets("offline-binance-before", {"account_assets": before})
-    for table, rows in input_batch.items():
-        batch[table].extend(rows)
-
-    actual, loaded = _sql_batch_round_trip(assets, batch)
+    receipt = freeze_input(native_database, {}, input_id="offline-binance-before", before_assets=before)
+    actual, loaded = _sql_round_trip(native_database, {"account_assets": after})
+    observations = native_store_call(native_database, "asset_input_observations", {"input_id": receipt["input_id"]})
+    assert len(observations) == 1
+    actual["before_account_assets"] = observations[0]["account_assets"]
 
     assert business_evidence(actual) == business_evidence({"account_assets": after, "before_account_assets": before})
-    snapshots = loaded[assets.asset_snapshot.name]
+    snapshots = loaded["business_asset_snapshot"]
     assert business_evidence(len(snapshots)) == business_evidence(2)
     assert business_evidence({row["scope"] for row in snapshots}) == business_evidence({"before", "after"})
     assert business_evidence(len({row["asset_id"] for row in snapshots})) == business_evidence(2)
@@ -330,18 +321,18 @@ def test_binance_before_and_after_assets_are_independent_observations():
 
 
 @pytest.mark.parametrize("positions", [None, [], [{"symbol": "BTCUSDT", "volume": 0, "extra": {}}]])
-def test_binance_position_container_unknown_empty_and_explicit_zero_are_distinct(positions):
+def test_binance_position_container_unknown_empty_and_explicit_zero_are_distinct(native_database, positions):
     snapshot = _asset_snapshot()
     snapshot["positions"] = positions
     payload = {"account_assets": snapshot}
 
-    actual, _ = _sql_round_trip(assets, payload)
+    actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     assert business_evidence(actual["account_assets"]["positions"]) == business_evidence(positions)
 
 
-def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen():
+def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen(native_database):
     payload = {
         "symbol_results": {
             "ETH/USDC~SHORT": {
@@ -379,7 +370,7 @@ def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen():
         "target_volume": {"ETHUSDC": 0.0},
     }
 
-    actual, _ = _sql_round_trip(symbols, payload)
+    actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     nested = actual["symbol_results"]["ETH/USDC~SHORT"]

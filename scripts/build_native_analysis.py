@@ -1,4 +1,4 @@
-"""Build and stage the host-native SQLite publishing CLI and PyO3 extension."""
+"""Build and stage the host-native PyO3 extension and optional SQLite publishing CLI."""
 
 from __future__ import annotations
 
@@ -27,10 +27,13 @@ def verify_capabilities(source: Path) -> None:
         not isinstance(capabilities, dict)
         or type(capabilities.get("protocol")) is not int
         or capabilities["protocol"] != 1
+        or capabilities.get("analysis_fact_schema") != 40
         or not isinstance(capabilities.get("commands"), list)
         or "publish_store" not in capabilities["commands"]
     ):
-        raise RuntimeError("Native analysis executable requires protocol 1 and command publish_store")
+        raise RuntimeError(
+            "Native analysis executable requires protocol 1, analysis fact schema 40 and command publish_store"
+        )
 
 
 def stage_binary(source: Path, destination: Path) -> str:
@@ -65,10 +68,12 @@ def stage_binary(source: Path, destination: Path) -> str:
 
 
 def main() -> None:
-    """Compile with the checked-in lockfile, then stage and verify the binary."""
+    """Compile with the checked-in lockfile, then verify the extension and optional CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--debug", action="store_true", help="Build the debug profile instead of release")
-    parser.add_argument("--no-build", action="store_true", help="Only stage the already built host executable and extension")
+    parser.add_argument(
+        "--no-build", action="store_true", help="Only stage the already built host executable and extension"
+    )
     parser.add_argument(
         "--target-dir",
         type=Path,
@@ -109,8 +114,12 @@ def main() -> None:
     executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
     source = target_dir / ("debug" if args.debug else "release") / executable
     destination = ROOT / "axile" / "server" / "_native" / executable
-    version = stage_binary(source, destination)
-    print(f"Staged {version or executable}: {destination}")
+    if source.is_file():
+        version = stage_binary(source, destination)
+        print(f"Staged {version or executable}: {destination}")
+    else:
+        destination.unlink(missing_ok=True)
+        print(f"Staged native extension: {extension} (no publishing CLI)")
 
 
 if __name__ == "__main__":

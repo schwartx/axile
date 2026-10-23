@@ -6,17 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import loguru
-from sqlalchemy import update
-from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import col, select
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
-from axile.server.core.db import SessionLocal
-from axile.server.db.models import Account, now_str
-from axile.server.db.models.account import AccountContext
-from axile.server.db.models.execution_intent import ExecutionIntent
+from axile.server.db.models import new_execution_id, now_str
+from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.execution.execution_algorithms import resolve_execution_algorithm_name
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
@@ -32,15 +26,11 @@ from axile.server.execution.registry import (
     try_register_running_execution,
     update_execution_task_state,
 )
+from axile.server.native_store import native_operation
 
 PROCESS_INTERRUPTED_REASON = "上次执行中断，未自动续跑"
 SUPERSEDED_BY_CLEAR = "superseded_by_clear"
 
-_ACTIVE_STATUSES = (
-    ExecutionTaskStatus.QUEUED,
-    ExecutionTaskStatus.RUNNING,
-    ExecutionTaskStatus.TERMINATING,
-)
 _RUNNING_STATUSES = (ExecutionTaskStatus.RUNNING, ExecutionTaskStatus.TERMINATING)
 
 
@@ -82,43 +72,30 @@ class SubmitResult:
     account_id: int
 
 
-def _snapshot(row: ExecutionIntent) -> IntentSnapshot:
-    kind = row.kind if isinstance(row.kind, ExecutionKind) else ExecutionKind(str(row.kind))
-    status = row.status if isinstance(row.status, ExecutionTaskStatus) else ExecutionTaskStatus(str(row.status))
-    channel = (
-        None
-        if row.channel is None
-        else (row.channel if isinstance(row.channel, TradeChannel) else TradeChannel(str(row.channel)))
-    )
-    terminate_mode = None
-    if row.terminate_mode is not None:
-        terminate_mode = (
-            row.terminate_mode
-            if isinstance(row.terminate_mode, ExecutionTerminateMode)
-            else ExecutionTerminateMode(str(row.terminate_mode))
-        )
+def _snapshot(row: dict[str, Any]) -> IntentSnapshot:
     return IntentSnapshot(
-        execution_id=row.execution_id,
-        account_id=row.account_id,
-        kind=kind,
-        trigger_source=row.trigger_source,
-        status=status,
-        channel=channel,
-        algorithm=row.algorithm,
-        payload=dict(row.payload or {}),
-        created_at=row.created_at,
-        started_at=row.started_at,
-        finished_at=row.finished_at,
-        error=row.error,
-        cancel_requested_at=row.cancel_requested_at,
-        cancel_reason=row.cancel_reason,
-        terminate_mode=terminate_mode,
+        execution_id=row["execution_id"],
+        account_id=row["account_id"],
+        kind=ExecutionKind(row["kind"]),
+        trigger_source=row["trigger_source"],
+        status=ExecutionTaskStatus(row["status"]),
+        channel=None if row["channel"] is None else TradeChannel(row["channel"]),
+        algorithm=row["algorithm"],
+        payload=dict(row["payload"]),
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        error=row["error"],
+        cancel_requested_at=row["cancel_requested_at"],
+        cancel_reason=row["cancel_reason"],
+        terminate_mode=None if row["terminate_mode"] is None else ExecutionTerminateMode(row["terminate_mode"]),
     )
 
 
-async def _require_account(account_id: int) -> Account:
-    async with SessionLocal() as session:
-        account = await session.get(Account, account_id)
+async def _require_account(account_id: int) -> AccountSnapshot:
+    from axile.server.repositories import get_account_snapshot
+
+    account = await get_account_snapshot(account_id)
     if account is None:
         raise ValueError(f"无法执行任务 账户id: {account_id} 不存在")
     return account
@@ -126,34 +103,52 @@ async def _require_account(account_id: int) -> Account:
 
 async def get_intent(execution_id: str) -> IntentSnapshot | None:
     """按 execution_id 读取一张 intent."""
-    async with SessionLocal() as session:
-        statement = select(ExecutionIntent).where(col(ExecutionIntent.execution_id) == execution_id)
-        row = (await session.execute(statement)).scalar_one_or_none()
+    row = await native_operation("intent_get", {"execution_id": execution_id})
     return None if row is None else _snapshot(row)
 
 
 async def load_active_intents(account_id: int) -> tuple[IntentSnapshot | None, IntentSnapshot | None]:
     """返回账户当前 (running_or_terminating, queued)."""
-    async with SessionLocal() as session:
-        statement = select(ExecutionIntent).where(
-            col(ExecutionIntent.account_id) == account_id,
-            col(ExecutionIntent.status).in_(_ACTIVE_STATUSES),
-        )
-        rows = list((await session.execute(statement)).scalars().all())
-    running = next((row for row in rows if _snapshot(row).status in _RUNNING_STATUSES), None)
-    queued = next((row for row in rows if _snapshot(row).status == ExecutionTaskStatus.QUEUED), None)
+    rows = await native_operation("intent_active", {"account_id": account_id})
     return (
-        None if running is None else _snapshot(running),
-        None if queued is None else _snapshot(queued),
+        None if rows["running"] is None else _snapshot(rows["running"]),
+        None if rows["queued"] is None else _snapshot(rows["queued"]),
     )
 
 
 async def list_intents_by_status(*statuses: ExecutionTaskStatus) -> list[IntentSnapshot]:
     """列出指定状态的全部 intent（启动恢复用）."""
-    async with SessionLocal() as session:
-        statement = select(ExecutionIntent).where(col(ExecutionIntent.status).in_(statuses))
-        rows = list((await session.execute(statement)).scalars().all())
+    rows = await native_operation("intent_list", {"statuses": statuses})
     return [_snapshot(row) for row in rows]
+
+
+async def load_intents_for_recovery() -> tuple[list[IntentSnapshot], list[IntentSnapshot]]:
+    """在同一只读快照中读取遗留执行和队列，收尾仍逐阶段提交。"""
+    rows = await native_operation("intent_recovery", {})
+    return ([_snapshot(row) for row in rows["interrupted"]], [_snapshot(row) for row in rows["queued"]])
+
+
+async def list_interrupted_intents_without_record() -> list[IntentSnapshot]:
+    """读取历史中断留下的缺失终态；修复只补结果，不重复结算通知。"""
+    rows = await native_operation("intent_recovery", {})
+    return [_snapshot(row) for row in rows["repair"]]
+
+
+async def _intent_operation(name: str, request: dict[str, object]) -> Any:
+    try:
+        return await native_operation(name, request)
+    except Exception as error:
+        if error.args[:1] == ("SUPPLEMENT_NOT_RUNNABLE",):
+            from axile.server.execution.supplements import SupplementNotRunnable
+
+            raise SupplementNotRunnable(str(error.args[1])) from error
+        if error.args[:1] == ("BUSINESS_FACTS_REFERENCE",):
+            from axile.server.business_facts.summary_refs import BusinessFactReferenceError
+
+            raise BusinessFactReferenceError(error.args[1]) from None
+        if error.args[:1] == ("BUSINESS_FACTS",):
+            raise ValueError(error.args[1]) from None
+        raise
 
 
 async def cas_intent_status(
@@ -163,31 +158,11 @@ async def cas_intent_status(
     **fields: object,
 ) -> bool:
     """仅当当前状态为 expected 时更新 intent，返回是否成功."""
-    async with SessionLocal() as session:
-        statement = (
-            update(ExecutionIntent)
-            .where(
-                col(ExecutionIntent.execution_id) == execution_id,
-                col(ExecutionIntent.status) == expected,
-            )
-            .values(status=target, **fields)
-        )
-        result = cast("CursorResult[Any]", await session.execute(statement))
-        if result.rowcount == 1 and target in {
-            ExecutionTaskStatus.TERMINATED,
-            ExecutionTaskStatus.FAILED,
-            ExecutionTaskStatus.SUCCEEDED,
-            ExecutionTaskStatus.SKIPPED,
-            ExecutionTaskStatus.PARTIAL,
-        }:
-            from axile.server.execution.supplement_notifications import finish_supplement_execution
-
-            row = (
-                await session.scalars(select(ExecutionIntent).where(ExecutionIntent.execution_id == execution_id))
-            ).one()
-            await finish_supplement_execution(session, row)
-        await session.commit()
-    return result.rowcount == 1
+    result = await _intent_operation(
+        "intent_cas",
+        {"execution_id": execution_id, "expected": expected, "target": target, "fields": fields, "now": now_str()},
+    )
+    return bool(result["changed"])
 
 
 async def mark_intent_finished(
@@ -199,32 +174,15 @@ async def mark_intent_finished(
 ) -> None:
     """将 intent 标为终态（幂等：已终态则忽略）."""
     finished = finished_at or now_str()
-    async with SessionLocal() as session:
-        statement = select(ExecutionIntent).where(col(ExecutionIntent.execution_id) == execution_id)
-        row = (await session.execute(statement)).scalar_one_or_none()
-        if row is None:
-            return
-        current = row.status if isinstance(row.status, ExecutionTaskStatus) else ExecutionTaskStatus(str(row.status))
-        if current in {
-            ExecutionTaskStatus.SUCCEEDED,
-            ExecutionTaskStatus.FAILED,
-            ExecutionTaskStatus.TERMINATED,
-            ExecutionTaskStatus.SKIPPED,
-            ExecutionTaskStatus.PARTIAL,
-        }:
-            return
-        row.status = status
-        row.finished_at = finished
-        if error is not None:
-            row.error = error
-        session.add(row)
-        from axile.server.execution.supplement_notifications import finish_supplement_execution
-
-        await finish_supplement_execution(session, row)
-        await session.commit()
+    result = await _intent_operation(
+        "intent_finish",
+        {"execution_id": execution_id, "status": status, "error": error, "finished_at": finished, "now": finished},
+    )
+    if not result["changed"]:
+        return
     from axile.server.execution.notification_outbox import wake_notifications
 
-    wake_notifications(row.account_id)
+    wake_notifications(result["intent"]["account_id"])
 
 
 def serialize_intent(intent: IntentSnapshot) -> dict[str, object]:
@@ -362,26 +320,29 @@ async def _insert_intent(
         kind,
         algorithm_override=payload if kind == ExecutionKind.CLEAR_POSITIONS and payload else None,
     )
-    row = ExecutionIntent(
-        account_id=cast("int", account.id),
-        kind=kind,
-        trigger_source=trigger_source,
-        status=ExecutionTaskStatus.QUEUED,
-        channel=account.trade_channel,
-        algorithm=algorithm,
-        payload=payload,
+    row = await _intent_operation(
+        "intent_insert",
+        {
+            "execution_id": new_execution_id(),
+            "account_id": account.id,
+            "kind": kind,
+            "trigger_source": trigger_source,
+            "channel": account.trade_channel,
+            "algorithm": algorithm,
+            "payload": payload,
+            "created_at": now_str(),
+            **_request_context(account, payload),
+        },
     )
-    async with SessionLocal() as session:
-        from axile.server.execution.supplements import attach_step
-
-        session.add(row)
-        await session.flush()
-        await attach_step(session, row, cast("str | None", payload.get("supplement_step_id")))
-        await session.commit()
-        await session.refresh(row)
-        snap = _snapshot(row)
+    snap = _snapshot(row)
     _ensure_memory_queued(account, snap)
     return snap
+
+
+def _request_context(account: AccountContext, payload: dict[str, object]) -> dict[str, object]:
+    from axile.server.execution.supplements import calendar_context
+
+    return calendar_context(str(account.trade_channel) if payload.get("supplement_step_id") is not None else None)
 
 
 async def _supersede_queued_with_clear(
@@ -424,6 +385,7 @@ async def _supersede_queued_with_clear(
             trigger_source=trigger_source,
             payload=payload,
         )
+    clear_queued_execution(queued.account_id, queued.execution_id)
     return None
 
 
@@ -439,21 +401,31 @@ async def submit_intent(
     from axile.server.execution.supplements import account_lock
 
     async with account_lock(account_id):
-        return await _submit_intent(account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict)
+        while True:
+            try:
+                return await _submit_intent(account_id, kind, trigger_source, payload=payload, on_conflict=on_conflict)
+            except Exception as exc:
+                if exc.args[:1] != ("INTENT_CONFLICT",):
+                    raise
 
 
-async def _coalesce(execution_id: str, account_id: int, payload: dict[str, object]) -> SubmitResult:
+async def _coalesce(execution_id: str, account: AccountContext, payload: dict[str, object]) -> SubmitResult:
     """保留共享执行承接的每一条触发需求。"""
-    from axile.server.execution.supplements import attach_step
-
-    async with SessionLocal() as session:
-        row = (
-            await session.execute(select(ExecutionIntent).where(ExecutionIntent.execution_id == execution_id))
-        ).scalar_one()
-        await attach_step(session, row, cast("str | None", payload.get("supplement_step_id")))
-        session.add(row)
-        await session.commit()
-    return SubmitResult(outcome="coalesced", execution_id=execution_id, account_id=account_id)
+    try:
+        await _intent_operation(
+            "intent_coalesce",
+            {
+                "execution_id": execution_id,
+                "account_id": account.id,
+                "payload": payload,
+                **_request_context(account, payload),
+            },
+        )
+    except Exception as exc:
+        if exc.args[:1] == ("INTENT_CONFLICT",):
+            clear_queued_execution(cast("int", account.id), execution_id)
+        raise
+    return SubmitResult(outcome="coalesced", execution_id=execution_id, account_id=cast("int", account.id))
 
 
 async def _submit_intent(
@@ -509,7 +481,7 @@ async def _submit_intent(
     if not has_running and queued_kind == ExecutionKind.CLEAR_POSITIONS:
         if kind == ExecutionKind.CLEAR_POSITIONS:
             execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
-            return await _coalesce(execution_id, account_id, payload)
+            return await _coalesce(execution_id, account, payload)
         return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
 
     if not has_running and queued_kind == ExecutionKind.REBALANCE:
@@ -529,53 +501,25 @@ async def _submit_intent(
             _wake(account_id)
             return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
         execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
-        return await _coalesce(execution_id, account_id, payload)
+        return await _coalesce(execution_id, account, payload)
 
     if has_running and has_queued:
         if kind == ExecutionKind.CLEAR_POSITIONS:
             return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
         if queued_kind == ExecutionKind.REBALANCE:
             execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
-            return await _coalesce(execution_id, account_id, payload)
+            return await _coalesce(execution_id, account, payload)
         return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
 
-    if has_running and not has_queued:
-        if kind == ExecutionKind.CLEAR_POSITIONS:
-            return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
-        try:
-            created = await _insert_intent(
-                account=account,
-                kind=kind,
-                trigger_source=trigger_source,
-                payload=payload,
-            )
-        except IntegrityError:
-            running_now, queued_now = await load_active_intents(account_id)
-            if queued_now is not None:
-                return await _coalesce(queued_now.execution_id, account_id, payload)
-            raise
-        _sync_live(account_id)
-        return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
-
-    try:
-        created = await _insert_intent(
-            account=account,
-            kind=kind,
-            trigger_source=trigger_source,
-            payload=payload,
-        )
-    except IntegrityError:
-        # 并发首次提交可能同时读到空槽位；唯一索引决出胜者后，
-        # 重新走冲突表，让败者得到 coalesced / busy 而不是 500。
-        return await _submit_intent(
-            account_id,
-            kind,
-            trigger_source,
-            payload=payload,
-            on_conflict=on_conflict,
-        )
+    created = await _insert_intent(
+        account=account,
+        kind=kind,
+        trigger_source=trigger_source,
+        payload=payload,
+    )
     _sync_live(account_id)
-    _wake(account_id)
+    if not has_running:
+        _wake(account_id)
     return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
 
 
@@ -634,12 +578,18 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
         raise IntentNotRunnable("账户渠道锁占用中", retry=True)
 
     started_at = now_str()
-    ok = await cas_intent_status(
-        execution_id,
-        ExecutionTaskStatus.QUEUED,
-        ExecutionTaskStatus.RUNNING,
-        started_at=started_at,
-    )
+    try:
+        ok = await cas_intent_status(
+            execution_id,
+            ExecutionTaskStatus.QUEUED,
+            ExecutionTaskStatus.RUNNING,
+            started_at=started_at,
+        )
+    except BaseException as exc:
+        clear_running_execution(account_id, execution_id)
+        if exc.args[:1] == ("INTENT_CONFLICT",):
+            raise IntentNotRunnable("账户已有执行占用运行槽位", retry=True) from exc
+        raise
     if not ok:
         clear_running_execution(account_id, execution_id)
         raise IntentNotRunnable(f"intent {execution_id} 未能从 QUEUED 推进到 RUNNING")

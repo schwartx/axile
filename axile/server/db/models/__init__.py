@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-from sqlmodel import SQLModel
-
-from axile.server.business_facts import assets as business_assets
-from axile.server.business_facts import extensions as business_extensions
-from axile.server.business_facts import head as business_head
-from axile.server.business_facts import inputs as business_inputs
-from axile.server.business_facts import orders as business_orders
-from axile.server.business_facts import symbols as business_symbols
-from axile.server.business_facts import trades as business_trades
-from axile.server.db.models import analysis as analysis
 from axile.server.db.models.account import (
     Account,
     AccountBase,
@@ -55,7 +45,7 @@ from axile.server.db.models.account_runtime_sync import (
     AccountRuntimeSyncPublic,
 )
 from axile.server.db.models.account_settings import AccountSettings
-from axile.server.db.models.base import PydanticJSONType, new_execution_id, now_ms, now_str
+from axile.server.db.models.base import new_execution_id, now_ms, now_str
 from axile.server.db.models.execution import (
     ExecuteRecord,
     ExecuteRecordBase,
@@ -108,27 +98,7 @@ from axile.server.db.models.target_weight_snapshot import (
 )
 from axile.server.db.models.time_check import TimeCheckSettingsRow, TimeCheckStateRow
 
-# 保留模块引用以登记表；直接导入某个事实模块时不能读取尚未完成的 TABLES。
-BUSINESS_FACT_MODULES = (
-    business_assets,
-    business_extensions,
-    business_head,
-    business_inputs,
-    business_orders,
-    business_symbols,
-    business_trades,
-)
-
-Portfolio.model_rebuild()
-Account.model_rebuild()
-AccountAssetSnapshot.model_rebuild()
-PortfolioAccount.model_rebuild()
-
-ExecuteRecord.model_rebuild()
-
-
 __all__ = [
-    "BUSINESS_FACT_MODULES",
     "OrderSubmission",
     "OrderSubmissionMonitor",
     "OrderSubmissionWarning",
@@ -142,8 +112,6 @@ __all__ = [
     "AccountSnapshot",
     "AccountNotificationState",
     "AccountNotificationStatePublic",
-    "SQLModel",
-    "PydanticJSONType",
     "now_str",
     "now_ms",
     "new_execution_id",

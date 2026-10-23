@@ -6,10 +6,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from axile.executor.instrument_catalog import CatalogError
-from axile.server.api.deps import SessionDep
-from axile.server.db.models import Account
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+from axile.server.repositories import get_account_snapshot
 
 router = APIRouter(prefix="/instrument-catalog", tags=["instrument-catalog"])
 
@@ -36,14 +35,14 @@ class InstrumentQuery(BaseModel):
 
 
 @router.post("/query")
-async def query_instruments(query: InstrumentQuery, session: SessionDep) -> dict[str, Any]:
+async def query_instruments(query: InstrumentQuery) -> dict[str, Any]:
     """通过已连接账户精确查询静态资料，负查询不回收健康交易会话。"""
-    account = await session.get(Account, query.account_id)
+    account = await get_account_snapshot(query.account_id)
     if account is None:
         raise HTTPException(404, detail={"code": "ACCOUNT_NOT_FOUND", "message": "账户不存在"})
     try:
         rows = await get_worker_backend_manager().query_instruments(
-            account.snapshot(),
+            account,
             query.symbols,
             timeout=query.timeout_seconds,
             require_specs=query.require_specs,

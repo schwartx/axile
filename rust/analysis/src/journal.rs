@@ -65,7 +65,7 @@ pub fn page(
 
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut statement = connection.prepare(&format!("{cte}
-        SELECT s.record_id,s.map_key,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
+        SELECT s.record_id,s.map_key,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
         FROM execution_symbol_result s JOIN selected p ON p.id=s.record_id
         ORDER BY s.record_id,s.map_key")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
@@ -83,10 +83,15 @@ pub fn page(
                     .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?,
             );
         }
+        let fields = crate::executions::public_symbol(
+            fields,
+            &row.get::<_, String>("node_kind").map_err(database)?,
+        )
+        .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get(0).map_err(database)?)
             .or_default()
-            .insert(row.get(1).map_err(database)?, Value::Object(fields));
+            .insert(row.get(1).map_err(database)?, fields);
     }
 
     let mut summaries = HashMap::new();
@@ -249,8 +254,7 @@ pub(crate) fn historical_summary(mut summary: Value) -> Value {
 mod tests {
     use super::*;
 
-    #[test]
-    fn canonical_page_without_projection_tables() {
+    fn fixture() -> Connection {
         let conn = crate::execution_summary::tests::fixture();
         conn.execute_batch("CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
             CREATE TABLE schedule_skip(id INTEGER,account_id INTEGER,triggered_at TEXT,channel TEXT,calendar_id TEXT,calendar_day TEXT,calendar_label TEXT,reason_code TEXT);
@@ -290,11 +294,22 @@ mod tests {
             ))
             .unwrap();
         }
+        conn.execute_batch("ALTER TABLE execution_symbol_result ADD COLUMN node_kind TEXT NOT NULL DEFAULT 'object'").unwrap();
+        conn
+    }
+
+    #[test]
+    fn canonical_page_without_projection_tables() {
+        let conn = fixture();
         let result = page(&conn, 2, 0, 10, None, None).unwrap();
         assert_eq!(result["count"], 2);
         assert_eq!(result["data"][0]["record"]["summary"]["count"], 0);
         assert_eq!(result["data"][1]["record"]["trade_count"], 2);
         assert_eq!(result["data"][1]["record"]["summary"]["fees"]["USD"], -0.2);
+        assert_eq!(
+            result["data"][1]["record"]["symbol_results"],
+            json!({"A":{"outcome":null}})
+        );
         assert_eq!(
             page(&conn, 2, 1, 1, None, None).unwrap()["data"]
                 .as_array()
@@ -302,6 +317,34 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn symbol_display_matches_execution_projection_without_memory_or_fact_updates() {
+        let conn = fixture();
+        conn.execute_batch("UPDATE execution_symbol_result SET status='NOOP',memory='null' WHERE record_id=1;
+            INSERT INTO execution_symbol_result(record_id,path,map_key,ordinal,status,memory,node_kind) VALUES
+            (1,'/symbol_results/empty','empty',1,NULL,'null','object'),
+            (1,'/symbol_results/failed','failed',2,'FAILED','{\"message\":\"RuntimeError: private\",\"private\":true}','object'),
+            (1,'/symbol_results/malformed','malformed',3,NULL,NULL,'value');").unwrap();
+        let result = page(&conn, 2, 0, 10, None, None).unwrap();
+        assert_eq!(
+            result["data"][1]["record"]["symbol_results"],
+            json!({
+                "A":{"status":"NOOP","outcome":"completed"},
+                "empty":{"outcome":null},
+                "failed":{"status":"FAILED","outcome":"error","error":"执行失败，具体原因见执行证据"},
+                "malformed":{"outcome":null}
+            })
+        );
+        assert_eq!(conn.query_row("SELECT count(*) FROM execution_symbol_result WHERE record_id=1 AND outcome IS NULL AND error IS NULL AND reason_code IS NULL", [], |row| row.get::<_,i64>(0)).unwrap(),4);
+        conn.execute_batch(
+            "UPDATE execution_symbol_result SET memory='bad-json' WHERE map_key='A'",
+        )
+        .unwrap();
+        assert!(page(&conn, 2, 0, 10, None, None)
+            .unwrap_err()
+            .starts_with("JOURNAL_READ_ERROR:"));
     }
 
     #[test]

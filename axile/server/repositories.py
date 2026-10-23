@@ -1,95 +1,56 @@
-"""账户、组合与执行关系相关的数据库查询辅助函数."""
+"""账户、组合绑定与执行记录的原生读取入口。"""
 
-from typing import List, Optional, cast
-
-from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, desc, func, select
-
-from axile.server.db.models import ExecuteRecord, Portfolio, PortfolioAccount
+from axile.server.db.models import Account, AccountSnapshot, ExecuteRecord
+from axile.server.db.models.base import now_str
+from axile.server.native_store import native_operation
 
 
-async def add_record_portfolio_account(
-    session: AsyncSession,
-    account_id: int,
-    portfolio_id: Optional[int],
-) -> None:
-    """新增账户/组合记录, portfolio_id为None说明账户解绑组合."""
-    if portfolio_id is not None:
-        db_portfolio = await session.get(Portfolio, portfolio_id)
-        if not db_portfolio:
-            raise HTTPException(status_code=404, detail="组合不存在")
+async def get_account(account_id: int) -> Account | None:
+    """一次读取账户配置与持久化运行摘要，不携带数据库会话。"""
+    value = await native_operation("account_get", {"account_id": account_id})
+    return Account.model_validate(value) if value is not None else None
 
-    record = PortfolioAccount(
-        account_id=account_id,
-        portfolio_id=portfolio_id,
+
+async def get_account_snapshot(account_id: int) -> AccountSnapshot | None:
+    """为执行编排读取普通账户快照。"""
+    value = await native_operation("account_get", {"account_id": account_id})
+    return AccountSnapshot.model_validate(value) if value is not None else None
+
+
+async def stop_account_for_clear_positions(account_id: int) -> AccountSnapshot:
+    """停止自动调度并取消补发，提交后返回清仓使用的账户快照。"""
+    value = await native_operation("account_stop_for_clear", {"account_id": account_id, "now": now_str()})
+    from axile.server.execution.notification_outbox import wake_notifications
+    from axile.server.execution.supplements import reap_cancelled_queue
+
+    await reap_cancelled_queue(account_id)
+    wake_notifications(account_id)
+    return AccountSnapshot.model_validate(value)
+
+
+async def get_latest_account_id_by_portfolio_id(portfolio_id: int) -> int | None:
+    """获取最近绑定且当前仍指向该组合的账户 ID。"""
+    return await native_operation("portfolio_latest_account", {"portfolio_id": portfolio_id})
+
+
+async def get_latest_portfolio_id_by_account_id(account_id: int) -> int | None:
+    """获取账户最后一条绑定历史所指向的组合。"""
+    return await native_operation("account_latest_portfolio", {"account_id": account_id})
+
+
+async def get_latest_success_execute_record_by_account_id(account_id: int | None) -> ExecuteRecord | None:
+    """读取账户最近一次成功执行的紧凑头记录。"""
+    if account_id is None:
+        return None
+    rows = await native_operation(
+        "recent_execution_records", {"account_id": account_id, "limit": 1, "success_only": True}
     )
-    session.add(record)
+    return ExecuteRecord.model_validate(rows[0]) if rows else None
 
 
-async def get_latest_account_id_by_portfolio_id(session: AsyncSession, portfolio_id: int) -> Optional[int]:
-    """获取最近绑定且当前仍指向该组合的账户 ID."""
-    latest_binding_ids = (
-        select(func.max(PortfolioAccount.id).label("max_id")).group_by(col(PortfolioAccount.account_id)).subquery()
-    )
-    return await session.scalar(
-        select(PortfolioAccount.account_id)
-        .join(latest_binding_ids, col(PortfolioAccount.id) == latest_binding_ids.c.max_id)
-        .where(PortfolioAccount.portfolio_id == portfolio_id)
-        .order_by(desc(PortfolioAccount.id))
-        .limit(1)
-    )
-
-
-async def get_latest_portfolio_id_by_account_id(session: AsyncSession, account_id: int) -> Optional[int]:
-    """获取账户的当前组合的id."""
-    return await session.scalar(
-        select(PortfolioAccount.portfolio_id)
-        .where(PortfolioAccount.account_id == account_id)
-        .order_by(desc(PortfolioAccount.id))
-        .limit(1)
-    )
-
-
-async def get_latest_success_execute_record_by_account_id(
-    session: AsyncSession, account_id: Optional[int]
-) -> Optional[ExecuteRecord]:
-    """获取账户的最新成功的执行记录."""
-    return (
-        await session.execute(
-            select(ExecuteRecord)
-            .where(ExecuteRecord.account_id == cast("int", account_id))
-            .where(ExecuteRecord.is_success == 1)
-            .order_by(desc(ExecuteRecord.id))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
-
-async def get_recent_execute_records_by_account_id(
-    session: AsyncSession, account_id: Optional[int], limit: int = 20
-) -> List[ExecuteRecord]:
-    """
-    获取账户最近若干条执行记录（按 id 倒序，不限成败）.
-
-    Parameters
-    ----------
-    session : AsyncSession
-        当前数据库会话。
-    account_id : Optional[int]
-        账户 ID。
-    limit : int, optional
-        返回的最大条数，默认 20。
-
-    Returns
-    -------
-    List[ExecuteRecord]
-        最近的执行记录列表（最新在前）；无记录时为空列表。
-    """
-    result = await session.execute(
-        select(ExecuteRecord)
-        .where(ExecuteRecord.account_id == cast("int", account_id))
-        .order_by(desc(ExecuteRecord.id))
-        .limit(limit)
-    )
-    return list(result.scalars().all())
+async def get_recent_execute_records_by_account_id(account_id: int | None, limit: int = 20) -> list[ExecuteRecord]:
+    """按 ID 倒序读取账户最近执行的紧凑头记录。"""
+    if account_id is None:
+        return []
+    rows = await native_operation("recent_execution_records", {"account_id": account_id, "limit": limit})
+    return [ExecuteRecord.model_validate(row) for row in rows]

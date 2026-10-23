@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlmodel import Field, SQLModel
+from pydantic import BaseModel, Field
 
 from axile.executor.account_control.models import AccountControlOverride, AccountControlPolicy
 from axile.executor.account_control.presets import (
@@ -12,13 +12,12 @@ from axile.executor.account_control.presets import (
     resolve_account_control_policy,
 )
 from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
-from axile.server.api.deps import SessionDep
 from axile.server.api.routes.account_support import _get_account_or_404
 
 router = APIRouter()
 
 
-class AccountControlPresetPublic(SQLModel):
+class AccountControlPresetPublic(BaseModel):
     """流控预设方案的展示信息."""
 
     key: str
@@ -26,7 +25,7 @@ class AccountControlPresetPublic(SQLModel):
     description: str
 
 
-class AccountControlOperationPublic(SQLModel):
+class AccountControlOperationPublic(BaseModel):
     """流控操作的展示信息."""
 
     key: str
@@ -36,7 +35,7 @@ class AccountControlOperationPublic(SQLModel):
     groups: list[str] = Field(default_factory=list)
 
 
-class AccountControlGroupPublic(SQLModel):
+class AccountControlGroupPublic(BaseModel):
     """共享限制组的展示信息."""
 
     key: str
@@ -44,7 +43,7 @@ class AccountControlGroupPublic(SQLModel):
     description: str
 
 
-class AccountControlPolicyPublic(SQLModel):
+class AccountControlPolicyPublic(BaseModel):
     """账户流控编辑器使用的完整只读模型."""
 
     preset_key: str
@@ -109,12 +108,11 @@ def _compatible_presets(trade_channel: object) -> list[AccountControlPresetPubli
 
 @router.get("/{account_id}/control/policy", response_model=AccountControlPolicyPublic)
 async def get_account_control_policy(
-    session: SessionDep,
     account_id: int,
     preset_key: str | None = Query(default=None),
 ) -> AccountControlPolicyPublic:
     """读取或无副作用预览账户流控配置."""
-    account = await _get_account_or_404(session, account_id)
+    account = await _get_account_or_404(account_id)
     selected_key = preset_key or account.account_control_preset
     try:
         ensure_account_control_preset_compatible(selected_key, account.trade_channel)

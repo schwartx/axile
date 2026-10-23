@@ -1,42 +1,30 @@
 """当前委托 REST 契约，失败保持未知，撤单受理不冒充实际终态。"""
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionReasonFamily
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account_orders as routes
 from axile.server.db.models.account_order import AccountOrderPublic, AccountOrdersPublic, OrderCancelReceipt
 from axile.server.db.models.execution import ExecutionEvent
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._submission_test_support import initialize_submission_database
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     app = FastAPI()
     app.include_router(routes.router, prefix="/account")
 
-    async def session():
-        account = build_account()
+    async def account(account_id):
+        if account_id != 1:
+            raise HTTPException(404, detail="账户不存在")
+        return build_account()
 
-        async def get(_model, account_id):
-            return account if account_id == 1 else None
-
-        async def close():
-            pass
-
-        async def execute(_query):
-            return SimpleNamespace(all=lambda: [])
-
-        yield SimpleNamespace(get=get, close=close, execute=execute)
-
-    app.dependency_overrides[get_db] = session
+    monkeypatch.setattr(routes, "_get_account_or_404", account)
     with TestClient(app) as client:
         yield client
 
@@ -122,6 +110,31 @@ def test_recent_activity_gateway_error_does_not_disclose_channel_exception(clien
 
 
 def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_path):
+    from tests.conftest import native_store_call
+
+    database = str(tmp_path / "orders.db")
+    initialize_submission_database(database, monkeypatch)
+    for execution, symbol, account_id in (
+        ("old-rb", "rb2610", 1),
+        ("new-rb", "rb2610", 1),
+        ("ag", "ag2612", 1),
+        ("another-account", "rb2610", 2),
+    ):
+        event = ExecutionEvent(
+            account_id=account_id,
+            execution_id=execution,
+            event_uid=execution,
+            channel="ctp",
+            algorithm="SINGLE-MAKER",
+            event_type=ExecutionEventType.ORDER_SUBMITTED,
+            status=ExecutionEventStatus.INFO,
+            reason_family=ExecutionReasonFamily.SYSTEM,
+            reason_code="TEST.ORDER",
+            symbol=symbol,
+            order_id="same-id",
+        )
+        assert native_store_call(database, "append_execution_event", event.model_dump(mode="json")) is True
+
     async def query(_account, **_kwargs):
         return AccountOrdersPublic(
             data=[
@@ -145,43 +158,50 @@ def test_current_orders_link_history_by_symbol_and_order_id(monkeypatch, tmp_pat
     monkeypatch.setattr(routes, "query_account_orders", query)
 
     async def scenario():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'orders.db'}")
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            async with factory() as session:
-                session.add(build_account(portfolio_id=None))
-                # 同号的其他品种更晚，且同品种的旧执行不能覆盖最新关联。
-                for execution, symbol in (("old-rb", "rb2610"), ("new-rb", "rb2610"), ("ag", "ag2612")):
-                    session.add(
-                        ExecutionEvent(
-                            account_id=1,
-                            execution_id=execution,
-                            event_uid=execution,
-                            channel="ctp",
-                            algorithm="SINGLE-MAKER",
-                            event_type=ExecutionEventType.ORDER_SUBMITTED,
-                            status=ExecutionEventStatus.INFO,
-                            reason_family=ExecutionReasonFamily.SYSTEM,
-                            reason_code="TEST.ORDER",
-                            symbol=symbol,
-                            order_id="same-id",
-                        )
-                    )
-                await session.commit()
-            async with factory() as session:
-                result = await query(build_account())
-                from axile.server.account_orders import _link_executions
+        from axile.server.account_orders import _link_executions
 
-                monkeypatch.setattr("axile.server.core.db.SessionLocal", factory)
-                await _link_executions(build_account(), result)
-                assert {row.symbol: row.execution_id for row in result.data} == {
-                    "rb2610": "new-rb",
-                    "ag2612": "ag",
-                    "cu2612": None,
-                }
-        finally:
-            await engine.dispose()
+        result = await query(build_account())
+        await _link_executions(build_account(), result)
+        assert {row.symbol: row.execution_id for row in result.data} == {
+            "rb2610": "new-rb",
+            "ag2612": "ag",
+            "cu2612": None,
+        }
 
     asyncio.run(scenario())
+
+
+def test_history_link_uses_one_batch_and_keeps_existing_associations(monkeypatch):
+    from axile.server import account_orders as service
+
+    calls = []
+
+    async def lookup(name, request):
+        calls.append((name, request))
+        return [["rb2610", "same-id", "history"]]
+
+    monkeypatch.setattr(service, "native_operation", lookup)
+    result = AccountOrdersPublic(
+        data=[
+            AccountOrderPublic(
+                order_id="same-id",
+                symbol=symbol,
+                direction="BUY",
+                order_type="LIMIT",
+                price=3500,
+                volume=1,
+                filled_volume=0,
+                remaining_volume=1,
+                status="待成交",
+                execution_id=execution,
+            )
+            for symbol, execution in (("rb2610", None), ("ag2612", "existing"))
+        ],
+        count=2,
+        sampled_at="2026-10-15T10:00:00",
+    )
+    asyncio.run(service._link_executions(build_account(), result))
+    assert calls == [("order_execution_links", {"account_id": 1, "identities": [("rb2610", "same-id")]})]
+    assert [order.execution_id for order in result.data] == ["history", "existing"]
+    asyncio.run(service._link_executions(build_account(), result))
+    assert len(calls) == 1

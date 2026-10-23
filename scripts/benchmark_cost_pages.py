@@ -15,9 +15,15 @@ import statistics
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
+
+try:
+    from benchmark_business_fact_storage import initialize_benchmark_database
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import initialize_benchmark_database
 
 
 def client(port, identity, output):
@@ -75,14 +81,21 @@ async def worker(root, database, output):
     import psutil
     import uvicorn
 
+    from axile.server.core import db
+
+    initialize_benchmark_database(database)
     from axile.server import performance_details
     from axile.server.app import _app
-    from axile.server.core.db import engine
+
+    engine = getattr(db, "engine", None)
 
     if not Path(performance_details.__file__).resolve().is_relative_to(root):
         raise ValueError("Wrong source tree")
-    with sqlite3.connect(database) as connection:
-        identity = connection.execute("SELECT current_snapshot FROM account_analysis WHERE account_id=2").fetchone()[0]
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        state = connection.execute("SELECT current_snapshot FROM account_analysis WHERE account_id=2").fetchone()
+        identity = state[0] if state else None
+    if identity is None:
+        raise ValueError("A frozen published snapshot for account 2 is required")
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(_app, lifespan="off", access_log=False, log_level="error"))
@@ -124,7 +137,8 @@ async def worker(root, database, output):
         server.should_exit = True
         await asyncio.wait_for(serving, 5)
         listener.close()
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 def compare(args):
@@ -208,9 +222,9 @@ def compare(args):
 
 def main():
     """Keep controller, client and service imports in distinct processes."""
-    if sys.argv[1] == "--client":
+    if len(sys.argv) > 1 and sys.argv[1] == "--client":
         client(int(sys.argv[2]), sys.argv[3], Path(sys.argv[4]))
-    elif sys.argv[1] == "--worker":
+    elif len(sys.argv) > 1 and sys.argv[1] == "--worker":
         with patch.object(socket.socket, "connect", side_effect=AssertionError("Outbound forbidden")):
             asyncio.run(worker(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])))
     else:

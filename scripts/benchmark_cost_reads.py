@@ -7,12 +7,19 @@ import hashlib
 import json
 import resource
 import socket
+import sqlite3
 import statistics
 import sys
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.benchmark_performance_frames import emit, observe
+try:
+    from benchmark_business_fact_storage import initialize_benchmark_database
+    from benchmark_performance_frames import emit, observe
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import initialize_benchmark_database
+    from scripts.benchmark_performance_frames import emit, observe
 
 
 def queries(identity, trade):
@@ -73,34 +80,36 @@ async def worker(args):
     """Import the complete app and invoke actual cost HTTP handlers, without trading."""
     import httpx
     import psutil
-    import sqlalchemy as sa
 
+    from axile.server.core import db
+
+    initialize_benchmark_database(args.output / "working.db")
     from axile.server import performance_details
     from axile.server.app import _app
-    from axile.server.core.db import SessionLocal, engine
+
+    engine = getattr(db, "engine", None)
 
     if not Path(performance_details.__file__).resolve().is_relative_to(args.root.resolve()):
         raise ValueError("Wrong imported source tree")
     decoded = []
 
     def deserialize(raw):
-        decoded.append(len(raw))
+        decoded.append(len(raw.encode("utf-8") if isinstance(raw, str) else raw))
         return json.loads(raw)
 
-    # Record the actual JSON sent from SQLite to Python, with the same decoder
-    # and constant-size instrumentation overhead in both arms.
-    engine.sync_engine.dialect._json_deserializer = deserialize
+    # Only legacy SQLAlchemy decoding is observable through this hook.
+    if engine is not None:
+        engine.sync_engine.dialect._json_deserializer = deserialize
     try:
-        async with SessionLocal() as session:
-            identity = await session.scalar(sa.text("SELECT current_snapshot FROM account_analysis WHERE account_id=2"))
-            trade = (
-                await session.execute(
-                    sa.text(
-                        "SELECT time,day,symbol,record_id FROM performance_cost_trade WHERE snapshot_id=:id ORDER BY id LIMIT 1"
-                    ),
-                    {"id": identity},
-                )
-            ).first()
+        with closing(
+            sqlite3.connect((args.output / "working.db").resolve().as_uri() + "?mode=ro", uri=True)
+        ) as database:
+            state = database.execute("SELECT current_snapshot FROM account_analysis WHERE account_id=2").fetchone()
+            identity = state[0] if state else None
+            trade = database.execute(
+                "SELECT time,day,symbol,record_id FROM performance_cost_trade WHERE snapshot_id=? ORDER BY id LIMIT 1",
+                (identity,),
+            ).fetchone()
         if identity is None:
             raise ValueError("A genuine old-writer frozen snapshot is required")
         results = []
@@ -120,11 +129,13 @@ async def worker(args):
             peak_bytes=peak,
             steady_bytes=statistics.median(steady),
             results=results,
-            decoded_bytes=sum(decoded),
-            largest_decoded_bytes=max(decoded, default=0),
+            decoded_bytes=sum(decoded) if engine is not None else None,
+            largest_decoded_bytes=max(decoded, default=0) if engine is not None else None,
+            decoded_scope="SQLAlchemy DB JSON deserializer only; native decoding is unobserved",
         )
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 def main():
@@ -141,6 +152,8 @@ def main():
         with patch.object(socket.socket, "connect", side_effect=AssertionError("Outbound connections forbidden")):
             asyncio.run(worker(args))
         return
+    if args.baseline is None or args.runs < 1:
+        parser.error("--baseline and at least one run are required")
     args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     digest = hashlib.sha256(args.database.read_bytes()).hexdigest()
     results = []
@@ -161,7 +174,9 @@ def main():
                         repeat=repeat,
                         seconds=phases["api_end"]["seconds"],
                         peak_mib=phases["done"]["peak_bytes"] / 2**20,
-                        decoded_mib=phases["done"]["decoded_bytes"] / 2**20,
+                        decoded_mib=phases["done"]["decoded_bytes"] / 2**20
+                        if phases["done"]["decoded_bytes"] is not None
+                        else None,
                     )
                 ),
                 flush=True,
@@ -179,14 +194,17 @@ def main():
             seconds=statistics.median(row["api_end"]["seconds"] for row in rows),
             peak_mib=statistics.median(row["done"]["peak_bytes"] / 2**20 for row in rows),
             steady_mib=statistics.median(row["done"]["steady_bytes"] / 2**20 for row in rows),
-            decoded_mib=statistics.median(row["done"]["decoded_bytes"] / 2**20 for row in rows),
+            decoded_mib=statistics.median(row["done"]["decoded_bytes"] / 2**20 for row in rows)
+            if rows[0]["done"]["decoded_bytes"] is not None
+            else None,
             largest_decoded_bytes=rows[0]["done"]["largest_decoded_bytes"],
         )
     summary.update(
+        decoded_scope="SQLAlchemy hook only; native unobserved; legacy timing includes decoder instrumentation",
         source_sha256=digest,
         requests_per_run=len(expected),
         complete_http_bodies_equal=True,
-        scope="Full app imports and real ASGI cost HTTP; identical frozen data, same interpreter, warm OS cache, three alternating fresh processes, no trading lifecycle or forced GC",
+        scope="Full app imports and real ASGI cost HTTP; identical frozen data, same interpreter, warm OS cache, alternating fresh processes, no trading lifecycle or forced GC; native JSON decoding is unobserved",
     )
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))

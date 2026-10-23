@@ -19,13 +19,29 @@ from axile.executor.instrument_catalog import (
     catalog_remaining,
 )
 from axile.executor.instrument_catalog_records import Instrument
-from axile.server.api.deps import get_db
 from axile.server.api.routes import instrument_catalog as routes
 from axile.server.execution.worker_backend.catalog import CatalogSession, RemoteCatalogProvider
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
+from tests.conftest import native_store_call
+from tests.unit.server._execution_test_support import build_account
 
 pytestmark = pytest.mark.slow
 ROW = Instrument("SHFE", "rb2701", "FUTURE", 10, 1)
+
+
+@pytest.fixture
+def catalog_database(native_database, monkeypatch):
+    receipt = native_store_call(
+        native_database,
+        "account_create",
+        {
+            "account": build_account(portfolio_id=None).model_dump(mode="json"),
+            "now": "2026-10-23T09:00:00+08:00",
+        },
+    )
+    assert receipt["account"]["id"] == 1
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    return native_database
 
 
 @pytest.mark.parametrize(
@@ -105,7 +121,7 @@ def test_exact_lookup_uses_selected_paused_session_and_keeps_worker_on_not_found
 @pytest.mark.parametrize(
     "code,status", [(None, 200), ("CATALOG.NOT_FOUND", 404), ("CATALOG.TIMEOUT", 408), ("CATALOG.MIXED_FAILURE", 503)]
 )
-def test_exact_query_http_preserves_structured_result_and_errors(monkeypatch, code, status):
+def test_exact_query_http_preserves_structured_result_and_errors(catalog_database, monkeypatch, code, status):
     async def query(account, symbols, **kwargs):
         assert symbols == [ROW.key]
         if code:
@@ -114,18 +130,11 @@ def test_exact_query_http_preserves_structured_result_and_errors(monkeypatch, co
             )
         return {ROW.key: ROW.wire()}
 
-    class Database:
-        async def get(self, model, key):
-            return SimpleNamespace(snapshot=lambda: SimpleNamespace(id=key))
-
-    async def database():
-        yield Database()
-
     monkeypatch.setattr(routes, "get_worker_backend_manager", lambda: SimpleNamespace(query_instruments=query))
     app = FastAPI()
     app.include_router(routes.router)
-    app.dependency_overrides[get_db] = database
-    response = TestClient(app).post("/instrument-catalog/query", json={"account_id": 1, "symbols": [ROW.key]})
+    with TestClient(app) as api:
+        response = api.post("/instrument-catalog/query", json={"account_id": 1, "symbols": [ROW.key]})
     assert response.status_code == status
     if code:
         assert response.json()["detail"]["code"] == code
@@ -148,16 +157,8 @@ def real_catalog_api(monkeypatch, query):
     monkeypatch.setattr(manager, "_is_handle_healthy", lambda value: value is handle)
     monkeypatch.setattr(routes, "get_worker_backend_manager", lambda: manager)
 
-    class Database:
-        async def get(self, model, key):
-            return SimpleNamespace(snapshot=lambda: SimpleNamespace(id=key))
-
-    async def database():
-        yield Database()
-
     app = FastAPI()
     app.include_router(routes.router)
-    app.dependency_overrides[get_db] = database
     try:
         with TestClient(app) as api:
             yield api, manager, provider, handle
@@ -176,7 +177,7 @@ def real_catalog_api(monkeypatch, query):
     ],
 )
 def test_partial_and_ambiguous_matches_keep_classification_through_real_ipc_http(
-    monkeypatch, symbols, rows, code, status
+    catalog_database, monkeypatch, symbols, rows, code, status
 ):
     with real_catalog_api(monkeypatch, lambda requested, timeout: rows if requested == symbols else [ROW]) as (
         api,
@@ -195,7 +196,7 @@ def test_partial_and_ambiguous_matches_keep_classification_through_real_ipc_http
 @pytest.mark.parametrize("require_specs", [False, True])
 @pytest.mark.parametrize("use_cache", [False, True])
 def test_batch_timeout_stops_source_and_releases_query_slot_without_recycling_worker(
-    monkeypatch, require_specs, use_cache
+    catalog_database, monkeypatch, require_specs, use_cache
 ):
     finished = threading.Event()
     query_lock = threading.Lock()
@@ -264,7 +265,7 @@ def test_ipc_dispatch_queue_does_not_restart_query_timeout(monkeypatch):
     assert sent[-1]["reason_code"] == "CATALOG.TIMEOUT"
 
 
-def test_native_timeout_keeps_timeout_classification_across_ipc(monkeypatch):
+def test_native_timeout_keeps_timeout_classification_across_ipc(catalog_database, monkeypatch):
     def timeout(symbols, seconds):
         raise TimeoutError("native query budget expired")
 
@@ -274,7 +275,7 @@ def test_native_timeout_keeps_timeout_classification_across_ipc(monkeypatch):
         assert response.json()["detail"]["causes"][0]["reason_code"] == "CATALOG.TIMEOUT"
 
 
-def test_uncached_followup_exposes_broken_catalog_pipe_even_with_cached_normal_contract(monkeypatch):
+def test_uncached_followup_exposes_broken_catalog_pipe_even_with_cached_normal_contract(catalog_database, monkeypatch):
     calls = []
 
     def query(symbols, timeout):
@@ -310,7 +311,7 @@ def test_uncached_followup_exposes_broken_catalog_pipe_even_with_cached_normal_c
         assert manager.instrument_catalog.snapshot()[ROW.key] == ROW
 
 
-def test_uncached_query_uses_original_source_and_does_not_replace_shared_cache(monkeypatch):
+def test_uncached_query_uses_original_source_and_does_not_replace_shared_cache(catalog_database, monkeypatch):
     calls = []
 
     def query(symbols, timeout):

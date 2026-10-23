@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.executor.connection_state import ConnectionObservation
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account_connection as routes
 from axile.server.connection_runtime import observe_session, register_session
 from axile.server.connection_state import ConnectionBinding, connection_config_key, public_connection
@@ -15,32 +14,16 @@ from axile.server.db.models.account_connection import AccountConnectionState
 from tests.unit.server._execution_test_support import build_account
 
 
-class Session:
-    def __init__(self, account):
-        self.account = account
-
-    async def get(self, model, account_id):
-        return self.account if self.account.id == account_id else None
-
-    async def close(self):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-
 def client(account, monkeypatch):
     app = FastAPI()
     app.include_router(routes.router, prefix="/account")
 
-    async def db():
-        yield Session(account)
+    async def get_account(account_id):
+        if account.id != account_id:
+            raise routes.HTTPException(404, "账户不存在")
+        return account
 
-    app.dependency_overrides[get_db] = db
-    monkeypatch.setattr(routes, "SessionLocal", lambda: Session(account))
+    monkeypatch.setattr(routes, "_get_account_or_404", get_account)
     return TestClient(app)
 
 
@@ -122,11 +105,15 @@ def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch):
             await release.wait()
             raise TimeoutError("startup deadline")
 
-        monkeypatch.setattr(routes, "SessionLocal", lambda: Session(account))
+        async def get_account(account_id):
+            assert account_id == account.id
+            return account
+
+        monkeypatch.setattr(routes, "_get_account_or_404", get_account)
         monkeypatch.setattr(routes, "_operate_connection", operate)
-        first = asyncio.create_task(routes.reconnect_account(Session(account), 7))
+        first = asyncio.create_task(routes.reconnect_account(7))
         await entered.wait()
-        second = asyncio.create_task(routes.reconnect_account(Session(account), 7))
+        second = asyncio.create_task(routes.reconnect_account(7))
         await asyncio.sleep(0)
         release.set()
         results = await asyncio.gather(first, second, return_exceptions=True)

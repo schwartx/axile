@@ -1,8 +1,8 @@
-"""Measure three real structured publications after source facts are frozen.
+"""Measure actual in-process native publications after source facts are frozen.
 
 Synthetic database preparation runs in an unmeasured process. A fresh measured
-Python AnalysisManager performs native JSONL staging, typed publication and SQL
-INSERT SELECT cost copies. An external sampler includes Python and Rust RSS.
+Python AnalysisManager invokes the checkout's loaded extension. An external
+sampler includes the Python process and any descendants.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import importlib.util
 import json
 import os
 import sqlite3
@@ -18,10 +17,31 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+
+try:
+    from benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        no_network,
+        prepare_database,
+        source_hash,
+        sqlite_settings,
+    )
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        no_network,
+        prepare_database,
+        source_hash,
+        sqlite_settings,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 PROCESS_TIMEOUT = 20
@@ -30,16 +50,6 @@ PROCESS_TIMEOUT = 20
 def emit(phase: str, **values) -> None:
     """Emit small timestamped phase markers for the external RSS sampler."""
     print(json.dumps({"phase": phase, "when": time.monotonic(), **values}), flush=True)
-
-
-def migration(name: str):
-    """Load repository-owned trigger definitions without importing test helpers."""
-    path = ROOT / "axile/server/alembic/versions" / name
-    spec = importlib.util.spec_from_file_location("benchmark_migration_" + name[:4], path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def record(index: int, symbols: int) -> SimpleNamespace:
@@ -94,35 +104,43 @@ def record(index: int, symbols: int) -> SimpleNamespace:
 
 def prepare(args) -> None:
     """Create canonical evidence on the actual Alembic head before measurement."""
-    import sqlalchemy as sa
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
+    from axile.server._native import _core
+
+    if callable(getattr(_core, "migration_upgrade", None)):
+        from axile.executor.algorithms.utils.clock import get_default_clock
+        from axile.server.execution.records import _persist_execute_record
+
+        prepare_database(args.prepare, ROOT)
+
+        async def populate_native():
+            for index in range(args.observations):
+                item = record(index, args.symbols)
+                with patch.object(
+                    get_default_clock(), "time", return_value=datetime.fromisoformat(item.created_at).timestamp()
+                ):
+                    await _persist_execute_record(
+                        account_id=1,
+                        execution_id=item.execution_id,
+                        raw_input=item.raw_input,
+                        raw_result=item.raw_result,
+                        is_success=item.is_success,
+                    )
+
+        asyncio.run(populate_native())
+        emit("prepared", observations=args.observations, symbols=args.symbols)
+        return
+
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from axile.server.business_facts.repository import store_execution_facts
-    from axile.server.db.models import Account, ExecuteRecord
+    from axile.server.db.models import ExecuteRecord
 
-    engine = sa.create_engine(f"sqlite:///{args.prepare}")
-    try:
-        with engine.begin() as connection:
-            for path in sorted((ROOT / "axile/server/alembic/versions").glob("*.py")):
-                if not path.stem[:4].isdigit():
-                    continue
-                revision = migration(path.name)
-                revision.op = Operations(MigrationContext.configure(connection))
-                revision.upgrade()
-    finally:
-        engine.dispose()
+    prepare_database(args.prepare, ROOT)
 
     async def populate():
         engine = create_async_engine(f"sqlite+aiosqlite:///{args.prepare}")
         try:
             factory = async_sessionmaker(engine, expire_on_commit=False)
-            async with factory() as session:
-                session.add(
-                    Account(id=1, name="synthetic-analysis", market="期货", trade_channel="ctp", brokerage="synthetic")
-                )
-                await session.commit()
             for start in range(0, args.observations, 100):
                 async with factory() as session:
                     for index in range(start, min(start + 100, args.observations)):
@@ -147,9 +165,6 @@ def prepare(args) -> None:
 
 def verify(database: Path, expected_records: int, expected_trades: int) -> dict:
     """Verify current publication, retention, copied facts and repeatable outputs."""
-    from axile.server.analysis_cost_facts import COST_FACT_TABLES
-    from axile.server.db.models.analysis_result import RESULT_TABLES
-
     digest = hashlib.sha256()
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
@@ -161,17 +176,27 @@ def verify(database: Path, expected_records: int, expected_trades: int) -> dict:
         if snapshot["result_schema_version"] != 2 or snapshot["ranges"] != "{}" or snapshot["settings"] != "{}":
             raise AssertionError("The worker published legacy JSON instead of typed result rows")
         counts = {}
-        for table in (*RESULT_TABLES, *COST_FACT_TABLES):
-            columns = [column.name for column in table.c if column.name != "snapshot_id"]
-            order = [column.name for column in table.primary_key.columns if column.name != "snapshot_id"]
-            statement = f"SELECT {','.join(columns)} FROM {table.name} WHERE snapshot_id=? ORDER BY {','.join(order)}"
+        tables = [
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+            if row[0].startswith(("performance_result_", "performance_cost_"))
+        ]
+        for table in tables:
+            info = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+            columns = sorted(column[1] for column in info if column[1] != "snapshot_id")
+            order = [
+                column[1] for column in sorted(info, key=lambda row: row[5]) if column[5] and column[1] != "snapshot_id"
+            ]
+            statement = (
+                f"SELECT {','.join(columns)} FROM {table} WHERE snapshot_id=? ORDER BY {','.join(order or columns)}"
+            )
             count = 0
-            digest.update(table.name.encode())
+            digest.update(table.encode())
             for row in connection.execute(statement, (identity,)):
                 digest.update(json.dumps(tuple(row), ensure_ascii=False, separators=(",", ":")).encode())
                 digest.update(b"\n")
                 count += 1
-            counts[table.name] = count
+            counts[table] = count
         if counts["performance_cost_execution"] != expected_records:
             raise AssertionError("Published execution facts are incomplete")
         if counts["performance_cost_trade"] != expected_trades or counts["performance_result_range"] != 3:
@@ -181,42 +206,40 @@ def verify(database: Path, expected_records: int, expected_trades: int) -> dict:
 
 
 async def worker(args) -> None:
-    """Execute three actual native staging and atomic publication rounds."""
+    """Execute native publications without obsolete Python staging markers."""
     import psutil
-    import sqlalchemy as sa
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    initialize_benchmark_database(args.worker)
     from axile.server import performance_analysis as analysis
+    from axile.server.core import db
 
-    os.environ["AXILE_ANALYSIS_MODE"] = "required"
-    os.environ["AXILE_ANALYSIS_BINARY"] = str(args.binary.resolve())
-    emit("imported", python_rss_bytes=psutil.Process().memory_info().rss)
-    engine = create_async_engine(f"sqlite+aiosqlite:///{args.worker}")
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    manager = analysis.AnalysisManager(sessions)
-    statements = Counter()
-    raw_selects = set()
+    emit(
+        "imported",
+        python_rss_bytes=psutil.Process().memory_info().rss if args.mode == "rss" else None,
+        native_artifact=native_artifact(ROOT),
+    )
+    engine = None
+    if hasattr(db, "SessionLocal"):
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
-        normalized = " ".join(statement.lower().split())
-        statements["all"] += 1
-        if normalized.startswith("select") and ("raw_input" in normalized or "raw_result" in normalized):
-            statements["legacy_column_selects"] += 1
-            raw_selects.add(normalized)
-        if normalized.startswith("insert into performance_cost_") and " select " in normalized:
-            statements["cost_insert_select"] += 1
-
-    sa.event.listen(engine.sync_engine, "before_cursor_execute", capture)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{args.worker}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        manager = analysis.AnalysisManager(sessions)
+    else:
+        manager = analysis.AnalysisManager()
 
     hashes = []
     try:
-        for round_number in range(1, 4):
+        for round_number in range(1, args.rounds + 1):
             emit("refresh_start", round=round_number)
-            async with sessions() as session:
-                await analysis.enqueue(session.get_bind().url.database, 1, force=True)
+            await analysis.enqueue(str(args.worker), 1, force=True)
             if not await asyncio.wait_for(manager.run_once(), timeout=PROCESS_TIMEOUT):
                 raise AssertionError("The queued refresh was not executed")
-            emit("refresh_end", round=round_number, python_rss_bytes=psutil.Process().memory_info().rss)
+            emit(
+                "refresh_end",
+                round=round_number,
+                python_rss_bytes=psutil.Process().memory_info().rss if args.mode == "rss" else None,
+            )
             emit("verify_start", round=round_number)
             result = verify(args.worker, args.observations, args.observations * args.symbols)
             hashes.append(result["sha256"])
@@ -224,19 +247,48 @@ async def worker(args) -> None:
                 raise AssertionError("Repeated refreshes changed results or failed snapshot retention")
             emit("verify_end", round=round_number, **result)
         emit(
-            "done", sql_counts=dict(statements), legacy_column_queries=sorted(raw_selects), repeated_outputs_equal=True
+            "done",
+            repeated_outputs_equal=True,
+            sql_counts=None,
+            sql_count_scope="SQLAlchemy events cannot observe native SQLite statements; no SQL-count claim",
         )
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 def observe(args, directory: Path) -> dict:
     """Sample the measured Python process plus recursive Rust children every 5 ms."""
     import psutil
 
-    environment = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONHASHSEED="0", OMP_NUM_THREADS="1")
     database = directory / "facts.sqlite"
-    common = ["--observations", str(args.observations), "--symbols", str(args.symbols), "--binary", str(args.binary)]
+    settings = directory / "config.toml"
+    settings.write_text(
+        f'sqlalchemy_database_uri = "sqlite+aiosqlite:///{database}"\napp_log_dir = "{directory}/logs"\nenvironment = "local"\n'
+    )
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("AXILE_", "PYTHONPATH"))}
+    environment.update(
+        PYTHONPATH=str(ROOT),
+        PYTHONHASHSEED="0",
+        OMP_NUM_THREADS="1",
+        OPENBLAS_NUM_THREADS="1",
+        AXILE_CONFIG_TOML=str(settings),
+    )
+    common = [
+        "--checkout",
+        str(ROOT),
+        "--observations",
+        str(args.observations),
+        "--symbols",
+        str(args.symbols),
+        "--rounds",
+        str(args.rounds),
+        "--mode",
+        args.mode,
+    ]
+    frozen_source = source_hash(ROOT)
+    harness_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    harness_files = harness_manifest(Path(__file__))
     started = time.monotonic()
     prepared = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--prepare", str(database), *common],
@@ -244,11 +296,15 @@ def observe(args, directory: Path) -> dict:
         env=environment,
         timeout=PROCESS_TIMEOUT,
         check=False,
+        cwd=directory,
     )
     if prepared.returncode:
         raise RuntimeError("Fixture preparation failed: " + prepared.stderr.decode()[-3000:])
     prepared_seconds = time.monotonic() - started
     before_bytes = database.stat().st_size
+    before_hash = hashlib.sha256(database.read_bytes()).hexdigest()
+    with sqlite3.connect(database) as monitor:
+        observed_settings = sqlite_settings(monitor)
     samples = []
     log = directory / "worker.jsonl"
     errors = directory / "worker.stderr"
@@ -259,6 +315,8 @@ def observe(args, directory: Path) -> dict:
             stdout=stdout,
             stderr=stderr,
             env=environment,
+            cwd=directory,
+            start_new_session=True,
         )
         handle = psutil.Process(process.pid)
         try:
@@ -266,6 +324,9 @@ def observe(args, directory: Path) -> dict:
                 if time.monotonic() - measured_start > PROCESS_TIMEOUT:
                     raise TimeoutError(f"Measured worker exceeded {PROCESS_TIMEOUT} seconds")
                 try:
+                    if args.mode != "rss":
+                        time.sleep(0.005)
+                        continue
                     parent_rss = handle.memory_info().rss
                     child_rss = 0
                     for child in handle.children(recursive=True):
@@ -290,39 +351,48 @@ def observe(args, directory: Path) -> dict:
         raise RuntimeError("Measured worker failed: " + errors.read_text()[-5000:])
     markers = [json.loads(line) for line in log.read_text().splitlines()]
     rounds = []
-    for number in range(1, 4):
+    for number in range(1, args.rounds + 1):
         first = next(row for row in markers if row["phase"] == "refresh_start" and row["round"] == number)
         last = next(row for row in markers if row["phase"] == "refresh_end" and row["round"] == number)
         selected = [sample for sample in samples if first["when"] <= sample[0] <= last["when"]]
-        within = [row for row in markers if first["when"] <= row["when"] <= last["when"]]
-        stages = {row["phase"]: row for row in within}
         verified = next(row for row in markers if row["phase"] == "verify_end" and row["round"] == number)
         rounds.append(
             {
                 "round": number,
-                "refresh_seconds": last["when"] - first["when"],
-                "stage_seconds": stages["stage_end"]["when"] - stages["stage_start"]["when"],
-                "publish_seconds": stages["publish_end"]["when"] - stages["publish_start"]["when"],
-                "peak_combined_rss_bytes": max(parent + child for _, parent, child in selected),
-                "peak_python_rss_bytes": max(parent for _, parent, _ in selected),
-                "peak_children_rss_bytes": max(child for _, _, child in selected),
+                "refresh_seconds": last["when"] - first["when"] if args.mode == "timing" else None,
+                "peak_combined_rss_bytes": max((parent + child for _, parent, child in selected), default=None),
+                "peak_python_rss_bytes": max((parent for _, parent, _ in selected), default=None),
+                "peak_children_rss_bytes": max((child for _, _, child in selected), default=None),
                 "python_rss_after_refresh_bytes": last["python_rss_bytes"],
-                "spool_bytes": stages["stage_end"]["spool_bytes"],
-                "result_row_counts": stages["stage_end"]["result_row_counts"],
                 "correctness": {key: value for key, value in verified.items() if key not in {"phase", "when", "round"}},
             }
         )
+    if source_hash(ROOT) != frozen_source or harness_manifest(Path(__file__)) != harness_files:
+        raise AssertionError("Sources or benchmark harness changed during publication measurement")
+    fixture_digest = hashlib.sha256()
+    for index in range(args.observations):
+        fixture_digest.update(
+            json.dumps(vars(record(index, args.symbols)), sort_keys=True, separators=(",", ":")).encode()
+        )
     return {
-        "fixture": "synthetic_complete_source_facts_with_poisoned_legacy_json",
+        "fixture": "synthetic_complete_source_facts",
+        "fixture_sha256": fixture_digest.hexdigest(),
+        "source_tree_sha256": frozen_source,
+        "harness_sha256": harness_hash,
+        "harness_files": harness_files,
+        "checkout": str(ROOT),
+        "measurement_mode": args.mode,
         "observations": args.observations,
         "symbols_per_observation": args.symbols,
         "source_trade_rows": args.observations * args.symbols,
         "fixture_preparation_seconds_unmeasured": prepared_seconds,
         "database_bytes_before": before_bytes,
         "database_bytes_after": database.stat().st_size,
-        "binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
+        "native_artifact": next(row["native_artifact"] for row in markers if row["phase"] == "imported"),
+        "sqlite_settings": {"monitor_connection": observed_settings, "native_connections": None},
+        "source_database_sha256_before_publication": before_hash,
         "python_import_rss_bytes": next(row["python_rss_bytes"] for row in markers if row["phase"] == "imported"),
-        "overall_peak_combined_rss_bytes": max(parent + child for _, parent, child in samples),
+        "overall_peak_combined_rss_bytes": max((parent + child for _, parent, child in samples), default=None),
         "sample_interval_seconds": 0.005,
         "memory_method": "Externally sampled sum of Python AnalysisManager and recursive Rust child RSS; shared pages may be counted twice",
         "rounds": rounds,
@@ -339,26 +409,41 @@ def observe(args, directory: Path) -> dict:
 
 def main() -> None:
     """Run the bounded whole-publication measurement against temporary data only."""
+    global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", type=Path, default=ROOT / "rust/analysis/target/release/axile-analysis")
-    parser.add_argument("--observations", type=int, default=10_000)
+    parser.add_argument("--checkout", type=Path, default=ROOT)
+    parser.add_argument("--observations", type=int, default=100)
     parser.add_argument("--symbols", type=int, default=10)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--work-directory", type=Path)
+    parser.add_argument("--mode", choices=("timing", "rss"), default="timing")
+    parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--prepare", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    ROOT = args.checkout.resolve()
+    sys.path.insert(0, str(ROOT))
     if not 1 <= args.observations <= 10_000 or not 1 <= args.symbols <= 10:
         parser.error("Use 1 to 10000 observations and 1 to 10 symbols")
+    if not 1 <= args.rounds <= 3:
+        parser.error("Use 1..3 publication rounds")
     if args.prepare:
-        prepare(args)
+        with no_network():
+            prepare(args)
         return
     if args.worker:
-        asyncio.run(worker(args))
+        with no_network():
+            asyncio.run(worker(args))
         return
-    if not args.binary.is_file() or not os.access(args.binary, os.X_OK):
-        parser.error("Build the release binary first or pass --binary")
-    with tempfile.TemporaryDirectory(prefix="axile-publication-measurement-") as temporary:
-        report = observe(args, Path(temporary))
+    if args.work_directory:
+        args.work_directory = args.work_directory.resolve()
+        args.work_directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+        report = observe(args, args.work_directory)
+    else:
+        with tempfile.TemporaryDirectory(
+            prefix="axile-publication-measurement-", dir=args.output.parent if args.output else Path.cwd()
+        ) as temporary:
+            report = observe(args, Path(temporary))
     encoded = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(encoded)

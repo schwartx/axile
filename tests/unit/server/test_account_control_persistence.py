@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
+from pathlib import Path
 
 import pytest
-from sqlalchemy import Text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import (
@@ -19,6 +19,7 @@ from axile.executor.account_control.models import (
     AccountControlScopeType,
 )
 from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
+from tests.fixtures.rust_store.oracle_tables import table
 
 
 def _build_account() -> Account:
@@ -48,12 +49,9 @@ def _build_account() -> Account:
 
 
 @asynccontextmanager
-async def _session_scope() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def _session_scope(path: Path) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as session:
             yield session
@@ -61,14 +59,15 @@ async def _session_scope() -> AsyncIterator[AsyncSession]:
         await engine.dispose()
 
 
-def test_account_control_tables_use_explicit_columns_and_unique_uids() -> None:
+def test_account_control_tables_use_explicit_columns_and_unique_uids(native_database: Path) -> None:
     """运行期表应使用显式列和稳定 UID，而不是 JSON state。"""
-    delta_columns = set(AccountControlCounterDelta.__table__.columns.keys())
-    event_columns = set(AccountControlEvent.__table__.columns.keys())
-    delta_operation_column = AccountControlCounterDelta.__table__.columns["operation"]
-    event_operation_column = AccountControlEvent.__table__.columns["operation"]
+    with closing(sqlite3.connect(native_database)) as connection:
+        delta_columns = {
+            row[1]: row[2] for row in connection.execute("PRAGMA table_info(account_control_counter_delta)")
+        }
+        event_columns = {row[1]: row[2] for row in connection.execute("PRAGMA table_info(account_control_event)")}
 
-    assert delta_columns == {
+    assert set(delta_columns) == {
         "account_id",
         "execution_id",
         "context_kind",
@@ -83,7 +82,7 @@ def test_account_control_tables_use_explicit_columns_and_unique_uids() -> None:
         "delta_uid",
         "id",
     }
-    assert event_columns == {
+    assert set(event_columns) == {
         "account_id",
         "control_date",
         "execution_id",
@@ -103,86 +102,101 @@ def test_account_control_tables_use_explicit_columns_and_unique_uids() -> None:
         "occurred_at_ms",
         "id",
     }
-    assert isinstance(delta_operation_column.type, Text)
-    assert isinstance(event_operation_column.type, Text)
+    assert delta_columns["operation"] == "TEXT"
+    assert event_columns["operation"] == "TEXT"
 
 
-def test_account_control_tables_enforce_unique_delta_uid_and_event_uid() -> None:
+def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_database: Path) -> None:
     """delta_uid 和 event_uid 必须由数据库唯一约束兜底。"""
 
     async def scenario() -> None:
-        async with _session_scope() as session:
+        async with _session_scope(native_database) as session:
             account = _build_account()
-            session.add(account)
+            account_values = {
+                key: value
+                for key, value in account.model_dump(mode="json").items()
+                if key in table("account").c and key != "id"
+            }
+            inserted = await session.execute(table("account").insert().values(**account_values))
+            account.id = inserted.inserted_primary_key[0]
             await session.commit()
             assert account.id is not None
             account_id = account.id
 
-            session.add_all(
-                [
-                    AccountControlCounterDelta(
-                        account_id=account_id,
-                        execution_id="exec-1",
-                        control_date="2026-03-22",
-                        bucket_type=AccountControlBucketType.DAY,
-                        bucket_start="2026-03-22T00:00:00",
-                        scope_type=AccountControlScopeType.ACCOUNT,
-                        symbol=None,
-                        operation="place_order",
-                        delta_count=1,
-                        delta_uid="duplicate-delta",
-                    ),
-                    AccountControlCounterDelta(
-                        account_id=account_id,
-                        execution_id="exec-2",
-                        control_date="2026-03-22",
-                        bucket_type=AccountControlBucketType.MINUTE,
-                        bucket_start="2026-03-22T09:31:00",
-                        scope_type=AccountControlScopeType.ACCOUNT,
-                        symbol=None,
-                        operation="query_order",
-                        delta_count=1,
-                        delta_uid="duplicate-delta",
-                    ),
-                ]
-            )
-            with pytest.raises(IntegrityError):
+            deltas = [
+                AccountControlCounterDelta(
+                    account_id=account_id,
+                    execution_id="exec-1",
+                    control_date="2026-03-22",
+                    bucket_type=AccountControlBucketType.DAY,
+                    bucket_start="2026-03-22T00:00:00",
+                    scope_type=AccountControlScopeType.ACCOUNT,
+                    symbol=None,
+                    operation="place_order",
+                    delta_count=1,
+                    delta_uid="duplicate-delta",
+                ),
+                AccountControlCounterDelta(
+                    account_id=account_id,
+                    execution_id="exec-2",
+                    control_date="2026-03-22",
+                    bucket_type=AccountControlBucketType.MINUTE,
+                    bucket_start="2026-03-22T09:31:00",
+                    scope_type=AccountControlScopeType.ACCOUNT,
+                    symbol=None,
+                    operation="query_order",
+                    delta_count=1,
+                    delta_uid="duplicate-delta",
+                ),
+            ]
+            with pytest.raises(
+                IntegrityError, match=r"UNIQUE constraint failed: account_control_counter_delta\.delta_uid"
+            ):
+                await session.execute(
+                    table("account_control_counter_delta").insert(),
+                    [delta.model_dump(mode="json", exclude={"id"}) for delta in deltas],
+                )
                 await session.commit()
             await session.rollback()
 
-            session.add_all(
-                [
-                    AccountControlEvent(
-                        account_id=account_id,
-                        control_date="2026-03-22",
-                        execution_id="exec-1",
-                        seq=1,
-                        channel=TradeChannel.CTP,
-                        operation="place_order",
-                        symbol="rb2610",
-                        metadata_={},
-                        decision=AccountControlDecision.ALLOWED,
-                        counted=True,
-                        outcome="submitted",
-                        event_uid="duplicate-event",
-                    ),
-                    AccountControlEvent(
-                        account_id=account_id,
-                        control_date="2026-03-22",
-                        execution_id="exec-2",
-                        seq=2,
-                        channel=TradeChannel.CTP,
-                        operation="cancel_order",
-                        symbol="ag2612",
-                        metadata_={},
-                        decision=AccountControlDecision.BLOCKED,
-                        counted=False,
-                        outcome="policy_blocked",
-                        event_uid="duplicate-event",
-                    ),
-                ]
-            )
-            with pytest.raises(IntegrityError):
+            events = [
+                AccountControlEvent(
+                    account_id=account_id,
+                    control_date="2026-03-22",
+                    execution_id="exec-1",
+                    seq=1,
+                    channel=TradeChannel.CTP,
+                    operation="place_order",
+                    symbol="rb2610",
+                    metadata_={},
+                    decision=AccountControlDecision.ALLOWED,
+                    counted=True,
+                    outcome="submitted",
+                    event_uid="duplicate-event",
+                ),
+                AccountControlEvent(
+                    account_id=account_id,
+                    control_date="2026-03-22",
+                    execution_id="exec-2",
+                    seq=2,
+                    channel=TradeChannel.CTP,
+                    operation="cancel_order",
+                    symbol="ag2612",
+                    metadata_={},
+                    decision=AccountControlDecision.BLOCKED,
+                    counted=False,
+                    outcome="policy_blocked",
+                    event_uid="duplicate-event",
+                ),
+            ]
+            with pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: account_control_event\.event_uid"):
+                await session.execute(
+                    table("account_control_event").insert(),
+                    [
+                        {**event.model_dump(mode="json", exclude={"id", "metadata_"}), "metadata": event.metadata_}
+                        for event in events
+                    ],
+                )
                 await session.commit()
 
     asyncio.run(scenario())

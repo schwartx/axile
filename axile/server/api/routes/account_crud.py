@@ -2,32 +2,27 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, time, timedelta
+from hashlib import sha256
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Header, HTTPException, Response, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import and_, col, delete, func, select
 from starlette.concurrency import run_in_threadpool
 
-from axile.channels import get_channel
+from axile.channels import get_channel, list_channels
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
-from axile.server.api.deps import HistoryPaginationDep, SchedDep, SessionDep
-from axile.server.api.routes.account_analysis import _op
+from axile.server.api.deps import HistoryPaginationDep, SchedDep
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.core.db import analysis_store
 from axile.server.cron import SCHEDULER_TIMEZONE, parse_cron_expr
 from axile.server.db.models import (
     Account,
-    AccountAssetSnapshot,
     AccountCreate,
     AccountDashboardItemPublic,
     AccountDashboardPublic,
@@ -37,18 +32,15 @@ from axile.server.db.models import (
     AccountRuntimeSync,
     AccountRuntimeSyncPublic,
     AccountUpdate,
-    ExecuteRecord,
     Message,
-    PortfolioAccount,
     PortfolioAccountListPublic,
-    PortfolioAccountPublic,
 )
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
+from axile.server.db.models.base import now_str
 from axile.server.db.models.performance import PerformanceSummary
-from axile.server.execution.account_runtime_sync import enqueue_account_runtime_sync, reconcile_account_runtime
+from axile.server.execution.account_runtime_sync import reconcile_account_runtime
 from axile.server.execution.ctp_channels import drop_account_worker
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from axile.server.execution.live import live_hub
 from axile.server.execution.registry import (
     get_execution_task_state,
@@ -58,11 +50,9 @@ from axile.server.execution.registry import (
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
+from axile.server.native_store import native_operation
 from axile.server.performance import close_before, local_time
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
-from axile.server.repositories import (
-    add_record_portfolio_account,
-)
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
 
 router = APIRouter()
@@ -113,6 +103,20 @@ def _account_public(account: Account) -> AccountPublic:
 def _account_public_with_runtime_sync(account: Account, sync: AccountRuntimeSync) -> AccountPublic:
     """将账户与持久化的运行态对齐状态组装为 API 响应。"""
     return _account_public(account).model_copy(update={"runtime_sync": AccountRuntimeSyncPublic.model_validate(sync)})
+
+
+def _account_read_request() -> dict[str, object]:
+    """只传入渠道白名单与进程会话快照，账户查询直接返回最终 JSON。"""
+    from axile.server.connection_runtime import public_session_views
+
+    return {
+        "channel_fields": {
+            plugin.descriptor.channel: [field.name for field in plugin.descriptor.account_form.fields]
+            for plugin in list_channels()
+        },
+        "default_notification_hash": sha256(DEFAULT_ACCOUNT_NOTIFICATION_CODE.strip().encode()).hexdigest(),
+        "live_sessions": public_session_views(),
+    }
 
 
 def _validate_channel_account_config(channel: TradeChannel | str, config: dict[str, object]) -> dict[str, object]:
@@ -203,40 +207,19 @@ def _next_job_execution_times(job: Any, channel: TradeChannel | str, *, limit: i
     return result
 
 
-async def _create_account_record(
-    session: SessionDep,
-    account: AccountCreate,
-    account_config: dict[str, object],
-) -> Account:
-    """
-    创建账户并写入初始组合绑定记录.
-
-    Parameters
-    ----------
-    session : SessionDep
-        当前数据库会话。
-    account : AccountCreate
-        待创建的账户输入模型。
-
-    Returns
-    -------
-    Account
-        已加入当前会话、并完成初始组合绑定的账户对象。
-    """
-    code = account.execution_notification_code
-    if code is not None and not code.strip():
-        code = None
-    if code is None and account.feishu_key and "execution_notification_code" not in account.model_fields_set:
-        code = DEFAULT_ACCOUNT_NOTIFICATION_CODE
-    db_account = Account.model_validate(
-        account.model_copy(update={"account_config": account_config, "execution_notification_code": code})
-    )
-    session.add(db_account)
-    await session.flush()
-
-    account_id = cast("int", db_account.id)
-    await add_record_portfolio_account(session, account_id, account.portfolio_id)
-    return db_account
+async def _account_operation(name: str, request: dict[str, object]) -> Any:
+    """执行完整原生账户操作，并保持路由的错误状态。"""
+    try:
+        return await native_operation(name, request)
+    except _core.NativeError as exc:
+        code, message = exc.args[:2]
+        status_code = {
+            "ACCOUNT_NOT_FOUND": 404,
+            "PORTFOLIO_NOT_FOUND": 404,
+            "ACCOUNT_CONFLICT": 409,
+            "ACCOUNT_INPUT": 422,
+        }.get(code, 500)
+        raise HTTPException(status_code, detail=str(message)) from exc
 
 
 def _resolve_next_account_control_binding(
@@ -282,38 +265,7 @@ def _build_account_update_data(account: AccountUpdate) -> dict[str, object]:
     data = account.model_dump(exclude_unset=True, mode="json")
     if data.get("portfolio_id") == -1:
         data["portfolio_id"] = None
-    if "account_control_override" in data and data["account_control_override"] is not None:
-        data["account_control_override"] = AccountControlOverride.model_validate(data["account_control_override"])
     return data
-
-
-async def _sync_portfolio_binding_update(
-    session: SessionDep,
-    db_account: Account,
-    account_id: int,
-    data: dict[str, object],
-) -> None:
-    """
-    根据更新载荷补写账户与组合的绑定历史.
-
-    Parameters
-    ----------
-    session : SessionDep
-        当前数据库会话。
-    db_account : Account
-        当前数据库中的账户对象。
-    account_id : int
-        账户 ID。
-    data : dict[str, object]
-        本次更新对应的持久化字段映射。
-    """
-    if "portfolio_id" not in data:
-        return
-
-    next_portfolio_id = cast("int | None", data["portfolio_id"])
-    # 这里必须在 sqlmodel_update 之前比较 old/new，才能准确补写绑定历史。
-    if db_account.portfolio_id != next_portfolio_id:
-        await add_record_portfolio_account(session, account_id, next_portfolio_id)
 
 
 @router.post(
@@ -322,7 +274,6 @@ async def _sync_portfolio_binding_update(
     response_model=AccountPublic,
 )
 async def create_account(
-    session: SessionDep,
     sched: SchedDep,
     account: AccountCreate,
     response: Response,
@@ -332,14 +283,12 @@ async def create_account(
     account_routes = _account_route_module()
     try:
         if idempotency_key:
-            existing_sync = await session.scalar(
-                select(AccountRuntimeSync).where(AccountRuntimeSync.create_request_key == idempotency_key)
-            )
-            if existing_sync is not None:
-                existing_account = await _get_account_or_404(session, existing_sync.account_id)
-                if existing_sync.status != "synchronized":
+            existing = await _account_operation("account_create_replay", {"idempotency_key": idempotency_key})
+            if existing is not None:
+                sync = AccountRuntimeSync.model_validate(existing["runtime_sync"])
+                if sync.status != "synchronized":
                     response.status_code = status.HTTP_202_ACCEPTED
-                return _account_public_with_runtime_sync(existing_account, existing_sync)
+                return _account_public_with_runtime_sync(Account.model_validate(existing), sync)
         account_routes._validate_account_control_binding(account.trade_channel, account.account_control_preset)
         account.futures_close_policy.validate_channel(account.trade_channel)
         account_config = _validate_channel_account_config(account.trade_channel, account.account_config)
@@ -348,24 +297,35 @@ async def create_account(
         if account.execution_notification_code and account.execution_notification_code.strip():
             validate_notification_function(account.execution_notification_code)
         parse_cron_expr(account.cron_expr)
-        db_account = await _create_account_record(session, account, account_config)
-        await enqueue_account_runtime_sync(
-            session,
-            cast("int", db_account.id),
-            reset_worker=False,
-            create_request_key=idempotency_key,
+        code = account.execution_notification_code
+        if code is not None and not code.strip():
+            code = None
+        if code is None and account.feishu_key and "execution_notification_code" not in account.model_fields_set:
+            code = DEFAULT_ACCOUNT_NOTIFICATION_CODE
+        saved = await _account_operation(
+            "account_create",
+            {
+                "account": account.model_dump(mode="json")
+                | {"account_config": account_config, "execution_notification_code": code},
+                "idempotency_key": idempotency_key,
+                "now": now_str(),
+            },
         )
-        await session.commit()
-        await session.refresh(db_account)
+        db_account = Account.model_validate(saved["account"])
+        if saved["replayed"]:
+            sync = AccountRuntimeSync.model_validate(saved["account"]["runtime_sync"])
+            if sync.status != "synchronized":
+                response.status_code = status.HTTP_202_ACCEPTED
+            return _account_public_with_runtime_sync(db_account, sync)
         from axile.server.connection_events import connection_hub
 
         connection_hub.changed(cast("int", db_account.id))
     except ValueError as exc:
-        await session.rollback()
         logger.exception(f"创建账户失败: {exc}")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        await session.rollback()
         logger.exception(f"创建账户失败: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -377,7 +337,7 @@ async def create_account(
 
     await reap_cancelled_queue(cast("int", db_account.id))
     wake_notifications(cast("int", db_account.id))
-    sync = await _reconcile_committed_runtime(session, sched, cast("int", db_account.id))
+    sync = await _reconcile_committed_runtime(sched, cast("int", db_account.id))
     if sync.status != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
     return _account_public_with_runtime_sync(db_account, sync)
@@ -385,7 +345,6 @@ async def create_account(
 
 @router.post("/{account_id}/copy", status_code=status.HTTP_201_CREATED, response_model=AccountPublic)
 async def copy_account(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
     request: AccountCopyRequest,
@@ -395,7 +354,7 @@ async def copy_account(
     async with account_runtime_lock(account_id):
         if not request.name.strip():
             raise HTTPException(status_code=422, detail="新账户名称不能为空")
-        source = await _get_account_or_404(session, account_id)
+        source = await _get_account_or_404(account_id)
         if source.is_started:
             raise HTTPException(status_code=409, detail="请先暂停来源账户的自动调度")
         if sched.get_job(str(account_id)) is not None:  # type: ignore[no-untyped-call]
@@ -416,33 +375,36 @@ async def copy_account(
             _check_algorithm_channel_compat(payload.algorithm, str(payload.trade_channel), "下单算法")
             _check_algorithm_channel_compat(payload.empty_positions_algorithm, str(payload.trade_channel), "清仓算法")
             parse_cron_expr(payload.cron_expr)
-            copied = await _create_account_record(session, payload, config)
-            copied.copied_from_account_id = account_id
-            copied.copied_from_account_name = source.name
-            await enqueue_account_runtime_sync(session, cast("int", copied.id), reset_worker=False)
-            await session.commit()
-            await session.refresh(copied)
+            copied = Account.model_validate(
+                await _account_operation(
+                    "account_copy",
+                    {
+                        "account_id": account_id,
+                        "name": request.name.strip(),
+                        "account_config": config,
+                        "expected_revision": source.runtime_sync.revision if source.runtime_sync is not None else None,
+                        "now": now_str(),
+                    },
+                )
+            )
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(cast("int", copied.id))
         except (ValueError, ValidationError) as exc:
-            await session.rollback()
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception:
-            await session.rollback()
-            raise
 
-    sync = await _reconcile_committed_runtime(session, sched, cast("int", copied.id))
+    sync = await _reconcile_committed_runtime(sched, cast("int", copied.id))
     if sync.status != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
     return _account_public_with_runtime_sync(copied, sync)
 
 
 @router.get("/", response_model=AccountListPublic)
-async def list_accounts(session: SessionDep) -> AccountListPublic:
+async def list_accounts() -> Response:
     """获取所有账户列表."""
-    accounts = (await session.execute(select(Account))).scalars().all()
-    return AccountListPublic(data=[_account_public(account) for account in accounts])
+    return Response(
+        content=await _account_operation("account_list_json", _account_read_request()), media_type="application/json"
+    )
 
 
 def _safe_total_asset(assets: dict[str, Any]) -> float:
@@ -454,14 +416,12 @@ def _safe_total_asset(assets: dict[str, Any]) -> float:
 
 
 @router.get("/dashboard", response_model=AccountDashboardPublic)
-async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDashboardPublic:
+async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
     """
     仪表盘聚合: 一次性返回每个账户的舰队卡所需数据.
 
     Parameters
     ----------
-    session : SessionDep
-        当前数据库会话。
     sched : SchedDep
         当前调度器实例。
 
@@ -478,9 +438,11 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
     """
     from axile.server.connection_state import public_connection
 
-    accounts = (await session.execute(select(Account))).scalars().all()
-    account_ids = [cast("int", account.id) for account in accounts]
-    inputs = await _op(_core.dashboard_inputs, analysis_store(), account_ids, LOGIC_VERSION, ENGINE_VERSION)
+    context = await _account_operation(
+        "account_dashboard_context", {"logic_version": LOGIC_VERSION, "engine_version": ENGINE_VERSION}
+    )
+    accounts = [Account.model_validate(account) for account in context["accounts"]]
+    inputs = context["inputs"]
     items: list[AccountDashboardItemPublic] = []
     for account in accounts:
         account_id = cast("int", account.id)
@@ -596,15 +558,11 @@ async def account_dashboard(session: SessionDep, sched: SchedDep) -> AccountDash
 
 
 @router.delete("/{account_id}")
-async def delete_account(session: SessionDep, sched: SchedDep, account_id: int) -> Message:
+async def delete_account(sched: SchedDep, account_id: int) -> Message:
     """删除账户."""
     # 与对齐互斥，先等锁再读库，避免删除期间旧对齐把 worker 重新建立。
     async with account_runtime_lock(account_id):
-        account = await _get_account_or_404(session, account_id)
-        await _detach_account_execution_summaries(session, account_id)
-        await session.delete(account)
-        await session.commit()
-        await session.close()
+        await _account_operation("account_delete", {"account_id": account_id})
         delete_job(sched, account_id)
         await drop_account_worker(account_id)
         from axile.server.connection_runtime import forget_session
@@ -617,17 +575,23 @@ async def delete_account(session: SessionDep, sched: SchedDep, account_id: int) 
     "/{account_id}",
     response_model=AccountPublic,
 )
-async def account_info(session: SessionDep, account_id: int) -> AccountPublic:
+async def account_info(account_id: int) -> Response:
     """获取账户详情."""
-    return _account_public(await _get_account_or_404(session, account_id))
+    return Response(
+        content=await _account_operation("account_info_json", _account_read_request() | {"account_id": account_id}),
+        media_type="application/json",
+    )
 
 
 @router.get("/{account_id}/connection", response_model=AccountConnectionDetail)
-async def account_connection(session: SessionDep, account_id: int) -> AccountConnectionDetail:
+async def account_connection(account_id: int) -> Response:
     """只读取最新连接结果及完整详情，不触发 SDK。"""
-    from axile.server.connection_state import public_connection
-
-    return cast(AccountConnectionDetail, public_connection(await _get_account_or_404(session, account_id), detail=True))
+    return Response(
+        content=await _account_operation(
+            "account_connection_json", _account_read_request() | {"account_id": account_id}
+        ),
+        media_type="application/json",
+    )
 
 
 @router.get(
@@ -635,7 +599,6 @@ async def account_connection(session: SessionDep, account_id: int) -> AccountCon
     response_model=AccountNextRunPublic,
 )
 async def account_next_run_time(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
 ) -> AccountNextRunPublic:
@@ -644,8 +607,6 @@ async def account_next_run_time(
 
     Parameters
     ----------
-    session : SessionDep
-        当前数据库会话。
     sched : SchedDep
         当前调度器实例。
     account_id : int
@@ -666,13 +627,13 @@ async def account_next_run_time(
     首次时间直接读取 APScheduler 的 ``next_run_time``，后续时间从同一任务 trigger
     继续展开。
     """
-    account = await _get_account_or_404(session, account_id)
+    context = await _account_operation("account_next_run_context", {"account_id": account_id})
+    account = Account.model_validate(context["account"])
     job = sched.get_job(str(account_id))  # type: ignore[no-untyped-call]
     next_run_times = _next_job_run_times(job) if job is not None else []
     next_execution_times = _next_job_execution_times(job, account.trade_channel) if job is not None else []
     if account.supplement and job is not None:
         from axile.server.api.routes.account_schedule import SchedulePreviewRequest, schedule_preview
-        from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 
         preview = await schedule_preview(
             SchedulePreviewRequest(
@@ -683,26 +644,15 @@ async def account_next_run_time(
             )
         )
         now = clock_now(tz=SCHEDULER_TIMEZONE)
-        pending = (
-            await session.scalars(
-                select(SupplementStep)
-                .join(SupplementGroup, col(SupplementGroup.id) == col(SupplementStep.group_id))
-                .where(
-                    SupplementGroup.account_id == account_id,
-                    SupplementGroup.status == "active",
-                    SupplementStep.status == "pending",
-                )
-            )
-        ).all()
         times = {
             item.scheduled_at
             for item in preview.items
             if item.action == "execute" and (item.base_scheduled_at is None or item.base_scheduled_at >= now)
         }
         times.update(
-            datetime.fromisoformat(step.scheduled_at)
-            for step in pending
-            if datetime.fromisoformat(step.scheduled_at) > now
+            datetime.fromisoformat(scheduled_at)
+            for scheduled_at in context["pending_scheduled_at"]
+            if datetime.fromisoformat(scheduled_at) > now
         )
         next_execution_times = [value.isoformat() for value in sorted(times)[:3]]
     return AccountNextRunPublic(
@@ -719,7 +669,6 @@ async def account_next_run_time(
     response_model=AccountPublic,
 )
 async def update_account(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
     account: AccountUpdate,
@@ -729,18 +678,17 @@ async def update_account(
     from axile.server.execution.supplements import account_lock
 
     async with account_lock(account_id):
-        return await _update_account(session, sched, account_id, account, response)
+        return await _update_account(sched, account_id, account, response)
 
 
 async def _update_account(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
     account: AccountUpdate,
     response: Response,
 ) -> AccountPublic:
     """更新账户."""
-    db_account = await _get_account_or_404(session, account_id)
+    db_account = await _get_account_or_404(account_id)
     account_routes = _account_route_module()
 
     try:
@@ -789,49 +737,26 @@ async def _update_account(
             validate_notification_function(str(next_notification_code))
         if account.account_config is not None or account.trade_channel is not None:
             data["account_config"] = normalized_account_config
-        # 调度开关只改变后续触发；保留登录会话，避免停启或重复保存导致 SDK 重登录。
-        runtime_changed = any(
-            key in data and data[key] != getattr(db_account, key) for key in ("account_config", "trade_channel")
+        db_account.settings.model_copy(deep=True).apply_patch(data)
+        saved = await _account_operation(
+            "account_update",
+            {
+                "account_id": account_id,
+                "patch": data,
+                "expected_revision": db_account.runtime_sync.revision if db_account.runtime_sync is not None else None,
+                "now": now_str(),
+            },
         )
-        from axile.server.execution.supplements import cancel_groups_in_session
-
-        changed_schedule = any(
-            key in data
-            and data[key]
-            != (
-                getattr(db_account, key).model_dump(mode="json")
-                if isinstance(getattr(db_account, key), BaseModel)
-                else getattr(db_account, key)
-            )
-            for key in ("cron_expr", "supplement", "trade_channel", "portfolio_id")
-        )
-        if (db_account.supplement or db_account.has_pending_supplement) and (
-            changed_schedule or data.get("is_started") is False
-        ):
-            await cancel_groups_in_session(
-                session, account_id, "account_stopped" if data.get("is_started") is False else "configuration_changed"
-            )
-        await _sync_portfolio_binding_update(session, db_account, account_id, data)
-        db_account.sqlmodel_update(data)
-
-        from axile.server.connection_state import reset_connection_for_config
-
-        if runtime_changed:
-            await reset_connection_for_config(session, db_account)
-
-        session.add(db_account)
-        await enqueue_account_runtime_sync(session, account_id, reset_worker=runtime_changed)
-        await session.commit()
-        await session.refresh(db_account)
-        if runtime_changed:
+        db_account = Account.model_validate(saved["account"])
+        if saved["runtime_changed"]:
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(account_id)
     except ValueError as exc:
-        await session.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"服务器错误: {str(exc)}",
@@ -842,17 +767,17 @@ async def _update_account(
 
     await reap_cancelled_queue(cast("int", db_account.id))
     wake_notifications(cast("int", db_account.id))
-    sync = await _reconcile_committed_runtime(session, sched, cast("int", db_account.id))
+    sync = await _reconcile_committed_runtime(sched, cast("int", db_account.id))
     if sync.status != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
     return _account_public_with_runtime_sync(db_account, sync)
 
 
 @router.get("/{account_id}/runtime-sync", response_model=AccountRuntimeSyncPublic)
-async def account_runtime_sync_status(session: SessionDep, account_id: int) -> AccountRuntimeSyncPublic:
+async def account_runtime_sync_status(account_id: int) -> AccountRuntimeSyncPublic:
     """查询账户运行态对齐的失败原因与重试计数。"""
-    await _get_account_or_404(session, account_id)
-    sync = await session.scalar(select(AccountRuntimeSync).where(AccountRuntimeSync.account_id == account_id))
+    account = await _get_account_or_404(account_id)
+    sync = account.runtime_sync
     if sync is None:
         raise HTTPException(status_code=status.HTTP_202_ACCEPTED, detail="账户运行态尚待首次同步")
     return AccountRuntimeSyncPublic.model_validate(sync)
@@ -860,49 +785,23 @@ async def account_runtime_sync_status(session: SessionDep, account_id: int) -> A
 
 @router.post("/{account_id}/runtime-sync/retry", response_model=AccountRuntimeSyncPublic)
 async def retry_account_runtime_sync(
-    session: SessionDep,
     sched: SchedDep,
     account_id: int,
     response: Response,
 ) -> AccountRuntimeSyncPublic:
     """显式重试账户 scheduler 和渠道 worker 的运行态对齐。"""
-    await _get_account_or_404(session, account_id)
-    sync = await _reconcile_committed_runtime(session, sched, account_id)
+    sync = await _reconcile_committed_runtime(sched, account_id)
     if sync.status != "synchronized":
         response.status_code = status.HTTP_202_ACCEPTED
     return AccountRuntimeSyncPublic.model_validate(sync)
 
 
-async def _reconcile_committed_runtime(session: SessionDep, sched: SchedDep, account_id: int) -> AccountRuntimeSync:
-    """释放已提交配置的读取会话；等锁期间被删除的账户仍返回 404。"""
-    await session.close()
+async def _reconcile_committed_runtime(sched: SchedDep, account_id: int) -> AccountRuntimeSync:
+    """已提交配置在事务外对齐；等锁期间被删除的账户仍返回 404。"""
     try:
         return await reconcile_account_runtime(account_id, sched)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在") from exc
-
-
-def _execution_response(content: bytes | str, *, page: bool, journal: bool = False) -> Response:
-    """仅对有界响应中的品种展示应用已有兼容规则，不重读业务事实。"""
-    payload = json.loads(content)
-    for item in payload["data"] if page else [payload]:
-        record = item.get("record", {}) if journal else item
-        symbols = record.get("symbol_results")
-        if isinstance(symbols, dict):
-            normalized = normalize_legacy_result({"symbol_results": symbols})["symbol_results"]
-            record["symbol_results"] = {
-                symbol: {
-                    key: item[key]
-                    for key in ("status", "error", "outcome", "outcome_reason", "reason_code")
-                    if key in item
-                }
-                if isinstance(item, dict)
-                else {}
-                for symbol, item in normalized.items()
-            }
-    return Response(
-        content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")), media_type="application/json"
-    )
 
 
 @router.get("/execute_records/{account_id}")
@@ -923,7 +822,7 @@ async def list_execute_records(
             execution_id,
             record_id,
         )
-        return _execution_response(content, page=True)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
@@ -935,7 +834,7 @@ async def execute_record_detail(account_id: int, record_id: int) -> Response:
     """从同一原生读快照返回账户内执行的完整业务证据。"""
     try:
         content = await run_in_threadpool(_core.execution_record_detail, analysis_store(), account_id, record_id)
-        return _execution_response(content, page=False)
+        return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
@@ -946,65 +845,21 @@ async def execute_record_detail(account_id: int, record_id: int) -> Response:
 
 @router.get("/portfolio_records/{account_id}", response_model=PortfolioAccountListPublic)
 async def list_portfolio_records(
-    session: SessionDep,
     account_id: int,
     pagination: HistoryPaginationDep,
-) -> PortfolioAccountListPublic:
+) -> Response:
     """获取账户的组合更换记录."""
-    db_account = await _get_account_or_404(session, account_id)
-
-    count_statement = (
-        select(func.count()).select_from(PortfolioAccount).where(PortfolioAccount.account_id == db_account.id)
-    )
-    count = (await session.execute(count_statement)).scalar_one()
-
-    # 组合绑定记录保持插入顺序返回，便于直接还原账户组合切换历史。
-    statement = (
-        select(PortfolioAccount)
-        .where(PortfolioAccount.account_id == db_account.id)
-        .offset(pagination.skip)
-        .limit(pagination.limit)
-    )
-    records = (await session.execute(statement)).scalars().all()
-
-    return PortfolioAccountListPublic(
-        data=[PortfolioAccountPublic.model_validate(record) for record in records],
-        count=count,
+    return Response(
+        content=await _account_operation(
+            "account_portfolio_records_json",
+            {"account_id": account_id, "skip": pagination.skip, "limit": pagination.limit},
+        ),
+        media_type="application/json",
     )
 
 
 @router.delete("/execute_records/{account_id}", response_model=Message)
-async def delete_execute_records(session: SessionDep, account_id: int) -> Message:
+async def delete_execute_records(account_id: int) -> Message:
     """删除账户的执行记录."""
-    await _get_account_or_404(session, account_id)
-    await _detach_account_execution_summaries(session, account_id)
-
-    # 执行来源快照属于执行历史的一部分，随记录清理；人工刷新快照保持独立观测语义。
-    await session.execute(
-        delete(AccountAssetSnapshot).where(
-            and_(
-                AccountAssetSnapshot.account_id == account_id,
-                AccountAssetSnapshot.source == "execution",
-            )
-        )
-    )
-    # execution event / artifact 审计流仍不联动。
-    stmt = delete(ExecuteRecord).where(and_(ExecuteRecord.account_id == account_id))
-    await session.execute(stmt)
-    await session.commit()
-
+    await _account_operation("delete_execution_history", {"account_id": account_id})
     return Message(message="成功删除")
-
-
-async def _detach_account_execution_summaries(session: AsyncSession, account_id: int) -> None:
-    """在事实删除的同一事务中恢复独立审计日记，每批仅加载少量头记录。"""
-    from axile.server.business_facts.artifacts import detach_execution_summaries
-
-    records = await session.stream_scalars(
-        select(ExecuteRecord).where(ExecuteRecord.account_id == account_id).execution_options(yield_per=100)
-    )
-    try:
-        async for record in records:
-            await detach_execution_summaries(session, record)
-    finally:
-        await records.close()

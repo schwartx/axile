@@ -16,9 +16,23 @@ from __future__ import annotations
 
 # The driver and isolated arms share this source-only evidence oracle.
 try:
-    from scripts.business_facts_contract import business_evidence
-except ModuleNotFoundError:
+    from benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        source_manifest,
+        sqlite_settings,
+    )
     from business_facts_contract import business_evidence
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        source_manifest,
+        sqlite_settings,
+    )
+    from scripts.business_facts_contract import business_evidence
 
 import argparse
 import asyncio
@@ -62,10 +76,8 @@ def semantic_hash(value: object) -> str:
 
 
 def source_tree_hash(root: Path) -> str:
-    """Freeze all application Python files outside the measured service process."""
-    return semantic_hash(
-        {str(path.relative_to(root)): digest_file(path) for path in sorted((root / "axile").rglob("*.py"))}
-    )
+    """Freeze application, Rust, SQL, Cargo inputs and packaged native artifacts."""
+    return semantic_hash(source_manifest(root))
 
 
 def source_identity(root: Path) -> dict:
@@ -89,11 +101,12 @@ def common_semantics(endpoint: str, body: dict, arm: str) -> object:
     if endpoint == "history":
         return {"count": body["count"], "data": [{key: item[key] for key in HEAD_FIELDS} for item in body["data"]]}
     if endpoint == "detail":
-        item = body["data"][0] if arm == "baseline" else body
+        legacy = arm in {"baseline", "legacy"}
+        item = body["data"][0] if legacy else body
         return {
             "head": {key: item[key] for key in HEAD_FIELDS},
-            "input": item["raw_input"] if arm == "baseline" else item["input"],
-            "result": item["raw_result"] if arm == "baseline" else item["result"],
+            "input": item["raw_input"] if legacy else item["input"],
+            "result": item["raw_result"] if legacy else item["result"],
         }
     return body
 
@@ -124,8 +137,11 @@ def imported_sources(root: Path) -> dict[str, str]:
     for name, module in tuple(sys.modules.items()):
         filename = getattr(module, "__file__", None)
         if (name == "axile" or name.startswith("axile.")) and filename:
-            resolved = Path(filename).resolve()
-            if not resolved.is_relative_to(root / "axile"):
+            imported = Path(filename).absolute()
+            resolved = imported.resolve()
+            if not imported.is_relative_to(root / "axile") or (
+                imported.suffix == ".py" and not resolved.is_relative_to(root / "axile")
+            ):
                 raise RuntimeError(f"Wrong Axile import source: {name}")
             paths[name] = str(resolved)
     return paths
@@ -145,14 +161,31 @@ async def serve(config: dict) -> None:
     from fastapi import Body
     from loguru import logger
 
+    from axile.server.core import db
+
+    initialize_benchmark_database(Path(config["database"]))
     from axile.server.app import _app
-    from axile.server.core.db import SessionLocal, engine
     from axile.server.execution import rebalance, records
 
+    sessions = getattr(db, "SessionLocal", None)
+    engine = getattr(db, "engine", None)
     root = Path(config["root"]).resolve()
     imported_sources(root)
+    artifact = native_artifact(root)
+    with closing(sqlite3.connect(config["database"])) as monitor:
+        monitor_settings = sqlite_settings(monitor)
+    writer_settings = []
+    if engine is not None and hasattr(engine, "sync_engine"):
+        from sqlalchemy import event
+
+        event.listen(
+            engine.sync_engine,
+            "connect",
+            lambda connection, _record: writer_settings.append(sqlite_settings(connection)),
+        )
     logger.remove()
-    rebalance.SessionLocal = SessionLocal
+    if sessions is not None:
+        rebalance.SessionLocal = sessions
     _app.state.analysis_manager = SimpleNamespace(wake=asyncio.Event())
 
     @_app.get("/__business_fact_benchmark/last-target", tags=["benchmark"])
@@ -161,13 +194,14 @@ async def serve(config: dict) -> None:
 
     @_app.post("/__business_fact_benchmark/write", tags=["benchmark"])
     async def write(payload: dict = Body()):
+        options = {"session_factory": sessions} if sessions is not None else {}
         record = await records._persist_execute_record(
             account_id=config["account_id"],
             execution_id=payload["execution_id"],
             raw_input=payload["raw_input"],
             raw_result=payload["raw_result"],
             is_success=payload["is_success"],
-            session_factory=SessionLocal,
+            **options,
         )
         return {"id": record.id, "execution_id": record.execution_id, "is_success": record.is_success}
 
@@ -206,7 +240,8 @@ async def serve(config: dict) -> None:
             await asyncio.wait_for(task, 5)
         finally:
             listener.close()
-            await engine.dispose()
+            if engine is not None:
+                await engine.dispose()
         paths = imported_sources(root)
         source_evidence = {
             "root": str(root),
@@ -218,7 +253,14 @@ async def serve(config: dict) -> None:
             },
             "module_paths_sha256": semantic_hash(paths),
             "frozen_source_tree_sha256": config["source_tree_sha256"],
-            "native_analysis": "disabled equally; lifespan off and subprocess creation rejected",
+            "native_analysis": "background lifecycle off; subprocesses rejected; in-process native reads and writes enabled",
+            "native_artifact": artifact,
+            "sqlite_settings": {
+                "monitor_connection": monitor_settings,
+                "sqlalchemy_connections": writer_settings,
+                "native_connections": None,
+                "native_scope": "connection-local native PRAGMAs are unobserved",
+            },
         }
         Path(config["sources"]).write_text(json.dumps(source_evidence, indent=2))
 
@@ -229,7 +271,7 @@ def endpoint_paths(config: dict) -> dict[str, str]:
     history = f"{base}/execute_records/{config['account_id']}"
     detail = (
         f"{history}?record_id={config['record_id']}&limit=1"
-        if config["arm"] == "baseline"
+        if config.get("response_layout", config["arm"]) in {"baseline", "legacy"}
         else f"{history}/{config['record_id']}"
     )
     return {
@@ -292,7 +334,7 @@ def run_client(config: dict) -> dict:
                     raise AssertionError("Source database execution count differs from the frozen fixture")
             elif endpoint == "last_target":
                 initial_target = body
-            digest = semantic_hash(common_semantics(endpoint, body, config["arm"]))
+            digest = semantic_hash(common_semantics(endpoint, body, config.get("response_layout", config["arm"])))
             if endpoint in semantics and semantics[endpoint] != digest:
                 raise AssertionError(f"Read changed without writes: {endpoint}")
             semantics[endpoint] = digest
@@ -325,7 +367,8 @@ def run_client(config: dict) -> dict:
                     writes.append(body)
                 elif (
                     endpoint != "write"
-                    and semantic_hash(common_semantics(endpoint, body, config["arm"])) != semantics[endpoint]
+                    and semantic_hash(common_semantics(endpoint, body, config.get("response_layout", config["arm"])))
+                    != semantics[endpoint]
                 ):
                     raise AssertionError(f"Concurrent read changed stable evidence: {endpoint}")
     verified = verify_writes(config, template, writes, initial_count, initial_target)
@@ -343,7 +386,7 @@ def verify_writes(config: dict, template: dict, writes: list, initial_count: int
     expected = semantic_hash({"input": template["raw_input"], "result": template["raw_result"]})
     for written in writes:
         _, body = request({**config, "record_id": written["id"]}, "detail", "verification")
-        detail = common_semantics("detail", body, config["arm"])
+        detail = common_semantics("detail", body, config.get("response_layout", config["arm"]))
         if detail["head"]["execution_id"] != written["execution_id"]:
             raise AssertionError("Committed detail points to a different execution")
         if semantic_hash({"input": detail["input"], "result": detail["result"]}) != expected:
@@ -535,6 +578,7 @@ def compare(args) -> None:
     databases = {arm: getattr(args, arm + "_database").resolve() for arm in ("baseline", "candidate")}
     hashes = {arm: digest_file(path) for arm, path in databases.items()}
     harness_hash = digest_file(Path(__file__))
+    harness_files = harness_manifest(Path(__file__))
     oracle_path = Path(__file__).with_name("business_facts_contract.py")
     oracle_hash = digest_file(oracle_path)
     roots = {arm: getattr(args, arm).resolve() for arm in ("baseline", "candidate")}
@@ -545,10 +589,12 @@ def compare(args) -> None:
     expected = None
     for mode in args.modes:
         for iteration in range(args.runs):
-            arms = ("baseline", "candidate") if iteration % 2 == 0 else ("candidate", "baseline")
+            pair = iteration + getattr(args, "pair_index", 0)
+            arms = ("baseline", "candidate") if pair % 2 == 0 else ("candidate", "baseline")
             for arm in arms:
                 config = {
                     "arm": arm,
+                    "response_layout": getattr(args, arm + "_layout", "typed"),
                     "root": str(roots[arm]),
                     "source_tree_sha256": source_hashes[arm],
                     "database": str(databases[arm]),
@@ -578,6 +624,8 @@ def compare(args) -> None:
         raise AssertionError("Frozen fixture or manifest changed during the benchmark")
     if digest_file(Path(__file__)) != harness_hash:
         raise AssertionError("Benchmark harness changed during its execution")
+    if harness_manifest(Path(__file__)) != harness_files:
+        raise AssertionError("Shared benchmark harness changed during its execution")
     if digest_file(oracle_path) != oracle_hash:
         raise AssertionError("Business oracle changed during the benchmark")
     report = {
@@ -587,7 +635,9 @@ def compare(args) -> None:
         "database_sha256": hashes,
         "application_source_sha256": source_hashes,
         "application_source_identity": source_identities,
+        "response_layout": {arm: getattr(args, arm + "_layout", "typed") for arm in roots},
         "harness_sha256": harness_hash,
+        "harness_files": harness_files,
         "summary": aggregate(runs),
         "semantic_hashes": expected,
         "measurement_scope": "actual complete FastAPI app, loopback HTTP, production terminal writer/last-target reader",
@@ -623,19 +673,30 @@ def main() -> None:
     for arm in ("baseline", "candidate"):
         parser.add_argument("--" + arm, type=Path, required=True)
         parser.add_argument("--" + arm + "-database", type=Path, required=True)
+        parser.add_argument("--" + arm + "-layout", choices=("legacy", "typed"), default="typed")
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--account-id", type=int, default=1)
     parser.add_argument("--record-id", type=int, default=1)
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--pair-index", type=int, default=0, help="Keep alternating order when pairs run as separate short jobs"
+    )
     parser.add_argument("--modes", nargs="+", choices=("timing", "rss"), default=("timing", "rss"))
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--writes", type=int, default=3)
     parser.add_argument("--mixed", type=int, default=2)
-    parser.add_argument("--timeout", type=int, default=30, help="Absolute service/startup/workload/shutdown deadline")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=25,
+        help="Absolute worker deadline; cleanup allowance remains inside the outer 30-second job",
+    )
     args = parser.parse_args()
     if min(args.runs, args.repeats, args.writes, args.mixed, args.timeout) < 1:
         parser.error("All workload counts and timeout must be positive")
+    if args.timeout > 25 or args.pair_index < 0:
+        parser.error("Use a 1..25 second worker deadline and a nonnegative pair index")
     compare(args)
 
 

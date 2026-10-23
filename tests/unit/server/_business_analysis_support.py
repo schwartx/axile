@@ -1,15 +1,19 @@
-"""分析测试显式保存规范事实；不为 ORM 恢复已删除的原始文档属性。"""
+"""真实原生迁移和业务阶段驱动的分析测试夹具。"""
 
-from collections import defaultdict
-from contextlib import asynccontextmanager
+import sqlite3
+from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta
+from graphlib import TopologicalSorter
+from pathlib import Path
+from shutil import copyfile
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
-import sqlalchemy as sa
-from sqlmodel import SQLModel
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.pool import NullPool
 
-from axile.server.db.models import ExecuteRecord, TargetWeightSnapshot
+from tests.conftest import initialize_native_database, native_store_call
 
 
 def analysis_record(*, input=None, result=None, **metadata):
@@ -17,162 +21,175 @@ def analysis_record(*, input=None, result=None, **metadata):
     return SimpleNamespace(**metadata, input={} if input is None else input, result={} if result is None else result)
 
 
+async def _release_oracle_connections(session) -> Path:
+    """Python 与原生扩展的 SQLite 内核不能同时持有同一个文件连接。"""
+    engine = session.bind
+    assert isinstance(engine, AsyncEngine), "分析 oracle 要求绑定真实 AsyncEngine"
+    path = engine.url.database
+    assert path and path != ":memory:", "原生分析夹具要求文件库，请在建 Session 前调用 initialize_native_database"
+    await session.commit()
+    await session.close()
+    await engine.dispose()
+    return Path(path)
+
+
 def install_analysis_triggers(connection):
-    """复用发布版本的触发器，并最终安装规范事实失效与所有权约束。"""
-    from axile.server.alembic.business0037_invalidation import install_triggers
-    from axile.server.business_facts.repository import execution_fact_tables
-    from axile.server.db.models import AccountAssetSnapshot
-    from axile.server.db.models.target_weight_snapshot import target_weight_snapshot_weight
-    from tests.unit.server.test_initial_migration import _MIGRATIONS_DIR, _load_migration
+    """验证真实迁移已安装触发器；不再从生产 Python 迁移模块补建。"""
+    revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+    assert revision == "0039", "请在打开测试事务前调用 initialize_native_database"
+    count = connection.exec_driver_sql("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").scalar_one()
+    assert count >= 243, "测试库缺少真实迁移触发器"
 
-    _load_migration(_MIGRATIONS_DIR / "0012_performance_snapshots.py").install_triggers(connection)
-    _load_migration(_MIGRATIONS_DIR / "0020_account_settings.py").install_settings_trigger(connection)
-    install_triggers(
-        connection,
-        (
-            *execution_fact_tables(),
-            AccountAssetSnapshot.__table__,
-            TargetWeightSnapshot.__table__,
-            target_weight_snapshot_weight,
-        ),
+
+def _quote(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _record_tables(connection):
+    names = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    tables = {}
+    for name in names:
+        if not name.startswith(("execution_", "business_")):
+            continue
+        columns = connection.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
+        if any(column[1] == "record_id" for column in columns):
+            tables[name] = connection.execute(f"PRAGMA foreign_key_list({_quote(name)})").fetchall()
+    dependencies = {
+        name: {row[2] for row in keys if row[2] in tables and row[2] != name} for name, keys in tables.items()
+    }
+    return tuple(TopologicalSorter(dependencies).static_order())
+
+
+def _move_record_id(connection, source, target, execution_id, tables):
+    """显式历史主键仅在测试侧重排，保留全部真实所有权和失效触发器。"""
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    connection.execute("PRAGMA defer_foreign_keys=ON")
+    connection.execute("UPDATE executerecord SET execution_id=NULL WHERE id=?", (source,))
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(executerecord)")]
+    values = [
+        ":target" if name == "id" else ":execution_id" if name == "execution_id" else _quote(name) for name in columns
+    ]
+    connection.execute(
+        f"INSERT INTO executerecord ({','.join(map(_quote, columns))}) SELECT {','.join(values)} "
+        "FROM executerecord WHERE id=:source",
+        {"source": source, "target": target, "execution_id": execution_id},
     )
-
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    migration = _load_migration(_MIGRATIONS_DIR / "0039_direct_analysis_facts.py")
-    migration.op = Operations(MigrationContext.configure(connection))
-    migration.upgrade()
+    for name in tables:
+        connection.execute(f"UPDATE {_quote(name)} SET record_id=? WHERE record_id=?", (target, source))
+    connection.execute("DELETE FROM executerecord WHERE id=?", (source,))
 
 
-async def _insert_batches(session, batches):
-    for table, rows in batches.items():
-        for start in range(0, len(rows), 100):
-            await session.execute(table.insert(), rows[start : start + 100])
-
-
-def _new_head(record):
-    return ExecuteRecord(
-        **{name: getattr(record, name) for name in ("id", "account_id", "execution_id", "created_at", "is_success")}
-    )
-
-
-def _encode_new_record(record, head, input_batches, result_batches):
-    from axile.server.business_facts import inputs
-    from axile.server.business_facts.repository import encode_result_facts
-
-    input_id = f"analysis-fixture-{record.account_id}-{record.id}"
-    for table, rows in inputs.encode_inputs(
-        input_id,
-        record.input,
-        account_id=record.account_id,
-        execution_id=record.execution_id,
-        created_at=record.created_at,
-    ).items():
-        input_batches[table].extend(rows)
-    head.input_id = input_id
-    for table, rows in encode_result_facts(record.id, record.result, is_success=record.is_success).items():
-        if table.name == "executerecord":
-            for name, value in rows[0].items():
-                if name != "id":
-                    setattr(head, name, value)
-        else:
-            result_batches[table].extend(rows)
-
-
-async def _rewrite_input(session, record, head):
-    from axile.server.business_facts import inputs
-    from axile.server.business_facts.repository import read_execution_input
-
-    if head.input_id is None or await read_execution_input(session, head.input_id) == record.input:
-        return
-    # 测试历史事实修改的失效；生产前置输入仍由仓库保持冻结。
-    for table in reversed(inputs.TABLES):
-        if table is not inputs.execution_input:
-            await session.execute(table.delete().where(table.c.input_id == head.input_id))
-    batches = inputs.encode_inputs(
-        head.input_id,
-        record.input,
-        account_id=head.account_id,
-        execution_id=head.execution_id,
-        created_at=head.created_at,
-    )
-    values = batches.pop(inputs.execution_input)[0]
-    await session.execute(
-        inputs.execution_input.update()
-        .where(inputs.execution_input.c.id == head.input_id)
-        .values(**{key: value for key, value in values.items() if key != "id"})
-    )
-    await _insert_batches(session, batches)
+def _reset_records(connection, record_ids):
+    for identity in record_ids:
+        row = connection.execute("SELECT execution_id FROM executerecord WHERE id=?", (identity,)).fetchone()
+        if row is None:
+            continue
+        # 重写仅用于构造历史失效场景；生产首条终态与输入冻结规则不变。
+        if row[0] is not None:
+            connection.execute(
+                "DELETE FROM account_asset_snapshot WHERE execution_id=? AND source='execution'", (row[0],)
+            )
+        connection.execute("DELETE FROM executerecord WHERE id=?", (identity,))
 
 
 async def persist_records(session, records):
-    """正式编码器批量保存规范业务事实。"""
-    from axile.server.business_facts.repository import store_execution_facts
-
-    existing = {
-        head.id: head
-        for head in (
-            await session.scalars(
-                sa.select(ExecuteRecord).where(ExecuteRecord.id.in_([record.id for record in records]))
-            )
-        ).all()
-    }
-    input_batches, result_batches = defaultdict(list), defaultdict(list)
-    new_heads = []
+    """真实原生阶段保存事实；测试侧只负责历史 ID 和显式重置。"""
+    records = list(records)
+    if not records:
+        return
+    path = await _release_oracle_connections(session)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        tables = _record_tables(connection)
+        _reset_records(connection, [record.id for record in records if record.id is not None])
     for record in records:
-        head = existing.get(record.id)
-        if head is None and record.id is not None and "inputs" not in record.result:
-            head = _new_head(record)
-            _encode_new_record(record, head, input_batches, result_batches)
-            new_heads.append(head)
-            continue
-        if head is None:
-            head = _new_head(record)
-            session.add(head)
-            await session.flush()
+        saved = native_store_call(
+            path,
+            "persist_execute_record",
+            {
+                "account_id": record.account_id,
+                "execution_id": record.execution_id,
+                "created_at": record.created_at,
+                "is_success": record.is_success,
+                "input_id": str(uuid4()),
+                "result_input_id": str(uuid4()),
+                "raw_input": record.input,
+                "raw_result": record.result,
+            },
+        )
+        if record.id is not None and record.id != saved["id"]:
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _move_record_id(connection, saved["id"], record.id, record.execution_id, tables)
         else:
-            for name in ("account_id", "execution_id", "created_at", "is_success"):
-                setattr(head, name, getattr(record, name))
-            await _rewrite_input(session, record, head)
-        await store_execution_facts(session, head, raw_input=record.input, raw_result=record.result)
-        record.id = head.id
-    await _insert_batches(session, input_batches)
-    session.add_all(new_heads)
-    await session.flush()
-    await _insert_batches(session, result_batches)
+            record.id = saved["id"]
 
 
 async def load_record(session, record_id):
-    """显式读取测试记录；返回可修改的普通对象。"""
-    from axile.server.business_facts.repository import read_execution_detail
-
-    return SimpleNamespace(**await read_execution_detail(session, await session.get(ExecuteRecord, record_id)))
+    """读取真实原生明细，返回可修改的普通对象。"""
+    path = await _release_oracle_connections(session)
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute("SELECT account_id FROM executerecord WHERE id=?", (record_id,)).fetchone()
+    assert row is not None, f"测试执行记录不存在: {record_id}"
+    return SimpleNamespace(
+        **native_store_call(
+            path,
+            "read_execution_detail",
+            {
+                "account_id": row[0],
+                "record_id": record_id,
+            },
+        )
+    )
 
 
 async def persist_target(session, *, normalized_weights=None, raw_weights=None, snapshot=None, **metadata):
-    """保留目标快照头身份，使用正式编码器写入权重明细。"""
-    from axile.server.db.models.target_weight_snapshot import target_weight_snapshot_weight
-    from axile.server.target_weight_snapshots import encode_snapshot_weights
+    """通过原生 append 保存目标头和权重明细，历史重写仅用于测试。"""
+    from axile.server.db.models import TargetWeightSnapshot
 
-    payload = {"normalized_weights": normalized_weights, "raw_weights": raw_weights}
-    columns, _ = encode_snapshot_weights(0, payload)
-    if snapshot is None:
-        snapshot = TargetWeightSnapshot(**metadata, **columns)
-        session.add(snapshot)
-        await session.flush()
-    else:
-        for name, value in columns.items():
-            setattr(snapshot, name, value)
-        await session.execute(
-            target_weight_snapshot_weight.delete().where(target_weight_snapshot_weight.c.snapshot_id == snapshot.id)
-        )
-    _, batches = encode_snapshot_weights(snapshot.id, payload)
-    for table, rows in batches.items():
-        if rows:
-            await session.execute(table.insert(), rows)
-    await session.flush()
-    return snapshot
+    snapshot = snapshot or TargetWeightSnapshot(**metadata)
+    path = await _release_oracle_connections(session)
+    if snapshot.id is not None:
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (snapshot.id,))
+    saved = native_store_call(
+        path,
+        "target_operation",
+        {
+            "op": "append",
+            "portfolio_id": snapshot.portfolio_id,
+            "account_id": snapshot.account_id,
+            "source": snapshot.source,
+            "execution_id": snapshot.execution_id,
+            "calculated_at": snapshot.calculated_at,
+            "raw_weights": raw_weights,
+            "normalized_weights": normalized_weights,
+        },
+    )
+    if snapshot.id is not None and snapshot.id != saved["id"]:
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("PRAGMA defer_foreign_keys=ON")
+            connection.execute("UPDATE target_weight_snapshot SET execution_id=NULL WHERE id=?", (saved["id"],))
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(target_weight_snapshot)")]
+            values = [
+                ":target" if name == "id" else ":execution_id" if name == "execution_id" else _quote(name)
+                for name in columns
+            ]
+            connection.execute(
+                f"INSERT INTO target_weight_snapshot ({','.join(map(_quote, columns))}) SELECT {','.join(values)} "
+                "FROM target_weight_snapshot WHERE id=:source",
+                {"source": saved["id"], "target": snapshot.id, "execution_id": snapshot.execution_id},
+            )
+            connection.execute(
+                "UPDATE target_weight_snapshot_weight SET snapshot_id=? WHERE snapshot_id=?", (snapshot.id, saved["id"])
+            )
+            connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (saved["id"],))
+        saved["id"] = snapshot.id
+    return SimpleNamespace(**saved)
 
 
 def record(index=1, **kwargs):
@@ -205,46 +222,33 @@ def record(index=1, **kwargs):
     )
 
 
-def _create_schema(connection):
-    SQLModel.metadata.create_all(connection)
-    install_analysis_triggers(connection)
-
-
 @pytest.fixture(scope="module")
 def schema_template(tmp_path_factory):
-    """模板包含真实索引和触发器，复制前关闭全部连接。"""
+    """模板包含真实迁移版本、索引和触发器，复制前关闭原生连接。"""
     path = tmp_path_factory.mktemp("analysis-schema") / "template.db"
-    engine = sa.create_engine(f"sqlite:///{path}")
-    try:
-        with engine.begin() as connection:
-            _create_schema(connection)
-    finally:
-        engine.dispose()
+    initialize_native_database(path)
     return path
 
 
 @asynccontextmanager
 async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
-    """模板库 + 预置记录的引擎/会话工厂;第三个槽位保留给 worker,现阶段恒为 None."""
-    from shutil import copyfile
-
+    """SQLAlchemy 只供测试 oracle；生产业务写入使用真实原生阶段。"""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from tests.unit.server._execution_test_support import build_account
+    from tests.unit.server._execution_test_support import build_account, insert_account
 
-    if not fresh_schema:
-        copyfile(schema_template, tmp_path / "analysis.db")
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'analysis.db'}")
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    path = tmp_path / "analysis.db"
     if fresh_schema:
-        async with engine.begin() as conn:
-            await conn.run_sync(_create_schema)
-    async with sessions() as session:
-        session.add(build_account(id=2, account_control_preset="default"))
-        await session.commit()
-        await persist_records(session, [record(i + 1) for i in range(count)])
-        await session.commit()
+        initialize_native_database(path)
+    else:
+        copyfile(schema_template, path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        insert_account(connection, build_account(id=2, portfolio_id=None, account_control_preset="default"))
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}", poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
+        async with sessions() as session:
+            await persist_records(session, [record(index + 1) for index in range(count)])
         yield engine, sessions, None
     finally:
         await engine.dispose()
@@ -256,7 +260,7 @@ def _events(records, bindings, skips) -> list[dict]:
 
     from axile.executor.session_closed import session_closed_scope
     from axile.server.execution.legacy_compat import normalize_legacy_result
-    from axile.server.performance_costs import timestamp
+    from tests.unit.server._performance_costs_oracle import timestamp
 
     events = [
         {

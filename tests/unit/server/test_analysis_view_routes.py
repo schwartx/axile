@@ -2,31 +2,32 @@
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
+import sqlite3
+from contextlib import asynccontextmanager, closing
 
 import httpx
 import pytest
 import sqlalchemy as sa
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import Session, SQLModel
 
-from axile.server.analysis_cost_facts import iter_cost_fact_batches
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account_analysis as routes
-from axile.server.db.models.analysis import analysis_snapshot as snapshots
-from axile.server.db.models.analysis import analysis_state as states
-from axile.server.db.models.analysis import (
+from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
+from tests.conftest import initialize_native_database
+from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
+from tests.fixtures.rust_store.oracle_tables import analysis_state as states
+from tests.fixtures.rust_store.oracle_tables import (
     cost_attempt,
     cost_execution_symbol,
     cost_position,
     cost_transaction,
     cost_transaction_fee,
 )
-from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
-from axile.server.performance_costs import timestamp
+from tests.unit.server._analysis_cost_facts_oracle import iter_cost_fact_batches
 from tests.unit.server._analysis_results_support import iter_result_fact_batches
-from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._performance_costs_oracle import timestamp
 from tests.unit.server.test_analysis_results import SETTINGS, _range
 
 BASE_URL = "/api/v1/account/performance/2"
@@ -145,12 +146,12 @@ def _insert_frozen_views(connection, snapshot_id):
 @pytest.fixture
 def dataset(tmp_path):
     path = tmp_path / "analysis-views.sqlite"
-    engine = sa.create_engine(f"sqlite:///{path}")
+    initialize_native_database(path)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        for account_id in (2, 3):
+            insert_account(connection, build_account(id=account_id))
+    engine = sa.create_engine(f"sqlite:///{path}", poolclass=sa.pool.NullPool)
     try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            session.add_all([build_account(id=2), build_account(id=3)])
-            session.commit()
         with engine.begin() as connection:
             connection.exec_driver_sql("PRAGMA journal_mode=WAL")
             for snapshot_id, account_id, view_version in (
@@ -212,18 +213,20 @@ def dataset(tmp_path):
 
 @asynccontextmanager
 async def http_client(database):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}", poolclass=sa.pool.NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     app = FastAPI()
     patch = pytest.MonkeyPatch()
     patch.setattr(routes, "analysis_store", lambda: routes._core.Store(str(database)))
     app.include_router(routes.router, prefix="/api/v1/account")
 
-    async def session_dependency():
-        raise AssertionError("analysis routes must not open a Python database session")
-
-    app.dependency_overrides[get_db] = session_dependency
     try:
+        assert all(
+            getattr(dependency.call, "__name__", None) != "get_db"
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            for dependency in route.dependant.dependencies
+        ), "analysis routes must not open a Python database session"
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
             yield client, sessions, engine
     finally:

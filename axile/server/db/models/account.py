@@ -1,13 +1,8 @@
 """账户与组合绑定数据库模型."""
 
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, computed_field, field_validator
-from sqlalchemy import Column, Connection, ForeignKey, Integer, Text, event
-from sqlalchemy.ext.asyncio import AsyncAttrs
-from sqlalchemy.orm import Mapper, relationship
-from sqlmodel import Field, Relationship, SQLModel
-from sqlmodel._compat import SQLModelConfig
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
@@ -25,92 +20,47 @@ from axile.server.db.models.account_validation import (
     _validate_leverage,
     _validate_weight_precision,
 )
-from axile.server.db.models.base import now_str
+from axile.server.db.models.base import Model, now_str
 from axile.server.db.models.performance import FeeRate, PerformanceSummary, WeightType
-
-if TYPE_CHECKING:
-    from axile.server.db.models.account_asset import AccountAssetSnapshot
-    from axile.server.db.models.execution import ExecuteRecord
-    from axile.server.db.models.portfolio import Portfolio
-    from axile.server.db.models.supplement import SupplementGroup
 
 
 class AccountBase(BaseModel):
     """账户模型共用字段."""
 
-    backtest_weight_type: WeightType = Field(
-        default="ts",
-    )
-    backtest_fee_rate: FeeRate = Field(
-        default=0.0,
-    )
+    backtest_weight_type: WeightType = Field(default="ts")
+    backtest_fee_rate: FeeRate = Field(default=0.0)
     name: str = Field(description="账户名称, 必填")
-    market: str = Field(
-        description="交易市场标识, 例如: A股、期货等, 必填",
-    )
-    trade_channel: TradeChannel = Field(
-        description="实盘渠道, 必填",
-    )
-    account_control_preset: str = Field(
-        description="账户控制 preset 标识, 必填",
-    )
+    market: str = Field(description="交易市场标识, 例如: A股、期货等, 必填")
+    trade_channel: TradeChannel = Field(description="实盘渠道, 必填")
+    account_control_preset: str = Field(description="账户控制 preset 标识, 必填")
     account_control_override: AccountControlOverride | None = Field(
         default=None,
         description="账户控制的局部 override, 可选；支持 account/group 级规则与 operations.<op>.symbol 级规则",
     )
-    account_config: Dict[str, Any] = Field(
-        description="账户配置, JSON格式, 包含登录信息、API密钥等, 必填",
-    )
-    is_started: bool = Field(
-        description="账户是否已启动, 布尔值, 必填",
-    )
+    account_config: Dict[str, Any] = Field(description="账户配置, JSON格式, 包含登录信息、API密钥等, 必填")
+    is_started: bool = Field(description="账户是否已启动, 布尔值, 必填")
     supplement: SupplementSettings | None = None
-    cron_expr: str = Field(
-        description="定时任务表达式, 符合crontab语法, 必填",
-    )
+    cron_expr: str = Field(description="定时任务表达式, 符合crontab语法, 必填")
     remark: Optional[str] = Field(description="账户备注信息, 可选")
-    brokerage: str = Field(
-        description="券商名称, 例如华泰、银河等, 必填",
-    )
-    weight_precision: float = Field(
-        description="权重值的精度, 必须是10的负整数次幂, 默认: 0.01",
-    )
-    long_leverage: Optional[float] = Field(
-        default=None,
-        description="做多杠杆",
-    )
-    short_leverage: Optional[float] = Field(
-        default=None,
-        description="做空杠杆",
-    )
-    algorithm: Dict[str, Any] = Field(
-        description="下单算法,必填",
-    )
+    brokerage: str = Field(description="券商名称, 例如华泰、银河等, 必填")
+    weight_precision: float = Field(description="权重值的精度, 必须是10的负整数次幂, 默认: 0.01")
+    long_leverage: Optional[float] = Field(default=None, description="做多杠杆")
+    short_leverage: Optional[float] = Field(default=None, description="做空杠杆")
+    algorithm: Dict[str, Any] = Field(description="下单算法,必填")
     empty_positions_algorithm: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="清仓算法, 非必填; null 时由执行逻辑回退到默认值",
+        default=None, description="清仓算法, 非必填; null 时由执行逻辑回退到默认值"
     )
     futures_close_policy: FuturesClosePolicy = Field(default_factory=FuturesClosePolicy)
-    trade_rules: Optional[Dict[str, Any]] = Field(
-        description="交易规则,非必填",
-    )
-    forbidden_symbols: Optional[List[str]] = Field(
-        description="禁用品种,非必填",
-    )
-    risk_symbols: Optional[List[str]] = Field(
-        description="风险品种,自动平仓,非必填",
-    )
+    trade_rules: Optional[Dict[str, Any]] = Field(description="交易规则,非必填")
+    forbidden_symbols: Optional[List[str]] = Field(description="禁用品种,非必填")
+    risk_symbols: Optional[List[str]] = Field(description="风险品种,自动平仓,非必填")
     feishu_key: Optional[str] = Field(description="飞书KEY, 可选")
-    execution_notification_code: str | None = Field(
-        default=None,
-    )
+    execution_notification_code: str | None = Field(default=None)
     portfolio_id: Optional[int] = Field(
-        default=None,
-        description="当前绑定组合 ID（可空，删除组合时 DB 自动设为 NULL）",
+        default=None, description="当前绑定组合 ID（可空，删除组合时 DB 自动设为 NULL）"
     )
     write_empty_record: Optional[int] = Field(
-        default=None,
-        description="是否写入空订单的执行记录, 0/1 或 null 表示不写入,只有设置1才写入, 默认不写入",
+        default=None, description="是否写入空订单的执行记录, 0/1 或 null 表示不写入,只有设置1才写入, 默认不写入"
     )
     execution_timeout: int = Field(
         default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
@@ -148,7 +98,7 @@ class AccountBase(BaseModel):
 class AccountCreate(AccountBase):
     """创建账户时使用的载荷."""
 
-    model_config = SQLModelConfig(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
 
 class AccountSnapshot(AccountBase):
@@ -161,73 +111,56 @@ class AccountSnapshot(AccountBase):
     created_at: str = Field(default_factory=now_str)
 
 
-class Account(SQLModel, AsyncAttrs, table=True):
-    """账户身份与组合绑定；配置通过预加载的一对一关系读取。"""
+class Account(Model):
+    """账户身份、配置及当前状态的普通数据对象。"""
 
-    id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(sa_column=Column(Text, nullable=False))
-    market: str = Field(sa_column=Column(Text, nullable=False))
-    trade_channel: TradeChannel = Field(sa_column=Column(Text, nullable=False))
-    brokerage: str = Field(sa_column=Column(Text, nullable=False))
-    remark: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    portfolio_id: int | None = Field(
-        default=None, sa_column=Column(Integer, ForeignKey("portfolio.id", ondelete="SET NULL"), nullable=True)
-    )
-    copied_from_account_id: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
-    copied_from_account_name: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    updated_at: str = Field(default_factory=now_str, sa_column=Column(Text, nullable=False))
-    created_at: str = Field(default_factory=now_str, sa_column=Column(Text, nullable=False))
+    id: int | None = None
+    name: str
+    market: str
+    trade_channel: TradeChannel
+    brokerage: str
+    remark: str | None = None
+    portfolio_id: int | None = None
+    copied_from_account_id: int | None = None
+    copied_from_account_name: str | None = None
+    updated_at: str = Field(default_factory=now_str)
+    created_at: str = Field(default_factory=now_str)
+    settings: AccountSettings = Field(default_factory=AccountSettings, exclude=True)
+    has_pending_supplement: bool = Field(default=False, exclude=True)
+    notification_state: AccountNotificationState | None = Field(default=None, exclude=True)
+    connection_state: AccountConnectionState | None = Field(default=None, exclude=True)
+    runtime_sync: AccountRuntimeSyncPublic | None = Field(default=None, exclude=True)
 
-    supplement_groups: list["SupplementGroup"] = Relationship(
-        sa_relationship=relationship("SupplementGroup", lazy="selectin", cascade="all, delete-orphan")
-    )
-
-    @property
-    def has_pending_supplement(self) -> bool:
-        """存在尚未结束的补发组时允许复用账户终止入口。"""
-        return any(group.status in {"active", "cancelling"} for group in self.supplement_groups)
-
-    notification_state: AccountNotificationState | None = Relationship(
-        sa_relationship=relationship(
-            "AccountNotificationState", uselist=False, lazy="selectin", cascade="all, delete-orphan", single_parent=True
-        )
-    )
-
-    connection_state: AccountConnectionState | None = Relationship(
-        sa_relationship=relationship(
-            "AccountConnectionState", uselist=False, lazy="selectin", cascade="all, delete-orphan", single_parent=True
-        )
-    )
-
-    settings: AccountSettings = Relationship(
-        sa_relationship=relationship(
-            "AccountSettings", uselist=False, lazy="selectin", cascade="all, delete-orphan", single_parent=True
-        )
-    )
-
-    def __init__(self, **data: Any) -> None:
-        """兼容旧的扁平创建载荷，将配置归入设置对象。"""
-        patch = {key: data.pop(key) for key in list(data) if key in SETTINGS_FIELDS}
-        settings = data.pop("settings", None) or AccountSettings()
-        settings.apply_patch(patch)
-        super().__init__(**data)
-        self.settings = settings
-
+    @model_validator(mode="before")
     @classmethod
-    def model_validate(cls, obj: Any, **kwargs: Any) -> "Account":
-        """通过 API 数据创建账户，保留扁平配置兼容性。"""
-        data = obj.model_dump() if isinstance(obj, BaseModel) else dict(obj)
-        return cls(**data)
+    def _collect_settings(cls, values: Any) -> Any:
+        """将扁平配置合并为同一份有类型设置。"""
+        if isinstance(values, BaseModel):
+            values = values.model_dump()
+        if not isinstance(values, dict):
+            return values
+        data = dict(values)
+        patch = {key: data.pop(key) for key in list(data) if key in SETTINGS_FIELDS}
+        settings = AccountSettings.model_validate(data.get("settings") or {}).model_copy(deep=True)
+        settings.apply_patch(patch)
+        data["settings"] = settings
+        return data
+
+    @model_validator(mode="after")
+    def _link_settings(self) -> "Account":
+        """将设置绑定到已校验的账户 ID。"""
+        self.settings.account_id = self.id
+        return self
 
     def __getattr__(self, name: str) -> Any:
-        """兼容尚未迁移的账户配置字段读取。"""
+        """通过账户属性读取所属配置组。"""
         group = SETTINGS_FIELDS.get(name)
         if group:
             return self.settings.connection if group == "connection" else getattr(getattr(self.settings, group), name)
         return getattr(super(), "__getattr__")(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        """兼容单字段更新，同时确保 JSON 列被替换。"""
+        """校验配置后替换所属设置，并刷新修改时间。"""
         if name in SETTINGS_FIELDS:
             self.settings.apply_patch({name: value})
             super().__setattr__("updated_at", now_str())
@@ -235,50 +168,19 @@ class Account(SQLModel, AsyncAttrs, table=True):
             super().__setattr__(name, value)
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        """保留内部旧载荷格式；公开 API 仍由独立 DTO 构造。"""
+        """按账户快照字段输出扁平配置。"""
         values = super().model_dump() | self.settings.flat_values()
         return AccountSnapshot.model_construct(**values).model_dump(**kwargs)
 
-    def sqlmodel_update(self, obj: Any, *, update: dict[str, Any] | None = None) -> "Account":
-        """先校验局部配置，再更新账户身份字段。"""
-        data = (obj.model_dump(exclude_unset=True) if isinstance(obj, BaseModel) else dict(obj)) | (update or {})
-        self.settings.apply_patch(data)
-        if SETTINGS_FIELDS.keys() & data.keys():
-            self.updated_at = now_str()
-        super().sqlmodel_update({key: value for key, value in data.items() if key not in SETTINGS_FIELDS})
-        return self
-
     def snapshot(self) -> AccountSnapshot:
-        """复制为与 ORM 生命周期无关的账户快照。"""
+        """复制为可独立修改的执行账户快照。"""
         return AccountSnapshot.model_validate(self.model_dump()).model_copy(deep=True)
-
-    execute_records: list["ExecuteRecord"] = Relationship(
-        sa_relationship=relationship(
-            "ExecuteRecord",
-            back_populates="account",
-            cascade="all, delete-orphan",
-        )
-    )
-    asset_snapshots: list["AccountAssetSnapshot"] = Relationship(
-        sa_relationship=relationship(
-            "AccountAssetSnapshot",
-            back_populates="account",
-            cascade="all, delete-orphan",
-        )
-    )
-    portfolio_records: list["PortfolioAccount"] = Relationship(
-        sa_relationship=relationship(
-            "PortfolioAccount",
-            back_populates="account",
-            cascade="all, delete-orphan",
-        )
-    )
 
 
 type AccountContext = Account | AccountSnapshot
 
 
-class AccountPublic(SQLModel):
+class AccountPublic(Model):
     """账户读取响应。
 
     与持久化模型分离。渠道声明的连接字段包含密码与密钥，供编辑回显；
@@ -335,13 +237,13 @@ class AccountPublic(SQLModel):
         return "function"
 
 
-class AccountListPublic(SQLModel):
+class AccountListPublic(Model):
     """账户载荷的列表响应封装."""
 
     data: List[AccountPublic]
 
 
-class AccountNextRunPublic(SQLModel):
+class AccountNextRunPublic(Model):
     """账户未来调度执行时间的响应载荷.
 
     Attributes
@@ -365,7 +267,7 @@ class AccountNextRunPublic(SQLModel):
     next_execution_times: List[str] = Field(default_factory=list)
 
 
-class AccountDashboardItemPublic(SQLModel):
+class AccountDashboardItemPublic(Model):
     """仪表盘聚合中的单账户项.
 
     一次性把舰队卡所需数据拼齐，避免前端对每个账户分别请求下次执行、执行记录等。
@@ -452,7 +354,7 @@ class AccountDashboardItemPublic(SQLModel):
     pending_kind: Optional[str] = None
 
 
-class AccountDashboardPublic(SQLModel):
+class AccountDashboardPublic(Model):
     """仪表盘聚合响应.
 
     Attributes
@@ -464,7 +366,7 @@ class AccountDashboardPublic(SQLModel):
     data: List[AccountDashboardItemPublic]
 
 
-class AccountRebalancePlanRowPublic(SQLModel):
+class AccountRebalancePlanRowPublic(Model):
     """账户可执行持仓对照中的一个规范化品种."""
 
     symbol: str
@@ -477,7 +379,7 @@ class AccountRebalancePlanRowPublic(SQLModel):
     aligned: bool
 
 
-class AccountRebalancePlanPublic(SQLModel):
+class AccountRebalancePlanPublic(Model):
     """同一资产与目标快照下的可执行持仓对照."""
 
     rows: List[AccountRebalancePlanRowPublic] = Field(default_factory=list)
@@ -486,10 +388,10 @@ class AccountRebalancePlanPublic(SQLModel):
     target_calculated_at: Optional[str] = None
 
 
-class AccountUpdate(SQLModel):
+class AccountUpdate(Model):
     """账户变更时使用的局部更新载荷."""
 
-    model_config = SQLModelConfig(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = None
     market: Optional[str] = None
@@ -541,47 +443,26 @@ class AccountUpdate(SQLModel):
         return _validate_algorithm_config(value, "清仓算法")
 
 
-class PortfolioAccountBase(SQLModel):
+class PortfolioAccountBase(Model):
     """账户与组合绑定历史记录的共用字段."""
 
-    account_id: int = Field(sa_column=Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), nullable=False))
-    portfolio_id: Optional[int] = Field(
-        sa_column=Column(Integer, ForeignKey("portfolio.id", ondelete="CASCADE"), nullable=True)
-    )
-    created_at: str = Field(default_factory=now_str, sa_column=Column(Text, nullable=False))
+    account_id: int
+    portfolio_id: Optional[int]
+    created_at: str = Field(default_factory=now_str)
 
 
-class PortfolioAccount(PortfolioAccountBase, AsyncAttrs, table=True):
+class PortfolioAccount(PortfolioAccountBase):
     """账户和组合的记录, 只加不修改."""
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-
-    account: Account = Relationship(
-        sa_relationship=relationship(
-            "Account",
-            back_populates="portfolio_records",
-        )
-    )
-    portfolio: Optional["Portfolio"] = Relationship(
-        sa_relationship=relationship(
-            "Portfolio",
-            back_populates="account_records",
-        )
-    )
+    id: Optional[int] = Field(default=None)
 
 
 class PortfolioAccountPublic(PortfolioAccountBase):
     """账户与组合绑定记录的公开表示."""
 
 
-class PortfolioAccountListPublic(SQLModel):
+class PortfolioAccountListPublic(Model):
     """账户与组合绑定记录的列表响应封装."""
 
     data: List[PortfolioAccountPublic]
     count: int
-
-
-@event.listens_for(Account, "before_update")
-def update_account_updated_at(_mapper: Mapper[Account], _connection: Connection, target: Account) -> None:
-    """每次更新账户记录时刷新 ``updated_at``."""
-    target.updated_at = now_str()

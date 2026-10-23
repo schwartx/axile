@@ -9,20 +9,20 @@ use serde_json::{json, Map, Value};
 use crate::business_detail;
 
 /// 事实批:按插入顺序排列的 (表名, 行) 集合。
-pub(super) struct FactBatch {
+pub(crate) struct FactBatch {
     statements: Vec<(&'static str, Vec<Map<String, Value>>)>,
 }
 
 impl FactBatch {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             statements: Vec::new(),
         }
     }
-    pub(super) fn push(&mut self, table: &'static str, rows: Vec<Map<String, Value>>) {
+    pub(crate) fn push(&mut self, table: &'static str, rows: Vec<Map<String, Value>>) {
         self.statements.push((table, rows));
     }
-    pub(super) fn statements(&self) -> &[(&'static str, Vec<Map<String, Value>>)] {
+    pub(crate) fn statements(&self) -> &[(&'static str, Vec<Map<String, Value>>)] {
         &self.statements
     }
 }
@@ -100,29 +100,57 @@ const POSITION_AMOUNTS: &[&str] = &["volume", "available_volume", "market_value"
 
 fn as_number(value: &Value) -> Option<f64> {
     match value {
-        Value::Number(number) => number.as_f64(),
+        Value::Number(number) => number
+            .as_f64()
+            .or_else(|| number.to_string().parse::<f64>().ok()),
         Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
         _ => None,
     }
 }
 
-fn as_int(value: &Value) -> Option<i64> {
+fn integer_text(value: &Value) -> Option<String> {
     match value {
-        Value::Number(number) => number.as_i64(),
-        Value::Bool(flag) => Some(*flag as i64),
+        Value::Number(number) => {
+            let raw = number.to_string();
+            let digits = raw.strip_prefix('-').unwrap_or(&raw);
+            (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())).then(|| {
+                if raw == "-0" {
+                    "0".into()
+                } else {
+                    raw
+                }
+            })
+        }
+        Value::Bool(flag) => Some(if *flag { "1" } else { "0" }.into()),
         _ => None,
     }
 }
 
+fn integer_matches_float(integer: &str, float: f64) -> bool {
+    float.is_finite()
+        && float.fract() == 0.0
+        && if float == 0.0 {
+            integer == "0"
+        } else {
+            format!("{float:.0}") == integer
+        }
+}
+
 /// Python `left == right`:布尔与数字互相按数值相等,数字跨 int/float 相等。
-pub(super) fn py_eq(left: &Value, right: &Value) -> bool {
+pub(crate) fn py_eq(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(_), Value::Bool(_)) => left == right,
         (Value::Bool(_) | Value::Number(_), Value::Bool(_) | Value::Number(_)) => {
-            match (as_int(left), as_int(right)) {
+            match (integer_text(left), integer_text(right)) {
                 // 双方可精确表示为整数时按整数比较,避开 f64 精度丢失。
                 (Some(l), Some(r)) => l == r,
+                (Some(integer), None) => {
+                    as_number(right).is_some_and(|float| integer_matches_float(&integer, float))
+                }
+                (None, Some(integer)) => {
+                    as_number(left).is_some_and(|float| integer_matches_float(&integer, float))
+                }
                 _ => as_number(left).is_some_and(|l| as_number(right).is_some_and(|r| l == r)),
             }
         }
@@ -143,22 +171,27 @@ pub(super) fn py_eq(left: &Value, right: &Value) -> bool {
 // 列投影与审计证据 (columns.py)
 // ---------------------------------------------------------------------------
 
-fn valid(value: &Value, kind: &str) -> bool {
+pub(crate) fn valid(value: &Value, kind: &str) -> bool {
     if value.is_null() {
         return true;
     }
     match kind {
         "json" => true,
-        "identity" => value.is_string() || matches!(value, Value::Number(n) if n.is_i64()),
+        "identity" => value.is_string() || value.is_number() && integer_text(value).is_some(),
         "text" => matches!(value, Value::String(_)),
         "boolean" => matches!(value, Value::Bool(_)),
         "integer" => matches!(value, Value::Number(n) if n.is_i64()),
-        // number: bool 不算数字;JSON 输入不含非有限数。
-        _ => matches!(value, Value::Number(_)),
+        // SQLite REAL 不能精确保留的大整数转为审计证据。
+        _ => match value {
+            Value::Number(number) => number.as_f64().is_some_and(|float| {
+                integer_text(value).map_or(true, |integer| integer_matches_float(&integer, float))
+            }),
+            _ => false,
+        },
     }
 }
 
-pub(super) fn audit_value(value: &Value) -> Value {
+pub(crate) fn audit_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
@@ -166,13 +199,27 @@ pub(super) fn audit_value(value: &Value) -> Value {
                 .collect(),
         ),
         Value::Array(items) => Value::Array(items.iter().map(audit_value).collect()),
+        Value::Number(number) if number.as_i64() == Some(0) => json!(0),
+        Value::Number(number) if integer_text(value).is_none() => {
+            match number.as_f64().and_then(serde_json::Number::from_f64) {
+                Some(number) => Value::Number(number),
+                None => {
+                    let raw = number.to_string();
+                    json!({"invalid_number": if raw == "NaN" { "nan" } else if raw.starts_with('-') { "-inf" } else { "inf" }})
+                }
+            }
+        }
         other => other.clone(),
     }
 }
 
-type StoreResult = Result<(Map<String, Value>, Map<String, Value>), String>;
+pub(crate) fn join_pointer(path: &str, key: &str) -> String {
+    format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
 
-fn store_columns(
+pub(crate) type StoreResult = Result<(Map<String, Value>, Map<String, Value>), String>;
+
+pub(crate) fn store_columns(
     payload: &Map<String, Value>,
     specs: &[(&str, &str)],
     child_keys: &[&str],
@@ -237,11 +284,11 @@ fn store_columns(
 // 输入净化与目标归一 (inputs.py)
 // ---------------------------------------------------------------------------
 
-fn is_truthy(value: &Value) -> bool {
+pub(crate) fn is_truthy(value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(false) => false,
         Value::Bool(true) => true,
-        Value::Number(number) => number.as_f64().is_some_and(|v| v != 0.0),
+        Value::Number(number) => number.as_f64().map_or(true, |value| value != 0.0),
         Value::String(text) => !text.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Object(map) => !map.is_empty(),
@@ -258,7 +305,7 @@ fn sanitize_mapping(payload: &Map<String, Value>) -> Map<String, Value> {
     sanitized
 }
 
-fn sanitize_payload(payload: &Value) -> Result<Value, String> {
+pub(crate) fn sanitize_payload(payload: &Value) -> Result<Value, String> {
     match payload {
         Value::Object(map) => Ok(Value::Object(sanitize_mapping(map))),
         Value::Null | Value::String(_) | Value::Bool(_) | Value::Number(_) => Ok(payload.clone()),
@@ -268,7 +315,7 @@ fn sanitize_payload(payload: &Value) -> Result<Value, String> {
 }
 
 /// 字段别名归入业务角色,冲突值单独保留。
-pub(super) fn normalize_targets(payload: &Value) -> Map<String, Value> {
+pub(crate) fn normalize_targets(payload: &Value) -> Map<String, Value> {
     let mut result = payload.as_object().cloned().unwrap_or_default();
     let mut conflicts = Map::new();
     for (alias, role) in TARGET_ALIASES {
@@ -373,7 +420,7 @@ fn collection_state(body: &Map<String, Value>, key: &str, expects_object: bool) 
 // ---------------------------------------------------------------------------
 
 /// 直接映射冻结配置、业务目标和风险名单,不保存字段排列和数值表示。
-pub(super) fn encode_inputs(
+pub(crate) fn encode_inputs(
     input_id: &str,
     payload: &Value,
     account_id: i64,
@@ -382,6 +429,11 @@ pub(super) fn encode_inputs(
     owner_execution_id: Option<&str>,
 ) -> Result<FactBatch, String> {
     let payload = sanitize_payload(payload)?;
+    if execution_id.is_some() && owner_execution_id.is_some() && execution_id != owner_execution_id
+    {
+        return Err("Execution input primary identity and owner differ".into());
+    }
+    let owner_execution_id = owner_execution_id.or(execution_id);
     let body = if payload.is_object() {
         normalize_targets(&payload)
     } else {
@@ -695,8 +747,8 @@ fn encode_plan(
 }
 
 /// 比较冻结输入使用同一业务口径:编码后立即按读端口径解码。
-pub(super) fn canonical_input(payload: &Value) -> Value {
-    encode_decode(payload).unwrap_or(Value::Null)
+pub(crate) fn canonical_input(payload: &Value) -> Result<Value, String> {
+    encode_decode(payload)
 }
 
 fn encode_decode(payload: &Value) -> Result<Value, String> {
@@ -785,7 +837,7 @@ fn blocked_placeholder(result: &Map<String, Value>) -> bool {
             &json!({"message": "当前不在交易时间"}),
         )
         && result.get("inputs").is_some_and(Value::is_object)
-        && matches!(result.get("execution_time"), Some(Value::Number(_)))
+        && matches!(result.get("execution_time"), Some(Value::Number(number)) if number.as_f64().is_some_and(|value| value >= 0.0))
 }
 
 fn legacy_placeholder(result: &Map<String, Value>) -> bool {
@@ -794,9 +846,7 @@ fn legacy_placeholder(result: &Map<String, Value>) -> bool {
     };
     if assets
         .get("source")
-        .and_then(Value::as_str)
-        .unwrap_or("real")
-        != "real"
+        .is_some_and(|source| source.as_str() != Some("real"))
     {
         return false;
     }
@@ -831,23 +881,23 @@ fn is_asset_observation(assets: &Map<String, Value>, result: Option<&Map<String,
     observed && result.is_none_or(|result| !legacy_placeholder(result))
 }
 
-struct Observation {
-    root: Map<String, Value>,
-    positions: Vec<Map<String, Value>>,
+pub(crate) struct Observation {
+    pub(crate) root: Map<String, Value>,
+    pub(crate) positions: Vec<Map<String, Value>>,
 }
 
-fn encode_observation(
+pub(crate) fn encode_observation(
     value: &Value,
     asset_id: &str,
     path: &str,
     scope: &str,
     input_id: Option<&str>,
     result: Option<&Map<String, Value>>,
-) -> Observation {
+) -> Result<Observation, String> {
     let kind = kind_of(value);
     let payload = value.as_object().cloned().unwrap_or_default();
-    let (columns, metadata) = store_columns(&payload, ASSET_FIELDS, &["positions", "availability"])
-        .expect("asset fields");
+    let (columns, metadata) =
+        store_columns(&payload, ASSET_FIELDS, &["positions", "availability"])?;
     let positions_value = payload.get("positions");
     let positions_kind = if !payload.contains_key("positions") {
         "absent"
@@ -921,17 +971,19 @@ fn encode_observation(
     let positions = position_rows(
         asset_id,
         positions_value.and_then(Value::as_array).map(Vec::as_slice),
-    );
-    Observation { root, positions }
+    )?;
+    Ok(Observation { root, positions })
 }
 
-fn position_rows(asset_id: &str, positions: Option<&[Value]>) -> Vec<Map<String, Value>> {
+fn position_rows(
+    asset_id: &str,
+    positions: Option<&[Value]>,
+) -> Result<Vec<Map<String, Value>>, String> {
     let mut rows = Vec::new();
     for (ordinal, position) in positions.unwrap_or_default().iter().enumerate() {
         let kind = kind_of(position);
         let payload = position.as_object().cloned().unwrap_or_default();
-        let (columns, metadata) =
-            store_columns(&payload, POSITION_FIELDS, &["availability"]).expect("position fields");
+        let (columns, metadata) = store_columns(&payload, POSITION_FIELDS, &["availability"])?;
         let mut row = Map::new();
         row.insert("asset_id".into(), json!(asset_id));
         row.insert("ordinal".into(), json!(ordinal));
@@ -956,14 +1008,14 @@ fn position_rows(asset_id: &str, positions: Option<&[Value]>) -> Vec<Map<String,
         }
         rows.push(row);
     }
-    rows
+    Ok(rows)
 }
 
 /// 保存下单前资产;参数通过 account_assets 键明确区分缺失与空值。
-pub(super) fn encode_input_assets(input_id: &str, payload: &Value) -> FactBatch {
+pub(crate) fn encode_input_assets(input_id: &str, payload: &Value) -> Result<FactBatch, String> {
     let mut batch = FactBatch::new();
     let Some(assets) = payload.get("account_assets") else {
-        return batch;
+        return Ok(batch);
     };
     let observation = encode_observation(
         assets,
@@ -972,17 +1024,20 @@ pub(super) fn encode_input_assets(input_id: &str, payload: &Value) -> FactBatch 
         "before",
         Some(input_id),
         None,
-    );
+    )?;
     batch.push("business_asset_snapshot", vec![observation.root]);
     batch.push("business_asset_position", observation.positions);
-    batch
+    Ok(batch)
 }
 
 /// 在 worker 返回前保存执行后观测,终态记录随后只绑定同一事实。
-pub(super) fn encode_input_after_assets(input_id: &str, payload: &Map<String, Value>) -> FactBatch {
+pub(crate) fn encode_input_after_assets(
+    input_id: &str,
+    payload: &Map<String, Value>,
+) -> Result<FactBatch, String> {
     let mut batch = FactBatch::new();
     let Some(assets) = payload.get("account_assets") else {
-        return batch;
+        return Ok(batch);
     };
     let observation = encode_observation(
         assets,
@@ -991,18 +1046,44 @@ pub(super) fn encode_input_after_assets(input_id: &str, payload: &Map<String, Va
         "after_pending",
         Some(input_id),
         Some(payload),
-    );
+    )?;
     batch.push("business_asset_snapshot", vec![observation.root]);
     batch.push("business_asset_position", observation.positions);
-    batch
+    Ok(batch)
+}
+
+/// 手工快照与执行观测复用同一列编码,缺失资产不能制造空观测。
+pub(crate) fn encode_snapshot_assets(
+    snapshot_id: i64,
+    payload: &Value,
+    result: Option<&Map<String, Value>>,
+) -> Result<FactBatch, String> {
+    let assets = payload
+        .get("account_assets")
+        .ok_or("账户资产观测缺少 account_assets")?;
+    let mut observation = encode_observation(
+        assets,
+        &format!("snapshot:{snapshot_id}:/account_assets"),
+        "/account_assets",
+        "manual",
+        None,
+        result,
+    )?;
+    observation
+        .root
+        .insert("account_snapshot_id".into(), json!(snapshot_id));
+    let mut batch = FactBatch::new();
+    batch.push("business_asset_snapshot", vec![observation.root]);
+    batch.push("business_asset_position", observation.positions);
+    batch.push("business_asset_binding", Vec::new());
+    Ok(batch)
 }
 
 /// 重放比较用:把传入观测按同一编码-解码口径转成业务值。
-pub(super) fn business_asset_value(incoming: &Value) -> Value {
-    let observation =
-        encode_observation(incoming, "compare", "/account_assets", "after", None, None);
-    crate::assets::observation_value(&observation.root, &observation.positions)
-        .unwrap_or(Value::Null)
+pub(crate) fn business_asset_value(incoming: &Value) -> Result<Value, String> {
+    encode_observation(incoming, "compare", "/account_assets", "after", None, None).and_then(
+        |observation| crate::assets::observation_value(&observation.root, &observation.positions),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,17 +1104,29 @@ fn is_json_column(column: &str) -> bool {
             | "feishu_key"
             | "feishu_account"
             | "extra"
+            | "order_id"
+            | "trade_id"
+            | "invalid_value"
+            | "malformed_value"
+            | "conversion_invalid_value"
+            | "conversion_evidence"
+            | "conversion_reference"
+            | "reference"
+            | "memory"
+            | "reconciliation"
+            | "termination_evidence"
+            | "result_input_value"
     )
 }
 
-pub(super) fn sql_value(column: &str, value: Value) -> Result<rusqlite::types::Value, String> {
-    if value.is_null() {
-        return Ok(rusqlite::types::Value::Null);
-    }
+pub(crate) fn sql_value(column: &str, value: Value) -> Result<rusqlite::types::Value, String> {
     if is_json_column(column) {
         return Ok(rusqlite::types::Value::Text(
             serde_json::to_string(&value).map_err(|error| error.to_string())?,
         ));
+    }
+    if value.is_null() {
+        return Ok(rusqlite::types::Value::Null);
     }
     Ok(match value {
         Value::Bool(flag) => rusqlite::types::Value::Integer(flag as i64),
@@ -1051,4 +1144,232 @@ pub(super) fn sql_value(column: &str, value: Value) -> Result<rusqlite::types::V
             ))
         }
     })
+}
+
+/// algorithm 在冻结输入是 JSON,在品种结果是文本。
+pub(crate) fn sql_column_value(
+    table: &str,
+    column: &str,
+    value: Value,
+) -> Result<rusqlite::types::Value, String> {
+    if table == "execution_symbol_result" && column == "algorithm" {
+        return match value {
+            Value::Null => Ok(rusqlite::types::Value::Null),
+            Value::String(value) => Ok(rusqlite::types::Value::Text(value)),
+            _ => Err("unexpected structured value in symbol algorithm".into()),
+        };
+    }
+    sql_value(column, value)
+}
+
+#[cfg(test)]
+pub(super) fn frozen_cases(kind: &str) -> Vec<Value> {
+    let fixture: Value =
+        serde_json::from_str(include_str!("testdata/head_symbols_inputs_v0037.json")).unwrap();
+    fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["kind"] == kind)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) fn batch_value(batch: &FactBatch) -> Value {
+    Value::Object(
+        batch
+            .statements()
+            .iter()
+            .map(|(table, rows)| {
+                (
+                    (*table).into(),
+                    Value::Array(rows.iter().cloned().map(Value::Object).collect()),
+                )
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_0037_input_fixtures_match_python_columns_and_evidence() {
+        for case in frozen_cases("inputs") {
+            let encoded = encode_inputs(
+                "frozen",
+                &case["payload"],
+                3,
+                case.get("execution_id").and_then(Value::as_str),
+                "historical-time",
+                case.get("owner_execution_id").and_then(Value::as_str),
+            );
+            if let Some(error) = case.get("error") {
+                assert_eq!(
+                    encoded.err().unwrap(),
+                    error.as_str().unwrap(),
+                    "{}",
+                    case["name"]
+                );
+            } else {
+                assert_eq!(
+                    batch_value(&encoded.unwrap()),
+                    case["expected"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_columns_and_replays_do_not_round_large_identities() {
+        assert!(!valid(&json!(9_007_199_254_740_993_i64), "number"));
+        assert!(valid(&json!(9_007_199_254_740_994_i64), "number"));
+        assert!(!valid(&json!(u64::MAX), "number"));
+        assert!(valid(&json!(u64::MAX), "identity"));
+        assert!(!valid(&json!(true), "number"));
+        assert!(!py_eq(
+            &json!(9_007_199_254_740_993_i64),
+            &json!(9_007_199_254_740_992_f64)
+        ));
+        assert!(!py_eq(&json!(u64::MAX), &json!(u64::MAX - 1)));
+        assert!(py_eq(&json!(true), &json!(1.0)));
+    }
+
+    #[test]
+    fn arbitrary_precision_integers_keep_evidence_and_exact_replay_equality() {
+        let exact: Value = serde_json::from_str("1267650600228229401496703205376").unwrap();
+        let inexact: Value = serde_json::from_str("1267650600228229401496703205377").unwrap();
+        assert!(valid(&exact, "number"));
+        assert!(!valid(&inexact, "number"));
+        assert!(valid(&inexact, "identity"));
+        assert_eq!(audit_value(&inexact), inexact);
+        assert!(py_eq(&exact, &json!(2_f64.powi(100))));
+        assert!(!py_eq(&inexact, &json!(2_f64.powi(100))));
+        assert!(!py_eq(&exact, &inexact));
+        let huge: Value = serde_json::from_str(&format!("1{}", "0".repeat(400))).unwrap();
+        assert!(is_truthy(&huge));
+        assert!(valid(&huge, "identity"));
+        assert!(!valid(&huge, "number"));
+        assert_eq!(audit_value(&huge), huge);
+        assert!(py_eq(&huge, &huge));
+        assert!(!py_eq(&huge, &Value::Null));
+    }
+
+    #[test]
+    fn historical_float_lexemes_follow_python_rounding_and_nonfinite_evidence() {
+        let value: Value = serde_json::from_str("-0").unwrap();
+        assert_eq!(audit_value(&value), json!(0));
+        let value: Value = serde_json::from_str("-0.0").unwrap();
+        assert_eq!(audit_value(&value), json!(-0.0));
+        let value: Value = serde_json::from_str("1e400").unwrap();
+        assert_eq!(audit_value(&value), json!({"invalid_number":"inf"}));
+        let value: Value = serde_json::from_str("-1e400").unwrap();
+        assert_eq!(audit_value(&value), json!({"invalid_number":"-inf"}));
+        let value: Value = serde_json::from_str("1e-400").unwrap();
+        assert_eq!(audit_value(&value), json!(0.0));
+        let infinity = Value::Number(serde_json::Number::from_string_unchecked("Infinity".into()));
+        assert_eq!(audit_value(&infinity), json!({"invalid_number":"inf"}));
+        assert!(py_eq(&infinity, &infinity));
+        let nan = Value::Number(serde_json::Number::from_string_unchecked("NaN".into()));
+        assert_eq!(audit_value(&nan), json!({"invalid_number":"nan"}));
+        assert!(!py_eq(&nan, &nan));
+    }
+
+    #[test]
+    fn json_binding_uses_the_tables_declared_algorithm_type() {
+        assert_eq!(
+            sql_column_value("execution_symbol_result", "algorithm", json!("twap")).unwrap(),
+            rusqlite::types::Value::Text("twap".into())
+        );
+        assert_eq!(
+            sql_column_value("execution_input", "algorithm", json!("twap")).unwrap(),
+            rusqlite::types::Value::Text("\"twap\"".into())
+        );
+        assert_eq!(
+            sql_value("order_id", json!(u64::MAX)).unwrap(),
+            rusqlite::types::Value::Text(u64::MAX.to_string())
+        );
+    }
+
+    #[test]
+    fn bound_json_null_matches_sqlalchemy_while_text_and_omitted_columns_stay_sql_null() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_input(algorithm JSON,root_value JSON,extra JSON,omitted JSON);CREATE TABLE execution_symbol_result(algorithm TEXT,status TEXT);CREATE TABLE business_trade(malformed_value JSON);").unwrap();
+        let mut batch = FactBatch::new();
+        batch.push(
+            "execution_input",
+            vec![Map::from_iter([
+                ("algorithm".into(), Value::Null),
+                ("root_value".into(), Value::Null),
+                ("extra".into(), Value::Null),
+            ])],
+        );
+        batch.push(
+            "execution_symbol_result",
+            vec![Map::from_iter([
+                ("algorithm".into(), Value::Null),
+                ("status".into(), Value::Null),
+            ])],
+        );
+        batch.push(
+            "business_trade",
+            vec![Map::from_iter([("malformed_value".into(), Value::Null)])],
+        );
+        crate::business_facts_ops::insert_batch(&connection, &batch).unwrap();
+        for (table, column) in [
+            ("execution_input", "algorithm"),
+            ("execution_input", "root_value"),
+            ("execution_input", "extra"),
+            ("business_trade", "malformed_value"),
+        ] {
+            let stored: (String, String) = connection
+                .query_row(
+                    &format!("SELECT typeof({column}),json_type({column}) FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, ("text".into(), "null".into()), "{table}.{column}");
+        }
+        for (table, column) in [
+            ("execution_input", "omitted"),
+            ("execution_symbol_result", "algorithm"),
+            ("execution_symbol_result", "status"),
+        ] {
+            let stored: (String, Option<String>) = connection
+                .query_row(
+                    &format!("SELECT typeof({column}),json_type({column}) FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, ("null".into(), None), "{table}.{column}");
+        }
+    }
+
+    #[test]
+    fn invalid_asset_evidence_fails_instead_of_panicking() {
+        let payload =
+            json!({"account_assets":{"total_asset":"bad","audit_evidence":{"invalid_fields":[]}}});
+        assert_eq!(
+            encode_input_assets("i", &payload).err().unwrap(),
+            "Invalid audit evidence fields"
+        );
+    }
+
+    #[test]
+    fn legacy_placeholder_requires_exact_source_and_nonnegative_duration() {
+        let base = json!({"status":"BLOCKED","error":"当前不在交易时间","memory":{"message":"当前不在交易时间"},"inputs":{},"execution_time":0,"symbol_results":{},"account_assets":{"available_cash":0,"total_asset":0,"market_value":0,"positions":[],"extra":{}}});
+        assert!(legacy_placeholder(base.as_object().unwrap()));
+        let mut null_source = base.clone();
+        null_source["account_assets"]["source"] = Value::Null;
+        assert!(!legacy_placeholder(null_source.as_object().unwrap()));
+        let mut negative_duration = base;
+        negative_duration["execution_time"] = json!(-1);
+        assert!(!legacy_placeholder(negative_duration.as_object().unwrap()));
+    }
 }

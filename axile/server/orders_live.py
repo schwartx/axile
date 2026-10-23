@@ -73,25 +73,20 @@ def read_orders_snapshot(account: Any) -> dict[str, Any] | None:
 
 async def orders_frames(account_ids: set[int] | None = None) -> list[dict[str, Any]]:
     """组装 REST 与 SSE 共用的公开快照，不触发任何渠道请求。"""
-    from sqlalchemy import select
-    from sqlmodel import col
-
     from axile.server.account_orders import query_account_orders
-    from axile.server.core.db import SessionLocal
     from axile.server.db.models.account import Account
+    from axile.server.native_store import native_operation
 
-    statement = select(Account)
-    if account_ids is not None:
-        statement = statement.where(col(Account.id).in_(account_ids))
-    async with SessionLocal() as session:
-        accounts = (await session.execute(statement)).scalars().all()
-        return [
-            {
-                "account_id": account.id,
-                "snapshot": (await query_account_orders(account.snapshot())).model_dump(mode="json"),
-            }
-            for account in accounts
-        ]
+    accounts = await native_operation(
+        "connection_accounts", {"account_ids": sorted(account_ids) if account_ids is not None else None}
+    )
+    return [
+        {
+            "account_id": value["id"],
+            "snapshot": (await query_account_orders(Account.model_validate(value).snapshot())).model_dump(mode="json"),
+        }
+        for value in accounts
+    ]
 
 
 def forget_orders(account_id: int) -> None:

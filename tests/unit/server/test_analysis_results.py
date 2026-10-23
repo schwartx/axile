@@ -1,21 +1,16 @@
 """Normalized result storage preserves public performance semantics without JSON."""
 
-import asyncio
-from contextlib import asynccontextmanager
+from contextlib import contextmanager
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from axile.server.db.models.analysis import analysis_snapshot as snapshots
-from axile.server.db.models.analysis_result import RESULT_TABLES
 from axile.server.db.models.performance import AccountPerformance
-from tests.unit.server._analysis_results_support import (
-    iter_result_fact_batches,
-    read_result_points,
-    read_result_range,
-)
+from tests.conftest import initialize_native_database, require_native_store
+from tests.fixtures.rust_store.oracle_tables import RESULT_TABLES
+from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
+from tests.unit.server._analysis_results_support import iter_result_fact_batches
+from tests.unit.server.test_analysis_structured_migration import _connect
 
 SETTINGS = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}
 ENGINE_VERSION = "equity-ledger-1"
@@ -147,67 +142,85 @@ def _range(range_key="all", *, empty=False):
     }
 
 
-@asynccontextmanager
-async def _database(tmp_path, snapshots_by_id):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'results.db'}")
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(SQLModel.metadata.create_all)
-        async with sessions() as session:
-            for snapshot_id, ranges in snapshots_by_id.items():
-                await session.execute(
-                    snapshots.insert().values(
-                        id=snapshot_id,
-                        account_id=2,
-                        source_version=3,
-                        logic_version="test",
-                        engine_version=ENGINE_VERSION,
-                        computed_at="2026-01-07T00:00:00",
-                        settings=SETTINGS,
-                        ranges={},
-                    )
+@contextmanager
+def _database(tmp_path, snapshots_by_id):
+    database = tmp_path / "results.db"
+    initialize_native_database(database)
+    accounts = {snapshot_id: index for index, snapshot_id in enumerate(snapshots_by_id, 2)}
+    with _connect(database) as connection:
+        for snapshot_id, ranges in snapshots_by_id.items():
+            account_id = accounts[snapshot_id]
+            connection.execute(
+                sa.text(
+                    "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
+                    "VALUES(:id,'synthetic','FUTURES','tq','','2026-01-01','2026-01-01')"
+                ),
+                {"id": account_id},
+            )
+            connection.execute(
+                snapshots.insert().values(
+                    id=snapshot_id,
+                    account_id=account_id,
+                    source_version=3,
+                    logic_version="test",
+                    engine_version=ENGINE_VERSION,
+                    computed_at="2026-01-07T00:00:00",
+                    settings=SETTINGS,
+                    ranges={},
+                    result_schema_version=2,
+                    cost_schema_version=1,
+                    read_view_schema_version=1,
+                    backtest_weight_type=SETTINGS["backtest_weight_type"],
+                    backtest_fee_rate=SETTINGS["backtest_fee_rate"],
                 )
-                for table, rows in iter_result_fact_batches(snapshot_id, ranges, batch_size=2):
-                    await session.execute(table.insert(), rows)
-            await session.commit()
-        yield sessions
-    finally:
-        await engine.dispose()
+            )
+            for table, rows in iter_result_fact_batches(snapshot_id, ranges, batch_size=2):
+                connection.execute(table.insert(), rows)
+            connection.execute(
+                sa.text(
+                    "INSERT INTO account_analysis(account_id,source_version,published_version,current_snapshot,"
+                    "logic_version,engine_version) VALUES(:account,3,3,:snapshot,'test',:engine)"
+                ),
+                {"account": account_id, "snapshot": snapshot_id, "engine": ENGINE_VERSION},
+            )
+    core = require_native_store("snapshot")
+    yield core.Store(str(database)), accounts, database
+
+
+def _read_result(store, account_id, range_key="all"):
+    core = require_native_store("snapshot")
+    response = core.snapshot(store, account_id, range_key, "test", ENGINE_VERSION)
+    return {
+        "performance": response["result"],
+        **{name: response[name] for name in ("daily_costs", "events", "event_count")},
+    }
 
 
 def test_all_public_result_fields_round_trip_without_snapshot_json(tmp_path):
     """All result metadata and nullable point fields survive normalized storage."""
     ranges = {key: _range(key) for key in ("all", "30", "90")}
 
-    async def check():
-        async with _database(tmp_path, {"snapshot": ranges}) as sessions:
-            async with sessions() as session:
-                for range_key, expected in ranges.items():
-                    actual = await read_result_range(session, "snapshot", range_key, SETTINGS, ENGINE_VERSION)
-                    assert actual == expected
-                    AccountPerformance.model_validate(actual["performance"])
-                # An intentionally empty legacy blob cannot supply any of these values.
-                legacy = (await session.execute(sa.select(snapshots.c.ranges))).scalar_one()
-                assert legacy == {}
-
-    asyncio.run(check())
+    with _database(tmp_path, {"snapshot": ranges}) as (store, accounts, database):
+        for range_key, expected in ranges.items():
+            actual = _read_result(store, accounts["snapshot"], range_key)
+            assert actual == expected
+            AccountPerformance.model_validate(actual["performance"])
+        # An intentionally empty legacy blob cannot supply any of these values.
+        with _connect(database) as connection:
+            legacy = connection.execute(sa.select(snapshots.c.ranges)).scalar_one()
+        assert legacy == {}
 
 
 def test_empty_result_preserves_nulls_and_required_calendar(tmp_path):
     """No observations still has a complete result contract rather than invented zeroes."""
     expected = _range(empty=True)
 
-    async def check():
-        async with _database(tmp_path, {"snapshot": {"all": expected}}) as sessions:
-            async with sessions() as session:
-                actual = await read_result_range(session, "snapshot", "all", SETTINGS, ENGINE_VERSION)
-                assert actual == expected
-                assert actual["performance"]["skips"] is None
-                assert actual["performance"]["sizing_fallback_count"] is None
-                assert actual["performance"]["calendar"]["status"] == "unavailable"
-
-    asyncio.run(check())
+    with _database(tmp_path, {"snapshot": {"all": expected}}) as (store, accounts, database):
+        actual = _read_result(store, accounts["snapshot"])
+        assert actual == expected
+        assert actual["performance"]["skips"] is None
+        assert actual["performance"]["sizing_fallback_count"] is None
+        assert actual["performance"]["calendar"]["status"] == "unavailable"
 
 
 def test_daily_costs_keep_unknown_money_zero_fees_and_optional_presence(tmp_path):
@@ -215,21 +228,17 @@ def test_daily_costs_keep_unknown_money_zero_fees_and_optional_presence(tmp_path
     expected = _range()
     expected["daily_costs"]["2026-01-03"] = {"fees": {"X": 0}}
 
-    async def check():
-        async with _database(tmp_path, {"snapshot": {"all": expected}}) as sessions:
-            async with sessions() as session:
-                actual = await read_result_range(session, "snapshot", "all", SETTINGS, ENGINE_VERSION)
-                costs = actual["daily_costs"]
-                assert costs == expected["daily_costs"]
-                assert costs["2026-01-01"]["value"] is None
-                assert "coveredValue" not in costs["2026-01-01"]
-                assert "estimated" not in costs["2026-01-01"]
-                assert costs["2026-01-02"]["coveredValue"] is None
-                assert costs["2026-01-02"]["estimated"] == 0
-                assert costs["2026-01-02"]["fees"]["CNY"] == 0
-                assert costs["2026-01-03"] == {"fees": {"X": 0}}
-
-    asyncio.run(check())
+    with _database(tmp_path, {"snapshot": {"all": expected}}) as (store, accounts, database):
+        actual = _read_result(store, accounts["snapshot"])
+        costs = actual["daily_costs"]
+        assert costs == expected["daily_costs"]
+        assert costs["2026-01-01"]["value"] is None
+        assert "coveredValue" not in costs["2026-01-01"]
+        assert "estimated" not in costs["2026-01-01"]
+        assert costs["2026-01-02"]["coveredValue"] is None
+        assert costs["2026-01-02"]["estimated"] == 0
+        assert costs["2026-01-02"]["fees"]["CNY"] == 0
+        assert costs["2026-01-03"] == {"fees": {"X": 0}}
 
 
 def test_result_facts_have_bounded_batches_and_no_json_columns():
@@ -257,39 +266,10 @@ def test_events_are_capped_without_losing_total_count(tmp_path):
     ]
     expected.update(events=events, event_count=117)
 
-    async def check():
-        async with _database(tmp_path, {"snapshot": {"all": expected}}) as sessions:
-            async with sessions() as session:
-                actual = await read_result_range(session, "snapshot", "all", SETTINGS, ENGINE_VERSION)
-                assert actual["events"] == events[:100]
-                assert actual["event_count"] == 117
-                count = await session.scalar(sa.text("SELECT count(*) FROM performance_result_event"))
-                assert count == 100
-
-    asyncio.run(check())
-
-
-def test_summary_points_read_multiple_snapshots_and_selected_range(tmp_path):
-    """Cards batch-read ordered points and handle missing versions without legacy JSON."""
-    all_range = _range()
-    recent_range = _range("90")
-    recent_range["performance"]["points"] = recent_range["performance"]["points"][-1:]
-    empty_range = _range(empty=True)
-
-    async def check():
-        async with _database(
-            tmp_path,
-            {"snapshot-a": {"all": all_range, "90": recent_range}, "snapshot-b": {"all": empty_range}},
-        ) as sessions:
-            async with sessions() as session:
-                points = await read_result_points(session, ["snapshot-a", "snapshot-b", "missing"])
-                assert points == {
-                    "snapshot-a": all_range["performance"]["points"],
-                    "snapshot-b": [],
-                    "missing": [],
-                }
-                recent = await read_result_points(session, ["snapshot-a", "snapshot-b"], range_key="90")
-                assert recent == {"snapshot-a": recent_range["performance"]["points"], "snapshot-b": []}
-                assert await read_result_points(session, []) == {}
-
-    asyncio.run(check())
+    with _database(tmp_path, {"snapshot": {"all": expected}}) as (store, accounts, database):
+        actual = _read_result(store, accounts["snapshot"])
+        assert actual["events"] == events[:100]
+        assert actual["event_count"] == 117
+        with _connect(database) as connection:
+            count = connection.scalar(sa.text("SELECT count(*) FROM performance_result_event"))
+        assert count == 100

@@ -2,28 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
-from axile.server.api.deps import get_db
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
 from axile.server.db.models import Account
 from axile.server.execution.registry import ExecutionTaskState
-
-
-class _RouteSession:
-    def __init__(self, account: Account | None) -> None:
-        self._account = account
-
-    async def get(self, _model: object, account_id: int) -> Account | None:
-        if self._account is not None and self._account.id == account_id:
-            return self._account
-        return None
 
 
 def _build_account() -> Account:
@@ -50,14 +37,22 @@ def _build_account() -> Account:
     )
 
 
-def _build_app(account: Account | None) -> FastAPI:
+def _build_app(account: Account | None, monkeypatch) -> FastAPI:
+    from axile.server.execution import supplements
+
+    async def load(account_id: int):
+        if account is None or account.id != account_id:
+            raise HTTPException(status_code=404, detail="账户不存在")
+        return account.snapshot()
+
+    async def cancel(_account_id: int, _reason: str):
+        return False
+
+    monkeypatch.setattr(account_execution_routes, "_get_account_or_404", load)
+    monkeypatch.setattr(account_execution_routes, "get_queued_execution_id", lambda _: None)
+    monkeypatch.setattr(supplements, "cancel_groups_locked", cancel)
     app = FastAPI()
     app.include_router(account_routes.router)
-
-    async def _override_get_db() -> AsyncGenerator[_RouteSession, None]:
-        yield _RouteSession(account)
-
-    app.dependency_overrides[get_db] = _override_get_db
     return app
 
 
@@ -65,7 +60,7 @@ def test_terminate_account_execution_route_returns_conflict_without_running_exec
     """当账户当前没有活跃 execution 时，应返回 409。"""
     monkeypatch.setattr(account_execution_routes, "get_running_execution_id", lambda _account_id: None)
 
-    client = TestClient(_build_app(_build_account()))
+    client = TestClient(_build_app(_build_account(), monkeypatch))
     response = client.post("/account/1/terminate", json={"mode": "graceful"})
 
     assert response.status_code == 409
@@ -109,7 +104,7 @@ def test_terminate_account_execution_route_returns_running_execution(monkeypatch
         fake_terminate_running_account_execution,
     )
 
-    client = TestClient(_build_app(_build_account()))
+    client = TestClient(_build_app(_build_account(), monkeypatch))
     response = client.post(
         "/account/1/terminate",
         json={"reason": "manual stop", "mode": "cancel_pending"},

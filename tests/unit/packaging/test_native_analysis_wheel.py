@@ -9,7 +9,7 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -86,7 +86,7 @@ def test_incompatible_extension_rejects_wheel(wheel_project: Path, native_proces
         build_wheel(wheel_project)
 
 
-def test_wheel_probe_requires_business_freeze_and_queue_entrypoints(
+def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
     wheel_project: Path, native_process: dict[str, Any]
 ) -> None:
     import ast
@@ -108,7 +108,55 @@ def test_wheel_probe_requires_business_freeze_and_queue_entrypoints(
         "queue_claim",
         "queue_fail",
         "queue_release",
+        "migration_current",
+        "migration_check",
+        "migration_upgrade",
+        "migration_downgrade",
     } <= set(required)
+
+
+@pytest.mark.parametrize(
+    ("head", "fact_schema", "missing", "error"),
+    [
+        ("0039", 40, None, None),
+        ("0038", 40, None, "public migration head 0039"),
+        ("0039", 39, None, "analysis fact schema 40"),
+        ("0039", 40, "migration_upgrade", "missing required entrypoints"),
+    ],
+)
+def test_wheel_probe_checks_migration_head_separately_from_fact_schema(
+    wheel_project: Path,
+    native_process: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    head: str,
+    fact_schema: int,
+    missing: str | None,
+    error: str | None,
+) -> None:
+    import ast
+
+    build_wheel(wheel_project)
+    probe = next(command[3] for command in native_process["calls"] if command[0] == sys.executable)
+    required = next(
+        ast.literal_eval(node.value)
+        for node in ast.parse(probe).body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
+    )
+    module = SimpleNamespace(ANALYSIS_FACT_SCHEMA=fact_schema, PUBLIC_HEAD=head)
+    for name in required:
+        if name != missing:
+            setattr(module, name, lambda: None)
+    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args: spec)
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(sys, "argv", ["probe", "extension"])
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            exec(probe, {})
+    else:
+        exec(probe, {})
 
 
 def test_native_wheel_is_platform_tagged_and_preserves_executable(wheel_project: Path) -> None:
@@ -185,7 +233,7 @@ def test_wheel_rejects_incompatible_native_capabilities(
     binary = wheel_project / "axile" / "server" / "_native" / name
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_bytes(b"older native build fixture")
-    with pytest.raises(RuntimeError, match="protocol 1 and command publish_store"):
+    with pytest.raises(RuntimeError, match="protocol 1, analysis fact schema 40 and command publish_store"):
         build_wheel(wheel_project)
 
 
@@ -199,8 +247,9 @@ def load_build_script() -> ModuleType:
 
 
 @pytest.mark.parametrize("build", [False, True])
+@pytest.mark.parametrize("include_cli", [False, True])
 def test_external_cargo_target_is_used_for_build_and_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_process: dict[str, Any], build: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_process: dict[str, Any], build: bool, include_cli: bool
 ) -> None:
     script = load_build_script()
     project = tmp_path / "project"
@@ -208,8 +257,9 @@ def test_external_cargo_target_is_used_for_build_and_staging(
     executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
     source = external_target / "debug" / executable
     source.parent.mkdir(parents=True)
-    source.write_bytes(b"native build fixture")
-    source.chmod(0o755)
+    if include_cli:
+        source.write_bytes(b"native build fixture")
+        source.chmod(0o755)
     project.mkdir()
     shutil.copyfile(Path(__file__).resolve().parents[3] / "hatch_build.py", project / "hatch_build.py")
     library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
@@ -223,11 +273,16 @@ def test_external_cargo_target_is_used_for_build_and_staging(
         arguments.append("--no-build")
     native_process["allow_cargo"] = build
     monkeypatch.setattr(sys, "argv", arguments)
+    destination = project / "axile" / "server" / "_native" / executable
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"stale CLI")
 
     script.main()
 
-    destination = project / "axile" / "server" / "_native" / executable
-    assert destination.read_bytes() == source.read_bytes()
+    if include_cli:
+        assert destination.read_bytes() == source.read_bytes()
+    else:
+        assert not destination.exists()
     assert not (project / "rust" / "analysis" / "target").exists()
     cargo_calls = [command for command in native_process["calls"] if command[0] == "cargo"]
     if build:
@@ -239,8 +294,16 @@ def test_external_cargo_target_is_used_for_build_and_staging(
         assert not cargo_calls
 
 
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        {"protocol": 1, "analysis_fact_schema": 40, "commands": ["publish"]},
+        {"protocol": 1, "commands": ["publish_store"]},
+        {"protocol": 1, "analysis_fact_schema": 39, "commands": ["publish_store"]},
+    ],
+)
 def test_incompatible_staging_preserves_previously_staged_binary(
-    tmp_path: Path, native_process: dict[str, Any]
+    tmp_path: Path, native_process: dict[str, Any], capabilities: dict[str, Any]
 ) -> None:
     script = load_build_script()
     source = tmp_path / "source"
@@ -248,9 +311,9 @@ def test_incompatible_staging_preserves_previously_staged_binary(
     source.write_bytes(b"incompatible new binary")
     destination.parent.mkdir()
     destination.write_bytes(b"previous valid binary")
-    native_process["capabilities"] = {"protocol": 1, "commands": ["publish"]}
+    native_process["capabilities"] = capabilities
 
-    with pytest.raises(RuntimeError, match="protocol 1 and command publish_store"):
+    with pytest.raises(RuntimeError, match="protocol 1, analysis fact schema 40 and command publish_store"):
         script.stage_binary(source, destination)
 
     assert destination.read_bytes() == b"previous valid binary"

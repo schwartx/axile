@@ -1,10 +1,8 @@
 """执行审计持久化与同步封装器的测试。"""
 
 import asyncio
-from types import TracebackType
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
@@ -16,94 +14,76 @@ from axile.domain.execution import (
 from axile.server import execution_audit
 
 
-class _FakeSession:
-    commit_error: Exception | None
-    rollback_called: bool
-    commit_called: bool
-
-    def __init__(self, commit_error: Exception | None = None) -> None:
-        """构造一个可选提交失败的伪异步会话。"""
-        self.commit_error = commit_error
-        self.added: list[object] = []
-        self.rollback_called = False
-        self.commit_called = False
-
-    async def __aenter__(self) -> "_FakeSession":
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        return None
-
-    def add(self, obj: object) -> None:
-        self.added.append(obj)
-
-    async def commit(self) -> None:
-        self.commit_called = True
-        if self.commit_error is not None:
-            raise self.commit_error
-
-    async def rollback(self) -> None:
-        self.rollback_called = True
+def _event_kwargs():
+    return {
+        "execution_id": "exec-1",
+        "account_id": 1,
+        "channel": TradeChannel.CTP,
+        "algorithm": "SINGLE-MAKER",
+        "event_type": ExecutionEventType.SYMBOL_SKIPPED,
+        "status": ExecutionEventStatus.WARNING,
+        "reason_family": ExecutionReasonFamily.MARKET_RULE,
+        "reason_code": "EXTERNAL.BELOW_MIN_NOTIONAL",
+        "symbol": "ag2612",
+        "seq": 2,
+    }
 
 
-def test_append_execution_event_ignores_duplicate_event_uid(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """事务回滚后，应忽略重复的事件 id。"""
-    duplicate_error = IntegrityError(
-        "INSERT INTO execution_event",
-        {},
-        Exception("UNIQUE constraint failed: execution_event.event_uid"),
-    )
-    fake_session = _FakeSession(commit_error=duplicate_error)
-    monkeypatch.setattr(execution_audit, "SessionLocal", lambda: fake_session)
+@pytest.mark.parametrize("inserted", [True, False])
+def test_event_notifies_only_after_successful_native_commit(monkeypatch, inserted):
+    trace = []
 
-    result = asyncio.run(
-        execution_audit.append_execution_event(
-            execution_id="exec-1",
-            account_id=1,
-            channel=TradeChannel.CTP,
-            algorithm="SINGLE-MAKER",
-            event_type=ExecutionEventType.SYMBOL_SKIPPED,
-            status=ExecutionEventStatus.WARNING,
-            reason_family=ExecutionReasonFamily.MARKET_RULE,
-            reason_code="EXTERNAL.BELOW_MIN_NOTIONAL",
-            symbol="ag2612",
-            seq=2,
+    async def persist(name, row):
+        assert name == "append_execution_event"
+        assert row["event_type"] == "symbol_skipped"
+        assert row["event_uid"] == execution_audit.build_event_uid(
+            "exec-1", ExecutionEventType.SYMBOL_SKIPPED, symbol="ag2612", seq=2
         )
-    )
+        trace.append("commit")
+        return inserted
 
-    assert result is False
-    assert fake_session.rollback_called is True
+    monkeypatch.setattr(execution_audit, "native_operation", persist)
+    monkeypatch.setattr(execution_audit, "_notify_live_hub", lambda **_: trace.append("notify"))
+    assert asyncio.run(execution_audit.append_execution_event(**_event_kwargs())) is inserted
+    assert trace == (["commit", "notify"] if inserted else ["commit"])
 
 
-def test_append_execution_artifact_ignores_duplicate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """事务回滚后，应忽略重复的附件 key。"""
-    duplicate_error = IntegrityError(
-        "INSERT INTO execution_artifact",
-        {},
-        Exception("UNIQUE constraint failed: execution_artifact.execution_id, execution_artifact.artifact_type"),
-    )
-    fake_session = _FakeSession(commit_error=duplicate_error)
-    monkeypatch.setattr(execution_audit, "SessionLocal", lambda: fake_session)
+@pytest.mark.parametrize("inserted", [True, False])
+def test_artifact_returns_native_duplicate_receipt(monkeypatch, inserted):
+    async def persist(name, row):
+        assert name == "append_execution_artifact"
+        assert row["artifact_type"] == "execution_summary"
+        assert row["content"] == {"summary": {"filled": 1}}
+        return inserted
 
-    result = asyncio.run(
-        execution_audit.append_execution_artifact(
-            execution_id="exec-1",
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            content={"summary": {"filled": 1}},
+    monkeypatch.setattr(execution_audit, "native_operation", persist)
+    assert (
+        asyncio.run(
+            execution_audit.append_execution_artifact(
+                execution_id="exec-1",
+                artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+                content={"summary": {"filled": 1}},
+            )
         )
+        is inserted
     )
 
-    assert result is False
-    assert fake_session.rollback_called is True
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+def test_native_commit_failure_never_broadcasts(monkeypatch, raise_on_error):
+    notifications = []
+
+    async def fail(name, row):
+        raise RuntimeError("native commit failed")
+
+    monkeypatch.setattr(execution_audit, "native_operation", fail)
+    monkeypatch.setattr(execution_audit, "_notify_live_hub", lambda **kw: notifications.append(kw))
+    if raise_on_error:
+        with pytest.raises(RuntimeError, match="native commit failed"):
+            asyncio.run(execution_audit.append_execution_event(**_event_kwargs(), raise_on_error=True))
+    else:
+        assert asyncio.run(execution_audit.append_execution_event(**_event_kwargs())) is False
+    assert notifications == []
 
 
 def test_run_coroutine_sync_times_out_with_running_loop() -> None:

@@ -204,7 +204,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     -----
     未完成初始化配置（见 :func:`axile.common.config.is_configured`）时进入
     「初始化向导模式」：跳过算法加载、调度器启动与账户初始化（``init_scheduler``
-    会经会话触达数据库），仅由前端展示初始化向导并调用 ``/api/v1/init`` 接口；
+    会读取数据库），仅由前端展示初始化向导并调用 ``/api/v1/init`` 接口；
     待配置写入并重启后再进入正常模式。
 
     启动最开始会强制校验单 worker 部署（见
@@ -225,11 +225,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.warning("axile 未完成初始化配置，进入初始化向导模式（跳过调度与账户加载）。")
         yield
         return
-    from axile.server.core.db import SessionLocal
+    from axile.server.core.db import initialize_database
     from axile.server.performance_analysis import AnalysisManager, ensure_native_capabilities
 
     ensure_native_capabilities()
-    analysis = AnalysisManager(SessionLocal)
+    await asyncio.to_thread(initialize_database)
+    analysis = AnalysisManager()
     from axile.server.account_control.monitor import monitor, recover_sessions
     from axile.server.connection_state import recover_connection_sessions
 

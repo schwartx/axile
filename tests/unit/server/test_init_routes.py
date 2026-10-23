@@ -1,6 +1,8 @@
 """首启初始化向导路由测试。"""
 
 import asyncio
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,41 @@ def test_test_db_success(client: TestClient, tmp_path: Path) -> None:
     response = client.post("/api/v1/init/test-db", json={"uri": uri})
 
     assert response.json()["ok"] is True
+    with closing(sqlite3.connect(tmp_path / "probe.db")) as connection, connection:
+        assert connection.execute("SELECT name FROM sqlite_master").fetchall() == []
+
+
+@pytest.mark.parametrize("uri", ["sqlite+aiosqlite://", "sqlite+aiosqlite:///:memory:"])
+def test_test_db_accepts_memory_database(client: TestClient, uri: str) -> None:
+    assert client.post("/api/v1/init/test-db", json={"uri": uri}).json()["ok"] is True
+
+
+def test_test_db_uses_supplied_read_only_uri(client: TestClient, tmp_path: Path) -> None:
+    path = tmp_path / "probe.db"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("CREATE TABLE retained(value TEXT)")
+    uri = f"sqlite+aiosqlite:///file:{path}?mode=ro&uri=true"
+    assert client.post("/api/v1/init/test-db", json={"uri": uri}).json()["ok"] is True
+    path.unlink()
+    assert client.post("/api/v1/init/test-db", json={"uri": uri}).json()["ok"] is False
+    assert not path.exists()
+
+
+def test_test_db_failure_does_not_create_missing_directory(client: TestClient, tmp_path: Path) -> None:
+    path = tmp_path / "missing" / "probe.db"
+    response = client.post("/api/v1/init/test-db", json={"uri": f"sqlite+aiosqlite:///{path}"})
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert not path.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "uri", ["not-a-valid-dsn", "sqlite+aiosqlite://host/probe.db", "sqlite+aiosqlite:///a?uri=bad"]
+)
+def test_test_db_rejects_invalid_uri(client: TestClient, uri: str) -> None:
+    response = client.post("/api/v1/init/test-db", json={"uri": uri})
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
 
 
 def test_update_execution_alert_write_failure_keeps_runtime_value(

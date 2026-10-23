@@ -1,7 +1,9 @@
 """服务端通用工具函数测试。"""
 
 import asyncio
-from unittest.mock import AsyncMock
+import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -10,34 +12,12 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server import channel_capabilities
 from axile.server import utils as server_utils
+from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountUpdate
 from axile.server.execution import records as execution_records
-
-
-class _FakeWriteSession:
-    def __init__(self) -> None:
-        self.added: list[object] = []
-        self.committed = False
-        self.refreshed: list[object] = []
-
-    async def __aenter__(self) -> "_FakeWriteSession":
-        return self
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        return None
-
-    def add(self, obj: object) -> None:
-        self.added.append(obj)
-
-    async def flush(self) -> None:
-        return None
-
-    async def commit(self) -> None:
-        self.committed = True
-
-    async def refresh(self, obj: object) -> None:
-        self.refreshed.append(obj)
+from scripts.business_facts_contract import business_evidence
+from tests.unit.server._execution_test_support import insert_account
 
 
 def _build_account() -> Account:
@@ -75,6 +55,14 @@ def _build_account() -> Account:
     )
 
 
+@pytest.fixture
+def record_database(native_database: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        insert_account(connection, _build_account())
+    return native_database
+
+
 @pytest.mark.parametrize("timeout", [0, -1, -180])
 def test_account_update_rejects_non_positive_execution_timeout(timeout: int) -> None:
     """0 / 负数应被拒绝：不允许按账户关掉「执行无限挂起」这道兜底。"""
@@ -89,25 +77,21 @@ def test_account_update_rejects_execution_timeout_above_worker_kill_deadline(tim
         AccountUpdate(execution_timeout=timeout)
 
 
-def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(execution_records, "ensure_execution_asset_snapshot", AsyncMock())
-    monkeypatch.setattr(execution_records, "compact_execution_summary", AsyncMock())
-    store_facts = AsyncMock()
-    monkeypatch.setattr(execution_records, "store_execution_facts", store_facts)
-    fake_session = _FakeWriteSession()
-
+def test_append_error_execute_record_sanitizes_account_config(record_database: Path) -> None:
     record = asyncio.run(
         execution_records.append_error_execute_record(
             account_id=1,
             raw_input={"account_config": {"secret": "x"}, "symbol": "rb2610"},
             msg="boom",
-            session_factory=lambda: fake_session,
         )
     )
+    detail = asyncio.run(read_execution_detail(record))
 
-    assert fake_session.committed is True
-    assert store_facts.await_args.kwargs["raw_input"] == {"symbol": "rb2610"}
-    assert store_facts.await_args.kwargs["raw_result"] == {
+    assert detail["id"] == record.id
+    assert business_evidence(detail["input"], context="input") == business_evidence(
+        {"symbol": "rb2610"}, context="input"
+    )
+    assert detail["result"] == {
         "msg": "boom",
         "status": "FAILED",
         "error": "boom",
@@ -121,13 +105,7 @@ def test_append_error_execute_record_sanitizes_account_config(monkeypatch: pytes
     assert record.is_success == 0
 
 
-def test_append_terminated_execute_record_persists_termination_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(execution_records, "ensure_execution_asset_snapshot", AsyncMock())
-    monkeypatch.setattr(execution_records, "compact_execution_summary", AsyncMock())
-    store_facts = AsyncMock()
-    monkeypatch.setattr(execution_records, "store_execution_facts", store_facts)
-    fake_session = _FakeWriteSession()
-
+def test_append_terminated_execute_record_persists_termination_metadata(record_database: Path) -> None:
     record = asyncio.run(
         execution_records.append_terminated_execute_record(
             account_id=1,
@@ -142,13 +120,15 @@ def test_append_terminated_execute_record_persists_termination_metadata(monkeypa
             cancel_failed_order_ids=["oid-1"],
             raw_input={"account_config": {"secret": "x"}, "symbol": "ag2612"},
             raw_result={"summary": {"filled": 0}},
-            session_factory=lambda: fake_session,
         )
     )
+    detail = asyncio.run(read_execution_detail(record))
 
-    assert fake_session.committed is True
-    assert store_facts.await_args.kwargs["raw_input"] == {"symbol": "ag2612"}
-    result = store_facts.await_args.kwargs["raw_result"]
+    assert detail["id"] == record.id
+    assert business_evidence(detail["input"], context="input") == business_evidence(
+        {"symbol": "ag2612"}, context="input"
+    )
+    result = detail["result"]
     assert result["task_status"] == ExecutionTaskStatus.TERMINATED.value
     assert result["execution_kind"] == ExecutionKind.CLEAR_POSITIONS.value
     assert result["termination"]["cancel_failed_order_ids"] == ["oid-1"]

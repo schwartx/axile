@@ -3,18 +3,16 @@
 import asyncio
 import json
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-import sqlalchemy as sa
 from loguru import logger
-from sqlmodel import col
 from starlette.concurrency import run_in_threadpool
 
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.server._native import _core
-from axile.server.db.models.account import Account
-from axile.server.db.models.account_settings import AccountSettings, BacktestSettings
-from axile.server.db.models.analysis import analysis_snapshot as snapshots
-from axile.server.performance_costs import SHANGHAI
+from axile.server.core.db import database_path
+from axile.server.db.models.account_settings import BacktestSettings
+from axile.server.native_store import native_operation
 
 # 独立权益账本替代日内收益求和；重建旧回测曲线与同版卡片。
 LOGIC_VERSION = "19"
@@ -33,6 +31,9 @@ def ensure_native_capabilities() -> None:
         "queue_claim",
         "queue_fail",
         "queue_release",
+        "analysis_context",
+        "analysis_calendar_save",
+        "analysis_publication_committed",
     )
     if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 40:
         raise RuntimeError("Native analysis extension requires direct business facts schema 0039; rebuild the wheel")
@@ -54,8 +55,7 @@ async def read_snapshot_status(path: str, account_id: int) -> str:
 class AnalysisManager:
     """One background calculation at a time, independent of trading execution locks."""
 
-    def __init__(self, sessions):
-        self.sessions = sessions
+    def __init__(self):
         self.wake = asyncio.Event()
         self.task = None
         self.stopping = False
@@ -93,11 +93,7 @@ class AnalysisManager:
                 pass
 
     def _database_path(self) -> str:
-        with self.sessions().sync_session as session:
-            path = session.get_bind().url.database
-        if not path or path == ":memory:":
-            raise RuntimeError("Native queue requires a file-backed SQLite database")
-        return path
+        return database_path()
 
     async def _claim(self):
         return await run_in_threadpool(
@@ -108,25 +104,12 @@ class AnalysisManager:
         """Python 准备渠道日历；Rust 直接读取业务事实并原子发布。"""
         from axile.server.analysis_calendar import ensure_calendar_facts
 
-        async with self.sessions() as session:
-            path = session.get_bind().url.database
-            if not path or path == ":memory:":
-                raise RuntimeError("Native publication requires a file-backed SQLite database")
-            metadata = (
-                await session.execute(
-                    sa.select(col(Account.trade_channel), col(AccountSettings.backtest))
-                    .select_from(Account)
-                    .outerjoin(AccountSettings, col(AccountSettings.account_id) == col(Account.id))
-                    .where(col(Account.id) == row["account_id"])
-                )
-            ).one_or_none()
-            if metadata is None:
-                return
-            backtest = metadata.backtest or BacktestSettings()
-            settings = backtest.model_dump(mode="json")
-            channel = str(metadata.trade_channel)
-            await session.rollback()
-            await ensure_calendar_facts(session, row["account_id"], channel)
+        metadata = await native_operation("analysis_context", {"account_id": row["account_id"]})
+        if metadata is None:
+            return
+        settings = BacktestSettings.model_validate(metadata["settings"] or {}).model_dump(mode="json")
+        channel = metadata["trade_channel"]
+        await ensure_calendar_facts(channel, metadata["first_day"], metadata["last_day"])
         request = {
             "command": "publish_store",
             "protocol": 1,
@@ -136,11 +119,11 @@ class AnalysisManager:
             "claim_token": row["running_token"],
             "logic_version": LOGIC_VERSION,
             "engine_version": ENGINE_VERSION,
-            "computed_at": clock_now_iso(tz=SHANGHAI),
+            "computed_at": clock_now_iso(tz=ZoneInfo("Asia/Shanghai")),
             "settings": settings,
             "trade_channel": channel,
         }
-        receipt = await run_in_threadpool(_core.publish_store, path, json.dumps(request))
+        receipt = await run_in_threadpool(_core.publish_store, self._database_path(), json.dumps(request))
         if receipt["published"] and not await self._native_publication_committed(row):
             raise RuntimeError("Native publication receipt has no committed snapshot")
 
@@ -149,21 +132,16 @@ class AnalysisManager:
         token = row.get("running_token")
         if token is None:
             return False
-        async with self.sessions() as session:
-            return bool(
-                await session.scalar(
-                    sa.select(
-                        sa.exists().where(
-                            snapshots.c.id == token,
-                            snapshots.c.account_id == row["account_id"],
-                            snapshots.c.source_version == row["source_version"],
-                            snapshots.c.logic_version == LOGIC_VERSION,
-                            snapshots.c.engine_version == ENGINE_VERSION,
-                            snapshots.c.read_view_schema_version == 1,
-                        )
-                    )
-                )
-            )
+        return await native_operation(
+            "analysis_publication_committed",
+            {
+                "account_id": row["account_id"],
+                "source_version": row["source_version"],
+                "running_token": token,
+                "logic_version": LOGIC_VERSION,
+                "engine_version": ENGINE_VERSION,
+            },
+        )
 
     async def run_once(self) -> bool:
         """Claim one durable job, compute outside DB transactions, then compare-and-publish."""

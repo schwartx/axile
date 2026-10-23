@@ -1,4 +1,4 @@
-"""Compare complete snapshots with small analysis views over real loopback HTTP.
+"""Compare the same analysis read scenario in two frozen checkouts over HTTP.
 
 Use an already published, frozen SQLite copy with read_view_schema_version=1.
 The fixture's preparation and analysis calculation are outside this read test.
@@ -10,9 +10,10 @@ Only aggregate counts, timings, sizes and semantic hashes enter the report.
 Example
 -------
 python scripts/benchmark_analysis_views.py prepare synthetic.sqlite \
-    --binary /path/to/axile-analysis --observations 1000 --symbols 10
+    --observations 1000 --symbols 10
 python scripts/benchmark_analysis_views.py frozen.sqlite output-directory \
-    --binary /path/to/axile-analysis --account-id 1 --data-kind synthetic
+    --baseline /path/to/baseline --candidate /path/to/candidate \
+    --account-id 1 --data-kind synthetic --scenario views
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import importlib
 import json
 import math
 import os
-import shutil
 import signal
 import socket
 import sqlite3
@@ -40,6 +40,23 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
+
+try:
+    from benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        source_manifest,
+        sqlite_settings,
+    )
+except ModuleNotFoundError:
+    from scripts.benchmark_business_fact_storage import (
+        harness_manifest,
+        initialize_benchmark_database,
+        native_artifact,
+        source_manifest,
+        sqlite_settings,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -292,26 +309,42 @@ async def server(config: dict) -> None:
     """Serve repository routes over real TCP with no application lifespan."""
     import uvicorn
     from fastapi import FastAPI
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from axile.server.api.deps import get_db
+    from axile.server.core import db
+
+    initialize_benchmark_database(Path(config["database"]))
+    from axile.server.api import deps
     from axile.server.api.routes import account_performance
 
     if not Path(account_performance.__file__).resolve().is_relative_to(Path(config["root"])):
         raise RuntimeError("Benchmark imported a different source tree")
     views = importlib.import_module(config["views_router"])
-    engine = create_async_engine("sqlite+aiosqlite:///" + config["database"])
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    engine = None
+    writer_settings = []
+    if getattr(db, "engine", None) is not None:
+        from sqlalchemy import event
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        engine = create_async_engine("sqlite+aiosqlite:///" + config["database"])
+        db.register_sqlite_concurrency_pragmas(engine)
+        event.listen(
+            engine.sync_engine,
+            "connect",
+            lambda connection, _record: writer_settings.append(sqlite_settings(connection)),
+        )
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def session_dependency():
+            async with sessions() as session:
+                yield session
+
     app = FastAPI()
     app.include_router(account_performance.router, prefix="/api/v1/account")
     app.include_router(views.router, prefix="/api/v1/account")
     app.state.analysis_manager = SimpleNamespace(wake=asyncio.Event())
 
-    async def session_dependency():
-        async with sessions() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = session_dependency
+    if engine is not None:
+        app.dependency_overrides[deps.get_db] = session_dependency
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(128)
@@ -322,7 +355,7 @@ async def server(config: dict) -> None:
     native_starts = []
 
     def audit(event, arguments):
-        if event == "subprocess.Popen" and Path(os.fsdecode(arguments[0])).resolve() == Path(config["binary"]):
+        if event == "subprocess.Popen":
             native_starts.append(time.monotonic())
 
     sys.addaudithook(audit)
@@ -343,12 +376,28 @@ async def server(config: dict) -> None:
         instance.should_exit = True
         await task
         listener.close()
-        await engine.dispose()
-        Path(config["native_counts"]).write_text(json.dumps({"native_process_starts": len(native_starts)}))
+        if engine is not None:
+            await engine.dispose()
+        with closing(sqlite3.connect(config["database"])) as monitor:
+            settings = sqlite_settings(monitor)
+        Path(config["native_counts"]).write_text(
+            json.dumps(
+                {
+                    "native_process_starts": len(native_starts),
+                    "native_artifact": native_artifact(Path(config["root"])),
+                    "sqlite_settings": {
+                        "monitor_connection": settings,
+                        "sqlalchemy_connections": writer_settings,
+                        "native_connections": None,
+                    },
+                    "process_count_scope": "subprocess starts only; in-process FFI calls are not counted here",
+                }
+            )
+        )
 
 
 def _client_semantics(config: dict, bodies: dict) -> dict:
-    if config["arm"] == "full":
+    if config.get("scenario", config["arm"]) == "full":
         body = bodies["full_snapshot"]
         if body["result"] is None:
             raise AssertionError("Complete snapshot result is missing")
@@ -387,7 +436,7 @@ def client(config: dict) -> dict:
     base = f"/api/v1/account/performance/{config['account_id']}"
     query = urlencode({"snapshot_id": config["snapshot_id"], "range": config["range"]})
     endpoints = [("full_snapshot", f"{base}/snapshot?range={config['range']}")]
-    if config["arm"] == "views":
+    if config.get("scenario", config["arm"]) == "views":
         endpoints = [("status", base + "/status"), ("chart", base + "/chart?" + query)]
         if config["record_id"] is not None:
             detail_query = urlencode(
@@ -462,8 +511,6 @@ def inspect_database(path: Path, account_id: int, range_key: str, record_id: int
                 (account_id,),
             ).fetchone()[0]
         if record_id is None:
-            from axile.server.performance_costs import timestamp
-
             bounds = database.execute(
                 "SELECT baseline,end FROM performance_result_range WHERE snapshot_id=? AND range_key=?",
                 (identity, range_key),
@@ -473,8 +520,8 @@ def inspect_database(path: Path, account_id: int, range_key: str, record_id: int
                 "AND time BETWEEN ? AND ? ORDER BY time DESC,record_id DESC LIMIT 1",
                 (
                     identity,
-                    timestamp(bounds[0]) if bounds and bounds[0] else None,
-                    timestamp(bounds[1]) if bounds and bounds[1] else None,
+                    _timestamp(bounds[0]) if bounds and bounds[0] else None,
+                    _timestamp(bounds[1]) if bounds and bounds[1] else None,
                 ),
             ).fetchone()
             record_id = row[0] if row else None
@@ -531,13 +578,9 @@ def run_worker(config: dict, directory: Path, mode: str) -> dict:
     settings.write_text(
         f'sqlalchemy_database_uri = "sqlite+aiosqlite:///{working}"\napp_log_dir = "{directory}/logs"\nenvironment = "local"\n'
     )
-    environment = {
-        key: value for key, value in os.environ.items() if not key.startswith(("AXILE_ANALYSIS_", "AXILE_CONFIG_"))
-    }
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(("AXILE_", "PYTHONPATH"))}
     environment.update(
         AXILE_CONFIG_TOML=str(settings),
-        AXILE_ANALYSIS_MODE="required",
-        AXILE_ANALYSIS_BINARY=config["binary"],
         PYTHONPATH=config["root"],
         PYTHONHASHSEED="0",
         OMP_NUM_THREADS="1",
@@ -554,6 +597,7 @@ def run_worker(config: dict, directory: Path, mode: str) -> dict:
             start_new_session=True,
         )
         started = time.monotonic()
+        deadline = started + config.get("timeout", 25)
         try:
             if mode == "rss":
                 thread = threading.Thread(target=_rss_sampler, args=(process.pid, stop, samples), daemon=True)
@@ -561,6 +605,8 @@ def run_worker(config: dict, directory: Path, mode: str) -> dict:
             while not Path(config["ready"]).exists():
                 if process.poll() is not None:
                     raise RuntimeError("HTTP worker failed; inspect its private server.log")
+                if time.monotonic() >= deadline - 3:
+                    raise TimeoutError("HTTP worker startup exceeded its deadline")
                 stop.wait(0.01)
             config.update(json.loads(Path(config["ready"]).read_text()))
             startup_seconds = time.monotonic() - started
@@ -572,23 +618,24 @@ def run_worker(config: dict, directory: Path, mode: str) -> dict:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=max(0.01, deadline - time.monotonic() - 2),
             )
             if result.returncode:
                 (directory / "client.log").write_text(result.stderr)
                 raise RuntimeError("HTTP client failed; inspect its private client.log")
             measured = json.loads(result.stdout)
             Path(config["stop"]).touch()
-            process.wait()
+            process.wait(timeout=max(0.01, deadline - time.monotonic()))
             if process.returncode:
                 raise RuntimeError("HTTP service did not shut down cleanly")
         finally:
             _kill_group(process)
-            process.wait()
+            process.wait(timeout=3)
             stop.set()
             if thread:
-                thread.join()
+                thread.join(timeout=2)
     measured.update(json.loads(Path(config["native_counts"]).read_text()), startup_seconds=startup_seconds)
-    if config["arm"] == "views" and measured["native_process_starts"]:
+    if config.get("scenario", config["arm"]) == "views" and measured["native_process_starts"]:
         raise AssertionError("Small view reads started Rust subprocesses")
     if mode == "rss":
         for item in measured["samples"]:
@@ -602,7 +649,7 @@ def run_worker(config: dict, directory: Path, mode: str) -> dict:
 def aggregate(results: list) -> dict:
     """Report first and repeat HTTP costs separately from sampled memory."""
     report = {}
-    for arm in ("full", "views"):
+    for arm in sorted({row["arm"] for row in results}):
         runs = [row for row in results if row["arm"] == arm]
         endpoints = sorted({sample["endpoint"] for row in runs for sample in row["samples"]})
         report[arm] = {}
@@ -624,10 +671,12 @@ def aggregate(results: list) -> dict:
             first = [item["seconds"] for item in timed if item["iteration"] == 0]
             repeat = [item["seconds"] for item in timed if item["iteration"] > 0]
             report[arm][endpoint] = {
-                "first_seconds_p50": statistics.median(first),
+                "first_seconds_p50": statistics.median(first) if first else None,
                 "repeat_seconds_p50": statistics.median(repeat) if repeat else None,
                 "repeat_seconds_p95_observed": sorted(repeat)[math.ceil(len(repeat) * 0.95) - 1] if repeat else None,
-                "response_bytes": sorted({item["bytes"] for item in timed}),
+                "response_bytes": sorted(
+                    {item["bytes"] for row in runs for item in row["samples"] if item["endpoint"] == endpoint}
+                ),
                 "sampled_combined_peak_bytes": max(memory) if memory else None,
                 "rss_requests_with_samples": len(memory),
                 "timing_sample_count": len(timed),
@@ -642,42 +691,42 @@ def aggregate(results: list) -> dict:
             if row["mode"] == "timing"
         ]
         report[arm]["first_open"] = {
-            "http_seconds_p50": statistics.median(chain),
+            "http_seconds_p50": statistics.median(chain) if chain else None,
             "response_bytes": sum(report[arm][key]["response_bytes"][0] for key in endpoints if key != "one_detail"),
-            "request_count": 1 if arm == "full" else 2,
+            "request_count": len([key for key in endpoints if key != "one_detail"]),
             "excludes_client_decode_and_render": True,
         }
     return report
 
 
-def source_manifest(root: Path) -> dict:
-    """Identify service source files independently of unrelated UI work."""
-    return {str(path.relative_to(root)): digest_file(path) for path in sorted((root / "axile/server").rglob("*.py"))}
-
-
-async def _publish_fixture(database: Path, binary: Path) -> None:
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
+async def _publish_fixture(database: Path) -> None:
+    initialize_benchmark_database(database)
+    from axile.server.core import db
     from axile.server.performance_analysis import AnalysisManager, enqueue
 
-    os.environ["AXILE_ANALYSIS_MODE"] = "required"
-    os.environ["AXILE_ANALYSIS_BINARY"] = str(binary.resolve())
-    engine = create_async_engine("sqlite+aiosqlite:///" + str(database))
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    engine = None
+    if hasattr(db, "SessionLocal"):
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        engine = create_async_engine("sqlite+aiosqlite:///" + str(database))
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        manager = AnalysisManager(sessions)
+    else:
+        manager = AnalysisManager()
     try:
-        async with sessions() as session:
-            await enqueue(session.get_bind().url.database, 1, force=True)
-        if not await AnalysisManager(sessions).run_once():
+        await enqueue(str(database), 1, force=True)
+        if not await manager.run_once():
             raise AssertionError("Synthetic analysis task was not claimed")
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
 
 
 def prepare_main(arguments: list[str]) -> None:
     """Prepare deterministic typed source facts, then publish with actual Rust."""
     parser = argparse.ArgumentParser(description="Prepare an explicitly synthetic analysis fixture")
     parser.add_argument("database", type=Path)
-    parser.add_argument("--binary", type=Path)
+    parser.add_argument("--checkout", type=Path, default=ROOT)
     parser.add_argument("--observations", type=int, default=1000)
     parser.add_argument("--symbols", type=int, default=10)
     parser.add_argument("--source-only", action="store_true")
@@ -685,8 +734,6 @@ def prepare_main(arguments: list[str]) -> None:
     args = parser.parse_args(arguments)
     if not 1 <= args.observations <= 10000 or not 1 <= args.symbols <= 10:
         parser.error("Use 1..10000 observations and 1..10 symbols")
-    if not args.source_only and args.binary is None:
-        parser.error("--binary is required for a real native publication")
     args.database = args.database.resolve()
     args.database.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     settings = args.database.parent / (args.database.stem + ".config.toml")
@@ -694,24 +741,23 @@ def prepare_main(arguments: list[str]) -> None:
         f'sqlalchemy_database_uri = "sqlite+aiosqlite:///{args.database}"\napp_log_dir = "{args.database.parent}/logs"\nenvironment = "local"\n'
     )
     os.environ["AXILE_CONFIG_TOML"] = str(settings)
+    sys.path.insert(0, str(args.checkout.resolve()))
     with network_guard():
         if not args.publish_existing:
             if args.database.exists():
                 raise FileExistsError("Synthetic fixture already exists")
-            import sqlalchemy as sa
-
-            from scripts.benchmark_structured_publication import migration, prepare
-
-            prepare(SimpleNamespace(prepare=args.database, observations=args.observations, symbols=args.symbols))
-            engine = sa.create_engine("sqlite:///" + str(args.database))
             try:
-                with engine.begin() as connection:
-                    migration("0036_analysis_read_views.py").install_triggers(connection)
-            finally:
-                engine.dispose()
+                import benchmark_structured_publication as publication
+            except ModuleNotFoundError:
+                from scripts import benchmark_structured_publication as publication
+
+            publication.ROOT = args.checkout.resolve()
+            publication.prepare(
+                SimpleNamespace(prepare=args.database, observations=args.observations, symbols=args.symbols)
+            )
             args.database.chmod(0o600)
         if not args.source_only:
-            asyncio.run(_publish_fixture(args.database, args.binary))
+            asyncio.run(_publish_fixture(args.database))
             fixture = inspect_database(args.database, 1, "all", None)
             print(json.dumps({"data_kind": "synthetic", "database": str(args.database), **fixture}))
 
@@ -733,63 +779,90 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--candidate-database", type=Path)
+    parser.add_argument("--scenario", choices=("full", "views"), default="views")
     parser.add_argument("--account-id", type=int, required=True)
     parser.add_argument("--record-id", type=int)
     parser.add_argument("--range", choices=("all", "30", "90"), default="all")
     parser.add_argument("--data-kind", choices=("frozen", "synthetic"), required=True)
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--pair-index", type=int, default=0)
+    parser.add_argument("--modes", nargs="+", choices=("timing", "rss"), default=("timing", "rss"))
+    parser.add_argument("--timeout", type=int, default=25)
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--views-router", default="axile.server.api.routes.account_analysis")
     args = parser.parse_args()
     if not 1 <= args.runs <= 5 or not 1 <= args.iterations <= 10:
         parser.error("Use 1..5 runs and 1..10 iterations to keep each worker short")
+    if not 1 <= args.timeout <= 25 or args.pair_index < 0:
+        parser.error("Use a 1..25 second worker deadline and a nonnegative pair index")
     args.output = args.output.resolve()
     args.database = args.database.resolve()
     args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
-    sources = source_manifest(args.root.resolve())
+    roots = {arm: getattr(args, arm).resolve() for arm in ("baseline", "candidate")}
+    sources = {arm: source_manifest(root) for arm, root in roots.items()}
+    harness_files = harness_manifest(Path(__file__))
     (args.output / "source-manifest.json").write_text(json.dumps(sources, indent=2))
-    frozen_binary = args.output / "axile-analysis"
-    shutil.copy2(args.binary, frozen_binary)
+    databases = {"baseline": args.database, "candidate": (args.candidate_database or args.database).resolve()}
     fingerprints = {
-        str(path): digest_file(path) for path in (args.database, Path(str(args.database) + "-wal")) if path.exists()
+        str(path): digest_file(path)
+        for database in databases.values()
+        for path in (database, Path(str(database) + "-wal"))
+        if path.exists()
     }
-    fixture = inspect_database(args.database, args.account_id, args.range, args.record_id)
+    fixtures = {
+        arm: inspect_database(path, args.account_id, args.range, args.record_id) for arm, path in databases.items()
+    }
     config = {
-        "root": str(args.root.resolve()),
-        "database": str(args.database),
-        "binary": str(frozen_binary),
         "account_id": args.account_id,
         "range": args.range,
         "iterations": args.iterations,
         "views_router": args.views_router,
-        **fixture,
+        "scenario": args.scenario,
+        "timeout": args.timeout,
     }
     results, expected = [], None
-    for mode in ("timing", "rss"):
+    for mode in args.modes:
         for repeat in range(args.runs):
-            for arm in ("full", "views") if repeat % 2 == 0 else ("views", "full"):
-                measured = run_worker({**config, "arm": arm}, args.output / f"{mode}-{repeat}-{arm}", mode)
+            pair = repeat + args.pair_index
+            for arm in ("baseline", "candidate") if pair % 2 == 0 else ("candidate", "baseline"):
+                arm_config = {
+                    **config,
+                    "arm": arm,
+                    "root": str(roots[arm]),
+                    "database": str(databases[arm]),
+                    **fixtures[arm],
+                }
+                measured = run_worker(arm_config, args.output / f"{mode}-{repeat}-{arm}", mode)
                 semantic = measured.pop("semantic")
                 if expected is None:
                     expected = semantic
                 same(expected, semantic)
                 measured.update(arm=arm, mode=mode, repeat=repeat, semantic_sha256=semantic_hash(semantic))
                 results.append(measured)
+                (args.output / "runs.json").write_text(json.dumps(results, indent=2))
     if any(digest_file(Path(path)) != digest for path, digest in fingerprints.items()):
         raise AssertionError("Frozen source database changed")
-    if source_manifest(args.root.resolve()) != sources:
+    if {arm: source_manifest(root) for arm, root in roots.items()} != sources:
         raise AssertionError("Service source changed during the comparison; rerun on a fixed revision")
+    if harness_manifest(Path(__file__)) != harness_files:
+        raise AssertionError("Benchmark harness changed during the comparison")
     selected = expected["detail"]
     report = {
         "data_kind": args.data_kind,
-        "source_sha256": fingerprints[str(args.database)],
-        "binary_sha256": digest_file(frozen_binary),
-        "service_source_manifest_sha256": semantic_hash(sources),
-        "row_counts": fixture["row_counts"],
+        "harness_files": harness_files,
+        "database_sha256": fingerprints,
+        "service_source_manifest_sha256": {arm: semantic_hash(manifest) for arm, manifest in sources.items()},
+        "native_artifacts": {
+            arm: next(row["native_artifact"] for row in results if row["arm"] == arm) for arm in roots
+        },
+        "row_counts": {arm: fixture["row_counts"] for arm, fixture in fixtures.items()},
+        "scenario": args.scenario,
+        "checkouts": {arm: str(root) for arm, root in roots.items()},
         "transport": "router-only loopback HTTP service; independent client; lifespan disabled",
-        "scope": "same-source/same-binary endpoint comparison; published reads only; excludes calculation, whole-app middleware/residency, browser decoding and rendering",
+        "scope": "two-checkout comparison of the same read scenario; actual loaded extensions; published reads only; excludes calculation, whole-app middleware/residency, browser decoding and rendering",
         "rss_sample_seconds": SAMPLE_SECONDS,
         "rss_scope": "sampled simultaneous Python router service plus Rust descendants; client/driver excluded; shared pages may be counted twice and short peaks missed",
         "shared_semantics_equal": True,

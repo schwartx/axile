@@ -1,30 +1,16 @@
-"""资产可信度、旧占位与数据库过滤的跨层回归。"""
+"""资产可信度、历史占位和原生过滤口径保持一致。"""
 
-import asyncio
 import json
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
-import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel, select
 
-from axile.server.analysis_history import read_analysis_record
-from axile.server.api.routes.account_assets import list_account_asset_snapshots
-from axile.server.asset_observations import (
-    is_asset_observation,
-    is_legacy_placeholder,
-    legacy_placeholder_condition,
-    valid_asset_snapshot_condition,
-)
-from axile.server.business_facts.assets import asset_fact_id, read_snapshots_assets, write_snapshot_assets
-from axile.server.business_facts.repository import store_execution_facts
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
-from axile.server.execution import notification_assets
-from axile.server.execution.records import _persist_execute_record
-from axile.server.performance import observation
-from tests.unit.server._execution_test_support import build_account
+from axile.server._native import _core
+from axile.server.asset_observations import is_asset_observation, is_legacy_placeholder
+from tests.unit.server.test_native_asset_operations import _call, _save
+from tests.unit.server.test_native_asset_operations import asset_database as asset_database
 
 
 def legacy():
@@ -61,6 +47,8 @@ def cases():
         ("extra", {"balance": 0}),
         ("positions", [{}]),
         ("source", "unavailable"),
+        ("source", None),
+        ("source", 0),
         ("available_cash", "0"),
         ("market_value", False),
     ]:
@@ -76,16 +64,34 @@ def cases():
         "execution_time": 0.25,
     }
     yield blocked, True
+    yield {**blocked, "execution_time": -1}, False
     yield {**blocked, "memory": {"message": "当前不在交易时间", "other": 1}}, False
 
 
 @pytest.mark.parametrize("result,expected", list(cases()))
-def test_python_sql_placeholder_parity(result, expected):
-    engine = sa.create_engine("sqlite://")
-    with engine.connect() as conn:
-        actual = conn.scalar(sa.select(legacy_placeholder_condition(sa.literal(result, type_=sa.JSON))))
-    assert bool(actual) == is_legacy_placeholder(result) == expected
-    engine.dispose()
+def test_python_placeholder_rule(result, expected):
+    assert is_legacy_placeholder(result) == expected
+
+
+@pytest.mark.parametrize("result,expected", list(cases()))
+def test_native_placeholder_validity_matches_python(asset_database, result, expected):
+    snapshot = _call(
+        asset_database,
+        "asset_snapshot_write",
+        {
+            "account_id": 1,
+            "created_at": "observed-time",
+            "account_assets": result["account_assets"],
+            "result": result,
+        },
+    )
+    with closing(sqlite3.connect(asset_database)) as connection, connection:
+        valid = connection.execute(
+            "SELECT observation_valid FROM business_asset_snapshot WHERE asset_id=?", (snapshot["asset_fact_id"],)
+        ).fetchone()[0]
+    assert bool(valid) == is_asset_observation(result["account_assets"], result)
+    if expected:
+        assert not valid
 
 
 @pytest.mark.parametrize(
@@ -106,121 +112,32 @@ def test_asset_validity(value, valid):
         assert not is_asset_observation({"total_asset": value, "source": source})
 
 
-def test_failed_placeholders_do_not_become_zero_observations():
-    async def check():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            sessions = async_sessionmaker(engine, expire_on_commit=False)
-            async with sessions() as session:
-                session.add(build_account(id=1))
-                records = []
-                for i in range(1, 5):
-                    record = ExecuteRecord(
-                        account_id=1,
-                        execution_id=str(i),
-                        created_at=f"2026-09-{i:02d}",
-                        is_success=0,
-                    )
-                    session.add(record)
-                    await session.flush()
-                    result = {"account_assets": {"total_asset": 100000}} if i == 1 else legacy()
-                    await store_execution_facts(session, record, {}, result)
-                    records.append(record)
-                await session.commit()
-                observations = [observation(await read_analysis_record(session, record)).asset for record in records]
-                assert observations == [100000, None, None, None]
-                real_zero = legacy()
-                real_zero["extra"] = {}
-                await store_execution_facts(session, records[1], {}, real_zero)
-                await session.commit()
-                assert observation(await read_analysis_record(session, records[1])).asset == 0
-        finally:
-            await engine.dispose()
-
-    asyncio.run(check())
-
-
-def test_snapshot_filter_before_ranking_pagination_and_persistence(tmp_path, monkeypatch):
-    from axile.server._native import _core
-    from axile.server.api.routes import account_assets
-
-    monkeypatch.setattr(account_assets, "analysis_store", lambda: _core.Store(str(tmp_path / "assets.db")))
-
-    async def check():
-        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'assets.db'}")
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-        async with sessions() as session:
-            session.add(build_account(id=1))
-            session.add(build_account(id=2))
-            for account in (1, 2):
-                snapshot = AccountAssetSnapshot(account_id=account, source="manual")
-                await write_snapshot_assets(session, snapshot, {"total_asset": 100000, "positions": []})
-                for i in range(25):
-                    execution_id = f"{account}-{i}"
-                    record = ExecuteRecord(
-                        account_id=account,
-                        execution_id=execution_id,
-                        is_success=0,
-                    )
-                    session.add(record)
-                    await session.flush()
-                    await store_execution_facts(session, record, {}, legacy())
-                    session.add(
-                        AccountAssetSnapshot(
-                            account_id=account,
-                            execution_id=execution_id,
-                            asset_fact_id=asset_fact_id(record.id),
-                            source="execution",
-                        )
-                    )
-            await session.commit()
-            monkeypatch.setattr(notification_assets, "SessionLocal", sessions)
-            for account_id in (1, 2):
-                latest = await notification_assets.load_notification_snapshot(
-                    SimpleNamespace(id=account_id, execution_notification_code="configured")
-                )
-                assert latest["assets"]["total_asset"] == 100000
-            page = json.loads((await list_account_asset_snapshots(1, skip=0, limit=1)).body)
-            assert page["count"] == 1 and page["data"][0]["assets"]["total_asset"] == 100000
-            assert not (json.loads((await list_account_asset_snapshots(1, skip=1, limit=1)).body))["data"]
-        for i, result in enumerate(
-            [
-                legacy(),
-                {"account_assets": {"total_asset": 0}},
-                {"account_assets": {"total_asset": 500, "positions": []}},
-                {"account_assets": {"total_asset": 0, "source": "unavailable"}},
-            ]
-        ):
-            await _persist_execute_record(
-                account_id=1,
-                execution_id=f"new-{i}",
-                raw_input={},
-                raw_result=result,
-                is_success=0,
-                session_factory=sessions,
+def test_placeholders_are_excluded_before_latest_selection_and_pagination(asset_database):
+    for account_id in (1, 2):
+        _save(asset_database, {"total_asset": 100000, "positions": []}, account_id=account_id)
+        for index in range(25):
+            result = legacy()
+            _call(
+                asset_database,
+                "asset_snapshot_write",
+                {
+                    "account_id": account_id,
+                    "created_at": str(index),
+                    "account_assets": result["account_assets"],
+                    "result": result,
+                },
             )
-        async with sessions() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(AccountAssetSnapshot)
-                        .where(valid_asset_snapshot_condition(), AccountAssetSnapshot.account_id == 1)
-                        .order_by(AccountAssetSnapshot.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            assets = await read_snapshots_assets(session, rows)
-            assert [assets[row.id]["total_asset"] for row in rows] == [100000, 0, 500]
-            assert (await session.scalar(sa.select(sa.func.count()).select_from(ExecuteRecord))) == 54
-        await engine.dispose()
-
-    asyncio.run(check())
+        latest = _call(asset_database, "asset_snapshot_latest", {"account_id": account_id})
+        assert latest["assets"]["total_asset"] == 100000
+    store = _core.Store(str(asset_database))
+    assert json.loads(_core.asset_snapshots(store, 1, 0, 1))["count"] == 1
+    assert json.loads(_core.asset_snapshots(store, 1, 1, 1))["data"] == []
+    zero = _save(asset_database, {"total_asset": 0})
+    _save(asset_database, {"total_asset": 500, "source": "unavailable"})
+    latest = _call(asset_database, "asset_snapshot_latest", {"account_id": 1})
+    assert latest["id"] == zero["id"]
+    assert latest["assets"]["total_asset"] == 0
+    assert json.loads(_core.asset_snapshots(store, 1, 0, 1))["count"] == 2
 
 
 def test_non_trading_producer_does_not_claim_zero_balance():

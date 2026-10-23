@@ -5,9 +5,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
-
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.executor.models.execution_result import ExecutionStatus
@@ -15,7 +12,7 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.execution.execution_records_output import append_execute_record_from_output
-from axile.server.execution.records import append_error_execute_record
+from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -110,41 +107,23 @@ def test_failed_output_still_persists_as_error(monkeypatch) -> None:
     assert record.is_success == 0
 
 
-def test_not_reached_clear_keeps_conclusion_and_kind_on_error_record_path(monkeypatch):
+def test_not_reached_clear_keeps_conclusion_and_kind_on_error_record_path(native_database, monkeypatch):
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    seed_account(native_database)
     output = _output(status=ExecutionStatus.FAILED, error="目标未完成", success=False)
     output.status = ExecutionStatus.PARTIAL
     output.error = "剩余 1 手"
 
     async def scenario():
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(SQLModel.metadata.create_all)
-            factory = async_sessionmaker(engine, expire_on_commit=False)
-            account = build_account(id=1)
-            async with factory() as session:
-                session.add(account)
-                await session.commit()
-
-            async def persist_error(**kwargs):
-                return await append_error_execute_record(**kwargs, session_factory=factory)
-
-            monkeypatch.setattr(
-                "axile.server.execution.execution_records_output.append_error_execute_record", persist_error
-            )
-            record = await append_execute_record_from_output(
-                account=account,
-                raw_input={},
-                result=output.model_dump(mode="json"),
-                output=output,
-                execution_id="clear-shortfall",
-                execution_kind=ExecutionKind.CLEAR_POSITIONS,
-            )
-            async with factory() as session:
-                result = await read_execution_result(session, record)
-            return record, result
-        finally:
-            await engine.dispose()
+        record = await append_execute_record_from_output(
+            account=build_account(id=1),
+            raw_input={},
+            result=output.model_dump(mode="json"),
+            output=output,
+            execution_id="clear-shortfall",
+            execution_kind=ExecutionKind.CLEAR_POSITIONS,
+        )
+        return record, await read_execution_result(record)
 
     record, result = asyncio.run(scenario())
     assert isinstance(result, dict)

@@ -81,7 +81,7 @@ def test_run_server_uses_import_string_when_reload_enabled(
     monkeypatch.setattr(server_main.uvicorn, "Config", fake_config)
     monkeypatch.setattr(server_main.uvicorn, "Server", _FakeServer)
     monkeypatch.setattr(server_main, "setup_logging", lambda: None)
-    monkeypatch.setattr(server_main.command, "upgrade", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server_main, "initialize_database", lambda *_args, **_kwargs: None)
 
     # workers 固定为 1：多 worker 会让实盘互斥与调度失效，已在 run_server 入口
     # 被护栏拒绝（见 tests/unit/server/test_single_worker_guard.py）。本用例只
