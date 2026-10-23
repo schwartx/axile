@@ -1,7 +1,5 @@
 //! Bounded typed trade scan; no historical result or input JSON reconstruction.
 
-use chrono::{DateTime, NaiveDateTime, TimeZone};
-use chrono_tz::Asia::Shanghai;
 use rusqlite::{Connection, Statement};
 
 use crate::fact_prices::positive;
@@ -26,17 +24,9 @@ pub(crate) struct Trade {
 }
 
 fn timestamp(value: &str) -> Option<(f64, String)> {
-    let time = DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|time| time.with_timezone(&Shanghai))
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-                .ok()
-                .and_then(|time| Shanghai.from_local_datetime(&time).earliest())
-        })?;
     Some((
-        time.timestamp_micros() as f64 / 1000.0,
-        time.format("%Y-%m-%d").to_string(),
+        crate::calendar::timestamp_ms(value).ok()?,
+        crate::calendar::local_time(value).ok()?.format("%Y-%m-%d").to_string(),
     ))
 }
 

@@ -112,7 +112,7 @@ impl<'a> ObservationReader<'a> {
     }
 }
 
-/// Sort only identity/time scalars; derived observations are released immediately.
+/// SQLite sorts and deduplicates scalars in its bounded, disk-backed temporary store.
 pub(crate) fn scan(
     connection: &Connection,
     account: i64,
@@ -120,27 +120,18 @@ pub(crate) fn scan(
     mut consume: impl FnMut(&Observation) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut statement = connection
-        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1")
+        .prepare(
+            "WITH times AS MATERIALIZED (
+                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1
+             ) SELECT max(id) FROM times WHERE time>=?2 GROUP BY time ORDER BY time",
+        )
         .map_err(|error| error.to_string())?;
     let mut rows = statement
-        .query([account])
+        .query(params![account, start])
         .map_err(|error| error.to_string())?;
-    let mut identities = BTreeMap::new();
+    let mut reader = ObservationReader::new(connection).map_err(|error| error.to_string())?;
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
         let id: i64 = row.get(0).map_err(|error| error.to_string())?;
-        let raw: String = row.get(1).map_err(|error| error.to_string())?;
-        let time = crate::calendar::local_time(&raw)?
-            .format("%Y-%m-%dT%H:%M:%S%.6f")
-            .to_string();
-        if time.as_str() >= start {
-            identities
-                .entry(time)
-                .and_modify(|previous: &mut i64| *previous = (*previous).max(id))
-                .or_insert(id);
-        }
-    }
-    let mut reader = ObservationReader::new(connection).map_err(|error| error.to_string())?;
-    for id in identities.into_values() {
         consume(&reader.read(account, id)?)?;
     }
     Ok(())
@@ -175,6 +166,7 @@ mod tests {
     #[test]
     fn production_performance_reads_business_facts_without_replay_tables() {
         let connection = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);

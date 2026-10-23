@@ -46,7 +46,7 @@ impl<'a> HeaderReader<'a> {
              EXISTS(SELECT 1 FROM execution_symbol_result s WHERE s.record_id=e.id),
              EXISTS(SELECT 1 FROM execution_symbol_result s WHERE s.record_id=e.id AND s.status IS NOT 'NOOP')
              FROM executerecord e WHERE e.id=?1")?,
-            symbols:connection.prepare("SELECT map_key,status,error,outcome,outcome_reason,reason_code, CASE WHEN json_type(memory,'$.message')='text' THEN json_extract(memory,'$.message') END, CASE WHEN json_type(memory,'$.symbol_decision_reason_code')='text' THEN json_extract(memory,'$.symbol_decision_reason_code') END FROM execution_symbol_result WHERE record_id=?1 ORDER BY ordinal")?,
+            symbols:connection.prepare("SELECT map_key,node_kind,status,error,outcome,outcome_reason,reason_code,memory FROM execution_symbol_result WHERE record_id=?1 ORDER BY ordinal")?,
         })
     }
     pub(crate) fn emit(
@@ -95,10 +95,7 @@ impl<'a> HeaderReader<'a> {
             has_symbol_results,
             execution,
         ) = row;
-        let time = crate::calendar::local_time(&created)?
-            .and_utc()
-            .timestamp_micros()
-            - 28_800_000_000;
+        let time = crate::calendar::timestamp_ms(&created)?;
         let noop = success == 1
             && fills.is_empty()
             && !has_fills
@@ -117,7 +114,7 @@ impl<'a> HeaderReader<'a> {
         }
         let mut values = vec![
             json!(record),
-            json!(time as f64 / 1_000_000.0 * 1000.0),
+            json!(time),
             json!(success == 1),
             json!(noop),
             json!(record.to_string()),
@@ -151,26 +148,22 @@ impl<'a> HeaderReader<'a> {
             .query([record])
             .map_err(|error| error.to_string())?;
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            let display = crate::executions::symbol_from_row(row).map_err(|error| error.to_string())?;
             let mut present = 0_i64;
             let mut values = vec![
                 json!(record),
                 json!(row.get::<_, String>(0).map_err(|error| error.to_string())?),
                 Value::Null,
             ];
-            for index in 1..=5 {
-                let value: Option<String> = row.get(index).map_err(|error| error.to_string())?;
-                if value.is_some() {
-                    present |= 1 << (index - 1);
+            for (index, name) in crate::executions::SYMBOL_FIELDS.iter().enumerate() {
+                if display.get(*name).is_some() {
+                    present |= 1 << index;
                 }
-                values.push(json!(value));
+                values.push(display[*name].clone());
             }
             values[2] = json!(present);
-            values.push(json!(row
-                .get::<_, Option<String>>(6)
-                .map_err(|error| error.to_string())?));
-            values.push(json!(row
-                .get::<_, Option<String>>(7)
-                .map_err(|error| error.to_string())?));
+            // Display fields already consumed legacy memory; keep technical evidence in source facts.
+            values.extend([Value::Null, Value::Null]);
             crate::publication::rows(
                 "performance_cost_execution_symbol",
                 &[

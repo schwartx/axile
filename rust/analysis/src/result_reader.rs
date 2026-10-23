@@ -302,9 +302,7 @@ fn daily_costs(connection: &Connection, snapshot_id: &str, range: &str) -> Resul
 
 /// Match historical timestamps: naive values mean Shanghai and facts use ms.
 fn timestamp(value: &str) -> Option<f64> {
-    // Python's datetime.timestamp() rounds to floating seconds before * 1000;
-    // retain that order so inclusive bounds match stored fractional-ms facts.
-    crate::snapshots::timestamp(value).map(|micros| micros as f64 / 1_000_000.0 * 1000.0)
+    crate::calendar::timestamp_ms(value).ok()
 }
 
 /// Return a selected range wrapper without reading serialized legacy payloads.

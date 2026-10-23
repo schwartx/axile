@@ -40,53 +40,35 @@ pub(crate) fn values(
     fills: &[crate::fact_trades::Trade],
     emit: &mut crate::publication::RowEmitter<'_>,
 ) -> Result<Vec<Value>, String> {
-        let valued: Vec<_> = fills.iter().filter(|trade| trade.value.is_some()).collect();
-        let covered: Vec<_> = valued.iter().filter(|trade| trade.cost.is_some()).collect();
-        let value: f64 = valued.iter().filter_map(|trade| trade.value).sum();
-        let cost: f64 = covered.iter().filter_map(|trade| trade.cost).sum();
-        let covered_value: f64 = covered.iter().filter_map(|trade| trade.value).sum();
-        let weighted: f64 = covered
-            .iter()
-            .map(|trade| trade.value.unwrap() * trade.loss_bp.unwrap_or(0.0))
-            .sum();
-        let symbols: std::collections::BTreeSet<_> = fills
-            .iter()
-            .filter(|trade| trade.quantity.is_some())
-            .map(|trade| &trade.symbol)
-            .collect();
-        let mut fees: std::collections::BTreeMap<&str, (f64, usize)> =
-            std::collections::BTreeMap::new();
-        let mut fee_count = 0;
-        for trade in fills {
-            if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_deref()) {
-                let entry = fees.entry(currency).or_default();
-                entry.0 += fee;
-                entry.1 += 1;
-                fee_count += 1;
-            }
+    let mut summary = crate::costs::Summary::empty();
+    let mut symbols = std::collections::BTreeSet::new();
+    for trade in fills {
+        summary.push(trade);
+        if trade.quantity.is_some() {
+            symbols.insert(&trade.symbol);
         }
-        let values = vec![
-                json!((!valued.is_empty()).then_some(value)),
-                json!((!covered.is_empty()).then_some(cost)),
-                json!((covered_value > 0.0).then(|| weighted / covered_value)),
-                json!((valued.len() == fills.len() && value > 0.0).then(|| covered_value / value)),
-                json!(covered.len()),
-                json!(fills.len()),
-                json!(fee_count),
-                json!(valued.len() == fills.len()),
-                json!(covered_value),
-                json!(fills.iter().filter(|trade| trade.estimated).count()),
-                json!(!symbols.is_empty()),
-            ];
-
-        crate::publication::rows(
-            "performance_execution_fee",
-            FEE_COLUMNS,
-            fees.into_iter().map(|(currency, (value, count))| {
-                Ok(vec![json!(id), json!(currency), json!(value), json!(count)])
-            }),
-            emit,
-        )?;
+    }
+    let values = vec![
+        json!(summary.value),
+        json!(summary.cost),
+        json!(summary.loss_bp()),
+        json!(summary.coverage()),
+        json!(summary.covered),
+        json!(summary.count),
+        json!(summary.fee_count),
+        json!(summary.amount_complete()),
+        json!(summary.covered_value),
+        json!(summary.estimated),
+        json!(!symbols.is_empty()),
+    ];
+    crate::publication::rows(
+        "performance_execution_fee",
+        FEE_COLUMNS,
+        summary.fees.into_iter().map(|(currency, (value, count))| {
+            Ok(vec![json!(id), json!(currency), json!(value), json!(count)])
+        }),
+        emit,
+    )?;
     Ok(values)
 }
 
@@ -104,7 +86,7 @@ fn write(connection:&Connection,account:i64,emit:&mut crate::publication::RowEmi
         let prices = ticks.read(id).map_err(sql_error)?;
         let fills = trades.read(id, &created_at, &prices)?;
         let values = values(id,&fills,emit)?;
-        let mut row = vec![json!(id),json!(crate::calendar::local_time(&created_at)?.and_utc().timestamp_micros() as f64/1000.0-28_800_000.0)];
+        let mut row = vec![json!(id),json!(crate::calendar::timestamp_ms(&created_at)?)];
         row.extend(values[..10].iter().cloned());
         row.push(json!(fills.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<std::collections::BTreeSet<_>>().len()));
         row.push(values[10].clone());
@@ -119,6 +101,7 @@ pub(crate) mod tests {
 
     pub(crate) fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);

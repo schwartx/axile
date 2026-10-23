@@ -295,6 +295,7 @@ fn open(database: &Path, flags: OpenFlags) -> Result<Connection, AnalysisError> 
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(config)?;
+    crate::calendar::register_time_function(&connection).map_err(config)?;
     connection
         .execute_batch(
             "PRAGMA cache_size=-4096;

@@ -29,6 +29,8 @@ jobs:
         cargo build --manifest-path rust/analysis/Cargo.toml --release --locked --lib --features python
     - name: Stage and verify native extension
       run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
+    - name: Run Rust unit tests
+      run: cargo test --manifest-path rust/analysis/Cargo.toml --locked --lib
     - uses: actions/upload-artifact@v4
       with:
         name: axile-native-core

@@ -85,25 +85,9 @@ impl<'a> TransactionReader<'a> {
                 .iter()
                 .map(|trade| trade.time)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let valued: Vec<_> = trades
-                .iter()
-                .filter(|trade| trade.value.is_some())
-                .collect();
-            let covered: Vec<_> = valued.iter().filter(|trade| trade.cost.is_some()).collect();
-            let value: f64 = valued.iter().filter_map(|trade| trade.value).sum();
-            let cost: f64 = covered.iter().filter_map(|trade| trade.cost).sum();
-            let covered_value: f64 = covered.iter().filter_map(|trade| trade.value).sum();
-            let weighted: f64 = covered
-                .iter()
-                .map(|trade| trade.value.unwrap() * trade.loss_bp.unwrap_or(0.0))
-                .sum();
-            let mut fees = BTreeMap::<&str, f64>::new();
-            let mut fee_count = 0;
+            let mut summary = crate::costs::Summary::empty();
             for trade in &trades {
-                if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_deref()) {
-                    *fees.entry(currency).or_default() += fee;
-                    fee_count += 1;
-                }
+                summary.push(trade);
             }
             let (before, target) = sizing.get(symbol).copied().unwrap_or_default();
             crate::publication::rows(
@@ -123,22 +107,21 @@ impl<'a> TransactionReader<'a> {
                     json!(trades.iter().any(|trade| trade.estimated)),
                     json!(before),
                     json!(target),
-                    json!((!valued.is_empty()).then_some(value)),
-                    json!((!covered.is_empty()).then_some(cost)),
-                    json!((covered_value > 0.0).then(|| weighted / covered_value)),
-                    json!((valued.len() == trades.len() && value > 0.0)
-                        .then(|| covered_value / value)),
-                    json!(covered.len()),
-                    json!(trades.len()),
-                    json!(valued.len() == trades.len()),
-                    json!(fee_count),
+                    json!(summary.value),
+                    json!(summary.cost),
+                    json!(summary.loss_bp()),
+                    json!(summary.coverage()),
+                    json!(summary.covered),
+                    json!(summary.count),
+                    json!(summary.amount_complete()),
+                    json!(summary.fee_count),
                 ])],
                 emit,
             )?;
             crate::publication::rows(
                 "performance_cost_transaction_fee",
                 &["record_id", "transaction_idx", "currency", "value"],
-                fees.into_iter().map(|(currency, value)| {
+                summary.fees.into_iter().map(|(currency, (value, _))| {
                     Ok(vec![
                         json!(record),
                         json!(index),

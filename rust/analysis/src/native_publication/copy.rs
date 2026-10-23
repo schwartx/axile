@@ -1,6 +1,5 @@
 //! Copy frozen scalar source facts without materializing historical rows.
 
-use chrono::{DateTime, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::AnalysisError;
@@ -25,12 +24,8 @@ pub(crate) fn range_bounds(connection: &Connection, snapshot_id: &str, range: &s
 }
 
 fn timestamp(value: &str) -> Result<f64, AnalysisError> {
-    if let Ok(time) = DateTime::parse_from_rfc3339(value) {
-        return Ok(time.timestamp_micros() as f64 / 1_000_000.0 * 1000.0);
-    }
-    let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-        .map_err(|_| AnalysisError::new("INVALID_RESULT_TIME", "invalid range timestamp"))?;
-    Ok((parsed.and_utc().timestamp_micros() - 28_800_000_000) as f64 / 1_000_000.0 * 1000.0)
+    crate::calendar::timestamp_ms(value)
+        .map_err(|_| AnalysisError::new("INVALID_RESULT_TIME", "invalid range timestamp"))
 }
 
 #[cfg(test)]

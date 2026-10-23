@@ -5,13 +5,14 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
-use crate::costs::{Summary, AGGREGATES};
-use crate::executions::SYMBOL_FIELDS;
+use crate::costs::Summary;
+#[cfg(test)]
+use crate::costs::AGGREGATES;
 
-const HEADERS: &str = "SELECT id,created_at AS occurred_at,0 AS kind FROM executerecord
-    WHERE account_id=?1 AND (?2 IS NULL OR created_at>=?2) AND (?3 IS NULL OR created_at<?3)
-    UNION ALL SELECT id,triggered_at,1 FROM schedule_skip
-    WHERE account_id=?1 AND (?2 IS NULL OR triggered_at>=?2) AND (?3 IS NULL OR triggered_at<?3)";
+const HEADERS: &str = "SELECT id,axile_time(created_at) AS occurred_at,0 AS kind FROM executerecord
+    WHERE account_id=?1 AND (?2 IS NULL OR axile_time(created_at)>=?2) AND (?3 IS NULL OR axile_time(created_at)<?3)
+    UNION ALL SELECT id,axile_time(triggered_at),1 FROM schedule_skip
+    WHERE account_id=?1 AND (?2 IS NULL OR axile_time(triggered_at)>=?2) AND (?3 IS NULL OR axile_time(triggered_at)<?3)";
 const OWNER_VALID: &str = "((a.record_id=r.id AND a.path=b.path AND a.scope=b.scope
     AND a.ordinal=b.ordinal AND a.map_key IS b.map_key) OR
     (a.input_id IN (r.input_id,r.result_input_id) AND i.account_id=r.account_id
@@ -47,8 +48,10 @@ pub fn page(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let since = since.filter(|value| !value.is_empty());
-    let until = until.filter(|value| !value.is_empty());
+    let since = since.filter(|value| !value.is_empty())
+        .map(crate::calendar::canonical_time).transpose()?;
+    let until = until.filter(|value| !value.is_empty())
+        .map(crate::calendar::canonical_time).transpose()?;
     let args = params![account_id, since, until, limit, skip];
     let count: i64 = connection
         .query_row(
@@ -70,23 +73,7 @@ pub fn page(
         ORDER BY s.record_id,s.map_key")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
-        let mut fields = Map::new();
-        for name in SYMBOL_FIELDS {
-            if let Some(value) = row.get::<_, Option<String>>(*name).map_err(database)? {
-                fields.insert((*name).into(), json!(value));
-            }
-        }
-        if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(database)? {
-            fields.insert(
-                "memory".into(),
-                serde_json::from_str(&memory)
-                    .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?,
-            );
-        }
-        let fields = crate::executions::public_symbol(
-            fields,
-            &row.get::<_, String>("node_kind").map_err(database)?,
-        )
+        let fields = crate::executions::symbol_from_row(row)
         .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get(0).map_err(database)?)
@@ -110,17 +97,10 @@ pub fn page(
         let prices = ticks.read(id).map_err(database)?;
         let fills = trades.read(id, &created, &prices)?;
         let mut summary = Summary::empty();
-        let mut fees = Map::new();
-        let mut covered = 0;
         for fill in fills {
-            summary.push_historical(&fill);
-            if let (Some(fee), Some(currency)) = (fill.fee, fill.fee_currency) {
-                let total = fees.get(&currency).and_then(Value::as_f64).unwrap_or(0.0) + fee;
-                fees.insert(currency, json!(total));
-                covered += 1;
-            }
+            summary.push(&fill);
         }
-        summaries.insert(id, historical_summary(summary.output(fees, covered)));
+        summaries.insert(id, historical_summary(summary.output()));
     }
 
     let mut totals = HashMap::new();
@@ -320,6 +300,22 @@ mod tests {
     }
 
     #[test]
+    fn timezones_are_normalized_before_filtering_ordering_and_pagination() {
+        let conn = fixture();
+        conn.execute_batch("UPDATE executerecord SET created_at='2026-01-31T16:30:00Z' WHERE id=1;
+            UPDATE executerecord SET created_at='2026-02-01 00:20:00' WHERE id=2;
+            INSERT INTO schedule_skip VALUES(20,2,'2026-01-31T16:25:00Z','ctp','calendar','2026-02-01','test','BUSY');").unwrap();
+        let since = Some("2026-02-01T00:00:00+08:00");
+        let until = Some("2026-02-02T00:00:00+08:00");
+        let result = page(&conn, 2, 0, 1, since, until).unwrap();
+        assert_eq!(result["count"], 3);
+        assert_eq!(result["data"][0]["record"]["id"], 1);
+        assert_eq!(page(&conn, 2, 1, 1, since, until).unwrap()["data"][0]["id"], 20);
+        assert_eq!(page(&conn, 2, 2, 1, since, until).unwrap()["data"][0]["record"]["id"], 2);
+        assert_eq!(page(&conn, 2, 0, 10, since, Some("2026-02-01 00:30:00")).unwrap()["count"], 2);
+    }
+
+    #[test]
     fn symbol_display_matches_execution_projection_without_memory_or_fact_updates() {
         let conn = fixture();
         conn.execute_batch("UPDATE execution_symbol_result SET status='NOOP',memory='null' WHERE record_id=1;
@@ -350,17 +346,18 @@ mod tests {
     #[test]
     fn union_bounds_ties_and_pagination() {
         let conn = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&conn).unwrap();
         conn.execute_batch(
             "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
             CREATE TABLE schedule_skip(id INTEGER,account_id INTEGER,triggered_at TEXT);
-            INSERT INTO executerecord VALUES(1,1,'a'),(2,1,'b'),(9,2,'z');
-            INSERT INTO schedule_skip VALUES(2,1,'b'),(3,1,'c');",
+            INSERT INTO executerecord VALUES(1,1,'2026-01-01'),(2,1,'2026-01-02'),(9,2,'2026-01-04');
+            INSERT INTO schedule_skip VALUES(2,1,'2026-01-02'),(3,1,'2026-01-03');",
         )
         .unwrap();
         let sql = format!("SELECT kind,id FROM ({HEADERS}) ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5");
         let mut stmt = conn.prepare(&sql).unwrap();
         let result = stmt
-            .query_map(params![1, "b", "c", 10, 0], |row| {
+            .query_map(params![1, "2026-01-02", "2026-01-03", 10, 0], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
             .unwrap()
@@ -416,18 +413,19 @@ mod tests {
             INSERT INTO trade VALUES(100,2,200,0),(NULL,999,999,0),(50,NULL,NULL,0);",
         )
         .unwrap();
-        let summary = conn.query_row(&format!("WITH trades AS
+        let mut summary = conn.query_row(&format!("WITH trades AS
             (SELECT value,CASE WHEN value IS NOT NULL THEN cost END AS cost,loss_bp,estimated FROM trade)
             SELECT {AGGREGATES} FROM trades"), [], |row| Summary::read(row,0)).unwrap();
-        let result =
-            historical_summary(summary.output(Map::from_iter([("USD".into(), json!(3))]), 1));
+        summary.fees.insert("USD".into(), (3.0, 1));
+        summary.fee_count = 1;
+        let result = historical_summary(summary.output());
         assert_eq!(result["value"], 150.0);
         assert_eq!(result["cost"], 2.0);
         assert_eq!(result["lossBp"], 200.0);
         assert!(result["coverage"].is_null());
         assert_eq!(result["covered"], 1);
         assert_eq!(result["count"], 3);
-        assert_eq!(result["fees"]["USD"], 3);
+        assert_eq!(result["fees"]["USD"], 3.0);
         assert_eq!(result["feeCovered"], 1);
     }
 

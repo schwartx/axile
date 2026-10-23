@@ -10,6 +10,8 @@ Python 的 `AnalysisManager` 领取持久化任务并准备渠道日历，向 `_
 
 已发布结果使用类型化结果表：`result_schema_version=2`、`cost_schema_version=1`、`read_view_schema_version=1`。旧结果格式的兼容读取与历史迁移继续保留。事实结构和证据语义见[执行业务事实的结构化存储](business-facts.md)。
 
+时间解析和浮点毫秒换算由 Rust 共用实现；历史无时区时间按上海本地时间解释。日志、品种活动和观测扫描先规范化时间，再筛选、排序和分页，原始时间与错误证据不回写。分析逻辑版本 `20` 会重新计算旧快照，修正微秒区间边界、历史时间格式和旧结果的展示差异。
+
 绩效状态、曲线、成本和执行详情均通过原生扩展读取；需要 HTTP 透传的查询直接返回 JSON 字节，内部业务查询返回 Python 对象。旧 CLI、命令分发和专用 wire 返回路径已移除。服务不启动分析子进程，也不在运行时调用 Cargo。
 
 ## 构建与打包
@@ -29,6 +31,8 @@ uv build --wheel
 
 构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0039`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
 
+tag 发布流程先构建、验证原生扩展并运行 Rust 单测，再构建 wheel；Linux wheel 经 auditwheel 审核、修复后才上传 PyPI，不上传包含本机扩展的源码发行包。
+
 ## 验证与测量
 
 Rust 单测可独立运行，不需要 Python feature：
@@ -41,4 +45,4 @@ Python 的真实事务、连接复用和取消契约分别见 `tests/integration
 
 当前原生发布和查询测量使用 `scripts/benchmark_structured_publication.py`、`scripts/benchmark_analysis_views.py`，具体参数见各脚本的 `--help`。历史[独立回放测量](native-replay-measurement.md)和[旧发布链测量](structured-publication-measurement.md)记录了此前 CLI 架构，不能作为当前进程内实现的性能结果。
 
-计算仍保留记录身份排序、当前持仓和每日输出，内存随历史规模增长。性能比较应覆盖完整 Python 进程的 RSS、并发发布时的接口延迟、WAL 增长及提交耗时，不能只用单次查询或扩展文件大小推断生产收益。
+记录身份排序和去重由 SQLite 的磁盘临时存储完成，基线选择只保留三个区间的候选。Rust 不再保存每条记录的时间索引和权益映射，内存主要随当前持仓、日期和必要返回结果增长。性能比较应覆盖完整 Python 进程的 RSS、并发发布时的接口延迟、WAL 增长及提交耗时，不能只用单次查询或扩展文件大小推断生产收益。

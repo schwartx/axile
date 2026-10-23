@@ -4,7 +4,6 @@
 //! reads. Marker-zero snapshots retain an explicit legacy result decoder; this
 //! compatibility path never reads raw execution input or trade payloads.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::{self, SeqAccess, Visitor};
 use serde_json::{json, Value};
@@ -375,19 +374,7 @@ impl<'de> Visitor<'de> for ExecutionFilter {
 }
 
 pub(crate) fn timestamp(value: &str) -> Option<i64> {
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Some(parsed.timestamp_micros());
-    }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
-        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            // Historical naive timestamps use Shanghai local time (+08:00).
-            return Some(parsed.and_utc().timestamp_micros() - 8 * 3600 * 1_000_000);
-        }
-    }
-    NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .ok()?
-        .and_hms_opt(0, 0, 0)
-        .map(|parsed| parsed.and_utc().timestamp_micros() - 8 * 3600 * 1_000_000)
+    crate::calendar::timestamp_micros(value).ok()
 }
 
 /// 批量账户卡片摘要:状态 + 全区间曲线末点,兼容 typed(2)与 legacy ranges JSON。

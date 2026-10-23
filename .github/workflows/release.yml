@@ -8,6 +8,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: '0'
     environment:
       name: pypi
       url: https://pypi.org/p/axile
@@ -28,6 +30,17 @@ jobs:
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Build native extension
+      run: |
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-analysis-target"
+        echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+        cargo build --manifest-path rust/analysis/Cargo.toml --release --locked --lib --features python
+    - name: Stage and verify native extension
+      run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
+    - name: Run Rust unit tests
+      run: cargo test --manifest-path rust/analysis/Cargo.toml --locked --lib
 
     - name: Set up Bun
       uses: oven-sh/setup-bun@v2
@@ -52,7 +65,13 @@ jobs:
 
     - name: Build distributions
       run: |
-        uv build
+        # The validated native extension belongs to this host's platform wheel.
+        uv build --wheel
+
+    - name: Audit and repair Linux wheel
+      run: uv run --no-project --with auditwheel==6.8.2 --with patchelf auditwheel repair --plat auto --wheel-dir wheelhouse dist/*.whl
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: wheelhouse/

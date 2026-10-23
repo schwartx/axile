@@ -4,17 +4,17 @@
 //! frozen per-day decisions and never calls back across the process boundary.
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, Timelike};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{functions::FunctionFlags, params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 /// Apply the same Shanghai-local convention as performance.local_time.
 pub(crate) fn local_time(value: &str) -> Result<NaiveDateTime, String> {
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+    let normalized = value.replacen(' ', "T", 1);
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(&normalized) {
         return Ok(parsed
             .with_timezone(&FixedOffset::east_opt(8 * 60 * 60).expect("Shanghai offset"))
             .naive_local());
     }
-    let normalized = value.replacen(' ', "T", 1);
     for pattern in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"] {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(&normalized, pattern) {
             return Ok(parsed);
@@ -24,6 +24,35 @@ pub(crate) fn local_time(value: &str) -> Result<NaiveDateTime, String> {
         .ok()
         .and_then(|day| day.and_hms_opt(0, 0, 0))
         .ok_or_else(|| format!("Invalid metadata time {value:?}"))
+}
+
+pub(crate) fn canonical_time(value: &str) -> Result<String, String> {
+    Ok(local_time(value)?.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
+}
+
+pub(crate) fn timestamp_micros(value: &str) -> Result<i64, String> {
+    Ok(local_time(value)?.and_utc().timestamp_micros() - 28_800_000_000)
+}
+
+pub(crate) fn timestamp_ms(value: &str) -> Result<f64, String> {
+    // Preserve Python's floating seconds before multiplying, including at SQL boundaries.
+    Ok(timestamp_micros(value)? as f64 / 1_000_000.0 * 1000.0)
+}
+
+pub(crate) fn register_time_function(connection: &Connection) -> rusqlite::Result<()> {
+    connection.create_scalar_function(
+        "axile_time",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            canonical_time(&context.get::<String>(0)?).map_err(|error| {
+                rusqlite::Error::UserFunctionError(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    error,
+                )))
+            })
+        },
+    )
 }
 
 fn display_time(value: NaiveDateTime) -> String {
@@ -198,6 +227,26 @@ pub fn enrich(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_formats_share_sql_order_and_fractional_millisecond_boundaries() {
+        let connection = Connection::open_in_memory().unwrap();
+        register_time_function(&connection).unwrap();
+        for value in [
+            "2026-01-01T09:00:00.000006+08:00",
+            "2026-01-01 09:00:00.000006+08:00",
+            "2026-01-01T01:00:00.000006Z",
+            "2026-01-01 09:00:00.000006",
+        ] {
+            assert_eq!(timestamp_ms(value).unwrap(), 1767229200000.0059);
+            assert_eq!(connection.query_row("SELECT axile_time(?1)", [value],
+                |row| row.get::<_, String>(0)).unwrap(), "2026-01-01T09:00:00.000006");
+        }
+        assert_eq!(timestamp_ms("2026-01-01").unwrap(), timestamp_ms("2026-01-01T00:00:00+08:00").unwrap());
+        assert_eq!(canonical_time("2026-01-01 09:00").unwrap(), "2026-01-01T09:00:00.000000");
+        assert!(connection.query_row("SELECT axile_time('invalid')", [],
+            |row| row.get::<_, String>(0)).is_err());
+    }
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

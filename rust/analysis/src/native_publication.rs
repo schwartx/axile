@@ -9,7 +9,9 @@ mod writer;
 
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use crate::error::AnalysisError;
 use crate::{publication, with_read_snapshot, writer_scope};
@@ -29,9 +31,7 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
         if let Some(reason) = writer::stale_reason(source, &task)? {
             return Ok(Err(reason));
         }
-        let mut calculation = request.clone();
-        calculation["include_execution_summaries"] = json!(true);
-        let complete = publication::write(source, &calculation, &mut |table, columns, rows| {
+        let complete = publication::write(source, request, &mut |table, columns, rows| {
             staged
                 .insert_rows(table, columns, rows)
                 .map_err(|error| format!("{}:{}", error.code, error.error))

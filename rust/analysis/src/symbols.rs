@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use rusqlite::{params, Connection};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use crate::costs::Summary;
 use crate::journal::historical_summary;
@@ -30,15 +30,17 @@ pub fn query(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let mut groups: Vec<(String, f64, Summary, Map<String, Value>, i64, Vec<Value>)> = Vec::new();
+    let since = (!since.is_empty()).then(|| crate::calendar::canonical_time(since)).transpose()?;
+    let until = (!until.is_empty()).then(|| crate::calendar::canonical_time(until)).transpose()?;
+    let mut groups: Vec<(String, f64, Summary, Vec<Value>)> = Vec::new();
     let mut indices = HashMap::new();
     let mut ticks = crate::fact_ticks::TickReader::new(conn).map_err(database)?;
     let mut trades = crate::fact_trades::TradeReader::new(conn).map_err(database)?;
     let mut statement = conn
         .prepare(
             "SELECT id,created_at,execution_id,facts_complete FROM executerecord
-        WHERE account_id=?1 AND (?2='' OR created_at>=?2) AND (?3='' OR created_at<?3)
-        ORDER BY created_at DESC,id DESC",
+        WHERE account_id=?1 AND (?2 IS NULL OR axile_time(created_at)>=?2) AND (?3 IS NULL OR axile_time(created_at)<?3)
+        ORDER BY axile_time(created_at) DESC,id DESC",
         )
         .map_err(database)?;
     let mut rows = statement
@@ -61,20 +63,13 @@ pub fn query(
                     trade.symbol.clone(),
                     trade.time,
                     Summary::empty(),
-                    Map::new(),
-                    0,
                     Vec::new(),
                 ));
                 groups.len() - 1
             });
-            let (_, last, summary, fees, fee_count, fills) = &mut groups[index];
+            let (_, last, summary, fills) = &mut groups[index];
             *last = last.max(trade.time);
-            summary.push_historical(&trade);
-            if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_ref()) {
-                let total = fees.get(currency).and_then(Value::as_f64).unwrap_or(0.0) + fee;
-                fees.insert(currency.clone(), json!(total));
-                *fee_count += 1;
-            }
+            summary.push(&trade);
             if symbol.is_some_and(|name| !name.is_empty()) {
                 fills.push(json!({"symbol":trade.symbol,"day":trade.day,"time":trade.time,
                     "timeEstimated":trade.estimated,"side":trade.side,"quantity":trade.quantity,
@@ -86,8 +81,8 @@ pub fn query(
     }
     let data: Vec<_> = groups
         .into_iter()
-        .map(|(name, last, summary, fees, count, fills)| {
-            let summary = historical_summary(summary.output(fees, count));
+        .map(|(name, last, summary, fills)| {
+            let summary = historical_summary(summary.output());
             json!({"symbol":name,"last_time":last as i64,"n_trades":summary["count"],
             "summary":summary,"trades":fills})
         })
@@ -98,6 +93,20 @@ pub fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_window_includes_utc_executions_on_the_shanghai_day() {
+        let conn = crate::execution_summary::tests::fixture();
+        conn.execute_batch("CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
+            ALTER TABLE executerecord ADD COLUMN execution_id TEXT;
+            ALTER TABLE executerecord ADD COLUMN facts_complete INTEGER DEFAULT 1;
+            UPDATE executerecord SET created_at='2026-01-31T16:30:00Z' WHERE id=1;
+            UPDATE business_trade SET trade_time=NULL;").unwrap();
+        let result = query(&conn, 2, "2026-02-01T00:00:00+08:00", "2026-02-02T00:00:00+08:00", Some("A")).unwrap();
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["data"][0]["n_trades"], 2);
+        assert_eq!(result["data"][0]["trades"][0]["day"], "2026-02-01");
+    }
 
     #[test]
     fn canonical_symbols_preserve_unknown_fees_order_and_bounds() {

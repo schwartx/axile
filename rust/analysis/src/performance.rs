@@ -6,7 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDateTime, Timelike};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
+#[cfg(test)]
+use rusqlite::params;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -153,6 +155,28 @@ struct RangeState {
     fallback_count: usize,
     fallback_ranges: Vec<FallbackRange>,
     in_fallback: bool,
+}
+
+struct RangeBaseline {
+    key: &'static str,
+    cutoff: String,
+    candidate: Option<(String, f64)>,
+    fallback_equity: Option<f64>,
+}
+
+impl RangeBaseline {
+    fn push(&mut self, item: &Observation) {
+        let Some(asset) = item.asset.filter(|asset| *asset > 0.0) else { return };
+        if item.time >= self.cutoff && self.fallback_equity.is_none() {
+            self.fallback_equity = Some(asset);
+        }
+        let eligible = item.target.as_ref().is_some_and(|target| {
+            target.iter().all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
+        });
+        if eligible && (item.time <= self.cutoff || self.candidate.is_none()) {
+            self.candidate = Some((item.time.clone(), asset));
+        }
+    }
 }
 
 impl RangeState {
@@ -418,25 +442,10 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
             |row| row.get(0),
         )
         .map_err(database_error)?;
-    let mut first: Option<String> = None;
-    let mut last: Option<String> = None;
-    let mut baselines = BTreeSet::new();
-    let mut equities = BTreeMap::new();
-    crate::fact_observation::scan(connection, account_id, "", |item| {
-        first.get_or_insert_with(|| item.time.clone());
-        last = Some(item.time.clone());
-        if let Some(asset) = item.asset.filter(|asset| *asset > 0.0) {
-            equities.insert(item.time.clone(), asset);
-            if item.target.as_ref().is_some_and(|target| {
-                target
-                    .iter()
-                    .all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
-            }) {
-                baselines.insert(item.time.clone());
-            }
-        }
-        Ok(())
-    })?;
+    let (first, last): (Option<String>, Option<String>) = connection.query_row(
+        "SELECT min(axile_time(created_at)),max(axile_time(created_at)) FROM executerecord WHERE account_id=?1",
+        [account_id], |row| Ok((row.get(0)?,row.get(1)?)),
+    ).map_err(database_error)?;
     let range_keys: &[&str] = match request.range {
         None => &["30", "90", "all"],
         Some("30") => &["30"],
@@ -444,29 +453,31 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
         Some("all") => &["all"],
         Some(_) => return Err("range must be 30, 90 or all".to_owned()),
     };
-    let mut states = Vec::new();
+    let mut baselines = Vec::new();
     for &key in range_keys {
-        let start = if let (Some(first), Some(last)) = (&first, &last) {
-            let cutoff = if key == "all" {
+        let cutoff = if let (Some(first), Some(last)) = (&first, &last) {
+            if key == "all" {
                 first.clone()
             } else {
                 canonical_time(
                     parse_time(last)? - Duration::days(key.parse::<i64>().expect("range days")),
                 )
-            };
-            baselines
-                .range(..=cutoff.clone())
-                .next_back()
-                .or_else(|| baselines.range(cutoff.clone()..).next())
-                .cloned()
-                .unwrap_or(cutoff)
+            }
         } else {
             String::new()
         };
-        let initial_equity = equities
-            .range(start.clone()..)
-            .next()
-            .map(|(_, asset)| *asset);
+        baselines.push(RangeBaseline {key,cutoff,candidate:None,fallback_equity:None});
+    }
+    crate::fact_observation::scan(connection, account_id, "", |item| {
+        for baseline in &mut baselines { baseline.push(item); }
+        Ok(())
+    })?;
+    let mut states = Vec::new();
+    for baseline in baselines {
+        let (start, initial_equity) = match baseline.candidate {
+            Some((time, asset)) => (time, Some(asset)),
+            None => (baseline.cutoff, baseline.fallback_equity),
+        };
         let executable = Participants::new(
             if include_backtest {
                 initial_equity
@@ -486,7 +497,7 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
             true,
         )?;
         states.push(RangeState {
-            key,
+            key: baseline.key,
             start,
             count: 0,
             invalid_assets: 0,
@@ -539,6 +550,7 @@ mod tests {
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
             "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
@@ -849,6 +861,20 @@ mod tests {
         assert_eq!(result["all"]["observation_count"], 1);
         assert_eq!(result["all"]["baseline"], "2026-01-02T10:00:00");
         assert_eq!(result["all"]["points"][0]["record_id"], 3);
+    }
+
+    #[test]
+    fn canonical_time_deduplicates_aliases_and_keeps_the_last_record() {
+        let connection = fixture();
+        insert(&connection, 1, "2026-01-01T01:00:00.000006Z", Some(100.0), true, Some(10.0));
+        insert(&connection, 2, "2026-01-01 09:00:00.000006+08:00", Some(110.0), true, Some(11.0));
+        insert(&connection, 3, "2026-01-01T09:00:00.000007", Some(120.0), true, Some(12.0));
+        let result = calculate(&connection, true);
+        assert_eq!(result["all"]["record_count"], 3);
+        assert_eq!(result["all"]["observation_count"], 2);
+        assert_eq!(result["all"]["points"][0]["record_id"], 2);
+        assert_eq!(result["all"]["points"][0]["account_equity"], 110.0);
+        assert_eq!(result["all"]["points"][1]["record_id"], 3);
     }
 
     #[test]

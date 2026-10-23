@@ -6,8 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, NaiveDateTime};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
+#[cfg(test)]
+use rusqlite::params;
 use serde_json::{json, Value};
 
 pub type RowEmitter<'a> = dyn FnMut(&str, &[&str], &[Vec<Value>]) -> Result<(), String> + 'a;
@@ -156,17 +157,7 @@ fn array_rows(
 }
 
 fn numeric_time(value: &str) -> Result<f64, String> {
-    if let Ok(time) = DateTime::parse_from_rfc3339(value) {
-        return Ok(time.timestamp_micros() as f64 / 1_000_000.0 * 1000.0);
-    }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
-        if let Ok(time) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(
-                (time.and_utc().timestamp_micros() - 28_800_000_000) as f64 / 1_000_000.0 * 1000.0,
-            );
-        }
-    }
-    Err(format!("INVALID_RESULT_TIME:{value:?}"))
+    crate::calendar::timestamp_ms(value).map_err(|_| format!("INVALID_RESULT_TIME:{value:?}"))
 }
 
 #[derive(Debug)]
@@ -310,19 +301,7 @@ fn daily_costs(
     ranges: &[(&str, f64, f64)],
     emit: &mut RowEmitter<'_>,
 ) -> Result<(), String> {
-    #[derive(Default)]
-    struct Day {
-        count: usize,
-        valued: usize,
-        value: f64,
-        covered: usize,
-        cost: f64,
-        covered_value: f64,
-        weighted: f64,
-        fee_covered: usize,
-        fees: BTreeMap<String, f64>,
-    }
-    let mut summaries: Vec<BTreeMap<String, Day>> =
+    let mut summaries: Vec<BTreeMap<String, crate::costs::Summary>> =
         ranges.iter().map(|_| BTreeMap::new()).collect();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
     let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
@@ -346,22 +325,7 @@ fn daily_costs(
                 if time < *start || time > *end {
                     continue;
                 }
-                let day = days.entry(trade.day.clone()).or_default();
-                day.count += 1;
-                if let Some(value) = trade.value {
-                    day.valued += 1;
-                    day.value += value;
-                    if let Some(cost) = trade.cost {
-                        day.covered += 1;
-                        day.cost += cost;
-                        day.covered_value += value;
-                        day.weighted += value * trade.loss_bp.unwrap_or(0.0);
-                    }
-                }
-                if let (Some(fee), Some(currency)) = (trade.fee, trade.fee_currency.as_ref()) {
-                    day.fee_covered += 1;
-                    *day.fees.entry(currency.clone()).or_default() += fee;
-                }
+                days.entry(trade.day.clone()).or_insert_with(crate::costs::Summary::empty).push(&trade);
             }
         }
     }
@@ -387,17 +351,16 @@ fn daily_costs(
             Ok(vec![
                 json!(range),
                 json!(day),
-                json!((value.valued > 0).then_some(value.value)),
-                json!((value.covered > 0).then_some(value.cost)),
-                json!((value.covered_value > 0.0).then(|| value.weighted / value.covered_value)),
-                json!((value.valued == value.count && value.value > 0.0)
-                    .then(|| value.covered_value / value.value)),
+                json!(value.value),
+                json!(value.cost),
+                json!(value.loss_bp()),
+                json!(value.coverage()),
                 Value::Null,
                 json!(value.covered),
                 json!(value.count),
-                json!(value.fee_covered),
+                json!(value.fee_count),
                 Value::Null,
-                json!(value.valued == value.count),
+                json!(value.amount_complete()),
                 json!(255),
             ])
         }),
@@ -407,7 +370,7 @@ fn daily_costs(
             "performance_result_daily_fee",
             &["range_key", "day", "currency", "value"],
             days.iter().flat_map(|(day, value)| {
-                value.fees.iter().map(move |(currency, fee)| {
+                value.fees.iter().map(move |(currency, (fee, _))| {
                     Ok(vec![json!(range), json!(day), json!(currency), json!(fee)])
                 })
             }),
@@ -622,15 +585,7 @@ pub fn write(
             }
             range_rows(connection, account, key, performance, &mut counted_emit)?;
         }
-        // New native publication prepares one reusable execution index. The
-        // legacy stream retains exactly its original frame/table contract.
-        if request
-            .get("include_execution_summaries")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            crate::fact_cost_rows::trades(connection, account, &mut counted_emit)?;
-        }
+        crate::fact_cost_rows::trades(connection, account, &mut counted_emit)?;
     }
     Ok(
         json!({"type":"complete","account_id":account,"source_version":version,

@@ -83,6 +83,21 @@ pub(crate) fn public_symbol(
     Ok(normalized)
 }
 
+pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Value, AnalysisError> {
+    let read_error = |error: rusqlite::Error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string());
+    let mut fields = Map::new();
+    for name in SYMBOL_FIELDS {
+        if let Some(value) = row.get::<_, Option<String>>(*name).map_err(read_error)? {
+            fields.insert((*name).into(), json!(value));
+        }
+    }
+    if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(read_error)? {
+        fields.insert("memory".into(), serde_json::from_str(&memory)
+            .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?);
+    }
+    public_symbol(fields, &row.get::<_, String>("node_kind").map_err(read_error)?)
+}
+
 fn records(
     connection: &Connection,
     page_ids: &str,
@@ -97,23 +112,7 @@ fn records(
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut symbol_rows = symbol_statement.query(arguments).map_err(database)?;
     while let Some(row) = symbol_rows.next().map_err(database)? {
-        let mut fields = Map::new();
-        for name in SYMBOL_FIELDS {
-            if let Some(value) = row.get::<_, Option<String>>(*name).map_err(database)? {
-                fields.insert((*name).into(), json!(value));
-            }
-        }
-        if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(database)? {
-            fields.insert(
-                "memory".into(),
-                serde_json::from_str(&memory)
-                    .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?,
-            );
-        }
-        let fields = public_symbol(
-            fields,
-            &row.get::<_, String>("node_kind").map_err(database)?,
-        )
+        let fields = symbol_from_row(row)
         .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get("record_id").map_err(database)?)
