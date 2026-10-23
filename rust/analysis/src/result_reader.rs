@@ -314,33 +314,6 @@ pub(crate) fn read(
     range: &str,
     performance_only: bool,
 ) -> Result<Value, String> {
-    read_mode(connection, snapshot_id, range, performance_only, None)
-}
-
-pub(crate) fn read_typed(
-    connection: &Connection,
-    snapshot_id: &str,
-    range: &str,
-    performance_only: bool,
-) -> Result<(Value, Vec<Point>), String> {
-    let mut points = Vec::new();
-    let value = read_mode(
-        connection,
-        snapshot_id,
-        range,
-        performance_only,
-        Some(&mut points),
-    )?;
-    Ok((value, points))
-}
-
-fn read_mode(
-    connection: &Connection,
-    snapshot_id: &str,
-    range: &str,
-    performance_only: bool,
-    typed: Option<&mut Vec<Point>>,
-) -> Result<Value, String> {
     let Header {
         mut performance,
         baseline,
@@ -348,13 +321,7 @@ fn read_mode(
         event_count,
     } = header(connection, snapshot_id, range)?;
     performance["settings"] = settings(connection, snapshot_id)?;
-    performance["points"] = match typed {
-        Some(output) => {
-            *output = typed_points(connection, snapshot_id, range)?;
-            json!([])
-        }
-        None => Value::Array(points(connection, snapshot_id, range)?),
-    };
+    performance["points"] = Value::Array(points(connection, snapshot_id, range)?);
     attach_skips(connection, snapshot_id, range, &mut performance)?;
     attach_calendar(connection, snapshot_id, range, &mut performance)?;
     performance["sizing_fallback_ranges"] = Value::Array(rows(
@@ -586,28 +553,25 @@ mod tests {
     }
 
     #[test]
-    fn typed_wire_points_preserve_exact_bytes_and_close_sqlite_before_output() {
+    fn result_points_can_be_serialized_after_connection_closes() {
         let connection = database();
         connection.execute(
             "UPDATE performance_result_point SET date=?1,observed_at=?2,account_return=?3 WHERE idx=1",
             params!["上海\"\\\n", "time\tvalue", -0.0_f64],
         ).unwrap();
-        let expected = read(&connection, "s", "all", false).unwrap()["performance"].take();
-        let (mut value, points) = read_typed(&connection, "s", "all", false).unwrap();
-        let wire = crate::wire_result::WireResult {
-            value: value["performance"].take(),
-            points: Some(points),
-            performance_only: true,
-        };
+        let mut result = read(&connection, "s", "all", false).unwrap();
         drop(connection);
+        let encoded = serde_json::to_vec(&result).unwrap();
+        let decoded: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded["performance"]["points"][0]["date"], "上海\"\\\n");
         assert_eq!(
-            serde_json::to_vec(&wire).unwrap(),
-            serde_json::to_vec(&expected).unwrap()
+            decoded["performance"]["points"][0]["observed_at"],
+            "time\tvalue"
         );
-        let mut empty = wire;
-        empty.points.as_mut().unwrap().clear();
-        let parsed: Value = serde_json::from_slice(&serde_json::to_vec(&empty).unwrap()).unwrap();
-        assert_eq!(parsed["points"], json!([]));
+        assert_eq!(decoded["performance"]["points"][0]["account_return"], 0.0);
+        result["performance"]["points"] = json!([]);
+        let decoded: Value = serde_json::from_slice(&serde_json::to_vec(&result).unwrap()).unwrap();
+        assert_eq!(decoded["performance"]["points"], json!([]));
     }
 
     #[test]

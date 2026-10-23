@@ -4,7 +4,7 @@
 
 ## 测量方式
 
-`scripts/benchmark_native_replay.py` 先建立临时 SQLite：10,000 条按小时递增的观测，每条 10 个品种，共 100,000 条品种事实，数据库 6,991,872 字节。全部为合成完整数据，有明确价格、资产、目标权重、数量和换算单位，没有原始 JSON、未知字段补零或缺失数据填补。
+历史脚本 `scripts/benchmark_native_replay.py` 先建立临时 SQLite：10,000 条按小时递增的观测，每条 10 个品种，共 100,000 条品种事实，数据库 6,991,872 字节。全部为合成完整数据，有明确价格、资产、目标权重、数量和换算单位，没有原始 JSON、未知字段补零或缺失数据填补。
 
 随后启动两个全新进程，读取同一份已提交数据，计算 `30`、`90`、`all` 三个区间及独立权益回放，输出完整 JSON：
 
@@ -31,20 +31,9 @@ Python 内部计时：导入 0.888 秒、读取和重建观测 0.184 秒、计�
 
 ## 复现
 
-Python 对照现已迁至测试 oracle，必须在包含 `tests/` 的源码 checkout 运行，不属于安装包公共 API。迁移后的导入边界不同，下面历史数字没有重新测量。
+本节记录历史 CLI 架构的测量。依赖旧回放表和 CLI 的 `scripts/benchmark_native_replay.py` 已退役，以上数字未按当前进程内扩展重新测量。
 
-使用已有依赖的 Python 3.12 环境及预先构建的 release 二进制，无需启动 API 或连接真实数据库：
-
-```bash
-PYTHONPATH=. python scripts/benchmark_native_replay.py \
-  --binary rust/analysis/target/release/axile-analysis \
-  --output /tmp/native-replay-measurement.json
-
-PYTHONPATH=. python scripts/benchmark_native_replay.py \
-  --observations 1 --output /tmp/native-replay-baseline.json
-```
-
-脚本不构建二进制、不安装依赖、不读取真实历史，临时数据库运行后自动删除。报告保留字节值、CPU 时间、Python 分阶段时间和比对容差。
+当前发布链与页面查询分别使用 `scripts/benchmark_structured_publication.py` 和 `scripts/benchmark_analysis_views.py`，参数见脚本的 `--help`。它们测量的范围不同，不能用新结果直接复现或替换上表。
 
 ## 适用范围
 

@@ -1,7 +1,6 @@
 //! Native calculation, bounded disk staging and atomic SQLite publication.
 //!
-//! Only a small receipt crosses the process boundary. Python continues to own
-//! business facts and migrations; this command writes analysis-owned tables.
+//! Only a small receipt crosses the Python boundary; result rows stay in Rust.
 
 pub(crate) mod copy;
 mod staging;

@@ -212,5 +212,5 @@ start_local_server.ps1
 ui/test-results/
 ui/playwright-report/
 
-# Optional host-native analysis executable staged for platform wheels
+# Host-native PyO3 extension staged for platform wheels
 axile/server/_native/

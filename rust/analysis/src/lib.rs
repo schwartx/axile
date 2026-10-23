@@ -56,100 +56,39 @@ pub mod symbols;
 pub(crate) mod target_ops;
 pub(crate) mod time_check;
 pub mod views;
-pub(crate) mod wire_result;
 pub(crate) mod writer_scope;
 
 use rusqlite::Connection;
-use serde_json::{json, Value};
 use std::path::Path;
 
 use crate::error::AnalysisError;
 
-pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
-
-pub fn capabilities() -> Value {
-    json!({
-        "protocol": PROTOCOL_VERSION,
-        "analysis_fact_schema": 40,
-        "public_head": migrations::PUBLIC_HEAD,
-        "version": env!("CARGO_PKG_VERSION"),
-        "commands": ["costs", "snapshot", "performance_result", "publish_store"],
-        "read_only": false,
-        "write_commands": ["publish_store"],
-    })
-}
-
-/// Execute one complete analysis task against a consistent SQLite read view.
-pub fn query(database: &Path, request: &Value) -> Result<Value, AnalysisError> {
-    let command = request_command(request)?;
-    if command == "publish_store" {
-        return native_publication::publish(database, request);
-    }
-    if !matches!(command, "costs" | "snapshot" | "performance_result") {
-        return Err(AnalysisError::new(
-            "INVALID_REQUEST",
-            format!("unsupported command: {command}"),
-        ));
-    }
-
-    with_read_snapshot(database, |connection| {
-        match command {
-            "costs" => costs::query_costs(connection, request),
-            "snapshot" => snapshots::query(connection, request),
-            _ => snapshots::performance_result(connection, request),
-        }
-        .map_err(AnalysisError::from)
-    })
-}
-
-/// Preserve typed curve storage until serialization, after the read view closes.
-pub fn query_wire(
-    database: &Path,
-    request: &Value,
-) -> Result<wire_result::WireResult, AnalysisError> {
-    let command = request_command(request)?;
-    if matches!(command, "snapshot" | "performance_result") {
-        return with_read_snapshot(database, |connection| {
-            match command {
-                "snapshot" => snapshots::query_wire(connection, request),
-                _ => snapshots::performance_result_wire(connection, request),
-            }
-            .map_err(AnalysisError::from)
-        });
-    }
-    query(database, request).map(|value| wire_result::WireResult {
-        value,
-        points: None,
-        performance_only: false,
-    })
-}
-
-fn request_command(request: &Value) -> Result<&str, AnalysisError> {
-    request
-        .as_object()
-        .and_then(|request| request.get("command"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| AnalysisError::new("INVALID_REQUEST", "command must be a string"))
-}
-
 fn with_read_snapshot<T>(
     database: &Path,
     task: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
+) -> Result<T, AnalysisError> {
+    with_read_snapshot_errors(database, task, ("DATABASE_CONFIG", "DATABASE_CLOSE"))
+}
+
+// Preserve each entrypoint's existing transaction error codes in one shared scope.
+fn with_read_snapshot_errors<T>(
+    database: &Path,
+    task: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
+    (begin_error, close_error): (&str, &str),
 ) -> Result<T, AnalysisError> {
     // Read-only mode prevents accidental source writes, but deliberately avoids
     // immutable=1: live Python commits and WAL contents must remain visible.
     let connection = storage_connection::open_reader(database)?;
     connection
         .execute_batch("BEGIN DEFERRED;")
-        .map_err(|error| AnalysisError::new("DATABASE_CONFIG", error.to_string()))?;
+        .map_err(|error| AnalysisError::new(begin_error, error.to_string()))?;
 
     let result = task(&connection);
 
     // End the snapshot promptly; the lease discards a connection if cleanup fails.
     let closed = connection
         .execute_batch("ROLLBACK;")
-        .map_err(|error| AnalysisError::new("DATABASE_CLOSE", error.to_string()));
+        .map_err(|error| AnalysisError::new(close_error, error.to_string()));
     match result {
         Ok(value) => closed.map(|()| value),
         Err(error) => Err(error),
@@ -160,23 +99,63 @@ fn with_read_snapshot<T>(
 mod tests {
     use std::path::Path;
 
-    use serde_json::json;
-
     #[test]
-    fn invalid_commands_do_not_open_a_database() {
-        let result = super::query(
-            Path::new("/nonexistent.sqlite"),
-            &json!({"command": "publish"}),
-        );
-        assert_eq!(result.unwrap_err().code, "INVALID_REQUEST");
+    fn missing_database_is_not_created() {
+        let result =
+            super::with_read_snapshot(Path::new("/nonexistent-directory/analysis.sqlite"), |_| {
+                Ok(())
+            });
+        assert_eq!(result.unwrap_err().code, "DATABASE_OPEN");
     }
 
     #[test]
-    fn missing_database_is_not_created() {
-        let result = super::query(
-            Path::new("/nonexistent-directory/analysis.sqlite"),
-            &json!({"command": "costs"}),
-        );
-        assert_eq!(result.unwrap_err().code, "DATABASE_OPEN");
+    fn read_scope_preserves_errors_and_releases_failed_snapshots() {
+        let directory =
+            std::env::temp_dir().join(format!("axile-read-scope-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("reader.sqlite");
+        rusqlite::Connection::open(&database).unwrap();
+        for codes in [
+            ("DATABASE_CONFIG", "DATABASE_CLOSE"),
+            ("DATABASE_BEGIN", "DATABASE_CLOSE"),
+            ("BUSINESS_FACTS_SQL", "BUSINESS_FACTS_SQL"),
+        ] {
+            let error = super::with_read_snapshot_errors(
+                &database,
+                |connection| {
+                    connection.execute_batch("ROLLBACK;").unwrap();
+                    Ok(())
+                },
+                codes,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, codes.1);
+            let error = super::with_read_snapshot_errors(
+                &database,
+                |connection| {
+                    connection.execute_batch("ROLLBACK;").unwrap();
+                    Err::<(), _>(super::AnalysisError::new("TASK_ERROR", "original failure"))
+                },
+                codes,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "TASK_ERROR");
+            assert_eq!(error.error, "original failure");
+            assert_eq!(
+                super::with_read_snapshot(&database, |connection| {
+                    assert!(!connection.is_autocommit());
+                    assert!(connection
+                        .execute_batch("CREATE TABLE forbidden(id INTEGER)")
+                        .is_err());
+                    Ok(connection
+                        .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                        .unwrap())
+                })
+                .unwrap(),
+                1
+            );
+        }
+        drop(super::storage_connection::migration_guard(&database).unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

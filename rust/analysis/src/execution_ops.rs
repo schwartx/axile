@@ -275,14 +275,11 @@ fn read_snapshot<T>(
     path: &str,
     read: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
 ) -> Result<T, AnalysisError> {
-    let connection = crate::storage_connection::open_reader(Path::new(path))?;
-    connection.execute_batch("BEGIN DEFERRED").map_err(sql)?;
-    let result = read(&connection);
-    let closed = connection.execute_batch("ROLLBACK").map_err(sql);
-    match result {
-        Ok(value) => closed.map(|()| value),
-        Err(error) => Err(error),
-    }
+    crate::with_read_snapshot_errors(
+        Path::new(path),
+        read,
+        ("BUSINESS_FACTS_SQL", "BUSINESS_FACTS_SQL"),
+    )
 }
 
 /// 内部调用只返回主记录标量，不读取完整历史结果。

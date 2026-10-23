@@ -108,18 +108,11 @@ impl Store {
         &self,
         task: impl FnOnce(&Connection) -> Result<T, String>,
     ) -> Result<T, AnalysisError> {
-        let connection = crate::storage_connection::open_reader(&self.path)?;
-        connection
-            .execute_batch("BEGIN DEFERRED;")
-            .map_err(|error| AnalysisError::new("DATABASE_BEGIN", error.to_string()))?;
-        let result = task(&connection);
-        let closed = connection
-            .execute_batch("ROLLBACK;")
-            .map_err(|error| AnalysisError::new("DATABASE_CLOSE", error.to_string()));
-        match result {
-            Ok(value) => closed.map(|()| value),
-            Err(error) => Err(AnalysisError::from(error)),
-        }
+        crate::with_read_snapshot_errors(
+            &self.path,
+            |connection| task(connection).map_err(AnalysisError::from),
+            ("DATABASE_BEGIN", "DATABASE_CLOSE"),
+        )
     }
 }
 

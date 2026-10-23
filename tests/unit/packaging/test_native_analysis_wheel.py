@@ -19,7 +19,6 @@ from hatchling.builders.wheel import WheelBuilder
 @pytest.fixture(autouse=True)
 def native_process(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {
-        "capabilities": {"protocol": 1, "analysis_fact_schema": 40, "commands": ["publish_store"]},
         "calls": [],
         "allow_cargo": False,
     }
@@ -34,9 +33,7 @@ def native_process(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             if state.get("extension_error"):
                 raise subprocess.CalledProcessError(1, command, stderr=state["extension_error"])
             return subprocess.CompletedProcess(command, 0, "", "")
-        assert command[1:] in (["capabilities"], ["--version"])
-        output = json.dumps(state["capabilities"]) if command[1] == "capabilities" else "axile-analysis 0.1.0\n"
-        return subprocess.CompletedProcess(command, 0, output, "")
+        raise AssertionError(f"Unexpected native process: {command}")
 
     monkeypatch.setattr(subprocess, "run", run)
     return state
@@ -159,12 +156,11 @@ def test_wheel_probe_checks_migration_head_separately_from_fact_schema(
         exec(probe, {})
 
 
-def test_native_wheel_is_platform_tagged_and_preserves_executable(wheel_project: Path) -> None:
-    name = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
-    binary = wheel_project / "axile" / "server" / "_native" / name
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_bytes(b"native build fixture")
-    binary.chmod(0o755)
+def test_native_wheel_preserves_extension_and_excludes_retired_cli(wheel_project: Path) -> None:
+    for name in ("axile-analysis", "axile-analysis.exe"):
+        binary = wheel_project / "axile" / "server" / "_native" / name
+        binary.write_bytes(b"retired CLI fixture")
+        binary.chmod(0o755)
     wheel = build_wheel(wheel_project)
     assert "-cp312-abi3-" in wheel.name
     assert not wheel.name.endswith("-any.whl")
@@ -172,16 +168,11 @@ def test_native_wheel_is_platform_tagged_and_preserves_executable(wheel_project:
     with zipfile.ZipFile(wheel) as archive:
         extension = "_core.pyd" if os.name == "nt" else "_core.abi3.so"
         assert archive.read(f"axile/server/_native/{extension}") == b"extension fixture"
-        member = archive.getinfo(f"axile/server/_native/{name}")
-        assert archive.read(member) == b"native build fixture"
-        assert (member.external_attr >> 16) & 0o111
+        assert not any(Path(name).name in {"axile-analysis", "axile-analysis.exe"} for name in archive.namelist())
         assert "Root-Is-Purelib: false" in archive.read("axile-0.0.1.dist-info/WHEEL").decode()
 
 
-@pytest.mark.parametrize("include_native", [False, True])
-def test_built_frontend_resources_are_preserved_with_production_artifact_rules(
-    wheel_project: Path, include_native: bool
-) -> None:
+def test_built_frontend_resources_are_preserved_with_production_artifact_rules(wheel_project: Path) -> None:
     static = wheel_project / "axile" / "server" / "_static"
     (static / "assets").mkdir(parents=True)
     resources = {
@@ -192,49 +183,11 @@ def test_built_frontend_resources_are_preserved_with_production_artifact_rules(
     }
     for name, content in resources.items():
         (static / name).write_bytes(content)
-    if include_native:
-        executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
-        binary = wheel_project / "axile" / "server" / "_native" / executable
-        binary.parent.mkdir(exist_ok=True)
-        binary.write_bytes(b"native build fixture")
-        binary.chmod(0o755)
-
     wheel = build_wheel(wheel_project)
 
     with zipfile.ZipFile(wheel) as archive:
         for name, content in resources.items():
             assert archive.read(f"axile/server/_static/{name}") == content
-
-
-def test_foreign_native_executable_is_rejected(wheel_project: Path) -> None:
-    foreign = "axile-analysis" if os.name == "nt" else "axile-analysis.exe"
-    binary = wheel_project / "axile" / "server" / "_native" / foreign
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_bytes(b"foreign build fixture")
-    with pytest.raises(RuntimeError, match="different platform"):
-        build_wheel(wheel_project)
-
-
-@pytest.mark.parametrize(
-    "capabilities",
-    [
-        {"protocol": 1, "commands": ["publish"]},
-        {"protocol": 2, "commands": ["publish_store"]},
-        {"protocol": True, "commands": ["publish_store"]},
-        {"protocol": 1, "commands": "publish_store"},
-        [],
-    ],
-)
-def test_wheel_rejects_incompatible_native_capabilities(
-    wheel_project: Path, native_process: dict[str, Any], capabilities: Any
-) -> None:
-    native_process["capabilities"] = capabilities
-    name = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
-    binary = wheel_project / "axile" / "server" / "_native" / name
-    binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_bytes(b"older native build fixture")
-    with pytest.raises(RuntimeError, match="protocol 1, analysis fact schema 40 and command publish_store"):
-        build_wheel(wheel_project)
 
 
 def load_build_script() -> ModuleType:
@@ -247,25 +200,22 @@ def load_build_script() -> ModuleType:
 
 
 @pytest.mark.parametrize("build", [False, True])
-@pytest.mark.parametrize("include_cli", [False, True])
 def test_external_cargo_target_is_used_for_build_and_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_process: dict[str, Any], build: bool, include_cli: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_process: dict[str, Any], build: bool
 ) -> None:
     script = load_build_script()
     project = tmp_path / "project"
     external_target = tmp_path / "shared-target"
-    executable = "axile-analysis.exe" if os.name == "nt" else "axile-analysis"
-    source = external_target / "debug" / executable
-    source.parent.mkdir(parents=True)
-    if include_cli:
-        source.write_bytes(b"native build fixture")
-        source.chmod(0o755)
+    profile = external_target / "debug"
+    profile.mkdir(parents=True)
+    for name in ("axile-analysis", "axile-analysis.exe"):
+        (profile / name).write_bytes(b"retired CLI fixture")
     project.mkdir()
     shutil.copyfile(Path(__file__).resolve().parents[3] / "hatch_build.py", project / "hatch_build.py")
     library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
         sys.platform, "libaxile_analysis.so"
     )
-    (source.parent / library).write_bytes(b"extension fixture")
+    (profile / library).write_bytes(b"extension fixture")
     monkeypatch.setattr(script, "ROOT", project)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(external_target))
     arguments = ["build_native_analysis.py", "--debug"]
@@ -273,50 +223,51 @@ def test_external_cargo_target_is_used_for_build_and_staging(
         arguments.append("--no-build")
     native_process["allow_cargo"] = build
     monkeypatch.setattr(sys, "argv", arguments)
-    destination = project / "axile" / "server" / "_native" / executable
-    destination.parent.mkdir(parents=True)
-    destination.write_bytes(b"stale CLI")
+    native = project / "axile" / "server" / "_native"
 
     script.main()
 
-    if include_cli:
-        assert destination.read_bytes() == source.read_bytes()
-    else:
-        assert not destination.exists()
+    extension = native / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
+    assert extension.read_bytes() == b"extension fixture"
+    assert {path.name for path in native.iterdir()} == {extension.name}
     assert not (project / "rust" / "analysis" / "target").exists()
     cargo_calls = [command for command in native_process["calls"] if command[0] == "cargo"]
     if build:
-        assert len(cargo_calls) == 2
+        assert len(cargo_calls) == 1
         command = cargo_calls[0]
         assert command[command.index("--target-dir") + 1] == str(external_target)
         assert "--locked" in command
+        assert command[-3:] == ["--lib", "--features", "python"]
     else:
         assert not cargo_calls
 
 
-@pytest.mark.parametrize(
-    "capabilities",
-    [
-        {"protocol": 1, "analysis_fact_schema": 40, "commands": ["publish"]},
-        {"protocol": 1, "commands": ["publish_store"]},
-        {"protocol": 1, "analysis_fact_schema": 39, "commands": ["publish_store"]},
-    ],
-)
-def test_incompatible_staging_preserves_previously_staged_binary(
-    tmp_path: Path, native_process: dict[str, Any], capabilities: dict[str, Any]
+def test_incompatible_staging_preserves_previous_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_process: dict[str, Any]
 ) -> None:
     script = load_build_script()
-    source = tmp_path / "source"
-    destination = tmp_path / "package" / "axile-analysis"
-    source.write_bytes(b"incompatible new binary")
-    destination.parent.mkdir()
-    destination.write_bytes(b"previous valid binary")
-    native_process["capabilities"] = capabilities
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[3] / "hatch_build.py", project / "hatch_build.py")
+    native = project / "axile" / "server" / "_native"
+    native.mkdir(parents=True)
+    extension = native / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
+    extension.write_bytes(b"previous valid extension")
+    target = tmp_path / "target"
+    (target / "debug").mkdir(parents=True)
+    library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
+        sys.platform, "libaxile_analysis.so"
+    )
+    (target / "debug" / library).write_bytes(b"incompatible extension")
+    monkeypatch.setattr(script, "ROOT", project)
+    monkeypatch.setattr(sys, "argv", ["build_native_analysis.py", "--debug", "--no-build", "--target-dir", str(target)])
+    native_process["extension_error"] = "wrong architecture"
 
-    with pytest.raises(RuntimeError, match="protocol 1, analysis fact schema 40 and command publish_store"):
-        script.stage_binary(source, destination)
+    with pytest.raises(RuntimeError, match="wrong architecture"):
+        script.main()
 
-    assert destination.read_bytes() == b"previous valid binary"
+    assert extension.read_bytes() == b"previous valid extension"
+    assert list(native.iterdir()) == [extension]
 
 
 def test_real_loader_rejects_invalid_extension(wheel_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
