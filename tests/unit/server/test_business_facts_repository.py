@@ -12,6 +12,7 @@ from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, seed_account, sql
 
 
@@ -159,7 +160,7 @@ def test_foreign_input_is_rejected_on_read_and_write(database, reference, input_
         with pytest.raises(sqlite3.IntegrityError, match="Execution input owner mismatch"):
             sql(database, f"UPDATE executerecord SET {reference}=? WHERE id=?", (unrelated["input_id"], record["id"]))
         # 模拟历史损坏需临时移开写保护；读取仍使用完整原生校验。
-        with closing(sqlite3.connect(database)) as connection:
+        with closing(oracle_connect(database)) as connection:
             trigger = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE name='business_facts_0037_record_input_update'"
             ).fetchone()[0]

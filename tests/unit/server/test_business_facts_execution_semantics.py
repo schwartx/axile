@@ -21,6 +21,7 @@ from axile.server.db.models import ExecuteRecord
 from axile.server.execution import execution_records_output, input_persistence, lifecycle, rebalance, records, registry
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 
@@ -29,7 +30,7 @@ def _database(monkeypatch, tmp_path, name="semantics"):
     """原生完整迁移建库；测试 SQL 连接在业务操作前显式关闭。"""
     path = tmp_path / f"{name}.db"
     initialize_native_database(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         for account_id in (1, 2):
             insert_account(connection, build_account(id=account_id, portfolio_id=None, account_config={}))
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
@@ -37,7 +38,7 @@ def _database(monkeypatch, tmp_path, name="semantics"):
 
 
 def _rows(path, sql, parameters=()):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         return [dict(row) for row in connection.execute(sql, parameters)]
 
@@ -237,7 +238,7 @@ def test_last_target_selects_latest_success_for_exact_account(tmp_path, monkeypa
                     is_success=min(is_success, 1),
                 )
                 if is_success == 2:
-                    with closing(sqlite3.connect(path)) as connection, connection:
+                    with closing(oracle_connect(path)) as connection, connection:
                         connection.execute(
                             "UPDATE executerecord SET is_success=2 WHERE execution_id=?",
                             (f"semantic-target-{ordinal}",),
@@ -389,7 +390,7 @@ def test_failed_final_transaction_keeps_previously_committed_input(monkeypatch: 
                 execution_id="semantic-result-rollback",
                 payload=input_payload,
             )
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 connection.execute(
                     "CREATE TRIGGER reject_terminal BEFORE UPDATE OF facts_complete ON executerecord "
                     "WHEN NEW.facts_complete=1 BEGIN SELECT RAISE(ABORT,'synthetic terminal write failure'); END"

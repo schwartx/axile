@@ -464,7 +464,7 @@ mod tests {
                 10,1,1000,0.5,1,2,0,1,5,1);
              INSERT INTO performance_result_daily_cost VALUES ('s','all','2026-10-02',1023,
                 NULL,NULL,NULL,NULL,0,0,1,0,0,0);
-             INSERT INTO performance_result_daily_fee VALUES ('s','all','2026-10-01','USDT',0.02);"
+             INSERT INTO performance_result_daily_fee VALUES ('s','all','2026-10-01','USD',0.02);"
         ).unwrap();
         connection
     }
@@ -498,7 +498,7 @@ mod tests {
         let daily = &result["daily_costs"]["2026-10-01"];
         assert_eq!(daily["amountComplete"], false);
         assert_eq!(daily["covered"], 1);
-        assert_eq!(daily["fees"]["USDT"], 0.02);
+        assert_eq!(daily["fees"]["USD"], 0.02);
         assert!(daily.get("coveredValue").is_none());
         assert!(daily.get("estimated").is_none());
         let empty = &result["daily_costs"]["2026-10-02"];

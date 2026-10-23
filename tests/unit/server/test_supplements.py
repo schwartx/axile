@@ -16,6 +16,7 @@ from axile.server.execution import intents, notification_outbox, records, supple
 from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.sqlite_oracle import connect as oracle_connect
 
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
 
@@ -27,7 +28,7 @@ def call(path, operation, request):
 
 
 def query(path, sql, args=()):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         result = [dict(row) for row in connection.execute(sql, args)]
     for row in result:
@@ -37,7 +38,7 @@ def query(path, sql, args=()):
 
 
 def execute(path, sql, args=()):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(sql, args)
 
 
@@ -59,7 +60,7 @@ def database(monkeypatch, native_database):
     monkeypatch.setattr(supplements, "evaluate_channel_calendar_moment", open_moment)
     now = [BASE]
     monkeypatch.setattr(supplements, "clock_now", lambda **_kwargs: now[0])
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES (1,?,?,?,?,?)",
             ("test", "期货", "def calculate_portfolio(context): return {}", BASE.isoformat(), BASE.isoformat()),
@@ -409,7 +410,7 @@ def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch, 
         "UPDATE account_settings SET notification=json_set(notification,'$.execution_notification_code',?)",
         ("def notify(context):\n    pass",),
     )
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         for index, status in enumerate(["pending", "pending", "calling"]):
             connection.execute(
                 "INSERT INTO notification_event(id,account_id,created_at,event_type,status,context) VALUES (?,1,?,?,?,?)",

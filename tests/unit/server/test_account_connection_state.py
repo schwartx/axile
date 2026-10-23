@@ -19,6 +19,7 @@ from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
 from axile.server.portfolio_function import PortfolioFunctionResult, portfolio_result_from_exception
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 
@@ -28,7 +29,7 @@ def _account(path):
 
 
 def _states(path):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         rows = [dict(row) for row in connection.execute("SELECT * FROM account_connection_state")]
     for row in rows:
@@ -46,7 +47,7 @@ def _state(path):
 @pytest.fixture
 def database(native_database, monkeypatch):
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         insert_account(connection, build_account(portfolio_id=None))
     return native_database, _account(native_database)
 
@@ -262,7 +263,7 @@ def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
         1,
         ConnectionObservation("error", "confirmed", "原始故障", {"technical_detail": "完整证据"}, "有效标签"),
     )
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
             "UPDATE account_connection_state SET presentation=? WHERE account_id=1",
             (json.dumps({"title": 123, "sections": "invalid"}),),

@@ -10,9 +10,11 @@ from unittest.mock import patch
 
 from axile.server.db.models import AccountRuntimeSync
 from axile.server.native_store import native_operation
+from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
+@sqlite_oracle
 def runtime_rows(path: Path, statement: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
     """每次重新连接并提交，短超时使生产事务泄漏直接暴露为测试失败。"""
     with closing(sqlite3.connect(path, timeout=0.5)) as connection, connection:

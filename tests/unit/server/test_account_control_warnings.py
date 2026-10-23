@@ -18,6 +18,7 @@ from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers, warnings
 from axile.server.execution import execution_account_control as persistence
 from axile.server.execution import notification_outbox
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server.test_account_control_monitor import database as monitor_database
 from tests.unit.server.test_account_control_monitor import save_account
 
@@ -48,7 +49,7 @@ async def database(monkeypatch):
             }
         )
         save_account(path, account)
-        with closing(sqlite3.connect(path)) as connection, connection:
+        with closing(oracle_connect(path)) as connection, connection:
             connection.execute("DELETE FROM account_control_counter_delta")
         yield path, account, wakes, results, cards
 
@@ -58,7 +59,7 @@ def executor(guard):
 
 
 async def rows(path):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         return [
             SimpleNamespace(**{**dict(row), "context": json.loads(row["context"])})
@@ -103,7 +104,7 @@ def test_running_warning_is_sent_once_and_deduplicated_across_execution_and_moni
             await restarted.refresh()
             await notification_outbox._dispatch(1)
             assert len(await rows(path)) == len(cards) == 1
-            with closing(sqlite3.connect(path)) as connection:
+            with closing(oracle_connect(path)) as connection:
                 assert connection.execute("SELECT count(*) FROM account_notification_state").fetchone()[0] == 0
             assert (await rows(path))[0].context["quota"]["used"] == 4
 
@@ -201,7 +202,7 @@ def test_queue_failure_does_not_roll_back_control_counters(monkeypatch):
             for _ in range(4):
                 current.begin_operation("place_order")
 
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 connection.executescript(
                     "CREATE TRIGGER fail_warning BEFORE INSERT ON notification_event "
                     "BEGIN SELECT RAISE(ABORT,'queue unavailable'); END;"
@@ -218,7 +219,7 @@ def test_queue_failure_does_not_roll_back_control_counters(monkeypatch):
 def test_monitor_warning_failure_keeps_late_outcomes_and_retries_warning(monkeypatch):
     async def scenario():
         async with database(monkeypatch) as (path, account, _, _, _):
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 connection.executescript(
                     "CREATE TRIGGER fail_warning BEFORE INSERT ON notification_event "
                     "BEGIN SELECT RAISE(ABORT,'queue unavailable'); END;"
@@ -235,7 +236,7 @@ def test_monitor_warning_failure_keeps_late_outcomes_and_retries_warning(monkeyp
 
             monkeypatch.setattr(monitor, "_read_source", source)
             await monitor.refresh()
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 assert (
                     connection.execute(
                         "SELECT count(*) FROM account_control_event WHERE outcome='broker_rejected'"
@@ -258,7 +259,7 @@ def test_unregistered_retired_source_cannot_enqueue_warning_for_a_reused_account
             for _ in range(4):
                 current.begin_operation("place_order")
             frame = current.monitor_snapshot()
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 connection.execute("DELETE FROM account_control_session")
             providers._guards.clear()
             monkeypatch.setattr(monitor_module, "sample", lambda _account_id: (frame, clock_now_ms(), True))
@@ -276,7 +277,7 @@ def test_calling_warning_recovers_as_unknown_without_updating_account_notificati
             for _ in range(4):
                 current.begin_operation("place_order")
             await persistence.flush_account_control_records(executor(current))
-            with closing(sqlite3.connect(path)) as connection, connection:
+            with closing(oracle_connect(path)) as connection, connection:
                 connection.execute("UPDATE notification_event SET status='calling'")
                 if fail_summary:
                     connection.executescript(
@@ -288,7 +289,7 @@ def test_calling_warning_recovers_as_unknown_without_updating_account_notificati
             assert event.status == "unknown"
             assert event.finished_at
             assert event.error == "服务重启，通知调用结果未知"
-            with closing(sqlite3.connect(path)) as connection:
+            with closing(oracle_connect(path)) as connection:
                 summary = connection.execute(
                     "SELECT finished_at,event_type,execution_id,account_id,ok,error "
                     "FROM system_notification_state WHERE id=1"

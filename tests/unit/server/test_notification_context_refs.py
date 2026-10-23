@@ -12,6 +12,7 @@ from axile.server._native import _core
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
 from tests.unit.server.test_evidence_export import _seed as seed_rows
 
@@ -165,7 +166,7 @@ def test_changed_event_is_rejected(native_database) -> None:
     with pytest.raises(sqlite3.IntegrityError, match="Frozen notification context"):
         sql(native_database, "UPDATE notification_event SET context=? WHERE id=?", (json.dumps(changed), _EVENT))
     # 坏样本绕过写保护后恢复触发器，再让真实原生读取校验哈希。
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         guard = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
             ("business_facts_0037_notification_outbox_update",),

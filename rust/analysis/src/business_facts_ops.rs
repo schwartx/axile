@@ -441,7 +441,7 @@ mod tests {
     fn freeze_and_replay_round_trip_preserves_canonical_input() {
         let connection = schema();
         let payload = json!({
-            "channel_type": "binance", "algorithm": {"name": "twap"},
+            "channel_type": "custom", "algorithm": {"name": "twap"},
             "normalized_weights": {"A": 0.6, "B": 0.4},
             "forbidden_symbols": ["C"], "sizing_context": {"long_leverage": 2},
             "quantities": {"A": 3}, "unknown_field": {"deep": [1, 2]},
@@ -455,12 +455,12 @@ mod tests {
         assert_eq!(stored["plan"]["quantities"], json!({"A": 3.0}));
         assert!(stored["audit_evidence"]["unrecognized_fields"]["unknown_field"].is_object());
         assert!(replay_matches(&connection, "i1", &payload).unwrap());
-        let replay = json!({"channel_type": "binance", "algorithm": {"name": "twap"},
+        let replay = json!({"channel_type": "custom", "algorithm": {"name": "twap"},
             "normalized_weights": {"A": 0.6, "B": 0.4}, "forbidden_symbols": ["C"],
             "sizing_context": {"long_leverage": 2.0}, "quantities": {"A": 3.0},
             "unknown_field": {"deep": [1, 2]}});
         assert!(replay_matches(&connection, "i1", &replay).unwrap());
-        let different = json!({"channel_type": "binance", "algorithm": {"name": "vwap"}});
+        let different = json!({"channel_type": "custom", "algorithm": {"name": "vwap"}});
         assert!(!replay_matches(&connection, "i1", &different).unwrap());
     }
 

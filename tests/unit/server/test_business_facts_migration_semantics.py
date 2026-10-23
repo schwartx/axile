@@ -257,12 +257,12 @@ def _historical_documents():
 
 def _channel_documents():
     """Reuse independently prepared native-channel evidence in the real migration."""
-    from tests.unit.server.test_business_facts_binance import _asset_snapshot as binance_assets
-    from tests.unit.server.test_business_facts_binance import _order as binance_order
-    from tests.unit.server.test_business_facts_binance import _trade as binance_trade
     from tests.unit.server.test_business_facts_ctp import _order as ctp_order
     from tests.unit.server.test_business_facts_ctp import _position as ctp_position
     from tests.unit.server.test_business_facts_ctp import _trade as ctp_trade
+    from tests.unit.server.test_business_facts_external_channel import _asset_snapshot as custom_assets
+    from tests.unit.server.test_business_facts_external_channel import _order as custom_order
+    from tests.unit.server.test_business_facts_external_channel import _trade as custom_trade
     from tests.unit.server.test_business_facts_gm import _gm_assets, _gm_order, _gm_trade
     from tests.unit.server.test_business_facts_tq import tq_historical_payloads
 
@@ -286,13 +286,13 @@ def _channel_documents():
             {"channel_type": "gm", "account_assets": _gm_assets(), "orders": [_gm_order()], "trades": [_gm_trade()]},
         ),
         (
-            "binance-native-evidence",
-            {"channel_type": "binance", "curr_target": {"ETHUSDC": -0.125}},
+            "custom-native-evidence",
+            {"channel_type": "custom", "curr_target": {"XAGCNY": -0.125}},
             {
-                "channel_type": "binance",
-                "account_assets": binance_assets(),
-                "orders": [binance_order()],
-                "trades": [binance_trade(extra={"commission": -0.0000125, "commission_asset": "BNB"})],
+                "channel_type": "custom",
+                "account_assets": custom_assets(),
+                "orders": [custom_order()],
+                "trades": [custom_trade(extra={"commission": -0.0000125, "commission_asset": "HKD"})],
             },
         ),
     ]

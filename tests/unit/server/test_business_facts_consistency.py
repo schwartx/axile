@@ -19,6 +19,7 @@ from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 _CREATED = "2026-10-20T09:30:00.000001"
@@ -60,7 +61,7 @@ def _database_path(monkeypatch, tmp_path):
 @contextmanager
 def _connection(path, foreign_keys=False):
     """每次原生调用前关闭测试连接，外键模式只作用于显式 SQL。"""
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == int(foreign_keys)

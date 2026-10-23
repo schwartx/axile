@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool
 
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import sqlite_oracle
 
 
 def analysis_record(*, input=None, result=None, **metadata):
@@ -93,16 +94,29 @@ def _reset_records(connection, record_ids):
         connection.execute("DELETE FROM executerecord WHERE id=?", (identity,))
 
 
+@sqlite_oracle
+def _prepare_records(path, record_ids):
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        tables = _record_tables(connection)
+        _reset_records(connection, record_ids)
+    return tables
+
+
+@sqlite_oracle
+def _rewrite_record_id(path, source, target, execution_id, tables):
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _move_record_id(connection, source, target, execution_id, tables)
+
+
 async def persist_records(session, records):
     """真实原生阶段保存事实；测试侧只负责历史 ID 和显式重置。"""
     records = list(records)
     if not records:
         return
     path = await _release_oracle_connections(session)
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        tables = _record_tables(connection)
-        _reset_records(connection, [record.id for record in records if record.id is not None])
+    tables = _prepare_records(path, [record.id for record in records if record.id is not None])
     for record in records:
         saved = native_store_call(
             path,
@@ -119,18 +133,21 @@ async def persist_records(session, records):
             },
         )
         if record.id is not None and record.id != saved["id"]:
-            with closing(sqlite3.connect(path)) as connection, connection:
-                connection.execute("PRAGMA foreign_keys=ON")
-                _move_record_id(connection, saved["id"], record.id, record.execution_id, tables)
+            _rewrite_record_id(path, saved["id"], record.id, record.execution_id, tables)
         else:
             record.id = saved["id"]
+
+
+@sqlite_oracle
+def _record_account(path, record_id):
+    with closing(sqlite3.connect(path)) as connection:
+        return connection.execute("SELECT account_id FROM executerecord WHERE id=?", (record_id,)).fetchone()
 
 
 async def load_record(session, record_id):
     """读取真实原生明细，返回可修改的普通对象。"""
     path = await _release_oracle_connections(session)
-    with closing(sqlite3.connect(path)) as connection:
-        row = connection.execute("SELECT account_id FROM executerecord WHERE id=?", (record_id,)).fetchone()
+    row = _record_account(path, record_id)
     assert row is not None, f"测试执行记录不存在: {record_id}"
     return SimpleNamespace(
         **native_store_call(
@@ -144,6 +161,36 @@ async def load_record(session, record_id):
     )
 
 
+@sqlite_oracle
+def _reset_target(path, snapshot_id):
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (snapshot_id,))
+
+
+@sqlite_oracle
+def _rewrite_target_id(path, source, target, execution_id):
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("PRAGMA defer_foreign_keys=ON")
+        connection.execute("UPDATE target_weight_snapshot SET execution_id=NULL WHERE id=?", (source,))
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(target_weight_snapshot)")]
+        values = [
+            ":target" if name == "id" else ":execution_id" if name == "execution_id" else _quote(name)
+            for name in columns
+        ]
+        connection.execute(
+            f"INSERT INTO target_weight_snapshot ({','.join(map(_quote, columns))}) SELECT {','.join(values)} "
+            "FROM target_weight_snapshot WHERE id=:source",
+            {"source": source, "target": target, "execution_id": execution_id},
+        )
+        connection.execute(
+            "UPDATE target_weight_snapshot_weight SET snapshot_id=? WHERE snapshot_id=?", (target, source)
+        )
+        connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (source,))
+
+
 async def persist_target(session, *, normalized_weights=None, raw_weights=None, snapshot=None, **metadata):
     """通过原生 append 保存目标头和权重明细，历史重写仅用于测试。"""
     from axile.server.db.models import TargetWeightSnapshot
@@ -151,9 +198,7 @@ async def persist_target(session, *, normalized_weights=None, raw_weights=None, 
     snapshot = snapshot or TargetWeightSnapshot(**metadata)
     path = await _release_oracle_connections(session)
     if snapshot.id is not None:
-        with closing(sqlite3.connect(path)) as connection, connection:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (snapshot.id,))
+        _reset_target(path, snapshot.id)
     saved = native_store_call(
         path,
         "target_operation",
@@ -169,25 +214,7 @@ async def persist_target(session, *, normalized_weights=None, raw_weights=None, 
         },
     )
     if snapshot.id is not None and snapshot.id != saved["id"]:
-        with closing(sqlite3.connect(path)) as connection, connection:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("PRAGMA defer_foreign_keys=ON")
-            connection.execute("UPDATE target_weight_snapshot SET execution_id=NULL WHERE id=?", (saved["id"],))
-            columns = [row[1] for row in connection.execute("PRAGMA table_info(target_weight_snapshot)")]
-            values = [
-                ":target" if name == "id" else ":execution_id" if name == "execution_id" else _quote(name)
-                for name in columns
-            ]
-            connection.execute(
-                f"INSERT INTO target_weight_snapshot ({','.join(map(_quote, columns))}) SELECT {','.join(values)} "
-                "FROM target_weight_snapshot WHERE id=:source",
-                {"source": saved["id"], "target": snapshot.id, "execution_id": snapshot.execution_id},
-            )
-            connection.execute(
-                "UPDATE target_weight_snapshot_weight SET snapshot_id=? WHERE snapshot_id=?", (snapshot.id, saved["id"])
-            )
-            connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (saved["id"],))
+        _rewrite_target_id(path, saved["id"], snapshot.id, snapshot.execution_id)
         saved["id"] = snapshot.id
     return SimpleNamespace(**saved)
 
@@ -235,15 +262,14 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
     """SQLAlchemy 只供测试 oracle；生产业务写入使用真实原生阶段。"""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from tests.unit.server._execution_test_support import build_account, insert_account
+    from tests.unit.server._execution_test_support import build_account
 
     path = tmp_path / "analysis.db"
     if fresh_schema:
         initialize_native_database(path)
     else:
         copyfile(schema_template, path)
-    with closing(sqlite3.connect(path)) as connection, connection:
-        insert_account(connection, build_account(id=2, portfolio_id=None, account_control_preset="default"))
+    _insert_account(path, build_account(id=2, portfolio_id=None, account_control_preset="default"))
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}", poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -252,6 +278,14 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
         yield engine, sessions, None
     finally:
         await engine.dispose()
+
+
+@sqlite_oracle
+def _insert_account(path, account):
+    from tests.unit.server._execution_test_support import insert_account
+
+    with closing(sqlite3.connect(path)) as connection, connection:
+        insert_account(connection, account)
 
 
 def _events(records, bindings, skips) -> list[dict]:

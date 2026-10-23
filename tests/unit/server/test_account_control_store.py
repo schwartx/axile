@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from axile.server.account_control import providers
 from axile.server.account_control import store as store_module
 from axile.server.account_control.store import AccountControlStore
 from axile.server.native_store import native_operation_sync
+from tests.sqlite_oracle import connect as oracle_connect
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def control_database(monkeypatch, tmp_path):
     """从留存 schema 提取控制表，使用文件库跨 FFI 验证。"""
     path = tmp_path / "controls.sqlite"
     schema = (Path(__file__).parents[2] / "fixtures/rust_store/v0.22.0.sql").read_text()
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         for table in (
             "portfolio",
             "account",
@@ -173,7 +173,7 @@ def test_baseline_aggregates_scopes_and_recent_allowed_history(control_database)
         assert recent.get_last_allowed_at_ms("place_order") == 2000
         assert recent.get_last_allowed_at_ms("place_order", symbol="rb2610") == 2000
         assert recent.get_last_allowed_at_ms("place_order", symbol="ag2612") is None
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert set(connection.execute("SELECT bucket_type,scope_type FROM account_control_counter_delta")) == {
                 ("DAY", "ACCOUNT"),
                 ("DAY", "SYMBOL"),
@@ -188,7 +188,7 @@ def test_flush_rolls_back_all_facts_and_close_then_retries_idempotently(control_
     async def scenario():
         store = AccountControlStore()
         await _register(store)
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             connection.executescript(
                 "CREATE TRIGGER reject_event BEFORE INSERT ON account_control_event "
                 "WHEN NEW.event_uid='rejected' BEGIN SELECT RAISE(ABORT,'forced event failure'); END;"
@@ -197,7 +197,7 @@ def test_flush_rolls_back_all_facts_and_close_then_retries_idempotently(control_
         close = {"instance_id": "guard-1", "finished_at_ms": 2000}
         with pytest.raises(Exception, match="forced event failure"):
             await store.flush_execution_records(counter_deltas=deltas, events=events, close_session=close)
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute("SELECT COUNT(*) FROM account_control_counter_delta").fetchone() == (0,)
             assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (0,)
             assert connection.execute("SELECT status,finished_at_ms FROM account_control_session").fetchone() == (
@@ -207,7 +207,7 @@ def test_flush_rolls_back_all_facts_and_close_then_retries_idempotently(control_
             connection.execute("DROP TRIGGER reject_event")
         for _ in range(2):
             await store.flush_execution_records(counter_deltas=deltas, events=events, close_session=close)
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute(
                 "SELECT COUNT(*),SUM(delta_count) FROM account_control_counter_delta"
             ).fetchone() == (1, 2)
@@ -240,7 +240,7 @@ def test_warning_failure_does_not_rollback_committed_control_facts(control_datab
             "remaining": 2,
             "source": "axile_local_allowed",
         }
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             connection.executescript(
                 "CREATE TRIGGER reject_warning BEFORE INSERT ON notification_event "
                 "BEGIN SELECT RAISE(ABORT,'forced warning failure'); END;"
@@ -250,7 +250,7 @@ def test_warning_failure_does_not_rollback_committed_control_facts(control_datab
             events=[_event(metadata={"quota_warning": warning})],
             close_session={"instance_id": "guard-1", "finished_at_ms": 2000},
         )
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute("SELECT SUM(delta_count) FROM account_control_counter_delta").fetchone() == (2,)
             assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (1,)
             assert connection.execute("SELECT status FROM account_control_session").fetchone() == ("closed",)
@@ -280,7 +280,7 @@ def test_incomplete_history_preserves_window_and_risk_exclusions(
 ):
     async def scenario():
         await _register(AccountControlStore(), context_kind=context_kind, source=source, execution_id=execution_id)
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             connection.execute("UPDATE account_control_session SET status=?,finished_at_ms=?", (status, finished))
         raw = native_operation_sync(
             "control_load_baseline",
@@ -312,7 +312,7 @@ def test_outcome_updates_are_atomic_and_account_scoped(control_database):
                     {"event_uid": "event-1", "outcome": "invalid", "metadata": None},
                 ]
             )
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute("SELECT outcome FROM account_control_event").fetchone() == ("broker_rejected",)
 
     asyncio.run(scenario())

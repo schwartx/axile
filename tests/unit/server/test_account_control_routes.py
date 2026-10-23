@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import closing
 from unittest.mock import AsyncMock
 
@@ -20,6 +19,7 @@ from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
 from axile.server.db.models import Account, AccountRuntimeSync
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 
 
 @pytest.fixture(autouse=True)
@@ -124,7 +124,7 @@ def account_client(native_database, monkeypatch):
     monkeypatch.setattr(account_crud_routes, "get_running_execution_id", lambda _id: None)
     monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _id: None)
     monkeypatch.setattr(account_crud_routes, "drop_account_worker", AsyncMock())
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
             "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES(1,?,?,?,?,?)",
             ("组合", "期货", "def calculate_portfolio(context): return {}", "2026-10-23", "2026-10-23"),
@@ -336,7 +336,7 @@ def test_copy_rejects_active_source(account_client, monkeypatch, condition) -> N
 def test_copy_preserves_config_and_starts_without_source_history(account_client) -> None:
     client, database = account_client
     source = _seed_account(database, is_started=False, feishu_key="server-only-webhook")
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         connection.execute(
             "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,facts_complete,"
             "audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) "
@@ -359,7 +359,7 @@ def test_copy_preserves_config_and_starts_without_source_history(account_client)
     assert copied.feishu_key == source.feishu_key
     assert copied.notification_state is None
     assert _load_account(database).name == source.name
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         assert (
             connection.execute("SELECT count(*) FROM executerecord WHERE account_id=?", (copied.id,)).fetchone()[0] == 0
         )
@@ -384,7 +384,7 @@ def test_create_idempotency_replays_before_custom_validation(account_client) -> 
 def test_runtime_registration_failure_rolls_back_create_and_update(account_client) -> None:
     client, database = account_client
     _seed_account(database)
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         connection.executescript(
             "CREATE TRIGGER reject_sync_insert BEFORE INSERT ON accountruntimesync BEGIN SELECT RAISE(ABORT,'blocked'); END;"
             "CREATE TRIGGER reject_sync_update BEFORE UPDATE ON accountruntimesync BEGIN SELECT RAISE(ABORT,'blocked'); END;"
@@ -393,7 +393,7 @@ def test_runtime_registration_failure_rolls_back_create_and_update(account_clien
     assert client.patch("/account/1", json={"name": "failed", "portfolio_id": -1}).status_code == 500
     saved = _load_account(database)
     assert saved.name == "ctp-testnet-sim" and saved.portfolio_id == 1
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         for table in ("account", "account_settings", "portfolioaccount"):
             assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
 
@@ -445,7 +445,7 @@ def test_late_update_failure_rolls_back_connection_supplements_intent_and_outbox
             "calendar_status_by_channel": {"ctp": "available_open"},
         },
     )
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         connection.execute(
             "INSERT INTO account_connection_state(account_id,config_key,instance_id,sequence,status,manually_disconnected) "
             "VALUES(1,?,'active-worker',4,'ok',0)",
@@ -468,7 +468,7 @@ def test_late_update_failure_rolls_back_connection_supplements_intent_and_outbox
     )
 
     def snapshot():
-        with closing(sqlite3.connect(database)) as connection, connection:
+        with closing(oracle_connect(database)) as connection, connection:
             return {table: connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() for table in tables}
 
     before = snapshot()
@@ -490,7 +490,7 @@ def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) ->
     # 509b362 的真实 Alembic 0039、FK-OFF ORM 删除结果；包含第二账户及触发器。
     for ident in (1, 2):
         _seed_account(native_database, name=f"account-{ident}", portfolio_id=None, is_started=False)
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         for ident in (1, 2):
             connection.execute(
                 "INSERT INTO account_notification_state(account_id,execution_id) VALUES(?,?)", (ident, f"e{ident}")
@@ -552,7 +552,7 @@ def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) ->
         "execution_event": ("account_id,event_uid", [(2, "event2")]),
         "execution_artifact": ("execution_id,artifact_type,content", [("e2", "TARGET_SNAPSHOT", '{"sentinel": 2}')]),
     }
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         for table, (columns, rows) in expected.items():
             assert connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY 1').fetchall() == rows, table
 

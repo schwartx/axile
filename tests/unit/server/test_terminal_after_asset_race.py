@@ -15,6 +15,7 @@ from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 _ACCOUNT_ID = 2
@@ -34,7 +35,7 @@ _WORKER_RESULT = {"status": "SUCCEEDED", "success": True, "account_assets": _AFT
 
 
 def _rows(path, table):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         connection.row_factory = sqlite3.Row
         return [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')]
 
@@ -44,7 +45,7 @@ def _frozen_after(tmp_path, monkeypatch):
     path = tmp_path / "terminal-race.db"
     initialize_native_database(path)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, build_account(id=_ACCOUNT_ID, portfolio_id=None))
     input_id = native_store_call(
         path,

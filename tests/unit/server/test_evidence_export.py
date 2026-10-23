@@ -52,6 +52,7 @@ from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.execution.worker_backend import worker_audit
 from tests.conftest import initialize_native_database
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._business_facts_test_support import persist_result, sql
 from tests.unit.server._business_facts_test_support import rows as fact_rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
@@ -215,7 +216,8 @@ def _record(execution_id="exec-1", **overrides):
     )
 
 
-def _seed(path, *items):
+@sqlite_oracle
+def _seed_rows(path, *items):
     names = {
         "Account": "account",
         "ExecutionIntent": "execution_intent",
@@ -246,6 +248,10 @@ def _seed(path, *items):
                 connection.execute(target.insert(), values)
     finally:
         engine.dispose()
+
+
+def _seed(path, *items):
+    _seed_rows(path, *items)
     for row in items:
         if isinstance(row, _RecordFixture):
             persist_result(

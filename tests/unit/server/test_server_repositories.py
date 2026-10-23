@@ -1,7 +1,6 @@
 """账户原生读取与当前组合绑定契约。"""
 
 import asyncio
-import sqlite3
 from contextlib import closing
 
 import pytest
@@ -17,12 +16,13 @@ from axile.server.repositories import (
     get_latest_portfolio_id_by_account_id,
 )
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server.test_account_control_routes import _build_account
 
 
 def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch) -> None:
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
             "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES(1,'p','期货',?,'now','now')",
             ("def calculate_portfolio(context): return {}",),
@@ -36,7 +36,7 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
                 "now": "2026-10-23T09:00:00",
             },
         )
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         connection.executemany(
             "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(?,?,'now')",
             [(1, 1), (2, 1), (1, None)],
@@ -48,7 +48,7 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
         with pytest.raises(HTTPException) as exc:
             await delete_portfolio(1)
         assert exc.value.status_code == 422
-        with closing(sqlite3.connect(native_database)) as connection, connection:
+        with closing(oracle_connect(native_database)) as connection, connection:
             connection.execute("INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(2,NULL,'now')")
         assert await get_latest_account_id_by_portfolio_id(1) is None
         await delete_portfolio(1)

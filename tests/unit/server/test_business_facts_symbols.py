@@ -25,7 +25,7 @@ def _roundtrip(path, payload):
         {},
         {"symbol_results": None, "first_ticks": [], "target_volume": "invalid"},
         {"symbol_results": {}, "first_ticks": {}, "target_volume": {}},
-        {"symbol_results": {"": None, "alias/~BTC": [], "A": {}, "B": {"first_tick": None, "sizing": None}}},
+        {"symbol_results": {"": None, "alias/~XAU": [], "A": {}, "B": {"first_tick": None, "sizing": None}}},
         {
             "symbol_results": {
                 "map/~B": {

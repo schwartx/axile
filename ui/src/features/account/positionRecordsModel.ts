@@ -34,8 +34,7 @@ export function positionCurrencyUnit(currency: unknown): string {
   if (typeof currency !== 'string' || !currency.trim()) return ''
   const code = currency.trim().toUpperCase()
   if (code === 'CNY') return displayCurrencyUnit(code)
-  return ({ USD: '美元', HKD: '港元', EUR: '欧元', JPY: '日元', GBP: '英镑', CHF: '瑞郎', AUD: '澳元', CAD: '加元',
-    USDT: '泰达币', USDC: '美元币', BTC: '比特币', ETH: '以太币', BNB: '币安币' } as Record<string, string>)[code] ?? '原币'
+  return ({ USD: '美元', HKD: '港元', EUR: '欧元', JPY: '日元', GBP: '英镑', CHF: '瑞郎', AUD: '澳元', CAD: '加元' } as Record<string, string>)[code] ?? code
 }
 
 const columns: Record<string, PositionColumn[]> = {
@@ -55,16 +54,19 @@ const columns: Record<string, PositionColumn[]> = {
     { key: 'frozen', label: '冻结数量', quantity: true }, { key: 'diluted_price', label: '摊薄均价' }, { key: 'diluted_profit', label: '摊薄口径盈亏', pnl: true },
     { key: 'open_price', label: '开仓均价' }, { key: 'open_profit', label: '开仓口径盈亏', pnl: true },
   ],
-  binance: [
-    { key: 'open_price', label: '开仓均价' }, { key: 'unrealized_pnl', label: '未实现盈亏', pnl: true }, { key: 'liquidation_price', label: '强平价' },
-    { key: 'mark_price', label: '标记价' }, { key: 'break_even_price', label: '保本价' },
-    { key: 'initial_margin', label: '初始保证金', money: true }, { key: 'maintenance_margin', label: '维持保证金', money: true },
-    { key: 'isolated_margin', label: '逐仓保证金', money: true }, { key: 'isolated_wallet', label: '逐仓钱包余额', money: true },
-    { key: 'adl', label: '自动减仓排名', quantity: true },
-  ],
 }
 
-export const positionColumns = (channel?: string): PositionColumn[] => columns[channel ?? ''] ?? []
+const externalColumns: PositionColumn[] = [
+  { key: 'open_price', label: '开仓均价' }, { key: 'unrealized_pnl', label: '未实现盈亏', pnl: true }, { key: 'liquidation_price', label: '强平价' },
+  { key: 'mark_price', label: '标记价' }, { key: 'break_even_price', label: '保本价' },
+  { key: 'initial_margin', label: '初始保证金', money: true }, { key: 'maintenance_margin', label: '维持保证金', money: true },
+  { key: 'isolated_margin', label: '逐仓保证金', money: true }, { key: 'isolated_wallet', label: '逐仓钱包余额', money: true },
+  { key: 'adl', label: '自动减仓排名', quantity: true },
+]
+
+export function positionColumns(channel?: string, positions: Position[] = []): PositionColumn[] {
+  return columns[channel ?? ''] ?? externalColumns.filter(column => positions.some(position => Object.hasOwn(positionAttributes(position), column.key)))
+}
 
 export function positionColumnText(position: Position, column: PositionColumn, channel?: string): string {
   const attrs = positionAttributes(position)
@@ -77,7 +79,7 @@ export function positionColumnText(position: Position, column: PositionColumn, c
   const raw = channel === 'ctp' && column.key === 'frozen' ? attrs[positionDirection(position) === '多头' ? 'long_frozen' : 'short_frozen'] : attrs[column.key]
   const value = column.quantity ? positionText(raw) : positionDecimalText(raw)
   const unit = positionCurrencyUnit(column.money ? attrs.margin_asset : recordObject(position.extra).quote_asset)
-  return channel === 'binance' && (column.pnl || column.money) && value !== '—' && unit ? `${value} ${unit}` : value
+  return !columns[channel ?? ''] && (column.pnl || column.money) && value !== '—' && unit ? `${value} ${unit}` : value
 }
 
 export function positionDirection(position: Position): string {
@@ -85,9 +87,14 @@ export function positionDirection(position: Position): string {
 }
 
 export function positionCommonNumber(position: Position, key: 'volume' | 'available_volume' | 'market_value', channel?: string): number | null {
-  if (channel === 'binance' && key === 'available_volume') return null
   const attrs = positionAttributes(position)
-  if (channel === 'binance' && key === 'market_value' && positionNumber(attrs.native_notional) == null) return null
+  if (!columns[channel ?? '']) {
+    if (key === 'available_volume') return positionNumber(attrs.available_now)
+    if (key === 'market_value') {
+      if (!Object.hasOwn(attrs, 'native_notional')) return positionNumber(attrs.market_value)
+      return positionNumber(attrs.native_notional) == null ? null : positionNumber(position.market_value)
+    }
+  }
   if (channel === 'gm') {
     const field = key === 'available_volume' ? 'available_now' : key
     return positionNumber(attrs[field])
@@ -127,7 +134,7 @@ const quantityDetails = new Set([
 
 export function positionDetails(position: Position, channel?: string): { key: string; label: string; text: string }[] {
   const attrs = positionAttributes(position)
-  const shown = new Set(positionColumns(channel).map(column => column.key))
+  const shown = new Set(positionColumns(channel, [position]).map(column => column.key))
   if (shown.has('today_yesterday')) { shown.add('today_volume'); shown.add('yesterday_volume') }
   if (channel === 'gm') shown.add('available_now')
   return Object.entries(detailLabels).flatMap(([key, label]) => {
@@ -139,6 +146,6 @@ export function positionDetails(position: Position, channel?: string): { key: st
   })
 }
 
-export function positionValueLabel(channel?: string): string {
-  return channel === 'ctp' || channel === 'tq' ? '货值' : channel === 'binance' ? '名义价值' : '市值'
+export function positionValueLabel(channel?: string, positions: Position[] = []): string {
+  return channel === 'ctp' || channel === 'tq' ? '货值' : !columns[channel ?? ''] && positions.some(position => Object.hasOwn(positionAttributes(position), 'native_notional')) ? '名义价值' : '市值'
 }

@@ -21,6 +21,7 @@ from axile.server.business_facts.assets import (
 from axile.server.core import db
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
 
@@ -80,7 +81,7 @@ def _manual(database, assets):
 
 def _corrupt(database, statement, parameters=()):
     # 历史损坏夹具跳过当前写入触发器，读取仍经过真实原生完整性检查。
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with closing(oracle_connect(database)) as connection, connection:
         connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
         connection.execute(statement, parameters)
 
@@ -172,7 +173,7 @@ def test_symbol_map_key_path_and_embedded_position_symbol_are_separate(database)
     payload = {
         "account_assets": {"total_asset": 10},
         "symbol_results": {
-            "BTC/USDT~hedge": {
+            "XAU/USD~hedge": {
                 "account_assets": {"total_asset": 9, "positions": [{"symbol": "native-symbol", "volume": 1}]}
             },
             "": {"account_assets": None},
@@ -184,7 +185,7 @@ def test_symbol_map_key_path_and_embedded_position_symbol_are_separate(database)
     assert business_evidence(paths) == business_evidence(
         [
             "/account_assets",
-            "/symbol_results/BTC~1USDT~0hedge/account_assets",
+            "/symbol_results/XAU~1USD~0hedge/account_assets",
             "/symbol_results//account_assets",
         ]
     )

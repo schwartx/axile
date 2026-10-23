@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 
@@ -13,6 +12,7 @@ import pytest
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.fixtures.rust_store.data_contract import database_rows, seed_database
 from tests.fixtures.rust_store.schema_contract import database_schema, load_schema, schema_differences
+from tests.sqlite_oracle import connect as oracle_connect
 
 _FIXTURES = Path(__file__).parents[2] / "fixtures/rust_store"
 _TAG_COMMIT = "bc70e4a3785eacedeaf4eadcda5a3109d3a3ffa6"
@@ -103,7 +103,7 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
 
 @pytest.mark.parametrize("name", ["v0.22.0.sql", "public-0039.sql"])
 def test_frozen_oracle_ddl_loads_with_all_objects(tmp_path: Path, name: str) -> None:
-    with closing(sqlite3.connect(tmp_path / "oracle.db")) as connection, connection:
+    with closing(oracle_connect(tmp_path / "oracle.db")) as connection, connection:
         load_schema(connection, (_FIXTURES / name).read_text(encoding="utf-8"))
         schema = database_schema(connection)
         assert "executerecord" in schema["tables"]
@@ -117,7 +117,7 @@ def test_frozen_oracle_ddl_loads_with_all_objects(tmp_path: Path, name: str) -> 
 
 
 def test_schema_contract_detects_integrity_changes(tmp_path: Path) -> None:
-    with closing(sqlite3.connect(tmp_path / "contract.db")) as connection, connection:
+    with closing(oracle_connect(tmp_path / "contract.db")) as connection, connection:
         connection.executescript(
             "CREATE TABLE parent(id INTEGER PRIMARY KEY);"
             "CREATE TABLE child(id INTEGER PRIMARY KEY,parent_id INTEGER REFERENCES parent(id),"
@@ -155,7 +155,7 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
     from tests.unit.server._execution_test_support import build_account, insert_account
 
     path = tmp_path / "fixture.db"
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         load_schema(connection, (_FIXTURES / "public-0039.sql").read_text(encoding="utf-8"))
         connection.execute("PRAGMA foreign_keys=ON")
         insert_account(connection, build_account(id=2, portfolio_id=None))
@@ -185,7 +185,7 @@ def test_native_migration_matches_real_schema(tmp_path: Path, revision: str, nam
     path = tmp_path / "native.db"
     result = initialize_native_database(path, revision=revision)
     assert result["public"] == revision
-    with closing(sqlite3.connect(tmp_path / "oracle.db")) as oracle, closing(sqlite3.connect(path)) as native:
+    with closing(oracle_connect(tmp_path / "oracle.db")) as oracle, closing(oracle_connect(path)) as native:
         load_schema(oracle, (_FIXTURES / name).read_text(encoding="utf-8"))
         differences = schema_differences(database_schema(native), database_schema(oracle))
         if differences:
@@ -210,7 +210,7 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
     path = tmp_path / "upgrade.db"
     initialize_native_database(path, revision="0033")
     backup = ("executerecord", "701", "raw_result", '"error"', 1, '"before"', 1, '"after"', "fixture", "{}")
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO axile_0013_error_backup "
             "(table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity) "
@@ -220,7 +220,7 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
     result = initialize_native_database(path)
     assert result["public"] == "0039"
     assert native_store_call(path, "migration_current", {})["public"] == "0039"
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
             "FROM axile_0013_error_backup"
@@ -234,7 +234,7 @@ def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> N
     assert len(data["seed"]["executerecord"]) == 22
     assert len(data["seed"]["notification_event"]) == 8
     assert len(data["expected"]["execution_input"]) > 22
-    with closing(sqlite3.connect(tmp_path / "historical.db")) as connection, connection:
+    with closing(oracle_connect(tmp_path / "historical.db")) as connection, connection:
         load_schema(connection, (_FIXTURES / "v0.22.0.sql").read_text(encoding="utf-8"))
         seed_database(connection, data["seed"])
         assert database_rows(connection, canonical=False) == data["seed"]
@@ -247,10 +247,10 @@ def test_nonempty_native_upgrade_matches_frozen_0039_rows(tmp_path: Path) -> Non
     data = json.loads((_FIXTURES / "public-0033-data.json").read_text(encoding="utf-8"))
     path = tmp_path / "historical.db"
     initialize_native_database(path, revision=data["from_revision"])
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
     assert initialize_native_database(path)["public"] == data["to_revision"]
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         assert database_rows(connection) == data["expected"]
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -266,7 +266,7 @@ def test_native_record_fixture_preserves_explicit_ids_and_rewrites(tmp_path: Pat
 
     path = tmp_path / "records.db"
     initialize_native_database(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, build_account(id=2, portfolio_id=None))
 
     async def check():
@@ -286,7 +286,7 @@ def test_native_record_fixture_preserves_explicit_ids_and_rewrites(tmp_path: Pat
             await engine.dispose()
 
     asyncio.run(check())
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute("SELECT id FROM executerecord").fetchall() == [(9,)]
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -301,7 +301,7 @@ def test_native_target_fixture_preserves_explicit_id_and_empty_weights(tmp_path:
 
     path = tmp_path / "targets.db"
     initialize_native_database(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) "
             "VALUES (11,'fixture','FUTURES','','now','now')"
@@ -330,7 +330,7 @@ def test_native_target_fixture_preserves_explicit_id_and_empty_weights(tmp_path:
             await engine.dispose()
 
     asyncio.run(check())
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute("SELECT id FROM target_weight_snapshot").fetchall() == [(9,)]
         assert connection.execute("SELECT COUNT(*) FROM target_weight_snapshot_weight").fetchone() == (0,)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

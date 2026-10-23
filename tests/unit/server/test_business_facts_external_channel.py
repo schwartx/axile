@@ -1,4 +1,4 @@
-"""币安序列化事实的离线 SQL 往返，不依赖私有插件或真实账户。"""
+"""外部渠道序列化事实的离线 SQL 往返，不依赖私有插件或真实账户。"""
 
 from __future__ import annotations
 
@@ -31,8 +31,8 @@ def _sql_round_trip(path, payload: Mapping[str, object]):
 
 def _conversion() -> dict[str, object]:
     return {
-        "price_currency": "USDC",
-        "value_currency": "USDT",
+        "price_currency": "CNY",
+        "value_currency": "USD",
         "rate": 1.0101010101010102,
         "reference": {
             "quote_index": {"index": 1.0, "time_ms": 1792440000123, "source": "asset_index"},
@@ -42,7 +42,7 @@ def _conversion() -> dict[str, object]:
     }
 
 
-def _order(*, symbol="ETHUSDC", order_id="9007199254740993", day="20261020", **changes):
+def _order(*, symbol="XAGCNY", order_id="9007199254740993", day="20261020", **changes):
     value = {
         "order_id": order_id,
         "symbol": symbol,
@@ -57,7 +57,7 @@ def _order(*, symbol="ETHUSDC", order_id="9007199254740993", day="20261020", **c
         "update_time": "2026-10-19T16:00:01.000Z",
         "value_conversion": _conversion(),
         "extra": {
-            "exchange_id": "BINANCE",
+            "exchange_id": "CUSTOM",
             "trading_day": day,
             "client_order_id": "offline-synthetic-~/%",
             "native_order_type": "STOP_MARKET",
@@ -78,7 +78,7 @@ def _order(*, symbol="ETHUSDC", order_id="9007199254740993", day="20261020", **c
     return value
 
 
-def _trade(*, symbol="ETHUSDC", trade_id="9007199254740995", day="20261020", extra=None, **changes):
+def _trade(*, symbol="XAGCNY", trade_id="9007199254740995", day="20261020", extra=None, **changes):
     value = {
         "trade_id": trade_id,
         "order_id": "9007199254740993",
@@ -90,7 +90,7 @@ def _trade(*, symbol="ETHUSDC", trade_id="9007199254740995", day="20261020", ext
         "trade_value": 202.64,
         "value_conversion": _conversion(),
         "extra": {
-            "exchange_id": "BINANCE",
+            "exchange_id": "CUSTOM",
             "trading_day": day,
             "symbol": symbol,
             "order_id": "9007199254740993",
@@ -107,24 +107,24 @@ def _trade(*, symbol="ETHUSDC", trade_id="9007199254740995", day="20261020", ext
     return value
 
 
-def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order(native_database):
+def test_custom_order_occurrences_keep_native_identity_scope_and_snapshot_order(native_database):
     pending = _order(filled_volume=0.0, avg_price=0.0, status="待成交")
     filled = _order(filled_volume=0.125, status="已成交")
     nested = [pending, filled, deepcopy(filled), _order(order_id=""), _order(day="20261019")]
     payload = {
-        "orders": [_order(symbol="BTCUSDT", day="20261019"), _order(order_id="")],
+        "orders": [_order(symbol="XAUUSD", day="20261019"), _order(order_id="")],
         "symbol_results": {
-            "ETH/USDC~SHORT": {"orders": nested},
-            "BTCUSDT": {"orders": [_order(symbol="BTCUSDT")]},
+            "XAG/CNY~SHORT": {"orders": nested},
+            "XAUUSD": {"orders": [_order(symbol="XAUUSD")]},
         },
     }
 
     actual, loaded = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
-    assert business_evidence(list(actual["symbol_results"])) == business_evidence(["ETH/USDC~SHORT", "BTCUSDT"])
-    assert business_evidence(len(actual["symbol_results"]["ETH/USDC~SHORT"]["orders"])) == business_evidence(5)
-    snapshots = actual["symbol_results"]["ETH/USDC~SHORT"]["orders"]
+    assert business_evidence(list(actual["symbol_results"])) == business_evidence(["XAG/CNY~SHORT", "XAUUSD"])
+    assert business_evidence(len(actual["symbol_results"]["XAG/CNY~SHORT"]["orders"])) == business_evidence(5)
+    snapshots = actual["symbol_results"]["XAG/CNY~SHORT"]["orders"]
     assert business_evidence([row["status"] for row in snapshots[:3]]) == business_evidence(
         ["待成交", "已成交", "已成交"]
     )
@@ -137,7 +137,7 @@ def test_binance_order_occurrences_keep_native_identity_scope_and_snapshot_order
 
 
 @pytest.mark.parametrize("native_id", [0, "0", "", None, "000001", "900719925474099312345"])
-def test_binance_native_order_and_trade_ids_are_not_coerced(native_database, native_id):
+def test_custom_native_order_and_trade_ids_are_not_coerced(native_database, native_id):
     order_payload = {"orders": [_order(order_id=native_id)]}
     trade_payload = {"trades": [_trade(trade_id=native_id, order_id=native_id)]}
 
@@ -155,14 +155,14 @@ def test_binance_native_order_and_trade_ids_are_not_coerced(native_database, nat
     [
         {},
         {"commission": None},
-        {"commission": 0, "commission_asset": "USDT"},
-        {"commission": 0.0, "commission_asset": "BNB"},
-        {"commission": -0.0000125, "commission_asset": "BNB"},
-        {"commission": 0.0123, "commission_asset": "USDC"},
+        {"commission": 0, "commission_asset": "USD"},
+        {"commission": 0.0, "commission_asset": "HKD"},
+        {"commission": -0.0000125, "commission_asset": "HKD"},
+        {"commission": 0.0123, "commission_asset": "CNY"},
         {"commission": None, "commission_asset": ""},
     ],
 )
-def test_binance_fees_preserve_missing_unknown_zero_rebate_and_native_asset(native_database, fee):
+def test_custom_fees_preserve_missing_unknown_zero_rebate_and_native_asset(native_database, fee):
     payload = {"trades": [_trade(extra=fee)]}
 
     actual, _ = _sql_round_trip(native_database, payload)
@@ -178,21 +178,21 @@ def test_binance_fees_preserve_missing_unknown_zero_rebate_and_native_asset(nati
         assert type(decoded["extra"]["commission"]) is type(fee["commission"])
 
 
-def test_binance_trades_keep_duplicate_ids_symbols_days_and_root_evidence(native_database):
-    first = _trade(extra={"commission": 0.0, "commission_asset": "USDT"})
+def test_custom_trades_keep_duplicate_ids_symbols_days_and_root_evidence(native_database):
+    first = _trade(extra={"commission": 0.0, "commission_asset": "USD"})
     prior_day = _trade(day="20261019", trade_time="2026-10-19T16:00:00.000Z")
     payload = {
-        "trades": [_trade(symbol="BTCUSDT"), _trade(trade_id="")],
+        "trades": [_trade(symbol="XAUUSD"), _trade(trade_id="")],
         "symbol_results": {
-            "ETH/USDC~SHORT": {"trades": [first, deepcopy(first), prior_day]},
-            "BTCUSDT": {"trades": [_trade(symbol="BTCUSDT")]},
+            "XAG/CNY~SHORT": {"trades": [first, deepcopy(first), prior_day]},
+            "XAUUSD": {"trades": [_trade(symbol="XAUUSD")]},
         },
     }
 
     actual, loaded = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
-    nested = actual["symbol_results"]["ETH/USDC~SHORT"]["trades"]
+    nested = actual["symbol_results"]["XAG/CNY~SHORT"]["trades"]
     assert business_evidence(len(nested)) == business_evidence(3)
     assert business_evidence([row["extra"]["trading_day"] for row in nested]) == business_evidence(
         ["20261020", "20261020", "20261019"]
@@ -206,19 +206,19 @@ def _asset_snapshot():
         "available_cash": 0.0,
         "total_asset": 5050.50505050505,
         "market_value": 4012.5,
-        "currency": "USDT",
+        "currency": "USD",
         "source": "real",
         "update_time": "2026-10-20T00:00:01.123456+08:00",
         "positions": [
             {
-                "symbol": "ETHUSDC",
+                "symbol": "XAGCNY",
                 "direction": "SHORT",
                 "volume": 0.5,
                 "available_volume": 0.5,
                 "market_value": 2006.25,
                 "avg_price": 4012.5,
                 "extra": {
-                    "quote_asset": "USDC",
+                    "quote_asset": "CNY",
                     "unrealized_pnl": -2.5,
                     "position_attributes": {
                         "position_side": "SHORT",
@@ -233,20 +233,20 @@ def _asset_snapshot():
                 },
             },
             {
-                "symbol": "ETHUSDC",
+                "symbol": "XAGCNY",
                 "direction": "LONG",
                 "volume": 0.5,
                 "available_volume": 0.0,
                 "market_value": 2006.25,
                 "avg_price": 4012.5,
                 "extra": {
-                    "quote_asset": "USDC",
+                    "quote_asset": "CNY",
                     "position_attributes": {
                         "position_side": "LONG",
                         "open_price": 3980.0,
                         "mark_price": 3972.375,
                         "liquidation_price": 0.0,
-                        "margin_asset": "USDC",
+                        "margin_asset": "CNY",
                         "adl": 0,
                         "risk_updated_at": 1792425600222,
                     },
@@ -255,32 +255,32 @@ def _asset_snapshot():
         ],
         "extra": {
             "equity_source": "totalMarginBalance",
-            "equity_basis": "binance_margin_equity",
-            "native_currency": "USD",
+            "equity_basis": "custom_margin_equity",
+            "native_currency": "EUR",
             "native_equity": 5000,
             "multi_assets": True,
             "native_available": 321.0,
             "available_cash_source": "availableBalance",
             "available_cash_conversion": "unavailable_missing_ask_rate",
             "available_cash_status": "unavailable",
-            "equity_conversion": "USDTUSD.index",
+            "equity_conversion": "USDEUR.index",
             "asset_indices": {
-                "USDT": {"index": 0.99, "ask_rate": None, "source": "assumed_stablecoin_parity"},
-                "USDC": {"index": 1.0, "time_ms": 1792425600000},
+                "USD": {"index": 0.99, "ask_rate": None, "source": "assumed_reference_parity"},
+                "CNY": {"index": 1.0, "time_ms": 1792425600000},
             },
             "asset_index_refresh": {"generation": 17},
         },
     }
 
 
-def test_binance_assets_preserve_hedged_positions_native_fields_and_unavailable_cash(native_database):
+def test_custom_assets_preserve_hedged_positions_native_fields_and_unavailable_cash(native_database):
     payload = {"account_assets": _asset_snapshot()}
 
     actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
     snapshot = actual["account_assets"]
-    assert business_evidence(snapshot["currency"]) == business_evidence("USDT")
+    assert business_evidence(snapshot["currency"]) == business_evidence("USD")
     assert business_evidence(snapshot["available_cash"]) == business_evidence(0.0)
     assert business_evidence(snapshot["extra"]["available_cash_status"]) == business_evidence("unavailable")
     assert business_evidence(snapshot["extra"]["native_available"]) == business_evidence(321.0)
@@ -299,13 +299,13 @@ def test_binance_assets_preserve_hedged_positions_native_fields_and_unavailable_
     assert business_evidence(long["liquidation_price"]) == business_evidence(0.0)
 
 
-def test_binance_before_and_after_assets_are_independent_observations(native_database):
+def test_custom_before_and_after_assets_are_independent_observations(native_database):
     before = _asset_snapshot()
     after = deepcopy(before)
     after["update_time"] = "2026-10-20T00:00:03.000Z"
     after["total_asset"] = 5048.0
     after["positions"][0]["volume"] = 0.25
-    receipt = freeze_input(native_database, {}, input_id="offline-binance-before", before_assets=before)
+    receipt = freeze_input(native_database, {}, input_id="offline-custom-before", before_assets=before)
     actual, loaded = _sql_round_trip(native_database, {"account_assets": after})
     observations = native_store_call(native_database, "asset_input_observations", {"input_id": receipt["input_id"]})
     assert len(observations) == 1
@@ -320,8 +320,8 @@ def test_binance_before_and_after_assets_are_independent_observations(native_dat
         assert (row["input_id"] is None) != (row["record_id"] is None)
 
 
-@pytest.mark.parametrize("positions", [None, [], [{"symbol": "BTCUSDT", "volume": 0, "extra": {}}]])
-def test_binance_position_container_unknown_empty_and_explicit_zero_are_distinct(native_database, positions):
+@pytest.mark.parametrize("positions", [None, [], [{"symbol": "XAUUSD", "volume": 0, "extra": {}}]])
+def test_custom_position_container_unknown_empty_and_explicit_zero_are_distinct(native_database, positions):
     snapshot = _asset_snapshot()
     snapshot["positions"] = positions
     payload = {"account_assets": snapshot}
@@ -332,15 +332,15 @@ def test_binance_position_container_unknown_empty_and_explicit_zero_are_distinct
     assert business_evidence(actual["account_assets"]["positions"]) == business_evidence(positions)
 
 
-def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen(native_database):
+def test_custom_sizing_ticks_and_native_price_conversion_remain_frozen(native_database):
     payload = {
         "symbol_results": {
-            "ETH/USDC~SHORT": {
-                "symbol": "ETHUSDC",
+            "XAG/CNY~SHORT": {
+                "symbol": "XAGCNY",
                 "target_volume": 0.125,
                 "final_volume": 0.0625,
                 "first_tick": {
-                    "symbol": "ETHUSDC",
+                    "symbol": "XAGCNY",
                     "last_price": 3210.125,
                     "bid_price": 3209.875,
                     "ask_price": 3210.25,
@@ -352,7 +352,7 @@ def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen(native_d
                     "extra": {"lastUpdateId": "9007199254740997", "source": "depth"},
                 },
                 "sizing": {
-                    "symbol": "ETHUSDC",
+                    "symbol": "XAGCNY",
                     "account_weight": 0.08,
                     "equity": 5050.50505050505,
                     "target_quantity": 0.125,
@@ -366,16 +366,16 @@ def test_binance_sizing_ticks_and_native_price_conversion_remain_frozen(native_d
                 },
             }
         },
-        "first_ticks": {"ETHUSDC": {"timestamp": 1792425600001, "last_price": 3210.0}},
-        "target_volume": {"ETHUSDC": 0.0},
+        "first_ticks": {"XAGCNY": {"timestamp": 1792425600001, "last_price": 3210.0}},
+        "target_volume": {"XAGCNY": 0.0},
     }
 
     actual, _ = _sql_round_trip(native_database, payload)
 
     assert business_evidence(actual) == business_evidence(payload)
-    nested = actual["symbol_results"]["ETH/USDC~SHORT"]
+    nested = actual["symbol_results"]["XAG/CNY~SHORT"]
     assert business_evidence(nested["first_tick"]["timestamp"]) == business_evidence(1792425600123)
-    assert business_evidence(actual["first_ticks"]["ETHUSDC"]["timestamp"]) == business_evidence(1792425600001)
+    assert business_evidence(actual["first_ticks"]["XAGCNY"]["timestamp"]) == business_evidence(1792425600001)
     assert business_evidence(nested["target_volume"]) == business_evidence(0.125)
-    assert business_evidence(actual["target_volume"]["ETHUSDC"]) == business_evidence(0.0)
+    assert business_evidence(actual["target_volume"]["XAGCNY"]) == business_evidence(0.0)
     assert business_evidence(nested["sizing"]["value_conversion"]) == business_evidence(_conversion())

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import sqlite3
 from contextlib import closing
 from unittest.mock import patch
 
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_analysis_support import database, persist_records, record
 from tests.unit.server._business_analysis_support import schema_template as schema_template
 from tests.unit.server._execution_test_support import build_account, insert_account
@@ -29,7 +29,7 @@ def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, s
                 for row in [record(index) for index in range(205, 0, -1)]
                 for trade in project_execution(row)[1]
             ]
-            with closing(sqlite3.connect(tmp_path / "analysis.db")) as connection, connection:
+            with closing(oracle_connect(tmp_path / "analysis.db")) as connection, connection:
                 insert_account(connection, build_account(id=3, account_control_preset="default"))
                 connection.execute(
                     "UPDATE execution_input SET algorithm=? WHERE id=(SELECT input_id FROM executerecord WHERE id=1)",

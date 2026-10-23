@@ -281,7 +281,7 @@ mod tests {
             "INSERT INTO executerecord(id,account_id,is_success,success,termination_forced,execution_id)
              VALUES(1,1,1,1,0,'one'),(2,1,0,NULL,NULL,'two'),(3,1,0,NULL,NULL,'three');
              INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');
-             INSERT INTO execution_symbol_result(record_id,path,map_key,status,error,outcome,outcome_reason,reason_code,memory) VALUES(1,'/symbol_results/BTC','BTC',NULL,'failed',NULL,NULL,NULL,NULL);"
+             INSERT INTO execution_symbol_result(record_id,path,map_key,status,error,outcome,outcome_reason,reason_code,memory) VALUES(1,'/symbol_results/SHFE.rb2610','SHFE.rb2610',NULL,'failed',NULL,NULL,NULL,NULL);"
         ).unwrap();
         let result = page(&connection, 1, 0, 500, None, None).unwrap();
         assert_eq!(result["count"], 3);
@@ -308,7 +308,7 @@ mod tests {
         let good = &result["data"][2];
         assert_eq!(
             good["symbol_results"],
-            json!({"BTC":{"error":"failed","outcome":null}})
+            json!({"SHFE.rb2610":{"error":"failed","outcome":null}})
         );
         assert_eq!(good["success"], true);
         assert_eq!(good["termination_forced"], false);

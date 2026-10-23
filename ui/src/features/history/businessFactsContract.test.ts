@@ -35,7 +35,7 @@ test('record identity opens typed full error evidence without manufacturing a le
   const trace = 'Traceback\n  worker.py:27005\n' + '原始细节\n'.repeat(300) + '尾部根因'
   const record: ExecuteRecord = {
     id: 27005, account_id: 27005, execution_id: null, created_at: '2026-10-20T10:00:00', is_success: 0,
-    status: 'FAILED', error: '柜台原始原因', input: { curr_target: { 'BTC/USDT': 0 }, last_target: null },
+    status: 'FAILED', error: '柜台原始原因', input: { curr_target: { 'SSE/510300': 0 }, last_target: null },
     result: { status: 'FAILED', error: '柜台原始原因', technical_detail: trace },
   }
   const read = await readExecutionRecordEvidence(27005, { recordId: 27005 }, new AbortController().signal, {
@@ -48,7 +48,7 @@ test('record identity opens typed full error evidence without manufacturing a le
   expect(read).toBe(record)
   const input = read?.input
   if (input == null || typeof input !== 'object' || Array.isArray(input)) throw new Error('Expected an object input fixture')
-  expect(input.curr_target).toEqual({ 'BTC/USDT': 0 })
+  expect(input.curr_target).toEqual({ 'SSE/510300': 0 })
   const info = buildExecutionErrorInfo({ accountId: 27005, record: read })
   expect(info.details.some(item => item.value === trace)).toBe(true)
   expect(info.text).toContain(trace)

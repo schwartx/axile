@@ -13,14 +13,14 @@ test('table decoding follows column names and preserves null, zero and precision
 test('chart decoder preserves summary presence, actual zero fees and currency rebates', () => {
   const response = chartFixture(810)
   response.tables.daily_costs = analysisTable(['day', ...summaryColumns, 'present'], [['2026-10-20', 0, null, null, null, 0, 0, true, 2, 0, 0, 1023 & ~(1 << 1)]])
-  response.tables.daily_fees.rows = [['2026-10-20', 'USD', 0], ['2026-10-20', 'USDT', -0.1234567890123456]]
+  response.tables.daily_fees.rows = [['2026-10-20', 'USD', 0], ['2026-10-20', 'EUR', -0.1234567890123456]]
   response.tables.execution_index = analysisTable(indexColumns, [[1, null, 1792425600000, null, null, true, false, null, null, null, false, null, null, null, null, null, 0, 0, true, 0, 0, 0]])
   response.tables.execution_fees.rows = [[1, 'CNY', 0, 1], [1, 'USD', -0.00000001, 1]]
   const chart = decodeAnalysisChart(response)
   expect(chart.result.points[1].portfolio_return).toBe(0.0123456789012345)
   expect(chart.daily_costs['2026-10-20'].value).toBe(0)
   expect(Object.hasOwn(chart.daily_costs['2026-10-20'], 'cost')).toBe(false)
-  expect(chart.daily_costs['2026-10-20'].fees).toEqual({ USD: 0, USDT: -0.1234567890123456 })
+  expect(chart.daily_costs['2026-10-20'].fees).toEqual({ USD: 0, EUR: -0.1234567890123456 })
   expect(chart.execution_index[0]).toMatchObject({ record_id: 1, created_at: null, positions_present: false, has_transactions: false, summary: { value: null, count: 0, amountComplete: true, fees: { CNY: 0, USD: -0.00000001 } } })
   expect(Object.hasOwn(chart.result, 'executions')).toBe(false)
   expect(Object.hasOwn(chart.execution_index[0], 'record')).toBe(false)

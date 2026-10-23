@@ -69,7 +69,7 @@ def update_account(account_id: int, patch: AccountUpdate):
     try:
         policy = patch.futures_close_policy or account.futures_close_policy
         policy.validate_channel(account.trade_channel)
-        account.sqlmodel_update(patch)
+        _accounts[account_id] = Account.model_validate(account.model_dump() | patch.model_dump(exclude_unset=True))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return account_info(account_id)

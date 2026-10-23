@@ -22,9 +22,11 @@ from axile.executor.algorithms.utils.clock import clock_now_ms
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
 from axile.server.execution import execution_account_control as persistence
+from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
+@sqlite_oracle
 def save_account(path, account):
     """测试 oracle 直接保存账户配置，生产路径不调用 SQLite。"""
     groups = account_settings_values(account)

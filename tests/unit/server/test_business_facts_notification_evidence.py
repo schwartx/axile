@@ -7,7 +7,6 @@ import csv
 import hashlib
 import io
 import json
-import sqlite3
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
@@ -51,6 +50,7 @@ from axile.server.evidence.models import EvidenceError, EvidenceLimits, Evidence
 from axile.server.execution import records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server.test_evidence_export import _seed
@@ -1060,13 +1060,13 @@ def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_d
         stored = await _stored_captured_notification(facts_database)
         assert not {"positions", "orders", "trades"}.intersection(stored)
         assert len(json.dumps(stored)) < 21000
-        with closing(sqlite3.connect(facts_database)) as connection:
+        with closing(oracle_connect(facts_database)) as connection:
             raw_size = connection.execute(
                 "SELECT length(CAST(context AS BLOB)) FROM notification_event WHERE id=?", (f"execution:{_EXECUTION}",)
             ).fetchone()[0]
         assert raw_size > 64000
         if malformed:
-            with closing(sqlite3.connect(facts_database)) as connection, connection:
+            with closing(oracle_connect(facts_database)) as connection, connection:
                 guard = connection.execute(
                     "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
                     ("business_facts_0037_notification_outbox_update",),

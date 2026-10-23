@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { RecordTable, type RecordColumn } from '@/features/account/RecordTable'
 import { positionAttributes, positionColumns, positionColumnText, positionCommonNumber, positionCurrencyUnit, positionDecimalText, positionDetails, positionDirection, positionNumber, positionText, positionValueLabel, recordObject } from '@/features/account/positionRecordsModel'
+import type { PositionColumn } from '@/features/account/positionRecordsModel'
 import type { ChannelCapability, Position } from '@/types/api'
 
 interface Props {
@@ -14,10 +15,9 @@ interface Props {
   emptyText: string
 }
 
-function PositionRow({ position, channel, units, currency }: Omit<Props, 'positions' | 'emptyText'> & { position: Position }) {
+function PositionRow({ position, channel, units, currency, columns }: Omit<Props, 'positions' | 'emptyText'> & { position: Position; columns: PositionColumn[] }) {
   const [expanded, setExpanded] = useState(false)
   const panel = useId()
-  const columns = positionColumns(channel)
   const attrs = positionAttributes(position)
   const extra = recordObject(position.extra)
   const provenance = recordObject(extra.market_value_provenance)
@@ -63,17 +63,18 @@ function PositionRow({ position, channel, units, currency }: Omit<Props, 'positi
 }
 
 export function PositionRecordsTable(props: Props) {
+  const nativeColumns = positionColumns(props.channel, props.positions)
   const columns: RecordColumn[] = [
     { key: 'symbol', label: '品种', grow: 1, sample: 'SHFE.rb2610', values: props.positions.map(position => position.symbol ?? ''), maxWidth: 180 },
     { key: 'direction', label: '方向', sample: '多头' },
     { key: 'volume', label: '持仓', grow: 1, numeric: true, sample: '99,999.99999999 手' },
     { key: 'available', label: '可用', grow: 1, numeric: true, sample: '99,999.99999999 手' },
-    { key: 'market_value', label: positionValueLabel(props.channel), grow: 1, numeric: true, sample: '999,999.99 泰达币' },
-    ...positionColumns(props.channel).map(column => ({ key: column.key, label: column.label, grow: 1, numeric: true, sample: column.key === 'today_yesterday' ? '999 / 999' : '99,999.99',
+    { key: 'market_value', label: positionValueLabel(props.channel, props.positions), grow: 1, numeric: true, sample: '999,999.99 瑞郎' },
+    ...nativeColumns.map(column => ({ key: column.key, label: column.label, grow: 1, numeric: true, sample: column.key === 'today_yesterday' ? '999 / 999' : '99,999.99',
       values: props.positions.map(position => positionColumnText(position, column, props.channel)) })),
     { key: 'details', label: '详情' },
   ]
   return <RecordTable columns={columns} kind="position" loading={props.loading} empty={!props.positions.length} emptyText={props.emptyText}>
-    {props.positions.map((position, index) => <PositionRow key={JSON.stringify([position.symbol, position.direction, index])} {...props} position={position} />)}
+    {props.positions.map((position, index) => <PositionRow key={JSON.stringify([position.symbol, position.direction, index])} {...props} position={position} columns={nativeColumns} />)}
   </RecordTable>
 }

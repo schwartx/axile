@@ -1,7 +1,6 @@
 """以真实原生业务事实验证精简存储，不要求恢复旧 JSON 表示。"""
 
 import json
-import sqlite3
 from contextlib import closing
 
 import pytest
@@ -9,6 +8,7 @@ import pytest
 from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
     persist_result,
@@ -65,7 +65,7 @@ def test_target_aliases_do_not_create_duplicate_facts(native_database):
         ("strategy_target", "A", 0.3),
         ("last_target", "A", -0.2),
     }
-    with closing(sqlite3.connect(native_database)) as connection:
+    with closing(oracle_connect(native_database)) as connection:
         columns = connection.execute("PRAGMA table_info(execution_input_target)").fetchall()
         indexes = connection.execute("PRAGMA index_list(execution_input_target)").fetchall()
     assert "ordinal" not in {row[1] for row in columns}
@@ -233,7 +233,7 @@ def test_summary_reference_rejects_invalid_projection_version(native_database, p
 
 
 def test_all_business_tables_have_no_generic_field_metadata(native_database):
-    with closing(sqlite3.connect(native_database)) as connection:
+    with closing(oracle_connect(native_database)) as connection:
         names = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
         facts = [
             name

@@ -8,13 +8,16 @@ import sqlalchemy as sa
 
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import sqlite_oracle
 
 
+@sqlite_oracle
 def sql(path, statement, parameters=()):
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(statement, parameters)
 
 
+@sqlite_oracle
 def rows(path, name):
     engine = sa.create_engine(f"sqlite:///{path}")
     try:

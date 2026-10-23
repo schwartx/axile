@@ -1,7 +1,6 @@
 """人工委托操作保持 guard 隔离，累计计数只在执行收尾时写入。"""
 
 import asyncio
-import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
@@ -13,6 +12,7 @@ from axile.server import account_orders_runtime
 from axile.server.account_control import providers
 from axile.server.account_control.store import AccountControlStore
 from axile.server.execution import execution_account_control
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server.test_account_control_store import control_database as control_database
 
 
@@ -55,11 +55,11 @@ def test_borrowed_guard_does_not_freeze_cumulative_deltas_before_execution_ends(
             guard.begin_operation("cancel_order").record_outcome("submitted")
         assert providers.active_guard(1) is guard
         guard.begin_operation("cancel_order").record_outcome("submitted")
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute("SELECT COUNT(*) FROM account_control_counter_delta").fetchone() == (0,)
             assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (2,)
         asyncio.run(execution_account_control.flush_account_control_records(adapter))
-        with closing(sqlite3.connect(control_database)) as connection, connection:
+        with closing(oracle_connect(control_database)) as connection, connection:
             for bucket in ("DAY", "MINUTE"):
                 assert dict(
                     connection.execute(
@@ -88,7 +88,7 @@ def test_idle_commands_keep_typed_sessions_and_reload_shared_counters(control_da
             guard = scoped_guard(executor)
             assert guard is not None
             guard.begin_operation(operation).record_outcome("fetched" if command == "query" else "submitted")
-    with closing(sqlite3.connect(control_database)) as connection, connection:
+    with closing(oracle_connect(control_database)) as connection, connection:
         sessions = list(
             connection.execute(
                 "SELECT execution_id,context_kind,source,status FROM account_control_session ORDER BY id"
@@ -131,7 +131,7 @@ def test_late_idle_cancel_rejection_preserves_existing_monitor_and_updates_origi
     updates = [row for row in frame["outcome_updates"] if f":{manual.instance_id}:" in row["event_uid"]]
     assert updates[-1]["outcome"] == "broker_rejected"
     asyncio.run(account_orders_runtime._persist_cancel_outcomes(updates))
-    with closing(sqlite3.connect(control_database)) as connection, connection:
+    with closing(oracle_connect(control_database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*),outcome FROM account_control_event").fetchone() == (
             1,
             "broker_rejected",

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 const raw = (name: string) => `${name}开始\n${'synthetic error '.repeat(100)}\nTraceback\n  script.py:123\npassword=synthetic token=synthetic api_key=synthetic\n尾部根因-${name}`
-const record = (id = 'A') => ({ id: 1, account_id: 7, execution_id: id, raw_input: {}, raw_result: { status: 'FAILED', technical_detail: raw(id), traceback: raw(id) }, is_success: 0, created_at: '2026-10-14T10:00:00' })
+const record = (id = 'A') => ({ id: id === 'B' ? 2 : 1, account_id: 7, execution_id: id, input: {}, result: { status: 'FAILED', technical_detail: raw(id), traceback: raw(id) }, is_success: 0, created_at: '2026-10-14T10:00:00' })
 const sync = (status = 'synchronized', revision = 1, last_error: string | null = null) => ({ status, revision, last_error, attempts: 1, last_attempt_at: null, synchronized_at: null })
 const account = { id: 7, name: '合成账户 A', market: 'demo', trade_channel: 'paper', is_started: false, cron_expr: '', portfolio_id: 9, algorithm: { method: 'SINGLE-MAKER', params: {} }, empty_positions_algorithm: null, account_config: {}, forbidden_symbols: [], risk_symbols: [], trade_rules: [], long_leverage: 1, short_leverage: 1, weight_precision: .001 }
 const snapshot = { portfolio_id: 9, context_account_id: 7, weights: {}, calculated_at: '2026-10-14T10:00:00', sizing: null }
@@ -275,6 +275,7 @@ test('evidence reads exact record and every event/artifact page before copying a
   const delayed = new Promise<void>(resolve => { release = resolve })
   await page.route('**/api/v1/account/**', async route => {
     const url = new URL(route.request().url()); queries.push(url.pathname + url.search)
+    if (url.pathname === '/api/v1/account/execute_records/7/1') return route.fulfill({ json: record() })
     if (url.pathname.includes('/execute_records/')) return route.fulfill({ json: { data: [record()], count: 1 } })
     const skip = Number(url.searchParams.get('skip') ?? 0)
     if (/\/(events|artifacts)$/.test(url.pathname)) {
@@ -299,7 +300,7 @@ test('evidence reads exact record and every event/artifact page before copying a
   await dialog.getByRole('button', { name: '复制全部', exact: true }).click()
   expect(await copied(page)).toContain(raw('A'))
   expect(await copied(page)).toContain('最后一页附件根因')
-  expect(queries.filter(url => url.includes('/execute_records/'))).toEqual(['/api/v1/account/execute_records/7?limit=1&execution_id=A'])
+  expect(queries.filter(url => url.includes('/execute_records/'))).toEqual(['/api/v1/account/execute_records/7?limit=1&execution_id=A', '/api/v1/account/execute_records/7/1'])
   expect(queries.some(url => url.includes('events?skip=500'))).toBe(true)
   expect(queries.some(url => url.includes('artifacts?skip=500'))).toBe(true)
 })
@@ -310,6 +311,7 @@ test('partial evidence keeps record originals and retries only the failed source
     const path = new URL(route.request().url()).pathname
     const key = path.split('/').at(-1)!
     reads[key] = (reads[key] ?? 0) + 1
+    if (path === '/api/v1/account/execute_records/7/1') return route.fulfill({ json: record() })
     if (path.includes('/execute_records/')) return route.fulfill({ json: { data: [record()], count: 1 } })
     if (path.endsWith('/events') && reads[key] === 1) return route.fulfill({ status: 500, json: { detail: { message: raw('query'), code: 'EVENTS_FAILED', request_id: 'req-events' } } })
     if (/\/(events|artifacts)$/.test(path)) return route.fulfill({ json: { data: [], count: 0 } })
@@ -326,12 +328,13 @@ test('partial evidence keeps record originals and retries only the failed source
   await dialog.getByRole('button', { name: '重试：执行事件读取失败' }).click()
   await expect.poll(() => reads.events).toBe(2)
   expect(reads['7']).toBe(1)
+  expect(reads['1']).toBe(1)
   expect(reads.artifacts).toBe(1)
 })
 
 test('legacy record without execution id reads and copies its exact record only', async ({ page }) => {
   const queries: string[] = []
-  await page.route('**/api/v1/account/**', route => { queries.push(route.request().url()); return route.fulfill({ json: { data: [{ ...record(), execution_id: null }], count: 1 } }) })
+  await page.route('**/api/v1/account/**', route => { queries.push(route.request().url()); return route.fulfill({ json: { ...record(), execution_id: null } }) })
   await page.goto('/e2e/errors.html?mode=evidence&legacy')
   await page.getByRole('button', { name: '查看错误详情' }).click()
   const dialog = page.getByRole('dialog')
@@ -339,7 +342,7 @@ test('legacy record without execution id reads and copies its exact record only'
   await dialog.getByRole('button', { name: '复制全部', exact: true }).click()
   expect(await copied(page)).toContain(raw('A'))
   expect(queries).toHaveLength(1)
-  expect(queries[0]).toContain('record_id=1')
+  expect(queries[0]).toContain('/api/v1/account/execute_records/7/1')
 })
 
 for (const failure of ['404', '500', 'network']) test(`execution query ${failure} retains id and last state; recovery never retriggers`, async ({ page }) => {
@@ -708,6 +711,8 @@ test('switching execution while A is pending invalidates its late response and o
   let readingA = false
   await page.route('**/api/v1/account/**', async route => {
     const url = new URL(route.request().url())
+    const detail = url.pathname.match(/\/execute_records\/7\/(\d+)$/)
+    if (detail) return route.fulfill({ json: record(detail[1] === '2' ? 'B' : 'A') })
     if (url.pathname.includes('/execute_records/')) {
       const id = url.searchParams.get('execution_id')!
       if (id === 'A') { readingA = true; await waiting }

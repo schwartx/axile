@@ -90,7 +90,7 @@ def _projected():
                         "count": 1,
                         "amountComplete": True,
                         "feeCovered": 2,
-                        "fees": {"USD": 0, "BTC": REBATE},
+                        "fees": {"USD": 0, "XAU": REBATE},
                     },
                 }
             ]
@@ -138,7 +138,7 @@ def _insert_frozen_views(connection, snapshot_id):
         ),
         [
             {"snapshot_id": snapshot_id, "currency": "USD", "value": 0},
-            {"snapshot_id": snapshot_id, "currency": "BTC", "value": REBATE},
+            {"snapshot_id": snapshot_id, "currency": "XAU", "value": REBATE},
         ],
     )
 
@@ -280,7 +280,7 @@ def test_chart_uses_small_typed_tables_without_json_or_source_trade_aggregation(
             forbidden = {"positions", "attempts", "transactions", "raw_result", "payload", "symbol_results"}
             assert not forbidden.intersection(chart["tables"]["execution_index"]["columns"])
             fees = _rows(chart["tables"]["execution_fees"])
-            assert {row["currency"]: row["value"] for row in fees} == {"BTC": REBATE, "USD": 0}
+            assert {row["currency"]: row["value"] for row in fees} == {"XAU": REBATE, "USD": 0}
             daily = _rows(chart["tables"]["daily_costs"])
             assert daily[0]["value"] is None and daily[0]["covered"] == 0
             assert daily[1]["cost"] == 0 and daily[1]["covered_value"] is None
@@ -445,7 +445,7 @@ def test_summary_pages_are_stable_and_use_frozen_null_zero_currency_values(datas
             assert [row["record_id"] for row in _rows(page["table"])] == [1, 2]
             assert page["next_offset"] == 2
             fees = _rows(page["fees"])
-            assert {row["currency"]: row["value"] for row in fees} == {"BTC": REBATE, "USD": 0}
+            assert {row["currency"]: row["value"] for row in fees} == {"XAU": REBATE, "USD": 0}
             second = await client.get(f"{BASE_URL}/execution-summary", params=params | {"offset": 2})
             assert second.status_code == 200
             assert [row["record_id"] for row in _rows(second.json()["table"])] == [3]
@@ -511,7 +511,7 @@ def test_detail_reads_only_selected_typed_record_with_precision_and_presence(dat
             assert transactions[0]["time"] == START + 0.125
             assert transactions[0]["reference"] is None
             fees = _rows(detail["tables"]["transaction_fees"])
-            assert {row["currency"]: row["value"] for row in fees} == {"BTC": REBATE, "USD": 0}
+            assert {row["currency"]: row["value"] for row in fees} == {"XAU": REBATE, "USD": 0}
             symbols = _rows(detail["tables"]["symbols"])
             assert symbols[0]["status"] == "FILLED" and symbols[0]["error"] is None
             for record_id, present in ((2, False), (3, True)):

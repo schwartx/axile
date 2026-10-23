@@ -50,12 +50,12 @@ def _facts(connection, snapshot_id="typed", *, result_version=2, cost_version=1)
         {"snapshot": snapshot_id},
     )
     rows = (
-        (1, "A", 100, 2, 200, 0, "USDT", 1),
-        (1, "B", None, 7, None, 0.25, "BTC", None),
+        (1, "A", 100, 2, 200, 0, "USD", 1),
+        (1, "B", None, 7, None, 0.25, "XAU", None),
         (1, "A", 50, None, None, 9, "", 2),
-        (3, "ZERO", 0, 0, 0, 0, "USDT", 0),
-        (4, "A", 100, 1, 100, 0.01, "USDT", 1),
-        (4, "B", 200, 2, 100, 0.02, "USDT", 2),
+        (3, "ZERO", 0, 0, 0, 0, "USD", 0),
+        (4, "A", 100, 1, 100, 0.01, "USD", 1),
+        (4, "B", 200, 2, 100, 0.02, "USD", 2),
     )
     columns = ("record", "symbol", "value", "cost", "loss", "fee", "currency", "quantity")
     connection.execute(
@@ -118,7 +118,7 @@ def test_backfill_preserves_unknown_amounts_zero_fees_and_currency(database):
                 "WHERE snapshot_id='typed' ORDER BY record_id,currency"
             )
         ).all()
-        assert fees == [(1, "BTC", 0.25), (1, "USDT", 0.0), (3, "USDT", 0.0), (4, "USDT", 0.03)]
+        assert fees == [(1, "XAU", 0.25), (1, "USD", 0.0), (3, "USD", 0.0), (4, "USD", 0.03)]
         assert (
             connection.execute(sa.text("SELECT read_view_schema_version FROM performance_snapshot")).scalar_one() == 1
         )
@@ -264,5 +264,5 @@ def test_backfill_preserves_rebates_and_estimated_trade_count(database):
             == 2
         )
         assert connection.execute(
-            sa.text("SELECT value,count FROM performance_execution_fee WHERE record_id=1 AND currency='BTC'")
+            sa.text("SELECT value,count FROM performance_execution_fee WHERE record_id=1 AND currency='XAU'")
         ).one() == (-0.125, 1)

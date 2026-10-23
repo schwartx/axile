@@ -824,7 +824,7 @@ mod tests {
                  INSERT INTO performance_result_range VALUES ('s1','all','equity-ledger-1',1,'1970-01-01T08:00:01','1970-01-01T08:00:02',1,1,1,1,0,0,'available','cal','日历',1);
                  INSERT INTO performance_result_point VALUES ('s1','all',0,'2026-01-01','2026-01-01T09:00:00',NULL,NULL,NULL,100.0,NULL,NULL,NULL,NULL,NULL,NULL,0);
                  INSERT INTO performance_result_point VALUES ('s1','all',1,'2026-01-02','2026-01-02T09:00:00',1,'e-1',0.1,110.0,NULL,0.1,NULL,NULL,NULL,NULL,1);
-                 INSERT INTO performance_execution_fee VALUES ('s1',1,'USD',0.0,1),('s1',1,'BTC',-0.000001,1);
+                 INSERT INTO performance_execution_fee VALUES ('s1',1,'USD',0.0,1),('s1',1,'CNY',-0.000001,1);
                  INSERT INTO performance_cost_execution VALUES ('s1',1,1500.0,1,0,'k-1','e-1','2026-01-01T09:30:00',1,0.25,1,1,1,1,NULL,0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}',1234.5,-0.5,NULL,1.0,1,1,2,1,1234.5,0,1);
                  INSERT INTO performance_cost_execution VALUES ('s1',2,1800.0,1,1,'k-2','e-2','2026-01-02T09:30:00',1,0.1,0,0,0,0,'noop',0,1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'{}',NULL,NULL,NULL,NULL,0,0,0,1,0,0,0);
                  INSERT INTO performance_cost_transaction VALUES ('s1',1,0,'A','buy',0.5,2469.0,NULL,NULL,1500.25,NULL,0,NULL,NULL,1234.5,-0.5,NULL,1.0,1,1,1,2);
@@ -941,7 +941,7 @@ mod tests {
         let value = execution_detail(&connection, 2, "s1", 1, 200, 0).unwrap();
         assert_eq!(value["header"]["execution_id"], "e-1");
         assert_eq!(value["header"]["success"], true);
-        assert_eq!(value["summary"]["fees"]["BTC"], -0.000001);
+        assert_eq!(value["summary"]["fees"]["CNY"], -0.000001);
         assert_eq!(value["summary"]["has_transactions"], true);
         let transactions = &value["tables"]["transactions"];
         assert_eq!(transactions["rows"][0][7], 1500.25); // time

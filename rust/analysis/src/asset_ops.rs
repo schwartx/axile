@@ -660,7 +660,7 @@ mod tests {
         let connection = schema();
         input_and_record(&connection, Some("e1"));
         let payload = json!({"account_assets":null,"symbol_results":{
-            "BTC/USDT~hedge":{"account_assets":{"positions":null}},
+            "SHFE.rb2610/CNY~hedge":{"account_assets":{"positions":null}},
             "":{"account_assets":"invalid"}}});
         write_result_assets(&connection, 17, &payload, None).unwrap();
         assert_eq!(count(&connection, "business_asset_snapshot"), 3);
@@ -676,11 +676,11 @@ mod tests {
         .unwrap();
         let hedged = roots
             .iter()
-            .find(|row| row["map_key"] == "BTC/USDT~hedge")
+            .find(|row| row["map_key"] == "SHFE.rb2610/CNY~hedge")
             .unwrap();
         assert_eq!(
             hedged["path"],
-            "/symbol_results/BTC~1USDT~0hedge/account_assets"
+            "/symbol_results/SHFE.rb2610~1CNY~0hedge/account_assets"
         );
         assert_eq!(
             observation(&connection, hedged, true).unwrap()["positions"],

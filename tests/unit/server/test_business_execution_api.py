@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pickle
-import subprocess
-import sys
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -23,44 +20,10 @@ from axile.server.db.models.execution import ExecuteRecord
 from axile.server.target_weight_snapshots import TargetWeightSnapshotData
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
-from tests.unit.server import _business_facts_test_support
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result
+from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
-
-_SQLITE_ORACLE = """
-import pickle, sys
-from tests.unit.server import _business_facts_test_support as support
-path, operation, arguments = pickle.loads(sys.stdin.buffer.read())
-result = getattr(support, operation)(path, *arguments)
-sys.stdout.buffer.write(pickle.dumps(result))
-"""
-
-
-def _oracle(path, operation, *arguments):
-    # 独立进程隔离两个 SQLite 内核，pickle 保留原有 SQLAlchemy 字段类型。
-    result = subprocess.run(
-        [sys.executable, "-c", _SQLITE_ORACLE],
-        input=pickle.dumps((str(path), operation, arguments)),
-        capture_output=True,
-        timeout=5,
-        check=True,
-    )
-    return pickle.loads(result.stdout)
-
-
-def sql(path, statement, parameters=()):
-    _oracle(path, "sql", statement, parameters)
-
-
-def rows(path, name):
-    return _oracle(path, "rows", name)
-
-
-@pytest.fixture(autouse=True)
-def isolated_sqlite_oracles(monkeypatch):
-    monkeypatch.setattr(_business_facts_test_support, "sql", sql)
 
 
 @pytest.fixture

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from contextlib import closing
 
 import pytest
@@ -12,6 +11,7 @@ from axile.server._native import _core
 from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.execution import records
 from axile.server.target_weight_snapshots import append_target_weight_snapshot, read_target_snapshot_weights
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import persist_result, rows, seed_account, sql
 
 
@@ -28,7 +28,7 @@ def database(native_database, monkeypatch):
 
 
 def _fact_counts(path):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         names = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
         return {
             name: connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]

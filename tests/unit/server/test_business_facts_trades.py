@@ -41,7 +41,7 @@ def test_occurrence_identity_preserves_root_nested_duplicates_and_paths(native_d
     payload = {
         "trades": [_fill(), _fill(), _fill(trade_price=3511)],
         "symbol_results": {
-            "BTC/USDT~demo": {"trades": [_fill(symbol="BTCUSDT"), _fill(symbol="BTCUSDT")]},
+            "XAU/USD~demo": {"trades": [_fill(symbol="XAUUSD"), _fill(symbol="XAUUSD")]},
             "": {"trades": [_fill(trade_id="", symbol="")]},
             "rb2610": {"trades": []},
         },
@@ -50,10 +50,10 @@ def test_occurrence_identity_preserves_root_nested_duplicates_and_paths(native_d
     assert business_evidence(restored) == business_evidence(payload)
     assert business_evidence(len(batch["business_trade"])) == business_evidence(6)
     assert business_evidence(batch["business_trade"][3]["path"]) == business_evidence(
-        "/symbol_results/BTC~1USDT~0demo/trades/0"
+        "/symbol_results/XAU~1USD~0demo/trades/0"
     )
-    assert business_evidence(batch["business_trade_collection"][1]["map_key"]) == business_evidence("BTC/USDT~demo")
-    assert business_evidence(batch["business_trade"][3]["symbol"]) == business_evidence("BTCUSDT")
+    assert business_evidence(batch["business_trade_collection"][1]["map_key"]) == business_evidence("XAU/USD~demo")
+    assert business_evidence(batch["business_trade"][3]["symbol"]) == business_evidence("XAUUSD")
     assert business_evidence(
         len({(row["record_id"], row["path"]) for row in batch["business_trade"]})
     ) == business_evidence(6)
@@ -64,8 +64,8 @@ def test_fee_absent_null_zero_rebate_and_original_currency_remain_distinct(nativ
     extras = [
         {},
         {"commission": None},
-        {"commission": 0, "commission_asset": "BNB"},
-        {"commission": -0.002, "commission_asset": "USDT"},
+        {"commission": 0, "commission_asset": "HKD"},
+        {"commission": -0.002, "commission_asset": "USD"},
         {"commission": 1.25, "commission_asset": ""},
         {"commission": "0.004", "commission_asset": None},
         {"commission": False, "commission_asset": 3},
@@ -78,7 +78,7 @@ def test_fee_absent_null_zero_rebate_and_original_currency_remain_distinct(nativ
         [None, None, 0, -0.002, 1.25, None, None, None]
     )
     assert business_evidence([row["fee_currency"] for row in batch["business_trade"]]) == business_evidence(
-        [None, None, "BNB", "USDT", "", None, None, None]
+        [None, None, "HKD", "USD", "", None, None, None]
     )
 
 

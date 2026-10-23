@@ -1,7 +1,6 @@
 """目录与交易共享限额，独立刷盘及后续基线读取不重复计入同一操作。"""
 
 import asyncio
-import sqlite3
 from contextlib import closing
 
 import pytest
@@ -13,6 +12,7 @@ from axile.executor.ctp.ctp_execute import CTPExecutor
 from axile.server.account_control import providers
 from axile.server.execution import execution_account_control as persistence
 from axile.server.execution.catalog_control import catalog_control_scope
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import rows
 from tests.unit.server._execution_test_support import build_account, insert_account
 
@@ -35,7 +35,7 @@ def test_independent_catalog_flush_preserves_running_usage_and_audit_ownership(n
                 }
             },
         )
-        with closing(sqlite3.connect(native_database)) as connection, connection:
+        with closing(oracle_connect(native_database)) as connection, connection:
             insert_account(connection, account)
         snapshot = account.snapshot()
         executor = CTPExecutor(TradeChannel.CTP)

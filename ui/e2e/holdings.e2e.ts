@@ -170,7 +170,11 @@ test('unsynchronized sampling and failed order refresh retain evidence but disab
   await page.route('**/api/v1/account/*/orders**', route => route.fulfill({ status: 502, json: { detail: '柜台查询失败' } }))
   await dialog.getByRole('button', { name: '核对在途委托' }).click()
   await expect(dialog.getByRole('button', { name: '撤单 c2611 c-1' })).toBeDisabled()
-  await expect(dialog.getByRole('button', { name: '核对失败' })).toBeVisible()
+  const notice = dialog.getByRole('img', { name: '本次核对未完成', exact: true })
+  await expect(notice).toBeVisible()
+  await notice.focus()
+  await expect(page.getByRole('tooltip')).toContainText('本次核对未完成')
+  await expect(page.getByRole('tooltip')).toContainText('当前显示上次读取结果')
   await expect(dialog.getByText('目标持仓', { exact: true }).locator('..').locator('dd')).toContainText('空20手')
 })
 

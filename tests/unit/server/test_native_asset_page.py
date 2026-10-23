@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from axile.server._native import _core
 from axile.server.api.routes import account_assets
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import seed_account, sql
 
 
@@ -65,14 +66,14 @@ def test_native_asset_page_http_and_integrity(native_database, monkeypatch):
             assert (await client.get("/99/asset_snapshots")).status_code == 404
             assert (await client.get("/1/asset_snapshots?limit=501")).status_code == 422
             # 历史损坏绕过当前写入触发器，仅在原生读取边界验证拒绝。
-            with closing(sqlite3.connect(native_database)) as connection, connection:
+            with closing(oracle_connect(native_database)) as connection, connection:
                 connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
                 connection.execute(
                     "UPDATE account_asset_snapshot SET asset_fact_id=(SELECT asset_fact_id "
                     "FROM account_asset_snapshot WHERE account_id=2) WHERE account_id=1"
                 )
             assert (await client.get("/1/asset_snapshots")).status_code == 503
-            with closing(sqlite3.connect(native_database)) as connection, connection:
+            with closing(oracle_connect(native_database)) as connection, connection:
                 connection.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
                 connection.execute(
                     "UPDATE account_asset_snapshot SET asset_fact_id='snapshot:1:/account_assets' WHERE account_id=1"
