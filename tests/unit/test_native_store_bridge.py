@@ -308,7 +308,7 @@ except _core.NativeError:
     assert corruption == "malformed_json"
 else:
     raise AssertionError("invalid account JSON did not raise")
-assert _core.migration_current(database, "{}")["public"] == "0040"
+assert _core.migration_current(database, "{}")["public"] == "0041"
 print("native-process-alive")
 """
     result = subprocess.run(

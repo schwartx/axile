@@ -252,6 +252,7 @@ def test_roundtrip_preview_matches_prior_notification_semantics_without_channel(
     original_order = old_payload["symbol_results"]["rb2610"]["orders"][0]
     original_order["extra"]["_update_time_str"] = original_order["update_time"]
     monkeypatch.setattr(feishu_notifications, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
+    monkeypatch.setattr(account_feishu, "clock_now", lambda: datetime(2026, 10, 20, 1, tzinfo=UTC))
     previous = feishu_notifications.build_execution_notification_context(
         account_feishu._TestNotificationSource(account.name), UnifiedStandardOutput.model_validate(old_payload)
     )
@@ -784,12 +785,12 @@ async def _write_real_terminal(path, payload):
     )
 
 
-def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidence(facts_database):
-    """终态及摘要引用同事务提交，冷读和下载仍保留原始 journal 内容。"""
+def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_database):
+    """终态及完整摘要同事务提交，冷读和下载仍保留原始 journal 内容。"""
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
-    record = asyncio.run(_write_real_terminal(facts_database, payload))
+    asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_summary():
         artifact = _get(facts_database, ExecutionArtifact)
@@ -798,12 +799,8 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
         return stored, hydrated
 
     stored, hydrated = asyncio.run(read_summary())
-    assert business_evidence(stored["business_facts_ref"]["view"]) == business_evidence("result")
-    assert business_evidence(stored["business_facts_ref"]["record_id"]) == business_evidence(record.id)
-    stored_symbol = stored.get("symbol_results", {}).get("rb2610", {})
-    assert "orders" not in stored_symbol and "trades" not in stored_symbol
-    assert len(json.dumps(stored)) < len(json.dumps(journal))
-    hydrated.pop("business_facts_ref")
+    assert "business_facts_ref" not in stored
+    assert stored == hydrated
     assert business_evidence(hydrated) == business_evidence(journal)
     snapshot = asyncio.run(_collect(facts_database))
     bundle = build_archive(snapshot, EvidenceProfile.INTERNAL, ExportBudget())
@@ -811,7 +808,7 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
         with ZipFile(bundle.path) as archive:
             artifacts = json.loads(archive.read(f"executions/{_EXECUTION}/artifacts.json"))
             summary = next(row["content"] for row in artifacts if row["artifact_type"] == "execution_summary")
-            summary.pop("business_facts_ref")
+            summary.pop("business_facts_ref", None)
             assert business_evidence(summary) == business_evidence(journal)
             assert business_evidence(
                 _csv(archive, f"executions/{_EXECUTION}/trades.csv")[0]["trade_id"]
@@ -821,7 +818,7 @@ def test_terminal_commit_compacts_pending_summary_and_hydrates_identical_evidenc
 
 
 def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database):
-    """引用已生成后提交失败，完整 worker 证据必须随同终态写入一起回滚。"""
+    """完整摘要已写入后提交失败，完整 worker 证据必须随同终态写入一起回滚。"""
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
@@ -829,9 +826,8 @@ def test_failed_terminal_transaction_keeps_original_worker_journal(facts_databas
     sql(
         facts_database,
         """CREATE TRIGGER reject_compacted_summary AFTER UPDATE OF content ON execution_artifact
-        WHEN json_extract(NEW.content,'$.business_facts_ref.view')='result'
-        AND json_type(NEW.content,'$.symbol_results.rb2610.orders') IS NULL
-        AND json_type(NEW.content,'$.symbol_results.rb2610.trades') IS NULL
+        WHEN json_type(NEW.content,'$.symbol_results.rb2610.orders')='array'
+        AND json_type(NEW.content,'$.symbol_results.rb2610.trades')='array'
         BEGIN SELECT RAISE(ABORT,'synthetic post-compaction persistence failure'); END""",
     )
     with pytest.raises(_core.NativeError, match="post-compaction persistence failure"):
@@ -917,7 +913,7 @@ async def _stored_captured_notification(path):
 def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
     facts_database, monkeypatch, existing_event
 ):
-    """outbox 冻结成功后只留引用；已有通知正文与预览优先级保持不变。"""
+    """outbox 冻结成功后保留独立捕获快照；已有通知正文与预览优先级保持不变。"""
     captured = _large_captured_notification()
     payload = _result()
     payload["extra"]["server_notification_context"] = deepcopy(captured)
@@ -936,8 +932,7 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
         return stored, event.context, detail
 
     stored, event_context, detail = asyncio.run(finish())
-    assert len(json.dumps(stored)) < len(json.dumps(captured)) // 2
-    assert not {"positions", "orders", "trades"}.intersection(stored)
+    assert stored == captured
     assert business_evidence(detail["result"]["extra"]["server_notification_context"]) == business_evidence(captured)
     if existing_event:
         assert business_evidence(event_context) == business_evidence(original_event)
@@ -960,7 +955,7 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
 
 
 def test_context_compaction_rollback_retains_only_copy_when_outbox_is_not_committed(facts_database):
-    """通知及去重提交失败时，捕获正文、步骤状态和 outbox 一起回滚。"""
+    """通知提交失败时，捕获正文、步骤状态和 outbox 一起回滚。"""
     captured = _large_captured_notification()
     payload = _result()
     payload["extra"]["server_notification_context"] = deepcopy(captured)
@@ -969,9 +964,7 @@ def test_context_compaction_rollback_retains_only_copy_when_outbox_is_not_commit
 
     sql(
         facts_database,
-        f"""CREATE TRIGGER reject_compacted_context AFTER UPDATE OF extra ON execution_extension
-        WHEN json_extract(NEW.extra,'$.server_notification_context."$axile_notification_context"')=1
-        AND length(json_extract(NEW.extra,'$.server_notification_context')) < {len(json.dumps(captured)) // 2}
+        """CREATE TRIGGER reject_notification AFTER INSERT ON notification_event
         BEGIN SELECT RAISE(ABORT,'synthetic notification transaction failure'); END""",
     )
     with pytest.raises(_core.NativeError, match="notification transaction failure"):
@@ -1046,7 +1039,7 @@ def test_no_outbox_keeps_captured_notification_as_unique_historical_evidence(fac
 
 @pytest.mark.parametrize("malformed", [False, True])
 def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_database, monkeypatch, malformed):
-    """捕获正文移到 outbox 后，其大列仍需在解码和冷重建前计入预算。"""
+    """捕获正文与 outbox 的大列仍需在解码和冷重建前计入预算。"""
     captured = _large_captured_notification()
     for key in ("positions", "orders", "trades"):
         captured[key] *= 8
@@ -1058,8 +1051,7 @@ def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_d
     async def finish_and_optionally_corrupt():
         await _finish(facts_database)
         stored = await _stored_captured_notification(facts_database)
-        assert not {"positions", "orders", "trades"}.intersection(stored)
-        assert len(json.dumps(stored)) < 21000
+        assert stored == captured
         with closing(oracle_connect(facts_database)) as connection:
             raw_size = connection.execute(
                 "SELECT length(CAST(context AS BLOB)) FROM notification_event WHERE id=?", (f"execution:{_EXECUTION}",)
@@ -1067,16 +1059,10 @@ def test_referenced_outbox_bytes_are_budgeted_before_canonical_hydration(facts_d
         assert raw_size > 64000
         if malformed:
             with closing(oracle_connect(facts_database)) as connection, connection:
-                guard = connection.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
-                    ("business_facts_0037_notification_outbox_update",),
-                ).fetchone()[0]
-                connection.execute("DROP TRIGGER business_facts_0037_notification_outbox_update")
                 connection.execute(
                     "UPDATE notification_event SET context=? WHERE id=?",
                     ("malformed-notification-context" * 10000, f"execution:{_EXECUTION}"),
                 )
-                connection.execute(guard)
 
     asyncio.run(finish_and_optionally_corrupt())
     cold_reader = AsyncMock(side_effect=AssertionError("outbox budget preflight must precede canonical hydration"))

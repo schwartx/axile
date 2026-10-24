@@ -6,8 +6,8 @@ use super::*;
 use crate::business_detail;
 use crate::business_facts_ops::{
     encode, result_extensions, result_head, result_orders, result_symbols, result_trades,
-    summary_refs,
 };
+use crate::migrations::{notification_refs, snapshot_refs};
 
 const TARGET_FIELDS: &[&str] = &[
     "curr_target",
@@ -169,12 +169,16 @@ fn result_children(record_id: i64, payload: &Value) -> Result<Vec<(&'static str,
     Ok(result)
 }
 pub(super) fn reconstruct_result(connection: &Connection, record: &Object) -> Result<Value> {
-    business_detail::read_result_for_migration(
+    let mut result = business_detail::read_result_for_migration(
         connection,
         integer(record, "account_id")?,
         integer(record, "id")?,
     )
-    .map_err(error)
+    .map_err(error)?;
+    if let Some(result) = result.as_object_mut() {
+        notification_refs::hydrate(connection, record, result).map_err(error)?;
+    }
+    Ok(result)
 }
 fn record_for_execution(connection: &Connection, execution: &Value) -> Result<Option<Object>> {
     let Some(execution) = execution.as_str() else {
@@ -229,7 +233,7 @@ fn backfill_records(connection: &Connection) -> Result<()> {
                 );
             }
             let compact =
-                summary_refs::compact_notification_capture(connection, &row, &raw_result)?;
+                snapshot_refs::compact_notification_capture(connection, &row, &raw_result)?;
             result_head::write_result_head(
                 connection,
                 record_id,
@@ -649,11 +653,11 @@ fn compact_summaries(connection: &Connection) -> Result<()> {
             return Ok(());
         }
         let Some(compacted) =
-            summary_refs::compact_summary_content(&content, &result, integer(&record, "id")?)
+            snapshot_refs::compact_summary_content(&content, &result, integer(&record, "id")?)
         else {
             return Ok(());
         };
-        if summary_refs::hydrate_summary_content(&compacted, &result, false).is_ok() {
+        if snapshot_refs::hydrate_summary_content(&compacted, &result, false).is_ok() {
             update_artifact(
                 connection,
                 &row,
@@ -845,7 +849,7 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
                 )));
             }
         }
-        let expected = summary_refs::compact_notification_capture(connection, &record, &expected)?;
+        let expected = snapshot_refs::compact_notification_capture(connection, &record, &expected)?;
         let is_success = value(&record, "is_success").as_i64();
         let mut expected_rows = result_children(id, &expected)?;
         let (head, cancellations) = result_head::encode_head(id, &expected, is_success)?;
@@ -988,7 +992,7 @@ fn restore_artifacts(connection: &Connection) -> Result<()> {
                         value(&row, "id")
                     ))
                 })?;
-            summary_refs::hydrate_summary_content(
+            snapshot_refs::hydrate_summary_content(
                 &Value::Object(content.clone()),
                 &reconstruct_result(connection, record)?,
                 false,

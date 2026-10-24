@@ -432,10 +432,33 @@ pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
                 }
             }
         }
-        let detail =
-            crate::business_detail::read(connection, account_id, record["id"].as_i64().unwrap())
-                .map_err(AnalysisError::from)?;
-        Ok(json!({"record":record,"detail":detail}))
+        let detail = execution_detail(connection, account_id, record["id"].as_i64().unwrap())?;
+        let account_name: String = connection
+            .query_row(
+                "SELECT name FROM account WHERE id=?1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .map_err(database)?;
+        let now = request
+            .get("now")
+            .map(|value| value.as_str().ok_or_else(|| invalid("now must be text")))
+            .transpose()?
+            .unwrap_or(record["created_at"].as_str().unwrap());
+        let context = crate::notification_context::preview(
+            &detail,
+            &format!("{account_name}（样例）"),
+            now,
+            record["created_at"].as_str().unwrap(),
+        )
+        .map_err(|error| {
+            let mut failure = AnalysisError::caused_by("NOTIFICATION_INPUT", error);
+            failure.error = "最近一次执行数据不完整，无法重建通知快照".into();
+            failure
+        })?;
+        let mut preview = json!({"record":record,"context":null});
+        preview["context"] = context;
+        Ok(preview)
     })
 }
 

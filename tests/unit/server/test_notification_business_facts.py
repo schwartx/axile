@@ -3,13 +3,14 @@
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 
 from axile.server._native import _core
 from axile.server.api.routes import account_feishu
-from axile.server.execution.notification_records import build_persisted_notification_context
+from tests.conftest import native_store_call
+from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -42,6 +43,17 @@ def _saved_context() -> dict:
     }
 
 
+def _store_preview(monkeypatch, path, result, persisted_input=None):
+    persist_result(
+        path, result, execution_id="execution-facts", created_at="2026-10-20T09:00:00", raw_input=persisted_input
+    )
+    monkeypatch.setattr(
+        account_feishu,
+        "native_operation",
+        AsyncMock(side_effect=lambda name, request: native_store_call(path, name, request)),
+    )
+
+
 def test_preview_prefers_outbox_without_loading_execution_detail(monkeypatch) -> None:
     """已保存的通知上下文保留补发事实，预览只修改副本。"""
     saved = _saved_context()
@@ -59,20 +71,18 @@ def test_preview_prefers_outbox_without_loading_execution_detail(monkeypatch) ->
     assert context["execution"]["is_test"] is True
     assert context["assets"] == {"total_assets": 0.0, "market_value": None}
     assert context["positions"] is None
-    native.assert_awaited_once_with("notifications_preview", {"account_id": 1})
+    native.assert_awaited_once_with("notifications_preview", {"account_id": 1, "now": ANY})
     assets.assert_not_awaited()
 
 
-def test_preview_reads_captured_context_from_business_facts(monkeypatch) -> None:
+def test_preview_reads_captured_context_from_business_facts(monkeypatch, native_database) -> None:
     """缺少 outbox 时使用结构化扩展中的捕获上下文，不制造资产。"""
     captured = _saved_context()
     original = deepcopy(captured)
     record = _record()
     detail = {"input": {}, "result": {"extra": {"server_notification_context": captured}}}
     assets = AsyncMock(side_effect=AssertionError("预览不得查询渠道"))
-    monkeypatch.setattr(
-        account_feishu, "native_operation", AsyncMock(return_value={"record": vars(record), "detail": detail})
-    )
+    _store_preview(monkeypatch, native_database, detail["result"])
     monkeypatch.setattr(account_feishu, "query_account_assets", assets)
 
     context = asyncio.run(account_feishu._load_notification_preview_context(build_account()))
@@ -99,14 +109,10 @@ def test_preview_converts_native_error_to_value_error(monkeypatch) -> None:
     assert caught.value.__cause__ is error
 
 
-def test_preview_rejects_incomplete_canonical_output_without_channel_query(monkeypatch) -> None:
+def test_preview_rejects_incomplete_canonical_output_without_channel_query(monkeypatch, native_database) -> None:
     """不完整事实给出明确错误，不连接渠道填补数据。"""
     assets = AsyncMock(side_effect=AssertionError("预览不得查询渠道"))
-    monkeypatch.setattr(
-        account_feishu,
-        "native_operation",
-        AsyncMock(return_value={"record": vars(_record()), "detail": {"input": {}, "result": {}}}),
-    )
+    _store_preview(monkeypatch, native_database, {})
     monkeypatch.setattr(account_feishu, "query_account_assets", assets)
 
     with pytest.raises(ValueError, match="数据不完整"):
@@ -117,7 +123,9 @@ def test_preview_rejects_incomplete_canonical_output_without_channel_query(monke
 
 @pytest.mark.parametrize("explicit_null", [False, True])
 @pytest.mark.parametrize("legacy_outcome", [False, True])
-def test_preview_rebuild_preserves_explicit_null_input(monkeypatch, explicit_null, legacy_outcome) -> None:
+def test_preview_rebuild_preserves_explicit_null_input(
+    monkeypatch, native_database, explicit_null, legacy_outcome
+) -> None:
     """缺省结果输入可以引用独立输入，显式空值不替换为另一份输入。"""
     account = build_account()
     inputs = account_feishu._test_input(account, curr_target={"rb2610": 0.0}, last_target={}).to_dict()
@@ -139,11 +147,7 @@ def test_preview_rebuild_preserves_explicit_null_input(monkeypatch, explicit_nul
     if legacy_outcome:
         result.pop("status")
         result["outcome"] = "completed"
-    monkeypatch.setattr(
-        account_feishu,
-        "native_operation",
-        AsyncMock(return_value={"record": vars(_record()), "detail": {"input": inputs, "result": result}}),
-    )
+    _store_preview(monkeypatch, native_database, result, inputs)
 
     context = asyncio.run(account_feishu._load_notification_preview_context(account))
 
@@ -156,7 +160,7 @@ def test_preview_rebuild_preserves_explicit_null_input(monkeypatch, explicit_nul
 @pytest.mark.parametrize(
     "time_fields", [{}, {"update_time": None}, {"update_time": "2026-10-20T09:00:02.123456+08:00"}]
 )
-def test_rebuild_keeps_explicit_errors_and_native_order_time(time_fields) -> None:
+def test_rebuild_keeps_explicit_errors_and_native_order_time(monkeypatch, native_database, time_fields) -> None:
     """展示兼容只补缺失字段，不覆盖技术错误，也不把历史订单时间改成现在。"""
     error = "RuntimeError: native callback failed\n  at channel.confirm(order_id='native-01')"
     payload = {
@@ -196,11 +200,12 @@ def test_rebuild_keeps_explicit_errors_and_native_order_time(time_fields) -> Non
     }
     original = deepcopy(payload)
 
-    context = build_persisted_notification_context(account_feishu._TestNotificationSource("ctp-sim"), payload, None, {})
+    _store_preview(monkeypatch, native_database, payload)
+    context = asyncio.run(account_feishu._load_notification_preview_context(build_account()))
 
     assert context["execution"]["error"] == error
     assert context["symbols"][0]["error"] == error
-    assert ("update_time" in context["orders"][0]) == ("update_time" in time_fields)
-    if "update_time" in time_fields:
+    assert ("update_time" in context["orders"][0]) == (time_fields.get("update_time") is not None)
+    if time_fields.get("update_time") is not None:
         assert context["orders"][0]["update_time"] == time_fields["update_time"]
     assert payload == original

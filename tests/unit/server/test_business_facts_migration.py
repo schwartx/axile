@@ -490,7 +490,7 @@ def test_summary_compaction_protects_dependencies_and_downgrade_restores_wire(le
         assert set(restored["symbol_results"]["A"]) - {"availability"} == set(summary["symbol_results"]["A"])
 
 
-def test_late_outbox_context_dedup_is_allowed_with_summary_reference(legacy_connection):
+def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_connection):
     database, metadata, now = legacy_connection
     captured = {
         "execution": {"id": "migration-exec"},
@@ -562,21 +562,17 @@ def test_late_outbox_context_dedup_is_allowed_with_summary_reference(legacy_conn
         )
         reference = extra["server_notification_context"]
         assert reference is not None
-        assert reference["$axile_notification_context"] == 1
+        assert reference == captured
     result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert business_evidence(result["extra"]["server_notification_context"]) == business_evidence(captured)
     with _connect(database) as connection:
         connection.exec_driver_sql(
             "UPDATE notification_event SET status='failed',error='synthetic' WHERE id='execution:migration-exec'"
         )
-        with pytest.raises(sa.exc.IntegrityError, match="Frozen notification context"):
-            connection.exec_driver_sql("UPDATE notification_event SET context='{}' WHERE id='execution:migration-exec'")
-        with pytest.raises(sa.exc.IntegrityError, match="Frozen notification context"):
-            connection.exec_driver_sql("DELETE FROM notification_event WHERE id='execution:migration-exec'")
-        with pytest.raises(sa.exc.IntegrityError, match="Frozen notification context"):
-            connection.exec_driver_sql(
-                "INSERT OR REPLACE INTO notification_event(id,account_id,created_at,event_type,context,status) VALUES('execution:migration-exec',1,'synthetic','execution.finished','{}','pending')"
-            )
+        connection.exec_driver_sql("UPDATE notification_event SET context='{}' WHERE id='execution:migration-exec'")
+        connection.exec_driver_sql("DELETE FROM notification_event WHERE id='execution:migration-exec'")
+    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    assert result["extra"]["server_notification_context"] == captured
 
 
 def test_migration_context_dedup_requires_existing_outbox_and_downgrades_losslessly(legacy_connection):

@@ -1,4 +1,4 @@
-//! 0034—0040 转换；所有写入均留在迁移引擎持有的事务内。
+//! 0034—0041 转换；所有写入均留在迁移引擎持有的事务内。
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Params};
@@ -11,6 +11,7 @@ mod account_identity;
 mod analysis;
 mod business;
 mod direct;
+mod full_snapshots;
 mod guards;
 use crate::json_codec as json;
 mod restore;
@@ -28,6 +29,7 @@ pub(super) fn upgrade(connection: &Connection, revision: u32) -> Result<()> {
         38 => guards::replace_summary(connection, true),
         39 => direct::upgrade(connection),
         40 => account_identity::upgrade(connection),
+        41 => full_snapshots::upgrade(connection),
         _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
     }
 }
@@ -41,6 +43,7 @@ pub(super) fn downgrade(connection: &Connection, revision: u32) -> Result<()> {
         38 => guards::replace_summary(connection, false),
         39 => direct::downgrade(connection),
         40 => account_identity::downgrade(connection),
+        41 => full_snapshots::downgrade(connection),
         _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
     }
 }

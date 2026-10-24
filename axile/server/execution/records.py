@@ -31,7 +31,7 @@ async def _persist_execute_record(
     raw_result: dict[str, object],
     is_success: int,
 ) -> ExecuteRecord:
-    """一次原生事务提交终态、输入、结果事实、资产历史与摘要引用。"""
+    """一次原生事务提交终态、输入、结果事实、资产历史与完整摘要快照。"""
     try:
         stored = await native_operation(
             "persist_execute_record",

@@ -1,4 +1,4 @@
-"""冻结 outbox 引用仅替换重复业务子树，并能恢复原捕获线格式。"""
+"""0040 的冻结 outbox 引用在 0041 迁移中无损展开；坏样本拒绝升级。"""
 
 import json
 import sqlite3
@@ -11,14 +11,22 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server._native import _core
 from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
-from tests.conftest import native_store_call
+from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
-from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
+from tests.unit.server._business_facts_test_support import persist_result, read_result, sql
+from tests.unit.server._legacy_snapshot_support import notification_reference
 from tests.unit.server.test_evidence_export import _seed as seed_rows
 
 _EXECUTION = "execution-facts"
 _EVENT = f"execution:{_EXECUTION}"
 _NOW = "2026-10-20T09:00:01"
+
+
+@pytest.fixture
+def native_database(tmp_path):
+    path = tmp_path / "legacy-notification.db"
+    initialize_native_database(path, revision="0040")
+    return path
 
 
 def _capture() -> dict:
@@ -77,10 +85,14 @@ def _freeze_capture(path, captured, event):
         path, "intent_finish", {"execution_id": _EXECUTION, "status": "PARTIAL", "finished_at": _NOW, "now": _NOW}
     )
     assert receipt["changed"]
-    return record, rows(path, "execution_extension")[0]["extra"]["server_notification_context"]
+    reference = notification_reference(captured, event, _EVENT)
+    if reference is not None:
+        _replace_reference(path, record, reference)
+    return record, reference if reference is not None else captured
 
 
 def _read_capture(path, record):
+    initialize_native_database(path)
     return read_result(path, record)["extra"]["server_notification_context"]
 
 

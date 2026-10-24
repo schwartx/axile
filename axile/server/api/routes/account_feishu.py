@@ -28,7 +28,6 @@ from axile.server.account_assets import query_account_assets
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.error_details import exception_details
-from axile.server.execution.notification_records import build_persisted_notification_context
 from axile.server.execution.registry import clear_account_asset_refresh, try_register_account_asset_refresh
 from axile.server.native_store import native_operation
 from axile.server.target_weight_snapshots import get_latest_account_target_snapshot
@@ -299,33 +298,15 @@ async def _load_notification_preview_context(
 ) -> dict[str, Any]:
     """复用最近一次执行的脱敏通知快照，不连接渠道或模拟成交。"""
     try:
-        preview = await native_operation("notifications_preview", {"account_id": account.id})
+        preview = await native_operation(
+            "notifications_preview", {"account_id": account.id, "now": clock_now().isoformat()}
+        )
     except _core.NativeError as exc:
         raise ValueError(str(exc.args[1])) from exc
     if preview is None:
         raise ValueError("当前账户暂无执行记录，无法试跑通知")
     record = preview["record"]
-    if "context" in preview:
-        context = deepcopy(preview["context"])
-    else:
-        detail = preview["detail"]
-        raw = deepcopy(detail["result"])
-        if not isinstance(raw, dict):
-            raise ValueError("最近一次执行没有可用的通知快照")
-        extra = raw.get("extra")
-        captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
-        if isinstance(captured, dict) and captured:
-            context = deepcopy(captured)
-        else:
-            try:
-                context = build_persisted_notification_context(
-                    _TestNotificationSource(account.name), raw, detail["input"], account.account_config
-                )
-            except ValueError as exc:
-                raise ValueError("最近一次执行数据不完整，无法重建通知快照") from exc
-            execution = context.get("execution")
-            if isinstance(execution, dict):
-                execution["notified_at"] = record["created_at"]
+    context = deepcopy(preview["context"])
     context["is_test"] = True
     context["event_type"] = "execution.finished"
     execution = context.get("execution")

@@ -1,4 +1,4 @@
-"""通知上下文去重不得丢失已冻结的分析与活动列表投影。"""
+"""完整通知快照不得丢失已冻结的分析与活动列表投影。"""
 
 from __future__ import annotations
 
@@ -142,8 +142,8 @@ def _event():
     )
 
 
-def test_compaction_preserves_projections_and_activity_without_requested_analysis(database):
-    """真实终态事务压缩通知，成交数和成本仍立即可读。"""
+def test_full_context_preserves_projections_and_activity_without_requested_analysis(database):
+    """真实终态事务完整保留通知，成交数和成本仍立即可读。"""
     record = _seed(database)
     before = _projection_rows(database, record["id"])
     result_before = asyncio.run(read_execution_result(record))
@@ -153,7 +153,7 @@ def test_compaction_preserves_projections_and_activity_without_requested_analysi
     assert activity.summary is not None and activity.summary.cost is not None
     _finish(database)
     assert _projection_rows(database, record["id"]) == before
-    assert _extra(database)["server_notification_context"]["$axile_notification_context"] == 1
+    assert _extra(database)["server_notification_context"] == _result()["extra"]["server_notification_context"]
     assert not _finish(database)["changed"]
     state = rows(database, "account_analysis")[0]
     assert state["current_snapshot"] is None and not state["requested"]
@@ -165,10 +165,10 @@ def test_compaction_preserves_projections_and_activity_without_requested_analysi
 
 
 def test_real_extension_evidence_change_still_invalidates_projections(database):
-    """压缩后的真实扩展变化仍增加来源版本，并保持事实可用。"""
+    """真实扩展变化仍增加来源版本，并保持事实可用。"""
     record = _seed(database)
     _finish(database)
-    assert _extra(database)["server_notification_context"]["$axile_notification_context"] == 1
+    assert _extra(database)["server_notification_context"] == _result()["extra"]["server_notification_context"]
     assert all(_projection_rows(database, record["id"]).values())
     version = rows(database, "account_analysis")[0]["source_version"]
     sql(
@@ -196,19 +196,15 @@ def test_distinct_business_context_is_not_compacted_or_reprojected(database):
     assert rows(database, "account_analysis")[0]["source_version"] == version
 
 
-def test_compaction_rolls_back_with_outbox(database):
-    """原生终态事务失败时回滚 outbox、引用和业务投影。"""
+def test_notification_rolls_back_with_outbox(database):
+    """原生终态事务失败时回滚 outbox、步骤和业务投影。"""
     record = _seed(database)
     before = _projection_rows(database, record["id"])
     result_before = asyncio.run(read_execution_result(record))
     state_before = rows(database, "account_analysis")[0]
     sql(
         database,
-        """CREATE TRIGGER reject_compacted_context AFTER UPDATE OF extra ON execution_extension
-        WHEN json_extract(NEW.extra,'$.server_notification_context."$axile_notification_context"')=1
-        AND EXISTS(SELECT 1 FROM execution_symbol_result WHERE record_id=NEW.record_id)
-        AND EXISTS(SELECT 1 FROM execution_symbol_sizing WHERE record_id=NEW.record_id)
-        AND EXISTS(SELECT 1 FROM business_trade WHERE record_id=NEW.record_id)
+        """CREATE TRIGGER reject_notification AFTER INSERT ON notification_event
         BEGIN SELECT RAISE(ABORT,'synthetic outer transaction failure'); END""",
     )
     with pytest.raises(_core.NativeError, match="synthetic outer transaction failure"):

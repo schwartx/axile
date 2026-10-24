@@ -739,13 +739,8 @@ pub(crate) fn finish_supplement_execution(
         )
         .optional()
         .map_err(database)?;
-    let (event, session_closed) =
+    let (_, session_closed) =
         enqueue_execution_finished(connection, row, &account, &steps, &groups, record, now)?;
-    if let (Some(record_id), Some(event)) = (record, event) {
-        crate::business_facts_ops::summary_refs::compact_record_notification_context(
-            connection, record_id, &event,
-        )?;
-    }
     if session_closed {
         for group_id in groups.keys() {
             cancel_groups_in_connection(

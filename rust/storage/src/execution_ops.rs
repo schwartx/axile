@@ -2,12 +2,12 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::business_facts_ops::{
     self as facts, encode, facts_error, result_extensions, result_head, result_orders,
-    result_symbols, result_trades, sql, summary_refs,
+    result_symbols, result_trades, sql,
 };
 use crate::error::AnalysisError;
 
@@ -139,9 +139,70 @@ fn persist_execute_record_in(
         .map_err(sql)?;
     crate::asset_ops::ensure_execution_asset_snapshot(connection, record_id)?;
     if let Some(execution_id) = execution_id {
-        summary_refs::compact_execution_summary(connection, record_id, execution_id, raw_result)?;
+        freeze_execution_summary(connection, account_id, record_id, execution_id, raw_result)?;
     }
     Ok(Value::Object(record_row(connection, record_id)?))
+}
+
+fn freeze_execution_summary(
+    connection: &Connection,
+    account_id: i64,
+    record_id: i64,
+    execution_id: &str,
+    raw_result: &Value,
+) -> Result<(), AnalysisError> {
+    let artifact = connection.query_row("SELECT id,content FROM execution_artifact WHERE execution_id=?1 AND lower(artifact_type)='execution_summary'", [execution_id],
+        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?))).optional().map_err(sql)?;
+    let Some((artifact_id, content)) = artifact else {
+        return Ok(());
+    };
+    let mut content: Value = serde_json::from_str(&content)
+        .map_err(|error| AnalysisError::caused_by("BUSINESS_FACTS", error))?;
+    let Some(symbols) = content
+        .get_mut("symbol_results")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let result = crate::business_detail::read_result(connection, account_id, record_id)
+        .map_err(facts_error)?;
+    let heavy = [
+        "orders",
+        "trades",
+        "sizing",
+        "first_tick",
+        "account_assets",
+        "memory",
+        "technical_detail",
+    ];
+    for (symbol, observed) in symbols {
+        let (Some(observed), Some(canonical)) = (
+            observed.as_object_mut(),
+            result["symbol_results"][symbol].as_object(),
+        ) else {
+            continue;
+        };
+        let mut frozen = canonical.clone();
+        frozen.extend(
+            observed
+                .iter()
+                .filter(|(key, value)| {
+                    !heavy.contains(&key.as_str())
+                        || raw_result["symbol_results"][symbol]
+                            .get(*key)
+                            .is_none_or(|raw| !encode::py_eq(raw, value))
+                })
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        *observed = frozen;
+    }
+    connection
+        .execute(
+            "UPDATE execution_artifact SET content=?1 WHERE id=?2",
+            params![content.to_string(), artifact_id],
+        )
+        .map_err(sql)?;
+    Ok(())
 }
 
 fn attach_inputs(
@@ -221,25 +282,6 @@ pub(crate) fn delete_execution_history_in(
     connection: &Connection,
     account_id: i64,
 ) -> Result<usize, AnalysisError> {
-    let mut last_id = 0;
-    loop {
-        let records = connection
-            .prepare(
-                "SELECT id FROM executerecord WHERE account_id=?1 AND id>?2 ORDER BY id LIMIT 100",
-            )
-            .map_err(sql)?
-            .query_map(params![account_id, last_id], |row| row.get::<_, i64>(0))
-            .map_err(sql)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(sql)?;
-        if records.is_empty() {
-            break;
-        }
-        for record_id in records {
-            summary_refs::detach_execution_summaries(connection, record_id)?;
-            last_id = record_id;
-        }
-    }
     connection
         .execute(
             "DELETE FROM account_asset_snapshot WHERE account_id=?1 AND source='execution'",

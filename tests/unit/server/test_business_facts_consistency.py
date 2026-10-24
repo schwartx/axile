@@ -568,21 +568,15 @@ def test_account_snapshot_cannot_read_another_execution_asset(
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_direct_terminal_delete_cannot_dangle_summary_reference(tmp_path, foreign_keys):
-    """原始 SQL 删除不能使独立审计摘要的结果引用悬空。"""
+def test_direct_terminal_delete_keeps_independent_summary(tmp_path, foreign_keys):
+    """直接 SQL 删除终态也不改变完整审计快照。"""
     path = _database(tmp_path)
     record, artifact, original = _store_summary(path)
-    assert artifact.content[REFERENCE_KEY]["view"] == "result"
-    assert artifact.content[REFERENCE_KEY]["record_id"] == record.id
-    assert artifact.content[REFERENCE_KEY]["projection_version"] == 2
+    assert REFERENCE_KEY not in artifact.content
     with _connection(path, foreign_keys) as connection:
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute("DELETE FROM executerecord WHERE id=?", (record.id,))
-        connection.rollback()
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord WHERE id=?", (record.id,)) == 1
-    resolved = _resolved(path, record.execution_id)
-    resolved.pop(REFERENCE_KEY)
-    assert _wire_json(resolved) == _wire_json(original)
+        connection.execute("DELETE FROM executerecord WHERE id=?", (record.id,))
+    assert _scalar(path, "SELECT COUNT(*) FROM executerecord WHERE id=?", (record.id,)) == 0
+    assert _wire_json(_resolved(path, record.execution_id)) == _wire_json(original)
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
@@ -602,9 +596,9 @@ def test_application_history_delete_preserves_independent_summary_wire(tmp_path,
     assert _wire_json(journal.content) == _wire_json(original)
     assert _wire_json(_resolved(path, record.execution_id)) == _wire_json(original)
     untouched = _artifact(path, other.execution_id)
-    assert untouched.id == other_artifact.id and untouched.content[REFERENCE_KEY]["view"] == "result"
+    assert untouched.id == other_artifact.id and REFERENCE_KEY not in untouched.content
     resolved = _resolved(path, other.execution_id)
-    resolved.pop(REFERENCE_KEY)
+    resolved.pop(REFERENCE_KEY, None)
     assert _wire_json(resolved) == _wire_json(other_original)
 
 
@@ -628,9 +622,9 @@ def test_detach_and_delete_rollback_restore_original_summary_reference(tmp_path,
     assert _counts(path) == counts and _version(path) == version
     assert _rows(path, "SELECT * FROM account_asset_snapshot") == history
     journal = _artifact(path, record.execution_id)
-    assert journal.id == artifact.id and journal.content[REFERENCE_KEY]["view"] == "result"
+    assert journal.id == artifact.id and REFERENCE_KEY not in journal.content
     resolved = _resolved(path, record.execution_id)
-    resolved.pop(REFERENCE_KEY)
+    resolved.pop(REFERENCE_KEY, None)
     assert _wire_json(resolved) == _wire_json(original)
 
 
@@ -645,7 +639,7 @@ def test_terminal_compaction_rollback_keeps_previously_committed_worker_summary(
     with _connection(path, foreign_keys) as connection:
         connection.execute(
             "CREATE TRIGGER reject_compaction AFTER UPDATE OF content ON execution_artifact "
-            "WHEN json_extract(NEW.content,'$.business_facts_ref.view')='result' "
+            "WHEN json_type(NEW.content,'$.symbol_results')='object' "
             "BEGIN SELECT RAISE(ABORT,'synthetic failure after summary compaction'); END"
         )
     with pytest.raises(_core.NativeError, match="synthetic failure after summary compaction"):
@@ -669,14 +663,16 @@ def test_summary_reference_rejects_foreign_account_or_execution(tmp_path, accoun
 
     path = _database(tmp_path)
     _, artifact, _ = _store_summary(path)
-    assert artifact.content[REFERENCE_KEY]["view"] == "result"
-    with pytest.raises(ValueError, match="账户"):
+    assert REFERENCE_KEY not in artifact.content
+    assert (
         asyncio.run(
             resolve_artifact_content(
                 {"execution_id": execution_id, "artifact_type": artifact.artifact_type, "content": artifact.content},
                 account_id=account_id,
             )
         )
+        == artifact.content
+    )
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
@@ -685,17 +681,6 @@ def test_summary_reference_freezes_child_until_journal_is_materialized(tmp_path,
     path = _database(tmp_path)
     record, artifact, original = _store_summary(path)
     with _connection(path, foreign_keys) as connection:
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute("UPDATE business_trade SET trade_price=101 WHERE record_id=?", (record.id,))
-        connection.rollback()
-    materialized = _resolved(path, record.execution_id)
-    materialized.pop(REFERENCE_KEY)
-    with _connection(path, foreign_keys) as connection:
-        # 测试直接物化已由原生读取校验的正文，验证数据库冻结边界。
-        connection.execute(
-            "UPDATE execution_artifact SET content=? WHERE id=?",
-            (json.dumps(materialized, ensure_ascii=False, allow_nan=False), artifact.id),
-        )
         connection.execute("UPDATE business_trade SET trade_price=101 WHERE record_id=?", (record.id,))
     journal = _artifact(path, record.execution_id)
     assert REFERENCE_KEY not in journal.content

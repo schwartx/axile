@@ -429,6 +429,28 @@ pub(super) fn replace_summary(connection: &Connection, optimize: bool) -> Result
     install_summary(connection, &registry(connection)?, optimize)
 }
 
+pub(super) fn drop_snapshot_references(connection: &Connection) -> Result<()> {
+    for row in rows(
+        connection,
+        "SELECT name FROM sqlite_master WHERE type='trigger'",
+        [],
+    )? {
+        let name = text(&row, "name")?;
+        if name.starts_with(PREFIX)
+            && (name.contains("_summary_")
+                || name.starts_with("business_facts_0037_notification_outbox_"))
+        {
+            execute(connection, &format!("DROP TRIGGER {}", quote(name)))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn restore_snapshot_references(connection: &Connection) -> Result<()> {
+    replace_summary(connection, true)?;
+    outbox_guards(connection)
+}
+
 fn input_guards(connection: &Connection) -> Result<()> {
     for action in ["INSERT", "UPDATE"] {
         let checks=["input_id","result_input_id"].iter().map(|name|format!("SELECT RAISE(ABORT,'Execution input owner mismatch') WHERE NEW.{name} IS NOT NULL AND NOT EXISTS(SELECT 1 FROM execution_input WHERE id=NEW.{name} AND account_id=NEW.account_id);")).collect::<Vec<_>>().join(" ");

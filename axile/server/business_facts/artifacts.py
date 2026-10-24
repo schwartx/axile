@@ -8,11 +8,10 @@ from typing import Any, Literal
 from axile.server.business_facts.summary_refs import (
     REFERENCE_KEY,
     BusinessFactReferenceError,
-    validate_summary_reference,
 )
 
-ArtifactView = Literal["input", "targets", "rules", "assets_before", "assets_after", "result"]
-_VIEWS = {"input", "targets", "rules", "assets_before", "assets_after", "result"}
+ArtifactView = Literal["input", "targets", "rules", "assets_before", "assets_after"]
+_VIEWS = {"input", "targets", "rules", "assets_before", "assets_after"}
 _TARGET_FIELDS = ("curr_target", "last_target", "strategy_target", "sizing_context", "plan", "audit_evidence")
 _RULE_FIELDS = ("trade_rules", "futures_close_policy")
 
@@ -22,7 +21,6 @@ def make_artifact_reference(
     view: ArtifactView,
     input_id: str | None = None,
     asset_id: str | None = None,
-    record_id: int | None = None,
     select_fields: list[str] | None = None,
 ) -> dict[str, object]:
     """构造版本固定的引用；身份必须来自已经持久化的事实。"""
@@ -31,10 +29,6 @@ def make_artifact_reference(
         reference["input_id"] = input_id
     if asset_id is not None:
         reference["asset_id"] = asset_id
-    if record_id is not None:
-        reference["record_id"] = record_id
-    if view == "result":
-        reference["projection_version"] = 2
     if select_fields is not None:
         reference["select_fields"] = list(select_fields)
     parse_artifact_reference({REFERENCE_KEY: reference})
@@ -56,9 +50,6 @@ def parse_artifact_reference(content: object) -> Mapping[str, object] | None:
         or view not in _VIEWS
     ):
         raise BusinessFactReferenceError("审计业务事实引用版本或视图无效")
-    if view == "result":
-        validate_summary_reference(reference)
-        return reference
     _validate_select_fields(reference, view)
     for key in ("input_id", "asset_id"):
         value = reference.get(key)

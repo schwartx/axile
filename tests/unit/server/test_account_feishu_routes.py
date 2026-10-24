@@ -4,12 +4,13 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.server.api.routes import account_feishu
 from tests.unit.server._execution_test_support import build_account
 
 
-def test_notification_preview_rebuilds_standard_output(monkeypatch) -> None:
+def test_notification_preview_uses_native_context(monkeypatch) -> None:
     account = build_account()
     monkeypatch.setattr(account_feishu, "get_latest_account_target_snapshot", AsyncMock(return_value=None))
     output = asyncio.run(account_feishu._build_sample_output(account, _sample_assets()))
@@ -22,7 +23,12 @@ def test_notification_preview_rebuilds_standard_output(monkeypatch) -> None:
         account_feishu,
         "native_operation",
         AsyncMock(
-            return_value={"record": vars(record), "detail": {"input": {}, "result": output.model_dump(mode="json")}}
+            return_value={
+                "record": vars(record),
+                "context": build_execution_notification_context(
+                    account_feishu._TestNotificationSource(account.name), output
+                ),
+            }
         ),
     )
     context = asyncio.run(account_feishu._load_notification_preview_context(account))

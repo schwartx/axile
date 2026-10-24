@@ -33,9 +33,11 @@ Rust 业务入口拥有连接和事务，内部辅助函数接收同一个 `&Con
 
 ## 迁移与维护
 
-Rust 的迁移引擎负责建库、公共 `0001`—`0040` 历史数据转换、升级和降级。Axon 将私有规则作为数据一次传入，Rust 在同一事务中完成公共链和私有 `axon_0001` 链，全部成功后提交。继续使用 `alembic_version`、`axon_alembic_version` 及原修订号，不调用 Python Alembic 回调；`ANALYSIS_FACT_SCHEMA=40` 是分析事实版本，不是迁移修订号。`current` 和 `check` 只读，数据库不存在时保持不存在。降级保留证据可表示性和字段恢复冲突检查，不能为完成降级丢弃证据。
+Rust 的迁移引擎负责建库、公共 `0001`—`0041` 历史数据转换、升级和降级。Axon 将私有规则作为数据一次传入，Rust 在同一事务中完成公共链和私有 `axon_0001` 链，全部成功后提交。继续使用 `alembic_version`、`axon_alembic_version` 及原修订号，不调用 Python Alembic 回调；`ANALYSIS_FACT_SCHEMA=40` 是分析事实版本，不是迁移修订号。`current` 和 `check` 只读，数据库不存在时保持不存在。降级保留证据可表示性和字段恢复冲突检查，不能为完成降级丢弃证据。
 
-`0040` 将账户主键改为 SQLite `AUTOINCREMENT`，新编号也会避开旧库各表残留的账户编号。账户删除先解绑独立执行摘要，再在同一事务中通过外键级联清理从属状态；降级到 `0039` 会恢复允许编号复用的旧主键规则。
+`0040` 将账户主键改为 SQLite `AUTOINCREMENT`，新编号也会避开旧库各表残留的账户编号。账户删除在同一事务中通过外键级联清理从属状态，独立执行摘要保留完整快照；降级到 `0039` 会恢复允许编号复用的旧主键规则。
+
+`0041` 在同一迁移事务中将旧摘要和通知引用展开为独立完整快照，再移除引用保护触发器。身份、哈希或内容校验失败会整体回滚。在线读取、终态及删除流程不再压缩或恢复这些引用；旧协议仅保留在迁移模块。降级到 `0040` 保留完整正文。历史通知预览由 Rust 直接补齐展示字段并返回 context，Python 不再重建执行模型；新版成本快照直接组装最终响应，版本零快照保留旧格式适配。
 
 测试 oracle、SQLite 夹具以及历史 Alembic/SQLAlchemy 对照留在开发测试侧，不进入生产存储路径。源码边界检查见 `tests/contract/test_native_storage_source_boundary.py`，桥接取消和真实事务契约分别见 `tests/unit/test_native_store_bridge.py`、`tests/integration/server/test_native_storage_transactions.py`。维护目标是 Python 更薄、存储边界统一、行为容易核对；总行数可以随 Rust 实现和必要验证增加。
 

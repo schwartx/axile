@@ -46,6 +46,52 @@ pub(crate) fn build(request: &Value) -> Result<Value, AnalysisError> {
     Ok(context)
 }
 
+/// 历史展示直接使用持久化字段，不构造会添加当前时间的执行模型。
+pub(crate) fn preview(
+    detail: &Value,
+    account_mark: &str,
+    now: &str,
+    created_at: &str,
+) -> Result<Value, AnalysisError> {
+    let captured = &detail["result"]["extra"]["server_notification_context"];
+    if captured
+        .as_object()
+        .is_some_and(|context| !context.is_empty())
+    {
+        return Ok(captured.clone());
+    }
+    let mut result = fill_missing_fields(&detail["result"])?;
+    if !result.is_object() {
+        return Err(AnalysisError::new(
+            "NOTIFICATION_INPUT",
+            "invalid execution notification result",
+        ));
+    }
+    let inputs = result.get("inputs").unwrap_or(&detail["input"]).clone();
+    result["inputs"] = inputs;
+    let mut request = json!({"account_mark":account_mark,"now":now,"is_test":true,"trade_operations":[],"result":null});
+    request["result"] = result;
+    let mut context = build(&request)?;
+    context["execution"]["notified_at"] = json!(created_at);
+    Ok(context)
+}
+
+fn fill_missing_fields(value: &Value) -> Result<Value, AnalysisError> {
+    let mut normalized = crate::business_facts_ops::result_head::normalize_legacy_result(value)?;
+    if let (Some(source), Some(target)) = (value.as_object(), normalized.as_object_mut()) {
+        target.extend(source.clone());
+        if let Some(symbols) = target
+            .get_mut("symbol_results")
+            .and_then(Value::as_object_mut)
+        {
+            for symbol in symbols.values_mut() {
+                *symbol = fill_missing_fields(symbol)?;
+            }
+        }
+    }
+    Ok(normalized)
+}
+
 fn successful(value: &Value) -> bool {
     matches!(value.as_str(), Some("SUCCEEDED" | "NOOP"))
 }
@@ -526,6 +572,45 @@ pub(crate) fn execution_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_preview_keeps_explicit_errors_and_order_times() {
+        for update in [
+            None,
+            Some(Value::Null),
+            Some(json!("2026-10-20T09:00:02.123456+08:00")),
+        ] {
+            let mut order = json!({"order_id":"o1","symbol":"A","direction":"BUY","volume":2,"price":1,"create_time":"original"});
+            if let Some(update) = &update {
+                order["update_time"] = update.clone();
+            }
+            let detail = json!({"input":null,"result":{"status":"PARTIAL","error":"RuntimeError: original", "inputs":null,
+                "channel_type":"ctp","account_assets":{"total_asset":0,"available_cash":0,"market_value":null,"positions":[]},
+                "symbol_results":{"A":{"status":"PARTIAL","error":"RuntimeError: symbol","orders":[order]}}}});
+            let context = preview(&detail, "account", "2026-10-20T09:00:10", "original").unwrap();
+            assert_eq!(context["execution"]["error"], "RuntimeError: original");
+            assert_eq!(context["symbols"][0]["error"], "RuntimeError: symbol");
+            assert_eq!(context["orders"][0].get("update_time"), update.as_ref());
+            assert_eq!(context["orders"][0]["create_time"], "original");
+            assert_eq!(detail["result"]["error"], "RuntimeError: original");
+        }
+    }
+
+    #[test]
+    fn historical_preview_distinguishes_missing_and_null_input() {
+        let mut detail = json!({"input":{"curr_target":{"A":0.0}},"result":{"outcome":"completed","channel_type":"ctp",
+            "account_assets":{"total_asset":0,"available_cash":0,"market_value":null,"positions":[]}}});
+        assert_eq!(
+            preview(&detail, "account", "now", "original").unwrap()["targets"]["current"],
+            json!({"A":0.0})
+        );
+        detail["result"]["inputs"] = Value::Null;
+        let context = preview(&detail, "account", "now", "original").unwrap();
+        assert_eq!(context["targets"]["current"], json!({}));
+        assert_eq!(context["assets"]["total_assets"], 0.0);
+        assert_eq!(context["positions"], json!([]));
+        assert!(preview(&json!({"result":null}), "account", "now", "original").is_err());
+    }
     const NOW: &str = "2026-10-09T09:30:00+08:00";
 
     #[test]

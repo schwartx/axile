@@ -6,10 +6,11 @@ use rusqlite::{params, Connection, Params, Row};
 use serde_json::{json, Map, Value};
 
 use crate::business_detail;
-use crate::business_facts_ops::{result_extensions, result_head, result_symbols, summary_refs};
+use crate::business_facts_ops::{result_extensions, result_head, result_symbols};
 use crate::error::AnalysisError;
 
 use super::legacy::{self, Change};
+use super::{notification_refs, snapshot_refs};
 use crate::json_codec::parse as parse_legacy_json;
 
 type Result<T> = std::result::Result<T, AnalysisError>;
@@ -87,7 +88,12 @@ fn detail(connection: &Connection, record: &Object) -> Result<Value> {
         .get("account_id")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid("invalid migration account id"))?;
-    business_detail::read(connection, account_id, id(record)?).map_err(AnalysisError::from)
+    let mut detail =
+        business_detail::read(connection, account_id, id(record)?).map_err(AnalysisError::from)?;
+    if let Some(result) = detail["result"].as_object_mut() {
+        notification_refs::hydrate(connection, record, result).map_err(AnalysisError::from)?;
+    }
+    Ok(detail)
 }
 
 fn content(artifact: &Object) -> Value {
@@ -100,7 +106,7 @@ fn content(artifact: &Object) -> Value {
 
 fn artifact_document(connection: &Connection, artifact: &Object) -> Result<Value> {
     let content = content(artifact);
-    let Some(reference) = summary_refs::parse_artifact_reference(&content)? else {
+    let Some(reference) = snapshot_refs::parse_artifact_reference(&content)? else {
         return Ok(content);
     };
     if reference.get("view").and_then(Value::as_str) != Some("result") {
@@ -127,7 +133,7 @@ fn artifact_document(connection: &Connection, artifact: &Object) -> Result<Value
         ));
     }
     let projected = detail(connection, record)?;
-    summary_refs::hydrate_summary_content(&content, &projected["result"], false)
+    snapshot_refs::hydrate_summary_content(&content, &projected["result"], false)
 }
 
 fn evidence(connection: &Connection, execution_id: Option<&str>) -> Result<Vec<Value>> {
@@ -213,7 +219,7 @@ fn store_changes(
 
 fn write_artifact(connection: &Connection, artifact: &Object, document: &Value) -> Result<()> {
     let original = content(artifact);
-    let reference = summary_refs::parse_artifact_reference(&original)?;
+    let reference = snapshot_refs::parse_artifact_reference(&original)?;
     let version = reference
         .filter(|reference| reference.get("view").and_then(Value::as_str) == Some("result"))
         .map(|reference| match reference.get("legacy_schema_version") {
@@ -250,7 +256,7 @@ fn write_result(
     changes: &[Change],
 ) -> Result<()> {
     let record_id = id(record)?;
-    summary_refs::detach_execution_summaries(connection, record_id)?;
+    snapshot_refs::detach_execution_summaries(connection, record_id)?;
     let head = result_head::execution_head_values(
         document,
         record.get("is_success").and_then(Value::as_i64),

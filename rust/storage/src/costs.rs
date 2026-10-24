@@ -186,8 +186,11 @@ impl Scope {
             .query(params_from_iter(self.args.iter()))
             .map_err(sql_error)?;
         while let Some(row) = rows.next().map_err(sql_error)? {
-            summary.add_fee(&row.get::<_, String>(0).map_err(sql_error)?,
-                row.get(1).map_err(sql_error)?, row.get(2).map_err(sql_error)?);
+            summary.add_fee(
+                &row.get::<_, String>(0).map_err(sql_error)?,
+                row.get(1).map_err(sql_error)?,
+                row.get(2).map_err(sql_error)?,
+            );
         }
         Ok(summary.output())
     }
@@ -327,7 +330,7 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
             if legacy {
                 legacy_execution_page(conn, &scope, sort, limit, offset)?
             } else {
-                display_execution_rows(execution_page(conn, &scope, sort, limit, offset, false)?)?
+                execution_page(conn, &scope, sort, limit, offset, false)?
             },
         ),
         "symbol" => {
@@ -416,44 +419,6 @@ fn compact_execution(payload: &Value) -> Result<Value, String> {
         .map_err(|error| failure(&error.code, &error.error))
 }
 
-fn display_execution_rows(rows: Vec<Value>) -> Result<Vec<Value>, String> {
-    rows.into_iter()
-        .map(|row| {
-            let mut row = compact_execution(&row)?;
-            let reasons: HashMap<String, String> = row
-                .pointer("/record/raw_result/symbol_results")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-                .map(|(symbol, result)| {
-                    (
-                        symbol.clone(),
-                        result
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .chars()
-                            .take(200)
-                            .collect(),
-                    )
-                })
-                .collect();
-            if let Some(attempts) = row.get_mut("attempts").and_then(Value::as_array_mut) {
-                for attempt in attempts {
-                    let reason = attempt
-                        .get("symbol")
-                        .and_then(Value::as_str)
-                        .and_then(|symbol| reasons.get(symbol))
-                        .cloned()
-                        .unwrap_or_default();
-                    attempt["reason"] = json!(reason);
-                }
-            }
-            Ok(row)
-        })
-        .collect()
-}
-
 fn legacy_trade_page(
     conn: &Connection,
     scope: &Scope,
@@ -524,9 +489,7 @@ fn legacy_execution_page(
         let mut payload = compact_execution(&parse_payload(
             &row.get::<_, String>(0).map_err(sql_error)?,
         )?)?;
-        payload["summary"] = Summary::read(row, 1)
-            .map_err(sql_error)?
-            .output();
+        payload["summary"] = Summary::read(row, 1).map_err(sql_error)?.output();
         payload["symbolCount"] = json!(row.get::<_, i64>(9).map_err(sql_error)?);
         output.push(payload);
     }
@@ -1075,21 +1038,6 @@ mod tests {
         assert!(legacy_bounds(&connection, "legacy", "all").is_err());
     }
 
-    #[test]
-    fn native_display_uses_frozen_memory_and_drops_technical_details() {
-        let rows = display_execution_rows(vec![
-            json!({"record":{"id":1,"raw_result":{"symbol_results":{
-            "A":{"status":"PARTIAL","memory":{"message":"冻结未到目标"}}}}},
-            "attempts":[{"symbol":"A","reason":"RuntimeError: secret"}]}),
-        ])
-        .unwrap();
-        assert_eq!(rows[0]["attempts"][0]["reason"], "冻结未到目标");
-        let symbol = &rows[0]["record"]["raw_result"]["symbol_results"]["A"];
-        assert_eq!(symbol["error"], "冻结未到目标");
-        assert!(symbol.get("memory").is_none());
-        assert!(symbol.get("technical_detail").is_none());
-        assert!(!rows[0].to_string().contains("secret"));
-    }
     #[test]
     fn empty_cursor_matches_first_page() {
         let first_page = json!({"snapshot_id": "v1", "cursor_scope": "known"});

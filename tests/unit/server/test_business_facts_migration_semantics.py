@@ -936,7 +936,7 @@ def test_migration_stores_valid_stable_domains_in_columns_without_shadow_documen
 
 
 @_run_async
-async def test_migration_compacts_equivalent_summary_and_restores_original_journal_wire(tmp_path):
+async def test_migration_freezes_full_summary_and_restores_original_journal_wire(tmp_path):
     """Compact verified stable copies while retaining differing and orphan journal evidence."""
     database, engine, _ = _migration_database(tmp_path)
     try:
@@ -949,11 +949,10 @@ async def test_migration_compacts_equivalent_summary_and_restores_original_journ
                 row["id"]: dict(row) for row in connection.execute(sa.select(table).order_by(table.c.id)).mappings()
             }
             exact = compacted[531]["content"]
-            assert business_evidence(exact["business_facts_ref"]["view"]) == business_evidence("result")
-            assert business_evidence(exact["business_facts_ref"]["record_id"]) == business_evidence(31)
-            assert business_evidence(compacted[531]["schema_version"]) == business_evidence(3)
-            assert "orders" not in exact["symbol_results"]["A/B~C"]
-            assert "trades" not in exact["symbol_results"]["A/B~C"]
+            assert "business_facts_ref" not in exact
+            assert compacted[531]["schema_version"] == originals[531]["schema_version"]
+            assert "orders" in exact["symbol_results"]["A/B~C"]
+            assert "trades" in exact["symbol_results"]["A/B~C"]
             assert exact["reconciliation"] == originals[531]["content"]["reconciliation"]
             assert business_evidence(exact["reconciliation"]["account"]["equity_before"]) == business_evidence(
                 123457.25
@@ -995,7 +994,7 @@ async def test_migration_notification_references_require_matching_frozen_busines
     database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
-            records, original_events, matching = _seed_notification_outbox_evidence(connection)
+            records, original_events, _ = _seed_notification_outbox_evidence(connection)
         _apply_0037(database)
         with engine.begin() as connection:
             metadata = sa.MetaData()
@@ -1011,21 +1010,10 @@ async def test_migration_notification_references_require_matching_frozen_busines
             _assert_same_evidence(original_events, events, "outbox-after-upgrade")
             for record_id, source in records.items():
                 captured = extensions[record_id]["server_notification_context"]
-                assert (isinstance(captured, dict) and "$axile_notification_context" in captured) is (
-                    record_id in matching
+                assert "$axile_notification_context" not in captured
+                _assert_same_evidence(
+                    source["raw_result"]["extra"]["server_notification_context"], captured, "full-notification-capture"
                 )
-                if record_id in matching:
-                    assert "orders" not in captured
-                    assert "assets" not in captured
-                    assert business_evidence(captured["event_id"]) == business_evidence(
-                        f"execution:{source['execution_id']}"
-                    )
-                else:
-                    _assert_same_evidence(
-                        source["raw_result"]["extra"]["server_notification_context"],
-                        captured,
-                        "unmatched-notification-capture",
-                    )
                 _assert_same_evidence(
                     source["raw_result"]["extra"]["unrelated_extra"],
                     extensions[record_id]["unrelated_extra"],
