@@ -8,7 +8,7 @@ from copy import deepcopy
 import pytest
 
 from axile.server._native import _core
-from tests.unit.server._asset_observation_oracle import is_asset_observation, is_legacy_placeholder
+from axile.server.asset_observations import is_asset_observation
 from tests.unit.server.test_native_asset_operations import _call, _save
 from tests.unit.server.test_native_asset_operations import asset_database as asset_database
 
@@ -26,14 +26,14 @@ def legacy():
 
 def cases():
     base = legacy()
-    yield base, True
+    yield base, False
     for key in ("inputs", "symbol_results"):
-        yield {**base, key: "{}"}, False
+        yield {**base, key: "{}"}, True
     for key, value in [("positions", "[]"), ("extra", "{}")]:
-        yield {**base, "account_assets": {**base["account_assets"], key: value}}, False
+        yield {**base, "account_assets": {**base["account_assets"], key: value}}, True
     missing = deepcopy(base)
     del missing["account_assets"]["source"]
-    yield missing, True
+    yield missing, False
     for key, value in [
         ("extra", {}),
         ("inputs", {"curr_target": {}}),
@@ -41,18 +41,18 @@ def cases():
         ("status", "SUCCEEDED"),
         ("symbol_results", {"A": {}}),
     ]:
-        yield {**base, key: value}, False
-    for key, value in [
-        ("total_asset", 100),
-        ("extra", {"balance": 0}),
-        ("positions", [{}]),
-        ("source", "unavailable"),
-        ("source", None),
-        ("source", 0),
-        ("available_cash", "0"),
-        ("market_value", False),
+        yield {**base, key: value}, True
+    for key, value, valid in [
+        ("total_asset", 100, True),
+        ("extra", {"balance": 0}, True),
+        ("positions", [{}], True),
+        ("source", "unavailable", False),
+        ("source", None, True),
+        ("source", 0, True),
+        ("available_cash", "0", True),
+        ("market_value", False, True),
     ]:
-        yield {**base, "account_assets": {**base["account_assets"], key: value}}, False
+        yield {**base, "account_assets": {**base["account_assets"], key: value}}, valid
     blocked = {
         **base,
         "status": "BLOCKED",
@@ -63,18 +63,13 @@ def cases():
         "inputs": {"curr_target": {}},
         "execution_time": 0.25,
     }
-    yield blocked, True
-    yield {**blocked, "execution_time": -1}, False
-    yield {**blocked, "memory": {"message": "当前不在交易时间", "other": 1}}, False
+    yield blocked, False
+    yield {**blocked, "execution_time": -1}, True
+    yield {**blocked, "memory": {"message": "当前不在交易时间", "other": 1}}, True
 
 
 @pytest.mark.parametrize("result,expected", list(cases()))
-def test_python_placeholder_rule(result, expected):
-    assert is_legacy_placeholder(result) == expected
-
-
-@pytest.mark.parametrize("result,expected", list(cases()))
-def test_native_placeholder_validity_matches_python(asset_database, result, expected):
+def test_native_observation_validity_matches_boundary_cases(asset_database, result, expected):
     snapshot = _call(
         asset_database,
         "asset_snapshot_write",
@@ -89,9 +84,7 @@ def test_native_placeholder_validity_matches_python(asset_database, result, expe
         valid = connection.execute(
             "SELECT observation_valid FROM business_asset_snapshot WHERE asset_id=?", (snapshot["asset_fact_id"],)
         ).fetchone()[0]
-    assert bool(valid) == is_asset_observation(result["account_assets"], result)
-    if expected:
-        assert not valid
+    assert bool(valid) == expected
 
 
 @pytest.mark.parametrize(

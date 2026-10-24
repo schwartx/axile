@@ -29,13 +29,10 @@ from tests.unit.server._execution_test_support import account_settings_values, b
 def test_native_session_classification_preserves_raw_audit_fields(native_database):
     from axile.server.db.models.account_control_session import AccountControlSession
     from tests.conftest import native_store_call
+    from tests.unit.server._business_facts_test_support import seed_account
     from tests.unit.server._runtime_db_support import runtime_rows
 
-    native_store_call(
-        native_database,
-        "account_create",
-        {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": "2026-10-24"},
-    )
+    seed_account(native_database)
     runtime_rows(
         native_database,
         "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
