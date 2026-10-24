@@ -2,6 +2,7 @@
 
 import copy
 import json
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ import pytest
 
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call, require_native_store
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
 
 _NOW = "2026-01-02T09:00:00+08:00"
@@ -53,17 +55,17 @@ def database(native_database: Path) -> Path:
     return native_database
 
 
-def _persist(database: Path, created_at: str, result: dict) -> dict:
+def _persist(database: Path, created_at: str, result: dict, execution_id: str = "regression") -> dict:
     return native_store_call(
         database,
         "persist_execute_record",
         {
             "account_id": 1,
-            "execution_id": "regression",
+            "execution_id": execution_id,
             "created_at": created_at,
             "is_success": 1,
-            "input_id": "regression-input",
-            "result_input_id": "regression-result-input",
+            "input_id": f"{execution_id}-input",
+            "result_input_id": f"{execution_id}-result-input",
             "raw_input": {"curr_target": {"A": 1.0}},
             "raw_result": result,
         },
@@ -159,3 +161,62 @@ def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(
         core.execution_business_detail(store, 1, record["id"])["result"]["symbol_results"]["A"]["error"]
         == symbol["error"]
     )
+
+
+def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts(database: Path) -> None:
+    result = copy.deepcopy(_RESULT)
+    symbol = result["symbol_results"]["A"]
+    symbol["first_tick"] = {"bid_price": 98.0, "ask_price": 98.0}
+    symbol["trades"] = [
+        {
+            "order_id": "o",
+            "trade_time": "2026-01-01T23:59:00",
+            "trade_price": 100,
+            "trade_volume": 1,
+            "extra": {"commission": 0, "commission_asset": "CNY"},
+        },
+        {
+            "order_id": "o",
+            "trade_time": "2026-01-02T00:01:00",
+            "trade_volume": 1,
+            "extra": {"commission": -0.2, "commission_asset": "USD"},
+        },
+        {
+            "order_id": "o",
+            "trade_time": "2026-01-02T00:02:00",
+            "trade_volume": 1,
+            "extra": {"commission": 0, "commission_asset": "USD"},
+        },
+    ]
+    _persist(database, "2026-01-01T23:59:00", result, "old")
+    for identity, when in (("middle", "2026-01-10T09:00:00"), ("latest", "2026-02-15T09:00:00")):
+        current = copy.deepcopy(_RESULT)
+        current["symbol_results"]["A"]["trades"][0]["trade_time"] = when
+        _persist(database, when, current, identity)
+    _, _, snapshot = _publish(database)
+    with closing(oracle_connect(database)) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM performance_cost_trade WHERE snapshot_id=?", (snapshot,)
+            ).fetchone()[0]
+            == 5
+        )
+        for range_key in ("all", "90"):
+            costs = connection.execute(
+                "SELECT day,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete "
+                "FROM performance_result_daily_cost WHERE snapshot_id=? AND range_key=? AND day<'2026-01-10' ORDER BY day",
+                (snapshot, range_key),
+            ).fetchall()
+            assert costs == [
+                ("2026-01-01", 100.0, 2.0, 2.0 / 98.0 * 10000.0, 1.0, 1, 1, 1, 1),
+                ("2026-01-02", None, None, None, None, 0, 2, 2, 0),
+            ]
+            assert connection.execute(
+                "SELECT day,currency,value FROM performance_result_daily_fee "
+                "WHERE snapshot_id=? AND range_key=? AND day<'2026-01-10' ORDER BY day,currency",
+                (snapshot, range_key),
+            ).fetchall() == [("2026-01-01", "CNY", 0.0), ("2026-01-02", "USD", -0.2)]
+        assert connection.execute(
+            "SELECT day,count FROM performance_result_daily_cost WHERE snapshot_id=? AND range_key='30' ORDER BY day",
+            (snapshot,),
+        ).fetchall() == [("2026-01-10", 1), ("2026-02-15", 1)]

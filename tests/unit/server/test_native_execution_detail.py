@@ -18,9 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_schedule
 from axile.server.business_facts.repository import read_execution_detail
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from axile.server.execution.legacy_compat import normalize_legacy_result
-from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_read_oracle import ExecuteRecordDetailPublic
 from tests.unit.server._execution_test_support import build_account, insert_account
@@ -232,8 +230,7 @@ def _historical_corruption(path, name, statement, parameters):
         for trigger, sql in _oracle(
             path, [("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?", (name,))]
         )[0]
-        if trigger.endswith("_update")
-        and ("_owner_" in trigger or trigger.endswith(("record_input_update", "notification_outbox_update")))
+        if trigger.endswith("_update") and ("_owner_" in trigger or trigger.endswith("record_input_update"))
     ]
     assert guards
     statements = [(f'DROP TRIGGER "{trigger}"', ()) for trigger, _ in guards]
@@ -325,9 +322,9 @@ def test_native_detail_matches_repository_and_summary(native_database, monkeypat
 
 @pytest.mark.parametrize(
     "corruption",
-    ["foreign_asset", "foreign_input", "foreign_result_input", "event_hash", "capture_hash", "missing_plan"],
+    ["foreign_asset", "foreign_input", "foreign_result_input", "outbox_changed", "outbox_deleted", "missing_plan"],
 )
-def test_native_detail_frozen_context_ownership_and_hashes(native_database, monkeypatch, corruption):
+def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_database, monkeypatch, corruption):
     path = native_database
     _accounts(path)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
@@ -345,70 +342,11 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
     )
     notification = _event()
     event_context = notification.context
-    group = SupplementGroup(
-        id="detail-frozen-group",
-        account_id=1,
-        fingerprint="detail-frozen-fingerprint",
-        base_scheduled_at=created_at,
-        expires_at="2026-10-20T23:00:00+08:00",
-        configured_count=1,
-        effective_count=1,
-    )
-    step = SupplementStep(
-        group_id=group.id, index=1, scheduled_at=created_at, status="running", execution_id=execution_id
-    )
-    statements = []
-    for name, item in (
-        ("notification_event", notification),
-        ("supplement_group", group),
-        ("supplement_step", step),
-    ):
-        values = item.model_dump(mode="json")
-        statements.append(
-            (
-                f"INSERT INTO {name} ({','.join('[' + key + ']' for key in values)}) VALUES ({','.join('?' for _ in values)})",
-                [
-                    json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
-                    for value in values.values()
-                ],
-            )
-        )
-    _oracle(path, statements)
-    native_store_call(
+    _sql(
         path,
-        "intent_insert",
-        {
-            "account_id": 1,
-            "execution_id": execution_id,
-            "kind": "rebalance",
-            "trigger_source": "manual",
-            "channel": "ctp",
-            "algorithm": "SINGLE-MAKER",
-            "payload": {},
-            "created_at": created_at,
-            "now": created_at,
-        },
-    )
-    native_store_call(
-        path,
-        "intent_cas",
-        {
-            "execution_id": execution_id,
-            "expected": "QUEUED",
-            "target": "RUNNING",
-            "fields": {"started_at": created_at},
-            "now": created_at,
-        },
-    )
-    native_store_call(
-        path,
-        "intent_finish",
-        {
-            "execution_id": execution_id,
-            "status": "PARTIAL",
-            "finished_at": created_at,
-            "now": created_at,
-        },
+        "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) "
+        "VALUES(?,1,?,'execution.finished',?,'pending')",
+        (notification.id, created_at, json.dumps(event_context)),
     )
     record_id = head["id"]
     borrowed_rows, extra_rows = _oracle(
@@ -424,7 +362,7 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
     borrowed_asset = borrowed_rows[0][0]
     extra = json.loads(extra_rows[0][0])
     assert borrowed_asset is not None
-    assert extra["server_notification_context"]["$axile_notification_context"] == 1
+    assert extra["server_notification_context"] == captured
 
     async def scenario():
         expected = _expected_detail(head, await read_execution_detail(head))
@@ -451,21 +389,23 @@ def test_native_detail_frozen_context_ownership_and_hashes(native_database, monk
                     f"UPDATE executerecord SET {field}=? WHERE id=?",
                     (other["input_id"], record_id),
                 )
-            elif corruption == "event_hash":
+            elif corruption == "outbox_changed":
                 context = deepcopy(event_context)
                 context["account"]["name"] = "tampered"
-                _historical_corruption(
+                _sql(
                     path,
-                    "notification_event",
                     "UPDATE notification_event SET context=? WHERE id=?",
                     (json.dumps(context), notification.id),
                 )
-            elif corruption == "capture_hash":
-                extra["server_notification_context"]["capture_sha256"] = "0" * 64
-                _sql(path, "UPDATE execution_extension SET extra=? WHERE record_id=?", (json.dumps(extra), record_id))
+            elif corruption == "outbox_deleted":
+                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification.id,))
             else:
                 _sql(path, "DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
             response = await client.get(f"/execute_records/1/{record_id}")
-            assert response.status_code == 503, response.text
+            if corruption in {"outbox_changed", "outbox_deleted"}:
+                assert response.status_code == 200, response.text
+                assert response.json() == expected
+            else:
+                assert response.status_code == 503, response.text
 
     asyncio.run(scenario())

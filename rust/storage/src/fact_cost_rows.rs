@@ -1,15 +1,20 @@
-//! Emit final frozen cost trades from the publication's source read snapshot.
+//! Emit frozen cost details and daily totals in one source scan.
 
+use crate::cost_summary::Summary;
 use crate::error::AnalysisError;
-use crate::publication::{finite, sql_error, stage_error};
+use crate::publication::{finite, numeric_time, sql_error, stage_error};
 use rusqlite::params;
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 
 pub(crate) fn trades(
     connection: &Connection,
     account: i64,
     target: &Connection,
+    ranges: &[(&str, f64, f64)],
 ) -> Result<(), AnalysisError> {
+    let mut summaries: Vec<BTreeMap<String, Summary>> =
+        ranges.iter().map(|_| BTreeMap::new()).collect();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
     let mut reader = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
     let mut statement = connection
@@ -26,6 +31,7 @@ pub(crate) fn trades(
     while let Some(row) = rows.next().map_err(sql_error)? {
         let record: i64 = row.get(0).map_err(sql_error)?;
         let created_at: String = row.get(1).map_err(sql_error)?;
+        let time = numeric_time(&created_at)?;
         let prices = ticks.read(record).map_err(sql_error)?;
         let fills = reader.read(record, &created_at, &prices)?;
         transactions.write(record, &fills, target)?;
@@ -56,6 +62,13 @@ pub(crate) fn trades(
             )
             .map_err(stage_error)?;
         for trade in fills {
+            for ((_, start, end), days) in ranges.iter().zip(&mut summaries) {
+                if time >= *start && time <= *end {
+                    days.entry(trade.day.clone())
+                        .or_insert_with(Summary::empty)
+                        .push(&trade);
+                }
+            }
             insert
                 .execute(params![
                     next_id,
@@ -77,6 +90,35 @@ pub(crate) fn trades(
                 ])
                 .map_err(stage_error)?;
             next_id += 1;
+        }
+    }
+    let mut cost = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_daily_cost
+         (range_key,day,value,cost,loss_bp,coverage,covered_value,covered,count,fee_covered,estimated,amount_complete,present)
+         VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,NULL,?10,255)"
+    ).map_err(stage_error)?;
+    let mut fee = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_daily_fee(range_key,day,currency,value) VALUES(?1,?2,?3,?4)"
+    ).map_err(stage_error)?;
+    for ((range, _, _), days) in ranges.iter().zip(&summaries) {
+        for (day, value) in days {
+            cost.execute(params![
+                range,
+                day,
+                finite(value.value),
+                finite(value.cost),
+                finite(value.loss_bp()),
+                finite(value.coverage()),
+                value.covered,
+                value.count,
+                value.fee_count,
+                value.amount_complete()
+            ])
+            .map_err(stage_error)?;
+            for (currency, (value, _)) in &value.fees {
+                fee.execute(params![range, day, currency, finite(Some(*value))])
+                    .map_err(stage_error)?;
+            }
         }
     }
     Ok(())

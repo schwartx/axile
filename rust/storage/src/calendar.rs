@@ -30,6 +30,14 @@ pub(crate) fn canonical_time(value: &str) -> Result<String, String> {
     Ok(local_time(value)?.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
 }
 
+pub(crate) fn canonical_boundary(value: &str) -> Result<String, String> {
+    match value.len() {
+        4 => canonical_time(&format!("{value}-01-01")),
+        7 => canonical_time(&format!("{value}-01")),
+        _ => canonical_time(value),
+    }
+}
+
 pub(crate) fn timestamp_micros(value: &str) -> Result<i64, String> {
     Ok(local_time(value)?.and_utc().timestamp_micros() - 28_800_000_000)
 }
@@ -227,6 +235,14 @@ pub fn enrich(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_boundaries_keep_main_date_prefixes_without_relaxing_source_times() {
+        assert_eq!(canonical_boundary("2099").unwrap(), "2099-01-01T00:00:00.000000");
+        assert_eq!(canonical_boundary("2026-02").unwrap(), "2026-02-01T00:00:00.000000");
+        assert!(canonical_boundary("2026-13").is_err());
+        assert!(canonical_time("2099").is_err());
+    }
 
     #[test]
     fn time_formats_share_sql_order_and_fractional_millisecond_boundaries() {

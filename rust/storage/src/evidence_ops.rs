@@ -828,52 +828,7 @@ fn preflight_facts(
         budget,
         &mut snapshot.counts,
     )?;
-    preflight_notifications(connection, snapshot, budget, record_ids)
-}
-
-fn preflight_notifications(
-    connection: &Connection,
-    snapshot: &mut Snapshot,
-    budget: &mut Budget,
-    record_ids: &[i64],
-) -> Result<(), AnalysisError> {
-    if record_ids.is_empty() {
-        return Ok(());
-    }
-    let mut statement=connection.prepare(&format!(
-        "SELECT r.execution_id FROM execution_extension e JOIN executerecord r ON r.id=e.record_id
-         WHERE {} AND CASE WHEN json_valid(e.extra)=1 THEN
-         json_type(e.extra,'$.server_notification_context.\"$axile_notification_context\"') IS NOT NULL ELSE 0 END",
-        in_json("e.record_id"))).map_err(sql)?;
-    let event_ids = statement
-        .query_map([json_argument(&json!(record_ids))], |row| {
-            row.get::<_, Option<String>>(0)
-        })
-        .map_err(sql)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql)?
-        .into_iter()
-        .flatten()
-        .map(|id| format!("execution:{id}"))
-        .collect::<Vec<_>>();
-    if event_ids.is_empty() {
-        return Ok(());
-    }
-    let ids = json_argument(&json!(event_ids));
-    let conflict:bool=connection.query_row(&format!(
-        "SELECT EXISTS(SELECT 1 FROM notification_event WHERE {} AND (account_id!=? OR event_type!='execution.finished'))",
-        in_json("id")),params![ids,integer(&snapshot.account,"id")?],|row|row.get(0)).map_err(sql)?;
-    if conflict {
-        return Err(invalid("冻结通知引用与执行账户不一致"));
-    }
-    preflight(
-        connection,
-        "notification_event",
-        &in_json("id"),
-        &[ids],
-        budget,
-        &mut snapshot.counts,
-    )
+    Ok(())
 }
 
 fn hydrate(

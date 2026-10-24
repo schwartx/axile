@@ -224,7 +224,7 @@ def _intent(path: Path, execution_id: str, *, step_id: str | None = None, runnin
 
 
 @pytest.mark.parametrize("frozen", [False, True])
-@pytest.mark.parametrize("stage", ["asset_history", "summary_reference"])
+@pytest.mark.parametrize("stage", ["asset_history", "facts_complete"])
 def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, stage: str) -> None:
     core = require_native_store("persist_execute_record")
     execution_id = "terminal-rollback"
@@ -237,7 +237,9 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
         (execution_id, json.dumps({"symbol_results": _RESULT["symbol_results"]}), _NOW),
     )
     table, event = (
-        ("account_asset_snapshot", "INSERT") if stage == "asset_history" else ("execution_artifact", "UPDATE")
+        ("account_asset_snapshot", "INSERT")
+        if stage == "asset_history"
+        else ("executerecord", "UPDATE OF facts_complete")
     )
     _sql(database, f"CREATE TRIGGER fail_terminal BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'{stage}'); END")
     before = _snapshot(database)
@@ -263,9 +265,7 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
         "account_asset_snapshot",
     ):
         assert _rows(database, table), table
-    summary = _rows(database, "execution_artifact")[0]
-    assert summary["schema_version"] == 3
-    assert json.loads(summary["content"])["business_facts_ref"]["record_id"] == record["id"]
+    assert _rows(database, "execution_artifact") == before["execution_artifact"]
 
 
 def test_lost_worker_response_preserves_frozen_facts_and_first_terminal(database: Path) -> None:
@@ -446,9 +446,9 @@ def test_portfolio_trial_failure_preserves_code_and_prior_snapshot(database: Pat
     assert len(weights) == 4
 
 
-@pytest.mark.parametrize("stage", ["outbox_insert", "context_reference"])
+@pytest.mark.parametrize("stage", ["outbox_insert", "group_settlement"])
 @pytest.mark.parametrize("operation", ["intent_finish", "intent_cas"])
-def test_terminal_transition_supplement_outbox_and_reference_are_atomic(
+def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
     database: Path, stage: str, operation: str
 ) -> None:
     core = require_native_store(operation)
@@ -456,7 +456,7 @@ def test_terminal_transition_supplement_outbox_and_reference_are_atomic(
     _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
     _terminal(database, execution_id)
     table, event = (
-        ("notification_event", "INSERT") if stage == "outbox_insert" else ("execution_extension", "UPDATE OF extra")
+        ("notification_event", "INSERT") if stage == "outbox_insert" else ("supplement_group", "UPDATE OF status")
     )
     _sql(database, f"CREATE TRIGGER fail_finish BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'{stage}'); END")
     before = _snapshot(database)
@@ -483,7 +483,7 @@ def test_terminal_transition_supplement_outbox_and_reference_are_atomic(
     event = _rows(database, "notification_event")
     assert len(event) == 1 and event[0]["id"] == f"execution:{execution_id}"
     extra = json.loads(_rows(database, "execution_extension")[0]["extra"])
-    assert extra["server_notification_context"]["$axile_notification_context"] == 1
+    assert extra["server_notification_context"] == _RESULT["extra"]["server_notification_context"]
     committed = _snapshot(database)
     later = {**request, "target" if operation == "intent_cas" else "status": "FAILED"}
     assert not native_store_call(database, operation, later)["changed"]

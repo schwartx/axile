@@ -10,16 +10,6 @@ use super::{
     task::{settings, Task},
 };
 
-const COST_TABLES: &[&str] = &[
-    "performance_cost_transaction_fee",
-    "performance_cost_transaction",
-    "performance_cost_attempt",
-    "performance_cost_position",
-    "performance_cost_execution_symbol",
-    "performance_cost_trade",
-    "performance_cost_execution",
-];
-
 fn sql(error: rusqlite::Error) -> AnalysisError {
     AnalysisError::caused_by("PUBLICATION_WRITE", error)
 }
@@ -236,11 +226,7 @@ fn cleanup(
     previous: Option<&str>,
 ) -> Result<(), AnalysisError> {
     let obsolete = "SELECT id FROM main.performance_snapshot WHERE account_id=?1 AND id!=?2 AND (?3 IS NULL OR id!=?3)";
-    for name in staging::RESULT_TABLES.iter().chain(
-        COST_TABLES
-            .iter()
-            .filter(|name| !staging::RESULT_TABLES.contains(name)),
-    ) {
+    for name in staging::RESULT_TABLES {
         let query = format!("DELETE FROM main.\"{name}\" WHERE snapshot_id IN ({obsolete})");
         connection
             .execute(&query, params![task.account_id, task.snapshot_id, previous])
@@ -515,11 +501,7 @@ mod tests {
     #[test]
     fn cleanup_keeps_current_previous_and_other_accounts() {
         let connection = fixture();
-        for name in staging::RESULT_TABLES.iter().chain(
-            COST_TABLES
-                .iter()
-                .filter(|name| !staging::RESULT_TABLES.contains(name)),
-        ) {
+        for name in staging::RESULT_TABLES {
             connection.execute_batch(&format!(
                 "CREATE TABLE main.\"{name}\" (snapshot_id TEXT NOT NULL REFERENCES performance_snapshot(id));"
             )).unwrap();
@@ -531,11 +513,7 @@ mod tests {
                     params![id, account],
                 )
                 .unwrap();
-            for name in staging::RESULT_TABLES.iter().chain(
-                COST_TABLES
-                    .iter()
-                    .filter(|name| !staging::RESULT_TABLES.contains(name)),
-            ) {
+            for name in staging::RESULT_TABLES {
                 connection
                     .execute(&format!("INSERT INTO \"{name}\" VALUES(?1)"), [id])
                     .unwrap();
@@ -555,11 +533,7 @@ mod tests {
                 .unwrap(),
             3
         );
-        for name in staging::RESULT_TABLES.iter().chain(
-            COST_TABLES
-                .iter()
-                .filter(|name| !staging::RESULT_TABLES.contains(name)),
-        ) {
+        for name in staging::RESULT_TABLES {
             assert_eq!(
                 connection
                     .query_row(&format!("SELECT COUNT(*) FROM \"{name}\""), [], |row| row

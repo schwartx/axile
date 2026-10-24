@@ -1,7 +1,5 @@
 //! Calculate from one read snapshot and insert directly into disk-backed staging.
 
-use std::collections::BTreeMap;
-
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -21,7 +19,7 @@ pub(crate) fn finite(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite())
 }
 
-fn numeric_time(value: &str) -> Result<f64, AnalysisError> {
+pub(crate) fn numeric_time(value: &str) -> Result<f64, AnalysisError> {
     crate::calendar::timestamp_ms(value).map_err(|_| {
         AnalysisError::new(
             "INVALID_RESULT_TIME",
@@ -41,7 +39,7 @@ fn take_array(value: &mut Value, field: &str) -> Result<Vec<Value>, AnalysisErro
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Event {
     time: String,
     numeric_time: f64,
@@ -54,24 +52,26 @@ struct Event {
 fn events(
     connection: &Connection,
     account: i64,
-    range: &str,
-    start: f64,
-    end: f64,
+    ranges: &[(&str, f64, f64)],
     target: &Connection,
-) -> Result<usize, AnalysisError> {
-    let mut count = 0;
-    let mut newest: Vec<Event> = Vec::with_capacity(101);
+) -> Result<Vec<usize>, AnalysisError> {
+    let mut results: Vec<(usize, Vec<Event>)> = ranges
+        .iter()
+        .map(|_| (0, Vec::with_capacity(101)))
+        .collect();
     let mut consume = |event: Event| {
-        if event.numeric_time < start || event.numeric_time > end {
-            return;
-        }
-        count += 1;
-        // Equal-time events retain the existing binding, skip, execution order.
-        let index = newest.partition_point(|other| other.numeric_time >= event.numeric_time);
-        if index < 100 {
-            newest.insert(index, event);
-            if newest.len() > 100 {
-                newest.pop();
+        for ((_, start, end), (count, newest)) in ranges.iter().zip(&mut results) {
+            if event.numeric_time < *start || event.numeric_time > *end {
+                continue;
+            }
+            *count += 1;
+            // Equal-time events retain the existing binding, skip, execution order.
+            let index = newest.partition_point(|other| other.numeric_time >= event.numeric_time);
+            if index < 100 {
+                newest.insert(index, event.clone());
+                if newest.len() > 100 {
+                    newest.pop();
+                }
             }
         }
     };
@@ -126,7 +126,10 @@ fn events(
         while let Some(row) = cursor.next().map_err(sql_error)? {
             let time: String = row.get(1).map_err(sql_error)?;
             let numeric_time = numeric_time(&time)?;
-            if numeric_time < start || numeric_time > end {
+            if !ranges
+                .iter()
+                .any(|(_, start, end)| numeric_time >= *start && numeric_time <= *end)
+            {
                 continue;
             }
             let status: Option<String> = row.get(2).map_err(sql_error)?;
@@ -167,114 +170,31 @@ fn events(
             )"#,
         )
         .map_err(stage_error)?;
-    for (index, event) in newest.into_iter().enumerate() {
-        insert
-            .execute(params![
-                range,
-                index,
-                event.time,
-                event.tag,
-                event.text,
-                event.execution_id
-            ])
-            .map_err(stage_error)?;
-    }
-    Ok(count)
-}
-
-fn daily_costs(
-    connection: &Connection,
-    account: i64,
-    ranges: &[(&str, f64, f64)],
-    target: &Connection,
-) -> Result<(), AnalysisError> {
-    let mut summaries: Vec<BTreeMap<String, crate::cost_summary::Summary>> =
-        ranges.iter().map(|_| BTreeMap::new()).collect();
-    let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
-    let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
-    let mut statement = connection
-        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 ORDER BY id")
-        .map_err(sql_error)?;
-    let mut cursor = statement.query([account]).map_err(sql_error)?;
-    while let Some(row) = cursor.next().map_err(sql_error)? {
-        let id: i64 = row.get(0).map_err(sql_error)?;
-        let created_at: String = row.get(1).map_err(sql_error)?;
-        let time = numeric_time(&created_at)?;
-        if !ranges
-            .iter()
-            .any(|(_, start, end)| time >= *start && time <= *end)
-        {
-            continue;
-        }
-        let prices = ticks.read(id).map_err(sql_error)?;
-        for trade in trades.read(id, &created_at, &prices)? {
-            for ((_, start, end), days) in ranges.iter().zip(&mut summaries) {
-                if time < *start || time > *end {
-                    continue;
-                }
-                days.entry(trade.day.clone())
-                    .or_insert_with(crate::cost_summary::Summary::empty)
-                    .push(&trade);
-            }
+    let mut counts = Vec::with_capacity(ranges.len());
+    for ((range, _, _), (count, newest)) in ranges.iter().zip(results) {
+        counts.push(count);
+        for (index, event) in newest.into_iter().enumerate() {
+            insert
+                .execute(params![
+                    range,
+                    index,
+                    event.time,
+                    event.tag,
+                    event.text,
+                    event.execution_id
+                ])
+                .map_err(stage_error)?;
         }
     }
-    let mut cost = target
-        .prepare_cached(
-            r#"INSERT INTO native_stage.performance_result_daily_cost (
-                range_key, day, value, cost, loss_bp, coverage,
-                covered_value, covered, count, fee_covered, estimated, amount_complete,
-                present
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                NULL, ?7, ?8, ?9, NULL, ?10,
-                255
-            )"#,
-        )
-        .map_err(stage_error)?;
-    let mut fee = target.prepare_cached(
-        "INSERT INTO native_stage.performance_result_daily_fee(range_key,day,currency,value) VALUES(?1,?2,?3,?4)"
-    ).map_err(stage_error)?;
-    for ((range, _, _), days) in ranges.iter().zip(&summaries) {
-        for (day, value) in days {
-            cost.execute(params![
-                range,
-                day,
-                finite(value.value),
-                finite(value.cost),
-                finite(value.loss_bp()),
-                finite(value.coverage()),
-                value.covered,
-                value.count,
-                value.fee_count,
-                value.amount_complete(),
-            ])
-            .map_err(stage_error)?;
-            for (currency, (value, _)) in &value.fees {
-                fee.execute(params![range, day, currency, finite(Some(*value))])
-                    .map_err(stage_error)?;
-            }
-        }
-    }
-    Ok(())
+    Ok(counts)
 }
 
 fn range_rows(
-    source: &Connection,
     target: &Connection,
-    account: i64,
     key: &str,
     mut performance: Value,
+    event_count: usize,
 ) -> Result<(), AnalysisError> {
-    let start = performance["baseline"]
-        .as_str()
-        .map(numeric_time)
-        .transpose()?
-        .unwrap_or(0.0);
-    let end = performance["end"]
-        .as_str()
-        .map(numeric_time)
-        .transpose()?
-        .unwrap_or(-1.0);
     let mut insert = target.prepare_cached(
         r#"INSERT INTO native_stage.performance_result_point (
                 range_key, idx, date, observed_at, record_id, execution_id,
@@ -393,7 +313,6 @@ fn range_rows(
                 .map_err(stage_error)?;
         }
     }
-    let count = events(source, account, key, start, end, target)?;
     target.execute(
         r#"INSERT INTO native_stage.performance_result_range (
                 range_key, backtest_included, engine_version, baseline, end, record_count,
@@ -419,7 +338,7 @@ performance["sizing_fallback_count"].as_i64(),
 calendar["status"].as_str(),
 calendar["calendar_id"].as_str(),
 calendar["label"].as_str(),
-count,
+event_count,
 ]
     ).map_err(stage_error)?;
     Ok(())
@@ -460,13 +379,13 @@ pub(crate) fn write(
         })
         .into_iter()
         .collect::<Result<Vec<_>, AnalysisError>>()?;
-    daily_costs(source, task.account_id, &bounds, target)?;
+    crate::fact_cost_rows::trades(source, task.account_id, target, &bounds)?;
+    let counts = events(source, task.account_id, &bounds, target)?;
     let settings = ranges["all"]["settings"].clone();
     let data_until = ranges["all"]["end"].clone();
-    for key in ["30", "90", "all"] {
-        range_rows(source, target, task.account_id, key, ranges[key].take())?;
+    for ((key, _, _), count) in bounds.iter().zip(counts) {
+        range_rows(target, key, ranges[*key].take(), count)?;
     }
-    crate::fact_cost_rows::trades(source, task.account_id, target)?;
     Ok(
         json!({"account_id":task.account_id,"source_version":task.source_version,"settings":settings,"data_until":data_until}),
     )
@@ -539,59 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn daily_costs_filter_by_execution_time_and_keep_unknown_amounts() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
-             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
-             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
-             CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
-             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
-             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
-             CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
-             INSERT INTO executerecord VALUES(1,2,'2026-01-01T23:59:00'),(2,2,'2026-01-02T09:00:00');
-             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0),(2,'/symbol_results/A','A',0);
-             INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,98,98,98,1);
-             INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1),(2,'/symbol_results/A/sizing',1);
-             INSERT INTO business_trade_collection VALUES(1,'/symbol_results/A/trades','/symbol_results/A','array'),(2,'/symbol_results/A/trades','/symbol_results/A','array');
-             INSERT INTO business_trade VALUES
-              (1,'/symbol_results/A/trades',0,'2026-01-01T23:59:00',100,1,'1','{\"commission\":0,\"direction\":\"buy\"}','CNY'),
-              (1,'/symbol_results/A/trades',1,'2026-01-02T00:01:00',NULL,1,'2','{\"commission\":-0.2}','USD'),
-              (1,'/symbol_results/A/trades',2,'2026-01-02T00:02:00',NULL,1,'3','{\"commission\":0}','USD'),
-              (2,'/symbol_results/A/trades',0,'2026-01-02T09:00:00',500,1,'4','{\"commission\":8}','CNY');"
-        ).unwrap();
-        let boundary = numeric_time("2026-01-01T23:59:00").unwrap();
-        connection.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_result_daily_cost(\"range_key\" TEXT,\"day\" TEXT,\"value\" FLOAT,\"cost\" FLOAT,\"loss_bp\" FLOAT,\"coverage\" FLOAT,\"covered_value\" FLOAT,\"covered\" INTEGER,\"count\" INTEGER,\"fee_covered\" INTEGER,\"estimated\" INTEGER,\"amount_complete\" BOOLEAN,\"present\" INTEGER);CREATE TABLE native_stage.performance_result_daily_fee(\"range_key\" TEXT,\"day\" TEXT,\"currency\" TEXT,\"value\" FLOAT);").unwrap();
-        daily_costs(&connection, 2, &[("all", boundary, boundary)], &connection).unwrap();
-        let costs = connection.prepare("SELECT day,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete FROM native_stage.performance_result_daily_cost ORDER BY day").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<f64>>(1)?,row.get::<_,Option<f64>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,i64>(5)?,row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,bool>(8)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
-        assert_eq!(
-            costs,
-            vec![
-                (
-                    "2026-01-01".into(),
-                    Some(100.0),
-                    Some(2.0),
-                    Some(2.0 / 98.0 * 10000.0),
-                    Some(1.0),
-                    1,
-                    1,
-                    1,
-                    true
-                ),
-                ("2026-01-02".into(), None, None, None, None, 0, 2, 2, false),
-            ]
-        );
-        let fees = connection.prepare("SELECT day,currency,value FROM native_stage.performance_result_daily_fee ORDER BY day,currency").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
-        assert_eq!(
-            fees,
-            vec![
-                ("2026-01-01".into(), "CNY".into(), 0.0),
-                ("2026-01-02".into(), "USD".into(), -0.2)
-            ]
-        );
-    }
-
-    #[test]
     fn newest_events_are_bounded_but_count_covers_the_full_range() {
         let connection = scalar_fixture();
         let time = numeric_time("2026-01-01T10:00:00").unwrap();
@@ -608,19 +474,36 @@ mod tests {
             ).unwrap();
         }
         connection.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_result_event(\"range_key\" TEXT,\"idx\" INTEGER,\"time\" TEXT,\"tag\" TEXT,\"text\" TEXT,\"execution_id\" TEXT);").unwrap();
-        let count = events(&connection, 2, "all", time, time, &connection).unwrap();
-        assert_eq!(count, 152);
-        let rows = connection.prepare("SELECT tag,text,execution_id FROM native_stage.performance_result_event ORDER BY idx").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        let count = events(
+            &connection,
+            2,
+            &[
+                ("all", time, time),
+                ("90", time, time),
+                ("30", time + 1.0, time + 2.0),
+            ],
+            &connection,
+        )
+        .unwrap();
+        assert_eq!(count, vec![152, 152, 0]);
+        let rows = connection.prepare("SELECT tag,text,execution_id FROM native_stage.performance_result_event WHERE range_key='all' ORDER BY idx").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert_eq!(rows.len(), 100);
         assert_eq!(rows[0], ("换绑".into(), "组合 #7".into(), None));
         assert_eq!(rows[1], ("跳过".into(), "执行中".into(), None));
         assert_eq!(rows[99].2.as_deref(), Some("execution-97"));
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM native_stage.performance_result_event WHERE range_key='90'", [], |row| row.get::<_,i64>(0)).unwrap(), 100);
         connection
             .execute("DELETE FROM native_stage.performance_result_event", [])
             .unwrap();
         assert_eq!(
-            events(&connection, 2, "all", time + 1.0, time + 2.0, &connection).unwrap(),
-            0
+            events(
+                &connection,
+                2,
+                &[("all", time + 1.0, time + 2.0)],
+                &connection
+            )
+            .unwrap(),
+            vec![0]
         );
         assert_eq!(
             connection

@@ -30,8 +30,8 @@ pub fn query(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let since = (!since.is_empty()).then(|| crate::calendar::canonical_time(since)).transpose()?;
-    let until = (!until.is_empty()).then(|| crate::calendar::canonical_time(until)).transpose()?;
+    let since = (!since.is_empty()).then(|| crate::calendar::canonical_boundary(since)).transpose()?;
+    let until = (!until.is_empty()).then(|| crate::calendar::canonical_boundary(until)).transpose()?;
     let mut groups: Vec<(String, f64, Summary, Vec<Value>)> = Vec::new();
     let mut indices = HashMap::new();
     let mut ticks = crate::fact_ticks::TickReader::new(conn).map_err(database)?;

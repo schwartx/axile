@@ -166,27 +166,21 @@ fn records(
                 json!(row.get::<_, Option<bool>>(name).map_err(database)?),
             );
         }
-        let projected = row.get::<_, bool>("facts_complete").map_err(database)?;
-        if !projected {
+        if !row.get::<_, bool>("facts_complete").map_err(database)? {
             return Err(format!(
                 "SOURCE_FACTS_INCOMPLETE: record {id}: incomplete business facts"
             ));
         }
-        let symbol_results =
-            if projected && row.get::<_, bool>("has_symbol_results").map_err(database)? {
-                Value::Object(symbols.remove(&id).unwrap_or_default())
-            } else {
-                Value::Null
-            };
+        let symbol_results = if row.get::<_, bool>("has_symbol_results").map_err(database)? {
+            Value::Object(symbols.remove(&id).unwrap_or_default())
+        } else {
+            Value::Null
+        };
         header.insert("symbol_results".into(), symbol_results);
         for name in ["trade_count", "symbol_count"] {
             header.insert(
                 name.into(),
-                if projected {
-                    json!(row.get::<_, Option<i64>>(name).map_err(database)?)
-                } else {
-                    Value::Null
-                },
+                json!(row.get::<_, Option<i64>>(name).map_err(database)?),
             );
         }
         data.push(Value::Object(header));

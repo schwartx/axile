@@ -49,9 +49,9 @@ pub fn page(
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
     let since = since.filter(|value| !value.is_empty())
-        .map(crate::calendar::canonical_time).transpose()?;
+        .map(crate::calendar::canonical_boundary).transpose()?;
     let until = until.filter(|value| !value.is_empty())
-        .map(crate::calendar::canonical_time).transpose()?;
+        .map(crate::calendar::canonical_boundary).transpose()?;
     let args = params![account_id, since, until, limit, skip];
     let count: i64 = connection
         .query_row(
@@ -137,7 +137,7 @@ pub fn page(
             "{cte}
         SELECT r.id,r.execution_id,r.created_at,r.is_success,r.display_status,r.task_status,
         r.display_error,r.display_outcome,r.display_outcome_reason,r.reason_code,r.execution_kind,
-        r.execution_time,r.id,NULL,
+        r.execution_time,
         EXISTS(SELECT 1 FROM execution_symbol_collection c WHERE c.record_id=r.id AND c.path='/symbol_results' AND c.node_kind='object'),
         (SELECT count(*) FROM business_trade t JOIN business_trade_collection c
           ON c.record_id=t.record_id AND c.path=t.collection_path
@@ -151,35 +151,26 @@ pub fn page(
         .map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
-        if row.get::<_, i64>(16).map_err(database)? == 1 {
+        if row.get::<_, i64>(14).map_err(database)? == 1 {
             data.push(
-                json!({"kind":"schedule_skip","id":row.get::<_, i64>(17).map_err(database)?,
-                "occurred_at":row.get::<_, String>(18).map_err(database)?,
-                "channel":row.get::<_, String>(19).map_err(database)?,
-                "calendar_id":row.get::<_, String>(20).map_err(database)?,
-                "calendar_day":row.get::<_, String>(21).map_err(database)?,
-                "calendar_label":row.get::<_, String>(22).map_err(database)?,
-                "reason_code":row.get::<_, String>(23).map_err(database)?}),
+                json!({"kind":"schedule_skip","id":row.get::<_, i64>(15).map_err(database)?,
+                "occurred_at":row.get::<_, String>(16).map_err(database)?,
+                "channel":row.get::<_, String>(17).map_err(database)?,
+                "calendar_id":row.get::<_, String>(18).map_err(database)?,
+                "calendar_day":row.get::<_, String>(19).map_err(database)?,
+                "calendar_label":row.get::<_, String>(20).map_err(database)?,
+                "reason_code":row.get::<_, String>(21).map_err(database)?}),
             );
             continue;
         }
         let id: i64 = row.get(0).map_err(database)?;
         let created: String = row.get(2).map_err(database)?;
-        let projected = row.get::<_, Option<i64>>(12).map_err(database)?.is_some()
-            && row
-                .get::<_, Option<String>>(13)
-                .map_err(database)?
-                .is_none();
-        let trade_count: Option<i64> = if projected {
-            row.get(15).map_err(database)?
-        } else {
-            None
-        };
+        let trade_count: i64 = row.get(13).map_err(database)?;
         let duration = row
             .get::<_, Option<f64>>(11)
             .map_err(database)?
             .filter(|value| *value >= 0.0);
-        let symbol_results = if projected && row.get::<_, bool>(14).map_err(database)? {
+        let symbol_results = if row.get::<_, bool>(12).map_err(database)? {
             symbols.remove(&id).unwrap_or_default()
         } else {
             Map::new()
@@ -187,7 +178,7 @@ pub fn page(
         let mut record = json!({"id":id,"execution_id":row.get::<_, Option<String>>(1).map_err(database)?,
             "created_at":created,"is_success":row.get::<_, i64>(3).map_err(database)?,
             "symbol_results":symbol_results,"total_asset":totals.remove(&id).unwrap_or(Value::Null),
-            "summary":if trade_count.is_some() { summaries.remove(&id).unwrap_or_else(empty_summary) } else { Value::Null },
+            "summary":summaries.remove(&id).unwrap_or_else(empty_summary),
             "duration_sec":duration,"trade_count":trade_count});
         for (index, name) in [
             "status",
