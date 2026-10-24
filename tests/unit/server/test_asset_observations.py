@@ -8,7 +8,7 @@ from copy import deepcopy
 import pytest
 
 from axile.server._native import _core
-from axile.server.asset_observations import is_asset_observation, is_legacy_placeholder
+from tests.unit.server._asset_observation_oracle import is_asset_observation, is_legacy_placeholder
 from tests.unit.server.test_native_asset_operations import _call, _save
 from tests.unit.server.test_native_asset_operations import asset_database as asset_database
 

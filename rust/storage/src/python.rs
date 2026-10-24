@@ -1,7 +1,7 @@
 //! Python 绑定:每业务函数一个 typed 入口,进程内直调;纯透传查询返回 JSON 字节。
 
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyFloat, PyInt, PyTuple};
 use pyo3::Py;
@@ -177,6 +177,18 @@ fn business_request(stage: &str, request_json: &str) -> Result<Value, AnalysisEr
 }
 
 #[pyfunction]
+fn normalize_execution_result(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            let request = crate::json_codec::parse(request_json)
+                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error))?;
+            crate::business_facts_ops::result_head::normalize_legacy_result(&request)
+        })
+        .map_err(|error| PyTypeError::new_err(error.error))?;
+    json_to_py(py, &result)
+}
+
+#[pyfunction]
 fn execution_notification_context(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(|| {
@@ -321,8 +333,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     append_execution_event => crate::audit_ops::append_execution_event,
     append_execution_artifact => crate::audit_ops::append_execution_artifact,
     append_execution_audit_batch => crate::audit_ops::append_execution_audit_batch,
-    list_execution_events => crate::audit_ops::list_execution_events,
-    list_execution_artifacts => crate::audit_ops::list_execution_artifacts,
     resolve_execution_artifact => crate::audit_ops::resolve_execution_artifact,
     analysis_context => crate::analysis_ops::context,
     analysis_calendar_save => crate::analysis_ops::save_calendar,
@@ -801,6 +811,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(publication_status, m)?)?;
     m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_execution_result, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
 }

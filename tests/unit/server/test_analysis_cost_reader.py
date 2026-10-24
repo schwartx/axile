@@ -292,7 +292,7 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
 
     from axile.server._native import _core
     from axile.server.api.routes import account_performance as routes
-    from axile.server.execution.legacy_compat import normalize_legacy_result
+    from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 
     database = tmp_path / "native-costs.db"
 

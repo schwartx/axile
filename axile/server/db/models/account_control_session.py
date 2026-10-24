@@ -13,6 +13,7 @@ class AccountControlSession(Model):
     account_id: int
     execution_id: str
     context_kind: str = Field(default="unknown")
+    effective_context_kind: str = Field(default="unknown", exclude=True)
     source: str = Field(default="unknown")
     timezone: str
     started_at_ms: int

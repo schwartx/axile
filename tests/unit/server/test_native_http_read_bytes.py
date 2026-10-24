@@ -20,9 +20,9 @@ from axile.server.core import db
 from axile.server.db.models import ExecutionArtifact, ExecutionArtifactPublic, ExecutionEvent, ExecutionEventPublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from tests.conftest import native_store_call
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 from tests.unit.server._runtime_db_support import runtime_rows
 
 _READS = [
@@ -81,6 +81,15 @@ def _event(path, details, **overrides):
     native_store_call(path, "append_execution_event", values | overrides)
 
 
+def _audit_rows(path, table):
+    data = [dict(row) for row in runtime_rows(path, f"SELECT * FROM {table} ORDER BY id")]
+    content, kind = ("details", "event_type") if table == "execution_event" else ("content", "artifact_type")
+    for row in data:
+        row[content] = json.loads(row[content])
+        row[kind] = row[kind].lower()
+    return data
+
+
 def test_event_fields_enums_and_error_promotion_match_public_model(client, native_database):
     cases = [
         ({"debug": {"error": "连接暂不可用"}}, "连接暂不可用"),
@@ -112,16 +121,16 @@ def test_event_fields_enums_and_error_promotion_match_public_model(client, nativ
         for value in enum:
             _event(native_database, {"business": [False, 0, None]}, event_uid=f"{field}-{value}", **{field: value})
     runtime_rows(native_database, "ALTER TABLE execution_event ADD COLUMN internal_only TEXT DEFAULT 'private'")
-    before = native_store_call(native_database, "list_execution_events", {"execution_id": "e1"})
-    expected = [ExecutionEventPublic.model_validate(row).model_dump(mode="json") for row in before["data"]]
+    before = _audit_rows(native_database, "execution_event")
+    expected = [ExecutionEventPublic.model_validate(row).model_dump(mode="json") for row in before]
     for item, (_, error) in zip(expected, cases, strict=False):
         if error is not None:
             item["details"]["error"] = error
     response = client.get("/account/executions/e1/events")
     assert response.status_code == 200, response.text
-    assert response.json() == {"data": expected, "count": before["count"]}
+    assert response.json() == {"data": expected, "count": len(before)}
     assert all("internal_only" not in row for row in response.json()["data"])
-    assert native_store_call(native_database, "list_execution_events", {"execution_id": "e1"}) == before
+    assert _audit_rows(native_database, "execution_event") == before
     assert client.get("/account/executions/missing/events").json() == {"data": [], "count": 0}
 
 
@@ -148,15 +157,15 @@ def test_artifact_projection_and_summary_normalization_match_existing_reader(cli
             ).model_dump(mode="json"),
         )
     runtime_rows(native_database, "ALTER TABLE execution_artifact ADD COLUMN internal_only TEXT DEFAULT 'private'")
-    before = native_store_call(native_database, "list_execution_artifacts", {"execution_id": "e1"})
-    expected = [ExecutionArtifactPublic.model_validate(row).model_dump(mode="json") for row in before["data"]]
+    before = _audit_rows(native_database, "execution_artifact")
+    expected = [ExecutionArtifactPublic.model_validate(row).model_dump(mode="json") for row in before]
     for item in expected:
         if item["artifact_type"] == "execution_summary":
             item["content"] = normalize_legacy_result(item["content"])
     response = client.get("/account/executions/e1/artifacts")
     assert response.status_code == 200, response.text
-    assert response.json() == {"data": expected, "count": before["count"]}
-    assert native_store_call(native_database, "list_execution_artifacts", {"execution_id": "e1"}) == before
+    assert response.json() == {"data": expected, "count": len(before)}
+    assert _audit_rows(native_database, "execution_artifact") == before
     assert client.get("/account/executions/missing/artifacts").json() == {"data": [], "count": 0}
 
 

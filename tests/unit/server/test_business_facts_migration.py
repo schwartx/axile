@@ -366,9 +366,9 @@ def test_migrated_decision_cold_resolver_uses_explicit_original_selector(legacy_
     with _connect(database) as connection:
         _decision_event(connection, now, original)
     _upgrade(database)
-    resolved = native_store_call(database, "list_execution_events", {"execution_id": "migration-exec"})["data"][0][
-        "details"
-    ]
+    resolved = json.loads(
+        native_store_call(database, "list_execution_events_json", {"execution_id": "migration-exec"})
+    )["data"][0]["details"]
     decision = {key: value for key, value in resolved["decision"].items() if key != "business_facts_ref"}
     assert business_evidence(decision) == business_evidence(original["decision"])
     assert business_evidence(list(decision)) == business_evidence(list(original["decision"]))

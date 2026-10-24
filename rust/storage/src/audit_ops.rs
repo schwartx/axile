@@ -232,12 +232,7 @@ pub(crate) fn decode_row(row: &Row<'_>, table: &str) -> Result<Value, AnalysisEr
     Ok(Value::Object(result))
 }
 
-fn list(
-    connection: &Connection,
-    request: &Value,
-    table: &str,
-    public: bool,
-) -> Result<Value, AnalysisError> {
+fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, AnalysisError> {
     let execution_id = text(request, "execution_id")?;
     let skip = request.get("skip").and_then(Value::as_i64).unwrap_or(0);
     let limit = request.get("limit").and_then(Value::as_i64).unwrap_or(100);
@@ -251,10 +246,9 @@ fn list(
             |row| row.get(0),
         )
         .map_err(sql)?;
-    let columns = match (table, public) {
-        ("execution_event", true) => "id,execution_id,account_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,client_order_id,ts_local_created,ts_exchange,ts_persisted,seq,details",
-        ("execution_artifact", true) => "id,execution_id,artifact_type,schema_version,content,created_at",
-        _ => "*",
+    let columns = match table {
+        "execution_event" => "id,execution_id,account_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,client_order_id,ts_local_created,ts_exchange,ts_persisted,seq,details",
+        _ => "id,execution_id,artifact_type,schema_version,content,created_at",
     };
     let mut statement = connection
         .prepare(&format!(
@@ -267,25 +261,19 @@ fn list(
     let mut data = Vec::new();
     while let Some(row) = cursor.next().map_err(sql)? {
         let mut item = decode_row(row, table)?;
-        if public {
-            integer(&item, "id")?;
-            integer(&item, "schema_version")?;
-        }
+        integer(&item, "id")?;
+        integer(&item, "schema_version")?;
         if table == "execution_event" {
             item["details"] = summary_refs::resolve_event_details(connection, &item, None)?;
-            if public {
-                public_event(&mut item)?;
-            }
+            public_event(&mut item)?;
         } else {
             item["content"] = summary_refs::resolve_artifact_content(connection, &item, None)?;
-            if public {
-                enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|execution_summary|environment_snapshot")?;
-                if !item["content"].is_object() {
-                    return Err(invalid("附件内容必须是对象"));
-                }
-                if item["artifact_type"] == "execution_summary" {
-                    item["content"] = result_head::normalize_legacy_result(&item["content"])?;
-                }
+            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|execution_summary|environment_snapshot")?;
+            if !item["content"].is_object() {
+                return Err(invalid("附件内容必须是对象"));
+            }
+            if item["artifact_type"] == "execution_summary" {
+                item["content"] = result_head::normalize_legacy_result(&item["content"])?;
             }
         }
         data.push(item);
@@ -325,33 +313,20 @@ fn public_event(item: &mut Value) -> Result<(), AnalysisError> {
     Ok(())
 }
 
-fn list_snapshot(
-    path: &str,
-    request: &Value,
-    table: &str,
-    public: bool,
-) -> Result<Value, AnalysisError> {
+fn list_snapshot(path: &str, request: &Value, table: &str) -> Result<Value, AnalysisError> {
     crate::with_read_snapshot_errors(
         Path::new(path),
-        |connection| list(connection, request, table, public),
+        |connection| list(connection, request, table),
         ("EXECUTION_AUDIT_SQL", "EXECUTION_AUDIT_SQL"),
     )
 }
 
-pub fn list_execution_events(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    list_snapshot(path, request, "execution_event", false)
-}
-
-pub fn list_execution_artifacts(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    list_snapshot(path, request, "execution_artifact", false)
-}
-
 pub fn list_execution_events_json(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    list_snapshot(path, request, "execution_event", true)
+    list_snapshot(path, request, "execution_event")
 }
 
 pub fn list_execution_artifacts_json(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    list_snapshot(path, request, "execution_artifact", true)
+    list_snapshot(path, request, "execution_artifact")
 }
 
 pub fn resolve_execution_artifact(path: &str, request: &Value) -> Result<Value, AnalysisError> {
@@ -438,7 +413,6 @@ mod tests {
             &connection,
             &json!({"execution_id":"e1","skip":1,"limit":1}),
             "execution_event",
-            false,
         )
         .unwrap();
         assert_eq!(page["count"], 2);

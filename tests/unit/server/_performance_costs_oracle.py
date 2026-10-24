@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
-from axile.server.execution.legacy_compat import normalize_legacy_result
+from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

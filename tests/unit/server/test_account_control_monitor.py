@@ -26,6 +26,31 @@ from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
+def test_native_session_classification_preserves_raw_audit_fields(native_database):
+    from axile.server.db.models.account_control_session import AccountControlSession
+    from tests.conftest import native_store_call
+    from tests.unit.server._runtime_db_support import runtime_rows
+
+    native_store_call(
+        native_database,
+        "account_create",
+        {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": "2026-10-24"},
+    )
+    runtime_rows(
+        native_database,
+        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
+        ("catalog-" + "a" * 32,),
+    )
+    (session,) = native_store_call(native_database, "control_monitor_inputs", {})["sessions"]
+    assert session["context_kind"] == session["source"] == "unknown"
+    assert session["effective_context_kind"] == "account_operation"
+    assert "effective_context_kind" not in AccountControlSession.model_validate(session).model_dump()
+    assert tuple(runtime_rows(native_database, "SELECT context_kind,source FROM account_control_session")[0]) == (
+        "unknown",
+        "unknown",
+    )
+
+
 @sqlite_oracle
 def save_account(path, account):
     """测试 oracle 直接保存账户配置，生产路径不调用 SQLite。"""

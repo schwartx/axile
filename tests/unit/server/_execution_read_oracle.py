@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models.execution import ExecuteRecord, ExecuteRecordPublic
-from axile.server.execution.legacy_compat import normalize_legacy_result
+from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 from tests.unit.server._performance_costs_oracle import project_execution
 
 

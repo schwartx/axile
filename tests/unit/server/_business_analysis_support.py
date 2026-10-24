@@ -300,7 +300,7 @@ def _events(records, bindings, skips) -> list[dict]:
     from collections.abc import Mapping
 
     from axile.executor.session_closed import session_closed_scope
-    from axile.server.execution.legacy_compat import normalize_legacy_result
+    from tests.unit.server._legacy_result_oracle import normalize_legacy_result
     from tests.unit.server._performance_costs_oracle import timestamp
 
     events = [

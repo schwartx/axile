@@ -16,6 +16,7 @@ from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 _ACCOUNT_ID = 2
@@ -79,7 +80,7 @@ def _asset_evidence(path):
 
 
 def _resolved_artifact(path):
-    artifacts = native_store_call(path, "list_execution_artifacts", {"execution_id": _EXECUTION_ID})
+    artifacts = audit_artifacts(path, _EXECUTION_ID)
     assert artifacts["count"] == 1
     return artifacts["data"][0]["content"]
 

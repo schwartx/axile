@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_schedule
 from axile.server.business_facts.repository import read_execution_detail
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_read_oracle import ExecuteRecordDetailPublic
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 from tests.unit.server._performance_costs_oracle import project_execution
 from tests.unit.server.test_business_facts_tq import tq_historical_payloads
 from tests.unit.server.test_notification_compaction_projections import _CREATED, _EXECUTION, _event, _result

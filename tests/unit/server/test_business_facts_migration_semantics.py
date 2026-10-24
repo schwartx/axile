@@ -12,6 +12,7 @@ import sqlalchemy as sa
 
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
+from tests.unit.server._business_facts_test_support import audit_artifacts
 
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
 _BUSINESS_MAP_FIELDS = frozenset(
@@ -971,9 +972,7 @@ async def test_migration_freezes_full_summary_and_restores_original_journal_wire
             )
             hydrated.pop("business_facts_ref", None)
             _assert_same_evidence(originals[artifact_id]["content"], hydrated, "summary-cold-wire")
-            resolved = native_store_call(
-                database, "list_execution_artifacts", {"execution_id": records[record_id]["execution_id"]}
-            )["data"][0]["content"]
+            resolved = audit_artifacts(database, records[record_id]["execution_id"])["data"][0]["content"]
             resolved.pop("business_facts_ref", None)
             _assert_same_evidence(originals[artifact_id]["content"], resolved, "summary-owned-cold-read")
             _assert_same_evidence(records[record_id]["raw_result"], result, "summary-source-result")
