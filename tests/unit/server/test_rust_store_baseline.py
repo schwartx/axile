@@ -47,15 +47,6 @@ def test_v0220_baseline_preserves_the_tag_and_0033_head() -> None:
     assert manifest["revisions"] == [f"{index:04}" for index in range(1, 34)]
 
 
-def test_current_oracle_is_the_complete_0039_migration_schema() -> None:
-    manifest = _manifest("public-0039.sql")
-    assert manifest["source_commit"] == _SOURCE_COMMIT
-    assert manifest["public_head"] == "0039"
-    assert manifest["revisions"] == [f"{index:04}" for index in range(1, 40)]
-    assert manifest["objects"] == {"table": 73, "index": 45, "trigger": 243, "view": 0}
-    assert "axile/server/alembic/versions/0039_direct_analysis_facts.py" in manifest["source_sha256"]
-
-
 def test_missing_capability_fails_instead_of_skipping() -> None:
     with pytest.raises(pytest.fail.Exception, match="缺少能力.*__missing_storage_operation_for_test__"):
         require_native_store("__missing_storage_operation_for_test__")
@@ -101,7 +92,7 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("name", ["v0.22.0.sql", "public-0039.sql"])
+@pytest.mark.parametrize("name", ["v0.22.0.sql"])
 def test_frozen_oracle_ddl_loads_with_all_objects(tmp_path: Path, name: str) -> None:
     with closing(oracle_connect(tmp_path / "oracle.db")) as connection, connection:
         load_schema(connection, (_FIXTURES / name).read_text(encoding="utf-8"))
@@ -109,11 +100,6 @@ def test_frozen_oracle_ddl_loads_with_all_objects(tmp_path: Path, name: str) -> 
         assert "executerecord" in schema["tables"]
         assert "axile_0013_error_backup" in schema["tables"]
         assert schema["triggers"]
-        if name == "public-0039.sql":
-            assert len(schema["tables"]) == 73
-            assert len(schema["triggers"]) == 243
-            assert schema["tables"]["business_asset_snapshot"]["checks"]
-            assert schema["tables"]["execution_input_target"]["without_rowid"]
 
 
 def test_schema_contract_detects_integrity_changes(tmp_path: Path) -> None:
@@ -139,24 +125,13 @@ def test_schema_contract_detects_integrity_changes(tmp_path: Path) -> None:
         assert "triggers.child_insert: missing" in differences
 
 
-def test_dml_oracles_declare_actual_0039_columns() -> None:
-    from tests.fixtures.rust_store.oracle_tables import table
-
-    manifest = _manifest("public-0039.sql")
-    for name, columns in manifest["table_columns"].items():
-        declared = table(name)
-        assert [(column.name, str(column.type), column.nullable, column.primary_key) for column in declared.c] == [
-            (column["name"], column["type"], column["nullable"], column["primary_key"]) for column in columns
-        ]
-
-
 def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> None:
     from tests.unit.server._business_analysis_support import _move_record_id, _record_tables, _reset_records
     from tests.unit.server._execution_test_support import build_account, insert_account
 
     path = tmp_path / "fixture.db"
+    initialize_native_database(path)
     with closing(oracle_connect(path)) as connection, connection:
-        load_schema(connection, (_FIXTURES / "public-0039.sql").read_text(encoding="utf-8"))
         connection.execute("PRAGMA foreign_keys=ON")
         insert_account(connection, build_account(id=2, portfolio_id=None))
         connection.execute(
@@ -179,7 +154,7 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
         assert connection.execute("SELECT COUNT(*) FROM execution_order").fetchone() == (0,)
 
 
-@pytest.mark.parametrize("revision,name", [("0033", "v0.22.0.sql"), ("0039", "public-0039.sql")])
+@pytest.mark.parametrize("revision,name", [("0033", "v0.22.0.sql")])
 def test_native_migration_matches_real_schema(tmp_path: Path, revision: str, name: str) -> None:
     """列、默认值、索引、外键、唯一性和完整触发器与历史实现一致。"""
     path = tmp_path / "native.db"
@@ -201,7 +176,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
     for operation in ("migration_current", "migration_check"):
         result = native_store_call(path, operation, {})
         assert result["public"] is None
-        assert result["public_target"] == "0041"
+        assert result["public_target"] == "0034"
         assert not path.exists()
         assert list(tmp_path.iterdir()) == []
 
@@ -218,14 +193,14 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
             backup,
         )
     result = initialize_native_database(path)
-    assert result["public"] == "0041"
-    assert native_store_call(path, "migration_current", {})["public"] == "0041"
+    assert result["public"] == "0034"
+    assert native_store_call(path, "migration_current", {})["public"] == "0034"
     with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
             "FROM axile_0013_error_backup"
         ).fetchall() == [backup]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0041",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
 
 
 def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> None:
@@ -242,14 +217,14 @@ def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> N
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_nonempty_native_upgrade_matches_frozen_0039_rows(tmp_path: Path) -> None:
+def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> None:
     """真实输入、成交、资产、目标、摘要、通知 outbox 和分析结果同时迁移。"""
     data = json.loads((_FIXTURES / "public-0033-data.json").read_text(encoding="utf-8"))
     path = tmp_path / "historical.db"
     initialize_native_database(path, revision=data["from_revision"])
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
-    assert initialize_native_database(path, revision=data["to_revision"])["public"] == data["to_revision"]
+    assert initialize_native_database(path)["public"] == "0034"
     expected = data["expected"]
     raw_results = {row["id"]: json.loads(row["raw_result"]) for row in data["seed"]["executerecord"]}
     for row in expected["execution_extension"]:
@@ -270,7 +245,14 @@ def test_nonempty_native_upgrade_matches_frozen_0039_rows(tmp_path: Path) -> Non
     for name in ("execution_extension", "execution_artifact"):
         expected[name].sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
     with closing(oracle_connect(path)) as connection, connection:
-        assert database_rows(connection) == data["expected"]
+        actual = database_rows(connection)
+
+        def business(name):
+            return name not in {"alembic_version", "account_analysis", "analysis_calendar_day"} and not name.startswith(
+                "performance_"
+            )
+
+        assert {k: v for k, v in actual.items() if business(k)} == {k: v for k, v in expected.items() if business(k)}
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 

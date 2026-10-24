@@ -162,9 +162,9 @@ def test_foreign_input_is_rejected_on_read_and_write(database, reference, input_
         # 模拟历史损坏需临时移开写保护；读取仍使用完整原生校验。
         with closing(oracle_connect(database)) as connection:
             trigger = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name='business_facts_0037_record_input_update'"
+                "SELECT sql FROM sqlite_master WHERE name='business_facts_0034_record_input_update'"
             ).fetchone()[0]
-        sql(database, "DROP TRIGGER business_facts_0037_record_input_update")
+        sql(database, "DROP TRIGGER business_facts_0034_record_input_update")
     sql(database, f"UPDATE executerecord SET {reference}=? WHERE id=?", (unrelated["input_id"], record["id"]))
     if input_account == 3:
         sql(database, trigger)

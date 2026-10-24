@@ -154,6 +154,8 @@ def dataset(tmp_path):
     try:
         with engine.begin() as connection:
             connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+            # 故意损坏缓存版本，核验读取仍拒绝不完整的版本。
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
             for snapshot_id, account_id, view_version in (
                 ("s1", 2, 1),
                 ("s2", 2, 1),
@@ -169,8 +171,6 @@ def dataset(tmp_path):
                         engine_version=ENGINE_VERSION,
                         computed_at="2026-01-03T00:00:00+08:00",
                         data_until="2026-01-02T09:00:00+08:00",
-                        settings=SETTINGS,
-                        ranges={},
                         cost_schema_version=1,
                         result_schema_version=2,
                         read_view_schema_version=view_version,
@@ -199,13 +199,6 @@ def dataset(tmp_path):
                     engine_version=ENGINE_VERSION,
                 )
             )
-            # Genuine invalid JSON catches ORM column decoding as well as JSON SQL.
-            for table, columns in (
-                ("performance_snapshot", ("ranges", "settings")),
-                ("performance_cost_execution", ("payload",)),
-            ):
-                for column in columns:
-                    connection.exec_driver_sql(f"UPDATE {table} SET {column}='not-json'")
     finally:
         engine.dispose()
     return path

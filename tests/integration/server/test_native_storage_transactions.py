@@ -454,7 +454,6 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
     core = require_native_store(operation)
     execution_id = "supplement-finish"
     _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
-    _terminal(database, execution_id)
     table, event = (
         ("notification_event", "INSERT") if stage == "outbox_insert" else ("supplement_group", "UPDATE OF status")
     )
@@ -470,13 +469,14 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
             "now": _LATER,
         }
     with pytest.raises(core.NativeError) as caught:
-        native_store_call(database, operation, request)
+        _terminal(database, execution_id)
     assert caught.value.args[0]
     assert stage in caught.value.args[1]
     assert _snapshot(database) == before
 
     _sql(database, "DROP TRIGGER fail_finish")
-    assert native_store_call(database, operation, request)["changed"]
+    _terminal(database, execution_id)
+    assert not native_store_call(database, operation, request)["changed"]
     assert _rows(database, "execution_intent")[0]["status"] == "SUCCEEDED"
     assert _rows(database, "supplement_step")[0]["status"] == "finished"
     assert _rows(database, "supplement_group")[0]["status"] == "completed"
@@ -495,6 +495,9 @@ def test_frozen_notification_still_checks_execution_facts_before_finishing(datab
     execution_id = "incomplete-frozen-result"
     _intent(database, execution_id, step_id=_group(database, "incomplete-result"), running=True)
     record = _terminal(database, execution_id)
+    # 模拟历史结果已有捕获正文，intent 与待发通知尚未提交。
+    _sql(database, "UPDATE execution_intent SET status='RUNNING'")
+    _sql(database, "DELETE FROM notification_event")
     _sql(database, "UPDATE executerecord SET facts_complete=0 WHERE id=?", (record["id"],))
     before = _snapshot(database)
 
@@ -583,23 +586,22 @@ def test_failed_recovery_terminal_commit_remains_recoverable(
         "CREATE TRIGGER fail_recovery BEFORE INSERT ON executerecord "
         "BEGIN SELECT RAISE(ABORT,'recovery-terminal'); END",
     )
+    before = _snapshot(database)
     try:
         with pytest.raises(core.NativeError) as caught:
             asyncio.run(dispatcher.recover_intents_on_startup())
         assert caught.value.args[0] == "BUSINESS_FACTS_SQL"
         assert "recovery-terminal" in caught.value.args[1]
         assert not _rows(database, "executerecord")
-        events = _rows(database, "notification_event")
-        assert len(events) == 1
-        statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
-        assert statuses == {execution_id: "FAILED", queued_id: "QUEUED", "ordinary-failed": "FAILED"}
+        assert _snapshot(database) == before
         _sql(database, "DROP TRIGGER fail_recovery")
         asyncio.run(dispatcher.recover_intents_on_startup())
         statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
         assert statuses == {execution_id: "FAILED", queued_id: "QUEUED", "ordinary-failed": "FAILED"}
         records = _rows(database, "executerecord")
         assert len(records) == 1 and records[0]["execution_id"] == execution_id
-        assert _rows(database, "notification_event") == events
+        events = _rows(database, "notification_event")
+        assert len(events) == 1
         committed = _snapshot(database)
         asyncio.run(dispatcher.recover_intents_on_startup())
         assert _snapshot(database) == committed

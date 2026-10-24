@@ -224,14 +224,6 @@ pub fn control_quota_pending(path: &str, _request: &Value) -> Result<Value, Anal
     Ok(json!({"account_ids":pending_on(&connection)?}))
 }
 
-pub fn control_quota_warnings(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let connection = crate::writer_scope::open_writer(Path::new(path))?;
-    let created_at = text(request, "created_at")?;
-    crate::writer_scope::immediate(&connection, || {
-        enqueue_quota_warnings_on(&connection, &request["warnings"], created_at)
-    })
-}
-
 fn history_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let mut history = crate::control_store::load_baseline_on(connection, request)?;
     let mut statement = connection

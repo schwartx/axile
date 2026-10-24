@@ -1,11 +1,11 @@
-"""冻结 0039 的测试侧 DML 表声明；建库始终使用真实 Rust 迁移。"""
+"""冻结 0034 的测试侧 DML 表声明；建库始终使用真实 Rust 迁移。"""
 
 import json
 from pathlib import Path
 
 import sqlalchemy as sa
 
-_COLUMNS = json.loads(Path(__file__).with_name("public-0039.json").read_text(encoding="utf-8"))["table_columns"]
+_COLUMNS = json.loads(Path(__file__).with_name("public-0034.json").read_text(encoding="utf-8"))["table_columns"]
 _METADATA = sa.MetaData()
 _TYPES = {
     "TEXT": sa.Text,

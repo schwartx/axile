@@ -69,9 +69,9 @@ fn rebuild(connection: &Connection, autoincrement: bool) -> Result<()> {
     execute(
         connection,
         &format!(
-            "PRAGMA legacy_alter_table=ON; CREATE TABLE account_0040 {}; \
-         INSERT INTO account_0040 SELECT * FROM account; DROP TABLE account; \
-         ALTER TABLE account_0040 RENAME TO account; PRAGMA legacy_alter_table=OFF;",
+            "PRAGMA legacy_alter_table=ON; CREATE TABLE account_storage {}; \
+         INSERT INTO account_storage SELECT * FROM account; DROP TABLE account; \
+         ALTER TABLE account_storage RENAME TO account; PRAGMA legacy_alter_table=OFF;",
             definition[body..].replacen(before, after, 1),
         ),
     )?;

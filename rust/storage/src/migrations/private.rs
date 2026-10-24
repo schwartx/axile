@@ -10,7 +10,6 @@ use crate::business_facts_ops::{result_extensions, result_head, result_symbols};
 use crate::error::AnalysisError;
 
 use super::legacy::{self, Change};
-use super::{notification_refs, snapshot_refs};
 use crate::json_codec::parse as parse_legacy_json;
 
 type Result<T> = std::result::Result<T, AnalysisError>;
@@ -88,11 +87,8 @@ fn detail(connection: &Connection, record: &Object) -> Result<Value> {
         .get("account_id")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid("invalid migration account id"))?;
-    let mut detail =
+    let detail =
         business_detail::read(connection, account_id, id(record)?).map_err(AnalysisError::from)?;
-    if let Some(result) = detail["result"].as_object_mut() {
-        notification_refs::hydrate(connection, record, result).map_err(AnalysisError::from)?;
-    }
     Ok(detail)
 }
 
@@ -102,38 +98,6 @@ fn content(artifact: &Object) -> Value {
         Some(value) => value.clone(),
         None => Value::Null,
     }
-}
-
-fn artifact_document(connection: &Connection, artifact: &Object) -> Result<Value> {
-    let content = content(artifact);
-    let Some(reference) = snapshot_refs::parse_artifact_reference(&content)? else {
-        return Ok(content);
-    };
-    if reference.get("view").and_then(Value::as_str) != Some("result") {
-        return Ok(content);
-    }
-    let record_id = reference
-        .get("record_id")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| invalid("summary reference record id missing"))?;
-    let records = business_detail::load(connection, "executerecord", "id", &json!(record_id))
-        .map_err(AnalysisError::from)?;
-    let reference_error =
-        || AnalysisError::new("BUSINESS_FACTS_REFERENCE", "执行摘要引用与原执行身份不一致");
-    let record = records.first().ok_or_else(reference_error)?;
-    if record.get("execution_id") != artifact.get("execution_id") {
-        return Err(reference_error());
-    }
-    if !text(artifact, "artifact_type")
-        .is_some_and(|kind| kind.eq_ignore_ascii_case("execution_summary"))
-    {
-        return Err(AnalysisError::new(
-            "BUSINESS_FACTS_REFERENCE",
-            "执行摘要引用与原附件类型不一致",
-        ));
-    }
-    let projected = detail(connection, record)?;
-    snapshot_refs::hydrate_summary_content(&content, &projected["result"], false)
 }
 
 fn evidence(connection: &Connection, execution_id: Option<&str>) -> Result<Vec<Value>> {
@@ -156,7 +120,7 @@ fn evidence(connection: &Connection, execution_id: Option<&str>) -> Result<Vec<V
         "SELECT * FROM execution_artifact WHERE execution_id=?1 AND artifact_type IN ('STANDARD_INPUT','EXECUTION_SUMMARY') ORDER BY id",
         [execution_id], "execution_artifact")?
     {
-        evidence.push(artifact_document(connection, &artifact)?);
+        evidence.push(content(&artifact));
     }
     let mut statement = connection
         .prepare("SELECT DISTINCT channel FROM execution_event WHERE execution_id=?1")
@@ -218,34 +182,12 @@ fn store_changes(
 }
 
 fn write_artifact(connection: &Connection, artifact: &Object, document: &Value) -> Result<()> {
-    let original = content(artifact);
-    let reference = snapshot_refs::parse_artifact_reference(&original)?;
-    let version = reference
-        .filter(|reference| reference.get("view").and_then(Value::as_str) == Some("result"))
-        .map(|reference| match reference.get("legacy_schema_version") {
-            None => Ok(2),
-            Some(value) => value
-                .as_i64()
-                .filter(|version| *version >= 1)
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "invalid migration summary version: execution_artifact:{}",
-                        id(artifact).unwrap_or_default()
-                    ))
-                }),
-        })
-        .transpose()?;
-    match version {
-        Some(version) => connection.execute(
-            "UPDATE execution_artifact SET content=?1,schema_version=?2 WHERE id=?3",
-            params![document.to_string(), version, id(artifact)?],
-        ),
-        None => connection.execute(
+    connection
+        .execute(
             "UPDATE execution_artifact SET content=?1 WHERE id=?2",
             params![document.to_string(), id(artifact)?],
-        ),
-    }
-    .map_err(sql)?;
+        )
+        .map_err(sql)?;
     legacy::invalidate(connection, text(artifact, "execution_id"))
 }
 
@@ -256,7 +198,6 @@ fn write_result(
     changes: &[Change],
 ) -> Result<()> {
     let record_id = id(record)?;
-    snapshot_refs::detach_execution_summaries(connection, record_id)?;
     let head = result_head::execution_head_values(
         document,
         record.get("is_success").and_then(Value::as_i64),
@@ -358,7 +299,7 @@ pub(super) fn patch_errors(
                     let projected = detail(connection, row)?;
                     (projected["input"].clone(), projected["result"].clone())
                 } else {
-                    (Value::Null, artifact_document(connection, row)?)
+                    (Value::Null, content(row))
                 };
                 let mut channels = vec![own_input];
                 channels.extend(evidence(connection, text(row, "execution_id"))?);
@@ -468,7 +409,7 @@ fn restore_group(connection: &Connection, group: &[Backup], dry_run: bool) -> Re
     let mut document = if first.table == "executerecord" {
         detail(connection, row)?["result"].clone()
     } else {
-        artifact_document(connection, row)?
+        content(row)
     };
     if !document.is_object() {
         return Err(conflict(&first.table, &first.row_id));

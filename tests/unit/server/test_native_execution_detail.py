@@ -26,7 +26,7 @@ from tests.unit.server._performance_costs_oracle import project_execution
 from tests.unit.server.test_business_facts_tq import tq_historical_payloads
 from tests.unit.server.test_notification_compaction_projections import _CREATED, _EXECUTION, _event, _result
 
-# 预期取自同库的冻结 0039 原生查询，经旧 HTTP 展示函数处理后的输出。
+# 预期取自同库的冻结 0034 原生查询，经旧 HTTP 展示函数处理后的输出。
 _DISPLAY_EDGE_CASES = [
     ("null", None, {"outcome": None}),
     ("invalid", "invalid", {"outcome": None}),
@@ -340,13 +340,13 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     other = persist_result(
         path, source_result, raw_input=source_input, execution_id="foreign-frozen-owner", account_id=2, is_success=0
     )
-    notification = _event()
-    event_context = notification.context
+    notification = _event()[1]
+    event_context = notification["context"]
     _sql(
         path,
         "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) "
         "VALUES(?,1,?,'execution.finished',?,'pending')",
-        (notification.id, created_at, json.dumps(event_context)),
+        (notification["id"], created_at, json.dumps(event_context)),
     )
     record_id = head["id"]
     borrowed_rows, extra_rows = _oracle(
@@ -395,10 +395,10 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
                 _sql(
                     path,
                     "UPDATE notification_event SET context=? WHERE id=?",
-                    (json.dumps(context), notification.id),
+                    (json.dumps(context), notification["id"]),
                 )
             elif corruption == "outbox_deleted":
-                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification.id,))
+                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification["id"],))
             else:
                 _sql(path, "DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
             response = await client.get(f"/execute_records/1/{record_id}")

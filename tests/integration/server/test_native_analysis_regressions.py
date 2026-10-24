@@ -104,6 +104,7 @@ def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_w
     core = require_native_store("queue_enqueue", "queue_claim", "queue_status")
     _persist(database, _PRECISE, _RESULT)
     monkeypatch.setattr(analysis, "database_path", lambda: str(database))
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(database))
     manager = analysis.AnalysisManager()
     claims = []
 

@@ -168,9 +168,9 @@ fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<()
     let until = complete["data_until"].as_str();
     connection.execute(
         "INSERT INTO main.performance_snapshot
-         (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,settings,ranges,
+         (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,
           cost_schema_version,result_schema_version,backtest_weight_type,backtest_fee_rate,read_view_schema_version)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,'{}','{}',1,2,?8,?9,1)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,1,2,?8,?9,1)",
         params![
             task.snapshot_id,
             task.account_id,

@@ -5,6 +5,7 @@ use std::path::Path;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
+use crate::control_audit::context_kind;
 use crate::error::AnalysisError;
 use crate::{storage_connection, writer_scope};
 
@@ -128,17 +129,6 @@ pub(crate) fn load_baseline_on(
     }))
 }
 
-fn legacy_operation(context_id: &str) -> bool {
-    let Some((prefix, suffix)) = context_id.split_once('-') else {
-        return false;
-    };
-    matches!(prefix, "orders" | "catalog")
-        && suffix.len() == 32
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 pub(crate) fn incomplete_history_on(
     connection: &Connection,
     request: &Value,
@@ -168,7 +158,7 @@ pub(crate) fn incomplete_history_on(
         let context: String = row.get(1).map_err(sql)?;
         let execution: String = row.get(2).map_err(sql)?;
         let source: String = row.get(3).map_err(sql)?;
-        if (context == "account_operation" || context == "unknown" && legacy_operation(&execution))
+        if context_kind(&context, &execution) == "account_operation"
             && matches!(
                 source.as_str(),
                 "account_assets" | "connection_prepare" | "instrument_catalog"

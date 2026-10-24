@@ -218,7 +218,7 @@ def test_create_rejects_invalid_configuration_before_write(account_client, patch
     response = client.post("/account/", json=payload)
     assert response.status_code == 422
     assert message in response.json()["detail"]
-    assert native_store_call(database, "account_list", {}) == []
+    assert client.get("/account/").json() == {"data": []}
 
 
 def test_create_account_requires_explicit_account_control_preset(account_client) -> None:
@@ -320,7 +320,7 @@ def test_invalid_weight_precision_does_not_mutate(account_client, weight_precisi
     assert client.patch("/account/1", json={"weight_precision": weight_precision}).status_code == 422
     assert _load_account(database).weight_precision == 0.001
     assert client.post("/account/", json=_account_payload() | {"weight_precision": weight_precision}).status_code == 422
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 def test_update_same_channel_preserves_omitted_credentials(account_client) -> None:
@@ -374,7 +374,7 @@ def test_copy_rejects_active_source(account_client, monkeypatch, condition) -> N
     elif condition == "queued":
         monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _id: "queued")
     assert client.post("/account/1/copy", json={"name": "新账户"}).status_code == 409
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 def test_copy_preserves_config_and_starts_without_source_history(account_client) -> None:
@@ -422,7 +422,7 @@ def test_create_idempotency_replays_before_custom_validation(account_client) -> 
     replay = client.post("/account/", headers={"Idempotency-Key": "create-1"}, json=invalid)
     assert replay.status_code == 202
     assert replay.json()["id"] == first.json()["id"]
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 @pytest.mark.parametrize("new_key", ["old-create", "new-create"])
@@ -446,7 +446,7 @@ def test_deleted_account_recreation_and_idempotent_retry_are_isolated(account_cl
     )
     assert replay.status_code == 202, replay.text
     assert replay.json()["id"] == new_id
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
     if new_key != "old-create":
         assert native_store_call(database, "account_create_replay", {"idempotency_key": "old-create"}) is None
 
@@ -730,7 +730,7 @@ def test_copy_rejects_concurrently_changed_source_configuration(account_client, 
     monkeypatch.setattr(account_crud_routes, "native_operation", concurrent_update)
     response = client.post("/account/1/copy", json={"name": "新账户"})
     assert response.status_code == 409, response.text
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
     assert _load_account(database).account_config["token"] == "new-secret"
 
 

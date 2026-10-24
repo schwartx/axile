@@ -53,11 +53,11 @@ pub(crate) fn trades(
                 r#"INSERT INTO native_stage.performance_cost_trade (
                 id, record_id, symbol, time, day, value,
                 cost, loss_bp, fee, fee_currency, estimated, side,
-                quantity, price, reference, reference_source, payload
+                quantity, price, reference, reference_source
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6,
                 ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, '{}'
+                ?13, ?14, ?15, ?16
             )"#,
             )
             .map_err(stage_error)?;

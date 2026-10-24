@@ -335,12 +335,6 @@ pub fn account_get(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     })
 }
 
-pub fn account_list(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        Ok(json!(list_on(connection)?))
-    })
-}
-
 fn public_account(mut account: Value, request: &Value) -> Result<Value, AnalysisError> {
     let channel = account["trade_channel"]
         .as_str()

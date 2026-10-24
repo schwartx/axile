@@ -88,30 +88,6 @@ pub(crate) fn delete_on(connection: &Connection, account_id: i64) -> Result<(), 
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Enqueue {
-    account_id: i64,
-    reset_worker: bool,
-    #[serde(default)]
-    create_request_key: Option<String>,
-    now: String,
-}
-
-pub fn enqueue(path: &str, value: &Value) -> Result<Value, AnalysisError> {
-    let input: Enqueue = request(value)?;
-    let connection = open_writer(Path::new(path))?;
-    immediate(&connection, || {
-        enqueue_on(
-            &connection,
-            input.account_id,
-            input.reset_worker,
-            input.create_request_key.as_deref(),
-            &input.now,
-        )
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Begin {
     account_id: i64,
     #[serde(default)]

@@ -66,9 +66,7 @@ async def _database(path=None):
                     engine_version=ENGINE_VERSION,
                     computed_at="2026-01-05T00:00:00",
                     data_until="2026-01-04T09:00:00",
-                    settings={},
-                    ranges=ranges,
-                    cost_schema_version=0,
+                    cost_schema_version=COST_FACT_SCHEMA_VERSION,
                 )
             )
             for table, rows in iter_cost_fact_batches("snapshot", projected, costs, ranges, batch_size=2):
@@ -82,14 +80,6 @@ async def _database(path=None):
         yield engine, sessions, projected, costs, ranges
     finally:
         await engine.dispose()
-
-
-async def _discard_legacy_json(sessions):
-    async with sessions() as session:
-        await session.execute(snapshots.update().values(cost_schema_version=COST_FACT_SCHEMA_VERSION, ranges={}))
-        await session.execute(executions.update().values(payload={}))
-        await session.execute(trades.update().values(payload={}))
-        await session.commit()
 
 
 def _reject_json_sql(connection, cursor, statement, parameters, context, executemany):
@@ -124,7 +114,6 @@ def test_typed_cost_pages_match_legacy_after_json_is_removed(dimension, sort, fi
             expected = await _pages(sessions, query)
             if not filters and dimension != "summary":
                 assert len(expected) > 1
-            await _discard_legacy_json(sessions)
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_json_sql)
             assert await _pages(sessions, query) == expected
 
@@ -139,7 +128,6 @@ def test_typed_trade_search_and_missing_side_match_legacy(filters):
         async with _database() as (engine, sessions, _, _, _):
             query = CostQuery(snapshot_id="snapshot", dimension="trade", **filters)
             expected = await _pages(sessions, query)
-            await _discard_legacy_json(sessions)
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_json_sql)
             assert await _pages(sessions, query) == expected
 
@@ -173,7 +161,6 @@ def test_execution_results_rebuild_full_snapshot_projection_without_json(baselin
                 for row in sorted(projected, key=lambda row: (row["time"], row["record_id"]))
                 if start <= row["time"] <= stop
             ]
-            await _discard_legacy_json(sessions)
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_json_sql)
             async with sessions() as session:
                 assert await read_execution_results(session, "snapshot", baseline, end) == expected
@@ -199,7 +186,6 @@ def test_typed_cost_time_and_record_scopes_match_legacy(dimension, filters):
         async with _database() as (engine, sessions, _, _, _):
             query = CostQuery(snapshot_id="snapshot", dimension=dimension, limit=1, **filters)
             expected = await _pages(sessions, query)
-            await _discard_legacy_json(sessions)
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_json_sql)
             assert await _pages(sessions, query) == expected
 
@@ -229,7 +215,6 @@ def test_execution_result_keyset_batches_preserve_equal_timestamp_records(monkey
             async with sessions() as session:
                 await session.execute(executions.update().values(time=timestamp(created_at), created_at=created_at))
                 await session.commit()
-            await _discard_legacy_json(sessions)
             sa.event.listen(engine.sync_engine, "before_cursor_execute", _reject_json_sql)
             async with sessions() as session:
                 actual = await analysis_cost_reader.read_execution_results(session, "snapshot", created_at, created_at)
@@ -244,7 +229,6 @@ def test_cost_reader_preserves_caller_uncommitted_writes():
 
     async def check():
         async with _database() as (_, sessions, _, _, _):
-            await _discard_legacy_json(sessions)
             async with sessions() as session:
                 original = await session.scalar(sa.select(snapshots.c.data_until))
                 await session.execute(snapshots.update().values(data_until="uncommitted"))
@@ -264,7 +248,6 @@ def test_cost_reader_keeps_one_snapshot_during_concurrent_retention(tmp_path):
 
     async def check():
         async with _database(path) as (engine, sessions, _, _, _):
-            await _discard_legacy_json(sessions)
             query = CostQuery(snapshot_id="snapshot", dimension="execution", limit=100)
             async with sessions() as session:
                 expected = await read_costs(session, 2, query)
@@ -300,8 +283,7 @@ def test_cost_reader_keeps_one_snapshot_during_concurrent_retention(tmp_path):
 
 @pytest.mark.parametrize("dimension", ["execution", "symbol", "trade", "summary"])
 @pytest.mark.parametrize("filters", [{}, {"limit": 1}, {"limit": 1, "symbol_search": "a", "side": "sell"}])
-@pytest.mark.parametrize("typed", [False, True], ids=["legacy", "typed"])
-def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, filters, typed):
+def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, filters):
     import json
     from unittest.mock import AsyncMock
 
@@ -315,27 +297,24 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
     database = tmp_path / "native-costs.db"
 
     def display(page):
-        if typed:
-            for item in page["data"]:
-                record = item.get("record")
-                if not isinstance(record, dict):
-                    continue
-                raw = normalize_legacy_result(record["raw_result"])
-                raw.pop("technical_detail", None)
-                for result in raw.get("symbol_results", {}).values():
-                    result.pop("memory", None)
-                    result.pop("technical_detail", None)
-                record["raw_result"] = raw
-                for attempt in item.get("attempts", []):
-                    attempt["reason"] = str(
-                        raw.get("symbol_results", {}).get(attempt["symbol"], {}).get("error") or ""
-                    )[:200]
+        for item in page["data"]:
+            record = item.get("record")
+            if not isinstance(record, dict):
+                continue
+            raw = normalize_legacy_result(record["raw_result"])
+            raw.pop("technical_detail", None)
+            for result in raw.get("symbol_results", {}).values():
+                result.pop("memory", None)
+                result.pop("technical_detail", None)
+            record["raw_result"] = raw
+            for attempt in item.get("attempts", []):
+                attempt["reason"] = str(raw.get("symbol_results", {}).get(attempt["symbol"], {}).get("error") or "")[
+                    :200
+                ]
         return page
 
     async def check():
         async with _database(database) as (_, sessions, _, _, _):
-            if typed:
-                await _discard_legacy_json(sessions)
             query = CostQuery(snapshot_id="snapshot", dimension=dimension, **filters)
             content = _core.query_costs(
                 _core.Store(str(database)),

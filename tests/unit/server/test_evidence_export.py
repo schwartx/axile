@@ -654,6 +654,8 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert first["executions"] == second["executions"]
     assert first["export_id"] != second["export_id"]
     _seed(database, _record())
+    # 终态工厂会完成 intent；此场景显式模拟旧 intent 尚未收敛。
+    sql(database, "UPDATE execution_intent SET status='RUNNING',finished_at=NULL WHERE execution_id='exec-1'")
     third = _manifest(_zip(client.get("/account/executions/exec-1/evidence")))
     assert third["executions"][0]["task_status"] == "RUNNING"
     assert third["executions"][0]["business_outcome"] == "not_reached"

@@ -29,7 +29,7 @@ python scripts/build_native_analysis.py --target-dir "$CARGO_TARGET_DIR"
 uv build --wheel
 ```
 
-构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0041`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
+构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0034`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
 
 tag 发布流程先构建、验证原生扩展并运行 Rust 单测，再构建 wheel；Linux wheel 经 auditwheel 审核、修复后才上传 PyPI，不上传包含本机扩展的源码发行包。
 

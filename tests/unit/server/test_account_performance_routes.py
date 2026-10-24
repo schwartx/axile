@@ -1,6 +1,7 @@
 """绩效路由复用原生读写；成本 JSON 字节直接透传。"""
 
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
 from unittest.mock import AsyncMock
@@ -26,7 +27,7 @@ def client(monkeypatch):
 
 def test_cost_response_passes_native_json_bytes_through():
     content = b'{"data": [], "count": 0}'
-    response = routes._cost_response(content)
+    response = routes._json_response(content)
     assert response.body is content
     assert response.media_type == "application/json"
 
@@ -81,7 +82,7 @@ def test_performance_route_computes_synchronously_without_backtest(client, monke
     }
     status = AsyncMock(return_value="empty")
     monkeypatch.setattr(routes, "read_snapshot_status", status)
-    monkeypatch.setattr(routes._core, "account_performance", lambda *args: payload)
+    monkeypatch.setattr(routes._core, "account_performance", lambda *args: json.dumps(payload).encode())
     response = client.get("/performance/1", params={"include_backtest": False})
     assert response.status_code == 200
     assert response.json()["record_count"] == 2
@@ -113,7 +114,7 @@ def test_snapshot_route_reads_published_snapshot(client, monkeypatch):
         "events": [],
         "event_count": 0,
     }
-    monkeypatch.setattr(routes._core, "snapshot", lambda *args: payload)
+    monkeypatch.setattr(routes._core, "snapshot", lambda *args: json.dumps(payload).encode())
     response = client.get("/performance/1/snapshot")
     assert response.status_code == 200
     assert response.json() == payload
