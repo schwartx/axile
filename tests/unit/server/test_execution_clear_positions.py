@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,7 +16,6 @@ from axile.server.db.models import Account
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import clear_positions as clear_positions_execution
 from axile.server.execution import intents as execution_intents
-from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
     FakeExecutor,
@@ -53,6 +53,7 @@ def _stub_intent_promotion(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, i
         calls.append((execution_id, account_id))
 
     monkeypatch.setattr(execution_intents, "promote_intent_to_running", fake_promote)
+    monkeypatch.setattr(clear_positions_execution, "trade_channel_check", AsyncMock())
     return calls
 
 
@@ -81,7 +82,7 @@ def test_empty_positions_uses_default_algorithm_when_not_provided(
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account))
+    _ = asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-empty-algorithm"))
 
     assert fake_executor.empty_kwargs["algorithm"] == {"method": "TARGET-POS-TASK", "params": {}}
     result = captured["result"]
@@ -132,7 +133,9 @@ def test_empty_positions_uses_account_level_algorithm_when_present(
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account))
+    _ = asyncio.run(
+        clear_positions_execution._run_clear_positions(account, execution_id="exec-empty-account-algorithm")
+    )
 
     assert fake_executor.empty_kwargs["algorithm"] == {
         "method": "SINGLE-MAKER",
@@ -188,7 +191,7 @@ def test_empty_positions_routes_gm_account_to_worker_manager(
     )
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-gm-worker-empty-1"))
+    _ = asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-gm-worker-empty-1"))
 
     assert len(manager.empty_calls) == 1
     empty_call = manager.empty_calls[0]
@@ -230,7 +233,7 @@ def test_empty_positions_routes_ctp_account_to_worker_manager(
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-ctp-worker-empty-1"))
+    _ = asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-ctp-worker-empty-1"))
 
     assert len(manager.empty_calls) == 1
     assert cast(Account, manager.empty_calls[0]["account"]).trade_channel == TradeChannel.CTP
@@ -264,7 +267,7 @@ def test_empty_positions_wraps_worker_failure_with_error_record(
     monkeypatch.setattr(execution_backend, "append_error_execute_record", fake_append_error_execute_record)
 
     with pytest.raises(ValueError, match="清仓执行失败，具体原因未确认"):
-        asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-worker-failed-1"))
+        asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-empty-worker-failed-1"))
 
     assert captured_event["execution_id"] == "exec-empty-worker-failed-1"
     assert captured_event["event_type"] == execution_backend.ExecutionEventType.EXECUTION_FAILED
@@ -308,8 +311,9 @@ def test_empty_positions_uses_custom_algorithm_when_provided(
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
     asyncio.run(
-        clear_positions_execution.__empty_positions(
+        clear_positions_execution._run_clear_positions(
             account,
+            execution_id="exec-empty-custom-algorithm",
             algorithm={
                 "method": "SINGLE-MAKER",
                 "params": {"max_wait_seconds": 90},
@@ -358,7 +362,7 @@ def test_empty_positions_binds_account_control_guard(
     )
     monkeypatch.setattr(worker_audit, "append_execution_audit_batch_sync", capture_worker_audit_batch())
 
-    _ = asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-bind-1"))
+    _ = asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-empty-bind-1"))
 
     assert captured == {
         "account_id": 1,
@@ -369,52 +373,16 @@ def test_empty_positions_binds_account_control_guard(
     assert fake_executor.account_control_guard is None
 
 
-def test_empty_positions_lock_acquired_reuses_tracked_execution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """持锁模式下应复用既有 execution，不再重复注册、标记或释放运行占位。"""
-    account = build_account()
-    fake_record = SimpleNamespace(id=303, is_success=1)
-    captured: dict[str, object] = {}
+def test_clear_positions_checks_channel_before_worker(monkeypatch) -> None:
+    """渠道检查失败时，清仓不得进入下单后端。"""
+    check = AsyncMock(side_effect=RuntimeError("channel unavailable"))
+    worker = AsyncMock()
+    monkeypatch.setattr(clear_positions_execution, "trade_channel_check", check)
+    monkeypatch.setattr(execution_backend, "run_clear_positions_via_backend", worker)
 
-    async def fake_trade_channel_check(_account: Account, execution_id: str | None = None) -> None:
-        return None
-
-    async def fake_inner_empty_positions(
-        _account: Account,
-        algorithm: dict[str, object] | None = None,
-        execution_id: str | None = None,
-        logger: object | None = None,
-    ) -> SimpleNamespace:
-        _ = algorithm, logger
-        captured["execution_id"] = execution_id
-        return fake_record
-
-    def _forbidden_register(**_kwargs: object) -> str:
-        raise AssertionError("持锁模式不应再次注册 execution")
-
-    def _forbidden_clear(*_args: object) -> None:
-        raise AssertionError("持锁模式不应释放账户级运行占位")
-
-    async def _forbidden_mark(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("持锁模式不应重复标记 inline execution")
-
-    monkeypatch.setattr(clear_positions_execution, "trade_channel_check", fake_trade_channel_check)
-    monkeypatch.setattr(clear_positions_execution, "__empty_positions", fake_inner_empty_positions)
-    monkeypatch.setattr(clear_positions_execution, "register_inline_execution", _forbidden_register)
-    monkeypatch.setattr(clear_positions_execution, "clear_running_execution", _forbidden_clear)
-    monkeypatch.setattr(execution_lifecycle, "mark_inline_execution_succeeded", _forbidden_mark)
-
-    record = asyncio.run(
-        clear_positions_execution.empty_positions(
-            account,
-            execution_id="exec-locked-1",
-            lock_acquired=True,
-        )
-    )
-
-    assert record is fake_record
-    assert captured["execution_id"] == "exec-locked-1"
+    with pytest.raises(RuntimeError, match="channel unavailable"):
+        asyncio.run(clear_positions_execution._run_clear_positions(build_account(), execution_id="clear-unavailable"))
+    worker.assert_not_awaited()
 
 
 def test_empty_positions_captures_before_account_snapshot(
@@ -456,7 +424,7 @@ def test_empty_positions_captures_before_account_snapshot(
         capture_worker_audit_batch(artifact=lambda **kw: asyncio.run(capture_artifact(**kw))),
     )
 
-    asyncio.run(clear_positions_execution.__empty_positions(account, execution_id="exec-empty-before-1"))
+    asyncio.run(clear_positions_execution._run_clear_positions(account, execution_id="exec-empty-before-1"))
 
     before_artifacts = [a for a in artifacts if a.get("artifact_type") == ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE]
     assert len(before_artifacts) == 1

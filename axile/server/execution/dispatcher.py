@@ -7,7 +7,7 @@ from threading import Lock
 
 import loguru
 
-from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
+from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.algorithms.utils.clock import clock_async_sleep
 from axile.server.db.models import now_str
 from axile.server.execution.intents import (
@@ -88,21 +88,9 @@ async def _run_claimed_intent(intent: IntentSnapshot) -> None:
         clear_queued_execution(intent.account_id, intent.execution_id)
         return
 
-    if intent.kind == ExecutionKind.CLEAR_POSITIONS:
-        algorithm = intent.payload if intent.payload else None
-        runner = execution_lifecycle._run_empty_positions_task(
-            intent.account_id,
-            intent.execution_id,
-            algorithm,
-        )
-    else:
-        runner = execution_lifecycle._run_execute_trade_task(
-            intent.account_id,
-            intent.execution_id,
-            intent.trigger_source,
-        )
-
-    task = asyncio.create_task(runner, name=f"axile-exec-{intent.execution_id}")
+    task = asyncio.create_task(
+        execution_lifecycle.run_queued_execution(intent), name=f"axile-exec-{intent.execution_id}"
+    )
     if state is not None:
         state.task = task
         set_execution_task_state(intent.execution_id, state)

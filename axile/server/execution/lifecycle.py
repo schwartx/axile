@@ -22,11 +22,12 @@ from axile.server.db.models import (
     ExecuteRecord,
     now_str,
 )
-from axile.server.db.models.account import AccountContext, AccountSnapshot
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.error_details import exception_details
 from axile.server.error_notifications import send_feishu_error
 from axile.server.execution.intents import (
     IntentNotRunnable,
+    IntentSnapshot,
     SubmitResult,
     ensure_memory_from_intent,
     get_intent,
@@ -161,16 +162,6 @@ async def _require_account(account_id: int) -> AccountSnapshot:
     if account is None:
         raise ValueError(f"无法执行任务 账户id: {account_id} 不存在")
     return account
-
-
-def _resolve_termination_requested_at(
-    current_state: ExecutionTaskState | None,
-    finished_at: str,
-) -> str:
-    """解析终止记录应写入的 requested_at。"""
-    if current_state is None or current_state.cancel_requested_at is None:
-        return finished_at
-    return current_state.cancel_requested_at
 
 
 def _mark_execution_finished(
@@ -348,110 +339,6 @@ async def _record_terminated_execution(
     return record
 
 
-async def mark_inline_execution_succeeded(execution_id: str, record: ExecuteRecord) -> None:
-    """
-    将内联 execution 标记为成功或失败完成.
-
-    Parameters
-    ----------
-    execution_id : str
-        当前 execution 标识。
-    record : ExecuteRecord
-        已持久化的执行记录。
-
-    Returns
-    -------
-    None
-        该函数仅更新内存状态，不返回结果。
-    """
-    outcome_symbols = await load_record_outcome_symbols(record)
-    _mark_execution_finished(
-        execution_id,
-        status=resolve_record_task_status(record),
-        finished_at=now_str(),
-        record=record,
-        outcome_symbols=outcome_symbols,
-    )
-
-
-async def handle_inline_execution_terminated(
-    *,
-    account_id: int,
-    execution_id: str,
-    execution_kind: ExecutionKind,
-    exc: ExecutionTerminated,
-) -> ExecuteRecord:
-    """
-    持久化内联 execution 的终止结果并更新内存状态.
-
-    Parameters
-    ----------
-    account_id : int
-        当前 execution 所属账户 ID。
-    execution_id : str
-        当前 execution 标识。
-    execution_kind : ExecutionKind
-        当前执行类型。
-    exc : ExecutionTerminated
-        上层捕获到的终止异常对象。
-
-    Returns
-    -------
-    ExecuteRecord
-        持久化后的终止执行记录。
-    """
-    current_state = get_execution_task_state(execution_id)
-    finished_at = now_str()
-    termination = _resolve_termination_snapshot(exc, current_state)
-    return await _record_terminated_execution(
-        account_id=account_id,
-        execution_id=execution_id,
-        execution_kind=execution_kind,
-        current_state=current_state,
-        requested_at=_resolve_termination_requested_at(current_state, finished_at),
-        finished_at=finished_at,
-        termination=termination,
-    )
-
-
-async def handle_inline_execution_failure(
-    *,
-    account: AccountContext | None,
-    execution_id: str,
-    error: Exception,
-) -> None:
-    """
-    将内联 execution 标记为失败并发送飞书告警.
-
-    Parameters
-    ----------
-    account : Account | None
-        当前执行所属账户；为空时仅更新内存状态。
-    execution_id : str
-        当前 execution 标识。
-    error : Exception
-        触发失败收尾的异常对象。
-
-    Returns
-    -------
-    None
-        该函数仅更新状态并发出告警，不返回结果。
-    """
-    update_execution_task_state(
-        execution_id,
-        status=ExecutionTaskStatus.FAILED,
-        finished_at=now_str(),
-        error=str(error),
-        is_success=0,
-    )
-    if account is None:
-        return
-
-    from axile.common.config import settings
-
-    await send_feishu_error(error, account, settings.exe_err_feishu_key, execution_id=execution_id)
-
-
 def _release_execution_slots(account_id: int, execution_id: str) -> None:
     """释放账户槽位并丢掉该 execution 的内存态."""
     clear_queued_execution(account_id, execution_id)
@@ -532,7 +419,6 @@ async def _run_execution_task(
         raise
     except ExecutionTerminated as exc:
         current_state = get_execution_task_state(execution_id)
-        requested_at = None if current_state is None else current_state.cancel_requested_at
         finished_at = now_str()
         termination = _resolve_termination_snapshot(exc, current_state)
         await _record_terminated_execution(
@@ -540,7 +426,7 @@ async def _run_execution_task(
             execution_id=execution_id,
             execution_kind=execution_kind,
             current_state=current_state,
-            requested_at=requested_at or _resolve_termination_requested_at(current_state, finished_at),
+            requested_at=(None if current_state is None else current_state.cancel_requested_at) or finished_at,
             finished_at=finished_at,
             termination=termination,
         )
@@ -568,39 +454,29 @@ async def _run_execution_task(
             sync_account_live(account_id)
 
 
-async def _run_execute_trade_task(account_id: int, execution_id: str, trigger_source: str) -> None:
-    """
-    运行后台调仓任务.
+async def run_queued_execution(intent: IntentSnapshot) -> None:
+    """执行一张已入队的调仓或清仓任务，共用完成、失败与终止收尾。"""
+    from axile.server.execution import clear_positions, rebalance
 
-    Parameters
-    ----------
-    account_id : int
-        目标账户 ID。
-    execution_id : str
-        当前 execution 标识。
-    trigger_source : str
-        本次执行的触发来源。
-
-    Returns
-    -------
-    None
-        该函数仅负责任务调度，不返回结果。
-    """
-    from axile.server.execution import rebalance as rebalance_execution
-
-    async def _runner(tracked_execution_id: str) -> ExecuteRecord:
-        return await rebalance_execution.execute_trade(
-            account_id,
-            execution_id=tracked_execution_id,
-            trigger_source=trigger_source,
-            lock_acquired=True,
+    async def runner(execution_id: str) -> ExecuteRecord:
+        if intent.kind == ExecutionKind.CLEAR_POSITIONS:
+            account = await _require_account(intent.account_id)
+            return await clear_positions._run_clear_positions(
+                account,
+                execution_id=execution_id,
+                algorithm=intent.payload or None,
+            )
+        return await rebalance._run_account_rebalance(
+            intent.account_id,
+            execution_id=execution_id,
+            trigger_source=intent.trigger_source,
         )
 
     await _run_execution_task(
-        account_id=account_id,
-        execution_id=execution_id,
-        execution_kind=ExecutionKind.REBALANCE,
-        runner=_runner,
+        account_id=intent.account_id,
+        execution_id=intent.execution_id,
+        execution_kind=intent.kind,
+        runner=runner,
     )
 
 
@@ -628,47 +504,6 @@ async def enqueue_execute_trade(account_id: int, trigger_source: str = "manual")
         当冲突表拒绝本次调仓时抛出。
     """
     return await submit_intent(account_id, ExecutionKind.REBALANCE, trigger_source)
-
-
-async def _run_empty_positions_task(
-    account_id: int,
-    execution_id: str,
-    algorithm: dict[str, object] | None,
-) -> None:
-    """
-    运行后台清仓任务.
-
-    Parameters
-    ----------
-    account_id : int
-        目标账户 ID。
-    execution_id : str
-        当前 execution 标识。
-    algorithm : dict[str, object] | None
-        显式指定的清仓算法配置；为空时使用账户级默认配置。
-
-    Returns
-    -------
-    None
-        该函数仅负责任务调度，不返回结果。
-    """
-    from axile.server.execution import clear_positions as clear_positions_execution
-
-    async def _runner(tracked_execution_id: str) -> ExecuteRecord:
-        account = await _require_account(account_id)
-        return await clear_positions_execution.empty_positions(
-            account,
-            algorithm=algorithm,
-            execution_id=tracked_execution_id,
-            lock_acquired=True,
-        )
-
-    await _run_execution_task(
-        account_id=account_id,
-        execution_id=execution_id,
-        execution_kind=ExecutionKind.CLEAR_POSITIONS,
-        runner=_runner,
-    )
 
 
 async def enqueue_empty_positions(

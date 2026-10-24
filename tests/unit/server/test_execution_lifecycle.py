@@ -31,13 +31,33 @@ def _isolate_outcome_symbol_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_lifecycle, "load_record_outcome_symbols", read_symbols)
 
 
-def test_handle_inline_execution_terminated_persists_record_and_updates_state(monkeypatch) -> None:
-    """内联 terminate 应复用统一收尾逻辑，并同步更新状态与事件。"""
-    execution_id = "exec-inline-terminated-1"
+async def _terminate_task(monkeypatch, state, exc):
+    finished = AsyncMock()
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
+    monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda _account_id: None)
+
+    async def runner(_execution_id):
+        raise exc
+
+    await execution_lifecycle._run_execution_task(
+        account_id=state.account_id,
+        execution_id=state.execution_id,
+        execution_kind=state.execution_kind,
+        runner=runner,
+    )
+    finished.assert_awaited_once_with(state.execution_id, ExecutionTaskStatus.TERMINATED, finished_at=state.finished_at)
+    assert execution_registry.get_running_execution_id(state.account_id) is None
+    assert execution_registry.get_queued_execution_id(state.account_id) is None
+
+
+@pytest.mark.parametrize("kind", list(ExecutionKind))
+def test_queued_execution_terminated_persists_record_and_updates_state(monkeypatch, kind) -> None:
+    """调仓与清仓 terminate 共用收尾逻辑，并同步更新状态与事件。"""
+    execution_id = "exec-queued-terminated-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
         account_id=1,
-        execution_kind=ExecutionKind.REBALANCE,
+        execution_kind=kind,
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-03-27T10:00:00",
         cancel_requested_at="2026-03-27T10:00:01",
@@ -61,12 +81,11 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
     monkeypatch.setattr(execution_lifecycle, "now_str", lambda: "2026-03-27T10:00:05")
 
     try:
-        record = asyncio.run(
-            execution_lifecycle.handle_inline_execution_terminated(
-                account_id=1,
-                execution_id=execution_id,
-                execution_kind=ExecutionKind.REBALANCE,
-                exc=ExecutionTerminated(
+        asyncio.run(
+            _terminate_task(
+                monkeypatch,
+                state,
+                ExecutionTerminated(
                     reason="manual stop",
                     mode=ExecutionTerminateMode.GRACEFUL.value,
                     acked_at="2026-03-27T10:00:03",
@@ -74,15 +93,14 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                 ),
             )
         )
-        current_state = execution_registry.get_execution_task_state(execution_id)
+        current_state = state
     finally:
         execution_registry._clear_execution_task_state(execution_id)
 
-    assert record.id == 321
     assert captured["record_kwargs"] == {
         "account_id": 1,
         "execution_id": execution_id,
-        "execution_kind": ExecutionKind.REBALANCE,
+        "execution_kind": kind,
         "reason": "manual stop",
         "mode": ExecutionTerminateMode.GRACEFUL.value,
         "requested_at": "2026-03-27T10:00:01",
@@ -110,7 +128,7 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
                     "reason": "manual stop",
                     "mode": ExecutionTerminateMode.GRACEFUL.value,
                     "trigger": "operator",
-                    "execution_kind": ExecutionKind.REBALANCE.value,
+                    "execution_kind": kind.value,
                     "cancel_failed_order_ids": ["order-1"],
                     "forced": False,
                     "cancel_unconfirmed": False,
@@ -125,13 +143,14 @@ def test_handle_inline_execution_terminated_persists_record_and_updates_state(mo
     assert current_state.is_success == 0
 
 
-def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> None:
+@pytest.mark.parametrize("kind", list(ExecutionKind))
+def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch, kind) -> None:
     """后台 terminate 分支应回退到内存状态中的 reason/mode。"""
     execution_id = "exec-queued-terminated-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
         account_id=1,
-        execution_kind=ExecutionKind.REBALANCE,
+        execution_kind=kind,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-27T11:00:00",
         cancel_requested_at="2026-03-27T11:00:01",
@@ -175,7 +194,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
             execution_lifecycle._run_execution_task(
                 account_id=1,
                 execution_id=execution_id,
-                execution_kind=ExecutionKind.REBALANCE,
+                execution_kind=kind,
                 runner=fake_runner,
             )
         )
@@ -187,7 +206,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
     assert captured["record_kwargs"] == {
         "account_id": 1,
         "execution_id": execution_id,
-        "execution_kind": ExecutionKind.REBALANCE,
+        "execution_kind": kind,
         "reason": "risk stop",
         "mode": ExecutionTerminateMode.CANCEL_PENDING.value,
         "requested_at": "2026-03-27T11:00:01",
@@ -214,7 +233,7 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch) -> Non
                     "reason": "risk stop",
                     "mode": ExecutionTerminateMode.CANCEL_PENDING.value,
                     "trigger": "operator",
-                    "execution_kind": ExecutionKind.REBALANCE.value,
+                    "execution_kind": kind.value,
                     "cancel_failed_order_ids": ["order-9"],
                     "forced": False,
                     "cancel_unconfirmed": False,
@@ -255,13 +274,14 @@ def test_enqueue_empty_positions_delegates_to_submit_intent(monkeypatch) -> None
     )
 
 
-def test_run_execution_task_persists_intent_on_success(monkeypatch) -> None:
+@pytest.mark.parametrize("kind", list(ExecutionKind))
+def test_run_execution_task_persists_intent_on_success(monkeypatch, kind) -> None:
     """后台任务成功后应把 intent 标终态。"""
     execution_id = "exec-intent-finish-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
         account_id=1,
-        execution_kind=ExecutionKind.REBALANCE,
+        execution_kind=kind,
         status=ExecutionTaskStatus.QUEUED,
         created_at="2026-03-27T12:00:00",
         channel=TradeChannel.CTP,
@@ -289,7 +309,7 @@ def test_run_execution_task_persists_intent_on_success(monkeypatch) -> None:
             execution_lifecycle._run_execution_task(
                 account_id=1,
                 execution_id=execution_id,
-                execution_kind=ExecutionKind.REBALANCE,
+                execution_kind=kind,
                 runner=fake_runner,
             )
         )
@@ -298,6 +318,82 @@ def test_run_execution_task_persists_intent_on_success(monkeypatch) -> None:
 
     assert marked["execution_id"] == execution_id
     assert marked["status"] == ExecutionTaskStatus.SUCCEEDED
+
+
+def test_queue_serializes_coalesced_rebalances_and_clear(native_database, monkeypatch) -> None:
+    """真实队列合并重复调仓，串行完成后用相同生命周期执行清仓。"""
+    from axile.server.execution import clear_positions, dispatcher, intents
+
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    monkeypatch.setattr(intents, "_wake", lambda _account_id: None)
+    started, release = asyncio.Event(), asyncio.Event()
+    executed = []
+    finished = AsyncMock(wraps=execution_lifecycle.mark_intent_finished)
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
+    algorithm = {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 30}}
+
+    async def complete(execution_id):
+        return await records._persist_execute_record(
+            account_id=1,
+            execution_id=execution_id,
+            raw_input={},
+            raw_result={"status": "SUCCEEDED", "orders": [], "trades": []},
+            is_success=1,
+        )
+
+    async def run_rebalance(account_id, execution_id, trigger_source):
+        assert account_id == 1 and trigger_source == "manual"
+        await intents.promote_intent_to_running(execution_id, account_id)
+        assert execution_registry.get_running_execution_id(1) == execution_id
+        executed.append(execution_id)
+        started.set()
+        await release.wait()
+        return await complete(execution_id)
+
+    async def run_clear(account, execution_id, algorithm):
+        assert account.id == 1 and algorithm == {"method": "SINGLE-MAKER", "params": {"max_wait_seconds": 30}}
+        await intents.promote_intent_to_running(execution_id, account.id)
+        executed.append(execution_id)
+        return await complete(execution_id)
+
+    monkeypatch.setattr(rebalance, "_run_account_rebalance", run_rebalance)
+    monkeypatch.setattr(clear_positions, "_run_clear_positions", run_clear)
+
+    async def run():
+        await records.native_operation(
+            "account_create",
+            {"account": build_account(portfolio_id=None).model_dump(mode="json"), "now": "2026-10-24T10:00:00+08:00"},
+        )
+        first = await execution_lifecycle.enqueue_execute_trade(1)
+        task = asyncio.create_task(dispatcher._dispatch_account(1))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            second = await execution_lifecycle.enqueue_execute_trade(1)
+            duplicate = await execution_lifecycle.enqueue_execute_trade(1)
+            assert second.outcome == "created" and duplicate.outcome == "coalesced"
+            assert first.execution_id != second.execution_id == duplicate.execution_id
+            assert executed == [first.execution_id]
+        finally:
+            release.set()
+            await asyncio.wait_for(task, timeout=2)
+
+        clear = await execution_lifecycle.enqueue_empty_positions(1, algorithm=algorithm)
+        await dispatcher._dispatch_account(1)
+        assert executed == [first.execution_id, second.execution_id, clear.execution_id]
+        assert finished.await_count == 3
+        for execution_id in executed:
+            intent = await intents.get_intent(execution_id)
+            assert intent.status == ExecutionTaskStatus.SUCCEEDED
+        assert execution_registry.get_running_execution_id(1) is None
+        assert execution_registry.get_queued_execution_id(1) is None
+
+    try:
+        asyncio.run(run())
+    finally:
+        for execution_id in executed:
+            execution_registry.clear_running_execution(1, execution_id)
+            execution_registry.clear_queued_execution(1, execution_id)
+            execution_registry._clear_execution_task_state(execution_id)
 
 
 def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch) -> None:
@@ -441,13 +537,14 @@ def test_run_execution_task_retry_keeps_queued_slot(monkeypatch) -> None:
         execution_registry._clear_execution_task_state(execution_id)
 
 
-def test_timeout_termination_is_distinguishable_from_operator(monkeypatch) -> None:
+@pytest.mark.parametrize("kind", list(ExecutionKind))
+def test_timeout_termination_is_distinguishable_from_operator(monkeypatch, kind) -> None:
     """总超时终止必须在落库与审计里与人工终止区分开（trigger=timeout）。"""
-    execution_id = "exec-inline-terminated-timeout"
+    execution_id = "exec-queued-terminated-timeout"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
         account_id=1,
-        execution_kind=ExecutionKind.REBALANCE,
+        execution_kind=kind,
         status=ExecutionTaskStatus.RUNNING,
         created_at="2026-07-27T10:00:00",
         channel=TradeChannel.CTP,
@@ -471,11 +568,10 @@ def test_timeout_termination_is_distinguishable_from_operator(monkeypatch) -> No
 
     try:
         asyncio.run(
-            execution_lifecycle.handle_inline_execution_terminated(
-                account_id=1,
-                execution_id=execution_id,
-                execution_kind=ExecutionKind.REBALANCE,
-                exc=ExecutionTerminated(
+            _terminate_task(
+                monkeypatch,
+                state,
+                ExecutionTerminated(
                     reason="执行总超时（180s）",
                     mode=ExecutionTerminateMode.CANCEL_PENDING.value,
                     acked_at="2026-07-27T10:03:00",
@@ -543,85 +639,54 @@ def test_worker_backend_terminated_response_defaults_trigger_to_operator() -> No
     assert exc_info.value.trigger == "operator"
 
 
-def test_timeout_termination_sends_alert(monkeypatch) -> None:
-    """总超时终止必须告警：它是「没人知道」的那种终止，静默等于兜底白装。"""
-    from axile.server.db.models import Account
-
-    execution_id = "exec-timeout-alert"
-    execution_registry.set_execution_task_state(
-        execution_id,
-        execution_registry.ExecutionTaskState(
-            execution_id=execution_id,
-            account_id=1,
-            execution_kind=ExecutionKind.REBALANCE,
-            status=ExecutionTaskStatus.RUNNING,
-            created_at="2026-07-27T10:00:00",
-            channel=TradeChannel.CTP,
-            algorithm="SINGLE-MAKER",
-        ),
+@pytest.mark.parametrize("kind", list(ExecutionKind))
+@pytest.mark.parametrize("trigger", ["timeout", "operator"])
+def test_timeout_termination_sends_alert(monkeypatch, kind, trigger) -> None:
+    """两种执行都只对总超时告警，人工终止不重复通知。"""
+    execution_id = f"exec-alert-{kind.value}-{trigger}"
+    state = execution_registry.ExecutionTaskState(
+        execution_id=execution_id,
+        account_id=1,
+        execution_kind=kind,
+        status=ExecutionTaskStatus.RUNNING,
+        created_at="2026-07-27T10:00:00",
+        channel=TradeChannel.CTP,
+        algorithm="SINGLE-MAKER",
     )
-    sent: list[str] = []
-
-    async def fake_append_terminated_execute_record(**_: object) -> SimpleNamespace:
-        return SimpleNamespace(id=888, is_success=0)
-
-    async def fake_append_execution_event(**_: object) -> None:
-        return None
-
-    async def fake_send_feishu_error(error: Exception, _account: object, _key: object, **_kwargs: object) -> None:
-        sent.append(str(error))
-
-    async def load_account(_account_id: int):
-        return Account(
-            id=1,
-            name="acc-1",
-            market="期货",
-            trade_channel="ctp",
-            brokerage="test",
-            account_config={},
-            account_control_preset="default",
-            is_started=False,
-            cron_expr="",
-            weight_precision=0.01,
-            algorithm={"method": "SINGLE-MAKER"},
-            feishu_key=None,
-        ).snapshot()
-
-    monkeypatch.setattr(execution_lifecycle, "append_terminated_execute_record", fake_append_terminated_execute_record)
-    monkeypatch.setattr(execution_lifecycle, "append_execution_event", fake_append_execution_event)
-    monkeypatch.setattr(execution_lifecycle, "send_feishu_error", fake_send_feishu_error)
-    monkeypatch.setattr(execution_lifecycle, "get_account_snapshot", load_account)
+    execution_registry.set_execution_task_state(execution_id, state)
+    sent = AsyncMock()
+    monkeypatch.setattr(
+        execution_lifecycle,
+        "append_terminated_execute_record",
+        AsyncMock(return_value=SimpleNamespace(id=888, is_success=0)),
+    )
+    monkeypatch.setattr(execution_lifecycle, "append_execution_event", AsyncMock())
+    monkeypatch.setattr(execution_lifecycle, "send_feishu_error", sent)
+    monkeypatch.setattr(execution_lifecycle, "get_account_snapshot", AsyncMock(return_value=build_account().snapshot()))
     monkeypatch.setattr(execution_lifecycle, "now_str", lambda: "2026-07-27T10:03:00")
 
-    def _run_termination(trigger: str) -> None:
+    try:
         asyncio.run(
-            execution_lifecycle.handle_inline_execution_terminated(
-                account_id=1,
-                execution_id=execution_id,
-                execution_kind=ExecutionKind.REBALANCE,
-                exc=ExecutionTerminated(
+            _terminate_task(
+                monkeypatch,
+                state,
+                ExecutionTerminated(
                     reason="执行总超时（180s）" if trigger == "timeout" else "manual stop",
                     mode=ExecutionTerminateMode.CANCEL_PENDING.value,
                     trigger=trigger,
                 ),
             )
         )
-
-    try:
-        _run_termination("timeout")
-        assert len(sent) == 1
-        assert "总超时" in sent[0]
-
-        # 人工终止不该再打扰运维——发起的人本来就知道。
-        _run_termination("operator")
-        assert len(sent) == 1
+        assert sent.await_count == (1 if trigger == "timeout" else 0)
+        if trigger == "timeout":
+            assert "总超时" in str(sent.await_args.args[0])
     finally:
         execution_registry._clear_execution_task_state(execution_id)
 
 
-def test_mark_inline_execution_copies_blocked_output_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_queued_execution_copies_blocked_output_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """业务失败没有异常，完成态也必须把 output.error / status 写进轮询载荷。"""
-    execution_id = "exec-blocked-inline-1"
+    execution_id = "exec-blocked-queued-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
         account_id=1,
@@ -649,9 +714,20 @@ def test_mark_inline_execution_copies_blocked_output_error(monkeypatch: pytest.M
 
     monkeypatch.setattr(execution_lifecycle, "load_record_outcome_symbols", read_symbols)
 
+    finished = AsyncMock()
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
+    monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda _account_id: None)
+
+    async def runner(_execution_id):
+        return record
+
     try:
-        asyncio.run(execution_lifecycle.mark_inline_execution_succeeded(execution_id, record))
-        current = execution_registry.get_execution_task_state(execution_id)
+        asyncio.run(
+            execution_lifecycle._run_execution_task(
+                account_id=1, execution_id=execution_id, execution_kind=ExecutionKind.REBALANCE, runner=runner
+            )
+        )
+        current = state
     finally:
         execution_registry._clear_execution_task_state(execution_id)
 
@@ -663,6 +739,7 @@ def test_mark_inline_execution_copies_blocked_output_error(monkeypatch: pytest.M
     assert current.outcome == "blocked"
     assert current.outcome_symbols == ["ag2612", "m2701"]
     assert current.record_id == 6
+    finished.assert_awaited_once_with(execution_id, ExecutionTaskStatus.FAILED, finished_at=current.finished_at)
 
 
 def test_mark_execution_finished_copies_record_error_unless_exception() -> None:

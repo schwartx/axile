@@ -16,7 +16,6 @@ from axile.domain.execution import (
 )
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import registry as execution_registry
-from tests.unit.server._execution_test_support import build_account
 
 
 @pytest.fixture(autouse=True)
@@ -175,13 +174,11 @@ def test_request_execution_termination_marks_queued_task_terminated() -> None:
     assert updated_state.finished_at is not None
 
 
-def test_registry_helper_functions_cover_status_serialization_and_registration(
+def test_registry_helper_functions_cover_status_serialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """状态机辅助函数应覆盖序列化、枚举收敛与内联注册。"""
+    """状态机辅助函数应覆盖序列化与枚举收敛。"""
     monkeypatch.setattr(execution_registry, "now_str", lambda: "2026-03-22T18:00:00")
-    monkeypatch.setattr(execution_registry.asyncio, "current_task", lambda: "current-task")
-    monkeypatch.setattr(execution_registry, "new_execution_id", lambda: "generated-exec-id")
 
     queued_state = execution_registry.ExecutionTaskState(
         execution_id="queued-exec",
@@ -257,34 +254,6 @@ def test_registry_helper_functions_cover_status_serialization_and_registration(
         "cancel_reason": None,
         "terminate_mode": None,
     }
-
-    account = build_account()
-    tracked_execution_id = execution_registry.register_inline_execution(
-        account=account,
-        execution_kind=ExecutionKind.REBALANCE,
-        execution_id=None,
-        algorithm_name="SINGLE-MAKER",
-    )
-    try:
-        assert tracked_execution_id == "generated-exec-id"
-        assert execution_registry.get_running_execution_id(1) == "generated-exec-id"
-        registered_state = execution_registry.get_execution_task_state("generated-exec-id")
-        assert registered_state is not None
-        assert registered_state.status == ExecutionTaskStatus.RUNNING
-        assert registered_state.channel == TradeChannel.CTP
-        assert registered_state.algorithm == "SINGLE-MAKER"
-        assert registered_state.task == "current-task"
-        assert registered_state.cancel_event is not None
-        with pytest.raises(execution_registry.AccountExecutionAlreadyRunningError):
-            execution_registry.register_inline_execution(
-                account=account,
-                execution_kind=ExecutionKind.REBALANCE,
-                execution_id="dup-exec",
-                algorithm_name="SINGLE-MAKER",
-            )
-    finally:
-        execution_registry._clear_execution_task_state("generated-exec-id")
-        execution_registry.clear_running_execution(1, "generated-exec-id")
 
 
 def test_terminate_running_account_execution_persists_immediately_terminated_queue(

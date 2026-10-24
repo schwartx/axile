@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from threading import Event, Lock
 from typing import cast
 
-import loguru
-
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
     ExecutionEventStatus,
@@ -19,10 +17,8 @@ from axile.domain.execution import (
 from axile.executor.termination import ExecutionTerminationController
 from axile.server.db.models import (
     ExecuteRecord,
-    new_execution_id,
     now_str,
 )
-from axile.server.db.models.account import AccountContext
 from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
 from axile.server.execution_audit import append_execution_event
 from axile.server.native_store import native_operation
@@ -851,59 +847,6 @@ def transition_execution_task_to_running(execution_id: str) -> ExecutionTaskStat
             state.status = ExecutionTaskStatus.RUNNING
             state.started_at = now_str()
         return state
-
-
-def register_inline_execution(
-    *,
-    account: AccountContext,
-    execution_kind: ExecutionKind,
-    execution_id: str | None,
-    algorithm_name: str,
-) -> str:
-    """
-    为直接执行链路注册一个 RUNNING 状态的 execution.
-
-    Parameters
-    ----------
-    account : Account
-        当前执行所属账户。
-    execution_kind : ExecutionKind
-        当前执行类型。
-    execution_id : str | None
-        显式指定的 execution ID；为空时自动生成。
-    algorithm_name : str
-        需要登记到状态表中的算法名。
-
-    Returns
-    -------
-    str
-        已登记的 execution ID。
-
-    Raises
-    ------
-    AccountExecutionAlreadyRunningError
-        当账户已有执行任务在运行时抛出。
-    """
-    tracked_execution_id = execution_id or new_execution_id()
-    if not try_register_running_execution(cast("int", account.id), tracked_execution_id):
-        msg = f"账户 {account.id} 已有调仓任务在执行中"
-        loguru.logger.warning(msg)
-        raise AccountExecutionAlreadyRunningError(msg)
-
-    state = ExecutionTaskState(
-        execution_id=tracked_execution_id,
-        account_id=cast("int", account.id),
-        execution_kind=execution_kind,
-        status=ExecutionTaskStatus.RUNNING,
-        created_at=now_str(),
-        channel=account.trade_channel,
-        algorithm=algorithm_name,
-        started_at=now_str(),
-        task=asyncio.current_task(),
-        cancel_event=Event(),
-    )
-    set_execution_task_state(tracked_execution_id, state)
-    return tracked_execution_id
 
 
 def get_running_execution_id(account_id: int) -> str | None:

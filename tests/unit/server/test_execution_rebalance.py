@@ -13,11 +13,10 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
-from axile.server.db.models import Account, ExecuteRecord
+from axile.server.db.models import Account
 from axile.server.execution import backend as execution_backend
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
-from axile.server.execution import registry as execution_registry
 from axile.server.execution.worker_backend import worker_audit, worker_state
 from tests.unit.server._execution_test_support import (
     FakeExecutor,
@@ -491,69 +490,6 @@ def test_trade_persists_failed_gm_worker_output(
         "message": "boom",
         "retryable": False,
     }
-
-
-def test_execute_trade_rejects_overlapping_runs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """应拒绝同一账户发生重叠执行。"""
-    account = build_account()
-    started = asyncio.Event()
-    release = asyncio.Event()
-    completed_record: ExecuteRecord | None = None
-
-    async def fake_execute_trade_inner(
-        account_id: int,
-        execution_id: str | None = None,
-        trigger_source: str = "scheduler",
-        _logger: object | None = None,
-    ) -> ExecuteRecord:
-        nonlocal completed_record
-        assert account_id == 1
-        assert trigger_source == "scheduler"
-        assert execution_id is not None
-        started.set()
-        _ = await release.wait()
-        completed_record = ExecuteRecord(
-            id=107,
-            account_id=account_id,
-            execution_id=execution_id,
-            is_success=1,
-            task_status="SUCCEEDED",
-            display_status="SUCCEEDED",
-            display_outcome="completed",
-        )
-        return completed_record
-
-    async def read_outcome_symbols(record: ExecuteRecord) -> list[str]:
-        assert record is completed_record
-        return []
-
-    async def load_account(_account_id: int):
-        return account.snapshot()
-
-    monkeypatch.setattr(rebalance_execution, "get_account_snapshot", load_account)
-    monkeypatch.setattr(rebalance_execution, "_run_account_rebalance", fake_execute_trade_inner)
-    monkeypatch.setattr(rebalance_execution.execution_lifecycle, "load_record_outcome_symbols", read_outcome_symbols)
-
-    async def runner() -> None:
-        first_task = asyncio.create_task(rebalance_execution.execute_trade(1))
-        _ = await started.wait()
-
-        with pytest.raises(execution_registry.AccountExecutionAlreadyRunningError):
-            _ = await rebalance_execution.execute_trade(1)
-
-        release.set()
-        assert await first_task is completed_record
-        assert not any(
-            account_id == account.id for account_id, _ in execution_registry.iter_running_account_executions()
-        )
-
-    try:
-        asyncio.run(runner())
-    finally:
-        with execution_registry._running_account_executions_lock:
-            execution_registry._running_account_executions.pop(1, None)
 
 
 def test_account_rebalance_persists_same_normalized_target_used_by_trade(

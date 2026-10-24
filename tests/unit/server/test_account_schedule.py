@@ -13,7 +13,7 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
 from axile.server.api.routes import account_schedule, account_support
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, parse_cron_expr
-from axile.server.execution import rebalance as rebalance_execution
+from axile.server.execution import intents as execution_intents
 from axile.server.execution import scheduler as execution_scheduler
 from axile.server.trading_calendar import (
     CalendarDayDecision,
@@ -91,12 +91,12 @@ def test_scheduled_rebalance_skips_closed_day_and_records_reason(monkeypatch: py
         "evaluate_channel_calendar_moment",
         lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
-    execute_trade = MagicMock()
-    monkeypatch.setattr(rebalance_execution, "execute_trade", execute_trade)
+    submit_intent = MagicMock()
+    monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
 
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
 
-    execute_trade.assert_not_called()
+    submit_intent.assert_not_called()
     assert len(session.added) == 1
     assert getattr(session.added[0], "reason_code") == "CALENDAR.CLOSED"
 
@@ -111,10 +111,10 @@ def test_scheduled_rebalance_skips_session_gap(monkeypatch: pytest.MonkeyPatch) 
             update={"reason_code": "CALENDAR.SESSION_CLOSED"}
         ),
     )
-    execute_trade = MagicMock()
-    monkeypatch.setattr(rebalance_execution, "execute_trade", execute_trade)
+    submit_intent = MagicMock()
+    monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
-    execute_trade.assert_not_called()
+    submit_intent.assert_not_called()
     assert getattr(session.added[0], "reason_code") == "CALENDAR.SESSION_CLOSED"
 
 
@@ -166,10 +166,10 @@ def test_closed_day_stays_skipped_when_audit_write_fails(monkeypatch: pytest.Mon
         "evaluate_channel_calendar_moment",
         lambda *_args: _decision(CalendarDecisionStatus.AVAILABLE_CLOSED),
     )
-    execute_trade = MagicMock()
-    monkeypatch.setattr(rebalance_execution, "execute_trade", execute_trade)
+    submit_intent = MagicMock()
+    monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
-    execute_trade.assert_not_called()
+    submit_intent.assert_not_called()
 
 
 def test_closed_day_stays_skipped_when_audit_session_cannot_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,10 +196,10 @@ def test_closed_day_stays_skipped_when_audit_session_cannot_open(monkeypatch: py
 
 def test_scheduled_rebalance_ignores_stale_job_for_stopped_account(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(execution_scheduler, "native_operation", _NativeContext(_account(started=False)).call)
-    execute_trade = MagicMock()
-    monkeypatch.setattr(rebalance_execution, "execute_trade", execute_trade)
+    submit_intent = MagicMock()
+    monkeypatch.setattr(execution_intents, "submit_intent", submit_intent)
     asyncio.run(execution_scheduler.execute_scheduled_rebalance(7))
-    execute_trade.assert_not_called()
+    submit_intent.assert_not_called()
 
 
 def test_busy_schedule_records_skip_after_intent_submission(monkeypatch: pytest.MonkeyPatch) -> None:
