@@ -23,7 +23,7 @@ export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/axile-native-target"
 python scripts/build_native_analysis.py --target-dir "$CARGO_TARGET_DIR"
 ```
 
-脚本要求 Rust 1.83 或更新版本，以 `--locked --lib --features python` 构建 release 扩展，隔离加载验证后暂存到 `axile/server/_native/_core.abi3.so`（Windows 为 `_core.pyd`）。已有构建产物可使用 `--no-build`，开发构建可使用 `--debug`；服务不会回退到 Python 存储实现。
+脚本使用 `rust-toolchain.toml` 固定的 Rust 1.99.1，以 `--locked --lib --features python` 构建 release 扩展，隔离加载验证后暂存到 `axile/server/_native/_core.abi3.so`（Windows 为 `_core.pyd`）。已有构建产物可使用 `--no-build`，开发构建可使用 `--debug`；服务不会回退到 Python 存储实现。
 
 ```bash
 uv build --wheel

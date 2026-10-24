@@ -46,7 +46,7 @@ Rust 的迁移引擎负责建库、公共 `0001`—`0040` 历史数据转换、�
 Rust 实现在 `rust/storage/`，Cargo 包名为 `axile-storage`。Python 导入入口仍是
 `axile.server._native._core`；构建脚本仍使用 `scripts/build_native_analysis.py`。
 crate 同时承担 SQLite 业务存储和分析，`analysis` 不再适合作为整个 crate 的名字。
-最低 Rust 版本为 1.83，与锁定的 PyO3 依赖一致；Axile 和 Axon 的质量检查使用 1.83.0 构建带 Python feature 的扩展。
+Rust 工具链固定为 1.99.1，由 Axile、Axon 各自根目录的 `rust-toolchain.toml` 声明。质量检查和发布工作流使用同一版本，不维护最低版本验证。
 
 当前保留单 crate。按现有源码依赖，拆分边界如下：
 
