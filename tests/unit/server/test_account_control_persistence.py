@@ -18,7 +18,8 @@ from axile.executor.account_control.models import (
     AccountControlDecision,
     AccountControlScopeType,
 )
-from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
+from axile.server.db.models import Account
+from axile.server.db.models.base import now_ms, now_str
 from tests.fixtures.rust_store.oracle_tables import table
 
 
@@ -124,7 +125,7 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
             account_id = account.id
 
             deltas = [
-                AccountControlCounterDelta(
+                dict(
                     account_id=account_id,
                     execution_id="exec-1",
                     control_date="2026-03-22",
@@ -136,7 +137,7 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                     delta_count=1,
                     delta_uid="duplicate-delta",
                 ),
-                AccountControlCounterDelta(
+                dict(
                     account_id=account_id,
                     execution_id="exec-2",
                     control_date="2026-03-22",
@@ -154,13 +155,13 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
             ):
                 await session.execute(
                     table("account_control_counter_delta").insert(),
-                    [delta.model_dump(mode="json", exclude={"id"}) for delta in deltas],
+                    deltas,
                 )
                 await session.commit()
             await session.rollback()
 
             events = [
-                AccountControlEvent(
+                dict(
                     account_id=account_id,
                     control_date="2026-03-22",
                     execution_id="exec-1",
@@ -168,13 +169,15 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                     channel=TradeChannel.CTP,
                     operation="place_order",
                     symbol="rb2610",
-                    metadata_={},
+                    metadata={},
+                    created_at=now_str(),
+                    occurred_at_ms=now_ms(),
                     decision=AccountControlDecision.ALLOWED,
                     counted=True,
                     outcome="submitted",
                     event_uid="duplicate-event",
                 ),
-                AccountControlEvent(
+                dict(
                     account_id=account_id,
                     control_date="2026-03-22",
                     execution_id="exec-2",
@@ -182,7 +185,9 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                     channel=TradeChannel.CTP,
                     operation="cancel_order",
                     symbol="ag2612",
-                    metadata_={},
+                    metadata={},
+                    created_at=now_str(),
+                    occurred_at_ms=now_ms(),
                     decision=AccountControlDecision.BLOCKED,
                     counted=False,
                     outcome="policy_blocked",
@@ -192,10 +197,7 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
             with pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: account_control_event\.event_uid"):
                 await session.execute(
                     table("account_control_event").insert(),
-                    [
-                        {**event.model_dump(mode="json", exclude={"id", "metadata_"}), "metadata": event.metadata_}
-                        for event in events
-                    ],
+                    events,
                 )
                 await session.commit()
 

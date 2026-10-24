@@ -8,16 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from axile.server.asset_observations import is_asset_observation
-from axile.server.db.models.performance import (
-    AccountPerformance,
-    PerformanceCalendar,
-    PerformanceCalendarRange,
-    PerformanceFallbackRange,
-    PerformancePoint,
-    PerformanceSettings,
-    PerformanceSkips,
-    RangeKey,
-)
+from axile.server.db.models.performance import PerformanceSettings, RangeKey
 from axile.server.performance import local_time
 from axile.server.performance_analysis import ENGINE_VERSION
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_day
@@ -207,25 +198,25 @@ def observation(
     )
 
 
-def _calendar_ranges(days: list[date]) -> list[PerformanceCalendarRange]:
+def _calendar_ranges(days: list[date]) -> list[dict]:
     """把已排序自然日合并为连续闭区间。"""
     if not days:
         return []
-    ranges: list[PerformanceCalendarRange] = []
+    ranges: list[dict] = []
     start = previous = days[0]
     for day in days[1:]:
         if day != previous + timedelta(days=1):
-            ranges.append(PerformanceCalendarRange(start=start.isoformat(), end=previous.isoformat()))
+            ranges.append(dict(start=start.isoformat(), end=previous.isoformat()))
             start = day
         previous = day
-    ranges.append(PerformanceCalendarRange(start=start.isoformat(), end=previous.isoformat()))
+    ranges.append(dict(start=start.isoformat(), end=previous.isoformat()))
     return ranges
 
 
-def performance_calendar(channel: str | None, baseline: str | None, end: str | None) -> PerformanceCalendar:
+def performance_calendar(channel: str | None, baseline: str | None, end: str | None) -> dict:
     """构造严格裁剪到绩效结果区间的渠道日历事实。"""
     if channel is None or baseline is None or end is None:
-        return PerformanceCalendar(status="unavailable")
+        return dict(status="unavailable", calendar_id=None, label=None, closed_ranges=[], unavailable_ranges=[])
     first, last = local_time(baseline).date(), local_time(end).date()
     closed: list[date] = []
     unavailable: list[date] = []
@@ -238,14 +229,16 @@ def performance_calendar(channel: str | None, baseline: str | None, end: str | N
             calendar_id = decision.calendar_id or calendar_id
             label = decision.label or label
             if decision.status is CalendarDecisionStatus.NOT_REQUIRED:
-                return PerformanceCalendar(status="not_required")
+                return dict(
+                    status="not_required", calendar_id=None, label=None, closed_ranges=[], unavailable_ranges=[]
+                )
             if decision.status is CalendarDecisionStatus.AVAILABLE_CLOSED:
                 closed.append(current)
             elif decision.status is CalendarDecisionStatus.UNAVAILABLE:
                 unavailable.append(current)
             current += timedelta(days=1)
     except KeyError:
-        return PerformanceCalendar(status="unavailable")
+        return dict(status="unavailable", calendar_id=None, label=None, closed_ranges=[], unavailable_ranges=[])
     status = (
         "partial"
         if unavailable and len(unavailable) <= (last - first).days
@@ -253,7 +246,7 @@ def performance_calendar(channel: str | None, baseline: str | None, end: str | N
         if unavailable
         else "available"
     )
-    return PerformanceCalendar(
+    return dict(
         status=status,
         calendar_id=calendar_id,
         label=label,
@@ -393,7 +386,7 @@ class BacktestInput:
 
     frame: pd.DataFrame | None
     used: int
-    skips: PerformanceSkips
+    skips: dict
     backtest_start: datetime | None
     participants: list[Observation]
 
@@ -444,7 +437,7 @@ def build_wbt_input(
     return BacktestInput(
         frame=frame.astype({"weight": "float64", "price": "float64"}) if frame is not None else None,
         used=used,
-        skips=PerformanceSkips(
+        skips=dict(
             count=skipped,
             missing_target=missing_target,
             missing_ticks=missing_ticks,
@@ -480,7 +473,7 @@ def _merge_daily(
     target_daily: dict[str, ReplayClose] | None = None,
     target_start: datetime | None = None,
     fallback_days: set[str] | None = None,
-) -> list[PerformancePoint]:
+) -> list[dict]:
     base = next((item for item in items if item.asset is not None and item.asset > 0), None)
     if base is None or base.asset is None:
         return []
@@ -495,7 +488,7 @@ def _merge_daily(
             by_day[item.time.date().isoformat()] = item
     portfolio = target_portfolio = 0.0
     previous_asset = base.asset
-    points: list[PerformancePoint] = []
+    points: list[dict] = []
     # 回测首个参与观测之前组合收益未知；其后无参与观测的日子按持仓延续计 0.
     backtest_day = backtest_start.date().isoformat() if backtest_start is not None else None
     target_day = target_start.date().isoformat() if target_start is not None else None
@@ -515,7 +508,7 @@ def _merge_daily(
         if target_close is not None:
             target_portfolio = target_close.cumulative_return
         points.append(
-            PerformancePoint(
+            dict(
                 date=day,
                 observed_at=last.time.isoformat(),
                 record_id=last.id,
@@ -535,7 +528,7 @@ def _merge_daily(
     from_backtest = daily is not None and backtest_start is not None and backtest_start <= base.time
     points.insert(
         0,
-        PerformancePoint(
+        dict(
             date=base.time.isoformat(),
             observed_at=base.time.isoformat(),
             record_id=base.id,
@@ -544,9 +537,13 @@ def _merge_daily(
             account_equity=base.asset,
             portfolio_return=0.0 if from_backtest else None,
             target_portfolio_return=0.0
-            if target_daily is not None and target_start is not None and target_start <= base.time
+            if target_daily is not None and target_start is not None and (target_start <= base.time)
             else None,
             difference=0.0 if from_backtest else None,
+            account_daily_return=None,
+            portfolio_daily_return=None,
+            target_portfolio_daily_return=None,
+            sizing_fallback=False,
         ),
     )
     return points
@@ -558,20 +555,33 @@ def calculate_performance(
     range_key: RangeKey,
     include_backtest: bool = True,
     trade_channel: str | None = None,
-) -> AccountPerformance:
+) -> dict:
     """使用独立模拟权益与实际资产比值生成同口径收益对比。"""
     items = select_range(observations, range_key)
-    result = AccountPerformance(
-        settings=settings,
+    result = dict(
+        settings=settings.model_dump(mode="json"),
         backtest_included=include_backtest,
         engine_version=ENGINE_VERSION,
         range=range_key,
         record_count=len(observations),
-        calendar=PerformanceCalendar(status="unavailable"),
+        calendar=dict(status="unavailable", calendar_id=None, label=None, closed_ranges=[], unavailable_ranges=[]),
+        baseline=None,
+        end=None,
+        observation_count=0,
+        used_record_count=0,
+        target_used_record_count=0,
+        invalid_asset_count=0,
+        skips=None,
+        target_skips=None,
+        sizing_fallback_count=None,
+        sizing_fallback_ranges=[],
+        points=[],
+        bindings=[],
+        executions=[],
     )
     if not items:
         return result
-    result.observation_count = len(items)
+    result["observation_count"] = len(items)
     daily = None
     backtest_start: datetime | None = None
     participants: list[Observation] | None = None
@@ -582,10 +592,10 @@ def calculate_performance(
         # 权益账本只消费参与记录和统计，不需要旧 WBT 权重表。
         built = build_wbt_input(items, materialize_frame=False)
         target_built = build_wbt_input(items, target_weight=True, materialize_frame=False)
-        result.used_record_count = built.used
-        result.target_used_record_count = target_built.used
-        result.skips = built.skips
-        result.target_skips = target_built.skips
+        result["used_record_count"] = built.used
+        result["target_used_record_count"] = target_built.used
+        result["skips"] = built.skips
+        result["target_skips"] = target_built.skips
         backtest_start = built.backtest_start
         target_start = target_built.backtest_start
         initial_equity = next((item.asset for item in items if item.asset is not None and item.asset > 0), None)
@@ -601,24 +611,26 @@ def calculate_performance(
         )
         participants = built.participants or None
         fallback_days = {item.time.date().isoformat() for item in built.participants if item.sizing_fallback}
-        result.sizing_fallback_count = sum(item.sizing_fallback for item in built.participants)
-        current: PerformanceFallbackRange | None = None
+        result["sizing_fallback_count"] = sum(item.sizing_fallback for item in built.participants)
+        current: dict | None = None
         for item in built.participants:
             if item.sizing_fallback:
                 when = item.time.isoformat()
                 if current is None:
-                    current = PerformanceFallbackRange(start=when, end=when, count=0)
-                    result.sizing_fallback_ranges.append(current)
-                current.end = when
-                current.count += 1
+                    current = dict(start=when, end=when, count=0)
+                    result["sizing_fallback_ranges"].append(current)
+                current["end"] = when
+                current["count"] += 1
             else:
                 current = None
     else:
         # 快速路径用同一参与谓词配对采样，不构建也不运行回测。
         participants = participating_items(items) or None
-    result.points = _merge_daily(items, daily, backtest_start, participants, target_daily, target_start, fallback_days)
-    result.baseline = result.points[0].date if result.points else None
-    result.end = items[-1].time.isoformat()
-    result.invalid_asset_count = sum(item.asset is None for item in items)
-    result.calendar = performance_calendar(trade_channel, result.baseline, result.end)
+    result["points"] = _merge_daily(
+        items, daily, backtest_start, participants, target_daily, target_start, fallback_days
+    )
+    result["baseline"] = result["points"][0]["date"] if result["points"] else None
+    result["end"] = items[-1].time.isoformat()
+    result["invalid_asset_count"] = sum(item.asset is None for item in items)
+    result["calendar"] = performance_calendar(trade_channel, result["baseline"], result["end"])
     return result

@@ -29,21 +29,6 @@ class AccountRuntimeSync(Model):
     synchronized_at: str | None = Field(default=None)
 
 
-class AccountRuntimeSyncAttempt(Model):
-    """运行态对齐的不可变尝试审计记录。
-
-    ``succeeded=False`` 表示本次未完成，包括可等待的 pending；账户当前状态
-    以 AccountRuntimeSync 为准，不能由单次尝试的布尔值反推。
-    """
-
-    id: int | None = Field(default=None)
-    account_id: int
-    revision: int
-    succeeded: bool
-    error: str | None = Field(default=None)
-    attempted_at: str = Field(default_factory=now_str)
-
-
 class AccountRuntimeSyncPublic(Model):
     """客户端可见的运行态同步状态。"""
 

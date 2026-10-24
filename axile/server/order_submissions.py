@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
-
-from pydantic import BaseModel
 
 from axile.common.config import settings
 from axile.executor.algorithms.utils.clock import clock_now_ms
@@ -44,7 +43,8 @@ def _save_fact(database: str, fact: OrderSubmissionFact) -> None:
     )
 
 
-class OrderSubmissionSummary(BaseModel):
+@dataclass(slots=True, kw_only=True)
+class OrderSubmissionSummary:
     """仅汇总已接入入口的调用事实；不保证覆盖柜台全部订单。"""
 
     scope: str = "instrumented_ctp_calls"

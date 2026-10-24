@@ -198,9 +198,11 @@ def _rewrite_target_id(path, source, target, execution_id):
 
 async def persist_target(session, *, normalized_weights=None, raw_weights=None, snapshot=None, **metadata):
     """通过原生 append 保存目标头和权重明细，历史重写仅用于测试。"""
-    from axile.server.db.models import TargetWeightSnapshot
+    from axile.server.db.models.base import now_str
 
-    snapshot = snapshot or TargetWeightSnapshot(**metadata)
+    snapshot = snapshot or SimpleNamespace(
+        **{"id": None, "account_id": None, "execution_id": None, "calculated_at": now_str(), **metadata}
+    )
     path = await _release_oracle_connections(session)
     if snapshot.id is not None:
         _reset_target(path, snapshot.id)

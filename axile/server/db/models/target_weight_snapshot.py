@@ -7,7 +7,7 @@ from typing import Literal, Optional
 from pydantic import Field
 
 from axile.executor.models.value_conversion import PriceValueConversion
-from axile.server.db.models.base import Model, now_str
+from axile.server.db.models.base import Model
 
 TargetWeightSnapshotSource = Literal["manual", "execution"]
 TargetSizingAvailability = Literal["available", "pending_execution", "legacy", "unavailable"]
@@ -45,20 +45,6 @@ class TargetSizingPublic(Model):
     execution_id: Optional[str] = None
     calculated_at: Optional[str] = None
     rows: dict[str, TargetSizingRowPublic] = Field(default_factory=dict)
-
-
-class TargetWeightSnapshot(Model):
-    """持久化一次成功的组合目标权重计算."""
-
-    id: Optional[int] = Field(default=None)
-    portfolio_id: int
-    account_id: Optional[int] = Field(default=None)
-    raw_weights_kind: str = Field(default="null")
-    normalized_weights_kind: str = Field(default="null")
-    weights_metadata: dict[str, object] = Field(default_factory=dict)
-    source: str
-    execution_id: Optional[str] = Field(default=None)
-    calculated_at: str = Field(default_factory=now_str)
 
 
 class TargetWeightSnapshotPublic(Model):

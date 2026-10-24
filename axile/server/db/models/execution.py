@@ -1,6 +1,6 @@
 """执行记录与执行审计数据库模型."""
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 
@@ -80,13 +80,6 @@ class ExecuteRecordPublic(ExecuteRecordBase):
     id: Optional[int]
     account_id: int
     created_at: str
-
-
-class ExecuteRecordListPublic(Model):
-    """执行记录的分页列表响应."""
-
-    data: List[ExecuteRecordPublic]
-    count: int
 
 
 class ExecutionEventBase(Model):
@@ -212,16 +205,3 @@ class Message(Model):
     """变更类接口使用的简单消息封装."""
 
     message: str
-
-
-class ListResponse(Model):
-    """不分页列表响应的简单封装."""
-
-    data: Sequence[Any]
-
-
-class ListResponsePage(Model):
-    """分页列表响应封装."""
-
-    data: Sequence[Any]
-    count: int

@@ -23,7 +23,15 @@ def _client(monkeypatch, assets, *, target=None):
             "1": {
                 "observation": {"assets": assets, "created_at": "2026-08-26T21:35:11"} if assets is not None else None,
                 "latest": {"display_status": "SUCCEEDED", "is_success": 1, "created_at": "2026-08-26T21:35:11"},
-                "performance": {},
+                "performance": {
+                    "snapshot_id": None,
+                    "status": "empty",
+                    "computed_at": None,
+                    "observed_at": None,
+                    "account_equity": None,
+                    "account_daily_return": None,
+                    "points": [],
+                },
                 "target_weights": target,
                 "portfolio_id": 7,
             }

@@ -106,6 +106,15 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     assert inputs(path, ()) == {}
     result = inputs(path)
     assert set(result) == {"1", "2", "3"}
+    assert result["1"]["performance"] == {
+        "snapshot_id": None,
+        "status": "empty",
+        "computed_at": None,
+        "observed_at": None,
+        "account_equity": None,
+        "account_daily_return": None,
+        "points": [],
+    }
     assert result["1"]["observation"]["assets"] == expected[2]
     assert result["2"]["observation"]["assets"] == expected[4]
     assert expected[2]["availability"] == {"cash": "null", "equity": "value", "market_value": "absent"}

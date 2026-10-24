@@ -8,7 +8,6 @@ import pytest
 
 from axile.server.account_control_audit import query_account_control_audit_executions
 from axile.server.api.routes import account_evidence
-from axile.server.db.models import AccountControlCounterDelta
 from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.execution import ExecutionArtifact
 from axile.server.evidence.models import EvidenceLimits, ExportBudget
@@ -40,8 +39,9 @@ def _session(key, **overrides):
 
 
 def _counter(key, **overrides):
-    return AccountControlCounterDelta(
-        **{
+    return (
+        "account_control_counter_delta",
+        {
             "account_id": 1,
             "execution_id": key,
             "control_date": "2026-10-15",
@@ -54,7 +54,7 @@ def _counter(key, **overrides):
             "context_kind": "account_operation",
             "source": "order_query",
             **overrides,
-        }
+        },
     )
 
 

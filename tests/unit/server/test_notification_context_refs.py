@@ -9,8 +9,7 @@ import pytest
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server._native import _core
-from axile.server.db.models.execution_intent import ExecutionIntent
-from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
+from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import persist_result, read_result, sql
@@ -58,14 +57,17 @@ def _freeze_capture(path, captured, event):
     )
     seed_rows(
         path,
-        ExecutionIntent(
-            account_id=1,
-            execution_id=_EXECUTION,
-            kind=ExecutionKind.REBALANCE,
-            trigger_source="manual",
-            status=ExecutionTaskStatus.RUNNING,
-            channel="ctp",
-            started_at=_NOW,
+        (
+            "execution_intent",
+            dict(
+                account_id=1,
+                execution_id=_EXECUTION,
+                kind=ExecutionKind.REBALANCE,
+                trigger_source="manual",
+                status=ExecutionTaskStatus.RUNNING,
+                channel="ctp",
+                started_at=_NOW,
+            ),
         ),
         SupplementGroup(
             id="context-refs-group",
@@ -79,7 +81,7 @@ def _freeze_capture(path, captured, event):
         SupplementStep(
             group_id="context-refs-group", index=1, scheduled_at=_NOW, status="running", execution_id=_EXECUTION
         ),
-        NotificationEvent(id=_EVENT, account_id=1, event_type="execution.finished", context=event),
+        ("notification_event", dict(id=_EVENT, account_id=1, event_type="execution.finished", context=event)),
     )
     receipt = native_store_call(
         path, "intent_finish", {"execution_id": _EXECUTION, "status": "PARTIAL", "finished_at": _NOW, "now": _NOW}

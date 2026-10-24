@@ -7,21 +7,19 @@ from datetime import UTC, datetime
 from zipfile import ZipFile
 
 import pytest
-import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.api.routes import account_evidence
-from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent, ExecuteRecord
+from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
-from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.evidence.models import EvidenceLimits, ExportBudget
 from axile.server.execution.worker_backend import worker, worker_state
 from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
 from tests.conftest import native_store_call
-from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._business_facts_test_support import rows as stored_rows
+from tests.unit.server.test_evidence_export import _seed_rows as seed_rows
 
 pytestmark = pytest.mark.slow
 DAY = "/account/1/evidence?start_date=2026-10-15&end_date=2026-10-15"
@@ -59,25 +57,7 @@ def evidence_db(native_database, monkeypatch):
 
 
 def seed(database, *rows):
-    names = {
-        ExecutionIntent: "execution_intent",
-        ExecutionEvent: "execution_event",
-        ExecutionArtifact: "execution_artifact",
-        AccountControlEvent: "account_control_event",
-        AccountControlCounterDelta: "account_control_counter_delta",
-    }
-    engine = sa.create_engine(f"sqlite:///{database}")
-    try:
-        with engine.begin() as connection:
-            for row in rows:
-                if isinstance(row, ExecuteRecord):
-                    continue
-                values = row.model_dump(mode="json", exclude={"id"})
-                if "metadata_" in values:
-                    values["metadata"] = values.pop("metadata_")
-                connection.execute(table(names[type(row)]).insert(), values)
-    finally:
-        engine.dispose()
+    seed_rows(database, *(row for row in rows if not isinstance(row, ExecuteRecord)))
     for row in rows:
         if isinstance(row, ExecuteRecord):
             native_store_call(
@@ -125,7 +105,7 @@ def event(key="exec-1", **overrides):
         source="algorithm",
     )
     values.update(overrides)
-    return AccountControlEvent(**values)
+    return ("account_control_event", values)
 
 
 def counter(key="exec-1", **overrides):
@@ -143,7 +123,7 @@ def counter(key="exec-1", **overrides):
         source="algorithm",
     )
     values.update(overrides)
-    return AccountControlCounterDelta(**values)
+    return ("account_control_counter_delta", values)
 
 
 def complete_execution(key="exec-1", **overrides):
@@ -160,7 +140,7 @@ def complete_execution(key="exec-1", **overrides):
     )
     values.update(overrides)
     rows = [
-        ExecutionIntent(**values),
+        ("execution_intent", values),
         ExecuteRecord(
             account_id=values["account_id"],
             execution_id=key,

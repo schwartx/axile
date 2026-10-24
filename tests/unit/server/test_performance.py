@@ -67,12 +67,12 @@ def test_performance_calendar_merges_closed_days_and_preserves_unknown(monkeypat
 
     monkeypatch.setattr("tests.unit.server._performance_oracle.evaluate_channel_calendar_day", evaluate)
     result = performance_calendar("ctp", "2026-01-01T09:00:00", "2026-01-05T16:00:00")
-    assert result.status == "partial"
-    assert [(item.start, item.end) for item in result.closed_ranges] == [
+    assert result["status"] == "partial"
+    assert [(item["start"], item["end"]) for item in result["closed_ranges"]] == [
         ("2026-01-02", "2026-01-03"),
         ("2026-01-05", "2026-01-05"),
     ]
-    assert [(item.start, item.end) for item in result.unavailable_ranges] == [("2026-01-04", "2026-01-04")]
+    assert [(item["start"], item["end"]) for item in result["unavailable_ranges"]] == [("2026-01-04", "2026-01-04")]
 
 
 def test_performance_calendar_not_required(monkeypatch):
@@ -83,8 +83,8 @@ def test_performance_calendar_not_required(monkeypatch):
         ),
     )
     result = performance_calendar("always-open", "2026-01-01", "2026-01-03")
-    assert result.status == "not_required"
-    assert result.closed_ranges == []
+    assert result["status"] == "not_required"
+    assert result["closed_ranges"] == []
 
 
 def test_performance_calendar_degrades_to_unavailable_on_unregistered_channel(monkeypatch):
@@ -93,78 +93,78 @@ def test_performance_calendar_degrades_to_unavailable_on_unregistered_channel(mo
 
     monkeypatch.setattr("tests.unit.server._performance_oracle.evaluate_channel_calendar_day", evaluate)
     result = performance_calendar("not-registered", "2026-01-01", "2026-01-03")
-    assert result.status == "unavailable"
-    assert result.closed_ranges == []
+    assert result["status"] == "unavailable"
+    assert result["closed_ranges"] == []
 
 
 def test_close_before_uses_last_day_end_before_observation():
     result = run([obs(1, asset=100), obs(2, asset=110), obs(3, asset=99)])
-    assert close_before(result.points, "2026-01-01") == pytest.approx(100)
-    assert close_before(result.points, "2026-01-02") == pytest.approx(100)
-    assert close_before(result.points, "2026-01-03") == pytest.approx(110)
-    assert close_before(result.points, "2026-01-04") == pytest.approx(99)
+    assert close_before(result["points"], "2026-01-01") == pytest.approx(100)
+    assert close_before(result["points"], "2026-01-02") == pytest.approx(100)
+    assert close_before(result["points"], "2026-01-03") == pytest.approx(110)
+    assert close_before(result["points"], "2026-01-04") == pytest.approx(99)
     assert close_before([], "2026-01-01") is None
 
 
 def test_replay_and_account_compound_returns():
     result = run([obs(1), obs(2, {"A": 110.0}, asset=110), obs(3, {"A": 99.0}, asset=99)])
-    assert result.points[0].account_return == 0
-    assert result.points[-2].account_return == pytest.approx(0.1)
-    assert result.points[-1].account_return == pytest.approx(-0.01)
-    assert result.points[-1].portfolio_return == pytest.approx(-0.01)
-    assert result.points[-1].difference == pytest.approx(0)
+    assert result["points"][0]["account_return"] == 0
+    assert result["points"][-2]["account_return"] == pytest.approx(0.1)
+    assert result["points"][-1]["account_return"] == pytest.approx(-0.01)
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(-0.01)
+    assert result["points"][-1]["difference"] == pytest.approx(0)
 
 
 @pytest.mark.parametrize("mode", ["ts", "cs"])
 def test_account_weights_are_summed_including_legacy_mode(mode):
     weights = {"A": 1.0, "B": -0.5}
     result = run([obs(1, {"A": 100.0, "B": 100.0}, weights), obs(2, {"A": 110.0, "B": 110.0}, weights)], mode)
-    assert result.points[-1].portfolio_return == pytest.approx(0.05)
-    assert result.settings.backtest_weight_type == "cs"
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0.05)
+    assert result["settings"]["backtest_weight_type"] == "cs"
 
 
 def test_exit_row_accounts_for_last_holding_return_and_fee():
     items = [obs(1), obs(2, {"A": 110.0}, {}), obs(3, {"A": 140.0}, {})]
     built = build_wbt_input(items)
-    assert built.skips.count == 0
+    assert built.skips["count"] == 0
     assert built.frame.iloc[-1]["weight"] == 0
-    assert run(items).points[-1].portfolio_return == pytest.approx(0.1)
-    assert run(items, fee=0.001).points[-1].portfolio_return == pytest.approx(0.0989)
+    assert run(items)["points"][-1]["portfolio_return"] == pytest.approx(0.1)
+    assert run(items, fee=0.001)["points"][-1]["portfolio_return"] == pytest.approx(0.0989)
 
 
 def test_missing_exit_price_skips_but_portfolio_holds_and_recovers():
     items = [obs(1), obs(2, {"B": 10.0}, {"B": 1.0}, 110), obs(3, {"A": 120.0, "B": 11.0}, {"B": 1.0}, 120)]
     result = run(items)
-    assert result.skips.count == 1
-    assert result.skips.missing_ticks == 1
-    assert result.skips.first_time == items[1].time.isoformat()
-    assert result.used_record_count == 2
+    assert result["skips"]["count"] == 1
+    assert result["skips"]["missing_ticks"] == 1
+    assert result["skips"]["first_time"] == items[1].time.isoformat()
+    assert result["used_record_count"] == 2
     # 跳过期间组合按 A 持仓延续，恢复点以 120 结算 A 退出行。
-    assert result.points[-1].portfolio_return == pytest.approx(0.2)
-    assert result.points[-1].difference == pytest.approx(0)
-    assert result.points[-1].account_return == pytest.approx(0.2)
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0.2)
+    assert result["points"][-1]["difference"] == pytest.approx(0)
+    assert result["points"][-1]["account_return"] == pytest.approx(0.2)
 
 
 def test_missing_target_is_not_a_clear():
     item = obs(2)
     item.target = None
     result = run([obs(1), item, obs(3)])
-    assert result.skips.count == 1
-    assert result.skips.missing_target == 1
-    assert result.skips.first_time == item.time.isoformat()
+    assert result["skips"]["count"] == 1
+    assert result["skips"]["missing_target"] == 1
+    assert result["skips"]["first_time"] == item.time.isoformat()
     # 缺失目标按持仓延续而非清仓：A@100→A@100 收益为 0。
-    assert result.points[-1].portfolio_return == pytest.approx(0)
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0)
 
 
 def test_range_restarts_after_old_gap_and_has_no_500_record_limit():
     items = [obs(i + 1, {"A": float(100 + i)}) for i in range(600)]
     items[2].target = None
-    assert run(items).skips.count == 1
-    assert run(items).used_record_count == 599
+    assert run(items)["skips"]["count"] == 1
+    assert run(items)["used_record_count"] == 599
     recent = run(items, range_key="30")
-    assert recent.skips.count == 0
-    assert recent.record_count == 600
-    assert recent.used_record_count == 31
+    assert recent["skips"]["count"] == 0
+    assert recent["record_count"] == 600
+    assert recent["used_record_count"] == 31
 
 
 def test_carry_forward_skip_equals_manually_held_weights():
@@ -172,10 +172,10 @@ def test_carry_forward_skip_equals_manually_held_weights():
     items[1].prices = {}
     skipped = run(items)
     held = run([items[0], items[2]])
-    assert skipped.points[-1].portfolio_return == pytest.approx(held.points[-1].portfolio_return)
-    assert skipped.points[-1].portfolio_return == pytest.approx(0.2)
-    assert skipped.skips.count == 1
-    assert skipped.used_record_count + skipped.skips.count == skipped.observation_count
+    assert skipped["points"][-1]["portfolio_return"] == pytest.approx(held["points"][-1]["portfolio_return"])
+    assert skipped["points"][-1]["portfolio_return"] == pytest.approx(0.2)
+    assert skipped["skips"]["count"] == 1
+    assert skipped["used_record_count"] + skipped["skips"]["count"] == skipped["observation_count"]
 
 
 def test_failure_burst_is_carried_and_counted_as_missing_target():
@@ -184,17 +184,17 @@ def test_failure_burst_is_carried_and_counted_as_missing_target():
         item.target = None
     items = [obs(1), *burst, obs(5, {"A": 120.0, "B": 10.0}, {"B": 1.0}, 120)]
     result = run(items)
-    assert result.skips.count == 3
-    assert result.skips.missing_target == 3
-    assert result.skips.missing_ticks == 0
-    assert result.skips.first_time == burst[0].time.isoformat()
-    assert result.skips.last_time == burst[-1].time.isoformat()
-    assert result.used_record_count == 2
-    assert result.used_record_count + result.skips.count == result.observation_count
+    assert result["skips"]["count"] == 3
+    assert result["skips"]["missing_target"] == 3
+    assert result["skips"]["missing_ticks"] == 0
+    assert result["skips"]["first_time"] == burst[0].time.isoformat()
+    assert result["skips"]["last_time"] == burst[-1].time.isoformat()
+    assert result["used_record_count"] == 2
+    assert result["used_record_count"] + result["skips"]["count"] == result["observation_count"]
     # 无参与记录的突发日保留账户观察，组合按持仓延续计 0，恢复日以 A 退出行结算。
-    assert all(point.portfolio_return is not None for point in result.points)
-    assert [point.portfolio_daily_return for point in result.points[1:-1]] == [0, 0, 0, 0]
-    assert result.points[-1].portfolio_return == pytest.approx(0.2)
+    assert all(point["portfolio_return"] is not None for point in result["points"])
+    assert [point["portfolio_daily_return"] for point in result["points"][1:-1]] == [0, 0, 0, 0]
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0.2)
 
 
 def test_day_point_samples_last_participant_not_last_record():
@@ -204,12 +204,12 @@ def test_day_point_samples_last_participant_not_last_record():
     items[2].id = 99
     items[2].time = items[1].time + timedelta(hours=2)
     result = run(items)
-    assert [p.date for p in result.points] == ["2026-01-01T00:00:00", "2026-01-01", "2026-01-02"]
-    day2 = result.points[-1]
-    assert day2.observed_at == items[1].time.isoformat()
-    assert day2.record_id == items[1].id
-    assert day2.account_return == pytest.approx(0.1)
-    assert day2.portfolio_return == pytest.approx(0.1)
+    assert [p["date"] for p in result["points"]] == ["2026-01-01T00:00:00", "2026-01-01", "2026-01-02"]
+    day2 = result["points"][-1]
+    assert day2["observed_at"] == items[1].time.isoformat()
+    assert day2["record_id"] == items[1].id
+    assert day2["account_return"] == pytest.approx(0.1)
+    assert day2["portfolio_return"] == pytest.approx(0.1)
 
 
 def test_quick_path_pairs_day_points_with_same_participants():
@@ -219,8 +219,8 @@ def test_quick_path_pairs_day_points_with_same_participants():
     settings = PerformanceSettings(backtest_weight_type="ts", backtest_fee_rate=0)
     full = calculate_performance(items, settings, "all")
     quick = calculate_performance(items, settings, "all", include_backtest=False)
-    assert [(p.date, p.observed_at, p.account_return) for p in quick.points] == [
-        (p.date, p.observed_at, p.account_return) for p in full.points
+    assert [(p["date"], p["observed_at"], p["account_return"]) for p in quick["points"]] == [
+        (p["date"], p["observed_at"], p["account_return"]) for p in full["points"]
     ]
 
 
@@ -229,9 +229,9 @@ def test_all_unusable_observations_keep_portfolio_null_not_flat_zero():
     for item in items:
         item.target = None
     result = run(items)
-    assert result.skips.count == 3
-    assert all(point.portfolio_return is None for point in result.points)
-    assert result.points[-1].account_return == pytest.approx(-0.01)
+    assert result["skips"]["count"] == 3
+    assert all(point["portfolio_return"] is None for point in result["points"])
+    assert result["points"][-1]["account_return"] == pytest.approx(-0.01)
 
 
 def test_portfolio_unknown_before_first_participating_observation():
@@ -239,10 +239,10 @@ def test_portfolio_unknown_before_first_participating_observation():
     items = [obs(1, asset=100), obs(2, {"A": 110.0}, asset=None)]
     items[0].target = None
     result = run(items)
-    assert result.used_record_count == 1
-    assert result.points[0].portfolio_return is None
-    assert result.points[1].portfolio_return is None
-    assert result.points[2].portfolio_return == 0
+    assert result["used_record_count"] == 1
+    assert result["points"][0]["portfolio_return"] is None
+    assert result["points"][1]["portfolio_return"] is None
+    assert result["points"][2]["portfolio_return"] == 0
 
 
 def test_anchor_portfolio_unknown_when_participation_starts_after_base_same_day():
@@ -253,33 +253,33 @@ def test_anchor_portfolio_unknown_when_participation_starts_after_base_same_day(
     items[0].time = datetime(2026, 1, 1, 9, 0)
     items[1].time = datetime(2026, 1, 1, 14, 0)
     result = run(items)
-    anchor = result.points[0]
-    assert anchor.account_return == 0
-    assert anchor.portfolio_return is None
-    assert anchor.difference is None
+    anchor = result["points"][0]
+    assert anchor["account_return"] == 0
+    assert anchor["portfolio_return"] is None
+    assert anchor["difference"] is None
 
 
 def test_clear_positions_still_participates_after_holding():
     items = [obs(1), obs(2, {"A": 110.0}, {}, 110)]
     result = run(items)
-    assert result.skips.count == 0
-    assert result.used_record_count == 2
-    assert result.points[-1].portfolio_return == pytest.approx(0.1)
+    assert result["skips"]["count"] == 0
+    assert result["used_record_count"] == 2
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0.1)
 
 
 def test_duplicates_keep_last_record_and_zero_assets_are_not_removed():
     items = [obs(1), obs(2, asset=110), obs(2, asset=0)]
     items[-1].id = 99
     result = run(items)
-    assert result.used_record_count == 2
-    assert result.points[-1].account_return == -1
+    assert result["used_record_count"] == 2
+    assert result["points"][-1]["account_return"] == -1
 
 
 def test_missing_asset_is_null_not_zero_and_later_cumulative_recovers():
     result = run([obs(1), obs(2, asset=None), obs(3, asset=120)])
-    assert result.points[-2].account_return is None
-    assert result.points[-1].account_return == pytest.approx(0.2)
-    assert result.points[-1].account_daily_return is None
+    assert result["points"][-2]["account_return"] is None
+    assert result["points"][-1]["account_return"] == pytest.approx(0.2)
+    assert result["points"][-1]["account_daily_return"] is None
 
 
 def test_intraday_returns_use_equity_instead_of_summing_bar_returns():
@@ -287,9 +287,9 @@ def test_intraday_returns_use_equity_instead_of_summing_bar_returns():
     for i, item in enumerate(items):
         item.time = datetime(2026, 1, 1, 9 + i)
     result = run(items)
-    assert result.points[-1].account_return == pytest.approx(0.21)
+    assert result["points"][-1]["account_return"] == pytest.approx(0.21)
     # 日内 100→110→121 必须与账户权益一样得到 21%，而不是相加得到 20%。
-    assert result.points[-1].portfolio_daily_return == pytest.approx(0.21)
+    assert result["points"][-1]["portfolio_daily_return"] == pytest.approx(0.21)
 
 
 @pytest.mark.parametrize("layout", ["nested", "dict", "list"])
@@ -396,11 +396,11 @@ def test_dual_weight_curves_keep_account_axis_and_zero_lot_is_not_fallback():
     second.created_at = "2026-01-02T01:00:00Z"
     second.result["account_assets"]["total_asset"] = 110
     result = run([observation(first), observation(second)])
-    assert result.points[-1].account_return == pytest.approx(110 / 102335.888 - 1)
-    assert result.points[-1].portfolio_return == 0
-    assert result.points[-1].target_portfolio_return == pytest.approx(0.105)
-    assert result.sizing_fallback_count == 0
-    assert result.used_record_count == result.target_used_record_count == 2
+    assert result["points"][-1]["account_return"] == pytest.approx(110 / 102335.888 - 1)
+    assert result["points"][-1]["portfolio_return"] == 0
+    assert result["points"][-1]["target_portfolio_return"] == pytest.approx(0.105)
+    assert result["sizing_fallback_count"] == 0
+    assert result["used_record_count"] == result["target_used_record_count"] == 2
 
 
 def test_dual_weight_skips_and_fallback_only_count_participants():
@@ -412,12 +412,12 @@ def test_dual_weight_skips_and_fallback_only_count_participants():
     ]
     rows[2].prices = {}
     result = run(rows)
-    assert result.sizing_fallback_count == 2
-    assert [(r.count, r.start, r.end) for r in result.sizing_fallback_ranges] == [
+    assert result["sizing_fallback_count"] == 2
+    assert [(r["count"], r["start"], r["end"]) for r in result["sizing_fallback_ranges"]] == [
         (2, rows[1].time.isoformat(), rows[3].time.isoformat())
     ]
-    assert result.points[2].sizing_fallback is True
-    assert result.skips.missing_ticks == result.target_skips.missing_ticks == 1
+    assert result["points"][2]["sizing_fallback"] is True
+    assert result["skips"]["missing_ticks"] == result["target_skips"]["missing_ticks"] == 1
 
 
 def test_target_price_requirement_is_independent_of_sized_zero():
@@ -427,11 +427,11 @@ def test_target_price_requirement_is_independent_of_sized_zero():
     ]
     rows[0].prices = rows[1].prices = {}
     result = run(rows)
-    assert result.used_record_count == 2
-    assert result.target_used_record_count == 0
-    assert result.points[-1].portfolio_return == 0
-    assert result.target_skips.missing_ticks == 2
-    assert all(point.target_portfolio_return is None for point in result.points)
+    assert result["used_record_count"] == 2
+    assert result["target_used_record_count"] == 0
+    assert result["points"][-1]["portfolio_return"] == 0
+    assert result["target_skips"]["missing_ticks"] == 2
+    assert all(point["target_portfolio_return"] is None for point in result["points"])
 
 
 def test_quantized_quantity_replays_lot_weight_per_row_equity():
@@ -508,11 +508,11 @@ def test_below_min_weight_excluded_from_portfolio_pnl():
         record.created_at = f"2026-01-0{day}T01:00:00Z"
         items.append(observation(record))
     result = run(items)
-    assert result.skips.count == 0
-    assert result.used_record_count == 2
+    assert result["skips"]["count"] == 0
+    assert result["used_record_count"] == 2
     # X 不足一手为 0 敞口（旧口径会重放 1.05×-10%）；S 一手等值现金价格持平，组合收益恰为零。
-    assert result.points[-1].portfolio_return == 0
-    assert result.points[-1].difference == 0
+    assert result["points"][-1]["portfolio_return"] == 0
+    assert result["points"][-1]["difference"] == 0
 
 
 @pytest.mark.parametrize("fee", [True, None, "0.01", float("nan"), float("inf"), -0.1, 1.0])
@@ -522,18 +522,18 @@ def test_invalid_settings_rejected(fee):
 
 
 def test_empty_and_single_observation():
-    assert run([]).points == []
-    assert run([obs(1)]).points[-1].portfolio_return == 0
-    assert run([obs(1)]).observation_count == 1
+    assert run([])["points"] == []
+    assert run([obs(1)])["points"][-1]["portfolio_return"] == 0
+    assert run([obs(1)])["observation_count"] == 1
 
 
 def test_two_intraday_observations_are_not_an_empty_chart():
     items = [obs(1), obs(2, {"A": 110.0}, asset=110)]
     items[1].time = items[0].time + timedelta(hours=1)
     result = run(items)
-    assert result.observation_count == 2
-    assert len(result.points) == 2
-    assert result.points[-1].portfolio_return == pytest.approx(0.1)
+    assert result["observation_count"] == 2
+    assert len(result["points"]) == 2
+    assert result["points"][-1]["portfolio_return"] == pytest.approx(0.1)
 
 
 @pytest.mark.parametrize("range_key", ["all", "30", "90"])
@@ -562,18 +562,19 @@ def test_account_only_matches_full_without_building_or_running_wbt(monkeypatch, 
     monkeypatch.setattr("tests.unit.server._performance_oracle.build_wbt_input", forbidden)
     monkeypatch.setattr("tests.unit.server._performance_oracle._portfolio_daily", forbidden)
     quick = calculate_performance(items, settings, range_key, include_backtest=False)
-    assert not quick.backtest_included
-    assert quick.baseline == full.baseline
-    assert quick.end == full.end
-    assert quick.invalid_asset_count == full.invalid_asset_count
-    assert quick.observation_count == full.observation_count
-    assert [(p.date, p.observed_at, p.account_return, p.account_daily_return) for p in quick.points] == [
-        (p.date, p.observed_at, p.account_return, p.account_daily_return) for p in full.points
+    assert not quick["backtest_included"]
+    assert quick["baseline"] == full["baseline"]
+    assert quick["end"] == full["end"]
+    assert quick["invalid_asset_count"] == full["invalid_asset_count"]
+    assert quick["observation_count"] == full["observation_count"]
+    assert [(p["date"], p["observed_at"], p["account_return"], p["account_daily_return"]) for p in quick["points"]] == [
+        (p["date"], p["observed_at"], p["account_return"], p["account_daily_return"]) for p in full["points"]
     ]
     assert all(
-        p.portfolio_return is None and p.portfolio_daily_return is None and p.difference is None for p in quick.points
+        p["portfolio_return"] is None and p["portfolio_daily_return"] is None and p["difference"] is None
+        for p in quick["points"]
     )
-    assert quick.skips is None
+    assert quick["skips"] is None
 
 
 @pytest.mark.parametrize(

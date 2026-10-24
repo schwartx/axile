@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
-from axile.server.db.models import ExecuteRecord, ScheduleSkip
+from axile.server.db.models import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle
@@ -45,15 +45,16 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
             with closing(oracle_connect(path)) as connection, connection:
                 insert_account(connection, build_account(id=3, account_control_preset="default"))
                 for index in (2, 4, 6):
-                    skip = ScheduleSkip(
+                    skip = dict(
                         id=index,
                         account_id=2,
                         channel="ctp",
                         triggered_at=record(index).created_at,
                         calendar_id="china",
-                        calendar_day=date(2026, 1, index),
+                        calendar_day=date(2026, 1, index).isoformat(),
                         calendar_label="休市",
-                    ).model_dump(mode="json")
+                        reason_code="CALENDAR.CLOSED",
+                    )
                     connection.execute(
                         f"INSERT INTO schedule_skip ({','.join(skip)}) VALUES ({','.join('?' for _ in skip)})",
                         list(skip.values()),

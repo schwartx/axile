@@ -431,6 +431,7 @@ def prepare_database(path: Path, checkout: Path) -> None:
     from alembic.config import Config
     from sqlalchemy.orm import Session
 
+    # Only historical SQLAlchemy checkouts reach this branch.
     from axile.server.db.models import Account, Portfolio, PortfolioAccount
 
     engine = sa.create_engine(f"sqlite:///{path}")
@@ -942,6 +943,8 @@ def writer_connections(items: list[dict], path: Path, layout: str):
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from axile.server import execution_audit
+
+    # Only historical SQLAlchemy checkouts reach this branch.
     from axile.server.db.models import ExecuteRecord, ExecutionArtifact, ExecutionEvent, TargetWeightSnapshot
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")

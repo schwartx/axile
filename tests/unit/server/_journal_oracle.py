@@ -6,7 +6,6 @@ from typing import Any
 import sqlalchemy as sa
 
 from axile.server.db.models import ExecuteRecord, ExecutionActivity
-from axile.server.db.models.performance import CostSummary
 from axile.server.db.models.schedule import ActivityExecutionRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
@@ -25,7 +24,7 @@ def _compact_execution_activity(
 ) -> ExecutionActivity:
     """列表只发布类型化头字段、摘要数字和结果权益。"""
     duration = row.execution_time
-    costs = CostSummary.model_validate(summarize(trades)) if summary.trade_count is not None else None
+    costs = summarize(trades) if summary.trade_count is not None else None
     return ExecutionActivity(
         occurred_at=row.created_at,
         record=ActivityExecutionRecord(

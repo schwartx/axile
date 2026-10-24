@@ -166,7 +166,10 @@ pub fn dashboard_inputs(
                 "portfolio_id":row.get::<_, Option<i64>>(1).map_err(database)?,
                 "latest":latest, "observation":observations.remove(&id),
                 "target_weights":targets.remove(&id),
-                "performance":performance.get(id.to_string()).cloned().unwrap_or_else(|| json!({}))
+                "performance":performance.get(id.to_string()).cloned().unwrap_or_else(|| json!({
+                    "snapshot_id":null,"status":"empty","computed_at":null,"observed_at":null,
+                    "account_equity":null,"account_daily_return":null,"points":[]
+                }))
             }),
         );
     }

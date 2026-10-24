@@ -39,7 +39,6 @@ from axile.server.db.models import (
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.db.models.account_validation import _check_algorithm_channel_compat
 from axile.server.db.models.base import now_str
-from axile.server.db.models.performance import PerformanceSummary
 from axile.server.execution.account_runtime_sync import reconcile_account_runtime
 from axile.server.execution.ctp_channels import drop_account_worker
 from axile.server.execution.live import live_hub
@@ -498,9 +497,9 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
             running_phase = "queued"
 
         last_output_status = None if latest is None else latest["display_status"]
-        performance = PerformanceSummary.model_validate(persisted["performance"])
+        performance = persisted["performance"]
         previous_close = (
-            close_before(performance.points, local_time(latest_snapshot["created_at"]).date().isoformat())
+            close_before(performance["points"], local_time(latest_snapshot["created_at"]).date().isoformat())
             if latest_snapshot is not None
             else None
         )

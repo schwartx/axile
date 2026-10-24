@@ -11,9 +11,8 @@ import pytest
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server._native import _core
 from axile.server.business_facts.repository import read_execution_result
-from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.db.models.schedule import ActivityExecutionRecord
-from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
+from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
@@ -78,14 +77,17 @@ def _seed(path):
     )
     seed_rows(
         path,
-        ExecutionIntent(
-            account_id=1,
-            execution_id=_EXECUTION,
-            kind=ExecutionKind.REBALANCE,
-            trigger_source="manual",
-            status=ExecutionTaskStatus.RUNNING,
-            channel="ctp",
-            started_at=_CREATED,
+        (
+            "execution_intent",
+            dict(
+                account_id=1,
+                execution_id=_EXECUTION,
+                kind=ExecutionKind.REBALANCE,
+                trigger_source="manual",
+                status=ExecutionTaskStatus.RUNNING,
+                channel="ctp",
+                started_at=_CREATED,
+            ),
         ),
         SupplementGroup(
             id="notification-compaction-group",
@@ -137,8 +139,9 @@ def _event():
     context = deepcopy(_result()["extra"]["server_notification_context"])
     context.update(event_id=f"execution:{_EXECUTION}", event_type="execution.finished")
     context["execution"].update(id=_EXECUTION, notified_at=_CREATED)
-    return NotificationEvent(
-        id=f"execution:{_EXECUTION}", account_id=1, event_type="execution.finished", context=context
+    return (
+        "notification_event",
+        dict(id=f"execution:{_EXECUTION}", account_id=1, event_type="execution.finished", context=context),
     )
 
 
@@ -150,7 +153,7 @@ def test_full_context_preserves_projections_and_activity_without_requested_analy
     assert all(before.values())
     activity = _activity(database)
     assert activity.trade_count == 1
-    assert activity.summary is not None and activity.summary.cost is not None
+    assert activity.summary is not None and activity.summary["cost"] is not None
     _finish(database)
     assert _projection_rows(database, record["id"]) == before
     assert _extra(database)["server_notification_context"] == _result()["extra"]["server_notification_context"]
@@ -186,7 +189,7 @@ def test_distinct_business_context_is_not_compacted_or_reprojected(database):
     before = _projection_rows(database, record["id"])
     result_before = asyncio.run(read_execution_result(record))
     event = _event()
-    event.context["orders"][0]["filled_volume"] = 1
+    event[1]["context"]["orders"][0]["filled_volume"] = 1
     seed_rows(database, event)
     version = rows(database, "account_analysis")[0]["source_version"]
     _finish(database)
@@ -231,5 +234,5 @@ def test_supplement_finish_keeps_projections_in_real_caller_transaction(database
     assert _projection_rows(database, record["id"]) == before
     activity = _activity(database)
     assert activity.trade_count == 1
-    assert activity.summary is not None and activity.summary.cost == 20.0
+    assert activity.summary is not None and activity.summary["cost"] == 20.0
     assert _projection_rows(database, record["id"]) == before

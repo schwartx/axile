@@ -21,7 +21,7 @@ from axile.executor.account_control.warnings import AccountControlQuotaWarning
 from axile.executor.algorithms.utils.clock import clock_now_iso, clock_now_ms
 from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
-from axile.server.account_control.schema import AccountControlMonitorPublic
+from axile.server.account_control.schema import public_frame
 from axile.server.account_control.store import snapshots_from_baseline
 from axile.server.account_control.warnings import wake_pending_quota_warnings
 from axile.server.db.models.account_control_session import AccountControlSession
@@ -156,9 +156,7 @@ class AccountControlMonitor:
             if state["history"] is not None:
                 self._historical(account, self._policy(account), related, state)
                 state["history"] = None
-            frame = AccountControlMonitorPublic.model_validate(
-                await self._account_frame(account, related, state)
-            ).model_dump(mode="json")
+            frame = public_frame(await self._account_frame(account, related, state))
             if self._content(self.frames.get(account["id"])) != self._content(frame):
                 changed.append(frame)
             frames[account["id"]] = frame

@@ -420,6 +420,57 @@ macro_rules! detached_operations {
 }
 
 store_operations! { register_store_values, value, PyAny;
+    order_submission_summary(
+        account_id: i64,
+        start_ms: i64,
+        end_ms: i64,
+    ) => |connection| crate::submissions::summary(connection, account_id, start_ms, end_ms);
+
+    #[allow(clippy::too_many_arguments)]
+    submission_monitor(
+        account_id: i64,
+        day: &str,
+        timezone: &str,
+        start_ms: i64,
+        end_ms: i64,
+        now_ms: i64,
+    ) => |connection| crate::submissions::monitor(
+        connection, account_id, day, timezone, start_ms, end_ms, now_ms,
+    );
+
+    /// Internal business evidence stays as objects, not an HTTP JSON round trip.
+    execution_business_detail(
+        account_id: i64,
+        record_id: i64,
+    ) => |connection| crate::business_detail::read(connection, account_id, record_id);
+
+    /// 同一只读快照中的卡片输入；插件和实时状态由 Python 收尾。
+    #[pyo3(signature = ( store, account_ids, logic_version, engine_version))]
+    dashboard_inputs(
+        account_ids: Vec<i64>,
+        logic_version: &str,
+        engine_version: &str,
+    ) => |connection| crate::dashboard::dashboard_inputs(
+        connection,
+        &account_ids,
+        logic_version,
+        engine_version,
+    );
+
+    #[pyo3(signature = (store, account_ids, logic_version, engine_version))]
+    summaries(
+        account_ids: Vec<i64>,
+        logic_version: &str,
+        engine_version: &str,
+    ) => |connection| snapshots::summaries_for_accounts(
+        connection,
+        &account_ids,
+        logic_version,
+        engine_version,
+    );
+}
+
+store_operations! { register_store_bytes, json_bytes, PyBytes;
     /// 同步计算账户绩效;费率与权重设置由 Rust 从账户行读取(旧 ts 归一为 cs)。
     #[pyo3(signature = (store, account_id, range=None, include_backtest=true, verify_source=false, expected_source_version=None))]
     account_performance(
@@ -484,30 +535,6 @@ store_operations! { register_store_values, value, PyAny;
         snapshots::performance_result(connection, &request)
     };
 
-    order_submission_summary(
-        account_id: i64,
-        start_ms: i64,
-        end_ms: i64,
-    ) => |connection| crate::submissions::summary(connection, account_id, start_ms, end_ms);
-
-    #[allow(clippy::too_many_arguments)]
-    submission_monitor(
-        account_id: i64,
-        day: &str,
-        timezone: &str,
-        start_ms: i64,
-        end_ms: i64,
-        now_ms: i64,
-    ) => |connection| crate::submissions::monitor(
-        connection, account_id, day, timezone, start_ms, end_ms, now_ms,
-    );
-
-    /// Internal business evidence stays as objects, not an HTTP JSON round trip.
-    execution_business_detail(
-        account_id: i64,
-        record_id: i64,
-    ) => |connection| crate::business_detail::read(connection, account_id, record_id);
-
     /// 读取快照状态信封与已发布结果(含 daily_costs/events)。
     #[pyo3(signature = ( store, account_id, range, logic_version, engine_version))]
     snapshot(
@@ -525,33 +552,6 @@ store_operations! { register_store_values, value, PyAny;
         snapshots::query(connection, &request)
     };
 
-    /// 同一只读快照中的卡片输入；插件和实时状态由 Python 收尾。
-    #[pyo3(signature = ( store, account_ids, logic_version, engine_version))]
-    dashboard_inputs(
-        account_ids: Vec<i64>,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| crate::dashboard::dashboard_inputs(
-        connection,
-        &account_ids,
-        logic_version,
-        engine_version,
-    );
-
-    #[pyo3(signature = (store, account_ids, logic_version, engine_version))]
-    summaries(
-        account_ids: Vec<i64>,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| snapshots::summaries_for_accounts(
-        connection,
-        &account_ids,
-        logic_version,
-        engine_version,
-    );
-}
-
-store_operations! { register_store_bytes, json_bytes, PyBytes;
     #[allow(clippy::too_many_arguments)]
     order_submissions(
         account_id: i64,

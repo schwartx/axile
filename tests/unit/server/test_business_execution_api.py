@@ -99,7 +99,7 @@ def test_activity_distinguishes_unknown_from_explicit_no_trades(known):
     assert activity.record.trade_count == (0 if known else None)
     if known:
         assert activity.record.summary is not None
-        assert activity.record.summary.count == 0
+        assert activity.record.summary["count"] == 0
     else:
         assert activity.record.summary is None
 

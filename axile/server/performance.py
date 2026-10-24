@@ -6,8 +6,6 @@ import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from axile.server.db.models.performance import PerformancePoint
-
 _TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -19,20 +17,16 @@ def local_time(value: str) -> datetime:
     return parsed.astimezone(_TIMEZONE).replace(tzinfo=None)
 
 
-def _point_fields(point: PerformancePoint | dict[str, object]) -> tuple[str, float | None]:
-    if isinstance(point, dict):
-        date = str(point.get("date") or "")
-        raw = point.get("account_equity")
-    else:
-        date = point.date
-        raw = point.account_equity
+def _point_fields(point: dict[str, object]) -> tuple[str, float | None]:
+    date = str(point.get("date") or "")
+    raw = point.get("account_equity")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return date, None
     value = float(raw)
     return date, value if math.isfinite(value) and value > 0 else None
 
 
-def close_before(points: list[PerformancePoint] | list[dict[str, object]], day: str) -> float | None:
+def close_before(points: list[dict[str, object]], day: str) -> float | None:
     """``day`` 之前最近一日末权益；没有更早日则用基准点。"""
     last_before = None
     baseline = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Literal
 
 from loguru import logger
@@ -21,15 +22,19 @@ class SubmissionMonitorUpdate(BaseModel):
     combined_limit: int | None = Field(default=None, strict=True, ge=1, le=1_000_000_000)
 
 
-class SubmissionMonitorSettings(SubmissionMonitorUpdate):
+@dataclass(slots=True, kw_only=True)
+class SubmissionMonitorSettings:
     """保存的配置及版本；时区沿用保存时的账户风控时区。"""
 
+    order_limit: int | None = None
+    combined_limit: int | None = None
     timezone: str = "Asia/Shanghai"
     revision: int = 0
     updated_at_ms: int | None = None
 
 
-class SubmissionWarning(BaseModel):
+@dataclass(slots=True, kw_only=True)
+class SubmissionWarning:
     """记录触发当时的数字，不用后续快照替换历史事实。"""
 
     event_uid: str
@@ -46,7 +51,8 @@ class SubmissionWarning(BaseModel):
     source: str
 
 
-class SubmissionMetric(BaseModel):
+@dataclass(slots=True, kw_only=True)
+class SubmissionMetric:
     """仅在接入范围内判断是否达到阈值；未知调用不推断为零。"""
 
     metric: Literal["order_calls", "combined_calls"]
@@ -56,13 +62,14 @@ class SubmissionMetric(BaseModel):
     state: Literal["disabled", "below", "unknown", "reached"]
 
 
-class SubmissionMonitorPublic(BaseModel):
+@dataclass(slots=True, kw_only=True)
+class SubmissionMonitorPublic:
     """配置、当前自然日状态和触发事实共用同一统计口径。"""
 
     settings: SubmissionMonitorSettings
     control_date: str
     scope: str = "instrumented_ctp_calls"
-    sampled_at_ms: int = Field(default_factory=clock_now_ms)
+    sampled_at_ms: int = field(default_factory=clock_now_ms)
     metrics: list[SubmissionMetric]
     warnings: list[SubmissionWarning]
 

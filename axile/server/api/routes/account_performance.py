@@ -11,12 +11,7 @@ from axile.server._native import _core
 from axile.server.api.routes.account_support import _get_account_or_404
 from axile.server.core.db import analysis_store, database_path
 from axile.server.db.models.base import now_str
-from axile.server.db.models.performance import (
-    AccountPerformance,
-    PerformanceSettings,
-    PerformanceSnapshot,
-    RangeKey,
-)
+from axile.server.db.models.performance import PerformanceSettings, RangeKey
 from axile.server.native_store import native_operation
 from axile.server.performance_analysis import (
     ENGINE_VERSION,
@@ -50,10 +45,10 @@ async def _op(call, *args):
         raise _native_http_error(error) from error
 
 
-async def _account_performance(store: "_core.Store", account_id: int, range_key: RangeKey) -> AccountPerformance:
+async def _account_performance(store: "_core.Store", account_id: int, range_key: RangeKey) -> Response:
     """同步计算账户收益;观测事实由发布管线物化,此处不重算投影."""
     result = await _op(_core.account_performance, store, account_id, range_key, False)
-    return AccountPerformance.model_validate(result)
+    return _json_response(result)
 
 
 @router.patch("/performance-settings/{account_id}", response_model=PerformanceSettings)
@@ -73,12 +68,12 @@ async def save_performance_settings(account_id: int, settings: PerformanceSettin
     )
 
 
-@router.get("/performance/{account_id}", response_model=AccountPerformance)
+@router.get("/performance/{account_id}", response_model=None)
 async def get_performance(
     account_id: int,
     range: RangeKey = "all",
     include_backtest: bool = True,
-) -> AccountPerformance:
+) -> Response:
     """完整绩效等待当前快照；纯账户收益不依赖回测成功."""
     await _get_account_or_404(account_id)
     path = database_path()
@@ -90,7 +85,7 @@ async def get_performance(
         if status == "ready":
             try:
                 async with asyncio.timeout(deadline - clock_monotonic()):
-                    return await _op(
+                    content = await _op(
                         _core.performance_result,
                         store,
                         account_id,
@@ -99,6 +94,7 @@ async def get_performance(
                         LOGIC_VERSION,
                         ENGINE_VERSION,
                     )
+                    return _json_response(content)
             except _core.NativeError as error:
                 # ready 之后仍可能因并发发布失效;无回测请求直接转同步计算。
                 if error.args[0] != "SNAPSHOT_NOT_READY" or include_backtest:
@@ -120,11 +116,11 @@ async def get_performance(
         await clock_async_sleep(min(0.1, max(0.0, deadline - clock_monotonic())))
 
 
-@router.get("/performance/{account_id}/snapshot", response_model=PerformanceSnapshot)
-async def get_snapshot(account_id: int, range: RangeKey = "all") -> dict:
+@router.get("/performance/{account_id}/snapshot", response_model=None)
+async def get_snapshot(account_id: int, range: RangeKey = "all") -> Response:
     """只读取已发布结果及更新状态，不触达历史大 JSON."""
     await _get_account_or_404(account_id)
-    return await _op(_core.snapshot, analysis_store(), account_id, range, LOGIC_VERSION, ENGINE_VERSION)
+    return _json_response(await _op(_core.snapshot, analysis_store(), account_id, range, LOGIC_VERSION, ENGINE_VERSION))
 
 
 @router.post("/performance/{account_id}/refresh", status_code=202)
@@ -160,9 +156,9 @@ async def get_costs(account_id: int, query: Annotated[CostQuery, Query()]) -> Re
         LOGIC_VERSION,
         ENGINE_VERSION,
     )
-    return _cost_response(content)
+    return _json_response(content)
 
 
-def _cost_response(content: bytes | str) -> Response:
+def _json_response(content: bytes | str) -> Response:
     """原生查询已使用冻结页内证据归一展示，直接返回编码结果。"""
     return Response(content=content, media_type="application/json")

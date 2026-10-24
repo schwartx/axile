@@ -6,7 +6,6 @@ import pytest
 
 from axile.server._native import _core
 from axile.server.business_facts import repository
-from axile.server.db.models.target_weight_snapshot import TargetWeightSnapshot
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
@@ -274,7 +273,6 @@ def test_target_snapshot_services_explicitly_load_typed_maps(native_database, mo
             "CF2701": 0.0,
             "CF701": -0.15,
         }
-        assert {"raw_weights", "normalized_weights"}.isdisjoint(TargetWeightSnapshot.model_fields)
         assert {"raw_weights", "normalized_weights"}.isdisjoint(rows(native_database, "target_weight_snapshot")[0])
 
     asyncio.run(check())

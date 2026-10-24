@@ -47,10 +47,10 @@ def test_analysis_runs_without_retired_wbt_packages():
         ]
         settings = PerformanceSettings(backtest_weight_type="cs", backtest_fee_rate=0)
         result = calculate_performance(items, settings, "all")
-        assert result.record_count == 2
-        assert len(result.points) == 3
-        assert math.isclose(result.points[-1].account_return, 0.1, abs_tol=1e-12)
-        assert math.isclose(result.points[-1].portfolio_return, 0.1, abs_tol=1e-12)
+        assert result["record_count"] == 2
+        assert len(result["points"]) == 3
+        assert math.isclose(result["points"][-1]["account_return"], 0.1, abs_tol=1e-12)
+        assert math.isclose(result["points"][-1]["portfolio_return"], 0.1, abs_tol=1e-12)
         assert len(build_wbt_input(items).frame) == 2
         assert router.routes
         assert retired.isdisjoint(sys.modules)

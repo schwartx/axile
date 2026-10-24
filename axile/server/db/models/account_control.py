@@ -8,65 +8,11 @@ from pydantic import BaseModel, Field
 
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.models import (
-    AccountControlBucketType,
     AccountControlContextKind,
     AccountControlDecision,
-    AccountControlScopeType,
     AccountControlSource,
 )
-from axile.server.db.models.base import Model, now_ms, now_str
-
-
-class AccountControlCounterDeltaBase(Model):
-    """账户控制 append-only 计数增量的共用字段."""
-
-    account_id: int
-    execution_id: str
-    context_kind: str = Field(default=AccountControlContextKind.UNKNOWN.value)
-    source: str = Field(default=AccountControlSource.UNKNOWN.value)
-    control_date: str
-    bucket_type: AccountControlBucketType
-    bucket_start: str
-    scope_type: AccountControlScopeType
-    symbol: Optional[str] = Field(default=None)
-    operation: str
-    delta_count: int = Field(ge=1)
-    delta_uid: str
-
-
-class AccountControlCounterDelta(AccountControlCounterDeltaBase):
-    """账户控制计数增量."""
-
-    id: Optional[int] = Field(default=None)
-
-
-class AccountControlEventBase(Model):
-    """账户控制最小行为留痕表的共用字段."""
-
-    account_id: int
-    control_date: str
-    execution_id: str
-    context_kind: str = Field(default=AccountControlContextKind.UNKNOWN.value)
-    source: str = Field(default=AccountControlSource.UNKNOWN.value)
-    seq: int = Field(ge=0)
-    channel: TradeChannel
-    operation: str
-    symbol: Optional[str] = Field(default=None)
-    metadata_: Dict[str, Any] = Field(default_factory=dict)
-    decision: AccountControlDecision
-    counted: bool
-    outcome: str
-    event_uid: str
-    created_at: str = Field(default_factory=now_str, description="事件创建时间，秒级可读时间戳")
-    occurred_at_ms: int = Field(
-        default_factory=now_ms, ge=0, description="事件发生时间的毫秒时间戳，用于 min_interval_ms 判断与排障"
-    )
-
-
-class AccountControlEvent(AccountControlEventBase):
-    """账户控制 v1 的最小事件事实表."""
-
-    id: Optional[int] = Field(default=None)
+from axile.server.db.models.base import Model
 
 
 class AccountControlAuditSummaryPublic(Model):

@@ -21,7 +21,7 @@ from axile.server.db.models.account_validation import (
     _validate_weight_precision,
 )
 from axile.server.db.models.base import Model, now_str
-from axile.server.db.models.performance import FeeRate, PerformanceSummary, WeightType
+from axile.server.db.models.performance import FeeRate, WeightType
 
 
 class AccountBase(BaseModel):
@@ -266,7 +266,7 @@ class AccountDashboardItemPublic(Model):
         最近一次快照的持仓品种数。
     position_weights : List[float]
         最近一次快照各持仓的市值（降序，最多 12 项），用于持仓分布条。
-    performance : PerformanceSummary
+    performance : dict
         已发布的全区间绩效，金额、日收益与曲线同版。
     asset_observed_at : Optional[str]
         最近一次账户资产观测时间；无快照时为 ``None``。
@@ -304,7 +304,7 @@ class AccountDashboardItemPublic(Model):
     currency: str
     holdings_count: int
     position_weights: List[float]
-    performance: PerformanceSummary = Field(default_factory=PerformanceSummary)
+    performance: dict[str, Any]
     asset_observed_at: Optional[str] = None
     previous_close: Optional[float] = None
     last_is_success: Optional[int] = None
@@ -414,12 +414,6 @@ class PortfolioAccountBase(Model):
     account_id: int
     portfolio_id: Optional[int]
     created_at: str = Field(default_factory=now_str)
-
-
-class PortfolioAccount(PortfolioAccountBase):
-    """账户和组合的记录, 只加不修改."""
-
-    id: Optional[int] = Field(default=None)
 
 
 class PortfolioAccountPublic(PortfolioAccountBase):

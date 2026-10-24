@@ -32,11 +32,12 @@ from axile.executor.account_control.models import (
     AccountControlDecision,
     AccountControlScopeType,
 )
+from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.api.routes import account_evidence
-from axile.server.db.models import Account, AccountControlCounterDelta, AccountControlEvent
+from axile.server.db.models import Account
 from axile.server.db.models.account_control_session import AccountControlSession
+from axile.server.db.models.base import now_ms, now_str
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
-from axile.server.db.models.execution_intent import ExecutionIntent
 from axile.server.evidence import archive as evidence_archive
 from axile.server.evidence import collect
 from axile.server.evidence.archive import build_archive
@@ -89,8 +90,9 @@ def _account(account_id=1):
 
 
 def _intent(execution_id="exec-1", **overrides):
-    return ExecutionIntent(
-        **{
+    return (
+        "execution_intent",
+        {
             "account_id": 1,
             "execution_id": execution_id,
             "kind": ExecutionKind.REBALANCE,
@@ -102,7 +104,7 @@ def _intent(execution_id="exec-1", **overrides):
             "started_at": "2026-10-15T09:00:01+08:00",
             "finished_at": "2026-10-15T09:00:10+08:00",
             **overrides,
-        }
+        },
     )
 
 
@@ -126,8 +128,9 @@ def _event(execution_id="exec-1", seq=1, **overrides):
 
 
 def _control(execution_id="exec-1", seq=1, **overrides):
-    return AccountControlEvent(
-        **{
+    return (
+        "account_control_event",
+        {
             "account_id": 1,
             "execution_id": execution_id,
             "control_date": "2026-10-15",
@@ -141,7 +144,7 @@ def _control(execution_id="exec-1", seq=1, **overrides):
             "occurred_at_ms": 1792026000000,
             "created_at": "2026-10-15T09:00:00+08:00",
             **overrides,
-        }
+        },
     )
 
 
@@ -220,13 +223,9 @@ def _record(execution_id="exec-1", **overrides):
 def _seed_rows(path, *items):
     names = {
         "Account": "account",
-        "ExecutionIntent": "execution_intent",
         "ExecutionEvent": "execution_event",
         "ExecutionArtifact": "execution_artifact",
-        "AccountControlEvent": "account_control_event",
-        "AccountControlCounterDelta": "account_control_counter_delta",
         "AccountControlSession": "account_control_session",
-        "NotificationEvent": "notification_event",
         "SupplementGroup": "supplement_group",
         "SupplementStep": "supplement_step",
     }
@@ -236,8 +235,22 @@ def _seed_rows(path, *items):
             for row in items:
                 if isinstance(row, _RecordFixture):
                     continue
-                target = table(names[type(row).__name__])
-                values = row.model_dump(mode="json")
+                if isinstance(row, tuple):
+                    name, values = row
+                    defaults = {
+                        "execution_intent": {"payload": {}, "created_at": now_str()},
+                        "account_control_event": {"metadata": {}, "created_at": now_str(), "occurred_at_ms": now_ms()},
+                        "notification_event": {
+                            "context": {},
+                            "created_at": clock_now().isoformat(),
+                            "status": "pending",
+                        },
+                    }.get(name, {})
+                    values = {**defaults, **values}
+                else:
+                    name = names[type(row).__name__]
+                    values = row.model_dump(mode="json")
+                target = table(name)
                 if "metadata_" in values:
                     values["metadata"] = values.pop("metadata_")
                 values = {
@@ -604,16 +617,19 @@ def test_session_and_counter_only_executions_are_not_lost(database):
             finished_at_ms=start + 1000,
             status="incomplete",
         ),
-        AccountControlCounterDelta(
-            account_id=1,
-            execution_id="counter-only",
-            control_date="2026-10-15",
-            bucket_type=AccountControlBucketType.DAY,
-            bucket_start="2026-10-15T00:00:00",
-            scope_type=AccountControlScopeType.ACCOUNT,
-            operation="place_order",
-            delta_count=2,
-            delta_uid="counter-1",
+        (
+            "account_control_counter_delta",
+            dict(
+                account_id=1,
+                execution_id="counter-only",
+                control_date="2026-10-15",
+                bucket_type=AccountControlBucketType.DAY,
+                bucket_start="2026-10-15T00:00:00",
+                scope_type=AccountControlScopeType.ACCOUNT,
+                operation="place_order",
+                delta_count=2,
+                delta_uid="counter-1",
+            ),
         ),
     )
     archive = _zip(

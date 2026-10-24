@@ -1,11 +1,11 @@
 """Normalized result storage preserves public performance semantics without JSON."""
 
+import json
 from contextlib import contextmanager
 
 import pytest
 import sqlalchemy as sa
 
-from axile.server.db.models.performance import AccountPerformance
 from tests.conftest import initialize_native_database, require_native_store
 from tests.fixtures.rust_store.oracle_tables import RESULT_TABLES
 from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
@@ -17,7 +17,7 @@ ENGINE_VERSION = "equity-ledger-1"
 
 
 def _range(range_key="all", *, empty=False):
-    performance = AccountPerformance(
+    performance = dict(
         settings=SETTINGS,
         engine_version=ENGINE_VERSION,
         range=range_key,
@@ -101,7 +101,7 @@ def _range(range_key="all", *, empty=False):
             "closed_ranges": [] if empty else [{"start": "2026-01-03", "end": "2026-01-04"}],
             "unavailable_ranges": [] if empty else [{"start": "2026-01-05", "end": "2026-01-06"}],
         },
-    ).model_dump()
+    )
     return {
         "performance": performance,
         "daily_costs": {}
@@ -189,7 +189,9 @@ def _database(tmp_path, snapshots_by_id):
 
 def _read_result(store, account_id, range_key="all"):
     core = require_native_store("snapshot")
-    response = core.snapshot(store, account_id, range_key, "test", ENGINE_VERSION)
+    content = core.snapshot(store, account_id, range_key, "test", ENGINE_VERSION)
+    assert isinstance(content, bytes)
+    response = json.loads(content)
     return {
         "performance": response["result"],
         **{name: response[name] for name in ("daily_costs", "events", "event_count")},
@@ -204,7 +206,11 @@ def test_all_public_result_fields_round_trip_without_snapshot_json(tmp_path):
         for range_key, expected in ranges.items():
             actual = _read_result(store, accounts["snapshot"], range_key)
             assert actual == expected
-            AccountPerformance.model_validate(actual["performance"])
+            content = require_native_store("performance_result").performance_result(
+                store, accounts["snapshot"], range_key, True, "test", ENGINE_VERSION
+            )
+            assert isinstance(content, bytes)
+            assert json.loads(content) == expected["performance"]
         # An intentionally empty legacy blob cannot supply any of these values.
         with _connect(database) as connection:
             legacy = connection.execute(sa.select(snapshots.c.ranges)).scalar_one()

@@ -7,8 +7,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from axile.server.db.models.base import Model, now_str
-from axile.server.db.models.performance import CostSummary
+from axile.server.db.models.base import Model
 
 type ScheduleSkipReason = Literal[
     "CALENDAR.CLOSED",
@@ -17,19 +16,6 @@ type ScheduleSkipReason = Literal[
     "CALENDAR.UNAVAILABLE",
     "BUSY",
 ]
-
-
-class ScheduleSkip(Model):
-    """一次因明确休市而跳过的账户排程。"""
-
-    id: int | None = Field(default=None)
-    account_id: int
-    channel: str
-    triggered_at: str = Field(default_factory=now_str)
-    calendar_id: str
-    calendar_day: date
-    calendar_label: str
-    reason_code: str = Field(default="CALENDAR.CLOSED")
 
 
 class ActivityExecutionRecord(Model):
@@ -48,7 +34,7 @@ class ActivityExecutionRecord(Model):
     execution_kind: str | None = None
     symbol_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
     total_asset: float | None = None
-    summary: CostSummary | None
+    summary: dict[str, Any] | None
     duration_sec: float | None = None
     trade_count: int | None = None
 
@@ -74,17 +60,8 @@ class ScheduleSkipActivity(Model):
     reason_code: ScheduleSkipReason = "CALENDAR.CLOSED"
 
 
-class AccountActivityListPublic(Model):
-    """按发生时间倒序的账户活动分页。"""
-
-    data: list[ExecutionActivity | ScheduleSkipActivity]
-    count: int
-
-
 __all__ = [
-    "AccountActivityListPublic",
     "ActivityExecutionRecord",
     "ExecutionActivity",
-    "ScheduleSkip",
     "ScheduleSkipActivity",
 ]

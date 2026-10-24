@@ -53,7 +53,6 @@ def test_native_fixture_preserves_complete_account_defaults_without_create_dto(m
 
 def test_legacy_fixture_records_the_same_portfolio_binding_as_native_create(monkeypatch, tmp_path):
     from axile.server._native import _core
-    from axile.server.db.models import PortfolioAccount
 
     added = []
 
@@ -75,12 +74,13 @@ def test_legacy_fixture_records_the_same_portfolio_binding_as_native_create(monk
         def commit(self):
             pass
 
+    monkeypatch.setattr("axile.server.db.models.PortfolioAccount", SimpleNamespace, raising=False)
     monkeypatch.setattr(_core, "migration_upgrade", None, raising=False)
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_args: SimpleNamespace(begin=Context, dispose=lambda: None))
     monkeypatch.setattr("sqlalchemy.orm.Session", lambda *_args: Context())
     monkeypatch.setattr("alembic.command.upgrade", lambda *_args: None)
     storage.prepare_database(tmp_path / "synthetic.sqlite", tmp_path)
-    binding = next(value for value in added if isinstance(value, PortfolioAccount))
+    binding = next(value for value in added if isinstance(value, SimpleNamespace))
     assert (binding.account_id, binding.portfolio_id, binding.created_at) == (1, 1, "2025-01-01T09:00:00")
 
 

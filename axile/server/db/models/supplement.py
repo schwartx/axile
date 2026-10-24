@@ -1,10 +1,7 @@
 """内部补发组、步骤与持久化通知 outbox，不提供独立 API。"""
 
-from typing import Any
-
 from pydantic import Field
 
-from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.db.models.base import Model, new_execution_id
 
 
@@ -32,17 +29,3 @@ class SupplementStep(Model):
     scheduled_at: str
     status: str = "pending"
     execution_id: str | None = Field(default=None)
-
-
-class NotificationEvent(Model):
-    """通知派发真源；calling 在重启后变为 unknown，避免重复副作用。"""
-
-    sequence: int | None = Field(default=None)
-    id: str
-    account_id: int
-    created_at: str = Field(default_factory=lambda: clock_now().isoformat())
-    event_type: str
-    context: dict[str, Any] = Field(default_factory=dict)
-    status: str = "pending"
-    finished_at: str | None = None
-    error: str | None = None

@@ -11,6 +11,7 @@ from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zipfile import ZipFile
 
@@ -40,10 +41,8 @@ from axile.server.business_facts.assets import (
     input_asset_fact_id,
 )
 from axile.server.business_facts.repository import read_execution_detail
-from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
-from axile.server.db.models.execution_intent import ExecutionIntent
-from axile.server.db.models.supplement import NotificationEvent, SupplementGroup, SupplementStep
+from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.collect import collect_evidence
 from axile.server.evidence.models import EvidenceError, EvidenceLimits, EvidenceProfile, ExportBudget
@@ -70,16 +69,9 @@ def facts_database(tmp_path, monkeypatch):
     return path
 
 
-def _get(path, model):
-    name = {
-        ExecuteRecord: "executerecord",
-        ExecutionArtifact: "execution_artifact",
-        ExecutionIntent: "execution_intent",
-        NotificationEvent: "notification_event",
-        SupplementStep: "supplement_step",
-    }[model]
+def _get(path, name):
     values = rows(path, name)
-    return model.model_validate(values[0]) if values else None
+    return SimpleNamespace(**values[0]) if values else None
 
 
 async def _finish(path):
@@ -192,26 +184,32 @@ async def _store(path, *, result=None, event_context=None):
     record = persist_result(path, deepcopy(payload), execution_id=_EXECUTION, created_at=_CREATED, raw_input=_input())
     _seed(
         path,
-        ExecutionIntent(
-            account_id=1,
-            execution_id=_EXECUTION,
-            kind=ExecutionKind.REBALANCE,
-            trigger_source="manual",
-            status=ExecutionTaskStatus.RUNNING,
-            channel="ctp",
-            algorithm="SINGLE-MAKER",
-            created_at="2026-10-20T09:00:00+08:00",
-            started_at="2026-10-20T09:00:01+08:00",
+        (
+            "execution_intent",
+            dict(
+                account_id=1,
+                execution_id=_EXECUTION,
+                kind=ExecutionKind.REBALANCE,
+                trigger_source="manual",
+                status=ExecutionTaskStatus.RUNNING,
+                channel="ctp",
+                algorithm="SINGLE-MAKER",
+                created_at="2026-10-20T09:00:00+08:00",
+                started_at="2026-10-20T09:00:01+08:00",
+            ),
         ),
     )
     if event_context is not None:
         _seed(
             path,
-            NotificationEvent(
-                id=f"execution:{_EXECUTION}",
-                account_id=1,
-                event_type="execution.finished",
-                context=deepcopy(event_context),
+            (
+                "notification_event",
+                dict(
+                    id=f"execution:{_EXECUTION}",
+                    account_id=1,
+                    event_type="execution.finished",
+                    context=deepcopy(event_context),
+                ),
             ),
         )
     return record["id"]
@@ -295,7 +293,7 @@ def test_real_persisted_preview_context_is_deeply_detached(facts_database, conte
     async def inspect_preview():
         context = await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
         if context_source == "captured":
-            record = _get(facts_database, ExecuteRecord)
+            record = _get(facts_database, "executerecord")
             native = await read_execution_detail(record)
             captured = native["result"]["extra"]["server_notification_context"]
             assert list(captured) == list(saved)
@@ -305,9 +303,9 @@ def test_real_persisted_preview_context_is_deeply_detached(facts_database, conte
         context["orders"][0]["extra"]["marker"] = "changed"
         context["execution"]["supplements"][0]["is_last"] = False
         if context_source == "outbox":
-            event = _get(facts_database, NotificationEvent)
+            event = _get(facts_database, "notification_event")
             return event.context
-        record = _get(facts_database, ExecuteRecord)
+        record = _get(facts_database, "executerecord")
         detail = await read_execution_detail(record)
         return detail["result"]["extra"]["server_notification_context"]
 
@@ -534,16 +532,19 @@ async def _store_preterminal_observations(path):
 
 
 def _running_intent():
-    return ExecutionIntent(
-        account_id=1,
-        execution_id=_EXECUTION,
-        kind=ExecutionKind.REBALANCE,
-        trigger_source="manual",
-        status=ExecutionTaskStatus.RUNNING,
-        channel="ctp",
-        algorithm="SINGLE-MAKER",
-        created_at="2026-10-20T09:00:00+08:00",
-        started_at="2026-10-20T09:00:01+08:00",
+    return (
+        "execution_intent",
+        dict(
+            account_id=1,
+            execution_id=_EXECUTION,
+            kind=ExecutionKind.REBALANCE,
+            trigger_source="manual",
+            status=ExecutionTaskStatus.RUNNING,
+            channel="ctp",
+            algorithm="SINGLE-MAKER",
+            created_at="2026-10-20T09:00:00+08:00",
+            started_at="2026-10-20T09:00:01+08:00",
+        ),
     )
 
 
@@ -727,7 +728,7 @@ def test_business_storage_has_no_complete_raw_document_columns(facts_database):
             columns = sa.inspect(engine).get_columns("executerecord")
         finally:
             engine.dispose()
-        record = _get(facts_database, ExecuteRecord)
+        record = _get(facts_database, "executerecord")
         detail = await read_execution_detail(record)
         return columns, detail
 
@@ -793,7 +794,7 @@ def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_datab
     asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_summary():
-        artifact = _get(facts_database, ExecutionArtifact)
+        artifact = _get(facts_database, "execution_artifact")
         stored = deepcopy(artifact.content)
         hydrated = await resolve_artifact_content(artifact, account_id=1)
         return stored, hydrated
@@ -834,7 +835,7 @@ def test_failed_terminal_transaction_keeps_original_worker_journal(facts_databas
 
     async def read_after_rollback():
         count = len(rows(facts_database, "executerecord"))
-        artifact = _get(facts_database, ExecutionArtifact)
+        artifact = _get(facts_database, "execution_artifact")
         return count, artifact.schema_version, artifact.content
 
     count, version, retained = asyncio.run(read_after_rollback())
@@ -855,7 +856,7 @@ def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
     asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_summary():
-        artifact = _get(facts_database, ExecutionArtifact)
+        artifact = _get(facts_database, "execution_artifact")
         return artifact.content, await resolve_artifact_content(artifact, account_id=1)
 
     stored, hydrated = asyncio.run(read_summary())
@@ -925,8 +926,8 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
     async def finish():
         await _finish(facts_database)
         stored = await _stored_captured_notification(facts_database)
-        event = _get(facts_database, NotificationEvent)
-        record = _get(facts_database, ExecuteRecord)
+        event = _get(facts_database, "notification_event")
+        record = _get(facts_database, "executerecord")
         detail = await read_execution_detail(record)
         return stored, event.context, detail
 
@@ -946,7 +947,7 @@ def test_finished_outbox_owns_large_context_and_preview_keeps_frozen_snapshot(
         assert business_evidence(context["account"]["name"]) == business_evidence("frozen-at-execution")
         assert business_evidence(context["orders"]) == business_evidence(captured["orders"])
         context["orders"][0]["order_id"] = "preview-only-edit"
-        event = _get(facts_database, NotificationEvent)
+        event = _get(facts_database, "notification_event")
         return event.context
 
     assert business_evidence(asyncio.run(preview())) == business_evidence(event_context)
@@ -970,8 +971,8 @@ def test_context_compaction_rollback_retains_only_copy_when_outbox_is_not_commit
         asyncio.run(_finish(facts_database))
 
     async def inspect_after_rollback():
-        event = _get(facts_database, NotificationEvent)
-        step = _get(facts_database, SupplementStep)
+        event = _get(facts_database, "notification_event")
+        step = _get(facts_database, "supplement_step")
         return event, step.status, await _stored_captured_notification(facts_database)
 
     event, step_status, retained = asyncio.run(inspect_after_rollback())
@@ -993,7 +994,7 @@ def test_distinct_frozen_outbox_wins_preview_without_erasing_captured_evidence(f
 
     async def finish():
         await _finish(facts_database)
-        event = _get(facts_database, NotificationEvent)
+        event = _get(facts_database, "notification_event")
         return await _stored_captured_notification(facts_database), event.context
 
     stored, retained_outbox = asyncio.run(finish())
@@ -1022,7 +1023,7 @@ def test_no_outbox_keeps_captured_notification_as_unique_historical_evidence(fac
 
     async def finish_without_step_and_preview():
         await _finish(facts_database)
-        event = _get(facts_database, NotificationEvent)
+        event = _get(facts_database, "notification_event")
         stored = await _stored_captured_notification(facts_database)
         preview = await account_feishu._load_notification_preview_context(build_account(portfolio_id=None))
         return event, stored, preview
