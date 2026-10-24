@@ -45,7 +45,7 @@ async def _terminate_task(monkeypatch, state, exc):
         execution_kind=state.execution_kind,
         runner=runner,
     )
-    finished.assert_awaited_once_with(state.execution_id, ExecutionTaskStatus.TERMINATED, finished_at=state.finished_at)
+    finished.assert_not_awaited()
     assert execution_registry.get_running_execution_id(state.account_id) is None
     assert execution_registry.get_queued_execution_id(state.account_id) is None
 
@@ -67,9 +67,9 @@ def test_queued_execution_terminated_persists_record_and_updates_state(monkeypat
     captured: dict[str, object] = {"events": []}
     execution_registry.set_execution_task_state(execution_id, state)
 
-    async def fake_append_terminated_execute_record(**kwargs: object) -> SimpleNamespace:
+    async def fake_append_terminated_execute_record(**kwargs: object) -> ExecuteRecord:
         captured["record_kwargs"] = kwargs
-        return SimpleNamespace(id=321, is_success=0)
+        return ExecuteRecord(id=321, account_id=1, is_success=0, task_status="TERMINATED")
 
     async def fake_append_execution_event(**kwargs: object) -> None:
         events = captured["events"]
@@ -163,9 +163,9 @@ def test_run_execution_task_uses_state_termination_fallbacks(monkeypatch, kind) 
     execution_registry.set_execution_task_state(execution_id, state)
     execution_registry.try_register_running_execution(1, execution_id)
 
-    async def fake_append_terminated_execute_record(**kwargs: object) -> SimpleNamespace:
+    async def fake_append_terminated_execute_record(**kwargs: object) -> ExecuteRecord:
         captured["record_kwargs"] = kwargs
-        return SimpleNamespace(id=654, is_success=0)
+        return ExecuteRecord(id=654, account_id=1, is_success=0, task_status="TERMINATED")
 
     async def fake_append_execution_event(**kwargs: object) -> None:
         events = captured["events"]
@@ -275,8 +275,8 @@ def test_enqueue_empty_positions_delegates_to_submit_intent(monkeypatch) -> None
 
 
 @pytest.mark.parametrize("kind", list(ExecutionKind))
-def test_run_execution_task_persists_intent_on_success(monkeypatch, kind) -> None:
-    """后台任务成功后应把 intent 标终态。"""
+def test_run_execution_task_uses_saved_result_without_finishing_twice(monkeypatch, kind) -> None:
+    """后台任务按保存的记录收尾，不重复写 intent。"""
     execution_id = "exec-intent-finish-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
@@ -288,19 +288,14 @@ def test_run_execution_task_persists_intent_on_success(monkeypatch, kind) -> Non
         algorithm="SINGLE-MAKER",
     )
     execution_registry.set_execution_task_state(execution_id, state)
-    marked: dict[str, object] = {}
-
-    async def fake_mark(execution_id: str, status: ExecutionTaskStatus, **kwargs: object) -> None:
-        marked["execution_id"] = execution_id
-        marked["status"] = status
-        marked.update(kwargs)
+    finished = AsyncMock()
 
     async def fake_runner(_tracked: str) -> SimpleNamespace:
         return ExecuteRecord(
             id=9, account_id=1, is_success=1, status="SUCCEEDED", display_status="SUCCEEDED", task_status="SUCCEEDED"
         )
 
-    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", fake_mark)
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
     monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda *_a, **_k: None)
     monkeypatch.setattr(execution_lifecycle, "now_str", lambda: "2026-03-27T12:00:05")
 
@@ -316,8 +311,9 @@ def test_run_execution_task_persists_intent_on_success(monkeypatch, kind) -> Non
     finally:
         execution_registry._clear_execution_task_state(execution_id)
 
-    assert marked["execution_id"] == execution_id
-    assert marked["status"] == ExecutionTaskStatus.SUCCEEDED
+    assert state.status == ExecutionTaskStatus.SUCCEEDED
+    assert state.record_id == 9
+    finished.assert_not_awaited()
 
 
 def test_queue_serializes_coalesced_rebalances_and_clear(native_database, monkeypatch) -> None:
@@ -380,7 +376,7 @@ def test_queue_serializes_coalesced_rebalances_and_clear(native_database, monkey
         clear = await execution_lifecycle.enqueue_empty_positions(1, algorithm=algorithm)
         await dispatcher._dispatch_account(1)
         assert executed == [first.execution_id, second.execution_id, clear.execution_id]
-        assert finished.await_count == 3
+        finished.assert_not_awaited()
         for execution_id in executed:
             intent = await intents.get_intent(execution_id)
             assert intent.status == ExecutionTaskStatus.SUCCEEDED
@@ -417,7 +413,7 @@ def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch)
         terminate_mode=None,
     )
     ran: dict[str, str] = {}
-    marked: dict[str, object] = {}
+    finished = AsyncMock()
 
     async def fake_get_intent(eid: str) -> IntentSnapshot:
         assert eid == execution_id
@@ -430,13 +426,8 @@ def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch)
             id=1, account_id=1, is_success=1, status="SUCCEEDED", display_status="SUCCEEDED", task_status="SUCCEEDED"
         )
 
-    async def fake_mark(eid: str, status: ExecutionTaskStatus, **kwargs: object) -> None:
-        marked["execution_id"] = eid
-        marked["status"] = status
-        marked.update(kwargs)
-
     monkeypatch.setattr(execution_lifecycle, "get_intent", fake_get_intent)
-    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", fake_mark)
+    monkeypatch.setattr(execution_lifecycle, "mark_intent_finished", finished)
     monkeypatch.setattr(execution_lifecycle, "sync_account_live", lambda *_a, **_k: None)
 
     try:
@@ -449,7 +440,8 @@ def test_run_execution_task_rehydrates_queued_intent_without_memory(monkeypatch)
             )
         )
         assert ran["id"] == execution_id
-        assert marked["status"] == ExecutionTaskStatus.SUCCEEDED
+        assert execution_registry.get_execution_task_state(execution_id).status == ExecutionTaskStatus.SUCCEEDED
+        finished.assert_not_awaited()
     finally:
         execution_registry.clear_queued_execution(1, execution_id)
         execution_registry._clear_execution_task_state(execution_id)
@@ -553,9 +545,9 @@ def test_timeout_termination_is_distinguishable_from_operator(monkeypatch, kind)
     captured: dict[str, object] = {"events": []}
     execution_registry.set_execution_task_state(execution_id, state)
 
-    async def fake_append_terminated_execute_record(**kwargs: object) -> SimpleNamespace:
+    async def fake_append_terminated_execute_record(**kwargs: object) -> ExecuteRecord:
         captured["record_kwargs"] = kwargs
-        return SimpleNamespace(id=777, is_success=0)
+        return ExecuteRecord(id=777, account_id=1, is_success=0, task_status="TERMINATED")
 
     async def fake_append_execution_event(**kwargs: object) -> None:
         events = captured["events"]
@@ -658,7 +650,7 @@ def test_timeout_termination_sends_alert(monkeypatch, kind, trigger) -> None:
     monkeypatch.setattr(
         execution_lifecycle,
         "append_terminated_execute_record",
-        AsyncMock(return_value=SimpleNamespace(id=888, is_success=0)),
+        AsyncMock(return_value=ExecuteRecord(id=888, account_id=1, is_success=0, task_status="TERMINATED")),
     )
     monkeypatch.setattr(execution_lifecycle, "append_execution_event", AsyncMock())
     monkeypatch.setattr(execution_lifecycle, "send_feishu_error", sent)
@@ -739,11 +731,11 @@ def test_queued_execution_copies_blocked_output_error(monkeypatch: pytest.Monkey
     assert current.outcome == "blocked"
     assert current.outcome_symbols == ["ag2612", "m2701"]
     assert current.record_id == 6
-    finished.assert_awaited_once_with(execution_id, ExecutionTaskStatus.FAILED, finished_at=current.finished_at)
+    finished.assert_not_awaited()
 
 
-def test_mark_execution_finished_copies_record_error_unless_exception() -> None:
-    """worker 收尾：有记录时拷贝 output；有异常时异常字符串优先。"""
+def test_mark_execution_finished_copies_saved_record_status_and_error() -> None:
+    """worker 收尾沿用已保存记录的终态与展示错误。"""
     execution_id = "exec-worker-blocked-1"
     state = execution_registry.ExecutionTaskState(
         execution_id=execution_id,
@@ -767,25 +759,15 @@ def test_mark_execution_finished_copies_record_error_unless_exception() -> None:
     try:
         execution_lifecycle._mark_execution_finished(
             execution_id,
-            status=ExecutionTaskStatus.FAILED,
             finished_at="2026-08-26T20:34:30",
             record=record,
         )
         blocked = execution_registry.get_execution_task_state(execution_id)
         assert blocked is not None
+        assert blocked.status == ExecutionTaskStatus.FAILED
+        assert blocked.record_id == record.id
         assert blocked.error == "当前不在交易时间"
         assert blocked.output_status == "BLOCKED"
-
-        execution_lifecycle._mark_execution_finished(
-            execution_id,
-            status=ExecutionTaskStatus.FAILED,
-            finished_at="2026-08-26T20:34:31",
-            error=RuntimeError("worker exploded"),
-        )
-        failed = execution_registry.get_execution_task_state(execution_id)
-        assert failed is not None
-        assert failed.error == "worker exploded"
-        assert failed.output_status == "FAILED"
     finally:
         execution_registry._clear_execution_task_state(execution_id)
 
@@ -862,11 +844,11 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
             assert request["raw_input"]["curr_target"] == {"A": 0.1}
         else:
             assert request["raw_input"] is None
-        expected_error = "worker exploded" if kind == ExecutionKind.REBALANCE else "清仓执行失败，具体原因未确认"
+        expected_error = (
+            "调仓执行失败，具体原因未确认" if kind == ExecutionKind.REBALANCE else "清仓执行失败，具体原因未确认"
+        )
         assert state.status == ExecutionTaskStatus.FAILED
         assert state.error == expected_error
-        finished.assert_awaited_once_with(
-            execution_id, ExecutionTaskStatus.FAILED, error=expected_error, finished_at=state.finished_at
-        )
+        finished.assert_not_awaited()
     finally:
         execution_registry._clear_execution_task_state(execution_id)

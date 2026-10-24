@@ -51,7 +51,7 @@ from axile.server.execution.registry import (
 from axile.server.execution_audit import append_execution_event
 from axile.server.repositories import get_account_snapshot
 
-type ExecutionRunner = Callable[[str], Awaitable[ExecuteRecord | None]]
+type ExecutionRunner = Callable[[str], Awaitable[ExecuteRecord]]
 
 _TIMEOUT_ALERT_BUDGET_SECONDS = 5.0
 """总超时告警的发送预算（秒）。.
@@ -167,28 +167,19 @@ async def _require_account(account_id: int) -> AccountSnapshot:
 def _mark_execution_finished(
     execution_id: str,
     *,
-    status: ExecutionTaskStatus,
     finished_at: str,
-    record: ExecuteRecord | None = None,
-    error: Exception | None = None,
-    outcome_symbols: list[str] | None = None,
+    record: ExecuteRecord,
 ) -> None:
-    """统一更新后台任务的完成态字段。"""
+    """按已提交的执行记录更新内存终态。"""
     update_execution_task_state(
         execution_id,
-        status=status,
+        status=resolve_record_task_status(record),
         finished_at=finished_at,
-        record_id=None if record is None else record.id,
-        is_success=0 if error is not None else None if record is None else record.is_success,
-        # 异常优先；业务失败（如全员 BLOCKED）没有异常，必须从记录里把原因带出来。
-        # 任务状态保留具体原因；完整 traceback 另存执行记录。
-        error=str(error) if error is not None else execution_record_output_error(record),
-        output_status="FAILED" if error is not None else execution_record_output_status(record),
-        **(
-            {"outcome": "error", "outcome_reason": str(error)}
-            if error is not None
-            else execution_record_outcome(record, outcome_symbols=outcome_symbols)
-        ),
+        record_id=record.id,
+        is_success=record.is_success,
+        error=execution_record_output_error(record),
+        output_status=execution_record_output_status(record),
+        **execution_record_outcome(record),
     )
 
 
@@ -294,6 +285,11 @@ async def _record_terminated_execution(
         forced=termination.forced,
         cancel_unconfirmed=termination.cancel_unconfirmed,
     )
+    # 先落内存态再发告警：告警链路里的 get_external_ip 会串行探测多个外网服务，
+    # 而超时终止恰恰常发生在网络劣化时——放在前面会把 TERMINATED 的可见时间拖上几十秒。
+    _mark_execution_finished(execution_id, record=record, finished_at=finished_at)
+    if resolve_record_task_status(record) != ExecutionTaskStatus.TERMINATED:
+        return record
     if current_state is not None and current_state.channel is not None and current_state.algorithm:
         await append_execution_event(
             execution_id=execution_id,
@@ -316,16 +312,6 @@ async def _record_terminated_execution(
                 }
             },
         )
-    # 先落内存态再发告警：告警链路里的 get_external_ip 会串行探测多个外网服务，
-    # 而超时终止恰恰常发生在网络劣化时——放在前面会把 TERMINATED 的可见时间拖上几十秒。
-    update_execution_task_state(
-        execution_id,
-        status=ExecutionTaskStatus.TERMINATED,
-        outcome="terminated",
-        finished_at=finished_at,
-        record_id=record.id,
-        is_success=record.is_success,
-    )
     # 同一条外网探测链路还会占住账户的运行位：调用方要等这里返回才走到 finally 里的
     # clear_running_execution，探测全超时的话下一次定时调仓会被判为「已在运行」而直接失败。
     # 六个服务各 5s 串行 = 最坏 30s，故在这里单独封顶；超时由内部 except 吞掉，不影响收尾。
@@ -403,55 +389,37 @@ async def _run_execution_task(
 
     keep_queued = False
     try:
-        record = await runner(execution_id)
-        status = resolve_record_task_status(record)
-        finished_at = now_str()
-        _mark_execution_finished(
-            execution_id,
-            status=status,
-            finished_at=finished_at,
-            record=record,
-            outcome_symbols=await load_record_outcome_symbols(record),
-        )
-        await mark_intent_finished(execution_id, status, finished_at=finished_at)
-    except IntentNotRunnable as exc:
-        keep_queued = exc.retry
-        raise
-    except ExecutionTerminated as exc:
-        current_state = get_execution_task_state(execution_id)
-        finished_at = now_str()
-        termination = _resolve_termination_snapshot(exc, current_state)
-        await _record_terminated_execution(
-            account_id=account_id,
-            execution_id=execution_id,
-            execution_kind=execution_kind,
-            current_state=current_state,
-            requested_at=(None if current_state is None else current_state.cancel_requested_at) or finished_at,
-            finished_at=finished_at,
-            termination=termination,
-        )
-        await mark_intent_finished(execution_id, ExecutionTaskStatus.TERMINATED, finished_at=finished_at)
-    except Exception as e:
-        from axile.server.execution.records import append_error_execute_record
+        try:
+            record = await runner(execution_id)
+        except IntentNotRunnable as exc:
+            keep_queued = exc.retry
+            raise
+        except ExecutionTerminated as exc:
+            current_state = get_execution_task_state(execution_id)
+            finished_at = now_str()
+            termination = _resolve_termination_snapshot(exc, current_state)
+            record = await _record_terminated_execution(
+                account_id=account_id,
+                execution_id=execution_id,
+                execution_kind=execution_kind,
+                current_state=current_state,
+                requested_at=(None if current_state is None else current_state.cancel_requested_at) or finished_at,
+                finished_at=finished_at,
+                termination=termination,
+            )
+        except Exception as e:
+            from axile.server.execution.records import append_error_execute_record
 
-        await append_error_execute_record(
-            account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e), error=e
-        )
-        finished_at = now_str()
-        _mark_execution_finished(
-            execution_id,
-            status=ExecutionTaskStatus.FAILED,
-            finished_at=finished_at,
-            error=e,
-        )
-        await mark_intent_finished(execution_id, ExecutionTaskStatus.FAILED, error=str(e), finished_at=finished_at)
+            record = await append_error_execute_record(
+                account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e), error=e
+            )
+        _mark_execution_finished(execution_id, record=record, finished_at=record.termination_finished_at or now_str())
+        update_execution_task_state(execution_id, outcome_symbols=await load_record_outcome_symbols(record))
     finally:
-        if keep_queued:
-            # 渠道锁被刷新占用：intent 仍是 QUEUED，不能拆内存槽，否则终止会 409。
-            sync_account_live(account_id)
-        else:
+        # 渠道锁被刷新占用：intent 仍是 QUEUED，不能拆内存槽，否则终止会 409。
+        if not keep_queued:
             _release_execution_slots(account_id, execution_id)
-            sync_account_live(account_id)
+        sync_account_live(account_id)
 
 
 async def run_queued_execution(intent: IntentSnapshot) -> None:

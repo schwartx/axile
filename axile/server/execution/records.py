@@ -48,6 +48,9 @@ async def _persist_execute_record(
         )
     except _core.NativeError as error:
         raise_business_fact_error(error)
+    from axile.server.execution.notification_outbox import wake_notifications
+
+    wake_notifications(stored["account_id"])
     return ExecuteRecord.model_validate(stored)
 
 

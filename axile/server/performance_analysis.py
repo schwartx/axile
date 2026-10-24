@@ -120,9 +120,7 @@ class AnalysisManager:
             "settings": settings,
             "trade_channel": channel,
         }
-        receipt = await native_operation("publish_store", request, database=self._database_path())
-        if receipt["published"] and not await self._native_publication_committed(row):
-            raise RuntimeError("Native publication receipt has no committed snapshot")
+        await native_operation("publish_store", request, database=self._database_path())
 
     async def _native_publication_committed(self, row) -> bool:
         """回执、进程退出或取消不决定提交结果，按本次 token 核对持久化快照。"""
@@ -163,16 +161,12 @@ class AnalysisManager:
 
     async def _release_claim(self, row) -> None:
         """只释放本次仍占有的任务；已提交发布或较新任务的状态保持不变。"""
-        if await self._native_publication_committed(row):
-            return
         await native_call(
             _core.queue_release, self._database_path(), row["account_id"], row["source_version"], row["running_token"]
         )
 
     async def _fail(self, row) -> None:
         """Only fail the claim still owned by this worker."""
-        if await self._native_publication_committed(row):
-            return
         await native_call(
             _core.queue_fail,
             self._database_path(),

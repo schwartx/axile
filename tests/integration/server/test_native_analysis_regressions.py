@@ -1,5 +1,6 @@
 """历史时间与展示规则经过真实原生发布后保持一致。"""
 
+import asyncio
 import copy
 import json
 from contextlib import closing
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from axile.server import performance_analysis as analysis
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
@@ -72,10 +74,11 @@ def _persist(database: Path, created_at: str, result: dict, execution_id: str = 
     )
 
 
-def _publish(database: Path):
+def _publish(database: Path, row=None):
     core = require_native_store("publish_store", "query_costs", "execution_detail")
-    core.queue_enqueue(str(database), 1, False)
-    row = core.queue_claim(str(database), 1.0, "regression-snapshot")
+    if row is None:
+        core.queue_enqueue(str(database), 1, False)
+        row = core.queue_claim(str(database), 1.0, "regression-snapshot")
     receipt = native_store_call(
         database,
         "publish_store",
@@ -95,6 +98,46 @@ def _publish(database: Path):
     )
     assert receipt["published"] is True
     return core, core.Store(str(database)), receipt["snapshot_id"]
+
+
+def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_work(database, monkeypatch):
+    core = require_native_store("queue_enqueue", "queue_claim", "queue_status")
+    _persist(database, _PRECISE, _RESULT)
+    monkeypatch.setattr(analysis, "database_path", lambda: str(database))
+    manager = analysis.AnalysisManager()
+    claims = []
+
+    async def publish_then_lose_receipt(row):
+        _publish(database, row)
+        claims.append(row)
+        raise RuntimeError("receipt lost after commit")
+
+    monkeypatch.setattr(manager, "_run_native", publish_then_lose_receipt)
+    core.queue_enqueue(str(database), 1, False)
+
+    async def run():
+        assert await manager.run_once()
+        row = claims[0]
+        assert core.queue_status(str(database), 1, LOGIC_VERSION, ENGINE_VERSION) == "ready"
+        _publish(database, row)
+        await manager._fail(row)
+        await manager._release_claim(row)
+        with closing(oracle_connect(database)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone()[0] == 1
+            assert connection.execute(
+                "SELECT failures,running_token FROM account_analysis WHERE account_id=1"
+            ).fetchone() == (0, None)
+        core.queue_enqueue(str(database), 1, True)
+        newer = core.queue_claim(str(database), 1.0, "newer-claim")
+        assert newer["running_token"] == "newer-claim"
+        await manager._fail(row)
+        await manager._release_claim(row)
+        with closing(oracle_connect(database)) as connection:
+            assert connection.execute(
+                "SELECT failures,running_token FROM account_analysis WHERE account_id=1"
+            ).fetchone() == (0, "newer-claim")
+
+    asyncio.run(run())
 
 
 def test_cost_interval_keeps_the_trade_at_its_inclusive_microsecond_end(database: Path) -> None:

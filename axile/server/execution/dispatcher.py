@@ -134,7 +134,6 @@ async def _append_interrupted_record(intent: IntentSnapshot) -> None:
 async def recover_intents_on_startup() -> None:
     """启动时中断 RUNNING/TERMINATING，修复中断终态并续跑 QUEUED."""
     from axile.server.execution.intents import (
-        PROCESS_INTERRUPTED_REASON,
         list_intents_by_status,
         list_interrupted_intents_without_record,
     )
@@ -145,12 +144,6 @@ async def recover_intents_on_startup() -> None:
     )
     for intent in interrupted:
         loguru.logger.warning(f"启动中断遗留 execution_id={intent.execution_id} account_id={intent.account_id}")
-        await mark_intent_finished(
-            intent.execution_id,
-            ExecutionTaskStatus.FAILED,
-            error=PROCESS_INTERRUPTED_REASON,
-            finished_at=now_str(),
-        )
         await _append_interrupted_record(intent)
         clear_running_execution(intent.account_id, intent.execution_id)
         clear_queued_execution(intent.account_id, intent.execution_id)

@@ -49,7 +49,8 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
         analysis.ensure_native_capabilities()
 
 
-def test_native_dispatch_prepares_calendar_before_publication(manager, claim, monkeypatch):
+@pytest.mark.parametrize("published", [False, True])
+def test_native_dispatch_prepares_calendar_before_publication(manager, claim, monkeypatch, published):
     prepared = {
         "trade_channel": "ctp",
         "settings": {"backtest_fee_rate": 0.01},
@@ -70,7 +71,7 @@ def test_native_dispatch_prepares_calendar_before_publication(manager, claim, mo
     def publish(path, payload):
         calendar.assert_awaited_once_with("ctp", "2026-01-01", "2026-01-03")
         requests.append((path, json.loads(payload)))
-        return {"published": False, "reason": "source_changed"}
+        return {"published": published}
 
     monkeypatch.setattr(analysis, "native_operation", native)
     monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", calendar)
@@ -184,12 +185,12 @@ def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes
         assert not manager.compute_lock.locked()
 
     asyncio.run(run())
-    assert len(releases) == (0 if committed else 1)
+    assert len(releases) == 1
 
 
-@pytest.mark.parametrize("committed", [False, True])
-def test_committed_publication_cannot_be_failed_or_released(manager, claim, monkeypatch, committed):
-    monkeypatch.setattr(manager, "_native_publication_committed", AsyncMock(return_value=committed))
+def test_release_and_fail_delegate_once_without_commit_preread(manager, claim, monkeypatch):
+    confirmation = AsyncMock()
+    monkeypatch.setattr(manager, "_native_publication_committed", confirmation)
     calls = []
     monkeypatch.setattr(analysis._core, "queue_release", lambda *args: calls.append(("release", args)))
     monkeypatch.setattr(analysis._core, "queue_fail", lambda *args: calls.append(("fail", args)))
@@ -200,14 +201,11 @@ def test_committed_publication_cannot_be_failed_or_released(manager, claim, monk
         await manager._fail(claim)
 
     asyncio.run(check())
-    assert calls == (
-        []
-        if committed
-        else [
-            ("release", ("/isolated/analysis.sqlite", 7, 11, "claim-token")),
-            ("fail", ("/isolated/analysis.sqlite", 7, 11, "claim-token", 123.0)),
-        ]
-    )
+    confirmation.assert_not_awaited()
+    assert calls == [
+        ("release", ("/isolated/analysis.sqlite", 7, 11, "claim-token")),
+        ("fail", ("/isolated/analysis.sqlite", 7, 11, "claim-token", 123.0)),
+    ]
 
 
 def test_concurrent_runs_keep_one_calculation_slot(manager, claim, monkeypatch):

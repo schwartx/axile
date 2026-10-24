@@ -68,11 +68,31 @@ fn facts_row(
     )
 }
 
-/// 一个执行首条终态胜出，所有结果事实与历史引用在同一事务提交。
+/// 首条执行结果、任务终态、补发结算与待发通知在同一事务提交。
 pub fn persist_execute_record(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
     crate::writer_scope::immediate(&connection, || {
-        persist_execute_record_in(&connection, request)
+        let record = persist_execute_record_in(&connection, request)?;
+        if let Some(execution_id) = record["execution_id"].as_str() {
+            let status = record["task_status"]
+                .as_str()
+                .unwrap_or(if record["is_success"] == 1 {
+                    "SUCCEEDED"
+                } else {
+                    "FAILED"
+                });
+            let finished = record["termination_finished_at"]
+                .as_str()
+                .or(record["created_at"].as_str());
+            crate::intents::finish_in_connection(
+                &connection,
+                &json!({
+                    "execution_id": execution_id, "account_id": record["account_id"],
+                    "status": status, "error": record["display_error"], "finished_at": finished, "now": finished,
+                }),
+            )?;
+        }
+        Ok(record)
     })
 }
 

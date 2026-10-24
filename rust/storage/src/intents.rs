@@ -343,7 +343,10 @@ pub fn intent_cas(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     })
 }
 
-fn finish_in_connection(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
+pub(crate) fn finish_in_connection(
+    connection: &Connection,
+    request: &Value,
+) -> Result<Value, AnalysisError> {
     let execution_id = text(request, "execution_id")?;
     let target = status(request, "status")?;
     if !TERMINAL.contains(&target) {
@@ -355,6 +358,12 @@ fn finish_in_connection(connection: &Connection, request: &Value) -> Result<Valu
     let Some(current) = get_in_connection(connection, execution_id)? else {
         return Ok(json!({"changed": false, "intent": null}));
     };
+    if request.get("account_id").is_some() && account_id(request)? != account_id(&current)? {
+        return Err(AnalysisError::new(
+            "INVALID_REQUEST",
+            "执行标识属于其他账户",
+        ));
+    }
     let mut fields = Map::new();
     fields.insert("finished_at".into(), json!(text(request, "finished_at")?));
     if !request["error"].is_null() {

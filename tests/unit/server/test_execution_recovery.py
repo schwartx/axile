@@ -47,7 +47,7 @@ def _intent(execution_id: str, status: ExecutionTaskStatus) -> IntentSnapshot:
 
 @pytest.mark.parametrize("interrupted_status", [ExecutionTaskStatus.RUNNING, ExecutionTaskStatus.TERMINATING])
 def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted_status) -> None:
-    """先分别保存中断票及错误记录，再恢复存在账户的排队票并唤醒。"""
+    """中断票随错误记录一起保存，再恢复存在账户的排队票并唤醒。"""
     interrupted = _intent("run-1", interrupted_status)
     queued = _intent("queue-1", ExecutionTaskStatus.QUEUED)
     saved: dict[str, IntentSnapshot] = {item.execution_id: item for item in (interrupted, queued)}
@@ -62,8 +62,9 @@ def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted
         saved[execution_id] = replace(saved[execution_id], status=status, error=kwargs.get("error"))
 
     async def append(**kwargs: object):
-        assert saved[kwargs["execution_id"]].status == ExecutionTaskStatus.FAILED
+        assert saved[kwargs["execution_id"]].status == interrupted_status
         assert kwargs["msg"] == PROCESS_INTERRUPTED_REASON
+        saved[kwargs["execution_id"]] = replace(interrupted, status=ExecutionTaskStatus.FAILED)
         calls.append(("record", kwargs["execution_id"]))
 
     async def load(account_id: int):
@@ -85,7 +86,7 @@ def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted
         assert saved["queue-1"].status == ExecutionTaskStatus.QUEUED
         assert registry.get_running_execution_id(3) is None
         assert registry.get_queued_execution_id(3) == "queue-1"
-        assert calls == [("finish", "run-1"), ("record", "run-1"), ("live", 3), ("wake", 3)]
+        assert calls == [("record", "run-1"), ("live", 3), ("wake", 3)]
     finally:
         registry.clear_running_execution(3, interrupted.execution_id)
         registry.clear_queued_execution(3, queued.execution_id)

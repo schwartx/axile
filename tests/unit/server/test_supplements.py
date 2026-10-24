@@ -3,6 +3,8 @@
 import asyncio
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from datetime import datetime, timedelta
 
@@ -12,7 +14,16 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account_settings import SupplementSettings
 from axile.server.db.models.supplement import SupplementGroup, SupplementStep
-from axile.server.execution import intents, notification_outbox, records, supplement_notifications, supplements
+from axile.server.execution import (
+    dispatcher,
+    intents,
+    lifecycle,
+    notification_outbox,
+    records,
+    registry,
+    supplement_notifications,
+    supplements,
+)
 from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
@@ -121,6 +132,138 @@ def running(path, execution_id):
         (BASE.isoformat(), execution_id),
     )
     clear_queued_execution(1, execution_id)
+
+
+@pytest.mark.parametrize("status", ["SUCCEEDED", "PARTIAL", "TERMINATED"])
+def test_result_commit_survives_interruption_replay_and_restart(database, status):
+    from axile.server._native import _core
+
+    path, _now = database
+
+    async def run():
+        planned, steps = await seed(path)
+        await supplements.fire_step(steps[0].id)
+        execution_id = step(path, steps[0].id)["execution_id"]
+        running(path, execution_id)
+        request = {
+            "account_id": 1,
+            "execution_id": execution_id,
+            "created_at": BASE.isoformat(),
+            "is_success": int(status == "SUCCEEDED"),
+            "raw_result": {"task_status": status, "status": status},
+        }
+        execute(
+            path,
+            "CREATE TRIGGER reject_finish BEFORE INSERT ON notification_event BEGIN SELECT RAISE(ABORT,'before-commit'); END",
+        )
+        with pytest.raises(_core.NativeError, match="before-commit"):
+            call(path, "persist_execute_record", request)
+        assert not query(path, "SELECT * FROM executerecord")
+        assert (await intents.get_intent(execution_id)).status == ExecutionTaskStatus.RUNNING
+        assert step(path, steps[0].id)["status"] == "queued"
+        assert not events(path)
+        execute(path, "DROP TRIGGER reject_finish")
+        _core.close_database(str(path))
+        interrupted = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os,sys; from axile.server._native import _core; _core.persist_execute_record(sys.argv[1],sys.argv[2]); os._exit(73)",
+                str(path),
+                json.dumps(request),
+            ],
+            timeout=10,
+            capture_output=True,
+        )
+        assert interrupted.returncode == 73, interrupted.stderr.decode()
+        saved = query(path, "SELECT * FROM executerecord")
+        assert len(saved) == 1 and saved[0]["task_status"] == status
+        assert (await intents.get_intent(execution_id)).status.value == status
+        assert step(path, steps[0].id)["status"] == "finished"
+        replay = call(
+            path,
+            "persist_execute_record",
+            {**request, "is_success": 0, "raw_result": {"status": "FAILED", "error": "late retry"}},
+        )
+        assert replay["id"] == saved[0]["id"]
+        assert query(path, "SELECT * FROM executerecord") == saved
+        await dispatcher.recover_intents_on_startup()
+        assert (await intents.get_intent(execution_id)).status.value == status
+        assert len(events(path)) == 1
+        assert events(path)[0]["context"]["execution"]["status"] == status
+        assert group(path, planned.id)["status"] == "active"
+        assert step(path, steps[-1].id)["status"] == "pending"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["receipt", "notification"])
+def test_postcommit_failure_keeps_execution_success_and_future_supplements(database, monkeypatch, failure):
+    from axile.common.notification_function import NotificationFunctionResult
+
+    path, _now = database
+    operation = records.native_operation
+    lost = False
+
+    async def lose_receipt(name, request, **kwargs):
+        nonlocal lost
+        result = await operation(name, request, **kwargs)
+        if name == "persist_execute_record" and not lost:
+            lost = True
+            raise RuntimeError("receipt lost after commit")
+        return result
+
+    if failure == "receipt":
+        monkeypatch.setattr(records, "native_operation", lose_receipt)
+    else:
+        execute(
+            path,
+            "UPDATE account_settings SET notification=json_set(notification,'$.execution_notification_code',?)",
+            ("def notify(context):\n    pass",),
+        )
+        monkeypatch.setattr(
+            notification_outbox,
+            "run_notification_function",
+            lambda *_a, **_k: NotificationFunctionResult(False, "delivery failed"),
+        )
+    monkeypatch.setattr(lifecycle, "sync_account_live", lambda _id: None)
+
+    async def run():
+        planned, steps = await seed(path)
+        await supplements.fire_step(steps[0].id)
+        execution_id = step(path, steps[0].id)["execution_id"]
+        running(path, execution_id)
+        state = registry.ExecutionTaskState(
+            execution_id=execution_id,
+            account_id=1,
+            execution_kind=ExecutionKind.REBALANCE,
+            status=ExecutionTaskStatus.RUNNING,
+            created_at=BASE.isoformat(),
+        )
+        registry.set_execution_task_state(execution_id, state)
+
+        async def runner(_id):
+            return await records._persist_execute_record(
+                account_id=1, execution_id=execution_id, raw_input={}, raw_result={"status": "SUCCEEDED"}, is_success=1
+            )
+
+        try:
+            await lifecycle._run_execution_task(
+                account_id=1, execution_id=execution_id, execution_kind=ExecutionKind.REBALANCE, runner=runner
+            )
+            if failure == "notification":
+                await notification_outbox._dispatch(1)
+                assert events(path)[0]["status"] == "failed"
+            assert (await intents.get_intent(execution_id)).status == ExecutionTaskStatus.SUCCEEDED
+            assert state.status == ExecutionTaskStatus.SUCCEEDED and state.error is None
+            assert len(query(path, "SELECT * FROM executerecord")) == len(events(path)) == 1
+            assert query(path, "SELECT task_status FROM executerecord")[0]["task_status"] == "SUCCEEDED"
+            assert group(path, planned.id)["status"] == "active"
+            assert step(path, steps[-1].id)["status"] == "pending"
+        finally:
+            registry._clear_execution_task_state(execution_id)
+
+    asyncio.run(run())
 
 
 async def save_closed_record(execution_id, *, scope="all"):
