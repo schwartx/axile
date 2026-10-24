@@ -144,6 +144,34 @@ def test_account_public_returns_connection_credentials_but_omits_webhook() -> No
     assert '"account_configured":true' in payload and '"feishu_configured":true' in payload
 
 
+def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_client) -> None:
+    client, database = account_client
+    _seed_account(database)
+    for sync_status in ("pending", "synchronized", "failed"):
+        with closing(oracle_connect(database)) as connection, connection:
+            connection.execute(
+                "UPDATE accountruntimesync SET status=?,revision=?,attempts=3,last_error=?,"
+                "last_attempt_at='2026-10-24T09:00:00',create_request_key='private' WHERE account_id=1",
+                (sync_status, 2**63 - 1, "等待核对"),
+            )
+        response = client.get("/account/1/runtime-sync")
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "status": sync_status,
+            "revision": 2**63 - 1,
+            "attempts": 3,
+            "last_error": "等待核对",
+            "last_attempt_at": "2026-10-24T09:00:00",
+            "synchronized_at": None,
+        }
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute("DELETE FROM accountruntimesync WHERE account_id=1")
+    missing = client.get("/account/1/runtime-sync")
+    assert missing.status_code == 202 and missing.json() == {"detail": "账户运行态尚待首次同步"}
+    absent = client.get("/account/999/runtime-sync")
+    assert absent.status_code == 404 and absent.json() == {"detail": "账户不存在"}
+
+
 def test_native_public_queries_match_existing_public_contract(account_client) -> None:
     client, database = account_client
     source = _seed_account(database, feishu_key="private-webhook")

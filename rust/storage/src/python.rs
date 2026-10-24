@@ -268,7 +268,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     account_portfolio_records => crate::accounts::account_portfolio_records,
     account_latest_portfolio => crate::accounts::account_latest_portfolio,
     portfolio_latest_account => crate::accounts::portfolio_latest_account,
-    account_update_backtest => crate::accounts::account_update_backtest,
     account_stop_for_clear => crate::accounts::account_stop_for_clear,
     time_check_start => crate::time_check::start,
     time_check_get => crate::time_check::get,
@@ -352,6 +351,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
 business_operations! { register_bytes_operations, business_bytes_operation, PyBytes;
     account_list_json => crate::accounts::account_list_json,
     account_info_json => crate::accounts::account_info_json,
+    account_runtime_sync_json => crate::accounts::account_runtime_sync_json,
     account_connection_json => crate::accounts::account_connection_json,
     account_portfolio_records_json => crate::accounts::account_portfolio_records_json,
 }
@@ -378,6 +378,8 @@ fn collect_evidence(
 
 business_operations! { register_json_operations, business_json_operation, PyBytes;
     portfolio_query_json => crate::portfolio_ops::portfolio_query,
+    portfolio_operation_json => crate::portfolio_ops::portfolio_operation,
+    account_update_backtest => crate::accounts::account_update_backtest,
     control_audit_summary_json => crate::control_audit::control_audit_summary,
     control_audit_executions_json => crate::control_audit::control_audit_executions,
     control_audit_events_json => crate::control_audit::control_audit_events,

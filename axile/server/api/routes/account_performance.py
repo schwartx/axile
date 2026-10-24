@@ -52,10 +52,10 @@ async def _account_performance(store: "_core.Store", account_id: int, range_key:
 
 
 @router.patch("/performance-settings/{account_id}", response_model=PerformanceSettings)
-async def save_performance_settings(account_id: int, settings: PerformanceSettings) -> PerformanceSettings:
+async def save_performance_settings(account_id: int, settings: PerformanceSettings) -> Response:
     """原子更新回测配置，不触发账户调度协调."""
     try:
-        account = await native_operation(
+        content = await native_operation(
             "account_update_backtest",
             {"account_id": account_id, "patch": settings.model_dump(mode="json"), "now": now_str()},
         )
@@ -63,9 +63,7 @@ async def save_performance_settings(account_id: int, settings: PerformanceSettin
         if error.args[0] == "ACCOUNT_NOT_FOUND":
             raise HTTPException(404, detail="账户不存在") from error
         raise _native_http_error(error) from error
-    return PerformanceSettings(
-        backtest_weight_type=account["backtest_weight_type"], backtest_fee_rate=account["backtest_fee_rate"]
-    )
+    return _json_response(content)
 
 
 @router.get("/performance/{account_id}", response_model=None)

@@ -151,3 +151,35 @@ def test_portfolio_queries_forward_native_json_without_decoding(monkeypatch):
     assert response.body == body
     assert response.media_type == "application/json"
     native.assert_awaited_once_with("portfolio_query_json", {"op": "list"})
+
+
+def test_portfolio_write_receipts_keep_persisted_fields_status_and_errors(native_database, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axile.server.api.routes import portfolio as routes
+
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        created = client.post("/portfolio/", json={"name": "组合", "market": "期货", "custom_calc_py_code": CODE})
+        assert created.status_code == 201, created.text
+        value = created.json()
+        identity = value["id"]
+        assert value["account_id"] is None and value["description"] is None
+        assert value["status"] is None and value["tag"] is None
+        assert value["custom_calc_py_code"] == CODE
+        detail = f"/portfolio/{identity}"
+        assert created.content == client.get(detail).content
+        assert client.patch(detail, json={"custom_calc_py_code": None}).status_code == 422
+        assert client.patch(detail, json={"custom_calc_py_code": " "}).status_code == 422
+        updated = client.patch(detail, json={"name": "更新后", "description": "说明"})
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "更新后" and updated.json()["description"] == "说明"
+        assert updated.content == client.get(detail).content
+        assert client.patch(detail, json={}).content == updated.content
+        deleted = client.delete(detail)
+        assert deleted.status_code == 200 and deleted.json() == {"message": "成功删除组合"}
+        assert client.get(detail).status_code == client.patch(detail, json={}).status_code == 404
+        assert client.delete(detail).status_code == 404

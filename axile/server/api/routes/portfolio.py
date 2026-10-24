@@ -8,11 +8,9 @@ from loguru import logger
 
 from axile.server._native import _core
 from axile.server.db.models import (
-    Message,
     Portfolio,
     PortfolioCreate,
     PortfolioListPublic,
-    PortfolioPublic,
     PortfolioUpdate,
     TargetWeightSnapshotPublic,
     ValidateCustomCalcRequest,
@@ -46,19 +44,19 @@ async def _portfolio_native(name: str, request: object) -> Any:
         raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED, response_model=PortfolioPublic)
-async def create_portfolio(portfolio: PortfolioCreate) -> PortfolioPublic:
+@router.post("/", status_code=status.HTTP_201_CREATED)
+async def create_portfolio(portfolio: PortfolioCreate) -> Response:
     """创建一个由自定义函数计算目标权重的组合。"""
     try:
         value = await _portfolio_native(
-            "portfolio_operation", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
+            "portfolio_operation_json", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
         )
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("创建组合失败: {}", exc)
         raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
-    return PortfolioPublic.model_validate(value)
+    return Response(value, media_type="application/json", status_code=201)
 
 
 @router.get("/", response_model=PortfolioListPublic)
@@ -67,7 +65,7 @@ async def list_portfolios() -> Response:
     return Response(await _portfolio_native("portfolio_query_json", {"op": "list"}), media_type="application/json")
 
 
-@router.get("/{portfolio_id:int}", response_model=PortfolioPublic)
+@router.get("/{portfolio_id:int}")
 async def portfolio_info(portfolio_id: int) -> Response:
     """获取组合详情和当前绑定账户。"""
     return Response(
@@ -77,19 +75,20 @@ async def portfolio_info(portfolio_id: int) -> Response:
 
 
 @router.delete("/{portfolio_id:int}")
-async def delete_portfolio(portfolio_id: int) -> Message:
+async def delete_portfolio(portfolio_id: int) -> Response:
     """删除未绑定账户的组合。"""
-    return Message.model_validate(
-        await _portfolio_native("portfolio_operation", {"op": "delete", "portfolio_id": portfolio_id})
+    return Response(
+        await _portfolio_native("portfolio_operation_json", {"op": "delete", "portfolio_id": portfolio_id}),
+        media_type="application/json",
     )
 
 
-@router.patch("/{portfolio_id:int}", response_model=PortfolioPublic)
-async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> PortfolioPublic:
+@router.patch("/{portfolio_id:int}")
+async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Response:
     """局部更新组合；自定义函数不可清空。"""
     try:
         value = await _portfolio_native(
-            "portfolio_operation",
+            "portfolio_operation_json",
             {
                 "op": "update",
                 "portfolio_id": portfolio_id,
@@ -102,7 +101,7 @@ async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Por
     except Exception as exc:
         logger.exception("更新组合失败: {}", exc)
         raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
-    return PortfolioPublic.model_validate(value)
+    return Response(value, media_type="application/json", status_code=200)
 
 
 async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> dict[str, float]:

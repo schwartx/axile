@@ -90,15 +90,6 @@ class ValidateCustomCalcResponse(Model):
     error_message: Optional[str] = None
 
 
-class PortfolioPublic(PortfolioBase):
-    """完整版组合信息, 包含当前绑定账户."""
-
-    id: Optional[int]
-    updated_at: str
-    created_at: str
-    account_id: Optional[int]
-
-
 class PortfolioLitePublic(PortfolioBase):
     """简化版组合信息, 不加载关系."""
 

@@ -424,6 +424,32 @@ pub fn account_info_json(path: &str, request: &Value) -> Result<Vec<u8>, Analysi
     })
 }
 
+pub fn account_runtime_sync_json(path: &str, request: &Value) -> Result<Vec<u8>, AnalysisError> {
+    let account_id = id(request)?;
+    crate::with_read_snapshot(Path::new(path), |connection| {
+        let state: Option<Option<String>> = connection
+            .query_row(
+                "SELECT CASE WHEN r.account_id IS NOT NULL THEN json_object(
+             'status',r.status,'revision',r.revision,'attempts',r.attempts,
+             'last_error',r.last_error,'last_attempt_at',r.last_attempt_at,
+             'synchronized_at',r.synchronized_at) END
+             FROM account a LEFT JOIN accountruntimesync r ON r.account_id=a.id WHERE a.id=?1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        match state {
+            None => Err(AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在")),
+            Some(None) => Err(AnalysisError::new(
+                "RUNTIME_SYNC_PENDING",
+                "账户运行态尚待首次同步",
+            )),
+            Some(Some(value)) => Ok(value.into_bytes()),
+        }
+    })
+}
+
 pub fn account_connection_json(path: &str, request: &Value) -> Result<Vec<u8>, AnalysisError> {
     let account_id = id(request)?;
     crate::with_read_snapshot(Path::new(path), |connection| {
@@ -779,8 +805,11 @@ pub fn account_update_backtest(path: &str, request: &Value) -> Result<Value, Ana
     writer_scope::immediate(&connection, || {
         require_on(&connection, account_id)?;
         patch_on(&connection, account_id, patch, now)?;
-        snapshot_on(&connection, account_id)?
-            .ok_or_else(|| AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在"))
+        connection.query_row(
+            "SELECT json_extract(backtest,'$.backtest_fee_rate') FROM account_settings WHERE account_id=?1",
+            [account_id],
+            |row| Ok(json!({"backtest_weight_type":"cs","backtest_fee_rate":row.get::<_, f64>(0)?})),
+        ).map_err(sql)
     })
 }
 
