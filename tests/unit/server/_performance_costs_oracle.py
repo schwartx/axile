@@ -7,7 +7,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
-from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -97,8 +96,7 @@ def _trade(raw: Any, symbol: str, result: dict, orders: dict, created_at: str) -
 def execution_list_payload(payload: dict) -> dict:
     """裁剪新旧绩效投影的逐单证据，只保留列表状态、结论与统计。"""
     record = mapping(payload.get("record"))
-    # 缓存中的旧投影同样读时归一，列表与详情两条路径拿到一致形状。
-    raw = mapping(normalize_legacy_result(record.get("raw_result")))
+    raw = mapping(record.get("raw_result"))
     results = mapping(raw.get("symbol_results"))
     compact = {
         key: raw[key]
@@ -132,8 +130,7 @@ def execution_list_payload(payload: dict) -> dict:
 
 def project_execution(record) -> tuple[dict, list[dict]]:
     """Project one explicitly supplied canonical result into compact analysis facts."""
-    # 旧记录读时归一：投影层拿到的一律是带 status/error 的契约形状。
-    raw = mapping(normalize_legacy_result(record.result))
+    raw = mapping(record.result)
     results = {symbol: mapping(value) for symbol, value in mapping(raw.get("symbol_results")).items()}
     trades = []
     has_fill = False

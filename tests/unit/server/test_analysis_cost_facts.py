@@ -53,16 +53,17 @@ def _ranges():
 def _rich_projection():
     source = record()
     raw = source.result
-    raw.update(status="PARTIAL", error="未全部成交", reason_code=None, msg="")
+    raw.update(status="PARTIAL", outcome="not_reached", error="未全部成交", reason_code=None, msg="")
     raw["account_assets"]["positions"] = [
         {"symbol": "A", "volume": -2, "direction": "SHORT"},
         {"symbol": "FLAT", "volume": 0, "direction": "LONG"},
     ]
-    raw["symbol_results"]["A"].update(status="PARTIAL", reason_code=None)
+    raw["symbol_results"]["A"].update(status="PARTIAL", outcome="not_reached", error="执行不到位", reason_code=None)
     raw["symbol_results"]["A"]["sizing"].update(current_quantity=0, target_quantity=3)
     raw["symbol_results"]["A"]["orders"][0]["filled_volume"] = 2
     raw["symbol_results"]["B"] = {
         "status": "SUCCEEDED",
+        "outcome": "completed",
         "first_tick": {"last_price": 50},
         "orders": [{"order_id": "sell", "direction": "SELL"}],
         "trades": [{"order_id": "sell", "trade_price": 51, "trade_volume": 1}],

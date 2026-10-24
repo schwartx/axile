@@ -235,9 +235,11 @@ def record(index=1, **kwargs):
         created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1)).isoformat(),
         input={"curr_target": {"A": 1}},
         result={
+            "outcome": None,
             "account_assets": {"total_asset": 100 + index},
             "symbol_results": {
                 "A": {
+                    "outcome": None,
                     "first_tick": {"bid_price": 100 + index, "ask_price": 100 + index},
                     "sizing": {"unit_multiplier": 10},
                     "orders": [{"order_id": "buy", "direction": "BUY"}],
@@ -300,7 +302,6 @@ def _events(records, bindings, skips) -> list[dict]:
     from collections.abc import Mapping
 
     from axile.executor.session_closed import session_closed_scope
-    from tests.unit.server._legacy_result_oracle import normalize_legacy_result
     from tests.unit.server._performance_costs_oracle import timestamp
 
     events = [
@@ -324,7 +325,7 @@ def _events(records, bindings, skips) -> list[dict]:
     for record in records:
         if record.is_success == 1:
             continue
-        raw = normalize_legacy_result(record.result)
+        raw = record.result
         if not isinstance(raw, Mapping):
             raise ValueError("Execution event result must be a mapping")
         status = raw.get("status")

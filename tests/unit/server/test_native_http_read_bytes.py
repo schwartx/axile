@@ -22,7 +22,6 @@ from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from tests.conftest import native_store_call
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 from tests.unit.server._runtime_db_support import runtime_rows
 
 _READS = [
@@ -161,7 +160,22 @@ def test_artifact_projection_and_summary_normalization_match_existing_reader(cli
     expected = [ExecutionArtifactPublic.model_validate(row).model_dump(mode="json") for row in before]
     for item in expected:
         if item["artifact_type"] == "execution_summary":
-            item["content"] = normalize_legacy_result(item["content"])
+            item["content"] = {
+                **summary,
+                "status": "FAILED",
+                "error": "执行失败，具体原因见执行证据",
+                "technical_detail": "RuntimeError: offline",
+                "symbol_results": {
+                    "a": {
+                        "status": "BLOCKED",
+                        "error": "执行受阻，具体原因见执行证据",
+                        "outcome": "blocked",
+                        "reason_code": "COMMON.SESSION.CLOSED",
+                    },
+                    "b": {"status": "PARTIAL", "error": "执行不到位", "outcome": "not_reached", "final_volume": 0},
+                    "c": {"task_status": "TERMINATED", "outcome": "terminated", "error": "执行已终止"},
+                },
+            }
     response = client.get("/account/executions/e1/artifacts")
     assert response.status_code == 200, response.text
     assert response.json() == {"data": expected, "count": len(before)}

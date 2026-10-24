@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
+from axile.server.asset_observations import is_asset_observation
 from axile.server.db.models.performance import PerformanceSettings, RangeKey
 from axile.server.performance import local_time
 from axile.server.performance_analysis import ENGINE_VERSION
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_day
-from tests.unit.server._asset_observation_oracle import is_asset_observation
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -164,7 +164,7 @@ def observation(
     result = _mapping(record.result)
     assets = _mapping(result.get("account_assets"))
     asset = _number(assets.get("total_asset"))
-    if not is_asset_observation(assets, result):
+    if not is_asset_observation(assets):
         asset = None
     target_weight = _target(_mapping(record.input).get("curr_target"))
     if target_weight is None:

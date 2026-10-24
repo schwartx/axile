@@ -27,9 +27,13 @@ def _history():
     projected, costs = _rich_projection()
     failed = record(3)
     failed.is_success = 0
-    failed.result.update(status="FAILED", error="拒绝", symbol_results={"C": {"status": "REJECTED"}})
+    failed.result.update(
+        status="FAILED", outcome="error", error="拒绝", symbol_results={"C": {"status": "REJECTED", "outcome": None}}
+    )
     noop = record(4)
-    noop.result.update(status="NOOP", symbol_results={"D": {"status": "NOOP"}})
+    noop.result.update(
+        status="NOOP", outcome="completed", symbol_results={"D": {"status": "NOOP", "outcome": "completed"}}
+    )
     extra, extra_costs = _project_rows([record(2, account_assets={"total_asset": 102, "positions": []}), failed, noop])
     projected.extend(extra)
     costs.extend(extra_costs)
@@ -292,26 +296,8 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
 
     from axile.server._native import _core
     from axile.server.api.routes import account_performance as routes
-    from tests.unit.server._legacy_result_oracle import normalize_legacy_result
 
     database = tmp_path / "native-costs.db"
-
-    def display(page):
-        for item in page["data"]:
-            record = item.get("record")
-            if not isinstance(record, dict):
-                continue
-            raw = normalize_legacy_result(record["raw_result"])
-            raw.pop("technical_detail", None)
-            for result in raw.get("symbol_results", {}).values():
-                result.pop("memory", None)
-                result.pop("technical_detail", None)
-            record["raw_result"] = raw
-            for attempt in item.get("attempts", []):
-                attempt["reason"] = str(raw.get("symbol_results", {}).get(attempt["symbol"], {}).get("error") or "")[
-                    :200
-                ]
-        return page
 
     async def check():
         async with _database(database) as (_, sessions, _, _, _):
@@ -338,7 +324,7 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
             )
             assert isinstance(content, bytes)
             async with sessions() as session:
-                expected = display(await read_costs(session, 2, query))
+                expected = await read_costs(session, 2, query)
             assert json.loads(content) == expected
             monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(database)))
             monkeypatch.setattr(routes, "_get_account_or_404", AsyncMock())
@@ -353,7 +339,7 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
                 if expected["next_cursor"] is not None:
                     next_query = query.model_copy(update={"cursor": expected["next_cursor"]})
                     async with sessions() as session:
-                        next_expected = display(await read_costs(session, 2, next_query))
+                        next_expected = await read_costs(session, 2, next_query)
                     response = await client.get("/performance/2/costs", params=next_query.model_dump(exclude_none=True))
                     assert response.status_code == 200, response.text
                     assert response.json() == next_expected
