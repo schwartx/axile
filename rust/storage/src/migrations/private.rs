@@ -204,7 +204,7 @@ fn store_changes(
                 change.after_present,
                 change.after.to_string(),
                 change.rule,
-                Value::Object(identity.clone()).to_string()
+                Value::Object(identity.clone()).to_string(),
             ])
             .map_err(sql)?;
     }
@@ -262,14 +262,8 @@ fn write_result(
     let document = document
         .as_object()
         .ok_or_else(|| invalid("invalid migration result document"))?;
-    let batch =
+    let extension =
         result_extensions::encode_extensions(record_id, document).map_err(AnalysisError::from)?;
-    let extension = batch
-        .statements()
-        .iter()
-        .find(|(table, _)| *table == "execution_extension")
-        .and_then(|(_, rows)| rows.first())
-        .ok_or_else(|| invalid("migration result extension missing"))?;
     let changed = connection
         .execute(
             "UPDATE execution_extension SET audit_evidence=?1,reconciliation=?2 WHERE record_id=?3",
@@ -299,13 +293,10 @@ fn write_result(
     if changed_symbols.is_empty() {
         return Ok(());
     }
-    let batch = result_symbols::encode_symbols(record_id, &Value::Object(document.clone()))?;
-    for (_, symbols) in batch
-        .statements()
-        .iter()
-        .filter(|(table, _)| *table == "execution_symbol_result")
+    let (_, symbols, _, _, _, _) =
+        result_symbols::encode_symbols(record_id, &Value::Object(document.clone()))?;
     {
-        for symbol in symbols {
+        for symbol in &symbols {
             if !text(symbol, "map_key").is_some_and(|key| changed_symbols.contains(key)) {
                 continue;
             }

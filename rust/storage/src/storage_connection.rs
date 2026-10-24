@@ -255,7 +255,7 @@ fn database_path(database: &Path) -> Result<PathBuf, AnalysisError> {
                 .map(|name| parent.join(name))
                 .ok_or(error)
         })
-        .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))
+        .map_err(|error| AnalysisError::caused_by("DATABASE_OPEN", error))
 }
 
 impl Registry {
@@ -279,7 +279,7 @@ pub(crate) fn migration_guard(database: &Path) -> Result<MigrationGuard, Analysi
 }
 
 fn config(error: rusqlite::Error) -> AnalysisError {
-    AnalysisError::new("DATABASE_CONFIG", error.to_string())
+    AnalysisError::caused_by("DATABASE_CONFIG", error)
 }
 
 fn open(database: &Path, flags: OpenFlags) -> Result<Connection, AnalysisError> {
@@ -291,7 +291,7 @@ fn open(database: &Path, flags: OpenFlags) -> Result<Connection, AnalysisError> 
     }
     // 不传 CREATE，路径错误不能悄悄生成空业务库。
     let connection = Connection::open_with_flags(database, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
+        .map_err(|error| AnalysisError::caused_by("DATABASE_OPEN", error))?;
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(config)?;
@@ -347,7 +347,7 @@ impl Registry {
             Ok(identity) => identity,
             Err(error) => {
                 registry.lock()?.invalidate(&database);
-                return Err(AnalysisError::new("DATABASE_OPEN", error.to_string()));
+                return Err(AnalysisError::caused_by("DATABASE_OPEN", error));
             }
         };
         let mut state = registry.lock()?;

@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
@@ -31,7 +31,7 @@ pub(crate) fn facts_error(message: impl Into<String>) -> AnalysisError {
 }
 
 pub(crate) fn sql(error: rusqlite::Error) -> AnalysisError {
-    AnalysisError::new("BUSINESS_FACTS_SQL", error.to_string())
+    AnalysisError::caused_by("BUSINESS_FACTS_SQL", error)
 }
 
 /// 事实替换保留关闭外键约束的既有策略，清理由数据库触发器执行。
@@ -129,7 +129,7 @@ pub fn freeze_execution_after_assets(path: &str, request: &Value) -> Result<Valu
             return Ok(json!({"input_id": input_id, "asset_id": existing}));
         }
         let batch = encode_input_after_assets(&input_id, payload).map_err(facts_error)?;
-        insert_batch(&connection, &batch)?;
+        crate::asset_ops::write_observation(&connection, batch.as_ref())?;
         Ok(json!({"input_id": input_id, "asset_id": asset_id}))
     })
 }
@@ -171,7 +171,7 @@ pub(crate) fn persist_input(
     )
     .map_err(facts_error)?;
     // 写锁内已检查执行标识;唯一约束兜底失败时整个事务回滚。
-    insert_batch(connection, &batch)?;
+    write_input(connection, &batch)?;
     Ok(input_id.to_owned())
 }
 
@@ -224,7 +224,7 @@ fn persist_owned_variant(
         Some(owner_execution_id),
     )
     .map_err(facts_error)?;
-    insert_batch(connection, &batch)?;
+    write_input(connection, &batch)?;
     Ok(input_id.to_owned())
 }
 
@@ -308,7 +308,7 @@ fn persist_before_assets(
     if existing == 0 {
         let batch = encode_input_assets(input_id, &json!({"account_assets": before_assets}))
             .map_err(facts_error)?;
-        insert_batch(connection, &batch)?;
+        crate::asset_ops::write_observation(connection, batch.as_ref())?;
     }
     Ok(())
 }
@@ -358,36 +358,112 @@ pub(crate) fn matching_after_asset(
     Err(facts_error("终态结果与已持久化执行后资产观测不一致"))
 }
 
-/// 按声明列类型把编码行写入事实表,每条语句分批至多 100 行。
-pub(crate) fn insert_batch(
+/// 使用调用方事务直接写入冻结输入及其目标、名单和计划。
+pub(crate) fn write_input(
     connection: &Connection,
-    batch: &encode::FactBatch,
+    (head, targets, symbols, plans): &encode::InputRows,
 ) -> Result<(), AnalysisError> {
-    for (table, rows) in batch.statements() {
-        if rows.is_empty() {
-            continue;
-        }
-        let columns: Vec<&str> = rows[0].keys().map(String::as_str).collect();
-        let names = columns
-            .iter()
-            .map(|name| format!("\"{name}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        let parameters = vec!["?"; columns.len()].join(",");
-        let query = format!("INSERT INTO {table} ({names}) VALUES ({parameters})");
-        let mut statement = connection.prepare_cached(&query).map_err(sql)?;
-        for chunk in rows.chunks(100) {
-            for row in chunk {
-                let values: Vec<SqlValue> = columns
-                    .iter()
-                    .map(|name| encode::sql_column_value(table, name, row[*name].clone()))
-                    .collect::<Result<_, _>>()
-                    .map_err(facts_error)?;
-                statement
-                    .execute(rusqlite::params_from_iter(values.iter()))
-                    .map_err(sql)?;
-            }
-        }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_input (
+                "id", "account_id", "execution_id", "owner_execution_id", "created_at", "root_kind",
+                "root_value", "channel_type", "execution_timeout", "algorithm", "symbol_algorithms", "trade_rules",
+                "futures_close_policy", "feishu_key", "feishu_account", "extra", "long_leverage", "short_leverage",
+                "weight_precision", "curr_target_state", "last_target_state", "strategy_target_state", "forbidden_symbols_state", "risk_symbols_state",
+                "sizing_context_state", "quantities_state", "target_units_state", "curr_target_count", "last_target_count", "strategy_target_count",
+                "quantities_count", "target_units_count", "forbidden_symbols_count", "risk_symbols_count", "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32, ?33, ?34, ?35
+            )"#).map_err(sql)?;
+    statement
+        .execute(rusqlite::params![
+            head.get("id").and_then(Value::as_str),
+            head.get("account_id").and_then(Value::as_i64),
+            head.get("execution_id").and_then(Value::as_str),
+            head.get("owner_execution_id").and_then(Value::as_str),
+            head.get("created_at").and_then(Value::as_str),
+            head.get("root_kind").and_then(Value::as_str),
+            encode::json_text(head.get("root_value"))?,
+            head.get("channel_type").and_then(Value::as_str),
+            head.get("execution_timeout").and_then(Value::as_i64),
+            encode::json_text(head.get("algorithm"))?,
+            encode::json_text(head.get("symbol_algorithms"))?,
+            encode::json_text(head.get("trade_rules"))?,
+            encode::json_text(head.get("futures_close_policy"))?,
+            encode::json_text(head.get("feishu_key"))?,
+            encode::json_text(head.get("feishu_account"))?,
+            encode::json_text(head.get("extra"))?,
+            head.get("long_leverage").and_then(Value::as_f64),
+            head.get("short_leverage").and_then(Value::as_f64),
+            head.get("weight_precision").and_then(Value::as_f64),
+            head.get("curr_target_state").and_then(Value::as_str),
+            head.get("last_target_state").and_then(Value::as_str),
+            head.get("strategy_target_state").and_then(Value::as_str),
+            head.get("forbidden_symbols_state").and_then(Value::as_str),
+            head.get("risk_symbols_state").and_then(Value::as_str),
+            head.get("sizing_context_state").and_then(Value::as_str),
+            head.get("quantities_state").and_then(Value::as_str),
+            head.get("target_units_state").and_then(Value::as_str),
+            head.get("curr_target_count").and_then(Value::as_i64),
+            head.get("last_target_count").and_then(Value::as_i64),
+            head.get("strategy_target_count").and_then(Value::as_i64),
+            head.get("quantities_count").and_then(Value::as_i64),
+            head.get("target_units_count").and_then(Value::as_i64),
+            head.get("forbidden_symbols_count").and_then(Value::as_i64),
+            head.get("risk_symbols_count").and_then(Value::as_i64),
+            encode::json_text(head.get("audit_evidence"))?,
+        ])
+        .map_err(sql)?;
+    let mut statement = connection.prepare_cached("INSERT INTO execution_input_target (\"input_id\",\"role\",\"map_key\",\"value\",\"audit_evidence\") VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
+    for row in targets {
+        statement
+            .execute(rusqlite::params![
+                row.get("input_id").and_then(Value::as_str),
+                row.get("role").and_then(Value::as_str),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("value").and_then(Value::as_f64),
+                encode::json_text(row.get("audit_evidence"))?
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached("INSERT INTO execution_input_symbol (\"input_id\",\"role\",\"ordinal\",\"value\",\"audit_evidence\") VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
+    for row in symbols {
+        statement
+            .execute(rusqlite::params![
+                row.get("input_id").and_then(Value::as_str),
+                row.get("role").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("value").and_then(Value::as_str),
+                encode::json_text(row.get("audit_evidence"))?
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_input_plan (
+                "input_id", "symbol", "quantity", "units", "quantity_state", "units_state",
+                "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in plans {
+        statement
+            .execute(rusqlite::params![
+                row.get("input_id").and_then(Value::as_str),
+                row.get("symbol").and_then(Value::as_str),
+                row.get("quantity").and_then(Value::as_f64),
+                row.get("units").and_then(Value::as_f64),
+                row.get("quantity_state").and_then(Value::as_str),
+                row.get("units_state").and_then(Value::as_str),
+                encode::json_text(row.get("audit_evidence"))?,
+            ])
+            .map_err(sql)?;
     }
     Ok(())
 }
@@ -447,7 +523,7 @@ mod tests {
             "quantities": {"A": 3}, "unknown_field": {"deep": [1, 2]},
         });
         let batch = encode_inputs("i1", &payload, 7, Some("e1"), "t", None).unwrap();
-        insert_batch(&connection, &batch).unwrap();
+        write_input(&connection, &batch).unwrap();
         let stored = load_input_value(&connection, "i1").unwrap();
         assert_eq!(stored["curr_target"], json!({"A": 0.6, "B": 0.4}));
         assert_eq!(stored["forbidden_symbols"], json!(["C"]));
@@ -479,7 +555,7 @@ mod tests {
         {
             let input_id = format!("root-{index}");
             let batch = encode_inputs(&input_id, payload, 7, None, "t", None).unwrap();
-            insert_batch(&connection, &batch).unwrap();
+            write_input(&connection, &batch).unwrap();
             assert_eq!(load_input_value(&connection, &input_id).unwrap(), *payload);
             assert!(replay_matches(&connection, &input_id, payload).unwrap());
         }
@@ -490,7 +566,7 @@ mod tests {
         let payload = json!({"account_config": {"secret": 1}, "feishu_key": "live-key",
             "execution_notification_code": "code", "algorithm": "x"});
         let batch = encode_inputs("i1", &payload, 7, Some("e1"), "t", None).unwrap();
-        let head = &batch.statements()[0].1[0];
+        let head = &batch.0;
         assert_eq!(head["feishu_key"], json!("***"));
         assert_eq!(head["algorithm"], json!("x"));
         let decoded = load_input_value_on(&batch);
@@ -498,12 +574,8 @@ mod tests {
         assert_eq!(decoded["feishu_key"], json!("***"));
     }
 
-    fn load_input_value_on(batch: &encode::FactBatch) -> Value {
-        let head = batch.statements()[0].1[0].clone();
-        let targets = batch.statements()[1].1.clone();
-        let symbols = batch.statements()[2].1.clone();
-        let plans = batch.statements()[3].1.clone();
-        crate::business_detail::decode_input(&head, &targets, &symbols, &plans).unwrap()
+    fn load_input_value_on((head, targets, symbols, plans): &encode::InputRows) -> Value {
+        crate::business_detail::decode_input(head, targets, symbols, plans).unwrap()
     }
 
     #[test]
@@ -526,11 +598,11 @@ mod tests {
         let connection = schema();
         let payload = json!({"algorithm": "x"});
         let batch = encode_inputs("i1", &payload, 7, Some("e1"), "t", None).unwrap();
-        insert_batch(&connection, &batch).unwrap();
+        write_input(&connection, &batch).unwrap();
         let after = json!({"account_assets": {"total_asset": 100.0, "positions": [
             {"symbol": "A", "volume": 2}]}});
-        let batch = encode_input_after_assets("i1", after.as_object().unwrap()).unwrap();
-        insert_batch(&connection, &batch).unwrap();
+        let observation = encode_input_after_assets("i1", after.as_object().unwrap()).unwrap();
+        crate::asset_ops::write_observation(&connection, observation.as_ref()).unwrap();
         let same = matching_after_asset(&connection, "i1", after.as_object().unwrap()).unwrap();
         assert_eq!(same.as_deref(), Some("input:i1:/after_account_assets"));
         let changed = json!({"account_assets": {"total_asset": 101.0, "positions": [

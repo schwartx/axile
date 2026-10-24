@@ -1,7 +1,6 @@
 //! Frozen position preview: absent/degraded evidence is never flat.
 
 use rusqlite::{Connection, OptionalExtension, Statement};
-use serde_json::{json, Value};
 
 pub(crate) struct PositionReader<'a> {
     root: Statement<'a>,
@@ -16,7 +15,10 @@ impl<'a> PositionReader<'a> {
         })
     }
 
-    pub(crate) fn read(&mut self, record: i64) -> Result<Option<Vec<Vec<Value>>>, String> {
+    pub(crate) fn read(
+        &mut self,
+        record: i64,
+    ) -> Result<Option<Vec<(String, f64, String)>>, String> {
         let root = self
             .root
             .query_row([record], |row| {
@@ -53,19 +55,15 @@ impl<'a> PositionReader<'a> {
             if quantity == 0.0 {
                 continue;
             }
-            output.push(vec![
-                json!(record),
-                json!(output.len()),
-                json!(row
-                    .get::<_, Option<String>>(0)
+            output.push((
+                row.get::<_, Option<String>>(0)
                     .map_err(|error| error.to_string())?
-                    .unwrap_or_default()),
-                json!(quantity),
-                json!(row
-                    .get::<_, Option<String>>(2)
+                    .unwrap_or_default(),
+                quantity,
+                row.get::<_, Option<String>>(2)
                     .map_err(|error| error.to_string())?
-                    .unwrap_or_default()),
-            ]);
+                    .unwrap_or_default(),
+            ));
         }
         if count != Some(seen) {
             return Err(format!(

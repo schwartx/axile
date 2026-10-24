@@ -1,104 +1,33 @@
-//! Execution-sized summaries prepared once from the frozen source facts.
-//!
-//! This module deliberately never reconstructs positions, symbol evidence or
-//! transactions. The result belongs to a snapshot, rather than to a display
-//! range, so changing a chart range cannot multiply the stored summaries.
+//! Compute execution totals and persist fees using the caller's staging transaction.
 
-#[cfg(test)]
-use rusqlite::Connection;
-use serde_json::{json, Value};
+use crate::costs::Summary;
+use crate::error::AnalysisError;
+use crate::publication::{finite, stage_error};
+use rusqlite::{params, Connection};
 
-#[cfg(test)]
-pub(crate) const SUMMARY_COLUMNS: &[&str] = &[
-    "record_id",
-    "time",
-    "value",
-    "cost",
-    "loss_bp",
-    "coverage",
-    "covered",
-    "count",
-    "fee_covered",
-    "amount_complete",
-    "covered_value",
-    "estimated",
-    "symbol_count",
-    "has_transactions",
-];
-pub(crate) const FEE_COLUMNS: &[&str] = &["record_id", "currency", "value", "count"];
-
-#[cfg(test)]
-fn sql_error(error: rusqlite::Error) -> String {
-    format!("ANALYSIS_READ_ERROR:{error}")
-}
-
-/// Prepare each execution summary once, independently of chart display ranges.
-/// The emitter assigns the snapshot ID and persists bounded frames internally;
-/// no per-execution details or serialized historical payloads are produced.
-pub(crate) fn values(
+pub(crate) fn write_fees(
+    target: &Connection,
     id: i64,
     fills: &[crate::fact_trades::Trade],
-    emit: &mut crate::publication::RowEmitter<'_>,
-) -> Result<Vec<Value>, String> {
-    let mut summary = crate::costs::Summary::empty();
-    let mut symbols = std::collections::BTreeSet::new();
+) -> Result<Summary, AnalysisError> {
+    let mut summary = Summary::empty();
     for trade in fills {
         summary.push(trade);
-        if trade.quantity.is_some() {
-            symbols.insert(&trade.symbol);
-        }
     }
-    let values = vec![
-        json!(summary.value),
-        json!(summary.cost),
-        json!(summary.loss_bp()),
-        json!(summary.coverage()),
-        json!(summary.covered),
-        json!(summary.count),
-        json!(summary.fee_count),
-        json!(summary.amount_complete()),
-        json!(summary.covered_value),
-        json!(summary.estimated),
-        json!(!symbols.is_empty()),
-    ];
-    crate::publication::rows(
-        "performance_execution_fee",
-        FEE_COLUMNS,
-        summary.fees.into_iter().map(|(currency, (value, count))| {
-            Ok(vec![json!(id), json!(currency), json!(value), json!(count)])
-        }),
-        emit,
-    )?;
-    Ok(values)
-}
-
-#[cfg(test)]
-fn write(connection:&Connection,account:i64,emit:&mut crate::publication::RowEmitter<'_>)->Result<(),String>{
-    let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
-    let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
-    let mut statement = connection
-        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 ORDER BY id")
-        .map_err(sql_error)?;
-    let mut cursor = statement.query([account]).map_err(sql_error)?;
-    while let Some(row) = cursor.next().map_err(sql_error)? {
-        let id: i64 = row.get(0).map_err(sql_error)?;
-        let created_at: String = row.get(1).map_err(sql_error)?;
-        let prices = ticks.read(id).map_err(sql_error)?;
-        let fills = trades.read(id, &created_at, &prices)?;
-        let values = values(id,&fills,emit)?;
-        let mut row = vec![json!(id),json!(crate::calendar::timestamp_ms(&created_at)?)];
-        row.extend(values[..10].iter().cloned());
-        row.push(json!(fills.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<std::collections::BTreeSet<_>>().len()));
-        row.push(values[10].clone());
-        emit("performance_execution_summary",SUMMARY_COLUMNS,&[row])?;
+    let mut insert = target.prepare_cached(
+        "INSERT INTO native_stage.performance_execution_fee(record_id,currency,value,count) VALUES(?1,?2,?3,?4)"
+    ).map_err(stage_error)?;
+    for (currency, (value, count)) in &summary.fees {
+        insert
+            .execute(params![id, currency, finite(Some(*value)), count])
+            .map_err(stage_error)?;
     }
-    Ok(())
+    Ok(summary)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
     pub(crate) fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
@@ -123,78 +52,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn direct_summaries_preserve_unknown_amounts_fees_and_empty_executions() {
-        let connection = fixture();
-        let mut summaries = Vec::new();
-        let mut fees = Vec::new();
-        write(&connection, 2, &mut |table, _, rows| {
-            if table == "performance_execution_summary" {
-                summaries.extend_from_slice(rows);
-            } else {
-                fees.extend_from_slice(rows);
-            }
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(summaries.len(), 2);
-        assert_eq!(
-            &summaries[0][2..],
-            &[
-                json!(102.0),
-                json!(2.0),
-                json!(200.0),
-                Value::Null,
-                json!(1),
-                json!(2),
-                json!(2),
-                json!(false),
-                json!(102.0),
-                json!(1),
-                json!(1),
-                json!(true)
-            ]
-        );
-        assert_eq!(
-            &summaries[1][2..10],
-            &[
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                json!(0),
-                json!(0),
-                json!(0),
-                json!(true),
-            ]
-        );
-        assert_eq!(summaries[1][10].as_f64(), Some(0.0));
-        assert_eq!(&summaries[1][11..], &[json!(0), json!(0), json!(false)]);
-        assert_eq!(
-            fees,
-            vec![
-                vec![json!(1), json!("CNY"), json!(0.0), json!(1)],
-                vec![json!(1), json!("USD"), json!(-0.2), json!(1)]
-            ]
-        );
-    }
-
-    #[test]
-    fn errors_and_empty_accounts_do_not_emit_phantom_summaries() {
-        let connection = fixture();
-        assert_eq!(
-            write(&connection, 2, &mut |_, _, _| Err("sink failed".into())).unwrap_err(),
-            "sink failed"
-        );
-        write(&connection, 99, &mut |_, _, _| {
-            panic!("empty account emitted rows")
-        })
-        .unwrap();
-        connection
-            .execute("UPDATE executerecord SET created_at='invalid'", [])
+    fn fees_and_unknown_amounts_are_written_without_json_rows() {
+        let source = fixture();
+        let target = Connection::open_in_memory().unwrap();
+        target.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_execution_fee(record_id INTEGER,currency TEXT,value REAL,count INTEGER);").unwrap();
+        let mut ticks = crate::fact_ticks::TickReader::new(&source).unwrap();
+        let mut trades = crate::fact_trades::TradeReader::new(&source).unwrap();
+        let fills = trades
+            .read(1, "2026-01-01T09:00:00", &ticks.read(1).unwrap())
             .unwrap();
-        assert!(write(&connection, 2, &mut |_, _, _| panic!(
-            "invalid timestamp emitted rows"
-        ))
-        .is_err());
+        let summary = write_fees(&target, 1, &fills).unwrap();
+        assert_eq!(summary.value, Some(102.0));
+        assert_eq!(summary.cost, Some(2.0));
+        assert_eq!(summary.loss_bp(), Some(200.0));
+        assert_eq!(summary.coverage(), None);
+        assert_eq!(summary.count, 2);
+        assert_eq!(summary.covered, 1);
+        assert!(!summary.amount_complete());
+        let fees = target.prepare("SELECT currency,value,count FROM native_stage.performance_execution_fee ORDER BY currency").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,f64>(1)?,row.get::<_,i64>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(fees, vec![("CNY".into(), 0.0, 1), ("USD".into(), -0.2, 1)]);
+        let empty = write_fees(&target, 2, &[]).unwrap();
+        assert_eq!(empty.value, None);
+        assert!(empty.amount_complete());
+        target
+            .execute_batch("DROP TABLE native_stage.performance_execution_fee;")
+            .unwrap();
+        let failure = write_fees(&target, 1, &fills).err().unwrap();
+        assert_eq!(failure.code, "PUBLICATION_STAGE");
+        assert!(std::error::Error::source(&failure).is_some());
     }
 }

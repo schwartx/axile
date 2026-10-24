@@ -11,7 +11,7 @@ use super::{
 };
 
 fn sql(error: rusqlite::Error) -> AnalysisError {
-    AnalysisError::new("PUBLICATION_WRITE", error.to_string())
+    AnalysisError::caused_by("PUBLICATION_WRITE", error)
 }
 
 /// Return a previously committed receipt without mutating a newer claim.
@@ -171,7 +171,17 @@ fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<()
          (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,settings,ranges,
           cost_schema_version,result_schema_version,backtest_weight_type,backtest_fee_rate,read_view_schema_version)
          VALUES (?1,?2,?3,?4,?5,?6,?7,'{}','{}',1,2,?8,?9,1)",
-        params![task.snapshot_id,task.account_id,task.source_version,task.logic_version,task.engine_version,task.computed_at,until,task.weight_type,task.fee_rate],
+        params![
+            task.snapshot_id,
+            task.account_id,
+            task.source_version,
+            task.logic_version,
+            task.engine_version,
+            task.computed_at,
+            until,
+            task.weight_type,
+            task.fee_rate,
+        ],
     ).map_err(sql)?;
     Ok(())
 }

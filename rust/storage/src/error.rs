@@ -7,6 +7,8 @@ use serde::Serialize;
 pub struct AnalysisError {
     pub code: String,
     pub error: String,
+    #[serde(skip)]
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl AnalysisError {
@@ -14,10 +16,23 @@ impl AnalysisError {
         Self {
             code: code.into(),
             error: error.into(),
+            source: None,
+        }
+    }
+
+    pub fn caused_by(
+        code: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            error: source.to_string(),
+            source: Some(Box::new(source)),
         }
     }
 }
 
+// Compatibility boundary for readers/codecs that still return legacy messages.
 impl From<String> for AnalysisError {
     fn from(error: String) -> Self {
         let code = error
@@ -30,7 +45,7 @@ impl From<String> for AnalysisError {
             })
             .unwrap_or("ANALYSIS_ERROR")
             .to_owned();
-        Self { code, error }
+        Self::new(code, error)
     }
 }
 
@@ -40,7 +55,11 @@ impl fmt::Display for AnalysisError {
     }
 }
 
-impl std::error::Error for AnalysisError {}
+impl std::error::Error for AnalysisError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|source| source as _)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -57,5 +76,31 @@ mod tests {
     fn does_not_treat_database_error_prose_as_a_public_code() {
         let error = AnalysisError::from("no such table: execution".to_owned());
         assert_eq!(error.code, "ANALYSIS_ERROR");
+    }
+
+    #[test]
+    fn native_failure_preserves_source_and_public_envelope() {
+        use std::error::Error;
+
+        let source = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "write denied");
+        let failure = AnalysisError::caused_by("PUBLICATION_WRITE", source);
+        assert_eq!(failure.code, "PUBLICATION_WRITE");
+        assert_eq!(failure.to_string(), "write denied");
+        assert_eq!(
+            failure
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            serde_json::to_value(&failure).unwrap(),
+            serde_json::json!({"code":"PUBLICATION_WRITE","error":"write denied"})
+        );
+        assert!(AnalysisError::new("BUSINESS_FACTS", "invalid input")
+            .source()
+            .is_none());
     }
 }

@@ -1,33 +1,11 @@
 //! Final symbol/side transaction rows derived from this execution's fills.
 
+use crate::error::AnalysisError;
 use crate::fact_trades::Trade;
+use crate::publication::{finite, sql_error, stage_error};
+use rusqlite::params;
 use rusqlite::{Connection, Statement};
-use serde_json::json;
 use std::collections::BTreeMap;
-
-const COLUMNS: &[&str] = &[
-    "record_id",
-    "idx",
-    "symbol",
-    "side",
-    "quantity",
-    "price",
-    "reference",
-    "reference_source",
-    "time",
-    "end_time",
-    "time_estimated",
-    "before",
-    "target",
-    "value",
-    "cost",
-    "loss_bp",
-    "coverage",
-    "covered",
-    "count",
-    "amount_complete",
-    "fee_covered",
-];
 
 pub(crate) struct TransactionReader<'a> {
     sizing: Statement<'a>,
@@ -38,20 +16,20 @@ impl<'a> TransactionReader<'a> {
         Ok(Self { sizing: connection.prepare("SELECT s.map_key,z.current_quantity,z.target_quantity FROM execution_symbol_result s LEFT JOIN execution_symbol_sizing z ON z.record_id=s.record_id AND z.path=s.path || '/sizing' WHERE s.record_id=?1 ORDER BY s.ordinal")? })
     }
 
-    pub(crate) fn emit(
+    pub(crate) fn write(
         &mut self,
         record: i64,
         fills: &[Trade],
-        emit: &mut crate::publication::RowEmitter<'_>,
-    ) -> Result<(), String> {
+        target: &Connection,
+    ) -> Result<(), AnalysisError> {
         let sizing: BTreeMap<String, (Option<f64>, Option<f64>)> = self
             .sizing
             .query_map([record], |row| {
                 Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
             })
-            .map_err(|error| error.to_string())?
+            .map_err(sql_error)?
             .collect::<Result<_, _>>()
-            .map_err(|error| error.to_string())?;
+            .map_err(sql_error)?;
         let mut groups: Vec<(&str, &str, Vec<&Trade>)> = Vec::new();
         for trade in fills.iter().filter(|trade| trade.quantity.is_some()) {
             if let Some(group) = groups
@@ -89,48 +67,54 @@ impl<'a> TransactionReader<'a> {
             for trade in &trades {
                 summary.push(trade);
             }
-            let (before, target) = sizing.get(symbol).copied().unwrap_or_default();
-            crate::publication::rows(
-                "performance_cost_transaction",
-                COLUMNS,
-                [Ok(vec![
-                    json!(record),
-                    json!(index),
-                    json!(symbol),
-                    json!(side),
-                    json!(quantity),
-                    json!(price),
-                    json!(reference),
-                    json!(trades[0].reference_source),
-                    json!(time),
-                    json!(end),
-                    json!(trades.iter().any(|trade| trade.estimated)),
-                    json!(before),
-                    json!(target),
-                    json!(summary.value),
-                    json!(summary.cost),
-                    json!(summary.loss_bp()),
-                    json!(summary.coverage()),
-                    json!(summary.covered),
-                    json!(summary.count),
-                    json!(summary.amount_complete()),
-                    json!(summary.fee_count),
-                ])],
-                emit,
-            )?;
-            crate::publication::rows(
-                "performance_cost_transaction_fee",
-                &["record_id", "transaction_idx", "currency", "value"],
-                summary.fees.into_iter().map(|(currency, (value, _))| {
-                    Ok(vec![
-                        json!(record),
-                        json!(index),
-                        json!(currency),
-                        json!(value),
-                    ])
-                }),
-                emit,
-            )?;
+            let (before, target_quantity) = sizing.get(symbol).copied().unwrap_or_default();
+            target
+                .prepare_cached(
+                    r#"INSERT INTO native_stage.performance_cost_transaction (
+                record_id, idx, symbol, side, quantity, price,
+                reference, reference_source, time, end_time, time_estimated, before,
+                target, value, cost, loss_bp, coverage, covered,
+                count, amount_complete, fee_covered
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21
+            )"#,
+                )
+                .map_err(stage_error)?
+                .execute(params![
+                    record,
+                    index,
+                    symbol,
+                    side,
+                    finite(Some(quantity)),
+                    finite(price),
+                    finite(reference),
+                    trades[0].reference_source,
+                    time,
+                    end,
+                    trades.iter().any(|trade| trade.estimated),
+                    finite(before),
+                    finite(target_quantity),
+                    finite(summary.value),
+                    finite(summary.cost),
+                    finite(summary.loss_bp()),
+                    finite(summary.coverage()),
+                    summary.covered,
+                    summary.count,
+                    summary.amount_complete(),
+                    summary.fee_count,
+                ])
+                .map_err(stage_error)?;
+            let mut insert = target.prepare_cached(
+                "INSERT INTO native_stage.performance_cost_transaction_fee(record_id,transaction_idx,currency,value) VALUES(?1,?2,?3,?4)"
+            ).map_err(stage_error)?;
+            for (currency, (value, _)) in summary.fees {
+                insert
+                    .execute(params![record, index, currency, finite(Some(value))])
+                    .map_err(stage_error)?;
+            }
         }
         Ok(())
     }
@@ -139,6 +123,7 @@ impl<'a> TransactionReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     #[test]
     fn grouping_preserves_encounter_order_and_unknown_amounts() {
         let connection = Connection::open_in_memory().unwrap();
@@ -164,16 +149,12 @@ mod tests {
             trade("buy", Some(101.0)),
             trade("sell", None),
         ];
-        let mut rows = Vec::new();
+        connection.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_cost_transaction(\"record_id\" INTEGER,\"idx\" INTEGER,\"symbol\" TEXT,\"side\" TEXT,\"quantity\" FLOAT,\"price\" FLOAT,\"reference\" FLOAT,\"reference_source\" TEXT,\"time\" FLOAT,\"end_time\" FLOAT,\"time_estimated\" BOOLEAN,\"before\" FLOAT,\"target\" FLOAT,\"value\" FLOAT,\"cost\" FLOAT,\"loss_bp\" FLOAT,\"coverage\" FLOAT,\"covered\" INTEGER,\"count\" INTEGER,\"amount_complete\" BOOLEAN,\"fee_covered\" INTEGER);CREATE TABLE native_stage.performance_cost_transaction_fee(\"record_id\" INTEGER,\"transaction_idx\" INTEGER,\"currency\" TEXT,\"value\" FLOAT);").unwrap();
         TransactionReader::new(&connection)
             .unwrap()
-            .emit(1, &fills, &mut |table, _, items| {
-                if table == "performance_cost_transaction" {
-                    rows.extend_from_slice(items);
-                }
-                Ok(())
-            })
+            .write(1, &fills, &connection)
             .unwrap();
+        let rows: Vec<Value> = connection.prepare("SELECT json_array(\"record_id\",\"idx\",\"symbol\",\"side\",\"quantity\",\"price\",\"reference\",\"reference_source\",\"time\",\"end_time\",json(CASE WHEN \"time_estimated\" THEN 'true' ELSE 'false' END),\"before\",\"target\",\"value\",\"cost\",\"loss_bp\",\"coverage\",\"covered\",\"count\",json(CASE WHEN \"amount_complete\" THEN 'true' ELSE 'false' END),\"fee_covered\") FROM native_stage.performance_cost_transaction ORDER BY idx").unwrap().query_map([],|row| Ok(serde_json::from_str(&row.get::<_,String>(0)?).unwrap())).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][3], "sell");
         assert_eq!(rows[1][3], "buy");

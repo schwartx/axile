@@ -3,7 +3,8 @@
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use super::encode::{audit_value, store_columns, FactBatch};
+use super::encode::{audit_value, store_columns};
+use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const FIELDS: &[(&str, &str)] = &[
@@ -38,21 +39,19 @@ const DOMAINS: &[&str] = &[
 pub(crate) fn encode_extensions(
     record_id: i64,
     payload: &Map<String, Value>,
-) -> Result<FactBatch, String> {
+) -> Result<Map<String, Value>, String> {
     let (mut row, evidence) = store_columns(payload, FIELDS, DOMAINS)?;
     row.insert("record_id".into(), json!(record_id));
     row.insert("root_kind".into(), json!("object"));
     row.insert("root_value".into(), Value::Null);
     row.insert("audit_evidence".into(), Value::Object(evidence));
-    let mut batch = FactBatch::new();
-    batch.push("execution_extension", vec![row]);
-    Ok(batch)
+    Ok(row)
 }
 
 pub(crate) fn encode_result_root_state(
     record_id: i64,
     payload: &Value,
-) -> Result<FactBatch, String> {
+) -> Result<Map<String, Value>, String> {
     let kind =
         match payload {
             Value::Object(map) => return encode_extensions(record_id, map),
@@ -72,7 +71,7 @@ pub(crate) fn encode_result_root_value(
     record_id: i64,
     kind: &str,
     payload: &Value,
-) -> Result<FactBatch, String> {
+) -> Result<Map<String, Value>, String> {
     let valid = match kind {
         "object" => {
             return payload
@@ -104,9 +103,7 @@ pub(crate) fn encode_result_root_value(
         ("audit_evidence".into(), json!({})),
         ("root_value".into(), audit_value(payload)),
     ]);
-    let mut batch = FactBatch::new();
-    batch.push("execution_extension", vec![row]);
-    Ok(batch)
+    Ok(row)
 }
 
 pub(crate) fn write_result_extensions(
@@ -114,8 +111,37 @@ pub(crate) fn write_result_extensions(
     record_id: i64,
     payload: &Value,
 ) -> Result<(), AnalysisError> {
-    let batch = encode_result_root_state(record_id, payload).map_err(super::facts_error)?;
-    super::insert_batch(connection, &batch)
+    let row = encode_result_root_state(record_id, payload).map_err(super::facts_error)?;
+    insert_extension(connection, &row)
+}
+
+pub(crate) fn insert_extension(
+    connection: &Connection,
+    row: &Map<String, Value>,
+) -> Result<(), AnalysisError> {
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_extension (
+                "record_id", "memory", "extra", "reconciliation", "root_kind", "root_value",
+                "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7
+            )"#,
+        )
+        .map_err(sql)?;
+    statement
+        .execute(rusqlite::params![
+            row.get("record_id").and_then(Value::as_i64),
+            encode::json_text(row.get("memory"))?,
+            encode::json_text(row.get("extra"))?,
+            encode::json_text(row.get("reconciliation"))?,
+            row.get("root_kind").and_then(Value::as_str),
+            encode::json_text(row.get("root_value"))?,
+            encode::json_text(row.get("audit_evidence"))?,
+        ])
+        .map_err(sql)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -136,7 +162,7 @@ mod tests {
             .clone(),
         );
         let batch = encode_extensions(3, &payload).unwrap();
-        let row = &batch.statements()[0].1[0];
+        let row = &batch;
         assert_eq!(row["root_kind"], "object");
         assert_eq!(row["memory"], payload["memory"]);
         assert_eq!(
@@ -158,7 +184,7 @@ mod tests {
             (json!(""), "scalar"),
         ] {
             let batch = encode_result_root_state(4, &value).unwrap();
-            let row = &batch.statements()[0].1[0];
+            let row = &batch;
             assert_eq!(row["root_kind"], kind);
             assert_eq!(row["root_value"], value);
         }
@@ -169,10 +195,10 @@ mod tests {
     fn explicit_historical_scalar_state_keeps_nonfinite_evidence_distinct_from_object() {
         let value = json!({"invalid_number":"nan"});
         let scalar = encode_result_root_value(4, "scalar", &value).unwrap();
-        assert_eq!(scalar.statements()[0].1[0]["root_kind"], "scalar");
-        assert_eq!(scalar.statements()[0].1[0]["root_value"], value);
+        assert_eq!(scalar["root_kind"], "scalar");
+        assert_eq!(scalar["root_value"], value);
         let object = encode_result_root_state(4, &value).unwrap();
-        assert_eq!(object.statements()[0].1[0]["root_kind"], "object");
+        assert_eq!(object["root_kind"], "object");
         assert!(encode_result_root_value(4, "scalar", &json!({})).is_err());
     }
 }

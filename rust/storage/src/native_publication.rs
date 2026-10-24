@@ -4,14 +4,14 @@
 
 pub(crate) mod copy;
 mod staging;
-mod task;
+pub(crate) mod task;
 mod writer;
 
 use std::path::Path;
 
-use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
+use serde_json::Value;
 
 use crate::error::AnalysisError;
 use crate::{publication, with_read_snapshot, writer_scope};
@@ -26,17 +26,12 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
     if let Some(receipt) = writer::already_published(&connection, &task)? {
         return Ok(receipt);
     }
-    let mut staged = Staging::new(&connection)?;
+    let staged = Staging::new(&connection)?;
     let result = with_read_snapshot(database, |source| {
         if let Some(reason) = writer::stale_reason(source, &task)? {
             return Ok(Err(reason));
         }
-        let complete = publication::write(source, request, &mut |table, columns, rows| {
-            staged
-                .insert_rows(table, columns, rows)
-                .map_err(|error| format!("{}:{}", error.code, error.error))
-        })
-        .map_err(AnalysisError::from)?;
+        let complete = publication::write(source, &connection, &task)?;
         Ok(Ok(complete))
     })?;
     let complete = match result {
@@ -46,7 +41,7 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
             // main's writer slot so no old main reader is upgraded into a writer.
             connection
                 .execute_batch("ROLLBACK;")
-                .map_err(|error| AnalysisError::new("PUBLICATION_STAGE", error.to_string()))?;
+                .map_err(|error| AnalysisError::caused_by("PUBLICATION_STAGE", error))?;
             return writer::skip(&connection, &task, reason);
         }
     };

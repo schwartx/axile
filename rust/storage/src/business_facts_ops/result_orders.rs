@@ -3,8 +3,9 @@
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use super::encode::{audit_value, join_pointer, store_columns, FactBatch};
-use super::{facts_error, insert_batch};
+use super::encode::{audit_value, join_pointer, store_columns, Rows};
+use super::facts_error;
+use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const ORDER_FIELDS: &[(&str, &str)] = &[
@@ -131,7 +132,7 @@ fn append_collection(
 pub(crate) fn encode_orders(
     record_id: i64,
     payload: &Map<String, Value>,
-) -> Result<FactBatch, String> {
+) -> Result<(Rows, Rows), String> {
     let mut collections = Vec::new();
     let mut orders = Vec::new();
     append_collection(
@@ -158,10 +159,7 @@ pub(crate) fn encode_orders(
             }
         }
     }
-    let mut batch = FactBatch::new();
-    batch.push("execution_order_collection", collections);
-    batch.push("execution_order", orders);
-    Ok(batch)
+    Ok((collections, orders))
 }
 
 /// 只使用调用方连接，不开启或提交事务。
@@ -170,10 +168,82 @@ pub(crate) fn insert_orders(
     record_id: i64,
     payload: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
-    insert_batch(
-        connection,
-        &encode_orders(record_id, payload).map_err(facts_error)?,
-    )
+    let (collections, orders) = encode_orders(record_id, payload).map_err(facts_error)?;
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_order_collection (
+                "record_id", "path", "ordinal", "map_key", "kind", "invalid_value",
+                "item_count", "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &collections {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                row.get("item_count").and_then(Value::as_i64),
+                encode::json_text(row.get("audit_evidence"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_order (
+                "record_id", "path", "ordinal", "map_key", "kind", "invalid_value",
+                "order_id", "symbol", "direction", "order_type", "volume", "price",
+                "status", "filled_volume", "avg_price", "create_time", "update_time", "update_timestamp",
+                "remaining_volume", "filled_ratio", "extra", "audit_evidence", "order_id_state", "conversion_kind",
+                "conversion_invalid_value", "conversion_price_currency", "conversion_value_currency", "conversion_rate", "conversion_reference", "conversion_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30
+            )"#).map_err(sql)?;
+    for row in &orders {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("order_id"))?,
+                row.get("symbol").and_then(Value::as_str),
+                row.get("direction").and_then(Value::as_str),
+                row.get("order_type").and_then(Value::as_str),
+                row.get("volume").and_then(Value::as_f64),
+                row.get("price").and_then(Value::as_f64),
+                row.get("status").and_then(Value::as_str),
+                row.get("filled_volume").and_then(Value::as_f64),
+                row.get("avg_price").and_then(Value::as_f64),
+                row.get("create_time").and_then(Value::as_str),
+                row.get("update_time").and_then(Value::as_str),
+                row.get("update_timestamp").and_then(Value::as_f64),
+                row.get("remaining_volume").and_then(Value::as_f64),
+                row.get("filled_ratio").and_then(Value::as_f64),
+                encode::json_text(row.get("extra"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("order_id_state").and_then(Value::as_str),
+                row.get("conversion_kind").and_then(Value::as_str),
+                encode::json_text(row.get("conversion_invalid_value"))?,
+                row.get("conversion_price_currency").and_then(Value::as_str),
+                row.get("conversion_value_currency").and_then(Value::as_str),
+                row.get("conversion_rate").and_then(Value::as_f64),
+                encode::json_text(row.get("conversion_reference"))?,
+                encode::json_text(row.get("conversion_evidence"))?,
+            ])
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -193,8 +263,11 @@ mod tests {
         let frozen = frozen_fixture();
         let payload = frozen["payload"].as_object().unwrap();
         let batch = encode_orders(19, payload).unwrap();
-        for (table, rows) in batch.statements() {
-            assert_eq!(json!(rows), frozen["orders"][*table], "{table}");
+        for (table, rows) in [
+            ("execution_order_collection", &batch.0),
+            ("execution_order", &batch.1),
+        ] {
+            assert_eq!(json!(rows), frozen["orders"][table], "{table}");
         }
         assert_eq!(Value::Object(payload.clone()), frozen["payload"]);
     }
@@ -292,6 +365,6 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(batch.statements().iter().all(|(_, rows)| rows.is_empty()));
+        assert!(batch.0.is_empty() && batch.1.is_empty());
     }
 }

@@ -1,163 +1,44 @@
-//! Bounded publication rows for native persistence.
-//!
-//! Rust keeps historical facts inside its read snapshot. Only scalar result
-//! rows are emitted to an in-process staging callback for publish_store, which
-//! atomically writes analysis results.
+//! Calculate from one read snapshot and insert directly into disk-backed staging.
 
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, OptionalExtension};
-#[cfg(test)]
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-pub type RowEmitter<'a> = dyn FnMut(&str, &[&str], &[Vec<Value>]) -> Result<(), String> + 'a;
+use crate::error::AnalysisError;
+use crate::native_publication::task::Task;
 
-const MAX_ROWS: usize = 256;
-const MAX_ROW_BYTES: usize = 512 * 1024;
-const POINT_COLUMNS: &[&str] = &[
-    "date",
-    "observed_at",
-    "record_id",
-    "execution_id",
-    "account_return",
-    "account_equity",
-    "portfolio_return",
-    "account_daily_return",
-    "portfolio_daily_return",
-    "target_portfolio_return",
-    "target_portfolio_daily_return",
-    "difference",
-    "sizing_fallback",
-];
-const RANGE_COLUMNS: &[&str] = &[
-    "backtest_included",
-    "engine_version",
-    "baseline",
-    "end",
-    "record_count",
-    "observation_count",
-    "used_record_count",
-    "target_used_record_count",
-    "invalid_asset_count",
-    "sizing_fallback_count",
-    "calendar_status",
-    "calendar_id",
-    "calendar_label",
-    "event_count",
-];
-
-fn sql_error(error: rusqlite::Error) -> String {
-    format!("ANALYSIS_READ_ERROR:{error}")
+pub(crate) fn sql_error(error: rusqlite::Error) -> AnalysisError {
+    AnalysisError::caused_by("ANALYSIS_READ_ERROR", error)
 }
 
-fn string_bytes(value: &str) -> usize {
-    2 + value
-        .bytes()
-        .map(|byte| match byte {
-            b'"' | b'\\' | b'\x08' | b'\x0c' | b'\n' | b'\r' | b'\t' => 2,
-            0..=0x1f => 6,
-            _ => 1,
-        })
-        .sum::<usize>()
+pub(crate) fn stage_error(error: rusqlite::Error) -> AnalysisError {
+    AnalysisError::caused_by("PUBLICATION_STAGE", error)
 }
 
-/// Count JSON framing bytes without encoding or copying native result rows.
-fn value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Null => 4,
-        Value::Bool(true) => 4,
-        Value::Bool(false) => 5,
-        Value::Number(number) => number.to_string().len(),
-        Value::String(text) => string_bytes(text),
-        Value::Array(values) => row_bytes(values),
-        Value::Object(values) => {
-            2 + values.len().saturating_sub(1)
-                + values
-                    .iter()
-                    .map(|(key, value)| string_bytes(key) + 1 + value_bytes(value))
-                    .sum::<usize>()
-        }
+// Keep the former JSON number semantics when binding calculated floats directly.
+pub(crate) fn finite(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite())
+}
+
+fn numeric_time(value: &str) -> Result<f64, AnalysisError> {
+    crate::calendar::timestamp_ms(value).map_err(|_| {
+        AnalysisError::new(
+            "INVALID_RESULT_TIME",
+            format!("INVALID_RESULT_TIME:{value:?}"),
+        )
+    })
+}
+
+fn take_array(value: &mut Value, field: &str) -> Result<Vec<Value>, AnalysisError> {
+    match value.get_mut(field).map(Value::take).unwrap_or(Value::Null) {
+        Value::Array(values) => Ok(values),
+        Value::Null => Ok(Vec::new()),
+        _ => Err(AnalysisError::new(
+            "INVALID_RESULT_ROW",
+            format!("{field} must be an array"),
+        )),
     }
-}
-
-fn row_bytes(values: &[Value]) -> usize {
-    2 + values.len().saturating_sub(1) + values.iter().map(value_bytes).sum::<usize>()
-}
-
-/// At most one bounded batch is retained, including when a consumer is slow.
-pub(crate) fn rows(
-    table: &str,
-    columns: &[&str],
-    values: impl IntoIterator<Item = Result<Vec<Value>, String>>,
-    emit: &mut RowEmitter<'_>,
-) -> Result<(), String> {
-    let mut pending = Vec::with_capacity(MAX_ROWS);
-    let mut bytes = 0;
-    for row in values {
-        let row = row?;
-        if row.len() != columns.len() {
-            return Err(format!("INVALID_RESULT_ROW:{table} column count mismatch"));
-        }
-        let size = row_bytes(&row);
-        if size > MAX_ROW_BYTES {
-            return Err(format!(
-                "RESULT_FRAME_TOO_LARGE:{table} contains an oversized row"
-            ));
-        }
-        if !pending.is_empty() && (pending.len() == MAX_ROWS || bytes + size > MAX_ROW_BYTES) {
-            emit(table, columns, &pending)?;
-            pending.clear();
-            bytes = 0;
-        }
-        bytes += size;
-        pending.push(row);
-    }
-    if !pending.is_empty() {
-        emit(table, columns, &pending)?;
-    }
-    Ok(())
-}
-
-fn array_rows(
-    range: &str,
-    performance: &mut Value,
-    field: &str,
-    table: &str,
-    fields: &[&str],
-    emit: &mut RowEmitter<'_>,
-) -> Result<(), String> {
-    let values = performance
-        .get_mut(field)
-        .map(Value::take)
-        .unwrap_or(Value::Null);
-    let values = match values {
-        Value::Array(values) => values,
-        Value::Null => Vec::new(),
-        _ => return Err(format!("INVALID_RESULT_ROW:{field} must be an array")),
-    };
-    let columns: Vec<&str> = ["range_key", "idx"]
-        .into_iter()
-        .chain(fields.iter().copied())
-        .collect();
-    rows(
-        table,
-        &columns,
-        values.into_iter().enumerate().map(|(index, mut value)| {
-            let mut row = vec![json!(range), json!(index)];
-            row.extend(
-                fields
-                    .iter()
-                    .map(|field| value.get_mut(field).map(Value::take).unwrap_or(Value::Null)),
-            );
-            Ok(row)
-        }),
-        emit,
-    )
-}
-
-fn numeric_time(value: &str) -> Result<f64, String> {
-    crate::calendar::timestamp_ms(value).map_err(|_| format!("INVALID_RESULT_TIME:{value:?}"))
 }
 
 #[derive(Debug)]
@@ -176,8 +57,8 @@ fn events(
     range: &str,
     start: f64,
     end: f64,
-    emit: &mut RowEmitter<'_>,
-) -> Result<usize, String> {
+    target: &Connection,
+) -> Result<usize, AnalysisError> {
     let mut count = 0;
     let mut newest: Vec<Event> = Vec::with_capacity(101);
     let mut consume = |event: Event| {
@@ -277,21 +158,27 @@ fn events(
             });
         }
     }
-    rows(
-        "performance_result_event",
-        &["range_key", "idx", "time", "tag", "text", "execution_id"],
-        newest.into_iter().enumerate().map(|(index, event)| {
-            Ok(vec![
-                json!(range),
-                json!(index),
-                json!(event.time),
-                json!(event.tag),
-                json!(event.text),
-                json!(event.execution_id),
+    let mut insert = target
+        .prepare_cached(
+            r#"INSERT INTO native_stage.performance_result_event (
+                range_key, idx, time, tag, text, execution_id
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6
+            )"#,
+        )
+        .map_err(stage_error)?;
+    for (index, event) in newest.into_iter().enumerate() {
+        insert
+            .execute(params![
+                range,
+                index,
+                event.time,
+                event.tag,
+                event.text,
+                event.execution_id
             ])
-        }),
-        emit,
-    )?;
+            .map_err(stage_error)?;
+    }
     Ok(count)
 }
 
@@ -299,8 +186,8 @@ fn daily_costs(
     connection: &Connection,
     account: i64,
     ranges: &[(&str, f64, f64)],
-    emit: &mut RowEmitter<'_>,
-) -> Result<(), String> {
+    target: &Connection,
+) -> Result<(), AnalysisError> {
     let mut summaries: Vec<BTreeMap<String, crate::costs::Summary>> =
         ranges.iter().map(|_| BTreeMap::new()).collect();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
@@ -325,68 +212,59 @@ fn daily_costs(
                 if time < *start || time > *end {
                     continue;
                 }
-                days.entry(trade.day.clone()).or_insert_with(crate::costs::Summary::empty).push(&trade);
+                days.entry(trade.day.clone())
+                    .or_insert_with(crate::costs::Summary::empty)
+                    .push(&trade);
             }
         }
     }
+    let mut cost = target
+        .prepare_cached(
+            r#"INSERT INTO native_stage.performance_result_daily_cost (
+                range_key, day, value, cost, loss_bp, coverage,
+                covered_value, covered, count, fee_covered, estimated, amount_complete,
+                present
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                NULL, ?7, ?8, ?9, NULL, ?10,
+                255
+            )"#,
+        )
+        .map_err(stage_error)?;
+    let mut fee = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_daily_fee(range_key,day,currency,value) VALUES(?1,?2,?3,?4)"
+    ).map_err(stage_error)?;
     for ((range, _, _), days) in ranges.iter().zip(&summaries) {
-        rows(
-        "performance_result_daily_cost",
-        &[
-            "range_key",
-            "day",
-            "value",
-            "cost",
-            "loss_bp",
-            "coverage",
-            "covered_value",
-            "covered",
-            "count",
-            "fee_covered",
-            "estimated",
-            "amount_complete",
-            "present",
-        ],
-        days.iter().map(|(day, value)| {
-            Ok(vec![
-                json!(range),
-                json!(day),
-                json!(value.value),
-                json!(value.cost),
-                json!(value.loss_bp()),
-                json!(value.coverage()),
-                Value::Null,
-                json!(value.covered),
-                json!(value.count),
-                json!(value.fee_count),
-                Value::Null,
-                json!(value.amount_complete()),
-                json!(255),
+        for (day, value) in days {
+            cost.execute(params![
+                range,
+                day,
+                finite(value.value),
+                finite(value.cost),
+                finite(value.loss_bp()),
+                finite(value.coverage()),
+                value.covered,
+                value.count,
+                value.fee_count,
+                value.amount_complete(),
             ])
-        }),
-        emit,
-    )?;
-        rows(
-            "performance_result_daily_fee",
-            &["range_key", "day", "currency", "value"],
-            days.iter().flat_map(|(day, value)| {
-                value.fees.iter().map(move |(currency, (fee, _))| {
-                    Ok(vec![json!(range), json!(day), json!(currency), json!(fee)])
-                })
-            }),
-            emit,
-        )?;
+            .map_err(stage_error)?;
+            for (currency, (value, _)) in &value.fees {
+                fee.execute(params![range, day, currency, finite(Some(*value))])
+                    .map_err(stage_error)?;
+            }
+        }
     }
     Ok(())
 }
 
 fn range_rows(
-    connection: &Connection,
+    source: &Connection,
+    target: &Connection,
     account: i64,
     key: &str,
     mut performance: Value,
-    emit: &mut RowEmitter<'_>,
-) -> Result<(), String> {
+) -> Result<(), AnalysisError> {
     let start = performance["baseline"]
         .as_str()
         .map(numeric_time)
@@ -397,284 +275,232 @@ fn range_rows(
         .map(numeric_time)
         .transpose()?
         .unwrap_or(-1.0);
-    array_rows(
-        key,
-        &mut performance,
-        "points",
-        "performance_result_point",
-        POINT_COLUMNS,
-        emit,
-    )?;
-    array_rows(
-        key,
-        &mut performance,
-        "sizing_fallback_ranges",
-        "performance_result_fallback",
-        &["start", "end", "count"],
-        emit,
-    )?;
-    array_rows(
-        key,
-        &mut performance,
-        "bindings",
-        "performance_result_binding",
-        &["time", "portfolio_id"],
-        emit,
-    )?;
+    let mut insert = target.prepare_cached(
+        r#"INSERT INTO native_stage.performance_result_point (
+                range_key, idx, date, observed_at, record_id, execution_id,
+                account_return, account_equity, portfolio_return, portfolio_daily_return, account_daily_return, target_portfolio_return,
+                target_portfolio_daily_return, difference, sizing_fallback
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15
+            )"#
+    ).map_err(stage_error)?;
+    for (index, value) in take_array(&mut performance, "points")?
+        .into_iter()
+        .enumerate()
+    {
+        insert
+            .execute(params![
+                key,
+                index,
+                value["date"].as_str(),
+                value["observed_at"].as_str(),
+                value["record_id"].as_i64(),
+                value["execution_id"].as_str(),
+                value["account_return"].as_f64(),
+                value["account_equity"].as_f64(),
+                value["portfolio_return"].as_f64(),
+                value["portfolio_daily_return"].as_f64(),
+                value["account_daily_return"].as_f64(),
+                value["target_portfolio_return"].as_f64(),
+                value["target_portfolio_daily_return"].as_f64(),
+                value["difference"].as_f64(),
+                value["sizing_fallback"].as_bool(),
+            ])
+            .map_err(stage_error)?;
+    }
+    let mut insert = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_fallback(range_key,idx,start,end,count) VALUES(?1,?2,?3,?4,?5)"
+    ).map_err(stage_error)?;
+    for (index, value) in take_array(&mut performance, "sizing_fallback_ranges")?
+        .into_iter()
+        .enumerate()
+    {
+        insert
+            .execute(params![
+                key,
+                index,
+                value["start"].as_str(),
+                value["end"].as_str(),
+                value["count"].as_i64()
+            ])
+            .map_err(stage_error)?;
+    }
+    let mut insert = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_binding(range_key,idx,time,portfolio_id) VALUES(?1,?2,?3,?4)"
+    ).map_err(stage_error)?;
+    for (index, value) in take_array(&mut performance, "bindings")?
+        .into_iter()
+        .enumerate()
+    {
+        insert
+            .execute(params![
+                key,
+                index,
+                value["time"].as_str(),
+                value["portfolio_id"].as_i64()
+            ])
+            .map_err(stage_error)?;
+    }
+    let mut insert = target
+        .prepare_cached(
+            r#"INSERT INTO native_stage.performance_result_skip (
+                range_key, kind, count, missing_target, missing_ticks, first_time,
+                last_time
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7
+            )"#,
+        )
+        .map_err(stage_error)?;
     for (field, kind) in [("skips", "portfolio"), ("target_skips", "target")] {
         let value = performance
             .get_mut(field)
             .map(Value::take)
             .unwrap_or(Value::Null);
         if !value.is_null() {
-            rows(
-                "performance_result_skip",
-                &[
-                    "range_key",
-                    "kind",
-                    "count",
-                    "missing_target",
-                    "missing_ticks",
-                    "first_time",
-                    "last_time",
-                ],
-                [Ok(vec![
-                    json!(key),
-                    json!(kind),
-                    value["count"].clone(),
-                    value["missing_target"].clone(),
-                    value["missing_ticks"].clone(),
-                    value["first_time"].clone(),
-                    value["last_time"].clone(),
-                ])],
-                emit,
-            )?;
+            insert
+                .execute(params![
+                    key,
+                    kind,
+                    value["count"].as_i64(),
+                    value["missing_target"].as_i64(),
+                    value["missing_ticks"].as_i64(),
+                    value["first_time"].as_str(),
+                    value["last_time"].as_str(),
+                ])
+                .map_err(stage_error)?;
         }
     }
     let mut calendar = performance["calendar"].take();
+    let mut insert = target.prepare_cached(
+        "INSERT INTO native_stage.performance_result_calendar_range(range_key,kind,idx,start,end) VALUES(?1,?2,?3,?4,?5)"
+    ).map_err(stage_error)?;
     for (field, kind) in [
         ("closed_ranges", "closed"),
         ("unavailable_ranges", "unavailable"),
     ] {
-        let values = calendar
-            .get_mut(field)
-            .map(Value::take)
-            .unwrap_or(json!([]));
-        let values = values
-            .as_array()
-            .ok_or("INVALID_RESULT_ROW:calendar ranges must be arrays")?;
-        rows(
-            "performance_result_calendar_range",
-            &["range_key", "kind", "idx", "start", "end"],
-            values.iter().enumerate().map(|(index, value)| {
-                Ok(vec![
-                    json!(key),
-                    json!(kind),
-                    json!(index),
-                    value["start"].clone(),
-                    value["end"].clone(),
+        for (index, value) in take_array(&mut calendar, field)?.into_iter().enumerate() {
+            insert
+                .execute(params![
+                    key,
+                    kind,
+                    index,
+                    value["start"].as_str(),
+                    value["end"].as_str()
                 ])
-            }),
-            emit,
-        )?;
+                .map_err(stage_error)?;
+        }
     }
-    let count = events(connection, account, key, start, end, emit)?;
-    let mut row = vec![json!(key)];
-    row.extend(
-        RANGE_COLUMNS[..10]
-            .iter()
-            .map(|field| performance[*field].take()),
-    );
-    row.extend([
-        calendar["status"].take(),
-        calendar["calendar_id"].take(),
-        calendar["label"].take(),
-        json!(count),
-    ]);
-    let columns: Vec<_> = ["range_key"]
-        .into_iter()
-        .chain(RANGE_COLUMNS.iter().copied())
-        .collect();
-    rows("performance_result_range", &columns, [Ok(row)], emit)
+    let count = events(source, account, key, start, end, target)?;
+    target.execute(
+        r#"INSERT INTO native_stage.performance_result_range (
+                range_key, backtest_included, engine_version, baseline, end, record_count,
+                observation_count, used_record_count, target_used_record_count, invalid_asset_count, sizing_fallback_count, calendar_status,
+                calendar_id, calendar_label, event_count
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15
+            )"#,
+        params![
+key,
+performance["backtest_included"].as_bool(),
+performance["engine_version"].as_str(),
+performance["baseline"].as_str(),
+performance["end"].as_str(),
+performance["record_count"].as_i64(),
+performance["observation_count"].as_i64(),
+performance["used_record_count"].as_i64(),
+performance["target_used_record_count"].as_i64(),
+performance["invalid_asset_count"].as_i64(),
+performance["sizing_fallback_count"].as_i64(),
+calendar["status"].as_str(),
+calendar["calendar_id"].as_str(),
+calendar["label"].as_str(),
+count,
+]
+    ).map_err(stage_error)?;
+    Ok(())
 }
 
-/// Emit typed result rows without ever writing to the source database.
-pub fn write(
-    connection: &Connection,
-    request: &Value,
-    emit: &mut RowEmitter<'_>,
-) -> Result<Value, String> {
-    let account = request
-        .get("account_id")
-        .and_then(Value::as_i64)
-        .ok_or("account_id must be an integer")?;
-    // The runtime owns one read transaction covering both version capture and
-    // every fact cursor. A later Python writer compares this version at commit.
-    let version: Option<i64> = connection
-        .query_row(
-            "SELECT source_version FROM account_analysis WHERE account_id=?1",
-            [account],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(sql_error)?;
+pub(crate) fn write(
+    source: &Connection,
+    target: &Connection,
+    task: &Task,
+) -> Result<Value, AnalysisError> {
     let calculation = crate::performance::PerformanceRequest {
-        account_id: account,
+        account_id: task.account_id,
         range: None,
-        include_backtest: request
-            .get("include_backtest")
-            .or_else(|| request.get("backtest_included"))
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        include_backtest: task.include_backtest,
         include_metadata: true,
-        require_observation_facts: request
-            .get("require_observation_facts")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        expected_source_version: match request.get("expected_source_version") {
-            None => crate::performance::SourceVersionCheck::Skip,
-            Some(Value::Null) => crate::performance::SourceVersionCheck::Version(None),
-            Some(value) => crate::performance::SourceVersionCheck::Version(Some(
-                value
-                    .as_i64()
-                    .ok_or("expected_source_version must be an integer or null")?,
-            )),
-        },
-        backtest_fee_rate: request
-            .pointer("/settings/backtest_fee_rate")
-            .and_then(Value::as_f64)
-            .ok_or("settings.backtest_fee_rate must be a number")?,
+        require_observation_facts: task.require_observation_facts,
+        expected_source_version: crate::performance::SourceVersionCheck::Version(Some(
+            task.source_version,
+        )),
+        backtest_fee_rate: task.fee_rate,
     };
-    let mut settings = Value::Null;
-    let mut data_until: Option<String> = None;
-    let mut row_counts: BTreeMap<String, usize> = BTreeMap::new();
-    {
-        let mut counted_emit =
-            |table: &str, columns: &[&str], rows: &[Vec<Value>]| -> Result<(), String> {
-                emit(table, columns, rows)?;
-                *row_counts.entry(table.to_owned()).or_default() += rows.len();
-                Ok(())
-            };
-        let mut ranges = crate::performance::performance(connection, &calculation)?;
-        let bounds = ["30", "90", "all"]
-            .map(|key| {
-                Ok((
-                    key,
-                    ranges[key]["baseline"]
-                        .as_str()
-                        .map(numeric_time)
-                        .transpose()?
-                        .unwrap_or(0.0),
-                    ranges[key]["end"]
-                        .as_str()
-                        .map(numeric_time)
-                        .transpose()?
-                        .unwrap_or(-1.0),
-                ))
-            })
-            .into_iter()
-            .collect::<Result<Vec<_>, String>>()?;
-        daily_costs(connection, account, &bounds, &mut counted_emit)?;
-        for key in ["30", "90", "all"] {
-            let performance = ranges[key].take();
-            if settings.is_null() {
-                settings = performance["settings"].clone();
-            }
-            if key == "all" {
-                data_until = performance["end"].as_str().map(str::to_owned);
-            }
-            range_rows(connection, account, key, performance, &mut counted_emit)?;
-        }
-        crate::fact_cost_rows::trades(connection, account, &mut counted_emit)?;
+    let mut ranges = crate::performance::performance(source, &calculation)?;
+    let bounds = ["30", "90", "all"]
+        .map(|key| {
+            Ok((
+                key,
+                ranges[key]["baseline"]
+                    .as_str()
+                    .map(numeric_time)
+                    .transpose()?
+                    .unwrap_or(0.0),
+                ranges[key]["end"]
+                    .as_str()
+                    .map(numeric_time)
+                    .transpose()?
+                    .unwrap_or(-1.0),
+            ))
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, AnalysisError>>()?;
+    daily_costs(source, task.account_id, &bounds, target)?;
+    let settings = ranges["all"]["settings"].clone();
+    let data_until = ranges["all"]["end"].clone();
+    for key in ["30", "90", "all"] {
+        range_rows(source, target, task.account_id, key, ranges[key].take())?;
     }
+    crate::fact_cost_rows::trades(source, task.account_id, target)?;
     Ok(
-        json!({"type":"complete","account_id":account,"source_version":version,
-        "settings":settings,"data_until":data_until,"row_counts":row_counts}),
+        json!({"account_id":task.account_id,"source_version":task.source_version,"settings":settings,"data_until":data_until}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn row_byte_count_matches_escaping_without_encoding_native_rows() {
-        let row = vec![
-            Value::Null,
-            json!(true),
-            json!(false),
-            json!(-123.45),
-            json!("中文\"\\\n\r\t\u{0008}\u{000c}\u{0001}"),
-            json!([]),
-            json!({"escaped\nkey": [1, null, "value"]}),
-        ];
-        assert_eq!(row_bytes(&row), serde_json::to_vec(&row).unwrap().len());
-        assert_eq!(row_bytes(&[]), 2);
-    }
-
-    #[test]
-    fn batches_bound_rows_and_preserve_order() {
-        let mut frames = Vec::new();
-        rows(
-            "example",
-            &["idx"],
-            (0..777).map(|index| Ok(vec![json!(index)])),
-            &mut |table, columns, rows| {
-                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(frames.len(), 4);
-        assert_eq!(frames[0]["rows"].as_array().unwrap().len(), 256);
-        assert_eq!(
-            frames[3]["rows"],
-            json!([
-                [768],
-                [769],
-                [770],
-                [771],
-                [772],
-                [773],
-                [774],
-                [775],
-                [776]
-            ])
-        );
-        assert_eq!(
-            frames
-                .iter()
-                .map(|frame| frame["rows"].as_array().unwrap().len())
-                .sum::<usize>(),
-            777
-        );
-    }
-
-    #[test]
-    fn batches_bound_bytes_and_reject_single_oversized_values() {
-        let mut frames = Vec::new();
-        rows(
-            "example",
-            &["text"],
-            (0..6).map(|_| Ok(vec![json!("a".repeat(200_000))])),
-            &mut |table, columns, rows| {
-                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(frames.len(), 3);
-        assert!(frames
-            .iter()
-            .all(|frame| serde_json::to_vec(frame).unwrap().len() < 1024 * 1024));
-        assert!(rows(
-            "example",
-            &["text"],
-            [Ok(vec![json!("x".repeat(MAX_ROW_BYTES))])],
-            &mut |_, _, _| Ok(())
-        )
-        .unwrap_err()
-        .starts_with("RESULT_FRAME_TOO_LARGE:"));
+    fn direct_float_binding_keeps_unknown_and_nonfinite_values_null() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE amounts(value REAL)")
+            .unwrap();
+        for value in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(0.0),
+            Some(-0.2),
+        ] {
+            connection
+                .execute("INSERT INTO amounts VALUES(?1)", [finite(value)])
+                .unwrap();
+        }
+        let values = connection
+            .prepare("SELECT value FROM amounts ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, Option<f64>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(values, vec![None, None, None, None, Some(0.0), Some(-0.2)]);
     }
 
     #[test]
@@ -735,60 +561,33 @@ mod tests {
               (2,'/symbol_results/A/trades',0,'2026-01-02T09:00:00',500,1,'4','{\"commission\":8}','CNY');"
         ).unwrap();
         let boundary = numeric_time("2026-01-01T23:59:00").unwrap();
-        let mut frames = Vec::new();
-        daily_costs(
-            &connection,
-            2,
-            &[("all", boundary, boundary)],
-            &mut |table, columns, rows| {
-                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-                Ok(())
-            },
-        )
-        .unwrap();
-        let costs = &frames[0]["rows"];
+        connection.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_result_daily_cost(\"range_key\" TEXT,\"day\" TEXT,\"value\" FLOAT,\"cost\" FLOAT,\"loss_bp\" FLOAT,\"coverage\" FLOAT,\"covered_value\" FLOAT,\"covered\" INTEGER,\"count\" INTEGER,\"fee_covered\" INTEGER,\"estimated\" INTEGER,\"amount_complete\" BOOLEAN,\"present\" INTEGER);CREATE TABLE native_stage.performance_result_daily_fee(\"range_key\" TEXT,\"day\" TEXT,\"currency\" TEXT,\"value\" FLOAT);").unwrap();
+        daily_costs(&connection, 2, &[("all", boundary, boundary)], &connection).unwrap();
+        let costs = connection.prepare("SELECT day,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete FROM native_stage.performance_result_daily_cost ORDER BY day").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<f64>>(1)?,row.get::<_,Option<f64>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,i64>(5)?,row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,row.get::<_,bool>(8)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert_eq!(
-            costs[0],
-            json!([
-                "all",
-                "2026-01-01",
-                100.0,
-                2.0,
-                2.0 / 98.0 * 10000.0,
-                1.0,
-                null,
-                1,
-                1,
-                1,
-                null,
-                true,
-                255
-            ])
+            costs,
+            vec![
+                (
+                    "2026-01-01".into(),
+                    Some(100.0),
+                    Some(2.0),
+                    Some(2.0 / 98.0 * 10000.0),
+                    Some(1.0),
+                    1,
+                    1,
+                    1,
+                    true
+                ),
+                ("2026-01-02".into(), None, None, None, None, 0, 2, 2, false),
+            ]
         );
+        let fees = connection.prepare("SELECT day,currency,value FROM native_stage.performance_result_daily_fee ORDER BY day,currency").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert_eq!(
-            costs[1],
-            json!([
-                "all",
-                "2026-01-02",
-                null,
-                null,
-                null,
-                null,
-                null,
-                0,
-                2,
-                2,
-                null,
-                false,
-                255
-            ])
-        );
-        assert_eq!(
-            frames[1]["rows"],
-            json!([
-                ["all", "2026-01-01", "CNY", 0.0],
-                ["all", "2026-01-02", "USD", -0.2]
-            ])
+            fees,
+            vec![
+                ("2026-01-01".into(), "CNY".into(), 0.0),
+                ("2026-01-02".into(), "USD".into(), -0.2)
+            ]
         );
     }
 
@@ -808,48 +607,30 @@ mod tests {
                 params![index, format!("failure-{index}"),format!("execution-{index}")],
             ).unwrap();
         }
-        let mut frames = Vec::new();
-        let count = events(
-            &connection,
-            2,
-            "all",
-            time,
-            time,
-            &mut |table, columns, rows| {
-                frames.push(json!({"type":"rows", "table":table, "columns":columns, "rows":rows}));
-                Ok(())
-            },
-        )
-        .unwrap();
+        connection.execute_batch("ATTACH DATABASE '' AS native_stage; CREATE TABLE native_stage.performance_result_event(\"range_key\" TEXT,\"idx\" INTEGER,\"time\" TEXT,\"tag\" TEXT,\"text\" TEXT,\"execution_id\" TEXT);").unwrap();
+        let count = events(&connection, 2, "all", time, time, &connection).unwrap();
         assert_eq!(count, 152);
-        let event_rows = frames[0]["rows"].as_array().unwrap();
-        assert_eq!(event_rows.len(), 100);
+        let rows = connection.prepare("SELECT tag,text,execution_id FROM native_stage.performance_result_event ORDER BY idx").unwrap().query_map([],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(rows.len(), 100);
+        assert_eq!(rows[0], ("换绑".into(), "组合 #7".into(), None));
+        assert_eq!(rows[1], ("跳过".into(), "执行中".into(), None));
+        assert_eq!(rows[99].2.as_deref(), Some("execution-97"));
+        connection
+            .execute("DELETE FROM native_stage.performance_result_event", [])
+            .unwrap();
         assert_eq!(
-            event_rows[0],
-            json!(["all", 0, "2026-01-01T10:00:00", "换绑", "组合 #7", null])
+            events(&connection, 2, "all", time + 1.0, time + 2.0, &connection).unwrap(),
+            0
         );
         assert_eq!(
-            event_rows[1],
-            json!(["all", 1, "2026-01-01T10:00:00", "跳过", "执行中", null])
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM native_stage.performance_result_event",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
         );
-        assert_eq!(event_rows[99][5], "execution-97");
-        let mut emitted = false;
-        assert_eq!(events_empty(&connection, time, &mut emitted), 0);
-        assert!(!emitted);
-    }
-
-    fn events_empty(connection: &Connection, time: f64, emitted: &mut bool) -> usize {
-        events(
-            connection,
-            2,
-            "all",
-            time + 1.0,
-            time + 2.0,
-            &mut |_, _, _| {
-                *emitted = true;
-                Ok(())
-            },
-        )
-        .unwrap()
     }
 }

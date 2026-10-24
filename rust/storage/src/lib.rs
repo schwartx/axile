@@ -81,14 +81,14 @@ fn with_read_snapshot_errors<T>(
     let connection = storage_connection::open_reader(database)?;
     connection
         .execute_batch("BEGIN DEFERRED;")
-        .map_err(|error| AnalysisError::new(begin_error, error.to_string()))?;
+        .map_err(|error| AnalysisError::caused_by(begin_error, error))?;
 
     let result = task(&connection);
 
     // End the snapshot promptly; the lease discards a connection if cleanup fails.
     let closed = connection
         .execute_batch("ROLLBACK;")
-        .map_err(|error| AnalysisError::new(close_error, error.to_string()));
+        .map_err(|error| AnalysisError::caused_by(close_error, error));
     match result {
         Ok(value) => closed.map(|()| value),
         Err(error) => Err(error),

@@ -24,12 +24,12 @@ pub(crate) fn immediate<T>(
 ) -> Result<T, AnalysisError> {
     connection
         .execute_batch("BEGIN IMMEDIATE;")
-        .map_err(|error| AnalysisError::new("PUBLICATION_WRITE", error.to_string()))?;
+        .map_err(|error| AnalysisError::caused_by("PUBLICATION_WRITE", error))?;
     match work() {
         Ok(value) => {
             if let Err(error) = connection.execute_batch("COMMIT;") {
                 let _ = connection.execute_batch("ROLLBACK;");
-                return Err(AnalysisError::new("PUBLICATION_WRITE", error.to_string()));
+                return Err(AnalysisError::caused_by("PUBLICATION_WRITE", error));
             }
             Ok(value)
         }
@@ -58,7 +58,7 @@ mod tests {
         immediate(&writer, || {
             writer
                 .execute("INSERT INTO entries VALUES (1)", [])
-                .map_err(|error| AnalysisError::new("TEST_WRITE", error.to_string()))?;
+                .map_err(|error| AnalysisError::caused_by("TEST_WRITE", error))?;
             Ok(())
         })
         .unwrap();
@@ -112,6 +112,10 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, "PUBLICATION_WRITE");
+        assert!(std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<rusqlite::Error>()
+            .is_some());
         assert!(connection.is_autocommit());
         assert_eq!(
             connection

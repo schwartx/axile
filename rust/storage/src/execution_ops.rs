@@ -107,9 +107,7 @@ fn persist_execute_record_in(
     head.insert("is_success".into(), json!(is_success));
     head.insert("created_at".into(), json!(created_at));
     head.insert("facts_complete".into(), json!(false));
-    let mut batch = encode::FactBatch::new();
-    batch.push("executerecord", vec![head]);
-    facts::insert_batch(connection, &batch)?;
+    result_head::insert_execution(connection, &head)?;
     let record_id = connection.last_insert_rowid();
     let input_id = attach_inputs(connection, request, record_id, raw_input, raw_result)?;
     let root_asset_id = match (input_id, raw_result.as_object()) {

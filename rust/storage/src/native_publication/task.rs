@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::error::AnalysisError;
 
 #[derive(Debug)]
-pub(super) struct Task {
+pub(crate) struct Task {
     pub account_id: i64,
     pub source_version: i64,
     pub snapshot_id: String,
@@ -17,6 +17,8 @@ pub(super) struct Task {
     pub weight_type: String,
     pub fee_rate: f64,
     pub trade_channel: String,
+    pub include_backtest: bool,
+    pub require_observation_facts: bool,
 }
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
@@ -68,6 +70,15 @@ impl Task {
             weight_type,
             fee_rate,
             trade_channel: string(request, "trade_channel", 128)?,
+            include_backtest: request
+                .get("include_backtest")
+                .or_else(|| request.get("backtest_included"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            require_observation_facts: request
+                .get("require_observation_facts")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     }
 

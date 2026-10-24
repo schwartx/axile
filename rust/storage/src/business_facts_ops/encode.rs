@@ -8,24 +8,8 @@ use serde_json::{json, Map, Value};
 
 use crate::business_detail;
 
-/// 事实批:按插入顺序排列的 (表名, 行) 集合。
-pub(crate) struct FactBatch {
-    statements: Vec<(&'static str, Vec<Map<String, Value>>)>,
-}
-
-impl FactBatch {
-    pub(crate) fn new() -> Self {
-        Self {
-            statements: Vec::new(),
-        }
-    }
-    pub(crate) fn push(&mut self, table: &'static str, rows: Vec<Map<String, Value>>) {
-        self.statements.push((table, rows));
-    }
-    pub(crate) fn statements(&self) -> &[(&'static str, Vec<Map<String, Value>>)] {
-        &self.statements
-    }
-}
+pub(crate) type Rows = Vec<Map<String, Value>>;
+pub(crate) type InputRows = (Map<String, Value>, Rows, Rows, Rows);
 
 const INPUT_FIELDS: &[(&str, &str)] = &[
     ("channel_type", "text"),
@@ -427,7 +411,7 @@ pub(crate) fn encode_inputs(
     execution_id: Option<&str>,
     created_at: &str,
     owner_execution_id: Option<&str>,
-) -> Result<FactBatch, String> {
+) -> Result<InputRows, String> {
     let payload = sanitize_payload(payload)?;
     if execution_id.is_some() && owner_execution_id.is_some() && execution_id != owner_execution_id
     {
@@ -561,12 +545,7 @@ pub(crate) fn encode_inputs(
         root.entry(format!("{role}_count")).or_insert(Value::Null);
     }
     root.insert("audit_evidence".into(), Value::Object(evidence));
-    let mut batch = FactBatch::new();
-    batch.push("execution_input", vec![root]);
-    batch.push("execution_input_target", targets);
-    batch.push("execution_input_symbol", symbols);
-    batch.push("execution_input_plan", plans);
-    Ok(batch)
+    Ok((root, targets, symbols, plans))
 }
 
 fn target_rows(
@@ -752,12 +731,7 @@ pub(crate) fn canonical_input(payload: &Value) -> Result<Value, String> {
 }
 
 fn encode_decode(payload: &Value) -> Result<Value, String> {
-    let batch = encode_inputs("", payload, 0, None, "", None)?;
-    let statements = batch.statements();
-    let head = statements[0].1[0].clone();
-    let targets = statements[1].1.clone();
-    let symbols = statements[2].1.clone();
-    let plans = statements[3].1.clone();
+    let (head, targets, symbols, plans) = encode_inputs("", payload, 0, None, "", None)?;
     business_detail::decode_input(&head, &targets, &symbols, &plans)
 }
 
@@ -1012,10 +986,12 @@ fn position_rows(
 }
 
 /// 保存下单前资产;参数通过 account_assets 键明确区分缺失与空值。
-pub(crate) fn encode_input_assets(input_id: &str, payload: &Value) -> Result<FactBatch, String> {
-    let mut batch = FactBatch::new();
+pub(crate) fn encode_input_assets(
+    input_id: &str,
+    payload: &Value,
+) -> Result<Option<Observation>, String> {
     let Some(assets) = payload.get("account_assets") else {
-        return Ok(batch);
+        return Ok(None);
     };
     let observation = encode_observation(
         assets,
@@ -1025,19 +1001,16 @@ pub(crate) fn encode_input_assets(input_id: &str, payload: &Value) -> Result<Fac
         Some(input_id),
         None,
     )?;
-    batch.push("business_asset_snapshot", vec![observation.root]);
-    batch.push("business_asset_position", observation.positions);
-    Ok(batch)
+    Ok(Some(observation))
 }
 
 /// 在 worker 返回前保存执行后观测,终态记录随后只绑定同一事实。
 pub(crate) fn encode_input_after_assets(
     input_id: &str,
     payload: &Map<String, Value>,
-) -> Result<FactBatch, String> {
-    let mut batch = FactBatch::new();
+) -> Result<Option<Observation>, String> {
     let Some(assets) = payload.get("account_assets") else {
-        return Ok(batch);
+        return Ok(None);
     };
     let observation = encode_observation(
         assets,
@@ -1047,9 +1020,7 @@ pub(crate) fn encode_input_after_assets(
         Some(input_id),
         Some(payload),
     )?;
-    batch.push("business_asset_snapshot", vec![observation.root]);
-    batch.push("business_asset_position", observation.positions);
-    Ok(batch)
+    Ok(Some(observation))
 }
 
 /// 手工快照与执行观测复用同一列编码,缺失资产不能制造空观测。
@@ -1057,7 +1028,7 @@ pub(crate) fn encode_snapshot_assets(
     snapshot_id: i64,
     payload: &Value,
     result: Option<&Map<String, Value>>,
-) -> Result<FactBatch, String> {
+) -> Result<Observation, String> {
     let assets = payload
         .get("account_assets")
         .ok_or("账户资产观测缺少 account_assets")?;
@@ -1072,11 +1043,7 @@ pub(crate) fn encode_snapshot_assets(
     observation
         .root
         .insert("account_snapshot_id".into(), json!(snapshot_id));
-    let mut batch = FactBatch::new();
-    batch.push("business_asset_snapshot", vec![observation.root]);
-    batch.push("business_asset_position", observation.positions);
-    batch.push("business_asset_binding", Vec::new());
-    Ok(batch)
+    Ok(observation)
 }
 
 /// 重放比较用:把传入观测按同一编码-解码口径转成业务值。
@@ -1087,79 +1054,16 @@ pub(crate) fn business_asset_value(incoming: &Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// SQL 绑定:按列名声明类型转换,JSON 列序列化为文本。
+// JSON fields are explicitly serialized by each table's fixed SQL binding.
 // ---------------------------------------------------------------------------
 
-fn is_json_column(column: &str) -> bool {
-    matches!(
-        column,
-        "audit_evidence"
-            | "root_value"
-            | "payload_value"
-            | "positions_value"
-            | "algorithm"
-            | "symbol_algorithms"
-            | "trade_rules"
-            | "futures_close_policy"
-            | "feishu_key"
-            | "feishu_account"
-            | "extra"
-            | "order_id"
-            | "trade_id"
-            | "invalid_value"
-            | "malformed_value"
-            | "conversion_invalid_value"
-            | "conversion_evidence"
-            | "conversion_reference"
-            | "reference"
-            | "memory"
-            | "reconciliation"
-            | "termination_evidence"
-            | "result_input_value"
-    )
-}
-
-pub(crate) fn sql_value(column: &str, value: Value) -> Result<rusqlite::types::Value, String> {
-    if is_json_column(column) {
-        return Ok(rusqlite::types::Value::Text(
-            serde_json::to_string(&value).map_err(|error| error.to_string())?,
-        ));
-    }
-    if value.is_null() {
-        return Ok(rusqlite::types::Value::Null);
-    }
-    Ok(match value {
-        Value::Bool(flag) => rusqlite::types::Value::Integer(flag as i64),
-        Value::Number(number) => {
-            if let Some(integer) = number.as_i64() {
-                rusqlite::types::Value::Integer(integer)
-            } else {
-                rusqlite::types::Value::Real(number.as_f64().ok_or("invalid number")?)
-            }
-        }
-        Value::String(text) => rusqlite::types::Value::Text(text),
-        other => {
-            return Err(format!(
-                "unexpected structured value in column {column}: {other}"
-            ))
-        }
-    })
-}
-
-/// algorithm 在冻结输入是 JSON,在品种结果是文本。
-pub(crate) fn sql_column_value(
-    table: &str,
-    column: &str,
-    value: Value,
-) -> Result<rusqlite::types::Value, String> {
-    if table == "execution_symbol_result" && column == "algorithm" {
-        return match value {
-            Value::Null => Ok(rusqlite::types::Value::Null),
-            Value::String(value) => Ok(rusqlite::types::Value::Text(value)),
-            _ => Err("unexpected structured value in symbol algorithm".into()),
-        };
-    }
-    sql_value(column, value)
+pub(crate) fn json_text(
+    value: Option<&Value>,
+) -> Result<Option<String>, crate::error::AnalysisError> {
+    value
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| crate::error::AnalysisError::caused_by("BUSINESS_FACTS", error))
 }
 
 #[cfg(test)]
@@ -1176,19 +1080,8 @@ pub(super) fn frozen_cases(kind: &str) -> Vec<Value> {
 }
 
 #[cfg(test)]
-pub(super) fn batch_value(batch: &FactBatch) -> Value {
-    Value::Object(
-        batch
-            .statements()
-            .iter()
-            .map(|(table, rows)| {
-                (
-                    (*table).into(),
-                    Value::Array(rows.iter().cloned().map(Value::Object).collect()),
-                )
-            })
-            .collect(),
-    )
+pub(super) fn input_value((head, targets, symbols, plans): &InputRows) -> Value {
+    serde_json::json!({"execution_input":[head],"execution_input_target":targets,"execution_input_symbol":symbols,"execution_input_plan":plans})
 }
 
 #[cfg(test)]
@@ -1215,7 +1108,7 @@ mod tests {
                 );
             } else {
                 assert_eq!(
-                    batch_value(&encoded.unwrap()),
+                    input_value(&encoded.unwrap()),
                     case["expected"],
                     "{}",
                     case["name"]
@@ -1280,75 +1173,29 @@ mod tests {
     }
 
     #[test]
-    fn json_binding_uses_the_tables_declared_algorithm_type() {
-        assert_eq!(
-            sql_column_value("execution_symbol_result", "algorithm", json!("twap")).unwrap(),
-            rusqlite::types::Value::Text("twap".into())
-        );
-        assert_eq!(
-            sql_column_value("execution_input", "algorithm", json!("twap")).unwrap(),
-            rusqlite::types::Value::Text("\"twap\"".into())
-        );
-        assert_eq!(
-            sql_value("order_id", json!(u64::MAX)).unwrap(),
-            rusqlite::types::Value::Text(u64::MAX.to_string())
-        );
-    }
-
-    #[test]
-    fn bound_json_null_matches_sqlalchemy_while_text_and_omitted_columns_stay_sql_null() {
+    fn explicit_json_binding_distinguishes_missing_null_and_arbitrary_precision() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE execution_input(algorithm JSON,root_value JSON,extra JSON,omitted JSON);CREATE TABLE execution_symbol_result(algorithm TEXT,status TEXT);CREATE TABLE business_trade(malformed_value JSON);").unwrap();
-        let mut batch = FactBatch::new();
-        batch.push(
-            "execution_input",
-            vec![Map::from_iter([
-                ("algorithm".into(), Value::Null),
-                ("root_value".into(), Value::Null),
-                ("extra".into(), Value::Null),
-            ])],
-        );
-        batch.push(
-            "execution_symbol_result",
-            vec![Map::from_iter([
-                ("algorithm".into(), Value::Null),
-                ("status".into(), Value::Null),
-            ])],
-        );
-        batch.push(
-            "business_trade",
-            vec![Map::from_iter([("malformed_value".into(), Value::Null)])],
-        );
-        crate::business_facts_ops::insert_batch(&connection, &batch).unwrap();
-        for (table, column) in [
-            ("execution_input", "algorithm"),
-            ("execution_input", "root_value"),
-            ("execution_input", "extra"),
-            ("business_trade", "malformed_value"),
-        ] {
-            let stored: (String, String) = connection
-                .query_row(
-                    &format!("SELECT typeof({column}),json_type({column}) FROM {table}"),
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+        connection
+            .execute_batch("CREATE TABLE sample(value JSON)")
+            .unwrap();
+        let huge: Value = serde_json::from_str("1267650600228229401496703205377").unwrap();
+        let evidence = json!({"id": huge});
+        for value in [None, Some(&Value::Null), Some(&evidence)] {
+            connection
+                .execute("INSERT INTO sample VALUES(?1)", [json_text(value).unwrap()])
                 .unwrap();
-            assert_eq!(stored, ("text".into(), "null".into()), "{table}.{column}");
         }
-        for (table, column) in [
-            ("execution_input", "omitted"),
-            ("execution_symbol_result", "algorithm"),
-            ("execution_symbol_result", "status"),
-        ] {
-            let stored: (String, Option<String>) = connection
-                .query_row(
-                    &format!("SELECT typeof({column}),json_type({column}) FROM {table}"),
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            assert_eq!(stored, ("null".into(), None), "{table}.{column}");
-        }
+        let stored = connection
+            .prepare("SELECT value FROM sample ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            stored,
+            vec![None, Some("null".into()), Some(evidence.to_string())]
+        );
     }
 
     #[test]

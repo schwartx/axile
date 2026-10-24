@@ -1,36 +1,10 @@
 //! Final cost headers from canonical scalar business evidence.
 
+use crate::error::AnalysisError;
 use crate::fact_trades::Trade;
+use crate::publication::{finite, sql_error, stage_error};
+use rusqlite::params;
 use rusqlite::{Connection, Statement};
-use serde_json::{json, Value};
-
-const COLUMNS: &[&str] = &[
-    "record_id",
-    "time",
-    "success",
-    "noop",
-    "key",
-    "execution_id",
-    "created_at",
-    "is_success",
-    "duration_sec",
-    "trade_count",
-    "symbol_count",
-    "position_count",
-    "positions_present",
-    "reason",
-    "raw_present",
-    "has_symbol_results",
-    "raw_status",
-    "raw_task_status",
-    "raw_error",
-    "raw_outcome",
-    "raw_outcome_reason",
-    "raw_reason_code",
-    "raw_msg",
-    "raw_execution_kind",
-    "payload",
-];
 
 pub(crate) struct HeaderReader<'a> {
     statement: Statement<'a>,
@@ -49,13 +23,13 @@ impl<'a> HeaderReader<'a> {
             symbols:connection.prepare("SELECT map_key,node_kind,status,error,outcome,outcome_reason,reason_code,memory FROM execution_symbol_result WHERE record_id=?1 ORDER BY ordinal")?,
         })
     }
-    pub(crate) fn emit(
+    pub(crate) fn write(
         &mut self,
         record: i64,
         fills: &[Trade],
         positions: Option<usize>,
-        emit: &mut crate::publication::RowEmitter<'_>,
-    ) -> Result<(), String> {
+        target: &Connection,
+    ) -> Result<(), AnalysisError> {
         let row = self
             .statement
             .query_row([record], |row| {
@@ -82,7 +56,7 @@ impl<'a> HeaderReader<'a> {
                     row.get::<_, Option<String>>(0)?,
                 ))
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(sql_error)?;
         let (
             created,
             success,
@@ -112,75 +86,98 @@ impl<'a> HeaderReader<'a> {
                 present |= 1 << index;
             }
         }
-        let mut values = vec![
-            json!(record),
-            json!(time),
-            json!(success == 1),
-            json!(noop),
-            json!(record.to_string()),
-            json!(execution),
-            json!(created),
-            json!(success),
-            json!(duration.filter(|value| value.is_finite() && *value >= 0.0)),
-            json!(fills.len()),
-            json!(count),
-            json!(positions),
-            json!(positions.is_some()),
-            json!(raw[2]
-                .as_deref()
-                .unwrap_or_default()
-                .chars()
-                .take(300)
-                .collect::<String>()),
-            json!(present),
-            json!(has_symbol_results),
-        ];
-        values.extend(raw.into_iter().map(|value| json!(value)));
-        values.push(json!("{}"));
-        values.extend(crate::execution_summary::values(record, fills, emit)?);
-        let columns: Vec<_> = COLUMNS.iter().copied().chain([
-            "value","cost","loss_bp","coverage","covered","count","fee_covered",
-            "amount_complete","covered_value","estimated","has_transactions"
-        ]).collect();
-        crate::publication::rows("performance_cost_execution", &columns, [Ok(values)], emit)?;
-        let mut rows = self
-            .symbols
-            .query([record])
-            .map_err(|error| error.to_string())?;
-        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-            let display = crate::executions::symbol_from_row(row).map_err(|error| error.to_string())?;
+        let summary = crate::execution_summary::write_fees(target, record, fills)?;
+        let mut insert = target.prepare_cached(r#"INSERT INTO native_stage.performance_cost_execution (
+                record_id, time, success, noop, key, execution_id,
+                created_at, is_success, duration_sec, trade_count, symbol_count, position_count,
+                positions_present, reason, raw_present, has_symbol_results, raw_status, raw_task_status,
+                raw_error, raw_outcome, raw_outcome_reason, raw_reason_code, raw_msg, raw_execution_kind,
+                payload, value, cost, loss_bp, coverage, covered,
+                count, fee_covered, amount_complete, covered_value, estimated, has_transactions
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32, ?33, ?34, ?35, ?36
+            )"#).map_err(stage_error)?;
+        insert
+            .execute(params![
+                record,
+                time,
+                success == 1,
+                noop,
+                record.to_string(),
+                execution,
+                created,
+                success,
+                duration.filter(|value| value.is_finite() && *value >= 0.0),
+                fills.len(),
+                count,
+                positions,
+                positions.is_some(),
+                raw[2]
+                    .as_deref()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>(),
+                present,
+                has_symbol_results,
+                raw[0],
+                raw[1],
+                raw[2],
+                raw[3],
+                raw[4],
+                raw[5],
+                raw[6],
+                raw[7],
+                "{}",
+                finite(summary.value),
+                finite(summary.cost),
+                finite(summary.loss_bp()),
+                finite(summary.coverage()),
+                summary.covered,
+                summary.count,
+                summary.fee_count,
+                summary.amount_complete(),
+                finite(summary.covered_value),
+                summary.estimated,
+                count > 0,
+            ])
+            .map_err(stage_error)?;
+        let mut rows = self.symbols.query([record]).map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let display = crate::executions::symbol_from_row(row)?;
             let mut present = 0_i64;
-            let mut values = vec![
-                json!(record),
-                json!(row.get::<_, String>(0).map_err(|error| error.to_string())?),
-                Value::Null,
-            ];
             for (index, name) in crate::executions::SYMBOL_FIELDS.iter().enumerate() {
                 if display.get(*name).is_some() {
                     present |= 1 << index;
                 }
-                values.push(display[*name].clone());
             }
-            values[2] = json!(present);
-            // Display fields already consumed legacy memory; keep technical evidence in source facts.
-            values.extend([Value::Null, Value::Null]);
-            crate::publication::rows(
-                "performance_cost_execution_symbol",
-                &[
-                    "record_id",
-                    "symbol",
-                    "present",
-                    "status",
-                    "error",
-                    "outcome",
-                    "outcome_reason",
-                    "reason_code",
-                    "memory_message",
-                    "memory_reason_code",
-                ],
-                [Ok(values)],
-                emit,
-            )?;
+            target
+                .prepare_cached(
+                    r#"INSERT INTO native_stage.performance_cost_execution_symbol (
+                record_id, symbol, present, status, error, outcome,
+                outcome_reason, reason_code, memory_message, memory_reason_code
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, NULL, NULL
+            )"#,
+                )
+                .map_err(stage_error)?
+                .execute(params![
+                    record,
+                    row.get::<_, String>(0).map_err(sql_error)?,
+                    present,
+                    display["status"].as_str(),
+                    display["error"].as_str(),
+                    display["outcome"].as_str(),
+                    display["outcome_reason"].as_str(),
+                    display["reason_code"].as_str(),
+                ])
+                .map_err(stage_error)?;
         }
         Ok(())
     }

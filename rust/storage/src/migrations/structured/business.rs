@@ -52,17 +52,13 @@ fn except(row: &Object, names: &[&str]) -> Object {
         .map(|(name, item)| (name.clone(), item.clone()))
         .collect()
 }
-fn write_batch(connection: &Connection, batch: &encode::FactBatch) -> Result<()> {
-    crate::business_facts_ops::insert_batch(connection, batch).map_err(|failure| {
-        AnalysisError::new(
-            if failure.code == "BUSINESS_FACTS_SQL" {
-                "MIGRATION_SQL"
-            } else {
-                "MIGRATION_ERROR"
-            },
-            failure.error,
-        )
-    })
+fn write_error(failure: AnalysisError) -> AnalysisError {
+    let code = if failure.code == "BUSINESS_FACTS_SQL" {
+        "MIGRATION_SQL"
+    } else {
+        "MIGRATION_ERROR"
+    };
+    AnalysisError::caused_by(code, failure)
 }
 fn update_json(
     connection: &Connection,
@@ -121,7 +117,7 @@ fn insert_input(
             .or(execution_id),
     )
     .map_err(error)?;
-    write_batch(connection, &batch)?;
+    crate::business_facts_ops::write_input(connection, &batch).map_err(write_error)?;
     Ok(id)
 }
 fn load_input(connection: &Connection, id: &str) -> Result<Value> {
@@ -133,16 +129,43 @@ fn load_input(connection: &Connection, id: &str) -> Result<Value> {
         })
     })
 }
-fn result_children(record_id: i64, payload: &Value) -> Result<Vec<encode::FactBatch>> {
+fn result_children(record_id: i64, payload: &Value) -> Result<Vec<(&'static str, encode::Rows)>> {
     let mut result = Vec::new();
     if let Some(map) = payload.as_object() {
-        result.push(result_symbols::encode_symbols(record_id, payload)?);
-        result
-            .push(crate::asset_ops::encode_result_assets(record_id, payload, None).map_err(error)?);
-        result.push(result_orders::encode_orders(record_id, map).map_err(error)?);
-        result.push(result_trades::encode_trades(record_id, map).map_err(error)?);
+        let (collections, symbols, sizings, conversions, ticks, targets) =
+            result_symbols::encode_symbols(record_id, payload)?;
+        result.extend([
+            ("execution_symbol_collection", collections),
+            ("execution_symbol_result", symbols),
+            ("execution_symbol_sizing", sizings),
+            ("execution_symbol_conversion", conversions),
+            ("execution_symbol_tick", ticks),
+            ("execution_symbol_target", targets),
+        ]);
+        let (assets, positions, bindings) =
+            crate::asset_ops::encode_result_assets(record_id, payload, None).map_err(error)?;
+        result.extend([
+            ("business_asset_snapshot", assets),
+            ("business_asset_position", positions),
+            ("business_asset_binding", bindings),
+        ]);
+        let (collections, orders) = result_orders::encode_orders(record_id, map).map_err(error)?;
+        result.extend([
+            ("execution_order_collection", collections),
+            ("execution_order", orders),
+        ]);
+        let (collections, trades, conversions) =
+            result_trades::encode_trades(record_id, map).map_err(error)?;
+        result.extend([
+            ("business_trade_collection", collections),
+            ("business_trade", trades),
+            ("business_trade_conversion", conversions),
+        ]);
     }
-    result.push(result_extensions::encode_result_root_state(record_id, payload).map_err(error)?);
+    result.push((
+        "execution_extension",
+        vec![result_extensions::encode_result_root_state(record_id, payload).map_err(error)?],
+    ));
     Ok(result)
 }
 pub(super) fn reconstruct_result(connection: &Connection, record: &Object) -> Result<Value> {
@@ -220,9 +243,18 @@ fn backfill_records(connection: &Connection) -> Result<()> {
                 "id=?",
                 &[Value::from(record_id)],
             )?;
-            for batch in result_children(record_id, &compact)? {
-                write_batch(connection, &batch)?;
+            if let Some(payload) = compact.as_object() {
+                result_symbols::write_result_symbols(connection, record_id, &compact)
+                    .map_err(write_error)?;
+                crate::asset_ops::write_result_assets(connection, record_id, &compact, None)
+                    .map_err(write_error)?;
+                result_orders::insert_orders(connection, record_id, payload)
+                    .map_err(write_error)?;
+                result_trades::insert_trades(connection, record_id, payload)
+                    .map_err(write_error)?;
             }
+            result_extensions::write_result_extensions(connection, record_id, &compact)
+                .map_err(write_error)?;
             Ok(())
         };
         convert().map_err(|_| {
@@ -486,7 +518,8 @@ fn backfill_artifact_views(connection: &Connection) -> Result<()> {
                     encode::encode_input_after_assets(&input_id, payload.as_object().unwrap())
                 }
                 .map_err(error)?;
-                write_batch(connection, &batch)?;
+                crate::asset_ops::write_observation(connection, batch.as_ref())
+                    .map_err(write_error)?;
             }
             if !encode::py_eq(&asset_value(connection, &asset_id)?, &expected_asset) {
                 return Err(error(format!(
@@ -661,7 +694,7 @@ fn backfill_assets(connection: &Connection) -> Result<()> {
                 result.as_ref().and_then(Value::as_object),
             )
             .map_err(error)?;
-            write_batch(connection, &batch)?;
+            crate::asset_ops::write_observation(connection, Some(&batch)).map_err(write_error)?;
             format!("snapshot:{}:/account_assets", integer(&row, "id")?)
         };
         connection
@@ -698,75 +731,72 @@ fn backfill_targets(connection: &Connection) -> Result<()> {
         Ok(())
     })
 }
-fn verify_graph(
+fn verify_rows(
     connection: &Connection,
     record_id: i64,
-    graph: &[encode::FactBatch],
+    expected_rows: &[(&str, encode::Rows)],
 ) -> Result<bool> {
     use std::collections::BTreeMap;
 
-    for batch in graph {
-        for (table, expected) in batch.statements() {
-            let mut key_columns = rows(
-                connection,
-                &format!("PRAGMA table_info({})", quote(table)),
-                [],
-            )?;
-            key_columns
-                .retain(|column| value(column, "pk").as_i64().is_some_and(|index| index > 0));
-            key_columns.sort_by_key(|column| value(column, "pk").as_i64());
-            let keys = key_columns
-                .iter()
-                .map(|column| text(column, "name").map(str::to_owned))
-                .collect::<Result<Vec<_>>>()?;
-            let row_key = |row: &Object| -> Result<String> {
-                serde_json::to_string(&keys.iter().map(|key| value(row, key)).collect::<Vec<_>>())
-                    .map_err(|failure| error(failure.to_string()))
-            };
-            let columns = if *table == "executerecord" {
-                expected[0]
-                    .keys()
-                    .map(|key| quote(key))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            } else {
-                "*".into()
-            };
-            let predicate = match *table {
-                "executerecord" => "id=?",
-                "business_asset_position" => {
-                    "asset_id IN (SELECT asset_id FROM business_asset_snapshot WHERE record_id=?)"
-                }
-                _ => "record_id=?",
-            };
-            let mut statement = connection
-                .prepare(&format!(
-                    "SELECT {columns} FROM {} WHERE {predicate}",
-                    quote(table)
-                ))
-                .map_err(sql)?;
-            let mut cursor = statement.query([record_id]).map_err(sql)?;
-            let mut actual = Vec::new();
-            while let Some(row) = cursor.next().map_err(sql)? {
-                actual.push(business_detail::decode(row, table).map_err(error)?);
+    for (table, expected) in expected_rows {
+        let mut key_columns = rows(
+            connection,
+            &format!("PRAGMA table_info({})", quote(table)),
+            [],
+        )?;
+        key_columns.retain(|column| value(column, "pk").as_i64().is_some_and(|index| index > 0));
+        key_columns.sort_by_key(|column| value(column, "pk").as_i64());
+        let keys = key_columns
+            .iter()
+            .map(|column| text(column, "name").map(str::to_owned))
+            .collect::<Result<Vec<_>>>()?;
+        let row_key = |row: &Object| -> Result<String> {
+            serde_json::to_string(&keys.iter().map(|key| value(row, key)).collect::<Vec<_>>())
+                .map_err(|failure| error(failure.to_string()))
+        };
+        let columns = if *table == "executerecord" {
+            expected[0]
+                .keys()
+                .map(|key| quote(key))
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "*".into()
+        };
+        let predicate = match *table {
+            "executerecord" => "id=?",
+            "business_asset_position" => {
+                "asset_id IN (SELECT asset_id FROM business_asset_snapshot WHERE record_id=?)"
             }
-            if actual.len() != expected.len() {
+            _ => "record_id=?",
+        };
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {columns} FROM {} WHERE {predicate}",
+                quote(table)
+            ))
+            .map_err(sql)?;
+        let mut cursor = statement.query([record_id]).map_err(sql)?;
+        let mut actual = Vec::new();
+        while let Some(row) = cursor.next().map_err(sql)? {
+            actual.push(business_detail::decode(row, table).map_err(error)?);
+        }
+        if actual.len() != expected.len() {
+            return Ok(false);
+        }
+        let actual = actual
+            .into_iter()
+            .map(|row| Ok((row_key(&row)?, row)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        for row in expected {
+            let Some(stored) = actual.get(&row_key(row)?) else {
                 return Ok(false);
-            }
-            let actual = actual
-                .into_iter()
-                .map(|row| Ok((row_key(&row)?, row)))
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            for row in expected {
-                let Some(stored) = actual.get(&row_key(row)?) else {
-                    return Ok(false);
-                };
-                if row
-                    .iter()
-                    .any(|(key, item)| !encode::py_eq(item, value(stored, key)))
-                {
-                    return Ok(false);
-                }
+            };
+            if row
+                .iter()
+                .any(|(key, item)| !encode::py_eq(item, value(stored, key)))
+            {
+                return Ok(false);
             }
         }
     }
@@ -817,9 +847,13 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
         }
         let expected = summary_refs::compact_notification_capture(connection, &record, &expected)?;
         let is_success = value(&record, "is_success").as_i64();
-        let mut graph = result_children(id, &expected)?;
-        graph.push(result_head::encode_head(id, &expected, is_success)?);
-        if !verify_graph(connection, id, &graph)? {
+        let mut expected_rows = result_children(id, &expected)?;
+        let (head, cancellations) = result_head::encode_head(id, &expected, is_success)?;
+        expected_rows.extend([
+            ("executerecord", vec![head]),
+            ("execution_termination_cancel_failure", cancellations),
+        ]);
+        if !verify_rows(connection, id, &expected_rows)? {
             return Err(error(format!(
                 "Conversion mismatch executerecord id={id} path=/raw_result"
             )));
@@ -1130,46 +1164,6 @@ mod tests {
     }
 
     #[test]
-    fn historical_batch_keeps_input_json_and_symbol_text_algorithms_distinct() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE execution_input(algorithm JSON); CREATE TABLE execution_symbol_result(algorithm TEXT)").unwrap();
-        let mut batch = encode::FactBatch::new();
-        batch.push(
-            "execution_input",
-            vec![serde_json::json!({"algorithm":{"name":"twap"}})
-                .as_object()
-                .unwrap()
-                .clone()],
-        );
-        batch.push(
-            "execution_symbol_result",
-            vec![serde_json::json!({"algorithm":"twap"})
-                .as_object()
-                .unwrap()
-                .clone()],
-        );
-        write_batch(&connection, &batch).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT algorithm FROM execution_symbol_result", [], |row| {
-                    row.get::<_, String>(0)
-                })
-                .unwrap(),
-            "twap"
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT json_extract(algorithm,'$.name') FROM execution_input",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )
-                .unwrap(),
-            "twap"
-        );
-    }
-
-    #[test]
     fn document_updates_keep_json_null_separate_from_sql_null() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE legacy(id INTEGER PRIMARY KEY, first JSON NOT NULL, second JSON NOT NULL); INSERT INTO legacy VALUES(1,'{}','{}')").unwrap();
@@ -1216,7 +1210,7 @@ mod tests {
             None,
         )
         .unwrap();
-        write_batch(&connection, &input).unwrap();
+        crate::business_facts_ops::write_input(&connection, &input).unwrap();
         connection.execute("INSERT INTO execution_artifact VALUES(1,'preorder','ACCOUNT_SNAPSHOT_BEFORE',2,?,'2026-01-01T00:00:00')",[r#"{"account_assets":{"total_asset":9,"positions":[]}}"#]).unwrap();
         backfill_artifact_views(&connection).unwrap();
         let asset=connection.query_row("SELECT json_extract(content,'$.business_facts_ref.asset_id') FROM execution_artifact",[],|row|row.get::<_,String>(0)).unwrap();

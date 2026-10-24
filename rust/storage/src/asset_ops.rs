@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use crate::business_facts_ops::{encode, facts_error as invalid, insert_batch, sql};
+use crate::business_facts_ops::{encode, facts_error as invalid, sql};
 use crate::error::AnalysisError;
 
 fn integer(request: &Value, key: &str) -> Result<i64, AnalysisError> {
@@ -71,7 +71,7 @@ fn write_manual_snapshot(
         request.get("result").and_then(Value::as_object),
     )
     .map_err(invalid)?;
-    insert_batch(connection, &batch)?;
+    write_observation(connection, Some(&batch))?;
     let asset_id = format!("snapshot:{snapshot_id}:/account_assets");
     connection
         .execute(
@@ -90,8 +90,7 @@ pub(crate) fn encode_result_assets(
     record_id: i64,
     payload: &Value,
     root_asset_id: Option<&str>,
-) -> Result<encode::FactBatch, String> {
-    let mut batch = encode::FactBatch::new();
+) -> Result<(encode::Rows, encode::Rows, encode::Rows), String> {
     let mut roots = Vec::new();
     let mut positions = Vec::new();
     let mut bindings = Vec::new();
@@ -154,10 +153,7 @@ pub(crate) fn encode_result_assets(
             }
         }
     }
-    batch.push("business_asset_snapshot", roots);
-    batch.push("business_asset_position", positions);
-    batch.push("business_asset_binding", bindings);
-    Ok(batch)
+    Ok((roots, positions, bindings))
 }
 
 pub(crate) fn write_result_assets(
@@ -166,9 +162,133 @@ pub(crate) fn write_result_assets(
     payload: &Value,
     root_asset_id: Option<&str>,
 ) -> Result<(), AnalysisError> {
-    let batch = encode_result_assets(record_id, payload, root_asset_id).map_err(invalid)?;
-    insert_batch(connection, &batch)?;
+    let (roots, positions, bindings) =
+        encode_result_assets(record_id, payload, root_asset_id).map_err(invalid)?;
+    for row in &roots {
+        insert_asset(connection, row)?;
+    }
+    insert_positions(connection, &positions)?;
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO business_asset_binding (
+                "record_id", "path", "asset_id", "scope", "ordinal", "map_key"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &bindings {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("asset_id").and_then(Value::as_str),
+                row.get("scope").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str)
+            ])
+            .map_err(sql)?;
+    }
+
     validate_result_asset_ownership(connection, record_id)
+}
+
+pub(crate) fn write_observation(
+    connection: &Connection,
+    observation: Option<&encode::Observation>,
+) -> Result<(), AnalysisError> {
+    if let Some(observation) = observation {
+        insert_asset(connection, &observation.root)?;
+        insert_positions(connection, &observation.positions)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn insert_asset(
+    connection: &Connection,
+    row: &Map<String, Value>,
+) -> Result<(), AnalysisError> {
+    let mut statement = connection.prepare_cached(r#"INSERT INTO business_asset_snapshot (
+                "asset_id", "record_id", "input_id", "account_snapshot_id", "path", "scope",
+                "ordinal", "map_key", "payload_kind", "payload_value", "audit_evidence", "cash_state",
+                "equity_state", "market_state", "positions_kind", "positions_count", "positions_value", "observation_valid",
+                "available_cash", "total_asset", "market_value", "currency", "update_time", "source",
+                "extra"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25
+            )"#).map_err(sql)?;
+    statement
+        .execute(rusqlite::params![
+            row.get("asset_id").and_then(Value::as_str),
+            row.get("record_id").and_then(Value::as_i64),
+            row.get("input_id").and_then(Value::as_str),
+            row.get("account_snapshot_id").and_then(Value::as_i64),
+            row.get("path").and_then(Value::as_str),
+            row.get("scope").and_then(Value::as_str),
+            row.get("ordinal").and_then(Value::as_i64),
+            row.get("map_key").and_then(Value::as_str),
+            row.get("payload_kind").and_then(Value::as_str),
+            encode::json_text(row.get("payload_value"))?,
+            encode::json_text(row.get("audit_evidence"))?,
+            row.get("cash_state").and_then(Value::as_str),
+            row.get("equity_state").and_then(Value::as_str),
+            row.get("market_state").and_then(Value::as_str),
+            row.get("positions_kind").and_then(Value::as_str),
+            row.get("positions_count").and_then(Value::as_i64),
+            encode::json_text(row.get("positions_value"))?,
+            row.get("observation_valid").and_then(Value::as_bool),
+            row.get("available_cash").and_then(Value::as_f64),
+            row.get("total_asset").and_then(Value::as_f64),
+            row.get("market_value").and_then(Value::as_f64),
+            row.get("currency").and_then(Value::as_str),
+            row.get("update_time").and_then(Value::as_str),
+            row.get("source").and_then(Value::as_str),
+            encode::json_text(row.get("extra"))?,
+        ])
+        .map_err(sql)?;
+    Ok(())
+}
+
+fn insert_positions(
+    connection: &Connection,
+    rows: &[Map<String, Value>],
+) -> Result<(), AnalysisError> {
+    let mut statement = connection.prepare_cached(r#"INSERT INTO business_asset_position (
+                "asset_id", "ordinal", "payload_kind", "payload_value", "audit_evidence", "volume_state",
+                "available_volume_state", "market_value_state", "avg_price_state", "symbol", "volume", "available_volume",
+                "market_value", "direction", "avg_price", "extra"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16
+            )"#).map_err(sql)?;
+    for row in rows {
+        statement
+            .execute(rusqlite::params![
+                row.get("asset_id").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("payload_kind").and_then(Value::as_str),
+                encode::json_text(row.get("payload_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("volume_state").and_then(Value::as_str),
+                row.get("available_volume_state").and_then(Value::as_str),
+                row.get("market_value_state").and_then(Value::as_str),
+                row.get("avg_price_state").and_then(Value::as_str),
+                row.get("symbol").and_then(Value::as_str),
+                row.get("volume").and_then(Value::as_f64),
+                row.get("available_volume").and_then(Value::as_f64),
+                row.get("market_value").and_then(Value::as_f64),
+                row.get("direction").and_then(Value::as_str),
+                row.get("avg_price").and_then(Value::as_f64),
+                encode::json_text(row.get("extra"))?,
+            ])
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 /// 只查询归属标量，供审计在装载大载荷前拒绝越权引用。
@@ -591,7 +711,7 @@ mod tests {
             let payload = json!({"account_assets":{"total_asset":0,"positions":[]}});
             let after =
                 encode::encode_input_after_assets("i1", payload.as_object().unwrap()).unwrap();
-            insert_batch(&connection, &after).unwrap();
+            write_observation(&connection, after.as_ref()).unwrap();
             let result: Result<(), AnalysisError> =
                 crate::writer_scope::immediate(&connection, || {
                     write_result_assets(
@@ -633,7 +753,7 @@ mod tests {
             } else {
                 encode::encode_input_after_assets("i1", payload.as_object().unwrap()).unwrap()
             };
-            insert_batch(&connection, &batch).unwrap();
+            write_observation(&connection, batch.as_ref()).unwrap();
             let change = match mutation {
                 "account" => "UPDATE execution_input SET account_id=2",
                 "execution" => "UPDATE execution_input SET owner_execution_id='e2'",

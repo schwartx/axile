@@ -3,9 +3,9 @@
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use super::encode::{audit_value, join_pointer, store_columns, valid, FactBatch};
+use super::encode::{audit_value, join_pointer, store_columns, valid, Rows};
 use super::result_orders::CONVERSION_FIELDS;
-use super::{facts_error, insert_batch, sql};
+use super::{encode, facts_error, sql};
 use crate::error::AnalysisError;
 
 const SYMBOL_FIELDS: &[(&str, &str)] = &[
@@ -169,7 +169,10 @@ fn encode_object(
 }
 
 /// 顺序、空映射、异常节点以及映射键和原生品种身份分别保留。
-pub(crate) fn encode_symbols(record_id: i64, result: &Value) -> Result<FactBatch, AnalysisError> {
+pub(crate) fn encode_symbols(
+    record_id: i64,
+    result: &Value,
+) -> Result<(Rows, Rows, Rows, Rows, Rows, Rows), AnalysisError> {
     let mut collections = Vec::new();
     let mut results = Vec::new();
     let mut sizings = Vec::new();
@@ -266,18 +269,7 @@ pub(crate) fn encode_symbols(record_id: i64, result: &Value) -> Result<FactBatch
             }
         }
     }
-    let mut batch = FactBatch::new();
-    for (table, rows) in [
-        ("execution_symbol_collection", collections),
-        ("execution_symbol_result", results),
-        ("execution_symbol_sizing", sizings),
-        ("execution_symbol_conversion", conversions),
-        ("execution_symbol_tick", ticks),
-        ("execution_symbol_target", targets),
-    ] {
-        batch.push(table, rows);
-    }
-    Ok(batch)
+    Ok((collections, results, sizings, conversions, ticks, targets))
 }
 
 pub(crate) fn write_result_symbols(
@@ -285,7 +277,225 @@ pub(crate) fn write_result_symbols(
     record_id: i64,
     result: &Value,
 ) -> Result<(), AnalysisError> {
-    insert_batch(connection, &encode_symbols(record_id, result)?)
+    let (collections, results, sizings, conversions, ticks, targets) =
+        encode_symbols(record_id, result)?;
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_symbol_collection (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "member_count"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &collections {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("member_count").and_then(Value::as_i64),
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_symbol_result (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "sizing_recorded", "tick_recorded", "target_volume_state", "final_volume_state", "symbol",
+                "algorithm", "status", "error", "technical_detail", "reason_code", "outcome",
+                "outcome_reason", "target_volume", "final_volume", "success", "memory"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23
+            )"#).map_err(sql)?;
+    for row in &results {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("sizing_recorded").and_then(Value::as_bool),
+                row.get("tick_recorded").and_then(Value::as_bool),
+                row.get("target_volume_state").and_then(Value::as_str),
+                row.get("final_volume_state").and_then(Value::as_str),
+                row.get("symbol").and_then(Value::as_str),
+                row.get("algorithm").and_then(Value::as_str),
+                row.get("status").and_then(Value::as_str),
+                row.get("error").and_then(Value::as_str),
+                row.get("technical_detail").and_then(Value::as_str),
+                row.get("reason_code").and_then(Value::as_str),
+                row.get("outcome").and_then(Value::as_str),
+                row.get("outcome_reason").and_then(Value::as_str),
+                row.get("target_volume").and_then(Value::as_f64),
+                row.get("final_volume").and_then(Value::as_f64),
+                row.get("success").and_then(Value::as_bool),
+                encode::json_text(row.get("memory"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_symbol_sizing (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "conversion_recorded", "symbol", "sizing_mode", "status", "reason_code",
+                "account_weight", "equity", "reference_price", "unit_multiplier", "unit_notional", "target_notional",
+                "raw_quantity", "target_quantity", "current_quantity", "quantity_step", "min_quantity", "min_notional"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24
+            )"#).map_err(sql)?;
+    for row in &sizings {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("conversion_recorded").and_then(Value::as_bool),
+                row.get("symbol").and_then(Value::as_str),
+                row.get("sizing_mode").and_then(Value::as_str),
+                row.get("status").and_then(Value::as_str),
+                row.get("reason_code").and_then(Value::as_str),
+                row.get("account_weight").and_then(Value::as_f64),
+                row.get("equity").and_then(Value::as_f64),
+                row.get("reference_price").and_then(Value::as_f64),
+                row.get("unit_multiplier").and_then(Value::as_f64),
+                row.get("unit_notional").and_then(Value::as_f64),
+                row.get("target_notional").and_then(Value::as_f64),
+                row.get("raw_quantity").and_then(Value::as_f64),
+                row.get("target_quantity").and_then(Value::as_f64),
+                row.get("current_quantity").and_then(Value::as_f64),
+                row.get("quantity_step").and_then(Value::as_f64),
+                row.get("min_quantity").and_then(Value::as_f64),
+                row.get("min_notional").and_then(Value::as_f64),
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_symbol_conversion (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "price_currency", "value_currency", "rate", "reference"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &conversions {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("price_currency").and_then(Value::as_str),
+                row.get("value_currency").and_then(Value::as_str),
+                row.get("rate").and_then(Value::as_f64),
+                encode::json_text(row.get("reference"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_symbol_tick (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "symbol", "last_price", "bid_price", "bid_price_2", "bid_price_3",
+                "bid_price_4", "bid_price_5", "bid_volume", "bid_volume_2", "bid_volume_3", "bid_volume_4",
+                "bid_volume_5", "ask_price", "ask_price_2", "ask_price_3", "ask_price_4", "ask_price_5",
+                "ask_volume", "ask_volume_2", "ask_volume_3", "ask_volume_4", "ask_volume_5", "volume",
+                "turnover", "timestamp", "update_time", "timestamp_datetime", "book_valid", "extra"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32, ?33, ?34, ?35, ?36
+            )"#).map_err(sql)?;
+    for row in &ticks {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("symbol").and_then(Value::as_str),
+                row.get("last_price").and_then(Value::as_f64),
+                row.get("bid_price").and_then(Value::as_f64),
+                row.get("bid_price_2").and_then(Value::as_f64),
+                row.get("bid_price_3").and_then(Value::as_f64),
+                row.get("bid_price_4").and_then(Value::as_f64),
+                row.get("bid_price_5").and_then(Value::as_f64),
+                row.get("bid_volume").and_then(Value::as_f64),
+                row.get("bid_volume_2").and_then(Value::as_f64),
+                row.get("bid_volume_3").and_then(Value::as_f64),
+                row.get("bid_volume_4").and_then(Value::as_f64),
+                row.get("bid_volume_5").and_then(Value::as_f64),
+                row.get("ask_price").and_then(Value::as_f64),
+                row.get("ask_price_2").and_then(Value::as_f64),
+                row.get("ask_price_3").and_then(Value::as_f64),
+                row.get("ask_price_4").and_then(Value::as_f64),
+                row.get("ask_price_5").and_then(Value::as_f64),
+                row.get("ask_volume").and_then(Value::as_f64),
+                row.get("ask_volume_2").and_then(Value::as_f64),
+                row.get("ask_volume_3").and_then(Value::as_f64),
+                row.get("ask_volume_4").and_then(Value::as_f64),
+                row.get("ask_volume_5").and_then(Value::as_f64),
+                row.get("volume").and_then(Value::as_f64),
+                row.get("turnover").and_then(Value::as_f64),
+                row.get("timestamp").and_then(Value::as_i64),
+                row.get("update_time").and_then(Value::as_str),
+                row.get("timestamp_datetime").and_then(Value::as_str),
+                row.get("book_valid").and_then(Value::as_bool),
+                encode::json_text(row.get("extra"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO execution_symbol_target (
+                "record_id", "path", "ordinal", "map_key", "node_kind", "invalid_value",
+                "audit_evidence", "value"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &targets {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("node_kind").and_then(Value::as_str),
+                encode::json_text(row.get("invalid_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+                row.get("value").and_then(Value::as_f64),
+            ])
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 fn decode_object(row: &Map<String, Value>, specs: &[(&str, &str)]) -> Result<Value, AnalysisError> {
@@ -417,7 +627,7 @@ pub(crate) fn read_sizing_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::super::encode::{batch_value, frozen_cases};
+    use super::super::encode::frozen_cases;
     use super::*;
 
     #[test]
@@ -433,7 +643,11 @@ mod tests {
                 );
             } else {
                 assert_eq!(
-                    batch_value(&encoded.unwrap()),
+                    {
+                        let (collections, results, sizings, conversions, ticks, targets) =
+                            encoded.unwrap();
+                        json!({"execution_symbol_collection":collections,"execution_symbol_result":results,"execution_symbol_sizing":sizings,"execution_symbol_conversion":conversions,"execution_symbol_tick":ticks,"execution_symbol_target":targets})
+                    },
                     case["expected"],
                     "{}",
                     case["name"]
@@ -446,7 +660,14 @@ mod tests {
     fn narrow_readers_preserve_order_and_reject_missing_conversion() {
         let connection = Connection::open_in_memory().unwrap();
         let prototype = encode_symbols(7, &json!({"symbol_results":{"schema":{"sizing":{"value_conversion":{}},"first_tick":{}}},"first_ticks":{},"target_volume":{"schema":0}})).unwrap();
-        for (table, rows) in prototype.statements() {
+        for (table, rows) in [
+            ("execution_symbol_collection", &prototype.0),
+            ("execution_symbol_result", &prototype.1),
+            ("execution_symbol_sizing", &prototype.2),
+            ("execution_symbol_conversion", &prototype.3),
+            ("execution_symbol_tick", &prototype.4),
+            ("execution_symbol_target", &prototype.5),
+        ] {
             let columns = rows[0]
                 .keys()
                 .map(|key| format!("\"{key}\""))
@@ -468,7 +689,7 @@ mod tests {
         );
         assert_eq!(
             read_sizing_rows(&connection, 7).unwrap(),
-            json!({"Z/~":{"target_quantity":0,"value_conversion":{"rate":1.25}}})
+            json!({"Z/~":{"target_quantity":0.0,"value_conversion":{"rate":1.25}}})
         );
         connection
             .execute_batch("DELETE FROM execution_symbol_conversion")

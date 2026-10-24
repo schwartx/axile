@@ -3,9 +3,10 @@
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use super::encode::{audit_value, join_pointer, store_columns, valid, FactBatch};
+use super::encode::{audit_value, join_pointer, store_columns, valid, Rows};
+use super::facts_error;
 use super::result_orders::CONVERSION_FIELDS;
-use super::{facts_error, insert_batch};
+use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const TRADE_FIELDS: &[(&str, &str)] = &[
@@ -134,7 +135,7 @@ fn append_collection(
 pub(crate) fn encode_trades(
     record_id: i64,
     payload: &Map<String, Value>,
-) -> Result<FactBatch, String> {
+) -> Result<(Rows, Rows, Rows), String> {
     let mut collections = Vec::new();
     let mut trades = Vec::new();
     let mut conversions = Vec::new();
@@ -164,11 +165,7 @@ pub(crate) fn encode_trades(
             }
         }
     }
-    let mut batch = FactBatch::new();
-    batch.push("business_trade_collection", collections);
-    batch.push("business_trade", trades);
-    batch.push("business_trade_conversion", conversions);
-    Ok(batch)
+    Ok((collections, trades, conversions))
 }
 
 /// 只使用调用方连接，不开启或提交事务。
@@ -177,10 +174,95 @@ pub(crate) fn insert_trades(
     record_id: i64,
     payload: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
-    insert_batch(
-        connection,
-        &encode_trades(record_id, payload).map_err(facts_error)?,
-    )
+    let (collections, trades, conversions) =
+        encode_trades(record_id, payload).map_err(facts_error)?;
+    let mut statement = connection
+        .prepare_cached(
+            r#"INSERT INTO business_trade_collection (
+                "record_id", "path", "parent_path", "ordinal", "map_key", "state",
+                "member_count", "malformed_value", "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9
+            )"#,
+        )
+        .map_err(sql)?;
+    for row in &collections {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("parent_path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("map_key").and_then(Value::as_str),
+                row.get("state").and_then(Value::as_str),
+                row.get("member_count").and_then(Value::as_i64),
+                encode::json_text(row.get("malformed_value"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO business_trade (
+                "record_id", "path", "collection_path", "ordinal", "state", "malformed_value",
+                "symbol", "trade_time", "trade_id", "order_id", "trade_volume", "trade_price",
+                "trade_value", "extra", "trade_id_state", "order_id_state", "conversion_recorded", "fee",
+                "fee_state", "fee_currency", "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21
+            )"#).map_err(sql)?;
+    for row in &trades {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("path").and_then(Value::as_str),
+                row.get("collection_path").and_then(Value::as_str),
+                row.get("ordinal").and_then(Value::as_i64),
+                row.get("state").and_then(Value::as_str),
+                encode::json_text(row.get("malformed_value"))?,
+                row.get("symbol").and_then(Value::as_str),
+                row.get("trade_time").and_then(Value::as_str),
+                encode::json_text(row.get("trade_id"))?,
+                encode::json_text(row.get("order_id"))?,
+                row.get("trade_volume").and_then(Value::as_f64),
+                row.get("trade_price").and_then(Value::as_f64),
+                row.get("trade_value").and_then(Value::as_f64),
+                encode::json_text(row.get("extra"))?,
+                row.get("trade_id_state").and_then(Value::as_str),
+                row.get("order_id_state").and_then(Value::as_str),
+                row.get("conversion_recorded").and_then(Value::as_bool),
+                row.get("fee").and_then(Value::as_f64),
+                row.get("fee_state").and_then(Value::as_str),
+                row.get("fee_currency").and_then(Value::as_str),
+                encode::json_text(row.get("audit_evidence"))?,
+            ])
+            .map_err(sql)?;
+    }
+    let mut statement = connection.prepare_cached(r#"INSERT INTO business_trade_conversion (
+                "record_id", "trade_path", "state", "malformed_value", "price_currency", "value_currency",
+                "rate", "reference", "audit_evidence"
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9
+            )"#).map_err(sql)?;
+    for row in &conversions {
+        statement
+            .execute(rusqlite::params![
+                row.get("record_id").and_then(Value::as_i64),
+                row.get("trade_path").and_then(Value::as_str),
+                row.get("state").and_then(Value::as_str),
+                encode::json_text(row.get("malformed_value"))?,
+                row.get("price_currency").and_then(Value::as_str),
+                row.get("value_currency").and_then(Value::as_str),
+                row.get("rate").and_then(Value::as_f64),
+                encode::json_text(row.get("reference"))?,
+                encode::json_text(row.get("audit_evidence"))?,
+            ])
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -192,10 +274,14 @@ mod tests {
     fn trade_codec_matches_frozen_python_occurrences_fees_and_metadata() {
         let frozen = frozen_fixture();
         let batch = encode_trades(19, frozen["payload"].as_object().unwrap()).unwrap();
-        for (table, rows) in batch.statements() {
-            assert_eq!(json!(rows), frozen["trades"][*table], "{table}");
+        for (table, rows) in [
+            ("business_trade_collection", &batch.0),
+            ("business_trade", &batch.1),
+            ("business_trade_conversion", &batch.2),
+        ] {
+            assert_eq!(json!(rows), frozen["trades"][table], "{table}");
         }
-        let rows = &batch.statements()[1].1;
+        let rows = &batch.1;
         assert_eq!(rows[2]["fee"], json!(0));
         assert_eq!(rows[3]["fee"], json!(-0.002));
         assert_eq!(rows[7]["fee_state"], json!("invalid"));
@@ -293,6 +379,6 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(batch.statements().iter().all(|(_, rows)| rows.is_empty()));
+        assert!(batch.0.is_empty() && batch.1.is_empty() && batch.2.is_empty());
     }
 }

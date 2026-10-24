@@ -1,15 +1,13 @@
-//! Consume bounded in-process publication frames into SQLite's temporary file.
+//! Own the disk-backed temporary database and validate completion before publication.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::error::AnalysisError;
 
 const STAGE: &str = "native_stage";
 
-// The names are trusted identifiers; frames never supply SQL identifiers.
+// Only migrated result tables participate in staging and publication.
 pub(super) const RESULT_TABLES: &[&str] = &[
     "performance_result_daily_fee",
     "performance_result_daily_cost",
@@ -40,8 +38,6 @@ struct Column {
 
 pub(super) struct Staging<'a> {
     connection: &'a Connection,
-    tables: BTreeMap<&'static str, Vec<Column>>,
-    counts: BTreeMap<String, usize>,
 }
 
 impl Drop for Staging<'_> {
@@ -62,7 +58,7 @@ fn invalid(message: impl Into<String>) -> AnalysisError {
 }
 
 fn sql(error: rusqlite::Error) -> AnalysisError {
-    AnalysisError::new("PUBLICATION_STAGE", error.to_string())
+    AnalysisError::caused_by("PUBLICATION_STAGE", error)
 }
 
 impl<'a> Staging<'a> {
@@ -72,11 +68,7 @@ impl<'a> Staging<'a> {
         connection
             .execute_batch("ATTACH DATABASE '' AS native_stage;")
             .map_err(sql)?;
-        let mut staged = Self {
-            connection,
-            tables: BTreeMap::new(),
-            counts: BTreeMap::new(),
-        };
+        let staged = Self { connection };
         connection
             .execute_batch(
                 "PRAGMA native_stage.cache_size = -4096;
@@ -87,58 +79,40 @@ impl<'a> Staging<'a> {
         for &name in RESULT_TABLES {
             let columns = table_columns(connection, name)?;
             create_table(connection, name, &columns)?;
-            staged.tables.insert(name, columns);
         }
         connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
         Ok(staged)
     }
 
-    pub(super) fn insert_rows(
-        &mut self,
-        name: &str,
-        columns: &[&str],
-        rows: &[Vec<Value>],
-    ) -> Result<(), AnalysisError> {
-        let table = self
-            .tables
-            .get(name)
-            .ok_or_else(|| invalid("unknown result table"))?;
-        let columns = checked_columns(columns, table)?;
-        if rows.is_empty() || rows.len() > 256 {
-            return Err(invalid("invalid publication batch size"));
-        }
-        let names = columns
-            .iter()
-            .map(|column| format!("\"{}\"", column.name))
-            .collect::<Vec<_>>()
-            .join(",");
-        let parameters = vec!["?"; columns.len()].join(",");
-        let query = format!("INSERT INTO {STAGE}.\"{name}\" ({names}) VALUES ({parameters})");
-        let mut statement = self.connection.prepare_cached(&query).map_err(sql)?;
-        for row in rows {
-            if row.len() != columns.len() {
-                return Err(invalid("result row width mismatch"));
-            }
-            let values = columns
-                .iter()
-                .zip(row)
-                .map(|(column, value)| cell(column, value))
-                .collect::<Result<Vec<_>, _>>()?;
-            statement
-                .execute(params_from_iter(values.iter()))
-                .map_err(sql)?;
-        }
-        *self.counts.entry(name.to_owned()).or_default() += rows.len();
-        Ok(())
-    }
-
     pub(super) fn finish(
         &self,
-        complete: Value,
+        mut complete: Value,
         account_id: i64,
         source_version: i64,
     ) -> Result<Value, AnalysisError> {
-        validate_complete(&complete, &self.counts, account_id, source_version)?;
+        if complete["account_id"].as_i64() != Some(account_id)
+            || complete["source_version"].as_i64() != Some(source_version)
+        {
+            return Err(invalid("publication source identity changed"));
+        }
+        if !complete["data_until"].is_null() && !complete["data_until"].is_string() {
+            return Err(invalid("invalid data_until"));
+        }
+        let mut counts = serde_json::Map::new();
+        for name in RESULT_TABLES {
+            let count: i64 = self
+                .connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM native_stage.\"{name}\""),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            if count > 0 {
+                counts.insert((*name).into(), Value::from(count));
+            }
+        }
+        complete["row_counts"] = Value::Object(counts);
         let mut statement = self
             .connection
             .prepare(
@@ -230,95 +204,6 @@ fn create_table(
         .map_err(sql)
 }
 
-fn checked_columns<'a>(
-    names: &[&str],
-    table: &'a [Column],
-) -> Result<Vec<&'a Column>, AnalysisError> {
-    let mut seen = BTreeSet::new();
-    let mut columns = Vec::new();
-    for &name in names {
-        if !seen.insert(name) {
-            return Err(invalid("duplicate result column"));
-        }
-        let column = table
-            .iter()
-            .find(|column| column.name == name)
-            .ok_or_else(|| invalid("unknown result column"))?;
-        columns.push(column);
-    }
-    if columns.len() != table.len() {
-        return Err(invalid("result columns differ from migrated schema"));
-    }
-    Ok(columns)
-}
-
-fn cell(column: &Column, value: &Value) -> Result<SqlValue, AnalysisError> {
-    if column.name == "range_key" && !matches!(value.as_str(), Some("30" | "90" | "all")) {
-        return Err(invalid("unknown result range"));
-    }
-    if value.is_null() {
-        return if column.required {
-            Err(invalid(format!(
-                "missing required result value {}",
-                column.name
-            )))
-        } else {
-            Ok(SqlValue::Null)
-        };
-    }
-    let parsed = match column.kind.as_str() {
-        "TEXT" => value.as_str().map(|value| SqlValue::Text(value.to_owned())),
-        "JSON" if column.name == "payload" && value.as_str() == Some("{}") => {
-            Some(SqlValue::Text("{}".into()))
-        }
-        "INTEGER" => value.as_i64().map(SqlValue::Integer),
-        "BOOLEAN" => value
-            .as_bool()
-            .map(|value| SqlValue::Integer(i64::from(value))),
-        "FLOAT" | "REAL" => value
-            .as_f64()
-            .filter(|value| value.is_finite())
-            .map(SqlValue::Real),
-        _ => None,
-    };
-    parsed.ok_or_else(|| invalid(format!("invalid result value type {}", column.name)))
-}
-
-fn validate_complete(
-    complete: &Value,
-    counts: &BTreeMap<String, usize>,
-    account_id: i64,
-    source_version: i64,
-) -> Result<(), AnalysisError> {
-    if complete["account_id"].as_i64() != Some(account_id)
-        || complete["source_version"].as_i64() != Some(source_version)
-    {
-        return Err(invalid("publication source identity changed"));
-    }
-    let reported = complete["row_counts"]
-        .as_object()
-        .ok_or_else(|| invalid("missing result row counts"))?;
-    let mut actual = BTreeMap::new();
-    for (name, count) in reported {
-        let count = count
-            .as_u64()
-            .ok_or_else(|| invalid("invalid result count"))?;
-        if !RESULT_TABLES.contains(&name.as_str()) {
-            return Err(invalid("unknown counted result table"));
-        }
-        if count > 0 {
-            actual.insert(name.clone(), count as usize);
-        }
-    }
-    if &actual != counts {
-        return Err(invalid("publication row count mismatch"));
-    }
-    if !complete["data_until"].is_null() && !complete["data_until"].is_string() {
-        return Err(invalid("invalid data_until"));
-    }
-    Ok(())
-}
-
 pub(super) fn copy_results(
     connection: &Connection,
     snapshot_id: &str,
@@ -342,22 +227,6 @@ pub(super) fn copy_results(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn payload_accepts_only_empty_compatibility_object() {
-        let column = Column {
-            name: "payload".into(),
-            kind: "JSON".into(),
-            required: true,
-            key: 0,
-        };
-        assert_eq!(
-            cell(&column, &json!("{}")).unwrap(),
-            SqlValue::Text("{}".into())
-        );
-        assert!(cell(&column, &json!("{\"history\":[]} ")).is_err());
-        assert!(cell(&column, &json!({})).is_err());
-    }
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
@@ -390,120 +259,82 @@ mod tests {
             .execute_batch("DROP TABLE performance_cost_transaction_fee;")
             .unwrap();
         for _ in 0..2 {
-            let error = Staging::new(&connection).err().unwrap();
-            assert_eq!(error.code, "SCHEMA_INCOMPATIBLE");
+            assert_eq!(
+                Staging::new(&connection).err().unwrap().code,
+                "SCHEMA_INCOMPATIBLE"
+            );
             assert_detached(&connection);
         }
     }
 
     #[test]
-    fn typed_insert_checks_identifiers_width_types_and_batch_limits() {
-        let connection = fixture();
-        let mut staged = Staging::new(&connection).unwrap();
-        let table = "performance_result_range";
-        let columns = ["range_key", "value"];
-        let row = vec![json!("all"), Value::Null];
-        for (name, names, rows) in [
-            ("unknown", columns.as_slice(), vec![row.clone()]),
-            (table, &["range_key", "unknown"], vec![row.clone()]),
-            (table, &["range_key", "range_key"], vec![row.clone()]),
-            (table, &["range_key"], vec![row.clone()]),
-            (table, columns.as_slice(), vec![vec![json!("all")]]),
-            (
-                table,
-                columns.as_slice(),
-                vec![vec![json!("all"), json!(true)]],
-            ),
-            (table, columns.as_slice(), vec![vec![Value::Null, json!(1)]]),
-            (
-                table,
-                columns.as_slice(),
-                vec![vec![json!("invalid"), json!(1)]],
-            ),
-            (table, columns.as_slice(), vec![]),
-            (table, columns.as_slice(), vec![row.clone(); 257]),
-        ] {
-            assert_eq!(
-                staged.insert_rows(name, names, &rows).unwrap_err().code,
-                "INVALID_NATIVE_PUBLICATION"
-            );
-        }
-        staged
-            .insert_rows(table, &columns, &vec![row; 256])
-            .unwrap();
-        assert_eq!(staged.counts[table], 256);
-        assert_eq!(connection.query_row(
-            "SELECT COUNT(*) FROM native_stage.performance_result_range WHERE value IS NULL",
-            [], |row| row.get::<_, usize>(0)
-        ).unwrap(), 256);
-        drop(staged);
-        assert_detached(&connection);
-    }
-
-    #[test]
-    fn finish_validates_identity_counts_and_three_ranges_before_commit() {
-        for case in ["valid", "identity", "count", "ranges"] {
+    fn finish_checks_identity_ranges_and_counts_persisted_rows() {
+        for case in ["valid", "identity", "version", "ranges", "until"] {
             let connection = fixture();
-            let mut staged = Staging::new(&connection).unwrap();
-            let ranges = if case == "ranges" {
-                vec!["30", "90", "90"]
-            } else {
-                vec!["30", "90", "all"]
-            };
-            staged
-                .insert_rows(
-                    "performance_result_range",
-                    &["range_key", "value"],
-                    &ranges
-                        .into_iter()
-                        .map(|range| vec![json!(range), Value::Null])
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap();
-            let complete = json!({"type":"complete", "account_id":1,
-                "source_version": if case == "identity" { 3 } else { 2 },
-                "data_until":null, "settings":{"backtest_fee_rate":0.001},
-                "row_counts":{"performance_result_range":if case == "count" { 2 } else { 3 }}});
-            let result = staged.finish(complete.clone(), 1, 2);
+            let staged = Staging::new(&connection).unwrap();
+            let last = if case == "ranges" { "90" } else { "all" };
+            for key in ["30", "90", last] {
+                connection
+                    .execute(
+                        "INSERT INTO native_stage.performance_result_range VALUES(?1,NULL)",
+                        [key],
+                    )
+                    .unwrap();
+            }
+            let complete = json!({"account_id":if case == "identity" { 2 } else { 1 },
+                "source_version":if case == "version" { 3 } else { 2 },
+                "data_until":if case == "until" { json!(1) } else { Value::Null }});
+            let result = staged.finish(complete, 1, 2);
             if case == "valid" {
-                assert_eq!(result.unwrap(), complete);
-                assert!(connection.is_autocommit());
+                assert_eq!(
+                    result.unwrap()["row_counts"],
+                    json!({"performance_result_range":3})
+                );
+                assert_eq!(
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM main.performance_result_range",
+                            [],
+                            |row| row.get::<_, i64>(0)
+                        )
+                        .unwrap(),
+                    0
+                );
+                copy_results(&connection, "snapshot").unwrap();
+                assert_eq!(connection.query_row("SELECT COUNT(*) FROM main.performance_result_range WHERE snapshot_id='snapshot'", [], |row| row.get::<_,i64>(0)).unwrap(), 3);
             } else {
                 assert_eq!(result.unwrap_err().code, "INVALID_NATIVE_PUBLICATION");
-                assert!(!connection.is_autocommit());
             }
             drop(staged);
             assert_detached(&connection);
-            drop(Staging::new(&connection).unwrap());
-            assert_detached(&connection);
         }
     }
 
     #[test]
-    fn scalar_validation_preserves_null_and_rejects_coercion() {
-        let mut column = Column {
-            name: "value".into(),
-            kind: "FLOAT".into(),
-            required: false,
-            key: 0,
-        };
-        assert_eq!(cell(&column, &Value::Null).unwrap(), SqlValue::Null);
-        assert_eq!(cell(&column, &json!(0)).unwrap(), SqlValue::Real(0.0));
-        assert!(cell(&column, &json!("0")).is_err());
-        column.kind = "INTEGER".into();
-        assert!(cell(&column, &json!(true)).is_err());
-        assert!(cell(&column, &json!(1.0)).is_err());
-        column.required = true;
-        assert!(cell(&column, &Value::Null).is_err());
-    }
-
-    #[test]
-    fn complete_rejects_wrong_version_and_missing_rows() {
-        let counts = BTreeMap::from([("performance_result_range".into(), 3)]);
-        let mut frame = json!({"account_id":1,"source_version":2,"data_until":null,"row_counts":{"performance_result_range":3}});
-        validate_complete(&frame, &counts, 1, 2).unwrap();
-        assert!(validate_complete(&frame, &counts, 1, 3).is_err());
-        frame["row_counts"]["performance_result_range"] = json!(2);
-        assert!(validate_complete(&frame, &counts, 1, 2).is_err());
+    fn dropping_stage_rolls_back_inserts_and_releases_cached_statements() {
+        let connection = fixture();
+        {
+            let _staged = Staging::new(&connection).unwrap();
+            connection
+                .prepare_cached(
+                    "INSERT INTO native_stage.performance_result_range VALUES('all',NULL)",
+                )
+                .unwrap()
+                .execute([])
+                .unwrap();
+        }
+        assert_detached(&connection);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM main.performance_result_range",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        drop(Staging::new(&connection).unwrap());
+        assert_detached(&connection);
     }
 }

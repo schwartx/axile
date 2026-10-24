@@ -19,6 +19,22 @@ def _roundtrip(path, payload):
     return read_result(path, record)
 
 
+def test_fixed_sql_binds_input_json_and_symbol_text_separately(native_database):
+    record = persist_result(
+        native_database,
+        {"symbol_results": {"A": {"algorithm": "twap"}}},
+        raw_input={"algorithm": "twap"},
+    )
+    with closing(sqlite3.connect(native_database)) as connection:
+        stored = connection.execute(
+            "SELECT i.algorithm,s.algorithm,i.extra,i.channel_type IS NULL "
+            "FROM executerecord e JOIN execution_input i ON i.id=e.input_id "
+            "JOIN execution_symbol_result s ON s.record_id=e.id WHERE e.id=?",
+            (record["id"],),
+        ).fetchone()
+    assert stored == ('"twap"', "twap", "null", 1)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

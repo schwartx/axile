@@ -6,7 +6,7 @@ Rust 通过进程内 PyO3 扩展 `axile.server._native._core` 执行 SQLite 业�
 
 Python 的 `AnalysisManager` 领取持久化任务并准备渠道日历，向 `_core.publish_store` 传入完整请求。Rust 在一致的只读快照中读取规范业务事实，计算 `30`、`90`、`all` 三个区间的绩效、成本与执行摘要。权益账本的引擎版本为 `equity-ledger-1`；缺失目标和缺失行情的观测按既有规则跳过，空目标仍表示清仓。
 
-结果行按至多 256 行、512 KiB 的批次进入私有磁盘暂存 SQLite。计算结束后，Rust 在 `BEGIN IMMEDIATE` 事务中重新核对源版本、领取 token、账户设置和渠道，一起提交结果、成本、摘要及快照指针。旧任务不能发布到更新的源版本，也不能释放其他任务的领取状态。回执丢失或取消时，Python 按 token 核对已提交快照。
+计算代码使用固定参数化 SQL，逐行直接写入私有磁盘暂存 SQLite；不再传递 JSON 行帧。暂存库限制页面缓存为 4 MiB 并关闭 mmap，不再额外构造通用行批次；计算所需的持仓和日级结果沿用现有内存边界。计算结束后，Rust 在 `BEGIN IMMEDIATE` 事务中重新核对源版本、领取 token、账户设置和渠道，一起提交结果、成本、摘要及快照指针。旧任务不能发布到更新的源版本，也不能释放其他任务的领取状态。回执丢失或取消时，Python 按 token 核对已提交快照。
 
 已发布结果使用类型化结果表：`result_schema_version=2`、`cost_schema_version=1`、`read_view_schema_version=1`。旧结果格式的兼容读取与历史迁移继续保留。事实结构和证据语义见[执行业务事实的结构化存储](business-facts.md)。
 
