@@ -490,6 +490,49 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
     assert _snapshot(database) == committed
 
 
+@pytest.mark.parametrize("table", ["supplement_step", "supplement_group"])
+def test_queued_cancellation_rolls_back_and_retries_through_intent_cas(database: Path, table: str) -> None:
+    core = require_native_store("intent_cas")
+    execution_id = "queued-cancel"
+    _intent(database, execution_id, step_id=_group(database, "group-cancel"))
+    fields = {
+        "finished_at": _LATER,
+        "cancel_requested_at": _LATER,
+        "cancel_reason": "stop",
+        "terminate_mode": "graceful",
+    }
+    request = {
+        "execution_id": execution_id,
+        "expected": "QUEUED",
+        "target": "TERMINATED",
+        "fields": fields,
+        "now": _LATER,
+    }
+    _sql(
+        database,
+        f"CREATE TRIGGER fail_cancel BEFORE UPDATE OF status ON {table} "
+        "BEGIN SELECT RAISE(ABORT,'cancel_rollback'); END",
+    )
+    before = _snapshot(database)
+    with pytest.raises(core.NativeError, match="cancel_rollback"):
+        native_store_call(database, "intent_cas", request)
+    assert _snapshot(database) == before
+
+    _sql(database, "DROP TRIGGER fail_cancel")
+    assert native_store_call(database, "intent_cas", request)["changed"]
+    intent = _rows(database, "execution_intent")[0]
+    assert intent["status"] == "TERMINATED"
+    assert {key: intent[key] for key in fields} == fields
+    assert _rows(database, "supplement_step")[0]["status"] == "finished"
+    assert _rows(database, "supplement_group")[0]["status"] == "completed"
+    assert _rows(database, "notification_event") == []
+    committed = _snapshot(database)
+    assert not native_store_call(database, "intent_cas", request)["changed"]
+    promotion = {**request, "target": "RUNNING", "fields": {"started_at": _LATER}}
+    assert not native_store_call(database, "intent_cas", promotion)["changed"]
+    assert _snapshot(database) == committed
+
+
 def test_frozen_notification_still_checks_execution_facts_before_finishing(database: Path) -> None:
     core = require_native_store("intent_finish")
     execution_id = "incomplete-frozen-result"

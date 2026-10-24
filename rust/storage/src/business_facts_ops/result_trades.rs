@@ -26,15 +26,14 @@ fn conversion_row(record_id: i64, path: &str, value: &Value) -> Result<Map<Strin
         CONVERSION_FIELDS,
         &[],
     )?;
-    let mut row = json!({
+    let Value::Object(mut row) = json!({
         "record_id": record_id, "trade_path": path,
         "state": if value.is_object() { "object" } else { "malformed" },
         "malformed_value": if value.is_object() { Value::Null } else { audit_value(value) },
         "audit_evidence": evidence
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     row.extend(columns);
     Ok(row)
 }
@@ -59,7 +58,7 @@ fn trade_row(
     let currency = extra
         .and_then(|extra| extra.get("commission_asset"))
         .filter(|value| value.is_string());
-    let mut row = json!({
+    let Value::Object(mut row) = json!({
         "record_id": record_id, "path": join_pointer(collection_path, &ordinal.to_string()),
         "collection_path": collection_path, "ordinal": ordinal,
         "state": if payload.is_some() { "object" } else { "malformed" },
@@ -71,10 +70,9 @@ fn trade_row(
             Some(_) if fee.is_some() => "value", _ => "invalid"
         },
         "audit_evidence": evidence
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     row.extend(columns);
     for key in ["trade_id", "order_id"] {
         let state = match payload.and_then(|payload| payload.get(key)) {
@@ -102,19 +100,17 @@ fn append_collection(
         return Ok(());
     };
     let path = join_pointer(scope, "trades");
-    collections.push(
-        json!({
-            "record_id": record_id, "path": path, "parent_path": scope,
-            "ordinal": ordinal, "map_key": map_key,
-            "state": if value.is_array() { "array" } else { "malformed" },
-            "member_count": value.as_array().map(Vec::len),
-            "malformed_value": if value.is_array() { Value::Null } else { audit_value(value) },
-            "audit_evidence": {}
-        })
-        .as_object()
-        .expect("object literal")
-        .clone(),
-    );
+    let Value::Object(collection) = json!({
+        "record_id": record_id, "path": path, "parent_path": scope,
+        "ordinal": ordinal, "map_key": map_key,
+        "state": if value.is_array() { "array" } else { "malformed" },
+        "member_count": value.as_array().map(Vec::len),
+        "malformed_value": if value.is_array() { Value::Null } else { audit_value(value) },
+        "audit_evidence": {}
+    }) else {
+        unreachable!("object literal")
+    };
+    collections.push(collection);
     if let Some(values) = value.as_array() {
         for (index, member) in values.iter().enumerate() {
             let row = trade_row(record_id, &path, index, member)?;

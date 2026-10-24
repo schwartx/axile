@@ -377,24 +377,6 @@ pub(crate) fn timestamp(value: &str) -> Option<i64> {
     crate::calendar::timestamp_micros(value).ok()
 }
 
-/// 批量账户卡片摘要:状态 + 全区间曲线末点,兼容 typed(2)与 legacy ranges JSON。
-pub fn summaries(connection: &Connection, request: &Value) -> Result<Value, String> {
-    let account_ids: Vec<i64> = request
-        .get("account_ids")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_i64).collect())
-        .ok_or("INVALID_REQUEST: account_ids must be an array of integers")?;
-    let expected_logic = request
-        .get("logic_version")
-        .and_then(Value::as_str)
-        .ok_or("INVALID_REQUEST: logic_version must be a nonempty string")?;
-    let expected_engine = request
-        .get("engine_version")
-        .and_then(Value::as_str)
-        .ok_or("INVALID_REQUEST: engine_version must be a nonempty string")?;
-    summaries_for_accounts(connection, &account_ids, expected_logic, expected_engine)
-}
-
 pub(crate) fn summaries_for_accounts(
     connection: &Connection,
     account_ids: &[i64],
@@ -652,7 +634,11 @@ mod tests {
                 crate::views::status(&connection, 1, "18", "equity-ledger-1").unwrap()["status"],
                 expected
             );
-            assert_eq!(summaries(&connection, &json!({"account_ids": [1], "logic_version": "18", "engine_version": "equity-ledger-1"})).unwrap()["1"]["status"], expected);
+            assert_eq!(
+                summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap()["1"]
+                    ["status"],
+                expected
+            );
         }
     }
 
@@ -929,25 +915,11 @@ mod tests {
     }
 
     #[test]
-    fn summaries_preserve_request_validation_before_empty_accounts() {
-        let connection = database();
-        for ids in [json!([]), json!([null, true, "1", 1.5])] {
-            let mut request = json!({"account_ids": ids});
-            assert_eq!(
-                summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: logic_version must be a nonempty string"
-            );
-            request["logic_version"] = json!("");
-            assert_eq!(
-                summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: engine_version must be a nonempty string"
-            );
-            request["engine_version"] = json!("");
-            assert_eq!(summaries(&connection, &request).unwrap(), json!({}));
-        }
+    fn summaries_with_no_accounts_do_not_query_database() {
+        let connection = Connection::open_in_memory().unwrap();
         assert_eq!(
-            summaries(&connection, &json!({"account_ids": 1})).unwrap_err(),
-            "INVALID_REQUEST: account_ids must be an array of integers"
+            summaries_for_accounts(&connection, &[], "18", "equity-ledger-1").unwrap(),
+            json!({})
         );
     }
 
@@ -963,17 +935,11 @@ mod tests {
             ('a','all',2,'later','t2',20),('b','all',0,'other','tb',99),
             ('a','all',1,'earlier','t1',10),('a','month',3,'excluded','x',999),
             ('d','all',0,'incompatible','x',999);").unwrap();
-        let result = summaries(
-            &connection,
-            &json!({"account_ids":[1,2,3,4],
-            "logic_version":"18","engine_version":"e"}),
-        )
-        .unwrap();
+        let result = summaries_for_accounts(&connection, &[1, 2, 3, 4], "18", "e").unwrap();
         assert_eq!(
             result,
-            summaries_for_accounts(&connection, &[1, 2, 3, 4], "18", "e").unwrap()
+            summaries_for_accounts(&connection, &[1, 2, 2, 3, 4], "18", "e").unwrap()
         );
-        assert_eq!(result, summaries(&connection, &json!({"account_ids":[1,null,"2",2,true,3,4,1.5], "logic_version":"18", "engine_version":"e"})).unwrap());
         assert_eq!(result["1"]["points"][0]["account_equity"], 10.0);
         assert_eq!(result["1"]["account_equity"], 20.0);
         assert_eq!(result["2"]["account_equity"], 99.0);
@@ -999,11 +965,9 @@ mod tests {
                  ('s5',5,3,'18','old-engine','2026-10-02T00:00:00','{}','{}',0);",
             )
             .unwrap();
-        let result = summaries(
-            &connection,
-            &json!({"account_ids": [1, 2, 3, 4, 5, 6], "logic_version": "18", "engine_version": "equity-ledger-1"}),
-        )
-        .unwrap();
+        let result =
+            summaries_for_accounts(&connection, &[1, 2, 3, 4, 5, 6], "18", "equity-ledger-1")
+                .unwrap();
         assert_eq!(result["1"]["status"], "ready");
         assert_eq!(result["1"]["snapshot_id"], "s1");
         assert_eq!(result["1"]["account_equity"], 100.0);
@@ -1015,11 +979,6 @@ mod tests {
         assert_eq!(result["4"]["status"], "empty");
         assert_eq!(result["5"]["status"], "pending");
         assert!(result.get("6").is_none());
-        assert_eq!(
-            result,
-            summaries_for_accounts(&connection, &[1, 2, 3, 4, 5, 6], "18", "equity-ledger-1")
-                .unwrap()
-        );
         for (ranges, expected) in [
             ("invalid", json!([])),
             ("{}", json!([])),

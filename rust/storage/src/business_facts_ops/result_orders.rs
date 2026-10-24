@@ -55,7 +55,7 @@ fn order_row(
         ORDER_FIELDS,
         &["value_conversion"],
     )?;
-    let mut row = json!({
+    let Value::Object(mut row) = json!({
         "record_id": record_id, "path": path, "map_key": map_key,
         "ordinal": ordinal, "kind": object_kind(value),
         "invalid_value": if payload.is_some() { Value::Null } else { audit_value(value) },
@@ -68,10 +68,9 @@ fn order_row(
         "audit_evidence": evidence,
         "conversion_kind": null, "conversion_invalid_value": null,
         "conversion_evidence": null
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     row.extend(columns);
     for (name, _) in CONVERSION_FIELDS {
         row.insert(format!("conversion_{name}"), Value::Null);
@@ -107,16 +106,15 @@ fn append_collection(
         return Ok(());
     };
     let path = join_pointer(scope, "orders");
-    let mut collection = json!({
+    let Value::Object(mut collection) = json!({
         "record_id": record_id, "path": path, "map_key": map_key,
         "ordinal": ordinal,
         "kind": if value.is_array() { "array" } else if value.is_null() { "null" } else { "invalid" },
         "invalid_value": null,
         "item_count": value.as_array().map(Vec::len), "audit_evidence": {}
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     if let Some(values) = value.as_array() {
         for (index, member) in values.iter().enumerate() {
             orders.push(order_row(record_id, &path, map_key, index, member)?);

@@ -74,7 +74,7 @@ pub(super) fn stale_reason(
     if source != Some(task.source_version) {
         return Ok(Some("source_changed"));
     }
-    if running != Some(task.source_version) || token.as_deref() != Some(task.claim_token.as_str()) {
+    if running != Some(task.source_version) || token.as_deref() != Some(task.snapshot_id.as_str()) {
         return Ok(Some("claim_lost"));
     }
     let mut current_settings = match raw_settings {
@@ -100,8 +100,8 @@ pub(super) fn stale_reason(
     current
         .entry("backtest_fee_rate")
         .or_insert_with(|| json!(0.0));
-    let (weight, fee) = settings(&current_settings)?;
-    if channel != task.trade_channel || weight != task.weight_type || fee != task.fee_rate {
+    let fee = settings(&current_settings)?;
+    if channel != task.trade_channel || fee != task.fee_rate {
         return Ok(Some("source_changed"));
     }
     Ok(None)
@@ -112,7 +112,7 @@ fn release_stale(connection: &Connection, task: &Task, reason: &str) -> Result<(
         connection.execute(
             "UPDATE main.account_analysis SET running_version=NULL,running_token=NULL,requested=1
              WHERE account_id=?1 AND running_version=?2 AND running_token=?3",
-            params![task.account_id,task.source_version,task.claim_token],
+            params![task.account_id,task.source_version,task.snapshot_id],
         ).map_err(sql)?;
     }
     Ok(())
@@ -165,12 +165,11 @@ pub(super) fn publish(
 }
 
 fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<(), AnalysisError> {
-    let until = complete["data_until"].as_str();
     connection.execute(
         "INSERT INTO main.performance_snapshot
          (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,settings,ranges,
           cost_schema_version,result_schema_version,backtest_weight_type,backtest_fee_rate,read_view_schema_version)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,'{}','{}',1,2,?8,?9,1)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'{}','{}',1,2,'cs',?8,1)",
         params![
             task.snapshot_id,
             task.account_id,
@@ -178,8 +177,7 @@ fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<()
             task.logic_version,
             task.engine_version,
             task.computed_at,
-            until,
-            task.weight_type,
+            complete["data_until"].as_str(),
             task.fee_rate,
         ],
     ).map_err(sql)?;
@@ -190,8 +188,8 @@ fn publish_pointer(connection: &Connection, task: &Task) -> Result<(), AnalysisE
     let changed = connection.execute(
         "UPDATE main.account_analysis SET previous_snapshot=current_snapshot,current_snapshot=?1,published_version=?2,
          running_version=NULL,running_token=NULL,requested=0,failures=0,retry_at=0,error=NULL,logic_version=?3,engine_version=?4
-         WHERE account_id=?5 AND source_version=?2 AND running_version=?2 AND running_token=?6",
-        params![task.snapshot_id,task.source_version,task.logic_version,task.engine_version,task.account_id,task.claim_token],
+         WHERE account_id=?5 AND source_version=?2 AND running_version=?2 AND running_token=?1",
+        params![task.snapshot_id,task.source_version,task.logic_version,task.engine_version,task.account_id],
     ).map_err(sql)?;
     if changed != 1 {
         return Err(AnalysisError::new(
@@ -481,6 +479,13 @@ mod tests {
             &json!({"data_until":"2026-10-20T09:00:00"}),
         )
         .unwrap();
+        assert_eq!(
+            connection.execute(
+                "UPDATE performance_snapshot SET backtest_weight_type='ts' WHERE backtest_weight_type='cs'",
+                [],
+            ).unwrap(),
+            1
+        );
         connection.execute("UPDATE account_analysis SET source_version=3,running_version=3,running_token='newer',current_snapshot='next'", []).unwrap();
         let receipt = publish(&connection, &task(), &json!({})).unwrap();
         assert_eq!(receipt["published"], true);

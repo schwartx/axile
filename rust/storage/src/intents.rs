@@ -387,35 +387,6 @@ pub fn intent_finish(path: &str, request: &Value) -> Result<Value, AnalysisError
     immediate(&connection, || finish_in_connection(&connection, request))
 }
 
-pub(crate) fn cancel_queued_in_connection(
-    connection: &Connection,
-    account_id: i64,
-    reason: &str,
-    now: &str,
-) -> Result<Vec<Value>, AnalysisError> {
-    let rows = list_in_connection(
-        connection,
-        "account_id=?1 AND status='QUEUED'",
-        &[SqlValue::Integer(account_id)],
-    )?;
-    let fields = json!({"finished_at":now,"cancel_requested_at":now,"cancel_reason":reason});
-    let request = json!({"now":now});
-    let mut changed = Vec::new();
-    for row in rows {
-        if let Some(row) = update_in_connection(
-            connection,
-            row["execution_id"].as_str().expect("stored execution id"),
-            "QUEUED",
-            "TERMINATED",
-            fields.as_object().unwrap(),
-        )? {
-            crate::supplements::finish_supplement_execution(connection, &row, &request)?;
-            changed.push(row);
-        }
-    }
-    Ok(changed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,30 +490,6 @@ mod tests {
             update_in_connection(&connection, "one", "FAILED", "RUNNING", &Map::new())
                 .unwrap()
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn queued_cancel_uses_the_callers_transaction() {
-        let connection = database();
-        immediate(&connection, || {
-            insert_in_connection(&connection, &request("one"))
-        })
-        .unwrap();
-        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let cancelled =
-            cancel_queued_in_connection(&connection, 1, "stop", "2026-10-23T10:01:00+08:00")
-                .unwrap();
-        assert_eq!(cancelled.len(), 1);
-        assert_eq!(
-            get_in_connection(&connection, "one").unwrap().unwrap()["status"],
-            "TERMINATED"
-        );
-        assert!(!connection.is_autocommit());
-        connection.execute_batch("ROLLBACK").unwrap();
-        assert_eq!(
-            get_in_connection(&connection, "one").unwrap().unwrap()["status"],
-            "QUEUED"
         );
     }
 
