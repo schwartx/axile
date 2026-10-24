@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
 use crate::business_facts_ops::{
@@ -138,71 +138,7 @@ fn persist_execute_record_in(
         )
         .map_err(sql)?;
     crate::asset_ops::ensure_execution_asset_snapshot(connection, record_id)?;
-    if let Some(execution_id) = execution_id {
-        freeze_execution_summary(connection, account_id, record_id, execution_id, raw_result)?;
-    }
     Ok(Value::Object(record_row(connection, record_id)?))
-}
-
-fn freeze_execution_summary(
-    connection: &Connection,
-    account_id: i64,
-    record_id: i64,
-    execution_id: &str,
-    raw_result: &Value,
-) -> Result<(), AnalysisError> {
-    let artifact = connection.query_row("SELECT id,content FROM execution_artifact WHERE execution_id=?1 AND lower(artifact_type)='execution_summary'", [execution_id],
-        |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?))).optional().map_err(sql)?;
-    let Some((artifact_id, content)) = artifact else {
-        return Ok(());
-    };
-    let mut content: Value = serde_json::from_str(&content)
-        .map_err(|error| AnalysisError::caused_by("BUSINESS_FACTS", error))?;
-    let Some(symbols) = content
-        .get_mut("symbol_results")
-        .and_then(Value::as_object_mut)
-    else {
-        return Ok(());
-    };
-    let result = crate::business_detail::read_result(connection, account_id, record_id)
-        .map_err(facts_error)?;
-    let heavy = [
-        "orders",
-        "trades",
-        "sizing",
-        "first_tick",
-        "account_assets",
-        "memory",
-        "technical_detail",
-    ];
-    for (symbol, observed) in symbols {
-        let (Some(observed), Some(canonical)) = (
-            observed.as_object_mut(),
-            result["symbol_results"][symbol].as_object(),
-        ) else {
-            continue;
-        };
-        let mut frozen = canonical.clone();
-        frozen.extend(
-            observed
-                .iter()
-                .filter(|(key, value)| {
-                    !heavy.contains(&key.as_str())
-                        || raw_result["symbol_results"][symbol]
-                            .get(*key)
-                            .is_none_or(|raw| !encode::py_eq(raw, value))
-                })
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
-        *observed = frozen;
-    }
-    connection
-        .execute(
-            "UPDATE execution_artifact SET content=?1 WHERE id=?2",
-            params![content.to_string(), artifact_id],
-        )
-        .map_err(sql)?;
-    Ok(())
 }
 
 fn attach_inputs(

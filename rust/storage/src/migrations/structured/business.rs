@@ -232,12 +232,10 @@ fn backfill_records(connection: &Connection) -> Result<()> {
                     },
                 );
             }
-            let compact =
-                snapshot_refs::compact_notification_capture(connection, &row, &raw_result)?;
             result_head::write_result_head(
                 connection,
                 record_id,
-                &compact,
+                &raw_result,
                 value(&row, "is_success").as_i64(),
             )?;
             update(
@@ -247,17 +245,17 @@ fn backfill_records(connection: &Connection) -> Result<()> {
                 "id=?",
                 &[Value::from(record_id)],
             )?;
-            if let Some(payload) = compact.as_object() {
-                result_symbols::write_result_symbols(connection, record_id, &compact)
+            if let Some(payload) = raw_result.as_object() {
+                result_symbols::write_result_symbols(connection, record_id, &raw_result)
                     .map_err(write_error)?;
-                crate::asset_ops::write_result_assets(connection, record_id, &compact, None)
+                crate::asset_ops::write_result_assets(connection, record_id, &raw_result, None)
                     .map_err(write_error)?;
                 result_orders::insert_orders(connection, record_id, payload)
                     .map_err(write_error)?;
                 result_trades::insert_trades(connection, record_id, payload)
                     .map_err(write_error)?;
             }
-            result_extensions::write_result_extensions(connection, record_id, &compact)
+            result_extensions::write_result_extensions(connection, record_id, &raw_result)
                 .map_err(write_error)?;
             Ok(())
         };
@@ -633,43 +631,6 @@ fn backfill_decisions(connection: &Connection) -> Result<()> {
         )
     })
 }
-fn compact_summaries(connection: &Connection) -> Result<()> {
-    each_parent(connection, "execution_artifact", |row| {
-        if !text(&row, "artifact_type")?.eq_ignore_ascii_case("execution_summary") {
-            return Ok(());
-        }
-        let content = parse(&row, "content", "execution_artifact", "/content")?;
-        if !content
-            .as_object()
-            .is_some_and(|content| !content.contains_key("business_facts_ref"))
-        {
-            return Ok(());
-        }
-        let Some(record) = record_for_execution(connection, value(&row, "execution_id"))? else {
-            return Ok(());
-        };
-        let result = parse(&record, "raw_result", "executerecord", "/raw_result")?;
-        if !result.is_object() {
-            return Ok(());
-        }
-        let Some(compacted) =
-            snapshot_refs::compact_summary_content(&content, &result, integer(&record, "id")?)
-        else {
-            return Ok(());
-        };
-        if snapshot_refs::hydrate_summary_content(&compacted, &result, false).is_ok() {
-            update_artifact(
-                connection,
-                &row,
-                compacted
-                    .as_object()
-                    .ok_or_else(|| error("Invalid summary reference"))?
-                    .clone(),
-            )?;
-        }
-        Ok(())
-    })
-}
 fn backfill_assets(connection: &Connection) -> Result<()> {
     each_parent(connection, "account_asset_snapshot", |row| {
         let assets = parse(&row, "assets", "account_asset_snapshot", "/assets")?;
@@ -849,7 +810,6 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
                 )));
             }
         }
-        let expected = snapshot_refs::compact_notification_capture(connection, &record, &expected)?;
         let is_success = value(&record, "is_success").as_i64();
         let mut expected_rows = result_children(id, &expected)?;
         let (head, cancellations) = result_head::encode_head(id, &expected, is_success)?;
@@ -932,7 +892,6 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     backfill_decisions(connection)?;
     backfill_assets(connection)?;
     backfill_targets(connection)?;
-    compact_summaries(connection)?;
     verify_conversion(connection)?;
     for (table, columns) in REMOVED {
         for name in *columns {

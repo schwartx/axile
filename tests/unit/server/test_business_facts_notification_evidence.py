@@ -818,19 +818,18 @@ def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_datab
 
 
 def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database):
-    """完整摘要已写入后提交失败，完整 worker 证据必须随同终态写入一起回滚。"""
+    """终态提交失败时，已保存的 worker 摘要保持原文。"""
     payload = _summary_result()
     journal = _pending_summary(payload)
     asyncio.run(_seed_pending_summary(facts_database, journal))
 
     sql(
         facts_database,
-        """CREATE TRIGGER reject_compacted_summary AFTER UPDATE OF content ON execution_artifact
-        WHEN json_type(NEW.content,'$.symbol_results.rb2610.orders')='array'
-        AND json_type(NEW.content,'$.symbol_results.rb2610.trades')='array'
-        BEGIN SELECT RAISE(ABORT,'synthetic post-compaction persistence failure'); END""",
+        """CREATE TRIGGER reject_terminal AFTER UPDATE OF facts_complete ON executerecord
+        WHEN NEW.facts_complete=1
+        BEGIN SELECT RAISE(ABORT,'synthetic terminal persistence failure'); END""",
     )
-    with pytest.raises(_core.NativeError, match="post-compaction persistence failure"):
+    with pytest.raises(_core.NativeError, match="terminal persistence failure"):
         asyncio.run(_write_real_terminal(facts_database, payload))
 
     async def read_after_rollback():

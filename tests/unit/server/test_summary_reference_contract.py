@@ -31,8 +31,8 @@ def _resolve_summary(path, artifact):
     return native_store_call(path, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
 
 
-@pytest.mark.parametrize("memory,kept_memory", [(None, {}), ({"message": "native observation"}, {"memory": None})])
-def test_full_summary_freezes_selected_symbols_and_unique_evidence(native_database, memory, kept_memory):
+@pytest.mark.parametrize("memory", [None, {"message": "native observation"}])
+def test_full_summary_freezes_selected_symbols_and_unique_evidence(native_database, memory):
     result = {
         "symbol_results": {
             "A": {"orders": [], "memory": memory, "sizing": {"target_quantity": 0}},
@@ -49,17 +49,7 @@ def test_full_summary_freezes_selected_symbols_and_unique_evidence(native_databa
     assert REFERENCE_KEY not in compact
     restored = _resolve_summary(native_database, artifact)
     assert restored == compact
-    canonical = read_result(native_database, record)["symbol_results"]["A"]
-    assert canonical["availability"] == {
-        "target_volume": "absent",
-        "final_volume": "absent",
-    }
-    # 既有品种事实视图省略空 memory；摘要中的独有空值仍保留。
-    assert ("memory" in canonical) is (memory is not None)
-    assert restored == {
-        **content,
-        "symbol_results": {"A": {**canonical, "sizing": {"target_quantity": 3}, **kept_memory}},
-    }
+    assert restored == original
     assert content == original
     assert set(restored["symbol_results"]) == {"A"}
     restored["symbol_results"]["A"]["orders"].append("preview")

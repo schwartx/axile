@@ -629,23 +629,20 @@ def test_detach_and_delete_rollback_restore_original_summary_reference(tmp_path,
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_terminal_compaction_rollback_keeps_previously_committed_worker_summary(tmp_path, foreign_keys):
-    """摘要压缩之后失败，worker 已提交的完整正文与前置输入仍保留。"""
+def test_terminal_write_never_rebuilds_previously_committed_worker_summary(tmp_path, foreign_keys):
+    """终态写入不得重建 worker 已提交的完整摘要。"""
     path = _database(tmp_path)
     input_id = _freeze(path)
     original = _summary_content(_result())
     artifact = _append_artifact(path, "facts-one", ExecutionArtifactType.EXECUTION_SUMMARY, deepcopy(original), 2)
-    counts = _counts(path)
     with _connection(path, foreign_keys) as connection:
         connection.execute(
             "CREATE TRIGGER reject_compaction AFTER UPDATE OF content ON execution_artifact "
             "WHEN json_type(NEW.content,'$.symbol_results')='object' "
             "BEGIN SELECT RAISE(ABORT,'synthetic failure after summary compaction'); END"
         )
-    with pytest.raises(_core.NativeError, match="synthetic failure after summary compaction"):
-        _store(path)
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord") == 0
-    assert _counts(path) == counts
+    _store(path)
+    assert _scalar(path, "SELECT COUNT(*) FROM executerecord") == 1
     assert business_evidence(_input_view(input_id)) == business_evidence(_input())
     journal = _artifact(path, "facts-one")
     assert journal.id == artifact.id and journal.schema_version == 2 and REFERENCE_KEY not in journal.content

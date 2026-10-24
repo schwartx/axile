@@ -50,6 +50,10 @@ def _legacy_snapshot(path, execution_id="snapshot-1"):
     )
     record = persist_result(path, payload, execution_id=execution_id)
     full_summary = rows(path, "execution_artifact")[-1]["content"]
+    full_summary["symbol_results"]["A"] = {
+        **read_result(path, record)["symbol_results"]["A"],
+        **full_summary["symbol_results"]["A"],
+    }
     compact = deepcopy(full_summary)
     compact["symbol_results"]["A"].pop("orders")
     compact["business_facts_ref"] = {
@@ -102,6 +106,22 @@ def test_expand_old_references_and_keep_snapshots_after_deleting_sources(tmp_pat
     sql(path, "DELETE FROM executerecord WHERE id=?", (record["id"],))
     assert rows(path, "execution_artifact")[0] == artifact
     assert native_store_call(path, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1}) == summary
+
+
+def test_old_references_can_downgrade_directly_and_upgrade_again(tmp_path):
+    path = tmp_path / "direct-rollback.db"
+    initialize_native_database(path, revision="0040")
+    record, capture, summary = _legacy_snapshot(path)
+    native_store_call(path, "migration_downgrade", {"public": "0033"})
+    with closing(oracle_connect(path)) as connection:
+        result = json.loads(
+            connection.execute("SELECT raw_result FROM executerecord WHERE id=?", (record["id"],)).fetchone()[0]
+        )
+    assert result["extra"]["server_notification_context"] == capture
+    assert rows(path, "execution_artifact")[0]["content"] == summary
+    initialize_native_database(path)
+    assert read_result(path, record)["extra"]["server_notification_context"] == capture
+    assert rows(path, "execution_artifact")[0]["content"] == summary
 
 
 def test_failed_expansion_rolls_back_earlier_rows_and_version(tmp_path):

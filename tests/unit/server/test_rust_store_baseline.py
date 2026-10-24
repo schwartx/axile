@@ -250,6 +250,25 @@ def test_nonempty_native_upgrade_matches_frozen_0039_rows(tmp_path: Path) -> Non
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
     assert initialize_native_database(path, revision=data["to_revision"])["public"] == data["to_revision"]
+    expected = data["expected"]
+    raw_results = {row["id"]: json.loads(row["raw_result"]) for row in data["seed"]["executerecord"]}
+    for row in expected["execution_extension"]:
+        extra = json.loads(row["extra"][1])
+        captured = extra.get("server_notification_context") if isinstance(extra, dict) else None
+        if isinstance(captured, dict) and "$axile_notification_context" in captured:
+            extra["server_notification_context"] = raw_results[row["record_id"]]["extra"]["server_notification_context"]
+            row["extra"] = ["json", json.dumps(extra, sort_keys=True, ensure_ascii=False, separators=(",", ":"))]
+    originals = {row["id"]: row for row in data["seed"]["execution_artifact"]}
+    for row in expected["execution_artifact"]:
+        if row["artifact_type"].lower() == "execution_summary":
+            original = originals[row["id"]]
+            row["content"] = [
+                "json",
+                json.dumps(json.loads(original["content"]), sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            ]
+            row["schema_version"] = original["schema_version"]
+    for name in ("execution_extension", "execution_artifact"):
+        expected[name].sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
     with closing(oracle_connect(path)) as connection, connection:
         assert database_rows(connection) == data["expected"]
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

@@ -1,16 +1,11 @@
 //! 0037—0040 摘要和通知去重格式；仅历史迁移使用。
 
-use super::notification_refs::{self, EXEC_METADATA};
+use super::notification_refs;
 use crate::business_detail;
-use crate::business_facts_ops::{
-    encode::py_eq,
-    summary_refs::{self as artifact_refs, REFERENCE_KEY},
-};
+use crate::business_facts_ops::summary_refs::{self as artifact_refs, REFERENCE_KEY};
 use crate::error::AnalysisError;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
-const MARKER: &str = "$axile_notification_context";
-const ROOT_METADATA: &[&str] = &["event_id", "event_type"];
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("BUSINESS_FACTS_REFERENCE", message.into())
 }
@@ -60,55 +55,6 @@ pub(crate) fn parse_artifact_reference(
     }
     validate_summary_reference(reference)?;
     Ok(Some(reference))
-}
-
-pub(crate) fn compact_summary_content(
-    content: &Value,
-    result: &Value,
-    record_id: i64,
-) -> Option<Value> {
-    let content = content.as_object()?;
-    if content.contains_key(REFERENCE_KEY) {
-        return None;
-    }
-    let facts = result.get("symbol_results")?.as_object()?;
-    let observed = content.get("symbol_results")?.as_object()?;
-    let heavy = [
-        "orders",
-        "trades",
-        "sizing",
-        "first_tick",
-        "account_assets",
-        "memory",
-        "technical_detail",
-    ];
-    let mut kept = Map::new();
-    for (symbol, row) in observed {
-        let row = match row.as_object() {
-            None => row.clone(),
-            Some(row) => Value::Object(
-                row.iter()
-                    .filter(|(key, value)| {
-                        !heavy.contains(&key.as_str())
-                            || facts
-                                .get(symbol)
-                                .and_then(Value::as_object)
-                                .and_then(|fact| fact.get(*key))
-                                .is_none_or(|fact| !py_eq(fact, value))
-                    })
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-        };
-        kept.insert(symbol.clone(), row);
-    }
-    let mut compact = content.clone();
-    compact.insert("symbol_results".into(), Value::Object(kept));
-    compact.insert(
-        REFERENCE_KEY.into(),
-        json!({"version":1,"view":"result","record_id":record_id,"projection_version":2}),
-    );
-    Some(Value::Object(compact))
 }
 
 pub(crate) fn hydrate_summary_content(
@@ -214,118 +160,6 @@ pub(crate) fn detach_execution_summaries(
     Ok(())
 }
 
-fn business_context(context: &Map<String, Value>) -> Option<Value> {
-    let mut business: Map<String, Value> = context
-        .iter()
-        .filter(|(key, _)| !ROOT_METADATA.contains(&key.as_str()) && key.as_str() != "execution")
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    let execution = match context.get("execution") {
-        Some(Value::Object(execution)) => execution
-            .iter()
-            .filter(|(key, _)| !EXEC_METADATA.contains(&key.as_str()))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-        None | Some(Value::Null) => Map::new(),
-        _ => return None,
-    };
-    business.insert("execution".into(), Value::Object(execution));
-    Some(Value::Object(business))
-}
-
-pub(crate) fn compact_captured_context(
-    captured: &Value,
-    event_context: &Value,
-    event_id: &str,
-) -> Option<Value> {
-    let captured_map = captured.as_object()?;
-    let event_map = event_context.as_object()?;
-    if captured_map.contains_key(MARKER) {
-        return None;
-    }
-    let same_business = {
-        let business = business_context(captured_map)?;
-        let event_business = business_context(event_map)?;
-        business_detail::wire(&business).ok()? == business_detail::wire(&event_business).ok()?
-    };
-    if !same_business {
-        return None;
-    }
-    let root_metadata: Map<String, Value> = captured_map
-        .iter()
-        .filter(|(key, _)| ROOT_METADATA.contains(&key.as_str()))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    let execution = captured_map.get("execution").and_then(Value::as_object);
-    let execution_metadata: Map<String, Value> = execution
-        .map(|execution| {
-            execution
-                .iter()
-                .filter(|(key, _)| EXEC_METADATA.contains(&key.as_str()))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let reference = json!({
-        "$axile_notification_context":1,"event_id":event_id,
-        "event_sha256":notification_refs::digest(event_context).ok()?,
-        "capture_sha256":notification_refs::digest(captured).ok()?,
-        "root_order":captured_map.keys().collect::<Vec<_>>(),
-        "root_metadata":root_metadata,
-        "execution_state":if execution.is_some() {"object"} else if captured.get("execution").is_some() {"null"} else {"absent"},
-        "execution_order":execution.map(|value| value.keys().collect::<Vec<_>>()).unwrap_or_default(),
-        "execution_metadata":execution_metadata,
-    });
-    let restored = notification_refs::hydrate_notification_context(
-        reference.as_object()?,
-        event_id,
-        event_context,
-    )
-    .ok()?;
-    if business_detail::wire(&restored).ok()? != business_detail::wire(captured).ok()? {
-        return None;
-    }
-    Some(reference)
-}
-
-pub(crate) fn compact_notification_capture(
-    conn: &Connection,
-    record: &Map<String, Value>,
-    result: &Value,
-) -> Result<Value, AnalysisError> {
-    let Some(execution_id) = record.get("execution_id").and_then(Value::as_str) else {
-        return Ok(result.clone());
-    };
-    let Some(captured) = result
-        .get("extra")
-        .and_then(|extra| extra.get("server_notification_context"))
-        .filter(|value| value.is_object())
-    else {
-        return Ok(result.clone());
-    };
-    let event_id = format!("execution:{execution_id}");
-    let events = business_detail::load(conn, "notification_event", "id", &json!(event_id))
-        .map_err(invalid)?;
-    if events.is_empty() {
-        return Ok(result.clone());
-    }
-    let event = one(&events)?;
-    if event.get("account_id") != record.get("account_id")
-        || event.get("event_type").and_then(Value::as_str) != Some("execution.finished")
-    {
-        return Ok(result.clone());
-    }
-    let Some(reference) = event
-        .get("context")
-        .and_then(|context| compact_captured_context(captured, context, &event_id))
-    else {
-        return Ok(result.clone());
-    };
-    let mut result = result.clone();
-    result["extra"]["server_notification_context"] = reference;
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,7 +180,9 @@ mod tests {
         let result = json!({"symbol_results":{"A":fact,"unrelated":{"orders":[1,2,3]}}});
         let content = json!({"symbol_results":{"A":{"status":"SUCCEEDED","orders":[{"order_id":"0","price":2}],
             "sizing":{"target_quantity":3}}},"independent":{"null":null,"zero":0,"false":false}});
-        let compact = compact_summary_content(&content, &result, 7).unwrap();
+        let compact = json!({"business_facts_ref":{"version":1,"view":"result","record_id":7,"projection_version":2},
+            "symbol_results":{"A":{"status":"SUCCEEDED","sizing":{"target_quantity":3}}},
+            "independent":{"null":null,"zero":0,"false":false}});
         assert!(compact["symbol_results"]["A"].get("orders").is_none());
         assert_eq!(
             compact["symbol_results"]["A"]["sizing"]["target_quantity"],
@@ -356,7 +192,6 @@ mod tests {
             hydrate_summary_content(&compact, &result, false).unwrap(),
             content
         );
-        assert!(compact_summary_content(&compact, &result, 7).is_none());
         let mut missing = result.clone();
         missing["symbol_results"]
             .as_object_mut()
@@ -386,11 +221,20 @@ mod tests {
         );
     }
 
+    fn reference() -> Value {
+        json!({"$axile_notification_context":1,"event_id":"execution:e1",
+            "event_sha256":"533a941a42eed59dcd43822b753b97366b669b70ae80f2c6cfab36e0a1f94ca0",
+            "capture_sha256":"03a1afa43e8fbc0858cb0ea046449e2bea12138e2841f676cd60645a53260d96",
+            "root_order":["execution","assets","positions"],"root_metadata":{},
+            "execution_state":"object","execution_order":["status","notified_at"],
+            "execution_metadata":{"status":"PARTIAL","notified_at":"t"}})
+    }
+
     #[test]
     fn frozen_capture_matches_python_hashes_and_preserves_order() {
         let captured = capture();
         let event = event_context();
-        let reference = compact_captured_context(&captured, &event, "execution:e1").unwrap();
+        let reference = reference();
         assert_eq!(
             reference["capture_sha256"],
             "03a1afa43e8fbc0858cb0ea046449e2bea12138e2841f676cd60645a53260d96"
@@ -411,7 +255,6 @@ mod tests {
         );
         let mut changed = event.clone();
         changed["assets"]["total_assets"] = json!(0);
-        assert!(compact_captured_context(&captured, &changed, "execution:e1").is_none());
         assert!(notification_refs::hydrate_notification_context(
             reference.as_object().unwrap(),
             "execution:e1",
@@ -426,10 +269,22 @@ mod tests {
         let mut captured = capture();
         for state in [None, Some(Value::Null), Some(json!({}))] {
             captured.as_object_mut().unwrap().shift_remove("execution");
-            if let Some(value) = state {
-                captured["execution"] = value;
+            if let Some(value) = &state {
+                captured["execution"] = value.clone();
             }
-            let reference = compact_captured_context(&captured, &event, "execution:e1").unwrap();
+            let mut reference = reference();
+            reference["execution_state"] = json!(if state.is_none() {
+                "absent"
+            } else if state.as_ref().is_some_and(Value::is_null) {
+                "null"
+            } else {
+                "object"
+            });
+            reference["root_order"] =
+                json!(captured.as_object().unwrap().keys().collect::<Vec<_>>());
+            reference["execution_order"] = json!([]);
+            reference["execution_metadata"] = json!({});
+            reference["capture_sha256"] = json!(notification_refs::digest(&captured).unwrap());
             let restored = notification_refs::hydrate_notification_context(
                 reference.as_object().unwrap(),
                 "execution:e1",
@@ -441,8 +296,14 @@ mod tests {
                 business_detail::wire(&captured).unwrap()
             );
         }
-        captured["execution"] = json!({"error":{"orders":[]}});
-        assert!(compact_captured_context(&captured, &event, "execution:e1").is_none());
+        let mut reference = reference();
+        reference["execution_metadata"]["error"] = json!({"orders":[]});
+        assert!(notification_refs::hydrate_notification_context(
+            reference.as_object().unwrap(),
+            "execution:e1",
+            &event
+        )
+        .is_err());
     }
 
     #[test]

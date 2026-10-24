@@ -469,19 +469,16 @@ def _summary_fixture(connection, metadata, now, *, captured=None):
     return result, summary
 
 
-def test_summary_compaction_protects_dependencies_and_downgrade_restores_wire(legacy_connection):
+def test_migration_keeps_summary_body_independent_through_downgrade(legacy_connection):
     database, metadata, now = legacy_connection
     with _connect(database) as connection:
         _result, summary = _summary_fixture(connection, metadata, now)
     _upgrade(database)
     with _connect(database) as connection:
         compact = json.loads(connection.exec_driver_sql("SELECT content FROM execution_artifact").scalar_one())
-        assert business_evidence(compact["business_facts_ref"]["view"]) == business_evidence("result")
-        assert "orders" not in compact["symbol_results"]["A"]
-        with pytest.raises(sa.exc.IntegrityError, match="summary must be materialized"):
-            connection.exec_driver_sql("UPDATE execution_order SET price=2 WHERE record_id=1")
-        with pytest.raises(sa.exc.IntegrityError, match="summary must be materialized"):
-            connection.exec_driver_sql("DELETE FROM executerecord WHERE id=1")
+        assert "business_facts_ref" not in compact
+        assert compact == summary
+        connection.exec_driver_sql("UPDATE execution_order SET price=2 WHERE record_id=1")
         connection.exec_driver_sql("UPDATE executerecord SET display_error='display-only' WHERE id=1")
     _downgrade(database)
     with _connect(database) as connection:
@@ -601,10 +598,7 @@ def test_migration_context_dedup_requires_existing_outbox_and_downgrades_lossles
         persisted = json.loads(
             connection.exec_driver_sql("SELECT extra FROM execution_extension WHERE record_id=1").scalar_one()
         )
-        assert business_evidence(
-            persisted["server_notification_context"]["$axile_notification_context"]
-        ) == business_evidence(1)
-        assert "positions" not in persisted["server_notification_context"]
+        assert persisted["server_notification_context"] == captured
     _downgrade(database)
     with _connect(database) as connection:
         restored = json.loads(
