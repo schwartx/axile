@@ -215,12 +215,14 @@ def test_request_blocking_eof_reports_exception_type_request_and_exitcode() -> N
     assert manager._workers == {}
 
 
+@pytest.mark.parametrize(("execution_timeout", "recv_timeout"), [(0, 600.0), (45, 105.0), (180, 240.0)])
 def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     monkeypatch: pytest.MonkeyPatch,
+    execution_timeout: int,
+    recv_timeout: float,
 ) -> None:
     manager = WorkerBackendManager()
     account = build_account(id=2)
-    standard_input = type("StandardInput", (), {"execution_timeout": 180})()
     commands: list[str] = []
 
     async def fake_prepare(*_args: object, **_kwargs: object) -> dict[str, object]:
@@ -229,6 +231,7 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     async def fake_to_thread(func: object, *args: object) -> WorkerBackendResponse:
         del func
         request = args[1]
+        assert args[2] == recv_timeout
         assert isinstance(request, WorkerBackendRequest)
         commands.append(request.command)
         return WorkerBackendResponse(
@@ -248,12 +251,10 @@ def test_execute_trade_drops_ctp_worker_after_session_recovery_without_replay(
     output, normalized = asyncio.run(
         manager.execute_trade(
             account=account,
-            standard_input=standard_input,  # type: ignore[arg-type]
-            standard_input_dict={},
+            standard_input_dict={"execution_timeout": execution_timeout},
             audit_input={},
             execution_id="exec-1",
             trigger_source="manual",
-            cleanup=True,
         )
     )
 

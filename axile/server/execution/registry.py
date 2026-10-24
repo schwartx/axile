@@ -739,7 +739,7 @@ async def terminate_running_account_execution(
     ):
         if execution_id is None:
             continue
-        state, transitioned = await _terminate_one_execution(
+        state = await _terminate_one_execution(
             account_id,
             execution_id,
             expected_queued=expected_queued,
@@ -748,7 +748,6 @@ async def terminate_running_account_execution(
         )
         if state is not None and primary is None:
             primary = state
-        _ = transitioned
 
     from axile.server.execution.intents import sync_account_live
 
@@ -763,7 +762,7 @@ async def _terminate_one_execution(
     expected_queued: bool,
     reason: str | None,
     mode: ExecutionTerminateMode,
-) -> tuple[ExecutionTaskState | None, bool]:
+) -> ExecutionTaskState | None:
     """先 CAS 落库再改内存；无 intent 行时退回纯内存路径（测试/遗留）。"""
     from axile.server.execution.intents import (
         ensure_memory_from_intent,
@@ -790,7 +789,7 @@ async def _terminate_one_execution(
                     state = ensure_memory_from_intent(latest, status=latest.status)
                 elif state is not None:
                     state, _ = request_execution_termination(execution_id, reason=reason, mode=mode)
-                return state, False
+                return state
             if expected_queued and latest.status == ExecutionTaskStatus.RUNNING:
                 persisted = await persist_intent_termination(
                     execution_id,
@@ -806,7 +805,7 @@ async def _terminate_one_execution(
                 persisted = True
             if not persisted:
                 state, _ = request_execution_termination(execution_id, reason=reason, mode=mode)
-                return state, False
+                return state
 
     if get_execution_task_state(execution_id) is None and intent is not None:
         hydrate_status = ExecutionTaskStatus.QUEUED if expected_queued else ExecutionTaskStatus.RUNNING
@@ -814,15 +813,15 @@ async def _terminate_one_execution(
 
     state, transitioned = request_execution_termination(execution_id, reason=reason, mode=mode)
     if state is None:
-        return None, False
+        return None
     if expected_queued or _is_terminated_before_start(state):
         clear_queued_execution(account_id, execution_id)
     if not transitioned:
-        return state, False
+        return state
     await _append_termination_requested_event(state, reason=reason, mode=mode)
     if _is_terminated_before_start(state):
         await _finalize_terminated_queued_execution(state, reason=reason, mode=mode)
-    return state, True
+    return state
 
 
 def transition_execution_task_to_running(execution_id: str) -> ExecutionTaskState | None:

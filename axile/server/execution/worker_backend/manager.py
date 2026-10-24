@@ -17,7 +17,6 @@ from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
 from axile.executor.instrument_catalog import InstrumentCatalog
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
-from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
 from axile.server.account_control.ipc import RemoteMonitor
@@ -890,12 +889,10 @@ class WorkerBackendManager:
         self,
         *,
         account: AccountContext,
-        standard_input: UnifiedStandardInput,
         standard_input_dict: dict[str, object],
         audit_input: dict[str, object],
         execution_id: str | None,
         trigger_source: str,
-        cleanup: bool,
         notification_snapshot: dict[str, object] | None = None,
     ) -> tuple[UnifiedStandardOutput, dict[str, object] | None]:
         """
@@ -905,8 +902,6 @@ class WorkerBackendManager:
         ----------
         account : Account
             当前执行所属账户。
-        standard_input : UnifiedStandardInput
-            结构化标准输入对象。
         standard_input_dict : dict[str, object]
             发送给 worker 的标准输入字典快照。
         audit_input : dict[str, object]
@@ -915,8 +910,6 @@ class WorkerBackendManager:
             当前 execution 标识。
         trigger_source : str
             触发来源，例如手动执行或调度触发。
-        cleanup : bool
-            执行结束后是否要求 worker 做清理。
 
         Returns
         -------
@@ -938,7 +931,6 @@ class WorkerBackendManager:
                 "standard_input": standard_input_dict,
                 "audit_input": audit_input,
                 "trigger_source": trigger_source,
-                "cleanup": cleanup,
                 "notification_snapshot": notification_snapshot,
             },
         )
@@ -947,7 +939,7 @@ class WorkerBackendManager:
             _require_account_id(account),
             request,
             _resolve_worker_recv_timeout(
-                standard_input.execution_timeout,
+                standard_input_dict.get("execution_timeout"),
                 fallback=self._execute_recv_timeout,
             ),
             termination_controller,

@@ -263,7 +263,8 @@ def _ensure_memory_queued(account: AccountContext, intent: IntentSnapshot) -> No
     )
 
 
-def _sync_live(account_id: int) -> None:
+def sync_account_live(account_id: int) -> None:
+    """按内存槽位刷新 SSE/仪表盘镜像。"""
     running_id = get_running_execution_id(account_id)
     queued_id = get_queued_execution_id(account_id)
     running_state = None if running_id is None else get_execution_task_state(running_id)
@@ -461,44 +462,33 @@ async def _submit_intent(
 
     busy_msg = f"账户 {account_id} 已有调仓任务在执行中"
 
-    if running_kind == ExecutionKind.CLEAR_POSITIONS:
-        result = _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
-        return result
-
-    if has_running and kind == ExecutionKind.CLEAR_POSITIONS:
+    if running_kind == ExecutionKind.CLEAR_POSITIONS or (has_running and kind == ExecutionKind.CLEAR_POSITIONS):
         return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
 
-    if not has_running and queued_kind == ExecutionKind.CLEAR_POSITIONS:
-        if kind == ExecutionKind.CLEAR_POSITIONS:
-            execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
-            return await _coalesce(execution_id, account, payload)
+    if queued_kind == ExecutionKind.CLEAR_POSITIONS and (has_running or kind != ExecutionKind.CLEAR_POSITIONS):
         return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
 
-    if not has_running and queued_kind == ExecutionKind.REBALANCE:
-        if kind == ExecutionKind.CLEAR_POSITIONS:
-            if queued is None:
-                return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
-            created = await _supersede_queued_with_clear(account, queued, trigger_source, payload)
-            if created is None:
-                return await _submit_intent(
-                    account_id,
-                    kind,
-                    trigger_source,
-                    payload=payload,
-                    on_conflict=on_conflict,
-                )
-            _sync_live(account_id)
-            _wake(account_id)
-            return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
+    if queued_kind == ExecutionKind.REBALANCE and kind == ExecutionKind.CLEAR_POSITIONS:
+        if queued is None:
+            return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
+        created = await _supersede_queued_with_clear(account, queued, trigger_source, payload)
+        if created is None:
+            return await _submit_intent(
+                account_id,
+                kind,
+                trigger_source,
+                payload=payload,
+                on_conflict=on_conflict,
+            )
+        sync_account_live(account_id)
+        _wake(account_id)
+        return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
+
+    if queued_kind in (ExecutionKind.REBALANCE, ExecutionKind.CLEAR_POSITIONS):
         execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
         return await _coalesce(execution_id, account, payload)
 
     if has_running and has_queued:
-        if kind == ExecutionKind.CLEAR_POSITIONS:
-            return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
-        if queued_kind == ExecutionKind.REBALANCE:
-            execution_id = queued.execution_id if queued is not None else cast("str", memory_queued_id)
-            return await _coalesce(execution_id, account, payload)
         return _conflict(kind=kind, on_conflict=on_conflict, account_id=account_id, message=busy_msg)
 
     created = await _insert_intent(
@@ -507,7 +497,7 @@ async def _submit_intent(
         trigger_source=trigger_source,
         payload=payload,
     )
-    _sync_live(account_id)
+    sync_account_live(account_id)
     if not has_running:
         _wake(account_id)
     return SubmitResult(outcome="created", execution_id=created.execution_id, account_id=account_id)
@@ -589,7 +579,7 @@ async def _promote_intent_to_running(execution_id: str, account_id: int) -> None
 
     transition_execution_task_to_running(execution_id)
     update_execution_task_state(execution_id, started_at=started_at)
-    _sync_live(account_id)
+    sync_account_live(account_id)
 
 
 async def persist_intent_termination(
@@ -611,8 +601,3 @@ async def persist_intent_termination(
         terminate_mode=mode.value,
         finished_at=requested_at if target == ExecutionTaskStatus.TERMINATED else None,
     )
-
-
-def sync_account_live(account_id: int) -> None:
-    """按内存槽位刷新 SSE/仪表盘镜像."""
-    _sync_live(account_id)

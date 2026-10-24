@@ -293,7 +293,6 @@ async def _build_rebalance_backend_request(
     execution_id: str | None,
     trigger_source: str,
     logger: "loguru.Logger",
-    cleanup: bool,
     normalized_target: dict[str, float] | None = None,
 ) -> execution_backend.RebalanceBackendRequest:
     """
@@ -311,8 +310,6 @@ async def _build_rebalance_backend_request(
         触发来源。
     logger : loguru.Logger
         当前执行使用的日志对象。
-    cleanup : bool
-        是否在执行结束后执行底层清理逻辑。
 
     Returns
     -------
@@ -341,7 +338,8 @@ async def _build_rebalance_backend_request(
             standard_input.execution_notification_code = None
             standard_input.extra = {**standard_input.extra, "server_notification": True}
     long_leverage, short_leverage = resolve_account_leverages(account)
-    audit_input = sanitize_standard_input_for_audit(standard_input)
+    standard_input_dict = standard_input.to_dict()
+    audit_input = sanitize_standard_input_for_audit(standard_input_dict)
     audit_input["strategy_target"] = dict(curr_target)
     audit_input["sizing_context"] = {
         "long_leverage": long_leverage,
@@ -350,12 +348,10 @@ async def _build_rebalance_backend_request(
     }
     return execution_backend.RebalanceBackendRequest(
         account=account,
-        standard_input=standard_input,
-        standard_input_dict=standard_input.to_dict(),
+        standard_input_dict=standard_input_dict,
         audit_input=audit_input,
         execution_id=execution_id,
         trigger_source=trigger_source,
-        cleanup=cleanup,
         logger=logger,
         notification_snapshot=notification_snapshot,
     )
@@ -447,7 +443,7 @@ async def trade(
     logger : loguru.Logger | None, optional
         用于输出日志的 logger；未提供时使用全局 logger。
     cleanup : bool, optional
-        是否在执行结束后执行底层清理逻辑。
+        兼容保留；常驻 worker 统一完成每次执行的收尾。
 
     Returns
     -------
@@ -463,7 +459,6 @@ async def trade(
         execution_id=execution_id,
         trigger_source=trigger_source,
         logger=logger,
-        cleanup=cleanup,
         normalized_target=normalized_target,
     )
     return await execution_backend.run_rebalance_via_backend(request=request)

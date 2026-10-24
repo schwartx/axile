@@ -30,7 +30,6 @@ class _ExecuteTradeRequestContext:
     standard_input: UnifiedStandardInput
     audit_context: dict[str, object]
     audit_input: dict[str, object]
-    cleanup: bool
     notification_snapshot: dict[str, object] | None = None
 
 
@@ -82,7 +81,6 @@ def _parse_execute_trade_request(request: WorkerBackendRequest) -> _ExecuteTrade
         standard_input=standard_input,
         audit_context=audit_context,
         audit_input=cast(dict[str, object], request.payload["audit_input"]),
-        cleanup=bool(request.payload["cleanup"]),
         notification_snapshot=cast("dict[str, object] | None", request.payload.get("notification_snapshot")),
     )
 

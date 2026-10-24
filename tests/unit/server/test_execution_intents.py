@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -92,10 +93,20 @@ def test_submit_intent_creates_queued_rebalance(monkeypatch: pytest.MonkeyPatch)
     assert queued_id == result.execution_id
 
 
-def test_submit_intent_coalesces_queued_rebalance(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("memory_only", [False, True])
+def test_submit_intent_coalesces_queued_rebalance(
+    monkeypatch: pytest.MonkeyPatch, running: bool, memory_only: bool
+) -> None:
     async def _run() -> tuple[SubmitResult, SubmitResult]:
         async with _intent_db(monkeypatch):
+            if running:
+                active = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+                assert active.execution_id is not None
+                await intents_module._promote_intent_to_running(active.execution_id, 1)
             first = await submit_intent(1, ExecutionKind.REBALANCE, "manual")
+            if memory_only:
+                monkeypatch.setattr(intents_module, "load_active_intents", AsyncMock(return_value=(None, None)))
             second = await submit_intent(1, ExecutionKind.REBALANCE, "scheduler")
             return first, second
 

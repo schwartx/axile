@@ -12,7 +12,6 @@ from axile.domain.execution import (
     ExecutionReasonFamily,
 )
 from axile.executor.algorithms.exceptions import execution_error_message
-from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models import ExecuteRecord
@@ -31,12 +30,10 @@ class RebalanceBackendRequest:
     """调仓后端执行所需的完整上下文。"""
 
     account: AccountContext
-    standard_input: UnifiedStandardInput
     standard_input_dict: dict[str, object]
     audit_input: dict[str, object]
     execution_id: str | None
     trigger_source: str
-    cleanup: bool
     logger: "loguru.Logger"
     notification_snapshot: dict[str, object] | None = None
 
@@ -106,12 +103,10 @@ async def _run_rebalance_via_worker_process(request: RebalanceBackendRequest) ->
     try:
         output, normalized_symbol_fields = await get_worker_backend_manager().execute_trade(
             account=request.account,
-            standard_input=request.standard_input,
             standard_input_dict=request.standard_input_dict,
             audit_input=request.audit_input,
             execution_id=request.execution_id,
             trigger_source=request.trigger_source,
-            cleanup=request.cleanup,
             **({"notification_snapshot": request.notification_snapshot} if request.notification_snapshot else {}),
         )
         raw_input = dict(request.standard_input_dict)

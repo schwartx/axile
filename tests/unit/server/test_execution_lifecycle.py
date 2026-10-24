@@ -809,12 +809,10 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
             )
             request = backend.RebalanceBackendRequest(
                 account=account,
-                standard_input=standard_input,
                 standard_input_dict=standard_input.to_dict(),
                 audit_input={},
                 execution_id=execution_id,
                 trigger_source="manual",
-                cleanup=True,
                 logger=logger,
             )
             return await backend._run_rebalance_via_worker_process(request)

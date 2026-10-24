@@ -205,27 +205,24 @@ class FakeWorkerBackendManager:
         self,
         *,
         account: Account,
-        standard_input: UnifiedStandardInput,
         standard_input_dict: dict[str, object],
         audit_input: dict[str, object],
         execution_id: str | None,
         trigger_source: str,
-        cleanup: bool,
     ) -> UnifiedStandardOutput:
         self.trade_calls.append(
             {
                 "account": account,
-                "standard_input": standard_input,
                 "standard_input_dict": standard_input_dict,
                 "audit_input": audit_input,
                 "execution_id": execution_id,
                 "trigger_source": trigger_source,
-                "cleanup": cleanup,
             }
         )
         if self._trade_output is not None:
             return self._trade_output, None
-        return FakeExecutor().execute(standard_input, cleanup=cleanup, retain_runtime=True), None
+        standard_input = UnifiedStandardInput.from_dict(standard_input_dict, channel_type=account.trade_channel)
+        return FakeExecutor().execute(standard_input, cleanup=False, retain_runtime=True), None
 
     async def empty_positions(
         self,
@@ -399,7 +396,6 @@ class WorkerCommandHarness:
                 "standard_input": standard_input_dict,
                 "trigger_source": trigger_source,
                 "audit_input": kwargs["audit_input"],
-                "cleanup": kwargs["cleanup"],
             },
         )
 

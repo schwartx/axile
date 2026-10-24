@@ -210,8 +210,10 @@ def test_trade_serializes_success_result_to_json_safe_dict(
     assert captured["execution_id"] is None
 
 
+@pytest.mark.parametrize("cleanup", [False, True])
 def test_trade_builds_model_before_execute_and_persists_dict(
     monkeypatch: pytest.MonkeyPatch,
+    cleanup: bool,
 ) -> None:
     """标准输入在进入执行器前应已转成模型，落库时仍写入字典快照。"""
     account = build_account(feishu_key="secret-feishu-key")
@@ -234,9 +236,10 @@ def test_trade_builds_model_before_execute_and_persists_dict(
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
 
-    _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
+    _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}, cleanup=cleanup))
 
     assert isinstance(fake_executor.execute_input, UnifiedStandardInput)
+    assert fake_executor.cleanup is False
     assert fake_executor.execute_input.curr_target == {"ag2612": 0.1}
     assert fake_executor.execute_input.feishu_key == "secret-feishu-key"
 
@@ -290,8 +293,8 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
     )
 
     assert len(manager.trade_calls) == 1
-    standard_input = cast(UnifiedStandardInput, manager.trade_calls[0]["standard_input"])
-    assert standard_input.curr_target == {
+    standard_input = cast("dict[str, object]", manager.trade_calls[0]["standard_input_dict"])
+    assert standard_input["curr_target"] == {
         "600000.SH": 0.13,
         "588000.SH": 0.0,
     }
@@ -357,11 +360,10 @@ def test_trade_routes_gm_account_to_worker_manager(
 
     assert len(manager.trade_calls) == 1
     trade_call = manager.trade_calls[0]
-    assert cast(UnifiedStandardInput, trade_call["standard_input"]).curr_target == {"600000.SH": 0.12}
+    assert cast("dict[str, object]", trade_call["standard_input_dict"])["curr_target"] == {"600000.SH": 0.12}
     assert cast("dict[str, object]", trade_call["audit_input"])["curr_target"] == {"600000.SH": 0.12}
     assert trade_call["execution_id"] == "exec-gm-worker-trade-1"
     assert trade_call["trigger_source"] == "manual"
-    assert trade_call["cleanup"] is True
     assert captured["raw_input"] == cast(dict[str, object], trade_call["standard_input_dict"])
     assert captured["execution_id"] == "exec-gm-worker-trade-1"
 
@@ -402,7 +404,9 @@ def test_trade_routes_ctp_account_to_worker_manager(
 
     assert len(manager.trade_calls) == 1
     assert cast(Account, manager.trade_calls[0]["account"]).trade_channel == TradeChannel.CTP
-    assert cast(UnifiedStandardInput, manager.trade_calls[0]["standard_input"]).channel_type == TradeChannel.CTP
+    assert cast("dict[str, object]", manager.trade_calls[0]["standard_input_dict"])["channel_type"] == str(
+        TradeChannel.CTP
+    )
 
 
 def test_trade_persists_failed_gm_worker_output(
