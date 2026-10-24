@@ -372,6 +372,10 @@ fn collect_evidence(
 }
 
 business_operations! { register_json_operations, business_json_operation, PyBytes;
+    list_execution_events_json => crate::audit_ops::list_execution_events_json,
+    list_execution_artifacts_json => crate::audit_ops::list_execution_artifacts_json,
+    account_runtime_sync_json => crate::runtime_sync::public_state,
+    notifications_get_system_json => crate::notifications::get_system,
     portfolio_query_json => crate::portfolio_ops::portfolio_query,
     control_audit_summary_json => crate::control_audit::control_audit_summary,
     control_audit_executions_json => crate::control_audit::control_audit_executions,

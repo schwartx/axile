@@ -37,6 +37,8 @@ required = (
     'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
     'execution_notification_context',
+    'list_execution_events_json', 'list_execution_artifacts_json',
+    'account_runtime_sync_json', 'notifications_get_system_json',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

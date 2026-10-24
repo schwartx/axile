@@ -185,21 +185,3 @@ def _fill_reason_code(result: dict[str, Any]) -> None:
 def _is_unsuccessful(status: object) -> bool:
     """仅失败类状态需要可读错误；成功态与未知态不强造结论。"""
     return status in {"FAILED", "PARTIAL", "BLOCKED", "TERMINATED"}
-
-
-def normalize_execution_event_details(details: object) -> object:
-    """
-    旧事件 ``details.debug.error`` 读时提升为公共层 ``details.error``.
-
-    仅提升说人话的文案；异常类名/SDK 原文留在 ``debug`` 命名空间，
-    只有审计/证据视图可以消费。
-    """
-    if not isinstance(details, dict) or _text(details.get("error")) is not None:
-        return details
-    debug = details.get("debug")
-    if not isinstance(debug, dict):
-        return details
-    error = _text(debug.get("error"))
-    if error is None or _is_technical_text(error):
-        return details
-    return {**details, "error": error}

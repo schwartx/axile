@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
@@ -33,7 +33,6 @@ from axile.common.notification_function import run_notification_function
 from axile.executor.algorithms.utils.clock import clock_now, get_default_clock
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.error_notifications import build_system_notification_context, build_test_card
-from axile.server.execution.notification_state import get_system_notification_result
 from axile.server.native_store import native_operation
 
 router = APIRouter(prefix="/init", tags=["init"])
@@ -326,12 +325,12 @@ def default_system_notification_function() -> dict[str, str]:
     return {"code": DEFAULT_SYSTEM_NOTIFICATION_CODE}
 
 
-@router.get("/execution-alert/result")
-async def system_notification_result() -> SystemNotificationStatePublic:
+@router.get("/execution-alert/result", response_model=SystemNotificationStatePublic)
+async def system_notification_result() -> Response:
     """仅已初始化服务读取真实结果，首启向导无需连接业务数据库。"""
     if not is_configured():
         raise HTTPException(status_code=409, detail="系统尚未完成初始化")
-    return await asyncio.to_thread(get_system_notification_result)
+    return Response(content=await native_operation("notifications_get_system_json", {}), media_type="application/json")
 
 
 @router.post("/execution-alert/function/test")
