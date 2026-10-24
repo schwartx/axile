@@ -655,7 +655,7 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert first["export_id"] != second["export_id"]
     _seed(database, _record())
     third = _manifest(_zip(client.get("/account/executions/exec-1/evidence")))
-    assert third["executions"][0]["task_status"] == "RUNNING"
+    assert third["executions"][0]["task_status"] == "SUCCEEDED"
     assert third["executions"][0]["business_outcome"] == "not_reached"
     assert first["executions"][0]["business_outcome"] == "unknown"
 

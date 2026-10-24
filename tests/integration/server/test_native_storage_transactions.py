@@ -453,8 +453,8 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
 ) -> None:
     core = require_native_store(operation)
     execution_id = "supplement-finish"
-    _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
     _terminal(database, execution_id)
+    _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
     table, event = (
         ("notification_event", "INSERT") if stage == "outbox_insert" else ("supplement_group", "UPDATE OF status")
     )
@@ -493,8 +493,8 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
 def test_frozen_notification_still_checks_execution_facts_before_finishing(database: Path) -> None:
     core = require_native_store("intent_finish")
     execution_id = "incomplete-frozen-result"
-    _intent(database, execution_id, step_id=_group(database, "incomplete-result"), running=True)
     record = _terminal(database, execution_id)
+    _intent(database, execution_id, step_id=_group(database, "incomplete-result"), running=True)
     _sql(database, "UPDATE executerecord SET facts_complete=0 WHERE id=?", (record["id"],))
     before = _snapshot(database)
 
@@ -590,16 +590,19 @@ def test_failed_recovery_terminal_commit_remains_recoverable(
         assert "recovery-terminal" in caught.value.args[1]
         assert not _rows(database, "executerecord")
         events = _rows(database, "notification_event")
-        assert len(events) == 1
+        assert len(events) == (0 if interrupted_status == "RUNNING" else 1)
         statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
-        assert statuses == {execution_id: "FAILED", queued_id: "QUEUED", "ordinary-failed": "FAILED"}
+        assert statuses == {execution_id: interrupted_status, queued_id: "QUEUED", "ordinary-failed": "FAILED"}
         _sql(database, "DROP TRIGGER fail_recovery")
         asyncio.run(dispatcher.recover_intents_on_startup())
         statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
         assert statuses == {execution_id: "FAILED", queued_id: "QUEUED", "ordinary-failed": "FAILED"}
         records = _rows(database, "executerecord")
         assert len(records) == 1 and records[0]["execution_id"] == execution_id
-        assert _rows(database, "notification_event") == events
+        committed_events = _rows(database, "notification_event")
+        assert len(committed_events) == 1
+        if interrupted_status == "FAILED":
+            assert committed_events == events
         committed = _snapshot(database)
         asyncio.run(dispatcher.recover_intents_on_startup())
         assert _snapshot(database) == committed

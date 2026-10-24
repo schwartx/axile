@@ -6,8 +6,8 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
 use crate::business_facts_ops::{
-    self as facts, encode, facts_error, result_extensions, result_head, result_orders,
-    result_symbols, result_trades, sql,
+    self as facts, facts_error, result_extensions, result_head, result_orders, result_symbols,
+    result_trades, sql,
 };
 use crate::error::AnalysisError;
 
@@ -190,12 +190,8 @@ fn attach_inputs(
     }
     let result_input_id = match raw_result.get("inputs").filter(|value| value.is_object()) {
         Some(payload) => {
-            let payload = encode::sanitize_payload(payload).map_err(facts_error)?;
             let same = match input_id.as_deref() {
-                Some(input_id) => encode::py_eq(
-                    &facts::load_input_value(connection, input_id)?,
-                    &encode::canonical_input(&payload).map_err(facts_error)?,
-                ),
+                Some(input_id) => facts::replay_matches(connection, input_id, payload)?,
                 None => false,
             };
             if same {
@@ -206,7 +202,7 @@ fn attach_inputs(
                     account_id,
                     None,
                     text(request, "result_input_id")?,
-                    &payload,
+                    payload,
                     created_at,
                     execution_id,
                 )?)

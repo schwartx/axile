@@ -262,7 +262,7 @@ pub(crate) fn find_execution_input(
 }
 
 /// 比较已冻结输入与重放输入:两侧都走同一编码-解码口径。
-fn replay_matches(
+pub(crate) fn replay_matches(
     connection: &Connection,
     input_id: &str,
     payload: &Value,

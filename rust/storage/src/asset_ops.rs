@@ -333,12 +333,11 @@ pub(crate) fn validate_result_asset_ownership(
     error.map_or(Ok(()), |message| Err(invalid(message)))
 }
 
-/// 与终态事实共用事务，重复收尾复用同一历史索引。
+/// 为已校验归属的结果资产补齐历史索引，与终态事实共用事务。
 pub(crate) fn ensure_execution_asset_snapshot(
     connection: &Connection,
     record_id: i64,
-) -> Result<Option<Value>, AnalysisError> {
-    validate_result_asset_ownership(connection, record_id)?;
+) -> Result<(), AnalysisError> {
     let reference = connection
         .query_row(
             "SELECT a.asset_id FROM business_asset_binding b
@@ -350,7 +349,7 @@ pub(crate) fn ensure_execution_asset_snapshot(
         .optional()
         .map_err(sql)?;
     let Some(reference) = reference else {
-        return Ok(None);
+        return Ok(());
     };
     let (account_id, execution_id, created_at): (i64, Option<String>, String) = connection
         .query_row(
@@ -380,18 +379,14 @@ pub(crate) fn ensure_execution_asset_snapshot(
         if cursor.next().map_err(sql)?.is_some() {
             return Err(invalid("执行资产历史索引不唯一"));
         }
-        return Ok(Some(Value::Object(existing)));
+        return Ok(());
     }
     connection.execute(
         "INSERT INTO account_asset_snapshot(account_id,asset_fact_id,source,execution_id,created_at)
          VALUES(?1,?2,'execution',?3,?4)",
         params![account_id, reference, execution_id, created_at],
     ).map_err(sql)?;
-    Ok(Some(
-        json!({"id": connection.last_insert_rowid(), "account_id": account_id,
-        "asset_fact_id": reference, "source": "execution", "execution_id": execution_id,
-        "created_at": created_at}),
-    ))
+    Ok(())
 }
 
 fn observation(
@@ -720,11 +715,21 @@ mod tests {
                         &payload,
                         Some("input:i1:/after_account_assets"),
                     )?;
-                    let first = ensure_execution_asset_snapshot(&connection, 17)?.unwrap();
-                    let second = ensure_execution_asset_snapshot(&connection, 17)?.unwrap();
-                    assert_eq!(first, second);
-                    assert_eq!(first["created_at"], "terminal-time");
-                    assert_eq!(first["source"], "execution");
+                    let history = || {
+                        crate::business_detail::load(
+                            &connection,
+                            "account_asset_snapshot",
+                            "account_id",
+                            &json!(1),
+                        )
+                        .map_err(invalid)
+                    };
+                    ensure_execution_asset_snapshot(&connection, 17)?;
+                    let first = history()?;
+                    ensure_execution_asset_snapshot(&connection, 17)?;
+                    assert_eq!(first, history()?);
+                    assert_eq!(first[0]["created_at"], "terminal-time");
+                    assert_eq!(first[0]["source"], "execution");
                     assert_eq!(count(&connection, "account_asset_snapshot"), 1);
                     assert_eq!(count(&connection, "business_asset_snapshot"), 1);
                     Err(invalid("terminal failed"))
@@ -784,9 +789,8 @@ mod tests {
             "":{"account_assets":"invalid"}}});
         write_result_assets(&connection, 17, &payload, None).unwrap();
         assert_eq!(count(&connection, "business_asset_snapshot"), 3);
-        assert!(ensure_execution_asset_snapshot(&connection, 17)
-            .unwrap()
-            .is_none());
+        ensure_execution_asset_snapshot(&connection, 17).unwrap();
+        assert_eq!(count(&connection, "account_asset_snapshot"), 0);
         let roots = crate::business_detail::load(
             &connection,
             "business_asset_snapshot",
