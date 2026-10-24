@@ -10,7 +10,7 @@ use crate::business_facts_ops::{result_extensions, result_head, result_symbols, 
 use crate::error::AnalysisError;
 
 use super::legacy::{self, Change};
-use super::parse_legacy_json;
+use crate::json_codec::parse as parse_legacy_json;
 
 type Result<T> = std::result::Result<T, AnalysisError>;
 type Object = Map<String, Value>;
@@ -402,7 +402,7 @@ impl Backup {
             let text: Option<String> = row.get(index).map_err(sql)?;
             match text {
                 None => Ok(Value::Null),
-                Some(text) => parse_legacy_json(&text),
+                Some(text) => parse_legacy_json(&text).map_err(invalid),
             }
         }
         let path = json_value(row, 3)?

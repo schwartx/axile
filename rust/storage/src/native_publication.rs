@@ -2,7 +2,6 @@
 //!
 //! Only a small receipt crosses the Python boundary; result rows stay in Rust.
 
-pub(crate) mod copy;
 mod staging;
 pub(crate) mod task;
 mod writer;

@@ -109,16 +109,18 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "migration_check",
         "migration_upgrade",
         "migration_downgrade",
+        "execution_notification_context",
     } <= set(required)
 
 
 @pytest.mark.parametrize(
     ("head", "fact_schema", "missing", "error"),
     [
-        ("0039", 40, None, None),
-        ("0038", 40, None, "public migration head 0039"),
-        ("0039", 39, None, "analysis fact schema 40"),
-        ("0039", 40, "migration_upgrade", "missing required entrypoints"),
+        ("0040", 40, None, None),
+        ("0039", 40, None, "public migration head 0040"),
+        ("0040", 39, None, "analysis fact schema 40"),
+        ("0040", 40, "migration_upgrade", "missing required entrypoints"),
+        ("0040", 40, "execution_notification_context", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(

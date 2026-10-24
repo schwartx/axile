@@ -320,7 +320,7 @@ fn summary_filters(
     sql: &mut String,
     params: &mut Vec<Box<dyn rusqlite::ToSql>>,
 ) -> Result<(), String> {
-    let bounds = crate::native_publication::copy::range_bounds(connection,snapshot_id,range_key)?
+    let bounds = crate::performance_ranges::range_bounds(connection,snapshot_id,range_key)?
         .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少区间边界")?;
     params.push(Box::new(snapshot_id.to_owned()));
     sql.push_str(" WHERE s.snapshot_id=? AND s.amount_complete IS NOT NULL");

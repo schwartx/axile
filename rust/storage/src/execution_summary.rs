@@ -1,6 +1,6 @@
 //! Compute execution totals and persist fees using the caller's staging transaction.
 
-use crate::costs::Summary;
+use crate::cost_summary::Summary;
 use crate::error::AnalysisError;
 use crate::publication::{finite, stage_error};
 use rusqlite::{params, Connection};

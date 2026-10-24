@@ -624,7 +624,9 @@ pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
             ),
             ValueRef::Text(bytes) => {
                 let s = std::str::from_utf8(bytes).map_err(invalid)?;
-                if json_column {
+                if table == "notification_event" && *name == "context" {
+                    crate::json_codec::parse(s).map_err(invalid)?
+                } else if json_column {
                     serde_json::from_str(s).map_err(invalid)?
                 } else {
                     json!(s)

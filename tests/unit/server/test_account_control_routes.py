@@ -14,6 +14,7 @@ from axile.executor.account_control.registry import (
     ensure_default_account_control_registry_bootstrapped,
     reset_default_account_control_registry_for_tests,
 )
+from axile.server._native import _core
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
@@ -154,6 +155,49 @@ def test_native_public_queries_match_existing_public_contract(account_client) ->
     assert detail.json() == expected
     assert listing.json() == {"data": [expected]}
     assert "private-webhook" not in detail.text
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        *[
+            pytest.param(
+                f"UPDATE account_settings SET {column}='[]' WHERE account_id=1",
+                id=f"{column}-array",
+            )
+            for column in ("connection", "execution", "schedule", "notification", "backtest")
+        ],
+        pytest.param("UPDATE account_settings SET connection='{' WHERE account_id=1", id="malformed-json"),
+        pytest.param("UPDATE account SET name=x'FF' WHERE id=1", id="binary-field"),
+        pytest.param("UPDATE account SET name=CAST(x'FF' AS TEXT) WHERE id=1", id="invalid-utf8"),
+    ],
+)
+def test_corrupt_account_data_is_a_server_error(account_client, mutation) -> None:
+    client, database = account_client
+    _seed_account(database)
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute(mutation)
+
+    with pytest.raises(_core.NativeError) as caught:
+        native_store_call(database, "account_get", {"account_id": 1})
+    assert caught.value.args[0] == "ACCOUNT_DATA"
+    for path in ("/account/1", "/account/"):
+        response = client.get(path)
+        assert response.status_code == 500, response.text
+        assert response.json()["detail"] == caught.value.args[1]
+
+
+def test_invalid_account_request_keeps_input_error(account_client) -> None:
+    client, database = account_client
+    _seed_account(database)
+    with pytest.raises(_core.NativeError) as caught:
+        native_store_call(
+            database,
+            "account_update",
+            {"account_id": 1, "patch": {"account_config": []}, "now": "2026-10-24T12:00:00"},
+        )
+    assert caught.value.args[0] == "ACCOUNT_INPUT"
+    assert client.patch("/account/1", json={"account_config": []}).status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -381,6 +425,32 @@ def test_create_idempotency_replays_before_custom_validation(account_client) -> 
     assert len(native_store_call(database, "account_list", {})) == 1
 
 
+@pytest.mark.parametrize("new_key", ["old-create", "new-create"])
+def test_deleted_account_recreation_and_idempotent_retry_are_isolated(account_client, new_key) -> None:
+    client, database = account_client
+    old = client.post("/account/", headers={"Idempotency-Key": "old-create"}, json=_account_payload())
+    assert old.status_code == 201, old.text
+    old_id = old.json()["id"]
+    assert client.delete(f"/account/{old_id}").status_code == 200
+    assert native_store_call(database, "account_create_replay", {"idempotency_key": "old-create"}) is None
+
+    payload = _account_payload() | {"name": "replacement"}
+    created = client.post("/account/", headers={"Idempotency-Key": new_key}, json=payload)
+    assert created.status_code == 201, created.text
+    new_id = created.json()["id"]
+    assert new_id > old_id
+    replay = client.post(
+        "/account/",
+        headers={"Idempotency-Key": new_key},
+        json=payload | {"account_control_preset": "unknown"},
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["id"] == new_id
+    assert len(native_store_call(database, "account_list", {})) == 1
+    if new_key != "old-create":
+        assert native_store_call(database, "account_create_replay", {"idempotency_key": "old-create"}) is None
+
+
 def test_runtime_registration_failure_rolls_back_create_and_update(account_client) -> None:
     client, database = account_client
     _seed_account(database)
@@ -486,8 +556,8 @@ def test_late_update_failure_rolls_back_connection_supplements_intent_and_outbox
     assert snapshot() == before
 
 
-def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) -> None:
-    # 509b362 的真实 Alembic 0039、FK-OFF ORM 删除结果；包含第二账户及触发器。
+@pytest.mark.parametrize("reject_delete", [False, True])
+def test_native_delete_cleans_owned_state_atomically(native_database, reject_delete) -> None:
     for ident in (1, 2):
         _seed_account(native_database, name=f"account-{ident}", portfolio_id=None, is_started=False)
     with closing(oracle_connect(native_database)) as connection, connection:
@@ -497,6 +567,31 @@ def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) ->
             )
             connection.execute(
                 "INSERT INTO account_connection_state(account_id,config_key,instance_id,sequence,status,manually_disconnected) VALUES(?,'key','',0,'unknown',0)",
+                (ident,),
+            )
+            connection.execute(
+                "INSERT INTO accountruntimesyncattempt(account_id,revision,succeeded,attempted_at) VALUES(?,1,0,'now')",
+                (ident,),
+            )
+            connection.execute("INSERT INTO order_submission_monitor(account_id,data) VALUES(?,'{}')", (ident,))
+            connection.execute(
+                "INSERT INTO order_submission(submission_uid,account_id,occurred_at_ms,revision,data) VALUES(?,?,1,1,'{}')",
+                (f"o{ident}", ident),
+            )
+            connection.execute(
+                "INSERT INTO order_submission_warning(event_uid,account_id,occurred_at_ms,data) VALUES(?,?,1,'{}')",
+                (f"w{ident}", ident),
+            )
+            connection.execute(
+                "INSERT INTO account_control_event(account_id,control_date,execution_id,seq,channel,operation,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms) VALUES(?,'day',?,1,'ctp','submit','{}','allow',1,'ok',?,'now',1)",
+                (ident, f"e{ident}", f"c{ident}"),
+            )
+            connection.execute(
+                "INSERT INTO account_control_counter_delta(account_id,execution_id,control_date,bucket_type,bucket_start,scope_type,operation,delta_count,delta_uid) VALUES(?,?,'day','day','day','account','submit',1,?)",
+                (ident, f"e{ident}", f"d{ident}"),
+            )
+            connection.execute(
+                "INSERT INTO schedule_skip(account_id,channel,triggered_at,calendar_id,calendar_day,calendar_label,reason_code) VALUES(?,'ctp','now','test','day','test','test')",
                 (ident,),
             )
             connection.execute(
@@ -534,7 +629,6 @@ def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) ->
                 "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES(?,'TARGET_SNAPSHOT',1,?,'now')",
                 (f"e{ident}", '{"sentinel": ' + str(ident) + "}"),
             )
-    native_store_call(native_database, "account_delete", {"account_id": 1})
     expected = {
         "account": ("id,name", [(2, "account-2")]),
         "account_settings": ("account_id", [(2,)]),
@@ -544,17 +638,40 @@ def test_native_delete_matches_frozen_head0039_orm_ownership(native_database) ->
         "account_asset_snapshot": ("account_id,source", [(2, "manual")]),
         "executerecord": ("account_id,execution_id", [(2, "e2")]),
         "supplement_group": ("id,account_id", [("g2", 2)]),
-        "supplement_step": ("id,group_id", [("s1", "g1"), ("s2", "g2")]),
-        "accountruntimesync": ("account_id,revision", [(1, 1), (2, 1)]),
-        "execution_intent": ("account_id,execution_id", [(1, "e1"), (2, "e2")]),
-        "notification_event": ("account_id,id,context", [(1, "n1", '{"sentinel": 1}'), (2, "n2", '{"sentinel": 2}')]),
-        "account_control_session": ("account_id,instance_id", [(1, "i1"), (2, "i2")]),
+        "supplement_step": ("id,group_id", [("s2", "g2")]),
+        "accountruntimesync": ("account_id,revision", [(2, 1)]),
+        "accountruntimesyncattempt": ("account_id,revision", [(2, 1)]),
+        "execution_intent": ("account_id,execution_id", [(2, "e2")]),
+        "notification_event": ("account_id,id,context", [(2, "n2", '{"sentinel": 2}')]),
+        "account_control_session": ("account_id,instance_id", [(2, "i2")]),
+        "account_control_event": ("account_id,event_uid", [(2, "c2")]),
+        "account_control_counter_delta": ("account_id,delta_uid", [(2, "d2")]),
+        "order_submission": ("account_id,submission_uid", [(2, "o2")]),
+        "order_submission_monitor": ("account_id", [(2,)]),
+        "order_submission_warning": ("account_id,event_uid", [(2, "w2")]),
+        "schedule_skip": ("account_id", [(2,)]),
         "execution_event": ("account_id,event_uid", [(2, "event2")]),
         "execution_artifact": ("execution_id,artifact_type,content", [("e2", "TARGET_SNAPSHOT", '{"sentinel": 2}')]),
     }
     with closing(oracle_connect(native_database)) as connection, connection:
+        before = {table: connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() for table in expected}
+        if reject_delete:
+            connection.execute(
+                "CREATE TRIGGER reject_account_delete AFTER DELETE ON account "
+                "BEGIN SELECT RAISE(ABORT,'delete rejected'); END"
+            )
+    if reject_delete:
+        with pytest.raises(_core.NativeError, match="delete rejected"):
+            native_store_call(native_database, "account_delete", {"account_id": 1})
+    else:
+        native_store_call(native_database, "account_delete", {"account_id": 1})
+    with closing(oracle_connect(native_database)) as connection, connection:
         for table, (columns, rows) in expected.items():
-            assert connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY 1').fetchall() == rows, table
+            if reject_delete:
+                assert connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() == before[table], table
+            else:
+                assert connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY 1').fetchall() == rows, table
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_update_rejects_stale_credential_merge(account_client, monkeypatch) -> None:

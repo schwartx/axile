@@ -188,7 +188,7 @@ fn daily_costs(
     ranges: &[(&str, f64, f64)],
     target: &Connection,
 ) -> Result<(), AnalysisError> {
-    let mut summaries: Vec<BTreeMap<String, crate::costs::Summary>> =
+    let mut summaries: Vec<BTreeMap<String, crate::cost_summary::Summary>> =
         ranges.iter().map(|_| BTreeMap::new()).collect();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
     let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
@@ -213,7 +213,7 @@ fn daily_costs(
                     continue;
                 }
                 days.entry(trade.day.clone())
-                    .or_insert_with(crate::costs::Summary::empty)
+                    .or_insert_with(crate::cost_summary::Summary::empty)
                     .push(&trade);
             }
         }

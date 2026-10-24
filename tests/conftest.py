@@ -38,8 +38,8 @@ def require_native_store(*operations: str) -> ModuleType:
     except ImportError as error:
         pytest.fail(f"需要当前源码构建的 Rust SQLite 扩展: {error}", pytrace=False)
     missing = [name for name in operations if not callable(getattr(_core, name, None))]
-    if getattr(_core, "PUBLIC_HEAD", None) != "0039":
-        missing.append("PUBLIC_HEAD=0039")
+    if getattr(_core, "PUBLIC_HEAD", None) != "0040":
+        missing.append("PUBLIC_HEAD=0040")
     if missing:
         pytest.fail(f"Rust SQLite 扩展缺少能力: {', '.join(missing)}；请先构建当前源码", pytrace=False)
     return _core

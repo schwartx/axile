@@ -87,14 +87,14 @@ def test_migration_history_has_one_root_and_head(tmp_path: Path) -> None:
     assert native_store_call(path, "migration_current", {})["public"] is None
     assert native_store_call(path, "migration_check", {})["public"] is None
     assert not path.exists()
-    revisions = [f"{number:04}" for number in range(1, 40)]
+    revisions = [f"{number:04}" for number in range(1, 41)]
     visited = []
     for revision in revisions:
         visited.append(initialize_native_database(path, revision=revision)["public"])
         assert native_store_call(path, "migration_current", {})["public"] == revision
     assert len(visited) == len(set(visited))
     assert visited == revisions
-    assert visited[-1] == core.PUBLIC_HEAD == "0039"
+    assert visited[-1] == core.PUBLIC_HEAD == "0040"
 
 
 def test_feishu_card_config_migration_adds_nullable_account_column(tmp_path: Path) -> None:

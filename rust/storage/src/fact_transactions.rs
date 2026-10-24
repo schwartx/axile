@@ -63,7 +63,7 @@ impl<'a> TransactionReader<'a> {
                 .iter()
                 .map(|trade| trade.time)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let mut summary = crate::costs::Summary::empty();
+            let mut summary = crate::cost_summary::Summary::empty();
             for trade in &trades {
                 summary.push(trade);
             }

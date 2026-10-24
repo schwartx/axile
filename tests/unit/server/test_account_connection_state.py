@@ -172,6 +172,10 @@ def test_account_deletion_cascades_latest_state_and_rejects_late_callback(databa
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(binding, 1, ConnectionObservation("error", "now", "连接失败", {}))
     native_store_call(path, "account_delete", {"account_id": 1})
+    replacement = native_store_call(
+        path, "account_create", {"account": account.model_dump(mode="json"), "now": "later"}
+    )["account"]
+    assert replacement["id"] > 1
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
     assert service.begin_connection_instance(account) is None
     assert _state(path) is None

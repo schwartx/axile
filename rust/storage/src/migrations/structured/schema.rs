@@ -2,23 +2,8 @@
 
 use super::*;
 
-pub(super) const RAW_FIELDS: &[&str] = &[
-    "status",
-    "task_status",
-    "error",
-    "outcome",
-    "outcome_reason",
-    "reason_code",
-    "msg",
-    "execution_kind",
-];
-pub(super) const SYMBOL_FIELDS: &[&str] = &[
-    "status",
-    "error",
-    "outcome",
-    "outcome_reason",
-    "reason_code",
-];
+pub(super) use crate::legacy_execution::{RAW_FIELDS, SYMBOL_FIELDS};
+
 pub(super) const COST_CHILDREN: &[&str] = &[
     "performance_cost_transaction_fee",
     "performance_cost_transaction",

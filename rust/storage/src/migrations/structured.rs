@@ -1,16 +1,18 @@
-//! 冻结的 0034—0039 转换；所有写入均留在迁移引擎持有的事务内。
+//! 0034—0040 转换；所有写入均留在迁移引擎持有的事务内。
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Params};
 use serde_json::{Map, Value};
 
 use crate::error::AnalysisError;
+use crate::json_codec::number_value;
 
+mod account_identity;
 mod analysis;
 mod business;
 mod direct;
 mod guards;
-mod json;
+use crate::json_codec as json;
 mod restore;
 mod schema;
 
@@ -25,6 +27,7 @@ pub(super) fn upgrade(connection: &Connection, revision: u32) -> Result<()> {
         37 => business::upgrade(connection),
         38 => guards::replace_summary(connection, true),
         39 => direct::upgrade(connection),
+        40 => account_identity::upgrade(connection),
         _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
     }
 }
@@ -37,6 +40,7 @@ pub(super) fn downgrade(connection: &Connection, revision: u32) -> Result<()> {
         37 => business::downgrade(connection),
         38 => guards::replace_summary(connection, false),
         39 => direct::downgrade(connection),
+        40 => account_identity::downgrade(connection),
         _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
     }
 }
@@ -113,7 +117,7 @@ fn integer(row: &Object, name: &str) -> Result<i64> {
 
 fn json_value(value: &Value) -> Result<Value> {
     match value {
-        Value::String(source) => json::parse(source),
+        Value::String(source) => json::parse(source).map_err(error),
         Value::Object(source)
             if source.len() == 1 && source.contains_key("$historical_sqlite_blob") =>
         {
@@ -125,7 +129,7 @@ fn json_value(value: &Value) -> Result<Value> {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(encoded)
                 .map_err(|_| error("Invalid historical SQLite BLOB"))?;
-            json::parse_bytes(&bytes)
+            json::parse_bytes(&bytes).map_err(error)
         }
         other => Ok(other.clone()),
     }
@@ -144,22 +148,6 @@ fn from_sql(value: SqlValue) -> Result<Value> {
 fn blob_value(value: Vec<u8>) -> Value {
     use base64::Engine;
     serde_json::json!({"$historical_sqlite_blob":base64::engine::general_purpose::STANDARD.encode(value)})
-}
-
-fn number_value(value: f64) -> Value {
-    if value.is_finite() {
-        return Value::from(value);
-    }
-    Value::Number(serde_json::Number::from_string_unchecked(
-        if value.is_nan() {
-            "NaN"
-        } else if value.is_sign_positive() {
-            "Infinity"
-        } else {
-            "-Infinity"
-        }
-        .into(),
-    ))
 }
 
 fn db_value(value: &Value) -> Result<SqlValue> {
@@ -347,15 +335,4 @@ mod tests {
 
 pub(super) fn preflight_downgrade_0039(connection: &Connection) -> Result<()> {
     direct::memory_preflight(connection)
-}
-
-pub(crate) fn parse_legacy_json(source: &str) -> Result<Value> {
-    json::parse(source)
-}
-
-pub(crate) fn compact_execution_list(value: &Value) -> Result<Value> {
-    let payload = value
-        .as_object()
-        .ok_or_else(|| error("Legacy execution projection must be an object"))?;
-    analysis::compact_execution(payload).map(Value::Object)
 }

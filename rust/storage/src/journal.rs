@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
-use crate::costs::Summary;
+use crate::cost_summary::Summary;
 #[cfg(test)]
-use crate::costs::AGGREGATES;
+use crate::cost_summary::AGGREGATES;
 
 const HEADERS: &str = "SELECT id,axile_time(created_at) AS occurred_at,0 AS kind FROM executerecord
     WHERE account_id=?1 AND (?2 IS NULL OR axile_time(created_at)>=?2) AND (?3 IS NULL OR axile_time(created_at)<?3)

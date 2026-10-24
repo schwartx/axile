@@ -1,4 +1,5 @@
 use super::*;
+use crate::legacy_execution::compact_execution;
 use schema::{COST_CHILDREN, RAW_FIELDS, RESULT_NAMES, SOURCE_NAMES, SYMBOL_FIELDS};
 
 fn object(value: &Value) -> Object {
@@ -116,64 +117,6 @@ fn put_validated(
     insert(connection, table, row)
 }
 
-fn compact_fields(source: &Object, names: &[&str]) -> Object {
-    names
-        .iter()
-        .filter_map(|name| source.get(*name).map(|item| ((*name).into(), item.clone())))
-        .collect()
-}
-
-pub(super) fn compact_execution(payload: &Object) -> Result<Object> {
-    let mut result = payload.clone();
-    let mut record = object(value(payload, "record"));
-    let raw = crate::business_facts_ops::result_head::normalize_legacy_result(value(
-        &record,
-        "raw_result",
-    ))
-    .map_err(|failure| invalid(failure.error))?;
-    let raw = object(&raw);
-    let mut compact = compact_fields(&raw, RAW_FIELDS);
-    if let Some(symbols) = value(&raw, "symbol_results").as_object() {
-        compact.insert(
-            "symbol_results".into(),
-            Value::Object(
-                symbols
-                    .iter()
-                    .map(|(symbol, item)| {
-                        let item = object(item);
-                        (
-                            symbol.clone(),
-                            Value::Object(compact_fields(&item, SYMBOL_FIELDS)),
-                        )
-                    })
-                    .collect(),
-            ),
-        );
-        if value(payload, "tradeCount").is_null()
-            && symbols
-                .values()
-                .any(|item| item.get("trades").is_some_and(Value::is_array))
-        {
-            result.insert(
-                "tradeCount".into(),
-                Value::from(
-                    symbols
-                        .values()
-                        .map(|item| {
-                            item.get("trades")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len)
-                        })
-                        .sum::<usize>(),
-                ),
-            );
-        }
-    }
-    record.insert("raw_result".into(), Value::Object(compact));
-    result.insert("record".into(), Value::Object(record));
-    result.entry("tradeCount").or_insert(Value::Null);
-    Ok(result)
-}
 fn backfill34(connection: &Connection, id: &str) -> Result<()> {
     let mut after = None;
     loop {

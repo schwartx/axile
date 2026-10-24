@@ -23,13 +23,13 @@ export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/axile-native-target"
 python scripts/build_native_analysis.py --target-dir "$CARGO_TARGET_DIR"
 ```
 
-脚本以 `--locked --lib --features python` 构建 release 扩展，隔离加载验证后暂存到 `axile/server/_native/_core.abi3.so`（Windows 为 `_core.pyd`）。已有构建产物可使用 `--no-build`，开发构建可使用 `--debug`；服务不会回退到 Python 存储实现。
+脚本要求 Rust 1.83 或更新版本，以 `--locked --lib --features python` 构建 release 扩展，隔离加载验证后暂存到 `axile/server/_native/_core.abi3.so`（Windows 为 `_core.pyd`）。已有构建产物可使用 `--no-build`，开发构建可使用 `--debug`；服务不会回退到 Python 存储实现。
 
 ```bash
 uv build --wheel
 ```
 
-构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0039`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
+构建钩子要求扩展通过加载、入口和版本检查：`PUBLIC_HEAD=0040`、`ANALYSIS_FACT_SCHEMA=40`。两者分别是迁移修订号与分析事实版本。wheel 标签为 `cp312-abi3-<本机平台>`；本地构建不自动声明 manylinux 或 musllinux 兼容，需要在目标系统和架构分别构建、验证。
 
 tag 发布流程先构建、验证原生扩展并运行 Rust 单测，再构建 wheel；Linux wheel 经 auditwheel 审核、修复后才上传 PyPI，不上传包含本机扩展的源码发行包。
 

@@ -201,7 +201,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
     for operation in ("migration_current", "migration_check"):
         result = native_store_call(path, operation, {})
         assert result["public"] is None
-        assert result["public_target"] == "0039"
+        assert result["public_target"] == "0040"
         assert not path.exists()
         assert list(tmp_path.iterdir()) == []
 
@@ -218,14 +218,14 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
             backup,
         )
     result = initialize_native_database(path)
-    assert result["public"] == "0039"
-    assert native_store_call(path, "migration_current", {})["public"] == "0039"
+    assert result["public"] == "0040"
+    assert native_store_call(path, "migration_current", {})["public"] == "0040"
     with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
             "FROM axile_0013_error_backup"
         ).fetchall() == [backup]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0039",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0040",)]
 
 
 def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> None:
@@ -249,7 +249,7 @@ def test_nonempty_native_upgrade_matches_frozen_0039_rows(tmp_path: Path) -> Non
     initialize_native_database(path, revision=data["from_revision"])
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
-    assert initialize_native_database(path)["public"] == data["to_revision"]
+    assert initialize_native_database(path, revision=data["to_revision"])["public"] == data["to_revision"]
     with closing(oracle_connect(path)) as connection, connection:
         assert database_rows(connection) == data["expected"]
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)

@@ -102,18 +102,24 @@ fn value(row: &Row<'_>, index: usize) -> Result<Value, AnalysisError> {
         ValueRef::Integer(value) => json!(value),
         ValueRef::Real(value) => json!(value),
         ValueRef::Text(value) => {
-            json!(std::str::from_utf8(value).map_err(|error| invalid(error.to_string()))?)
+            json!(std::str::from_utf8(value)
+                .map_err(|error| AnalysisError::caused_by("ACCOUNT_DATA", error))?)
         }
-        ValueRef::Blob(_) => return Err(invalid("账户配置包含非法二进制字段")),
+        ValueRef::Blob(_) => {
+            return Err(AnalysisError::new(
+                "ACCOUNT_DATA",
+                "账户配置包含非法二进制字段",
+            ))
+        }
     })
 }
 
 fn object(text: &str) -> Result<Map<String, Value>, AnalysisError> {
     serde_json::from_str::<Value>(text)
-        .map_err(|error| invalid(error.to_string()))?
+        .map_err(|error| AnalysisError::caused_by("ACCOUNT_DATA", error))?
         .as_object()
         .cloned()
-        .ok_or_else(|| invalid("账户配置必须是对象"))
+        .ok_or_else(|| AnalysisError::new("ACCOUNT_DATA", "账户配置必须是对象"))
 }
 
 fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
@@ -667,31 +673,11 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
 
 pub fn account_delete(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request)?;
-    // 沿用账户 ORM 删除的外键模式；审计及其余历史由既有触发器决定保留范围。
-    let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
+    let connection = crate::storage_connection::open_writer(Path::new(path), true)?;
     writer_scope::immediate(&connection, || {
         require_on(&connection, account_id)?;
+        // 先将独立摘要与执行记录解绑，再由外键级联清理账户拥有的全部状态。
         crate::execution_ops::delete_execution_history_in(&connection, account_id)?;
-        connection
-            .execute(
-                "DELETE FROM account_asset_snapshot WHERE account_id=?1",
-                [account_id],
-            )
-            .map_err(sql)?;
-        for relation in [
-            "account_settings",
-            "account_notification_state",
-            "account_connection_state",
-            "portfolioaccount",
-            "supplement_group",
-        ] {
-            connection
-                .execute(
-                    &format!("DELETE FROM {relation} WHERE account_id=?1"),
-                    [account_id],
-                )
-                .map_err(sql)?;
-        }
         connection
             .execute("DELETE FROM account WHERE id=?1", [account_id])
             .map_err(sql)?;

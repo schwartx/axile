@@ -196,14 +196,15 @@ def test_0039_removes_only_inputs_and_restores_old_guards(historical_database):
         assert not set(_INPUT_TABLES) & set(sa.inspect(connection).get_table_names())
 
 
-def test_0039_retains_old_display_and_refuses_lossy_memory_downgrade(historical_database):
+@pytest.mark.parametrize("revision", ["0039", "head"])
+def test_0039_retains_old_display_and_refuses_lossy_memory_downgrade(historical_database, revision):
     database = historical_database
     _upgrade(database, "0038")
     with _connect(database) as connection:
         connection.exec_driver_sql(
             "INSERT INTO performance_cost_execution_symbol(snapshot_id,record_id,symbol,present,error) VALUES('frozen',1,'A',2,'旧展示')"
         )
-    _upgrade(database, "0039")
+    _upgrade(database, revision)
     with _connect(database) as connection:
         assert connection.exec_driver_sql(
             "SELECT error,memory_message,memory_reason_code FROM performance_cost_execution_symbol"

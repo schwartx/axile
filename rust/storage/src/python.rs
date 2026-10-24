@@ -170,12 +170,22 @@ fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 fn business_request(stage: &str, request_json: &str) -> Result<Value, AnalysisError> {
     match serde_json::from_str(request_json) {
         Ok(value) => Ok(value),
-        Err(_) if EVIDENCE_INPUT_STAGES.contains(&stage) => {
-            crate::migrations::parse_legacy_json(request_json)
-                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error.error))
-        }
+        Err(_) if EVIDENCE_INPUT_STAGES.contains(&stage) => crate::json_codec::parse(request_json)
+            .map_err(|error| AnalysisError::new("INVALID_REQUEST", error)),
         Err(error) => Err(AnalysisError::new("INVALID_REQUEST", error.to_string())),
     }
+}
+
+#[pyfunction]
+fn execution_notification_context(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            let request = crate::json_codec::parse(request_json)
+                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error))?;
+            crate::notification_context::build(&request)
+        })
+        .map_err(raise)?;
+    json_to_py(py, &result)
 }
 
 fn business_operation(
@@ -791,6 +801,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_bytes_operations(m)?;
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(publication_status, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
 }

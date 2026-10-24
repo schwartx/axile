@@ -2,32 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
-from typing import Protocol, TypedDict
+from typing import Protocol
 
 import loguru
-from pydantic_core import to_jsonable_python
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
-from axile.common.notification_context import AccountNotificationExecution
 from axile.common.notification_function import NotificationFunctionResult, run_notification_function
 from axile.executor.algorithms.utils import clock_now
-from axile.executor.models.unified_account_assets import Position, UnifiedAccountAssets, is_degraded_snapshot_source
-from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
+from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
+from axile.executor.models.unified_order import UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 
 type ObjectDict = dict[str, object]
-
-
-class FormattedFeishuPosition(TypedDict):
-    """飞书持仓卡片使用的持仓信息."""
-
-    symbol: str
-    direction: str
-    market_value: float | None
-    volume: float
-    avg_price: float
 
 
 class LoggerLike(Protocol):
@@ -48,57 +37,6 @@ class FeishuNotificationSource(Protocol):
     def _get_account_mark(self) -> str: ...
 
     def _get_operation_display(self, order: UnifiedOrder) -> str: ...
-
-
-def format_position_for_feishu(position: Position) -> FormattedFeishuPosition:
-    """格式化持仓数据为飞书通知格式."""
-    return {
-        "symbol": position.symbol,
-        "direction": position.direction.value if hasattr(position.direction, "value") else str(position.direction),
-        "market_value": float(position.market_value) if position.market_value is not None else None,
-        "volume": float(position.volume),
-        "avg_price": float(position.avg_price) if position.avg_price is not None else 0,
-    }
-
-
-def _build_order_lookup(orders: list[UnifiedOrder]) -> dict[tuple[str, str], UnifiedOrder]:
-    """按 (symbol, order_id) 建立订单查找表."""
-    lookup: dict[tuple[str, str], UnifiedOrder] = {}
-    for order in orders:
-        lookup[(order.symbol, order.order_id)] = order
-    return lookup
-
-
-def format_trade_for_feishu(
-    source: FeishuNotificationSource,
-    trade: TradeRecord,
-    order_lookup: dict[tuple[str, str], UnifiedOrder],
-) -> dict[str, str]:
-    """格式化单笔成交为飞书通知格式."""
-    order = order_lookup.get((trade.symbol, trade.order_id))
-    operate = source._get_operation_display(order) if order is not None else "-"
-    return {
-        "symbol": trade.symbol,
-        "dt": trade.trade_time,
-        "operate": operate,
-        "volume": f"{trade.trade_volume:.4f}",
-        "price": f"{trade.trade_price:.4f}",
-        "order_id": trade.order_id,
-        "trade_id": trade.trade_id,
-    }
-
-
-def _redact_sensitive(value: object) -> object:
-    """递归移除普通策略配置中疑似凭据的字段."""
-    if isinstance(value, dict):
-        return {
-            key: _redact_sensitive(item)
-            for key, item in value.items()
-            if not any(marker in key.lower() for marker in ("key", "secret", "token", "password", "credential"))
-        }
-    if isinstance(value, list):
-        return [_redact_sensitive(item) for item in value]
-    return value
 
 
 def _select_notification_assets(
@@ -126,185 +64,6 @@ def _select_notification_assets(
     return assets
 
 
-def _legacy_template_variables(
-    source: FeishuNotificationSource,
-    output: UnifiedStandardOutput,
-    account_assets: UnifiedAccountAssets | None,
-) -> dict[str, object]:
-    """构造与既有飞书模板完全兼容的变量集合."""
-    account_mark = source._get_account_mark()
-    total_assets = float(account_assets.total_asset) if account_assets is not None else None
-    target_volume = output.target_volume
-    positions: list[dict[str, str]] = []
-    for position in account_assets.positions if account_assets is not None else []:
-        formatted_pos = format_position_for_feishu(position)
-        value = formatted_pos["market_value"]
-        if value is not None and value <= 0:
-            continue
-        positions.append(
-            {
-                "symbol": formatted_pos["symbol"],
-                "direction": formatted_pos["direction"],
-                "market_value": f"{value:.2f}" if value is not None else "暂无有效行情",
-                "volume": f"{formatted_pos['volume']:.4f}",
-                "target_volume": f"{target_volume.get(formatted_pos['symbol'], 0):.4f}",
-                "rate": f"{value / total_assets:.2%}"
-                if value is not None and total_assets is not None and total_assets > 0
-                else "—",
-            }
-        )
-    order_lookup = _build_order_lookup(output.orders)
-    return {
-        "account_mark": account_mark,
-        "dt": clock_now().strftime("%Y-%m-%d %H:%M:%S"),
-        "algorithm": str(output.inputs.algorithm.get("method", "Unknown")) if output.inputs else "Unknown",
-        "total_assets": f"{total_assets:.2f}" if total_assets is not None else "未获取",
-        "available_cash": f"{float(account_assets.available_cash):.2f}" if account_assets is not None else "未获取",
-        "market_value": (
-            f"{account_assets.market_value:.2f}"
-            if account_assets is not None and account_assets.market_value is not None
-            else ("暂无有效行情" if account_assets is not None else "未获取")
-        ),
-        "positions": positions
-        if account_assets is not None
-        else [
-            {
-                "symbol": "未获取",
-                "direction": "—",
-                "market_value": "未获取",
-                "volume": "—",
-                "target_volume": "—",
-                "rate": "—",
-            }
-        ],
-        "trades": [format_trade_for_feishu(source, trade, order_lookup) for trade in output.trades],
-    }
-
-
-def _structured_template_variables(
-    source: FeishuNotificationSource,
-    output: UnifiedStandardOutput,
-    legacy: dict[str, object],
-    assets: UnifiedAccountAssets | None,
-) -> dict[str, object]:
-    """构造跨渠道且不含连接信息的执行通知变量."""
-    inputs = output.inputs
-    audit_value = inputs.extra.get("audit") if inputs else None
-    audit: dict[str, object] = audit_value if isinstance(audit_value, dict) else {}
-    total_asset = float(assets.total_asset) if assets is not None else None
-    orders = [order.model_dump(mode="json", exclude={"extra", "update_timestamp"}) for order in output.orders]
-    trades = [trade.model_dump(mode="json", exclude={"extra"}) for trade in output.trades]
-    positions = [
-        {
-            **position.model_dump(mode="json", exclude={"extra"}),
-            "target_volume": output.target_volume.get(position.symbol, 0),
-            "target_weight": inputs.curr_target.get(position.symbol) if inputs else None,
-            "rate": (
-                float(position.market_value) / total_asset
-                if position.market_value is not None and total_asset is not None and total_asset > 0
-                else None
-            ),
-        }
-        for position in (assets.positions if assets is not None else [])
-    ]
-    symbols: list[dict[str, object]] = []
-    for symbol, result in output.symbol_results.items():
-        symbols.append(
-            {
-                "symbol": symbol,
-                "algorithm": result.algorithm,
-                "status": str(result.status),
-                "success": result.success,
-                "error": result.error,
-                "outcome": str(result.outcome),
-                "outcome_reason": result.outcome_reason,
-                "reason_code": result.reason_code,
-                "target_volume": result.target_volume,
-                "sizing": result.sizing.model_dump(mode="json") if result.sizing else None,
-                "first_tick": result.first_tick.model_dump(mode="json", exclude={"extra"})
-                if result.first_tick
-                else None,
-                "order_count": len(result.orders),
-                "trade_count": len(result.trades),
-            }
-        )
-    account = dict(inputs.feishu_account) if inputs else {}
-    account["mark"] = source._get_account_mark()
-    status = str(output.status)
-    execution_id = audit.get("execution_id")
-    kind = audit.get("execution_kind")
-    trigger_source = audit.get("trigger_source")
-    execution: AccountNotificationExecution = {
-        "id": execution_id if isinstance(execution_id, str) else None,
-        "kind": kind if isinstance(kind, str) else None,
-        "trigger_source": trigger_source if isinstance(trigger_source, str) else None,
-        "notified_at": str(legacy["dt"]),
-        "execution_time": output.execution_time,
-        "status": status,
-        "success": output.success,
-        "error": output.error,
-        "outcome": str(output.outcome),
-        "outcome_reason": output.outcome_reason,
-        "reason_code": output.reason_code,
-        "channel_type": str(output.channel_type),
-        "is_test": bool(audit.get("is_test", False)),
-    }
-    structured = {
-        "schema_version": 1,
-        "account": account,
-        "execution": execution,
-        "strategy": {
-            "algorithm": _redact_sensitive(to_jsonable_python(inputs.algorithm)) if inputs else {},
-            "symbol_algorithms": _redact_sensitive(to_jsonable_python(inputs.symbol_algorithms)) if inputs else {},
-            "trade_rules": _redact_sensitive(to_jsonable_python(inputs.trade_rules)) if inputs else {},
-            "forbidden_symbols": list(inputs.forbidden_symbols) if inputs else [],
-            "risk_symbols": list(inputs.risk_symbols) if inputs else [],
-        },
-        "assets": {
-            "total_assets": total_asset,
-            "available_cash": float(assets.available_cash) if assets is not None else None,
-            "market_value": float(assets.market_value)
-            if assets is not None and assets.market_value is not None
-            else None,
-            "currency": assets.currency if assets is not None else None,
-            "update_time": assets.update_time if assets is not None else None,
-            "source": assets.source if assets is not None else "unavailable",
-            "cash_rate": float(assets.available_cash) / total_asset
-            if assets is not None and total_asset is not None and total_asset > 0
-            else None,
-            "position_rate": (
-                float(assets.market_value) / total_asset
-                if assets is not None
-                and assets.market_value is not None
-                and total_asset is not None
-                and total_asset > 0
-                else None
-            ),
-        },
-        "targets": {
-            "current": dict(inputs.curr_target) if inputs else {},
-            "previous": dict(inputs.last_target) if inputs else {},
-            "target_volume": output.target_volume,
-        },
-        "positions": positions if assets is not None else None,
-        "orders": orders,
-        "trades": trades,
-        "symbols": symbols,
-        "summary": {
-            "symbol_count": len(output.symbol_results),
-            "position_count": len(positions) if assets is not None else None,
-            "order_count": len(orders),
-            "filled_order_count": len(output.get_filled_orders()),
-            "active_order_count": len(output.get_active_orders()),
-            "trade_count": len(trades),
-            "trade_value": sum(float(trade.trade_value) for trade in output.trades),
-            "succeeded_symbol_count": sum(1 for result in output.symbol_results.values() if result.success),
-            "failed_symbol_count": sum(1 for result in output.symbol_results.values() if not result.success),
-        },
-    }
-    return {**legacy, **structured}
-
-
 def build_execute_results_feishu_card(
     source: FeishuNotificationSource,
     output: UnifiedStandardOutput,
@@ -313,12 +72,12 @@ def build_execute_results_feishu_card(
     notification_snapshot: dict[str, object] | None = None,
 ) -> ObjectDict:
     """按账户配置构造可直接发送的执行结果卡片."""
-    assets = _select_notification_assets(source, output, notification_snapshot)
+    context = build_execution_notification_context(source, output, notification_snapshot)
     return {
         "type": "template",
         "data": {
             "template_id": template_id,
-            "template_variable": _legacy_template_variables(source, output, assets),
+            "template_variable": context["default_feishu_variables"],
         },
     }
 
@@ -331,21 +90,58 @@ def build_execution_notification_context(
     is_test: bool = False,
 ) -> dict[str, object]:
     """为渠道无关的通知函数构造脱敏执行快照。"""
+    from axile.server._native import _core
+
     assets = _select_notification_assets(source, output, notification_snapshot)
-    legacy = _legacy_template_variables(source, output, assets)
-    context = _structured_template_variables(source, output, legacy, assets)
-    context.pop("schema_version", None)
-    for key in legacy:
-        if key not in {"positions", "trades"}:
-            context.pop(key, None)
-    context["default_feishu_variables"] = legacy
-    context["event_type"] = "execution.finished"
-    context["is_test"] = is_test
-    execution = context.get("execution")
-    if isinstance(execution, dict):
-        execution["is_test"] = is_test
-        context["event_id"] = f"execution:{execution.get('id')}" if execution.get("id") else None
-    return to_jsonable_python(context)
+    result = output.model_dump(
+        mode="json",
+        exclude={
+            "memory": True,
+            "extra": True,
+            "account_assets": True,
+            "inputs": {"account_config", "extra", "feishu_key", "execution_notification_code"},
+            "symbol_results": {
+                "__all__": {
+                    "memory": True,
+                    "first_tick": {"extra"},
+                    "orders": {"__all__": {"extra"}},
+                    "trades": {"__all__": {"extra"}},
+                }
+            },
+        },
+    )
+    result["account_assets"] = (assets if assets is not None else output.account_assets).model_dump(
+        mode="json", exclude={"extra": True, "positions": {"__all__": {"extra"}}}
+    )
+    if output.inputs is not None:
+        audit = output.inputs.extra.get("audit")
+        audit = audit if isinstance(audit, dict) else {}
+        result["inputs"]["extra"] = {
+            "audit": {
+                key: value
+                for key in ("execution_id", "execution_kind", "trigger_source")
+                if isinstance(value := audit.get(key), str)
+            }
+        }
+    lookup = {(order.symbol, order.order_id): order for order in output.orders}
+    operations = [
+        source._get_operation_display(order)
+        if (order := lookup.get((trade.symbol, trade.order_id))) is not None
+        else "-"
+        for trade in output.trades
+    ]
+    return _core.execution_notification_context(
+        json.dumps(
+            {
+                "result": result,
+                "now": clock_now().isoformat(),
+                "account_mark": source._get_account_mark(),
+                "trade_operations": operations,
+                "is_test": is_test,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def _record_notification_result(

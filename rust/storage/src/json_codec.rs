@@ -2,14 +2,36 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::*;
+use serde_json::Value;
+
+type Result<T> = std::result::Result<T, String>;
+
+fn error(message: impl Into<String>) -> String {
+    message.into()
+}
+
+pub(crate) fn number_value(value: f64) -> Value {
+    if value.is_finite() {
+        return Value::from(value);
+    }
+    Value::Number(serde_json::Number::from_string_unchecked(
+        if value.is_nan() {
+            "NaN"
+        } else if value.is_sign_positive() {
+            "Infinity"
+        } else {
+            "-Infinity"
+        }
+        .into(),
+    ))
+}
 
 enum Piece<'a> {
     Source(&'a str),
     Number(&'static str),
 }
 
-pub(super) fn parse_bytes(source: &[u8]) -> Result<Value> {
+pub(crate) fn parse_bytes(source: &[u8]) -> Result<Value> {
     let (body, width, little) = if source.starts_with(&[0xff, 0xfe, 0, 0]) {
         (&source[4..], 4, true)
     } else if source.starts_with(&[0, 0, 0xfe, 0xff]) {
@@ -77,7 +99,7 @@ pub(super) fn parse_bytes(source: &[u8]) -> Result<Value> {
     parse(&text)
 }
 
-pub(super) fn parse(source: &str) -> Result<Value> {
+pub(crate) fn parse(source: &str) -> Result<Value> {
     let bytes = source.as_bytes();
     let mut pieces = Vec::new();
     let mut strings = BTreeSet::new();

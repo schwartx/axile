@@ -11,10 +11,8 @@ use crate::error::AnalysisError;
 mod legacy;
 mod private;
 mod structured;
-pub(crate) use structured::compact_execution_list;
-pub(crate) use structured::parse_legacy_json;
 
-pub const PUBLIC_HEAD: &str = "0039";
+pub const PUBLIC_HEAD: &str = "0040";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -22,7 +20,7 @@ const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const LEGACY_HEAD: u32 = 36;
-const PUBLIC_HEAD_NUMBER: u32 = 39;
+const PUBLIC_HEAD_NUMBER: u32 = 40;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -114,9 +112,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0039, private base/axon_0001")
+            invalid("supported targets: public 0012 through 0040, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0039")
+            invalid("supported targets: public base/0001 through 0040")
         }
     }
 }
@@ -406,7 +404,7 @@ fn scan(
     policy: &Policy<'_>,
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
-    if current.public == PUBLIC_HEAD_NUMBER && targets.public < PUBLIC_HEAD_NUMBER {
+    if current.public >= 39 && targets.public < 39 {
         structured::preflight_downgrade_0039(connection)?;
     }
     if current.public > LEGACY_HEAD && targets.public <= LEGACY_HEAD {
@@ -486,7 +484,7 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         let minimum = if policy.codes.is_some() { 12 } else { 1 };
         if current.public < minimum {
             return Err(invalid(if policy.codes.is_some() {
-                "downgrade requires public revision 0012 through 0039"
+                "downgrade requires public revision 0012 through 0040"
             } else {
                 "downgrade requires an existing public revision"
             }));
@@ -560,7 +558,7 @@ mod tests {
         let request = dual_request("head", "head");
         let current = migration_current(path.as_str(), &request).unwrap();
         assert_eq!(current["public"], Value::Null);
-        assert_eq!(current["public_target"], "0039");
+        assert_eq!(current["public_target"], "0040");
         let checked = migration_check(path.as_str(), &request).unwrap();
         assert_eq!(checked["private_fields"], 0);
         assert!(!path.0.exists());
@@ -677,7 +675,7 @@ mod tests {
             .contains("multiple public"));
         connection
             .execute_batch(
-                "DELETE FROM alembic_version; INSERT INTO alembic_version VALUES('0040');",
+                "DELETE FROM alembic_version; INSERT INTO alembic_version VALUES('0041');",
             )
             .unwrap();
         assert!(state(Some(&connection))

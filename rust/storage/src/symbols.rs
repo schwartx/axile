@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use crate::costs::Summary;
+use crate::cost_summary::Summary;
 use crate::journal::historical_summary;
 
 fn database(error: rusqlite::Error) -> String {

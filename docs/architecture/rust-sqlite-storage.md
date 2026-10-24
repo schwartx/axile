@@ -15,9 +15,13 @@ Rust 业务入口拥有连接和事务，内部辅助函数接收同一个 `&Con
 - 执行意图、补发步骤及通知 outbox。SDK 发送前必须提交 `pending`，发送成功后的记录故障不能把订单变成可重试发送。
 - 账户控制批次整体提交；依赖已落库事实的预警另开后续事务。执行事件审计批次允许逐行 SAVEPOINT，保留单行失败隔离。
 
+执行通知的内容统一由 `notification_context.rs` 投影，正常执行、历史预览和补发共用。Python 选择可信资产快照并提供渠道操作文字；纯计算入口 `execution_notification_context` 不接收数据库路径。补发模块只管理步骤、组状态及通知入队，通知仍在原事务内提交。账户持久化字段解码失败使用 `ACCOUNT_DATA`，HTTP 返回 500；请求校验继续使用 `ACCOUNT_INPUT` 和 422。
+
 执行输入、终态、订单、成交和资产使用固定 SQL 绑定参数；JSON 字段显式序列化，文本和数值列直接绑定。字段整理函数由在线写入和迁移共用，不再先装入按表名组织的通用批次。历史转换在删除旧列前逐表核对预期字段和落库结果。
 
 分析计算在一致性读快照中运行，通过另一条连接直接写磁盘暂存表。暂存对象负责库和事务的生命周期、完整区间校验及实际行数统计；计算代码不再经过行帧回调或动态列类型解释。最终仍在短写事务内复核源版本和任务身份，复制结果并切换快照指针。
+
+共用 JSON 解析、旧执行展示、成本聚合及区间读取分别位于 `json_codec.rs`、`legacy_execution.rs`、`cost_summary.rs` 和 `performance_ranges.rs`。迁移与在线路径依赖这些共同能力，在线读取不再反向依赖迁移或发布写入器。
 
 业务写连接使用 WAL、`synchronous=FULL` 和 30 秒 busy timeout，写事务使用 `BEGIN IMMEDIATE`。事务只包住本阶段数据库工作，不能持锁等待策略、worker 或网络。业务读写只打开已有文件，路径错误不能悄悄创建空库。业务时间戳由 Python Clock 生成并传入 Rust，保持仿真时钟可替换。
 
@@ -29,7 +33,9 @@ Rust 业务入口拥有连接和事务，内部辅助函数接收同一个 `&Con
 
 ## 迁移与维护
 
-Rust 的迁移引擎负责建库、公共 `0001`—`0039` 历史数据转换、升级和降级。Axon 将私有规则作为数据一次传入，Rust 在同一事务中完成公共链和私有 `axon_0001` 链，全部成功后提交。继续使用 `alembic_version`、`axon_alembic_version` 及原修订号，不调用 Python Alembic 回调；`ANALYSIS_FACT_SCHEMA=40` 是分析事实版本，不是迁移修订号。`current` 和 `check` 只读，数据库不存在时保持不存在。降级保留证据可表示性和字段恢复冲突检查，不能为完成降级丢弃证据。
+Rust 的迁移引擎负责建库、公共 `0001`—`0040` 历史数据转换、升级和降级。Axon 将私有规则作为数据一次传入，Rust 在同一事务中完成公共链和私有 `axon_0001` 链，全部成功后提交。继续使用 `alembic_version`、`axon_alembic_version` 及原修订号，不调用 Python Alembic 回调；`ANALYSIS_FACT_SCHEMA=40` 是分析事实版本，不是迁移修订号。`current` 和 `check` 只读，数据库不存在时保持不存在。降级保留证据可表示性和字段恢复冲突检查，不能为完成降级丢弃证据。
+
+`0040` 将账户主键改为 SQLite `AUTOINCREMENT`，新编号也会避开旧库各表残留的账户编号。账户删除先解绑独立执行摘要，再在同一事务中通过外键级联清理从属状态；降级到 `0039` 会恢复允许编号复用的旧主键规则。
 
 测试 oracle、SQLite 夹具以及历史 Alembic/SQLAlchemy 对照留在开发测试侧，不进入生产存储路径。源码边界检查见 `tests/contract/test_native_storage_source_boundary.py`，桥接取消和真实事务契约分别见 `tests/unit/test_native_store_bridge.py`、`tests/integration/server/test_native_storage_transactions.py`。维护目标是 Python 更薄、存储边界统一、行为容易核对；总行数可以随 Rust 实现和必要验证增加。
 
@@ -40,6 +46,7 @@ Rust 的迁移引擎负责建库、公共 `0001`—`0039` 历史数据转换、�
 Rust 实现在 `rust/storage/`，Cargo 包名为 `axile-storage`。Python 导入入口仍是
 `axile.server._native._core`；构建脚本仍使用 `scripts/build_native_analysis.py`。
 crate 同时承担 SQLite 业务存储和分析，`analysis` 不再适合作为整个 crate 的名字。
+最低 Rust 版本为 1.83，与锁定的 PyO3 依赖一致；Axile 和 Axon 的质量检查使用 1.83.0 构建带 Python feature 的扩展。
 
 当前保留单 crate。按现有源码依赖，拆分边界如下：
 

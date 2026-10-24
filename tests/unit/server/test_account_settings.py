@@ -117,10 +117,14 @@ def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch,
     assert account.notification_state.execution_id == "exec-new"
     assert account.notification_state.last_success_at == "2026-09-30T10:01:00"
     native_store_call(native_database, "account_delete", {"account_id": 1})
+    replacement = native_store_call(
+        native_database, "account_create", {"account": account_data(), "now": "2026-09-30T10:01:30"}
+    )["account"]
+    assert replacement["id"] > 1
     notification_state.record_notification_result(1, "exec-deleted", "2026-09-30T10:02:00", True, None)
     with closing(sqlite3.connect(native_database)) as connection:
         assert connection.execute("SELECT * FROM account_notification_state").fetchall() == []
-        assert connection.execute("SELECT * FROM account_settings").fetchall() == []
+        assert connection.execute("SELECT account_id FROM account_settings").fetchall() == [(replacement["id"],)]
 
 
 def test_public_response_exposes_success_summary_without_credentials():

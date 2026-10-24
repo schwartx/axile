@@ -1,0 +1,667 @@
+{
+  "source": "Axile cfca2532236231df6a4daa333b28d69329d49dee Python notification projection",
+  "source_sha256": "596139f47bc65f8843804faca6f786319fb06a48b810498525234e8fa60a56e9",
+  "now": "2026-10-24T08:00:00+08:00",
+  "cases": [
+    {
+      "name": "complete",
+      "result": {
+        "account_assets": {
+          "available_cash": 0.0,
+          "total_asset": 100000.0,
+          "market_value": null,
+          "positions": [
+            {
+              "symbol": "rb2610",
+              "volume": 1.0,
+              "available_volume": 0.0,
+              "market_value": null,
+              "direction": "多头",
+              "avg_price": 3500.0,
+              "extra": {
+                "position_attributes": {
+                  "today": 1,
+                  "yesterday": 0
+                }
+              }
+            }
+          ],
+          "currency": "CNY",
+          "update_time": "2026-10-20T09:00:09.123456+08:00",
+          "source": "real",
+          "extra": {}
+        },
+        "memory": {},
+        "inputs": {
+          "channel_type": "ctp",
+          "account_config": {
+            "broker_id": "9999",
+            "investor_id": "test",
+            "password": "test",
+            "td_front": "tcp://td:1",
+            "md_front": "tcp://md:2",
+            "app_id": "app",
+            "auth_code": "auth"
+          },
+          "curr_target": {
+            "rb2610": 0.25,
+            "zero-target": 0.0
+          },
+          "last_target": {},
+          "algorithm": {
+            "method": "SINGLE-MAKER",
+            "params": {
+              "pace": 2,
+              "api_token": "synthetic-secret"
+            }
+          },
+          "symbol_algorithms": {},
+          "trade_rules": {},
+          "futures_close_policy": {
+            "mode": "rules",
+            "fallback": "yesterday_first",
+            "overrides": {}
+          },
+          "forbidden_symbols": [],
+          "risk_symbols": [],
+          "feishu_key": null,
+          "execution_notification_code": null,
+          "feishu_account": {
+            "id": 1,
+            "name": "ctp-sim"
+          },
+          "execution_timeout": 180,
+          "extra": {
+            "audit": {
+              "execution_id": "projection-golden",
+              "execution_kind": "rebalance",
+              "trigger_source": "manual"
+            },
+            "channel_type": "ctp"
+          }
+        },
+        "symbol_results": {
+          "rb2610": {
+            "outcome": "not_reached",
+            "outcome_reason": "one contract remains",
+            "final_volume": 1.0,
+            "symbol": "rb2610",
+            "algorithm": "SINGLE-MAKER",
+            "orders": [
+              {
+                "order_id": "native-01",
+                "symbol": "rb2610",
+                "direction": "BUY",
+                "order_type": "LIMIT",
+                "volume": 2.0,
+                "price": 3500.0,
+                "status": "部分成交",
+                "filled_volume": 1.0,
+                "avg_price": 3500.0,
+                "value_conversion": null,
+                "create_time": "2026-10-20T09:00:01.000001+08:00",
+                "extra": {
+                  "OrderSysID": "native-system-01",
+                  "exchange": "SHFE",
+                  "trading_day": "20261020",
+                  "_update_time_str": "2026-10-20T09:00:02.000002+08:00"
+                },
+                "update_time": "2026-10-20T09:00:02.000002+08:00",
+                "remaining_volume": 1.0,
+                "filled_ratio": 0.5
+              }
+            ],
+            "trades": [
+              {
+                "trade_id": "native-fill-01",
+                "symbol": "rb2610",
+                "order_id": "native-01",
+                "trade_time": "2026-10-20T09:00:02.000003+08:00",
+                "trade_volume": 1.0,
+                "trade_price": 3500.0,
+                "trade_value": 35000.125,
+                "value_conversion": null,
+                "extra": {
+                  "commission": 0,
+                  "commission_asset": "CNY"
+                }
+              }
+            ],
+            "target_volume": 2,
+            "sizing": null,
+            "first_tick": null,
+            "memory": {},
+            "status": "PARTIAL",
+            "error": "one contract remains",
+            "reason_code": null,
+            "success": false
+          }
+        },
+        "status": "PARTIAL",
+        "error": "RuntimeError: native callback failed\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n",
+        "reason_code": null,
+        "outcome": "not_reached",
+        "outcome_reason": "one contract remains",
+        "execution_time": 0.0,
+        "channel_type": "ctp",
+        "success": false,
+        "extra": {
+          "channel_type": "ctp"
+        }
+      },
+      "notification_snapshot": null,
+      "is_test": true,
+      "expected": {
+        "positions": [
+          {
+            "symbol": "rb2610",
+            "volume": 1.0,
+            "available_volume": 0.0,
+            "market_value": null,
+            "direction": "多头",
+            "avg_price": 3500.0,
+            "target_volume": 2,
+            "target_weight": 0.25,
+            "rate": null
+          }
+        ],
+        "trades": [
+          {
+            "trade_id": "native-fill-01",
+            "symbol": "rb2610",
+            "order_id": "native-01",
+            "trade_time": "2026-10-20T09:00:02.000003+08:00",
+            "trade_volume": 1.0,
+            "trade_price": 3500.0,
+            "trade_value": 35000.125,
+            "value_conversion": null
+          }
+        ],
+        "account": {
+          "id": 1,
+          "name": "ctp-sim",
+          "mark": "acct-demo"
+        },
+        "execution": {
+          "id": "projection-golden",
+          "kind": "rebalance",
+          "trigger_source": "manual",
+          "notified_at": "2026-10-24 08:00:00",
+          "execution_time": 0.0,
+          "status": "PARTIAL",
+          "success": false,
+          "error": "RuntimeError: native callback failed\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n  at channel.confirm(order_id='native-01')\n",
+          "outcome": "not_reached",
+          "outcome_reason": "one contract remains",
+          "reason_code": null,
+          "channel_type": "ctp",
+          "is_test": true
+        },
+        "strategy": {
+          "algorithm": {
+            "method": "SINGLE-MAKER",
+            "params": {
+              "pace": 2
+            }
+          },
+          "symbol_algorithms": {},
+          "trade_rules": {},
+          "forbidden_symbols": [],
+          "risk_symbols": []
+        },
+        "assets": {
+          "total_assets": 100000.0,
+          "available_cash": 0.0,
+          "market_value": null,
+          "currency": "CNY",
+          "update_time": "2026-10-20T09:00:09.123456+08:00",
+          "source": "real",
+          "cash_rate": 0.0,
+          "position_rate": null
+        },
+        "targets": {
+          "current": {
+            "rb2610": 0.25,
+            "zero-target": 0.0
+          },
+          "previous": {},
+          "target_volume": {
+            "rb2610": 2
+          }
+        },
+        "orders": [
+          {
+            "order_id": "native-01",
+            "symbol": "rb2610",
+            "direction": "BUY",
+            "order_type": "LIMIT",
+            "volume": 2.0,
+            "price": 3500.0,
+            "status": "部分成交",
+            "filled_volume": 1.0,
+            "avg_price": 3500.0,
+            "value_conversion": null,
+            "create_time": "2026-10-20T09:00:01.000001+08:00",
+            "update_time": "2026-10-20T09:00:02.000002+08:00",
+            "remaining_volume": 1.0,
+            "filled_ratio": 0.5
+          }
+        ],
+        "symbols": [
+          {
+            "symbol": "rb2610",
+            "algorithm": "SINGLE-MAKER",
+            "status": "PARTIAL",
+            "success": false,
+            "error": "one contract remains",
+            "outcome": "not_reached",
+            "outcome_reason": "one contract remains",
+            "reason_code": null,
+            "target_volume": 2,
+            "sizing": null,
+            "first_tick": null,
+            "order_count": 1,
+            "trade_count": 1
+          }
+        ],
+        "summary": {
+          "symbol_count": 1,
+          "position_count": 1,
+          "order_count": 1,
+          "filled_order_count": 0,
+          "active_order_count": 1,
+          "trade_count": 1,
+          "trade_value": 35000.125,
+          "succeeded_symbol_count": 0,
+          "failed_symbol_count": 1
+        },
+        "default_feishu_variables": {
+          "account_mark": "acct-demo",
+          "dt": "2026-10-24 08:00:00",
+          "algorithm": "SINGLE-MAKER",
+          "total_assets": "100000.00",
+          "available_cash": "0.00",
+          "market_value": "暂无有效行情",
+          "positions": [
+            {
+              "symbol": "rb2610",
+              "direction": "多头",
+              "market_value": "暂无有效行情",
+              "volume": "1.0000",
+              "target_volume": "2.0000",
+              "rate": "—"
+            }
+          ],
+          "trades": [
+            {
+              "symbol": "rb2610",
+              "dt": "2026-10-20T09:00:02.000003+08:00",
+              "operate": "开多",
+              "volume": "1.0000",
+              "price": "3500.0000",
+              "order_id": "native-01",
+              "trade_id": "native-fill-01"
+            }
+          ]
+        },
+        "event_type": "execution.finished",
+        "is_test": true,
+        "event_id": "execution:projection-golden"
+      }
+    },
+    {
+      "name": "no-input",
+      "result": {
+        "account_assets": {
+          "available_cash": 0.0,
+          "total_asset": 0.0,
+          "market_value": 0.0,
+          "positions": [],
+          "currency": "CNY",
+          "update_time": "2026-10-24T10:38:22.955628",
+          "source": "real",
+          "extra": {}
+        },
+        "memory": {},
+        "inputs": null,
+        "symbol_results": {},
+        "status": "SUCCEEDED",
+        "error": null,
+        "reason_code": null,
+        "outcome": "completed",
+        "outcome_reason": null,
+        "execution_time": 0.0,
+        "channel_type": "ctp",
+        "success": true,
+        "extra": {
+          "channel_type": "ctp"
+        }
+      },
+      "notification_snapshot": null,
+      "is_test": false,
+      "expected": {
+        "positions": [],
+        "trades": [],
+        "account": {
+          "mark": "acct-demo"
+        },
+        "execution": {
+          "id": null,
+          "kind": null,
+          "trigger_source": null,
+          "notified_at": "2026-10-24 08:00:00",
+          "execution_time": 0.0,
+          "status": "SUCCEEDED",
+          "success": true,
+          "error": null,
+          "outcome": "completed",
+          "outcome_reason": null,
+          "reason_code": null,
+          "channel_type": "ctp",
+          "is_test": false
+        },
+        "strategy": {
+          "algorithm": {},
+          "symbol_algorithms": {},
+          "trade_rules": {},
+          "forbidden_symbols": [],
+          "risk_symbols": []
+        },
+        "assets": {
+          "total_assets": 0.0,
+          "available_cash": 0.0,
+          "market_value": 0.0,
+          "currency": "CNY",
+          "update_time": "2026-10-24T10:38:22.955628",
+          "source": "real",
+          "cash_rate": null,
+          "position_rate": null
+        },
+        "targets": {
+          "current": {},
+          "previous": {},
+          "target_volume": {}
+        },
+        "orders": [],
+        "symbols": [],
+        "summary": {
+          "symbol_count": 0,
+          "position_count": 0,
+          "order_count": 0,
+          "filled_order_count": 0,
+          "active_order_count": 0,
+          "trade_count": 0,
+          "trade_value": 0,
+          "succeeded_symbol_count": 0,
+          "failed_symbol_count": 0
+        },
+        "default_feishu_variables": {
+          "account_mark": "acct-demo",
+          "dt": "2026-10-24 08:00:00",
+          "algorithm": "Unknown",
+          "total_assets": "0.00",
+          "available_cash": "0.00",
+          "market_value": "0.00",
+          "positions": [],
+          "trades": []
+        },
+        "event_type": "execution.finished",
+        "is_test": false,
+        "event_id": null
+      }
+    },
+    {
+      "name": "fallback",
+      "result": {
+        "account_assets": {
+          "available_cash": 0.0,
+          "total_asset": 0.0,
+          "market_value": 0.0,
+          "positions": [],
+          "currency": "CNY",
+          "update_time": "2026-10-24T10:38:22.955781",
+          "source": "unavailable",
+          "extra": {}
+        },
+        "memory": {},
+        "inputs": null,
+        "symbol_results": {},
+        "status": "SUCCEEDED",
+        "error": null,
+        "reason_code": null,
+        "outcome": "completed",
+        "outcome_reason": null,
+        "execution_time": 0.0,
+        "channel_type": "ctp",
+        "success": true,
+        "extra": {
+          "channel_type": "ctp"
+        }
+      },
+      "notification_snapshot": {
+        "id": 42,
+        "created_at": "2026-10-23T10:00:00",
+        "assets": {
+          "total_asset": 1000,
+          "available_cash": 700,
+          "market_value": 300,
+          "source": "real",
+          "currency": "CNY",
+          "update_time": "2026-10-23T10:00:00",
+          "positions": [
+            {
+              "symbol": "rb2610",
+              "volume": 2,
+              "available_volume": 2,
+              "market_value": null,
+              "avg_price": null,
+              "direction": "多头"
+            }
+          ]
+        }
+      },
+      "is_test": false,
+      "expected": {
+        "positions": [
+          {
+            "symbol": "rb2610",
+            "volume": 2.0,
+            "available_volume": 2.0,
+            "market_value": null,
+            "direction": "多头",
+            "avg_price": null,
+            "target_volume": 0,
+            "target_weight": null,
+            "rate": null
+          }
+        ],
+        "trades": [],
+        "account": {
+          "mark": "acct-demo"
+        },
+        "execution": {
+          "id": null,
+          "kind": null,
+          "trigger_source": null,
+          "notified_at": "2026-10-24 08:00:00",
+          "execution_time": 0.0,
+          "status": "SUCCEEDED",
+          "success": true,
+          "error": null,
+          "outcome": "completed",
+          "outcome_reason": null,
+          "reason_code": null,
+          "channel_type": "ctp",
+          "is_test": false
+        },
+        "strategy": {
+          "algorithm": {},
+          "symbol_algorithms": {},
+          "trade_rules": {},
+          "forbidden_symbols": [],
+          "risk_symbols": []
+        },
+        "assets": {
+          "total_assets": 1000.0,
+          "available_cash": 700.0,
+          "market_value": 300.0,
+          "currency": "CNY",
+          "update_time": "2026-10-23T10:00:00",
+          "source": "real",
+          "cash_rate": 0.7,
+          "position_rate": 0.3
+        },
+        "targets": {
+          "current": {},
+          "previous": {},
+          "target_volume": {}
+        },
+        "orders": [],
+        "symbols": [],
+        "summary": {
+          "symbol_count": 0,
+          "position_count": 1,
+          "order_count": 0,
+          "filled_order_count": 0,
+          "active_order_count": 0,
+          "trade_count": 0,
+          "trade_value": 0,
+          "succeeded_symbol_count": 0,
+          "failed_symbol_count": 0
+        },
+        "default_feishu_variables": {
+          "account_mark": "acct-demo",
+          "dt": "2026-10-24 08:00:00",
+          "algorithm": "Unknown",
+          "total_assets": "1000.00",
+          "available_cash": "700.00",
+          "market_value": "300.00",
+          "positions": [
+            {
+              "symbol": "rb2610",
+              "direction": "多头",
+              "market_value": "暂无有效行情",
+              "volume": "2.0000",
+              "target_volume": "0.0000",
+              "rate": "—"
+            }
+          ],
+          "trades": []
+        },
+        "event_type": "execution.finished",
+        "is_test": false,
+        "event_id": null
+      }
+    },
+    {
+      "name": "unavailable",
+      "result": {
+        "account_assets": {
+          "available_cash": 0.0,
+          "total_asset": 0.0,
+          "market_value": 0.0,
+          "positions": [],
+          "currency": "CNY",
+          "update_time": "2026-10-24T10:38:22.955781",
+          "source": "unavailable",
+          "extra": {}
+        },
+        "memory": {},
+        "inputs": null,
+        "symbol_results": {},
+        "status": "SUCCEEDED",
+        "error": null,
+        "reason_code": null,
+        "outcome": "completed",
+        "outcome_reason": null,
+        "execution_time": 0.0,
+        "channel_type": "ctp",
+        "success": true,
+        "extra": {
+          "channel_type": "ctp"
+        }
+      },
+      "notification_snapshot": null,
+      "is_test": false,
+      "expected": {
+        "positions": null,
+        "trades": [],
+        "account": {
+          "mark": "acct-demo"
+        },
+        "execution": {
+          "id": null,
+          "kind": null,
+          "trigger_source": null,
+          "notified_at": "2026-10-24 08:00:00",
+          "execution_time": 0.0,
+          "status": "SUCCEEDED",
+          "success": true,
+          "error": null,
+          "outcome": "completed",
+          "outcome_reason": null,
+          "reason_code": null,
+          "channel_type": "ctp",
+          "is_test": false
+        },
+        "strategy": {
+          "algorithm": {},
+          "symbol_algorithms": {},
+          "trade_rules": {},
+          "forbidden_symbols": [],
+          "risk_symbols": []
+        },
+        "assets": {
+          "total_assets": null,
+          "available_cash": null,
+          "market_value": null,
+          "currency": null,
+          "update_time": null,
+          "source": "unavailable",
+          "cash_rate": null,
+          "position_rate": null
+        },
+        "targets": {
+          "current": {},
+          "previous": {},
+          "target_volume": {}
+        },
+        "orders": [],
+        "symbols": [],
+        "summary": {
+          "symbol_count": 0,
+          "position_count": null,
+          "order_count": 0,
+          "filled_order_count": 0,
+          "active_order_count": 0,
+          "trade_count": 0,
+          "trade_value": 0,
+          "succeeded_symbol_count": 0,
+          "failed_symbol_count": 0
+        },
+        "default_feishu_variables": {
+          "account_mark": "acct-demo",
+          "dt": "2026-10-24 08:00:00",
+          "algorithm": "Unknown",
+          "total_assets": "未获取",
+          "available_cash": "未获取",
+          "market_value": "未获取",
+          "positions": [
+            {
+              "symbol": "未获取",
+              "direction": "—",
+              "market_value": "未获取",
+              "volume": "—",
+              "target_volume": "—",
+              "rate": "—"
+            }
+          ],
+          "trades": []
+        },
+        "event_type": "execution.finished",
+        "is_test": false,
+        "event_id": null
+      }
+    }
+  ]
+}

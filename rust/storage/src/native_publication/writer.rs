@@ -6,9 +6,19 @@ use serde_json::{json, Value};
 use crate::error::AnalysisError;
 
 use super::{
-    copy, staging,
+    staging,
     task::{settings, Task},
 };
+
+const COST_TABLES: &[&str] = &[
+    "performance_cost_transaction_fee",
+    "performance_cost_transaction",
+    "performance_cost_attempt",
+    "performance_cost_position",
+    "performance_cost_execution_symbol",
+    "performance_cost_trade",
+    "performance_cost_execution",
+];
 
 fn sql(error: rusqlite::Error) -> AnalysisError {
     AnalysisError::caused_by("PUBLICATION_WRITE", error)
@@ -227,7 +237,7 @@ fn cleanup(
 ) -> Result<(), AnalysisError> {
     let obsolete = "SELECT id FROM main.performance_snapshot WHERE account_id=?1 AND id!=?2 AND (?3 IS NULL OR id!=?3)";
     for name in staging::RESULT_TABLES.iter().chain(
-        copy::COST_TABLES
+        COST_TABLES
             .iter()
             .filter(|name| !staging::RESULT_TABLES.contains(name)),
     ) {
@@ -506,7 +516,7 @@ mod tests {
     fn cleanup_keeps_current_previous_and_other_accounts() {
         let connection = fixture();
         for name in staging::RESULT_TABLES.iter().chain(
-            copy::COST_TABLES
+            COST_TABLES
                 .iter()
                 .filter(|name| !staging::RESULT_TABLES.contains(name)),
         ) {
@@ -522,7 +532,7 @@ mod tests {
                 )
                 .unwrap();
             for name in staging::RESULT_TABLES.iter().chain(
-                copy::COST_TABLES
+                COST_TABLES
                     .iter()
                     .filter(|name| !staging::RESULT_TABLES.contains(name)),
             ) {
@@ -546,7 +556,7 @@ mod tests {
             3
         );
         for name in staging::RESULT_TABLES.iter().chain(
-            copy::COST_TABLES
+            COST_TABLES
                 .iter()
                 .filter(|name| !staging::RESULT_TABLES.contains(name)),
         ) {

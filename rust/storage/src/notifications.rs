@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
 use crate::writer_scope::{immediate, open_writer};
@@ -45,16 +45,22 @@ fn optional_text<'a>(request: &'a Value, key: &str) -> Result<Option<&'a str>, A
 
 fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let raw: String = row.get(5)?;
-    let context: Value = serde_json::from_str(&raw).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(error))
+    let context = crate::json_codec::parse(&raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
     })?;
-    Ok(json!({
+    let mut event = json!({
         "sequence": row.get::<_, i64>(0)?, "id": row.get::<_, String>(1)?,
         "account_id": row.get::<_, i64>(2)?, "created_at": row.get::<_, String>(3)?,
-        "event_type": row.get::<_, String>(4)?, "context": context,
+        "event_type": row.get::<_, String>(4)?, "context": null,
         "status": row.get::<_, String>(6)?, "finished_at": row.get::<_, Option<String>>(7)?,
         "error": row.get::<_, Option<String>>(8)?
-    }))
+    });
+    event["context"] = context;
+    Ok(event)
 }
 
 fn event(connection: &Connection, sequence: i64) -> Result<Option<Value>, AnalysisError> {
@@ -362,6 +368,39 @@ pub fn recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     Ok(json!({"account_ids":accounts,"summary_errors":summary_errors}))
 }
 
+pub(crate) fn execution_detail(
+    connection: &Connection,
+    account_id: i64,
+    record_id: i64,
+) -> Result<Value, AnalysisError> {
+    let result = crate::business_detail::read_result(connection, account_id, record_id)
+        .map_err(AnalysisError::from)?;
+    let needs_input = !result["extra"]["server_notification_context"]
+        .as_object()
+        .is_some_and(|context| !context.is_empty())
+        && result.get("inputs").is_none();
+    let mut detail = Map::new();
+    detail.insert("result".into(), result);
+    let input = if needs_input {
+        let record =
+            crate::business_detail::load(connection, "executerecord", "id", &json!(record_id))
+                .map_err(AnalysisError::from)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| invalid("execution record does not exist"))?;
+        if record.get("input_id").is_none_or(Value::is_null) {
+            Value::Null
+        } else {
+            crate::business_detail::input(connection, &record["input_id"], &record)
+                .map_err(AnalysisError::from)?
+        }
+    } else {
+        Value::Null
+    };
+    detail.insert("input".into(), input);
+    Ok(Value::Object(detail))
+}
+
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
@@ -382,13 +421,14 @@ pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
                 .optional()
                 .map_err(database)?;
             if let Some(raw) = raw {
-                let context: Value =
-                    serde_json::from_str(&raw).map_err(|error| invalid(error.to_string()))?;
+                let context: Value = crate::json_codec::parse(&raw).map_err(invalid)?;
                 let object = context
                     .as_object()
                     .ok_or_else(|| invalid("notification context must be an object"))?;
                 if !object.is_empty() {
-                    return Ok(json!({"record":record,"context":context}));
+                    let mut preview = json!({"record":record,"context":null});
+                    preview["context"] = context;
+                    return Ok(preview);
                 }
             }
         }
@@ -462,6 +502,37 @@ mod tests {
                 let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
             }
         }
+    }
+
+    #[test]
+    fn notification_context_preserves_python_nonfinite_numbers() {
+        let db = Database::new();
+        let connection = open_writer(Path::new(&db.0)).unwrap();
+        let context = crate::json_codec::parse(r#"{"assets":{"total_assets":NaN,"available_cash":Infinity},"execution":{"id":"nonfinite"}}"#).unwrap();
+        let mut request = json!({"id":"execution:nonfinite","account_id":1,"event_type":"execution.finished","created_at":"now","context":null});
+        request["context"] = context;
+        let event =
+            immediate(&connection, || enqueue_in_connection(&connection, &request)).unwrap();
+        assert_eq!(
+            event["context"]["assets"]["total_assets"].to_string(),
+            "NaN"
+        );
+        let stored = crate::business_detail::load(
+            &connection,
+            "notification_event",
+            "id",
+            &json!("execution:nonfinite"),
+        )
+        .unwrap();
+        assert_eq!(
+            stored[0]["context"]["assets"]["available_cash"].to_string(),
+            "Infinity"
+        );
+        let claimed = claim(&db.0, &json!({"account_id":1})).unwrap();
+        assert_eq!(
+            claimed["context"]["assets"]["total_assets"].to_string(),
+            "NaN"
+        );
     }
 
     #[test]
