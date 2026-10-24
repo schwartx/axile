@@ -682,7 +682,7 @@ def source_manifest(checkout: Path) -> dict[str, str]:
     """Freeze Python, Rust, SQL, Cargo inputs and packaged native artifacts."""
     paths = {
         path
-        for directory in (checkout / "axile", checkout / "rust/analysis/src")
+        for directory in (checkout / "axile", checkout / "rust/storage/src")
         for path in directory.rglob("*")
         if path.is_file()
         and "__pycache__" not in path.parts
@@ -695,9 +695,9 @@ def source_manifest(checkout: Path) -> dict[str, str]:
             "uv.lock",
             "alembic.ini",
             "hatch_build.py",
-            "rust/analysis/Cargo.toml",
-            "rust/analysis/Cargo.lock",
-            "rust/analysis/build.rs",
+            "rust/storage/Cargo.toml",
+            "rust/storage/Cargo.lock",
+            "rust/storage/build.rs",
         )
         if (checkout / name).is_file()
     )

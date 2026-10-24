@@ -24,13 +24,13 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: Build native extension
       run: |
-        export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-analysis-target"
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/axile-storage-target"
         echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
-        cargo build --manifest-path rust/analysis/Cargo.toml --release --locked --lib --features python
+        cargo build --manifest-path rust/storage/Cargo.toml --release --locked --lib --features python
     - name: Stage and verify native extension
       run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
     - name: Run Rust unit tests
-      run: cargo test --manifest-path rust/analysis/Cargo.toml --locked --lib
+      run: cargo test --manifest-path rust/storage/Cargo.toml --locked --lib
     - uses: actions/upload-artifact@v4
       with:
         name: axile-native-core

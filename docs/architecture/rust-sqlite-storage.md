@@ -29,4 +29,29 @@ Rust 的迁移引擎负责建库、公共 `0001`—`0039` 历史数据转换、�
 
 测试 oracle、SQLite 夹具以及历史 Alembic/SQLAlchemy 对照留在开发测试侧，不进入生产存储路径。源码边界检查见 `tests/contract/test_native_storage_source_boundary.py`，桥接取消和真实事务契约分别见 `tests/unit/test_native_store_bridge.py`、`tests/integration/server/test_native_storage_transactions.py`。维护目标是 Python 更薄、存储边界统一、行为容易核对；总行数可以随 Rust 实现和必要验证增加。
 
-入口代码见 [`native_store.py`](../../axile/server/native_store.py)、[`python.rs`](../../rust/analysis/src/python.rs) 和 [`migrations.rs`](../../rust/analysis/src/migrations.rs)。结构化事实的表结构与证据语义见[执行业务事实的结构化存储](../performance/business-facts.md)。
+入口代码见 [`native_store.py`](../../axile/server/native_store.py)、[`python.rs`](../../rust/storage/src/python.rs) 和 [`migrations.rs`](../../rust/storage/src/migrations.rs)。结构化事实的表结构与证据语义见[执行业务事实的结构化存储](../performance/business-facts.md)。
+
+## Crate 命名与拆分评估
+
+Rust 实现在 `rust/storage/`，Cargo 包名为 `axile-storage`。Python 导入入口仍是
+`axile.server._native._core`；构建脚本仍使用 `scripts/build_native_analysis.py`。
+crate 同时承担 SQLite 业务存储和分析，`analysis` 不再适合作为整个 crate 的名字。
+
+当前保留单 crate。按现有源码依赖，拆分边界如下：
+
+| 候选 | 当前依赖与调用方 | 结论 |
+| --- | --- | --- |
+| `replay.rs` | 只依赖标准库和 `serde::Serialize`；`performance.rs` 消费账本，`fact_observation.rs` 构造 `Observation` | 可直接提取纯计算 crate；现有 14 个单元测试可随迁 |
+| `performance.rs` | 依赖 SQLite、事实扫描与完整性校验、数据库日历 | 不能直接作为纯计算 crate 提取；需先分离数据库读取和计算 |
+| `costs.rs` | SQL 聚合、成交事实类型、快照时间、迁移兼容逻辑和发布范围读取 | 暂留存储层；整体移入计算 crate 会反向引入存储依赖 |
+| `publication.rs` 与 `native_publication/` | 读取一致性快照、流式结果暂存、版本校验及原子发布 | 作为一个存储流程保留，避免跨 crate 分散事务职责 |
+| `python.rs` | 直接调用多个存储领域入口 | 技术上可独立绑定 crate，但目前会扩大存储 API 的公开面，收益不足 |
+
+若出现独立计算调用方，第一步仅提取 `replay.rs` 到 `axile-analytics`，依赖方向为
+`axile-storage -> axile-analytics -> serde`。账本的 `Observation`、`ReplayClose`、
+`ReplayLedger` 和引擎版本由计算 crate 持有，事实读取器继续留在存储层构造输入。
+先保持现有输入语义，不增加通用数据源接口或额外 DTO 转换。验收包括随迁账本测试、
+收益分析回归和发布集成测试。
+
+当前账本只有一个生产计算消费模块，也没有独立发布需求；因此本次只改名，
+不增加第二个 crate。这是一份源码依赖评估，尚未通过试拆编译验证。

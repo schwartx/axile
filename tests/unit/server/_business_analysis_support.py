@@ -289,7 +289,7 @@ def _insert_account(path, account):
 
 
 def _events(records, bindings, skips) -> list[dict]:
-    """事件标签 oracle:与 rust/analysis publication.rs 的事件派生保持同义。"""
+    """事件标签 oracle:与 rust/storage publication.rs 的事件派生保持同义。"""
     from collections.abc import Mapping
 
     from axile.executor.session_closed import session_closed_scope

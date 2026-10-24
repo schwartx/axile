@@ -212,8 +212,8 @@ def test_external_cargo_target_is_used_for_build_and_staging(
         (profile / name).write_bytes(b"retired CLI fixture")
     project.mkdir()
     shutil.copyfile(Path(__file__).resolve().parents[3] / "hatch_build.py", project / "hatch_build.py")
-    library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
-        sys.platform, "libaxile_analysis.so"
+    library = {"win32": "axile_storage.dll", "darwin": "libaxile_storage.dylib"}.get(
+        sys.platform, "libaxile_storage.so"
     )
     (profile / library).write_bytes(b"extension fixture")
     monkeypatch.setattr(script, "ROOT", project)
@@ -230,12 +230,13 @@ def test_external_cargo_target_is_used_for_build_and_staging(
     extension = native / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
     assert extension.read_bytes() == b"extension fixture"
     assert {path.name for path in native.iterdir()} == {extension.name}
-    assert not (project / "rust" / "analysis" / "target").exists()
+    assert not (project / "rust" / "storage" / "target").exists()
     cargo_calls = [command for command in native_process["calls"] if command[0] == "cargo"]
     if build:
         assert len(cargo_calls) == 1
         command = cargo_calls[0]
         assert command[command.index("--target-dir") + 1] == str(external_target)
+        assert command[command.index("--manifest-path") + 1] == str(project / "rust" / "storage" / "Cargo.toml")
         assert "--locked" in command
         assert command[-3:] == ["--lib", "--features", "python"]
     else:
@@ -255,8 +256,8 @@ def test_incompatible_staging_preserves_previous_extension(
     extension.write_bytes(b"previous valid extension")
     target = tmp_path / "target"
     (target / "debug").mkdir(parents=True)
-    library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
-        sys.platform, "libaxile_analysis.so"
+    library = {"win32": "axile_storage.dll", "darwin": "libaxile_storage.dylib"}.get(
+        sys.platform, "libaxile_storage.so"
     )
     (target / "debug" / library).write_bytes(b"incompatible extension")
     monkeypatch.setattr(script, "ROOT", project)

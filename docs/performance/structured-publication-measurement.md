@@ -64,7 +64,7 @@ SQLAlchemy 查询捕获记录到三轮共 **21 次**成本 `INSERT ... SELECT`�
 
 ```bash
 PYTHONPATH=. python scripts/benchmark_structured_publication.py \
-  --binary rust/analysis/target/release/axile-analysis \
+  --binary rust/storage/target/release/axile-analysis \
   --output /tmp/structured-publication-measurement.json
 ```
 

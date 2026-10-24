@@ -38,7 +38,7 @@ tag 发布流程先构建、验证原生扩展并运行 Rust 单测，再构建 
 Rust 单测可独立运行，不需要 Python feature：
 
 ```bash
-cargo test --locked --manifest-path rust/analysis/Cargo.toml --lib
+cargo test --locked --manifest-path rust/storage/Cargo.toml --lib
 ```
 
 Python 的真实事务、连接复用和取消契约分别见 `tests/integration/server/test_native_storage_transactions.py`、`tests/integration/server/test_native_connection_reuse.py` 和 `tests/unit/test_native_store_bridge.py`。发行验收还需检查实际 wheel 的扩展、静态资源及隔离安装。

@@ -1,10 +1,10 @@
 [package]
-name = "axile-analysis"
+name = "axile-storage"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 publish = false
-description = "Bounded SQLite analysis and publication worker for Axile"
+description = "SQLite storage and analytics for Axile"
 
 [lib]
 crate-type = ["rlib", "cdylib"]

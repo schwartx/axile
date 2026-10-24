@@ -112,10 +112,10 @@ def test_history_compares_head_without_hiding_evidence_in_detail():
 def test_fingerprint_includes_rust_sql_cargo_and_actual_native_artifact(tmp_path):
     for name in (
         "axile/writer.py",
-        "rust/analysis/src/store.rs",
-        "rust/analysis/src/migration.sql",
-        "rust/analysis/Cargo.lock",
-        "rust/analysis/build.rs",
+        "rust/storage/src/store.rs",
+        "rust/storage/src/migration.sql",
+        "rust/storage/Cargo.lock",
+        "rust/storage/build.rs",
         "axile/server/_native/_core.abi3.so",
     ):
         path = tmp_path / name

@@ -51,7 +51,7 @@ def test_tracked_source_has_no_private_channel_terms() -> None:
         text = path.read_bytes().decode("utf-8", errors="ignore").casefold()
         # 浏览器标准随机标识 API 不属于渠道声明；只豁免这一明确的成员访问。
         text = re.sub(rf"\b{re.escape(forbidden[1])}(?=\.randomuuid\b)", "", text)
-        if relative == "rust/analysis/Cargo.lock":
+        if relative == "rust/storage/Cargo.lock":
             # 通用摘要算法依赖只按 Cargo 的完整包名或依赖项识别，其余文本继续扫描。
             digest_dependency = re.escape("cryp" + "to-common")
             text = re.sub(rf'(?m)^(?:name = "{digest_dependency}"| "{digest_dependency}",)$', "", text)
@@ -106,7 +106,7 @@ def test_digest_dependency_exception_only_matches_exact_lock_identifiers(tmp_pat
     """依赖名豁免不覆盖相似包名、私有渠道、注释或普通源码。"""
     dependency = "cryp" + "to-common"
     private_channel = "bi" + "nance"
-    lock = tmp_path / "rust/analysis/Cargo.lock"
+    lock = tmp_path / "rust/storage/Cargo.lock"
     lock.parent.mkdir(parents=True)
     lock.write_text(f'[[package]]\nname = "{dependency}"\ndependencies = [\n "{dependency}",\n]\n')
     monkeypatch.setattr(f"{__name__}._tracked_paths", lambda: (tmp_path, {lock}))

@@ -118,7 +118,7 @@ def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity(nati
 
 
 def test_roundtrip_keeps_every_sizing_and_five_level_tick_field(native_database):
-    fixture = Path(__file__).parents[3] / "rust/analysis/src/business_facts_ops/testdata/head_symbols_inputs_v0037.json"
+    fixture = Path(__file__).parents[3] / "rust/storage/src/business_facts_ops/testdata/head_symbols_inputs_v0037.json"
     case = next(
         case for case in json.loads(fixture.read_text())["cases"] if case["name"] == "all-sizing-five-level-tick"
     )

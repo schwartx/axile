@@ -28,7 +28,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
-    manifest = ROOT / "rust" / "analysis" / "Cargo.toml"
+    manifest = ROOT / "rust" / "storage" / "Cargo.toml"
     target_dir = args.target_dir or manifest.parent / "target"
     target_dir = target_dir.expanduser()
     if not target_dir.is_absolute():
@@ -39,8 +39,8 @@ def main() -> None:
             command.append("--release")
         command.extend(["--lib", "--features", "python"])
         subprocess.run(command, check=True, cwd=ROOT, timeout=args.timeout)
-    library = {"win32": "axile_analysis.dll", "darwin": "libaxile_analysis.dylib"}.get(
-        sys.platform, "libaxile_analysis.so"
+    library = {"win32": "axile_storage.dll", "darwin": "libaxile_storage.dylib"}.get(
+        sys.platform, "libaxile_storage.so"
     )
     extension_source = target_dir / ("debug" if args.debug else "release") / library
     extension = ROOT / "axile" / "server" / "_native" / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
