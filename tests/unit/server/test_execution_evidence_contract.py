@@ -18,16 +18,15 @@ from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
-from axile.server.business_facts.artifacts import parse_artifact_reference, resolve_artifact_content
+from axile.server.business_facts.artifacts import parse_artifact_reference
 from axile.server.business_facts.assets import input_after_asset_fact_id, input_asset_fact_id
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
-from axile.server.execution.backend import _dump_output_result
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import initialize_native_database
+from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
 from tests.unit.server._business_analysis_support import _events
@@ -177,7 +176,9 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             "asset_id": input_after_asset_fact_id(input_id),
         }
         assert "account_assets" not in after.content
-        resolved = await resolve_artifact_content(after, account_id=1)
+        resolved = native_store_call(
+            path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
+        )
         assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
         summary = next(
             item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY
@@ -203,7 +204,7 @@ def build_contract_wire(case, monkeypatch):
         _standard_input(),
         [_algorithm_result(case)],
     )
-    raw = _dump_output_result(output)
+    raw = output.model_dump(mode="json")
     worker_raw = _dump_output_payload(output)
     assert {k: v for k, v in raw.items() if k != "inputs"} == worker_raw
     json.dumps(worker_raw, allow_nan=False)

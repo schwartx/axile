@@ -32,9 +32,7 @@ from axile.server._native import _core
 from axile.server.api.routes import account_feishu
 from axile.server.business_facts import repository as fact_repository
 from axile.server.business_facts.artifacts import (
-    BusinessFactReferenceError,
     make_artifact_reference,
-    resolve_artifact_content,
 )
 from axile.server.business_facts.assets import (
     input_after_asset_fact_id,
@@ -712,10 +710,15 @@ def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database,
     }
 
     async def resolve():
-        return await resolve_artifact_content(artifact, account_id=2 if fault == "account" else 1)
+        return native_store_call(
+            facts_database,
+            "resolve_execution_artifact",
+            {"artifact": artifact, "account_id": 2 if fault == "account" else 1},
+        )
 
-    with pytest.raises(BusinessFactReferenceError, match="时点" if fault == "observation_role" else "执行账户"):
+    with pytest.raises(_core.NativeError, match="时点" if fault == "observation_role" else "执行账户") as raised:
         asyncio.run(resolve())
+    assert raised.value.args[0] == "BUSINESS_FACTS_REFERENCE"
 
 
 def test_business_storage_has_no_complete_raw_document_columns(facts_database):
@@ -796,7 +799,9 @@ def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_datab
     async def read_summary():
         artifact = _get(facts_database, "execution_artifact")
         stored = deepcopy(artifact.content)
-        hydrated = await resolve_artifact_content(artifact, account_id=1)
+        hydrated = native_store_call(
+            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
+        )
         return stored, hydrated
 
     stored, hydrated = asyncio.run(read_summary())
@@ -857,7 +862,9 @@ def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
 
     async def read_summary():
         artifact = _get(facts_database, "execution_artifact")
-        return artifact.content, await resolve_artifact_content(artifact, account_id=1)
+        return artifact.content, native_store_call(
+            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
+        )
 
     stored, hydrated = asyncio.run(read_summary())
     assert business_evidence(stored["symbol_results"]["rb2610"]["orders"]) == business_evidence(

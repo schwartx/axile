@@ -10,7 +10,7 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
-from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.worker_backend import worker_audit
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import seed_account
@@ -62,7 +62,7 @@ def test_worker_target_reference_and_summary_keep_sizing(
     persist_input = Mock(wraps=worker_audit.persist_pre_execute_input_sync)
     monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", persist_input)
     audit_input = {
-        **sanitize_standard_input_for_audit(standard_input),
+        **sanitize_execution_input(standard_input.to_dict()),
         "strategy_target": {"m2701": -0.06},
         "sizing_context": {
             "long_leverage": 1.0,

@@ -1,6 +1,5 @@
 """结构化执行业务事实的归档来源与快照语义。"""
 
-import asyncio
 import json
 from zipfile import ZipFile
 
@@ -152,7 +151,7 @@ def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(mo
         "artifact_type": "target_snapshot",
         "content": fact_artifacts.make_artifact_reference(view="targets", input_id="typed-input"),
     }
-    target = asyncio.run(fact_artifacts.resolve_artifact_content(artifact, account_id=1))
+    target = native_store_call(native_database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
     assert {key: value for key, value in target.items() if key != "business_facts_ref"} == {
         key: value for key, value in payload.items() if key != "account_target"
     }

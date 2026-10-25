@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
-from axile.server.business_facts.artifacts import make_artifact_reference, resolve_artifact_content
+from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.business_facts.repository import read_execution_input
 from axile.server.core import db
 from axile.server.db.models.execution import ExecuteRecord
@@ -245,6 +245,6 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
     artifact = next(row for row in rows(database, "execution_artifact") if row["id"] == artifact["id"])
     assert artifact["schema_version"] == 2
     assert "business_facts_ref" not in artifact["content"]
-    assert business_evidence(asyncio.run(resolve_artifact_content(artifact, account_id=1))) == business_evidence(
-        journal
-    )
+    assert business_evidence(
+        native_store_call(database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
+    ) == business_evidence(journal)

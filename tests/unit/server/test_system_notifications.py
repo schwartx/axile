@@ -143,9 +143,9 @@ def test_default_trial_can_use_saved_key(client, monkeypatch):
     assert not client.post("/api/v1/init/test-feishu", json={"key": ""}).json()["ok"]
 
 
-def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monkeypatch, native_database):
+def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(client, monkeypatch, native_database):
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
-    assert notification_state.get_system_notification_result().ok is None
+    assert client.get("/api/v1/init/execution-alert/result").json()["ok"] is None
     latest = SystemNotificationStatePublic(
         finished_at="2026-09-30T10:02:00+08:00",
         mode="function",
@@ -158,7 +158,7 @@ def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(monk
     notification_state.record_system_notification_result(
         SystemNotificationStatePublic(finished_at="2026-09-30T10:01:00+08:00", ok=True)
     )
-    assert notification_state.get_system_notification_result() == latest
+    assert client.get("/api/v1/init/execution-alert/result").json() == latest.model_dump(mode="json")
 
 
 def test_state_write_failure_does_not_escape_notification(client, monkeypatch, native_database):
@@ -181,7 +181,7 @@ def test_state_write_failure_does_not_escape_notification(client, monkeypatch, n
         )
     asyncio.run(error_notifications.send_feishu_error(RuntimeError("error"), None, "saved-key"))
     assert len(calls) == 1
-    assert notification_state.get_system_notification_result().ok is None
+    assert client.get("/api/v1/init/execution-alert/result").json()["ok"] is None
 
 
 def test_system_notification_migration_roundtrip(tmp_path):

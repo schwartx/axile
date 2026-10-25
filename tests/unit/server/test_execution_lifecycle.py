@@ -7,13 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from loguru import logger
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
 from axile.executor.termination import ExecutionTerminated
 from axile.server.db.models import ExecuteRecord
-from axile.server.execution import backend, rebalance, records
+from axile.server.execution import clear_positions, intents, rebalance, records
 from axile.server.execution import lifecycle as execution_lifecycle
 from axile.server.execution import registry as execution_registry
 from axile.server.execution.intents import IntentSnapshot
@@ -783,7 +782,10 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
     worker = SimpleNamespace(
         execute_trade=AsyncMock(side_effect=failure), empty_positions=AsyncMock(side_effect=failure)
     )
-    monkeypatch.setattr(backend, "get_worker_backend_manager", lambda: worker)
+    monkeypatch.setattr(rebalance, "get_worker_backend_manager", lambda: worker)
+    monkeypatch.setattr(clear_positions, "get_worker_backend_manager", lambda: worker)
+    monkeypatch.setattr(clear_positions, "trade_channel_check", AsyncMock())
+    monkeypatch.setattr(intents, "promote_intent_to_running", AsyncMock())
     native = AsyncMock(wraps=records.native_operation)
     monkeypatch.setattr(records, "native_operation", native)
     finished = AsyncMock()
@@ -800,32 +802,13 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
 
     async def runner(_execution_id):
         if kind == ExecutionKind.REBALANCE:
-            standard_input = rebalance._build_rebalance_standard_input(
-                account=account,
-                curr_target={"A": 0.1},
-                last_target={},
+            return await rebalance.trade(
+                account,
+                {"A": 0.1},
                 execution_id=execution_id,
                 trigger_source="manual",
             )
-            request = backend.RebalanceBackendRequest(
-                account=account,
-                standard_input_dict=standard_input.to_dict(),
-                audit_input={},
-                execution_id=execution_id,
-                trigger_source="manual",
-                logger=logger,
-            )
-            return await backend._run_rebalance_via_worker_process(request)
-        request = backend.ClearPositionsBackendRequest(
-            account=account,
-            resolved_algorithm={"method": "SINGLE-MAKER"},
-            empty_kwargs={},
-            audit_input={},
-            execution_id=execution_id,
-            trigger_source="empty_positions",
-            logger=logger,
-        )
-        return await backend._run_clear_positions_via_worker_process(request)
+        return await clear_positions._run_clear_positions(account, execution_id=execution_id)
 
     try:
         asyncio.run(
@@ -850,3 +833,44 @@ def test_worker_failure_persists_once_through_task_lifecycle(native_database, mo
         finished.assert_not_awaited()
     finally:
         execution_registry._clear_execution_task_state(execution_id)
+
+
+@pytest.mark.parametrize("kind", [ExecutionKind.REBALANCE, ExecutionKind.CLEAR_POSITIONS])
+@pytest.mark.parametrize("phase", ["promotion", "termination"])
+def test_direct_worker_entry_preserves_promotion_and_termination_boundaries(monkeypatch, kind, phase):
+    """认领失败不能派发，worker 已确认的终止不能被入口记成失败或二次归档。"""
+    module = rebalance if kind == ExecutionKind.REBALANCE else clear_positions
+    account = build_account().snapshot()
+    error = (
+        RuntimeError("intent no longer runnable")
+        if phase == "promotion"
+        else ExecutionTerminated(reason="operator", mode="cancel_pending", cancel_failed_order_ids=["pending"])
+    )
+    promote = AsyncMock(side_effect=error if phase == "promotion" else None)
+    dispatch = AsyncMock(side_effect=error)
+    failed = AsyncMock()
+    archived = AsyncMock()
+    events = AsyncMock()
+    monkeypatch.setattr(intents, "promote_intent_to_running", promote)
+    monkeypatch.setattr(module, "load_notification_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(rebalance, "_load_last_target_snapshot", AsyncMock(return_value={}))
+    monkeypatch.setattr(clear_positions, "trade_channel_check", AsyncMock())
+    monkeypatch.setattr(clear_positions, "append_execution_event", events)
+    monkeypatch.setattr(
+        module, "get_worker_backend_manager", lambda: SimpleNamespace(execute_trade=dispatch, empty_positions=dispatch)
+    )
+    monkeypatch.setattr(module, "append_error_execute_record", failed)
+    monkeypatch.setattr(module, "append_execute_record_from_output", archived)
+
+    with pytest.raises(type(error)) as raised:
+        asyncio.run(
+            rebalance.trade(account, {"A": 0.1}, execution_id="boundary")
+            if kind == ExecutionKind.REBALANCE
+            else clear_positions._run_clear_positions(account, execution_id="boundary")
+        )
+    assert raised.value is error
+    promote.assert_awaited_once_with("boundary", account.id)
+    assert dispatch.await_count == (0 if phase == "promotion" else 1)
+    failed.assert_not_awaited()
+    archived.assert_not_awaited()
+    events.assert_not_awaited()

@@ -122,8 +122,7 @@ def test_summary_wrappers_preserve_models_and_reject_unfinished_system_results(m
         return {"finished_at": "2026-10-23T12:00:00", "ok": False, "error": "timeout"}
 
     monkeypatch.setattr(notification_state, "native_operation_sync", operation)
-    result = notification_state.get_system_notification_result()
-    assert result == SystemNotificationStatePublic(finished_at="2026-10-23T12:00:00", ok=False, error="timeout")
+    result = SystemNotificationStatePublic(finished_at="2026-10-23T12:00:00", ok=False, error="timeout")
     notification_state.record_system_notification_result(result)
     assert calls[-1] == ("notifications_record_system", result.model_dump(mode="json"))
     notification_state.record_notification_result(2, "execution", "2026-10-23T13:00:00", True, None)

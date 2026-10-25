@@ -12,7 +12,8 @@ from typing import cast
 import loguru
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
-from axile.executor.models.execution_result import ExecutionStatus
+from axile.executor.models.execution_result import ExecutionStatus, outcome_from_status
+from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 from axile.server._native import _core
@@ -20,6 +21,7 @@ from axile.server.business_facts.summary_refs import raise_business_fact_error
 from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.base import now_str
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.native_store import native_operation
 
 
@@ -146,6 +148,60 @@ def _recorded_error(error: BaseException | None, account_id: int | None, executi
             return record
         error = error.__cause__
     return None
+
+
+async def append_execute_record_from_output(
+    *,
+    account: AccountContext,
+    raw_input: dict[str, object],
+    output: UnifiedStandardOutput,
+    execution_id: str | None,
+    execution_kind: ExecutionKind,
+) -> ExecuteRecord:
+    """
+    根据统一输出结果持久化执行记录.
+
+    Parameters
+    ----------
+    account : Account
+        当前执行所属账户。
+    raw_input : dict[str, object]
+        原始输入的字典快照。
+    output : UnifiedStandardOutput
+        执行器返回的统一输出对象。
+    execution_id : str | None
+        当前 execution 标识。
+    execution_kind : ExecutionKind
+        本次执行类型（``rebalance`` / ``clear_positions``），写入成功记录供上层区分。
+
+    Returns
+    -------
+    ExecuteRecord
+        持久化后的执行记录。
+    """
+    result = output.model_dump(mode="json")
+    result["execution_kind"] = execution_kind.value
+    if isinstance(result.get("inputs"), dict):
+        result["inputs"] = sanitize_execution_input(result["inputs"])
+    # 落库边界按当前 status 重新派生展示结论，防止绕过校验器的中途改写造成两套结论分离。
+    result["outcome"] = outcome_from_status(output.status).value
+    result["outcome_reason"] = output.outcome_reason
+    if output.success:
+        return await append_success_execute_record(
+            account,
+            raw_input,
+            result,
+            execution_id,
+            execution_kind=execution_kind,
+        )
+
+    return await append_error_execute_record(
+        account_id=account.id,
+        raw_input=raw_input,
+        raw_result=result,
+        msg=output.get_error_message() or "执行未成功完成",
+        execution_id=execution_id,
+    )
 
 
 async def append_success_execute_record(

@@ -651,17 +651,22 @@ def test_terminal_write_never_rebuilds_previously_committed_worker_summary(tmp_p
 )
 def test_summary_reference_rejects_foreign_account_or_execution(tmp_path, account_id, execution_id):
     """正确的结果编号也不能在其他账户或执行上下文解析。"""
-    from axile.server.business_facts.artifacts import resolve_artifact_content
 
     path = _database(tmp_path)
     _, artifact, _ = _store_summary(path)
     assert REFERENCE_KEY not in artifact.content
     assert (
-        asyncio.run(
-            resolve_artifact_content(
-                {"execution_id": execution_id, "artifact_type": artifact.artifact_type, "content": artifact.content},
-                account_id=account_id,
-            )
+        native_store_call(
+            path,
+            "resolve_execution_artifact",
+            {
+                "artifact": {
+                    "execution_id": execution_id,
+                    "artifact_type": artifact.artifact_type,
+                    "content": artifact.content,
+                },
+                "account_id": account_id,
+            },
         )
         == artifact.content
     )

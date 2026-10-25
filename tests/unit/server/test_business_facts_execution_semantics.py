@@ -18,7 +18,7 @@ from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
 from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.db.models import ExecuteRecord
-from axile.server.execution import execution_records_output, input_persistence, rebalance, records, registry
+from axile.server.execution import input_persistence, rebalance, records, registry
 from axile.server.execution.records import resolve_record_task_status
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
@@ -298,10 +298,9 @@ def test_mutated_output_status_rederives_outcome_before_real_persistence(
             )
             assert business_evidence(output.outcome) == business_evidence("error")
             output.status = ExecutionStatus.PARTIAL
-            record = await execution_records_output.append_execute_record_from_output(
+            record = await records.append_execute_record_from_output(
                 account=build_account(),
                 raw_input=_input({}),
-                result=output.model_dump(mode="json"),
                 output=output,
                 execution_id="semantic-mutated-output",
                 execution_kind=ExecutionKind.CLEAR_POSITIONS,

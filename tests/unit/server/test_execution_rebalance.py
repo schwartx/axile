@@ -14,7 +14,6 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.executor.models.unified_price import UnifiedPriceData
 from axile.server.db.models import Account
-from axile.server.execution import backend as execution_backend
 from axile.server.execution import intents as execution_intents
 from axile.server.execution import rebalance as rebalance_execution
 from axile.server.execution.worker_backend import worker_audit, worker_state
@@ -53,7 +52,7 @@ class _VolumeCalcStub:
 def _worker_commands(monkeypatch) -> dict[str, dict[str, object]]:
     """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
     manager = WorkerCommandHarness()
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
     monkeypatch.setattr(worker_state, "build_account_control_guard", noop_account_control_guard)
 
@@ -182,7 +181,7 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         return SimpleNamespace(id=101, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}))
 
@@ -234,7 +233,7 @@ def test_trade_builds_model_before_execute_and_persists_dict(
         return SimpleNamespace(id=105, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(rebalance_execution.trade(account, {"ag2612": 0.1}, cleanup=cleanup))
 
@@ -282,8 +281,8 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
         _ = account, raw_input, output, execution_id
         return SimpleNamespace(id=108, is_success=1)
 
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -342,12 +341,12 @@ def test_trade_routes_gm_account_to_worker_manager(
         raise AssertionError("GM worker 路径不应在主进程写 execution artifact")
 
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_backend, "append_execution_event", unexpected_append_execution_event)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr("axile.server.execution_audit.append_execution_event", unexpected_append_execution_event)
     monkeypatch.setattr(
         worker_audit, "append_execution_audit_batch_sync", lambda _batch: unexpected_append_execution_artifact()
     )
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -389,9 +388,9 @@ def test_trade_routes_ctp_account_to_worker_manager(
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("PROCESS 策略下不应走线程执行器")
 
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", unexpected_create_executor_instance)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -473,8 +472,8 @@ def test_trade_persists_failed_gm_worker_output(
         )
         return SimpleNamespace(id=401, is_success=0)
 
-    monkeypatch.setattr(execution_backend, "get_worker_backend_manager", lambda: manager)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     record = asyncio.run(
         rebalance_execution.trade(
@@ -556,7 +555,7 @@ def test_trade_passes_execution_id_to_persisted_record(
         return SimpleNamespace(id=105, is_success=1)
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))
     )
@@ -625,7 +624,7 @@ def test_trade_emits_execution_events_and_artifacts(
             event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
         ),
     )
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -751,7 +750,7 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
             event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
         ),
     )
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     _ = asyncio.run(
         rebalance_execution.trade(
@@ -854,7 +853,7 @@ def test_trade_completion_event_matches_output_status(
             event=lambda **kw: asyncio.run(fake_append_execution_event(**kw)),
         ),
     )
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
 
     record = asyncio.run(
         rebalance_execution.trade(
@@ -912,7 +911,7 @@ def test_trade_binds_account_control_guard(
         return fake_guard
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
-    monkeypatch.setattr(execution_backend, "_append_output_record", fake_append_output_record)
+    monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
     monkeypatch.setattr(worker_state, "build_account_control_guard", fake_build_account_control_guard)
     monkeypatch.setattr(
         worker_audit, "append_execution_event_sync", lambda **kw: asyncio.run(noop_append_execution_event(**kw))

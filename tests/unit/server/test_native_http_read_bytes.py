@@ -268,7 +268,7 @@ def test_system_notification_empty_and_saved_results_match_public_model(client, 
     ).model_dump(mode="json")
     native_store_call(native_database, "notifications_record_system", result)
     assert client.get("/init/execution-alert/result").json() == result
-    assert native_store_call(native_database, "notifications_get_system", {}) == result
+    assert json.loads(native_store_call(native_database, "notifications_get_system_json", {})) == result
 
 
 def test_unconfigured_system_notification_does_not_query_database(client, monkeypatch):

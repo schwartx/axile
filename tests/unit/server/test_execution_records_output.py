@@ -16,7 +16,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import records
-from axile.server.execution.execution_records_output import append_execute_record_from_output
+from axile.server.execution.records import append_execute_record_from_output
 from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import build_account
 
@@ -51,11 +51,11 @@ def test_blocked_output_persists_as_unsuccessful_attempt(monkeypatch) -> None:
         return SimpleNamespace(id=12, is_success=0)
 
     monkeypatch.setattr(
-        "axile.server.execution.execution_records_output.append_success_execute_record",
+        "axile.server.execution.records.append_success_execute_record",
         fake_success,
     )
     monkeypatch.setattr(
-        "axile.server.execution.execution_records_output.append_error_execute_record",
+        "axile.server.execution.records.append_error_execute_record",
         fake_error,
     )
 
@@ -64,7 +64,6 @@ def test_blocked_output_persists_as_unsuccessful_attempt(monkeypatch) -> None:
         append_execute_record_from_output(
             account=build_account(),
             raw_input={"curr_target": {"rb2610": 0.1}},
-            result={"status": "BLOCKED", "error": output.error, "success": False},
             output=output,
             execution_id="exec-blocked-persist",
             execution_kind=ExecutionKind.REBALANCE,
@@ -88,11 +87,11 @@ def test_failed_output_still_persists_as_error(monkeypatch) -> None:
         return SimpleNamespace(id=12, is_success=0)
 
     monkeypatch.setattr(
-        "axile.server.execution.execution_records_output.append_success_execute_record",
+        "axile.server.execution.records.append_success_execute_record",
         fake_success,
     )
     monkeypatch.setattr(
-        "axile.server.execution.execution_records_output.append_error_execute_record",
+        "axile.server.execution.records.append_error_execute_record",
         fake_error,
     )
 
@@ -101,7 +100,6 @@ def test_failed_output_still_persists_as_error(monkeypatch) -> None:
         append_execute_record_from_output(
             account=build_account(),
             raw_input={},
-            result={"status": "FAILED", "error": "下单失败", "success": False},
             output=output,
             execution_id="exec-failed-persist",
             execution_kind=ExecutionKind.REBALANCE,
@@ -123,7 +121,6 @@ def test_not_reached_clear_keeps_conclusion_and_kind_on_error_record_path(native
         record = await append_execute_record_from_output(
             account=build_account(id=1),
             raw_input={},
-            result=output.model_dump(mode="json"),
             output=output,
             execution_id="clear-shortfall",
             execution_kind=ExecutionKind.CLEAR_POSITIONS,

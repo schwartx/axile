@@ -1,14 +1,22 @@
 """清仓执行场景."""
 
+from typing import cast
+
 import loguru
 
+from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, ExecutionKind, ExecutionReasonFamily
+from axile.executor.algorithms.exceptions import execution_error_message
+from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
 from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.account import AccountContext
-from axile.server.execution import backend as execution_backend
+from axile.server.error_details import exception_details, json_error_value
 from axile.server.execution.execution_algorithms import resolve_empty_positions_algorithm
-from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.notification_assets import load_notification_snapshot
+from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
+from axile.server.execution.worker_backend.manager import get_worker_backend_manager
+from axile.server.execution_audit import append_execution_event
 from axile.server.utils import trade_channel_check
 
 
@@ -48,64 +56,103 @@ async def _run_clear_positions(
         logger.info("清除持仓")
         await trade_channel_check(account, execution_id=execution_id)
         notification_snapshot = await load_notification_snapshot(account)
-        request = _build_clear_positions_backend_request(
-            account=account,
-            algorithm=algorithm,
-            execution_id=execution_id,
-            logger=logger,
-            notification_snapshot=notification_snapshot,
-        )
-        return await execution_backend.run_clear_positions_via_backend(request=request)
+        resolved_algorithm = resolve_empty_positions_algorithm(account, algorithm)
+        empty_kwargs = {
+            "trade_rules": account.trade_rules,
+            "futures_close_policy": account.futures_close_policy.model_dump(),
+            "algorithm": resolved_algorithm,
+            "feishu_key": account.feishu_key if account.feishu_key else None,
+            "execution_notification_code": account.execution_notification_code,
+            "feishu_account": {
+                "id": account.id,
+                "name": account.name,
+                "market": account.market,
+                "trade_channel": str(account.trade_channel),
+                "brokerage": account.brokerage,
+                "remark": account.remark,
+                "portfolio_id": account.portfolio_id,
+                "weight_precision": account.weight_precision,
+                "long_leverage": account.long_leverage,
+                "short_leverage": account.short_leverage,
+            },
+            "extra": {
+                "audit": {
+                    "execution_id": execution_id,
+                    "account_id": account.id,
+                    "channel": str(account.trade_channel),
+                    "algorithm": resolved_algorithm.get("method", "SINGLE-MAKER"),
+                    "trigger_source": "empty_positions",
+                    "execution_kind": "clear_positions",
+                }
+            },
+        }
+        audit_input = sanitize_execution_input(empty_kwargs)
+        if execution_id:
+            from axile.server.execution.intents import promote_intent_to_running
+
+            await promote_intent_to_running(execution_id, cast("int", account.id))
+        try:
+            output = await get_worker_backend_manager().empty_positions(
+                account=account,
+                empty_kwargs=empty_kwargs,
+                audit_input=audit_input,
+                execution_id=execution_id,
+                **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
+            )
+            record = await append_execute_record_from_output(
+                account=account,
+                raw_input={},
+                output=output,
+                execution_id=execution_id,
+                execution_kind=ExecutionKind.CLEAR_POSITIONS,
+            )
+            logger.info(
+                f"名称={account.name} | 渠道={account.trade_channel} | 清仓完成 | "
+                f"execution_id={execution_id} | record_id={record.id} | success={record.is_success}"
+            )
+            return record
+        except ExecutionTerminated:
+            logger.warning(
+                f"名称={account.name} | 渠道={account.trade_channel} | 清仓被终止 | "
+                f"execution_id={execution_id} | trigger=empty_positions"
+            )
+            raise
+        except Exception as exc:
+            msg = execution_error_message(exc, "清仓执行")
+            await append_execution_event(
+                execution_id=execution_id,
+                account_id=cast("int", account.id),
+                channel=account.trade_channel,
+                algorithm=cast("str", resolved_algorithm.get("method", "SINGLE-MAKER")),
+                event_type=ExecutionEventType.EXECUTION_FAILED,
+                status=ExecutionEventStatus.ERROR,
+                reason_family=ExecutionReasonFamily.SYSTEM,
+                reason_code="COMMON.EXECUTION_FAILED",
+                # worker 尚未准备成功时，由主进程保留失败证据。
+                seq=0,
+                # 阶段说明与技术原文一起进入既有事件。
+                details=_failure_details(exc, msg, "empty_positions"),
+            )
+            await append_error_execute_record(
+                account_id=account.id,
+                msg=msg,
+                raw_result=exception_details(exc),
+                execution_id=execution_id,
+                error=exc,
+            )
+            logger.opt(exception=exc).error("{}", msg)
+            raise ValueError(execution_error_message(exc, "清仓执行")) from exc
 
 
-def _build_clear_positions_backend_request(
-    *,
-    account: AccountContext,
-    algorithm: dict[str, object] | None,
-    execution_id: str,
-    logger: "loguru.Logger",
-    notification_snapshot: dict[str, object] | None = None,
-) -> execution_backend.ClearPositionsBackendRequest:
-    """组装后端执行清仓所需的请求对象。"""
-    if isinstance(account, Account):
-        account = account.snapshot()
-    resolved_algorithm = resolve_empty_positions_algorithm(account, algorithm)
-    empty_kwargs = {
-        "trade_rules": account.trade_rules,
-        "futures_close_policy": account.futures_close_policy.model_dump(),
-        "algorithm": resolved_algorithm,
-        "feishu_key": account.feishu_key if account.feishu_key else None,
-        "execution_notification_code": account.execution_notification_code,
-        "feishu_account": {
-            "id": account.id,
-            "name": account.name,
-            "market": account.market,
-            "trade_channel": str(account.trade_channel),
-            "brokerage": account.brokerage,
-            "remark": account.remark,
-            "portfolio_id": account.portfolio_id,
-            "weight_precision": account.weight_precision,
-            "long_leverage": account.long_leverage,
-            "short_leverage": account.short_leverage,
-        },
-        "extra": {
-            "audit": {
-                "execution_id": execution_id,
-                "account_id": account.id,
-                "channel": str(account.trade_channel),
-                "algorithm": resolved_algorithm.get("method", "SINGLE-MAKER"),
-                "trigger_source": "empty_positions",
-                "execution_kind": "clear_positions",
-            }
-        },
+def _failure_details(error: Exception, message: str, trigger_source: str) -> dict[str, object]:
+    """保留渠道结构化分类和恢复时间；诊断原文完整进入事件。"""
+    details: dict[str, object] = {
+        **exception_details(error),
+        "error": message,
+        "debug": {"trigger_source": trigger_source},
     }
-    return execution_backend.ClearPositionsBackendRequest(
-        account=account,
-        resolved_algorithm=resolved_algorithm,
-        empty_kwargs=empty_kwargs,
-        audit_input=sanitize_standard_input_for_audit(empty_kwargs),
-        execution_id=execution_id,
-        trigger_source="empty_positions",
-        logger=logger,
-        notification_snapshot=notification_snapshot,
-    )
+    diagnostics = getattr(error, "diagnostics", None)
+    if isinstance(diagnostics, list):
+        details["error_type"] = getattr(error, "exception_type", None) or type(error).__name__
+        details["diagnostics"] = json_error_value(diagnostics)
+    return details

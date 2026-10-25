@@ -23,7 +23,7 @@ from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.context import Context, PortfolioExecutor
 from axile.server.db.models.account import AccountSnapshot
-from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
 from axile.server.execution.worker_backend.protocol import (
@@ -303,7 +303,7 @@ def _handle_execute_trade(
         standard_input = cast(UnifiedStandardInput, normalize(standard_input))
         standard_input = cast(UnifiedStandardInput, normalize_connected(standard_input))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
-        audit_input = {**audit_input, **sanitize_standard_input_for_audit(standard_input)}
+        audit_input = {**audit_input, **sanitize_execution_input(standard_input.to_dict())}
         before_account_assets = _capture_before_account_snapshot(executor)
         _append_trade_pre_execute_audit(
             account=account,

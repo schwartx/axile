@@ -15,6 +15,7 @@ from axile.domain.execution import (
     ExecutionEventType,
     ExecutionReasonFamily,
 )
+from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import session_closed_scope
@@ -28,7 +29,6 @@ from axile.server.execution.audit_batch import (
     append_execution_audit_batch_sync,
 )
 from axile.server.execution.environment import execution_environment
-from axile.server.execution.execution_records_output import resolve_completion_event_status
 from axile.server.execution.execution_summaries import (
     build_execution_outcome_details,
     build_execution_summary_from_symbol_results,
@@ -41,6 +41,27 @@ from axile.server.execution.input_persistence import (
 )
 from axile.server.execution.worker_backend.protocol import WorkerBackendErrorPayload
 from axile.server.execution_audit import append_execution_event_sync, build_execution_event
+
+
+def resolve_completion_event_status(output_status: ExecutionStatus) -> ExecutionEventStatus:
+    """
+    将执行输出状态映射为 execution_completed 事件状态.
+
+    Parameters
+    ----------
+    output_status : ExecutionStatus
+        执行器返回的状态值。
+
+    Returns
+    -------
+    ExecutionEventStatus
+        可写入 execution event 的事件状态。
+    """
+    if output_status in {ExecutionStatus.SUCCEEDED, ExecutionStatus.NOOP}:
+        return ExecutionEventStatus.SUCCESS
+    if output_status in {ExecutionStatus.BLOCKED, ExecutionStatus.PARTIAL}:
+        return ExecutionEventStatus.WARNING
+    return ExecutionEventStatus.ERROR
 
 
 def _event_seq(executor: object) -> int:
