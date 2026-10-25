@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts import repository
 from scripts.business_facts_contract import business_evidence
+from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import freeze_input, rows, seed_account, sql
 
 

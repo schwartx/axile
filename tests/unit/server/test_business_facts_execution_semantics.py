@@ -16,14 +16,14 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
-from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.db.models import ExecuteRecord
-from axile.server.execution import input_persistence, rebalance, records, registry
+from axile.server.execution import input_persistence, rebalance, records
 from axile.server.execution.records import resolve_record_task_status
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._native_read_views import read_execution_input, read_execution_result, status_view
 
 
 @contextmanager
@@ -147,7 +147,7 @@ def test_terminal_facts_keep_output_lifecycle_and_outcome_distinct(
             assert business_evidence(resolve_record_task_status(persisted)) == business_evidence(
                 ExecutionTaskStatus(task_status)
             )
-            replay = registry._build_persisted_execution_status(persisted)
+            replay = status_view(persisted)
             assert business_evidence(replay["status"]) == business_evidence(task_status)
             assert business_evidence(replay["output_status"]) == business_evidence(output_status)
             assert business_evidence(replay["outcome"]) == business_evidence(outcome)
@@ -205,7 +205,7 @@ def test_termination_preserves_original_output_and_cancellation_evidence(
             )
             assert result["termination"].get("acked_at") is None
             assert result["termination"]["cancel_unconfirmed"] is True
-            replay = registry._build_persisted_execution_status(persisted)
+            replay = status_view(persisted)
             assert business_evidence(replay["status"]) == business_evidence("TERMINATED")
             assert business_evidence(replay["output_status"]) == business_evidence(output_status)
             assert business_evidence(replay["outcome"]) == business_evidence("terminated")
@@ -312,9 +312,7 @@ def test_mutated_output_status_rederives_outcome_before_real_persistence(
             assert business_evidence(result["outcome"]) == business_evidence("not_reached")
             assert business_evidence(result["execution_kind"]) == business_evidence("clear_positions")
             assert business_evidence(persisted.is_success) == business_evidence(0)
-            assert business_evidence(
-                registry._build_persisted_execution_status(persisted)["status"]
-            ) == business_evidence("FAILED")
+            assert business_evidence(status_view(persisted)["status"]) == business_evidence("FAILED")
 
     asyncio.run(scenario())
 

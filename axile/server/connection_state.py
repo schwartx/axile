@@ -13,15 +13,10 @@ from uuid import uuid4
 
 from loguru import logger
 
-from axile.executor.connection_presentation import presentation_snapshot
 from axile.executor.connection_state import (
     ConnectionObservation,
     connection_observer_scope,
     current_connection_observer,
-)
-from axile.server.db.models.account_connection import (
-    AccountConnectionDetail,
-    AccountConnectionPublic,
 )
 from axile.server.native_store import native_operation, native_operation_sync
 
@@ -186,35 +181,6 @@ def report_connection_for_account(account: object) -> Iterator[None]:
     collector = ConnectionCollector(begin_connection_instance(account), persist=True)
     with connection_observer_scope(collector.observe):
         yield
-
-
-def public_connection(account: object, *, detail: bool = False) -> AccountConnectionPublic:
-    """当前状态只取本进程会话；历史结果不构成会话存活或就绪证明。"""
-    from axile.server.connection_runtime import current_session
-    from axile.server.db.models.account_connection import AccountConnectionFailure
-
-    state = getattr(account, "connection_state", None)
-    key = connection_config_key(getattr(account, "trade_channel"), getattr(account, "account_config"))
-    current = current_session(getattr(account, "id"), key)
-    failure = None
-    if state is not None and state.config_key == key:
-        current.last_success_at = state.last_success_at
-        current.manually_disconnected = state.manually_disconnected
-        if state.last_failure:
-            raw = {**state.last_failure, "presentation": presentation_snapshot(state.last_failure.get("presentation"))}
-            failure = AccountConnectionFailure.model_validate(raw)
-            current.last_failure_at = failure.observed_at
-        if state.manually_disconnected and current.status in {"uninitialized", "unknown", "disconnected"}:
-            current.status, current.message = "disconnected", "账户会话已主动断开，需要显式重新连接"
-    if not detail:
-        return current
-    active_failure = failure if current.status == "unavailable" else None
-    return AccountConnectionDetail(
-        **current.model_dump(),
-        last_failure=failure,
-        error=active_failure.error if active_failure else None,
-        presentation=active_failure.presentation if active_failure else None,
-    )
 
 
 async def recover_connection_sessions() -> None:

@@ -7,11 +7,11 @@ import pytest
 
 from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import records, registry
 from axile.server.execution.records import resolve_record_task_status
 from tests.unit.server._business_facts_test_support import persist_result, seed_account
+from tests.unit.server._native_read_views import read_execution_result, status_view
 
 
 def closed_result():
@@ -145,7 +145,7 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
     assert result["symbol_results"]["m2701"]["final_volume"] is None
     assert not hasattr(record, "raw_result")
     assert resolve_record_task_status(record) == expected
-    replay = registry._build_persisted_execution_status(record)
+    replay = status_view(record)
     assert replay["status"] == expected
     assert replay["output_status"] == raw["status"]
     assert replay["is_success"] == 0

@@ -398,6 +398,12 @@ fn json_bytes(value: &Value) -> Result<Vec<u8>, AnalysisError> {
     serde_json::to_vec(value).map_err(|error| invalid(error.to_string()))
 }
 
+pub fn account_public(_path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    let mut account = public_account(request["account"].clone(), request)?;
+    account["runtime_sync"] = request["runtime_sync"].clone();
+    Ok(account)
+}
+
 pub fn account_list_json(path: &str, request: &Value) -> Result<Vec<u8>, AnalysisError> {
     crate::with_read_snapshot(Path::new(path), |connection| {
         let accounts = list_on(connection)?
@@ -689,7 +695,14 @@ pub fn account_dashboard_context(path: &str, request: &Value) -> Result<Value, A
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("缺少分析引擎版本"))?;
     crate::with_read_snapshot(Path::new(path), |connection| {
-        let accounts = list_on(connection)?;
+        let mut accounts = list_on(connection)?;
+        for account in &mut accounts {
+            account["connection"] = crate::connection_state::public_connection(
+                account,
+                &request["live_sessions"],
+                false,
+            )?;
+        }
         let ids = accounts
             .iter()
             .filter_map(|account| account["id"].as_i64())
@@ -746,16 +759,6 @@ pub fn account_latest_portfolio(path: &str, request: &Value) -> Result<Value, An
     let account_id = id(request)?;
     crate::with_read_snapshot(Path::new(path), |connection| {
         Ok(json!(latest_portfolio_on(connection, account_id)?))
-    })
-}
-
-pub fn portfolio_latest_account(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let portfolio_id = request
-        .get("portfolio_id")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| invalid("缺少组合 ID"))?;
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        Ok(json!(latest_account_on(connection, portfolio_id)?))
     })
 }
 

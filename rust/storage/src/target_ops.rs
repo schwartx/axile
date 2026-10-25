@@ -295,44 +295,6 @@ pub(crate) fn previous_account_target_snapshots(
     views(connection, heads)
 }
 
-pub(crate) fn read_execution_target_weights(
-    connection: &Connection,
-    account_id: i64,
-    execution_id: &str,
-) -> Result<Value, AnalysisError> {
-    let head = connection
-        .query_row(
-            "SELECT id,normalized_weights_kind,weights_metadata FROM target_weight_snapshot WHERE account_id=?1 AND execution_id=?2 ORDER BY id DESC LIMIT 1",
-            params![account_id, execution_id],
-            |row| Ok(json!({"id": row.get::<_, i64>(0)?, "raw_weights_kind":"missing",
-                "normalized_weights_kind":row.get::<_, String>(1)?,
-                "weights_metadata":json_column(row, "weights_metadata")?})),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some(head) = head else {
-        return Ok(Value::Null);
-    };
-    let mut rows = Vec::new();
-    if head["normalized_weights_kind"] == "mapping" {
-        let mut statement = connection.prepare("SELECT map_key,value,audit_evidence FROM target_weight_snapshot_weight WHERE snapshot_id=?1 AND role='normalized_weights' ORDER BY map_key").map_err(sql)?;
-        rows = statement
-            .query_map([integer(&head, "id")?], |row| {
-                Ok(
-                    json!({"role":"normalized_weights", "map_key":row.get::<_, String>(0)?,
-                "value":row.get::<_, Option<f64>>(1)?,
-                "audit_evidence":json_column(row, "audit_evidence")?}),
-                )
-            })
-            .map_err(sql)?
-            .collect::<Result<_, _>>()
-            .map_err(sql)?;
-    }
-    Ok(decode_snapshot_weights(&head, &rows)?
-        .remove("normalized_weights")
-        .unwrap_or(Value::Null))
-}
-
 /// 独立追加拥有一次写事务；读取在同一个只读快照内加载头和明细。
 pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let operation = text(request, "op")?;
@@ -345,11 +307,6 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
     match operation {
-        "latest_portfolio" => Ok(latest_portfolio_target_snapshot(
-            &connection,
-            integer(request, "portfolio_id")?,
-        )?
-        .unwrap_or(Value::Null)),
         "latest_account" => Ok(latest_account_target_snapshot(
             &connection,
             integer(request, "account_id")?,
@@ -363,12 +320,6 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
             integer(request, "before_id")?,
             optional_integer(request, "limit")?.unwrap_or(50),
         )?)),
-        "read_execution" => match optional_text(request, "execution_id")? {
-            Some(id) => {
-                read_execution_target_weights(&connection, integer(request, "account_id")?, id)
-            }
-            None => Ok(Value::Null),
-        },
         _ => Err(invalid("未知目标权重快照操作")),
     }
 }
@@ -441,11 +392,15 @@ mod tests {
         assert_eq!(previous.len(), 1);
         assert_eq!(previous[0]["execution_id"], "e1");
         assert_eq!(
-            read_execution_target_weights(&connection, 2, "e3").unwrap(),
+            latest_account_target_snapshot(&connection, 2, 7)
+                .unwrap()
+                .unwrap()["normalized_weights"],
             json!({})
         );
         assert_eq!(
-            read_execution_target_weights(&connection, 99, "e1").unwrap(),
+            latest_account_target_snapshot(&connection, 99, 7)
+                .unwrap()
+                .unwrap_or(Value::Null),
             Value::Null
         );
     }

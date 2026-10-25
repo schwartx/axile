@@ -9,7 +9,6 @@ import pytest
 
 from axile.server._native import _core
 from axile.server.business_facts import assets
-from axile.server.db.models.account_asset import AccountAssetSnapshot
 
 _SCHEMA = """
 CREATE TABLE account(id INTEGER PRIMARY KEY);
@@ -140,8 +139,8 @@ def test_manual_facade_crosses_once_with_clock_and_invalid_number_evidence(monke
     raw_assets = {"total_asset": float("inf")}
     raw_result = {"account_assets": raw_assets}
     saved = asyncio.run(assets.save_manual_asset_snapshot(1, raw_assets, created_at="clock-time", result=raw_result))
-    assert isinstance(saved, AccountAssetSnapshot)
-    assert saved.id == 7
+    assert isinstance(saved, dict)
+    assert saved["id"] == 7
     assert requests == [
         (
             "asset_snapshot_write",

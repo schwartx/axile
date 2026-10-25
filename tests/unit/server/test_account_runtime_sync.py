@@ -27,8 +27,8 @@ def test_old_result_cannot_overwrite_new_revision(tmp_path, monkeypatch, old_fai
             async def observe_finish(*args, **kwargs):
                 result = await finish(*args, **kwargs)
                 if len(observed) == 1:
-                    assert result.revision == 2 and result.status == "pending"
-                    assert result.last_error is None and result.reset_worker is True
+                    assert result["revision"] == 2 and result["status"] == "pending"
+                    assert result["last_error"] is None and result["reset_worker"] is True
                 return result
 
             monkeypatch.setattr(runtime, "_finish_attempt", observe_finish)
@@ -71,7 +71,12 @@ def test_old_result_cannot_overwrite_new_revision(tmp_path, monkeypatch, old_fai
             release.set()
             sync = await asyncio.wait_for(task, 5)
             assert observed == [("ctp-sim", False), ("latest", True)]
-            assert (sync.revision, sync.attempts, sync.status, sync.reset_worker) == (2, 2, "synchronized", False)
+            assert (sync["revision"], sync["attempts"], sync["status"], sync["reset_worker"]) == (
+                2,
+                2,
+                "synchronized",
+                False,
+            )
             attempts = runtime_rows(path, "SELECT revision,succeeded FROM accountruntimesyncattempt ORDER BY id")
             assert [tuple(row) for row in attempts] == [(1, not old_fails), (2, True)]
 
@@ -95,8 +100,8 @@ def test_failure_and_cancellation_release_lock_and_retry_converges(tmp_path, mon
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
             failed = await runtime.reconcile_account_runtime(1, MagicMock())
-            assert failed.status == "failed"
-            assert "worker timeout" in failed.last_error and "Traceback" in failed.last_error
+            assert failed["status"] == "failed"
+            assert "worker timeout" in failed["last_error"] and "Traceback" in failed["last_error"]
             mode = "cancel"
             task = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
             await asyncio.wait_for(entered.wait(), 5)
@@ -109,7 +114,7 @@ def test_failure_and_cancellation_release_lock_and_retry_converges(tmp_path, mon
             assert [row[0] for row in attempts] == [False, False]
             mode = "success"
             recovered = await asyncio.wait_for(runtime.reconcile_account_runtime(1, MagicMock()), 5)
-            assert (recovered.status, recovered.attempts) == ("synchronized", 3)
+            assert (recovered["status"], recovered["attempts"]) == ("synchronized", 3)
 
     asyncio.run(scenario())
 
@@ -133,7 +138,7 @@ def test_same_account_serializes_without_blocking_other_accounts(tmp_path, monke
             await asyncio.wait_for(entered.wait(), 5)
             duplicate = asyncio.create_task(runtime.reconcile_account_runtime(1, MagicMock()))
             other = await asyncio.wait_for(runtime.reconcile_account_runtime(2, MagicMock()), 5)
-            assert other.status == "synchronized" and calls == [1, 2]
+            assert other["status"] == "synchronized" and calls == [1, 2]
             release.set()
             await asyncio.wait_for(asyncio.gather(first, duplicate), 5)
             assert calls == [1, 2, 1]
@@ -165,8 +170,8 @@ def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path):
                     for _ in range(4)
                 )
             )
-            sync = runtime_sync(path, account_id)
-            assert (sync.revision, sync.reset_worker, sync.create_request_key) == (6, True, "create-1")
+            sync = vars(runtime_sync(path, account_id))
+            assert (sync["revision"], sync["reset_worker"], sync["create_request_key"]) == (6, True, "create-1")
 
     asyncio.run(scenario())
 
@@ -228,24 +233,24 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                 {"account_id": 1, "patch": {"account_config": {"password": "changed"}}, "now": "2026-10-01"},
             )
             sync = await runtime.reconcile_account_runtime(1, MagicMock())
-            assert (sync.status, sync.reset_worker) == ("pending", True)
-            assert reason in sync.last_error and "Traceback" in sync.last_error
-            assert sync.synchronized_at is None
+            assert (sync["status"], sync["reset_worker"]) == ("pending", True)
+            assert reason in sync["last_error"] and "Traceback" in sync["last_error"]
+            assert sync["synchronized_at"] is None
             warnings = [record for record in records if record["level"].name == "WARNING"]
             assert len(warnings) == 1 and warnings[0]["exception"] is None
             assert not any(record["level"].name in {"ERROR", "CRITICAL"} for record in records)
             mode = next_result
             await asyncio.wait_for(ctp_channels._prepare_accounts([1], "day"), 5)
-            sync = runtime_sync(path)
+            sync = vars(runtime_sync(path))
             attempts = runtime_rows(path, "SELECT succeeded,error FROM accountruntimesyncattempt ORDER BY id")
-            assert sync.status == {"success": "synchronized", "pending": "pending", "failed": "failed"}[mode]
+            assert sync["status"] == {"success": "synchronized", "pending": "pending", "failed": "failed"}[mode]
             if mode == "success":
-                assert sync.last_error is None
+                assert sync["last_error"] is None
             else:
-                assert {"pending": reason, "failed": "CTP 登录校验失败"}[mode] in sync.last_error
-                assert "Traceback" in sync.last_error
-            assert sync.reset_worker is (mode != "success")
-            assert bool(sync.synchronized_at) is (mode == "success")
+                assert {"pending": reason, "failed": "CTP 登录校验失败"}[mode] in sync["last_error"]
+                assert "Traceback" in sync["last_error"]
+            assert sync["reset_worker"] is (mode != "success")
+            assert bool(sync["synchronized_at"]) is (mode == "success")
             assert [row[0] for row in attempts] == [False, mode == "success"]
             assert reason in attempts[0][1] and resets == [True, True]
 
@@ -277,8 +282,8 @@ def test_only_explicit_ctp_prepare_error_is_pending(tmp_path, monkeypatch, bound
                 runtime, "_apply_account_job" if boundary == "scheduler" else "reconcile_china_channel_account", fail
             )
             sync = await runtime.reconcile_account_runtime(1, MagicMock())
-            assert sync.status == "failed"
-            assert "账户通道准备未完成" in sync.last_error and "SDK" in sync.last_error
+            assert sync["status"] == "failed"
+            assert "账户通道准备未完成" in sync["last_error"] and "SDK" in sync["last_error"]
 
     asyncio.run(scenario())
 

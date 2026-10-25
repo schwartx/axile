@@ -8,11 +8,11 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.execution import records
-from axile.server.target_weight_snapshots import append_target_weight_snapshot, read_target_snapshot_weights
+from axile.server.target_weight_snapshots import append_target_weight_snapshot, get_latest_account_target_snapshot
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import persist_result, rows, seed_account, sql
+from tests.unit.server._native_read_views import read_execution_input, read_execution_result
 
 
 @pytest.fixture
@@ -117,8 +117,7 @@ def test_late_target_refreshes_only_matching_execution_fact(database) -> None:
             source="execution",
             execution_id="late",
         )
-        assert await read_target_snapshot_weights(account_id=1, execution_id="late") == {"A": 0.6}
-        assert await read_target_snapshot_weights(account_id=1, execution_id="unrelated") is None
+        assert (await get_latest_account_target_snapshot(1, 1))["normalized_weights"] == {"A": 0.6}
 
     asyncio.run(scenario())
 

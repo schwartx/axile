@@ -21,6 +21,10 @@ def ensure_native_capabilities() -> None:
     """Reject obsolete extensions before any background services start."""
     required = (
         "close_database",
+        "account_public",
+        "connection_accounts",
+        "execution_read",
+        "supplement_has_execution_steps",
         "publish_store",
         "freeze_execution_input",
         "freeze_execution_after_assets",

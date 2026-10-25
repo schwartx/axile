@@ -9,6 +9,7 @@ import pytest
 
 from axile.server._native import _core
 from tests.conftest import native_store_call
+from tests.unit.server._native_read_views import read_view
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def test_main_upgrade_downgrade_repeat_preserves_facts_and_complete_artifacts(ma
         artifacts = connection.execute("SELECT content FROM execution_artifact ORDER BY id").fetchall()
     for _ in range(2):
         assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0034"
-        detail = native_store_call(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
+        detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
         assert detail["input"]["extra"]["sentinel"] == 9007199254740993
         assert detail["result"]["account_assets"]["total_asset"] == 101.0
         _core.close_database(str(main_database))

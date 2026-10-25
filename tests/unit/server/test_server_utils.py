@@ -12,12 +12,12 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server import channel_capabilities
 from axile.server import utils as server_utils
-from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountUpdate
 from axile.server.execution import records as execution_records
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import insert_account
+from tests.unit.server._native_read_views import read_execution_detail
 
 
 def _build_account() -> Account:

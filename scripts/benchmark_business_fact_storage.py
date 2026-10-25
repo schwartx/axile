@@ -553,7 +553,7 @@ async def _write_target(item: dict, sessions) -> None:
 
 async def _verify_records(sessions, items: list[dict], layout: str) -> str:
     if sessions is None:
-        from axile.server.business_facts.repository import read_execution_detail
+        from axile.server._native import _core
         from axile.server.core.db import database_path
 
         with sqlite3.connect(database_path()) as connection:
@@ -566,7 +566,7 @@ async def _verify_records(sessions, items: list[dict], layout: str) -> str:
             record = rows.get(item["execution_id"])
             if record is None or record["created_at"] != item["created_at"]:
                 raise AssertionError("terminal record identity/timestamp was not preserved")
-            detail = await read_execution_detail(record)
+            detail = json.loads(_core.execution_record_detail(_core.Store(database_path()), 1, record["id"]))
             evidence = {"input": detail["input"], "result": detail["result"]}
             if semantic_hash(evidence) != semantic_hash({"input": item["raw_input"], "result": item["raw_result"]}):
                 raise AssertionError("cold-path native evidence differs from the fixture")

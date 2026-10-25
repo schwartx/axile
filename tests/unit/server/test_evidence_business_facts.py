@@ -18,6 +18,7 @@ from axile.server.evidence.models import (
 from axile.server.evidence.report import execution_report, result_payload
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import freeze_input
+from tests.unit.server._native_read_views import read_view
 from tests.unit.server.test_evidence_export import _event
 
 
@@ -151,7 +152,7 @@ def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(mo
         "artifact_type": "target_snapshot",
         "content": fact_artifacts.make_artifact_reference(view="targets", input_id="typed-input"),
     }
-    target = native_store_call(native_database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
+    target = read_view(native_database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
     assert {key: value for key, value in target.items() if key != "business_facts_ref"} == {
         key: value for key, value in payload.items() if key != "account_target"
     }

@@ -249,57 +249,6 @@ pub(crate) fn delete_execution_history_in(
         .map_err(sql)
 }
 
-fn read_snapshot<T>(
-    path: &str,
-    read: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
-) -> Result<T, AnalysisError> {
-    crate::with_read_snapshot_errors(
-        Path::new(path),
-        read,
-        ("BUSINESS_FACTS_SQL", "BUSINESS_FACTS_SQL"),
-    )
-}
-
-pub fn read_execution_input(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let input_id = text(request, "input_id")?;
-    read_snapshot(path, |connection| {
-        facts::load_input_value(connection, input_id)
-    })
-}
-
-fn execution_detail(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
-    let record_id = integer(request, "record_id")?;
-    let account_id = integer(request, "account_id")?;
-    let head = record_row(connection, record_id)?;
-    let mut payload =
-        crate::business_detail::read(connection, account_id, record_id).map_err(facts_error)?;
-    let mut detail = Map::new();
-    for name in [
-        "id",
-        "account_id",
-        "execution_id",
-        "created_at",
-        "is_success",
-    ] {
-        detail.insert(name.into(), head.get(name).cloned().unwrap_or(Value::Null));
-    }
-    detail.insert("input".into(), payload["input"].take());
-    detail.insert("result".into(), payload["result"].take());
-    Ok(Value::Object(detail))
-}
-
-pub fn read_execution_detail(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    read_snapshot(path, |connection| execution_detail(connection, request))
-}
-
-pub fn read_execution_result(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let record_id = integer(request, "record_id")?;
-    let account_id = integer(request, "account_id")?;
-    read_snapshot(path, |connection| {
-        crate::business_detail::read_result(connection, account_id, record_id).map_err(facts_error)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,18 +20,18 @@ from axile.executor.models.unified_order import OrderDirection, OrderType, Unifi
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server.business_facts.artifacts import parse_artifact_reference
 from axile.server.business_facts.assets import input_after_asset_fact_id, input_asset_fact_id
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import initialize_native_database, native_store_call
+from tests.conftest import initialize_native_database
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
 from tests.unit.server._business_analysis_support import _events
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
+from tests.unit.server._native_read_views import read_execution_result, read_view
 from tests.unit.server._performance_costs_oracle import project_execution
 from tests.unit.server.test_evidence_export import _seed
 
@@ -176,7 +176,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             "asset_id": input_after_asset_fact_id(input_id),
         }
         assert "account_assets" not in after.content
-        resolved = native_store_call(
+        resolved = read_view(
             path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
         )
         assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])

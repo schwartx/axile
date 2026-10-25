@@ -7,6 +7,7 @@ import pytest
 from axile.server.business_facts.summary_refs import REFERENCE_KEY
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import persist_result, read_result, rows
+from tests.unit.server._native_read_views import read_view
 
 _EXECUTION = "summary-reference-contract"
 
@@ -28,7 +29,7 @@ def _freeze_summary(path, content, result):
 
 
 def _resolve_summary(path, artifact):
-    return native_store_call(path, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
+    return read_view(path, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
 
 
 @pytest.mark.parametrize("memory", [None, {"message": "native observation"}])

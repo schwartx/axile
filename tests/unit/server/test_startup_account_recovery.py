@@ -17,6 +17,10 @@ from axile.server.execution import notification_outbox, supplements
 NATIVE_OPERATIONS = (
     "close_database",
     "publish_store",
+    "account_public",
+    "connection_accounts",
+    "execution_read",
+    "supplement_has_execution_steps",
     "freeze_execution_input",
     "freeze_execution_after_assets",
     "queue_enqueue",

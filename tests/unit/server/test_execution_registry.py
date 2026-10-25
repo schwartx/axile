@@ -16,6 +16,7 @@ from axile.domain.execution import (
 )
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import registry as execution_registry
+from tests.unit.server._native_read_views import status_view
 
 
 @pytest.fixture(autouse=True)
@@ -28,10 +29,10 @@ def _no_persisted_intent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(intents, "get_intent", get_intent)
 
 
-def _persisted_record(monkeypatch: pytest.MonkeyPatch, record: ExecuteRecord) -> None:
+def _persisted_record(monkeypatch: pytest.MonkeyPatch, record: ExecuteRecord, *, intent=None) -> None:
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         assert name == "execution_read" and request == {"op": "status", "execution_id": record.execution_id}
-        return {"record": record.model_dump(), "outcome_symbols": []}
+        return status_view(record, intent=intent)
 
     monkeypatch.setattr(execution_registry, "native_operation", read)
 
@@ -217,14 +218,18 @@ def test_registry_helper_functions_cover_status_serialization(
     finally:
         execution_registry._clear_execution_task_state("queued-exec")
 
-    assert execution_registry._coerce_execution_task_status("RUNNING") == ExecutionTaskStatus.RUNNING
-    assert execution_registry._coerce_execution_task_status("bad") is None
-    assert execution_registry._coerce_execution_kind("clear_positions") == ExecutionKind.CLEAR_POSITIONS
-    assert execution_registry._coerce_execution_kind("bad") is None
-    assert (
-        execution_registry._coerce_execution_terminate_mode("cancel_pending") == ExecutionTerminateMode.CANCEL_PENDING
-    )
-    assert execution_registry._coerce_execution_terminate_mode("bad") is None
+    from axile.server._native import _core
+
+    def typed_status(**fields):
+        return status_view(ExecuteRecord(id=501, account_id=1, is_success=0, execution_id="types", **fields))
+
+    assert typed_status(task_status="RUNNING")["status"] == ExecutionTaskStatus.RUNNING
+    with pytest.raises(_core.NativeError, match="unknown execution task status"):
+        typed_status(task_status="bad")
+    assert typed_status(execution_kind="clear_positions")["execution_kind"] == ExecutionKind.CLEAR_POSITIONS
+    assert typed_status(execution_kind="bad")["execution_kind"] is None
+    assert typed_status(termination_mode="cancel_pending")["terminate_mode"] == ExecutionTerminateMode.CANCEL_PENDING
+    assert typed_status(termination_mode="bad")["terminate_mode"] is None
 
     record = ExecuteRecord(
         execution_id="persisted-exec",
@@ -234,7 +239,7 @@ def test_registry_helper_functions_cover_status_serialization(
         created_at="2026-03-22T17:00:00",
         id=501,
     )
-    assert execution_registry._build_persisted_execution_status(record) == {
+    assert status_view(record) == {
         "execution_id": "persisted-exec",
         "account_id": 1,
         "execution_kind": None,
@@ -566,7 +571,7 @@ def test_persisted_execution_status_reads_output_error_and_status(
         created_at="2026-08-26T20:34:30",
         id=6,
     )
-    payload = execution_registry._build_persisted_execution_status(record)
+    payload = status_view(record)
     assert payload["error"] == expected_error
     assert payload["output_status"] == output_status
 
@@ -603,7 +608,7 @@ def test_persisted_status_keeps_task_output_and_outcome_separate() -> None:
         display_outcome_reason="非交易时段",
         display_error="非交易时段",
     )
-    payload = execution_registry._build_persisted_execution_status(record, outcome_symbols=["second", "first"])
+    payload = status_view(record, outcome_symbols=["second", "first"])
     assert payload["status"] == ExecutionTaskStatus.SKIPPED
     assert payload["output_status"] == "BLOCKED"
     assert payload["outcome"] == "blocked"
@@ -679,7 +684,7 @@ def test_partial_session_replay_preserves_later_task_exception(monkeypatch):
         display_outcome="not_reached",
     )
     monkeypatch.setattr(intents, "get_intent", get_intent)
-    _persisted_record(monkeypatch, record)
+    _persisted_record(monkeypatch, record, intent={"status": "FAILED", "error": "收尾异常"})
     payload = asyncio.run(execution_registry.get_execution_status(record.execution_id))
     assert payload["status"] == ExecutionTaskStatus.FAILED
     assert payload["error"] == "收尾异常"

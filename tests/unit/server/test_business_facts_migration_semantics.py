@@ -13,6 +13,7 @@ import sqlalchemy as sa
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.unit.server._business_facts_test_support import audit_artifacts
+from tests.unit.server._native_read_views import read_view
 
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
 _BUSINESS_MAP_FIELDS = frozenset(
@@ -678,7 +679,7 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
             assert business_evidence(asset_validity) == business_evidence({11: 0, 12: 1})
 
         for record_id, source in expected.items():
-            detail = native_store_call(database, "read_execution_detail", {"account_id": 2, "record_id": record_id})
+            detail = read_view(database, "read_execution_detail", {"account_id": 2, "record_id": record_id})
             assert detail is not None
             _assert_same_evidence(source["raw_input"], detail["input"], f"{source['name']}/input")
             _assert_same_evidence(source["raw_result"], detail["result"], f"{source['name']}/result")
@@ -774,7 +775,7 @@ async def test_migration_preserves_small_malformed_root_states(tmp_path, column,
             connection.execute(table.update().where(table.c.id == 1).values({column: invalid}))
         _apply_0034(database)
 
-        detail = native_store_call(database, "read_execution_detail", {"account_id": 2, "record_id": 1})
+        detail = read_view(database, "read_execution_detail", {"account_id": 2, "record_id": 1})
         assert detail is not None
         _assert_same_evidence(invalid, detail[{"raw_input": "input", "raw_result": "result"}[column]], column)
     finally:
@@ -989,8 +990,8 @@ async def test_migration_freezes_full_summary_and_restores_original_journal_wire
             _assert_same_evidence(originals[599], compacted[599], "orphan-journal")
 
         for artifact_id, record_id in ((531, 31), (532, 32)):
-            result = native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
-            hydrated = native_store_call(
+            result = read_view(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
+            hydrated = read_view(
                 database, "resolve_execution_artifact", {"artifact": compacted[artifact_id], "account_id": 2}
             )
             hydrated.pop("business_facts_ref", None)
@@ -1043,7 +1044,7 @@ async def test_migration_notification_references_require_matching_frozen_busines
                 )
 
         for record_id, source in records.items():
-            result = native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
+            result = read_view(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
             _assert_same_evidence(source["raw_result"], result, "notification-cold-wire")
 
         _downgrade(database)

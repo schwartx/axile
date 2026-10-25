@@ -18,7 +18,7 @@ class _Scheduler:
 
 def _client(monkeypatch, assets, *, target=None):
     context = {
-        "accounts": [_build_account().model_dump(mode="json")],
+        "accounts": [_build_account().model_dump(mode="json") | {"connection": {"status": "uninitialized"}}],
         "inputs": {
             "1": {
                 "observation": {"assets": assets, "created_at": "2026-08-26T21:35:11"} if assets is not None else None,
@@ -94,6 +94,7 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
         {
             "logic_version": account_crud.LOGIC_VERSION,
             "engine_version": account_crud.ENGINE_VERSION,
+            "live_sessions": account_crud.public_session_views(),
         },
     )
 

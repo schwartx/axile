@@ -443,13 +443,16 @@ pub fn connection_accounts(database: &str, request: &Value) -> Result<Value, Ana
         _ => return Err(invalid("account_ids must be an array or null")),
     };
     crate::with_read_snapshot(Path::new(database), |connection| {
-        let accounts = match ids {
+        let mut accounts = match ids {
             None => crate::accounts::list_on(connection)?,
             Some(ids) => ids
                 .into_iter()
                 .filter_map(|id| crate::accounts::load_on(connection, id).transpose())
                 .collect::<Result<Vec<_>, _>>()?,
         };
+        for account in &mut accounts {
+            account["connection"] = public_connection(account, &request["live_sessions"], true)?;
+        }
         Ok(Value::Array(accounts))
     })
 }

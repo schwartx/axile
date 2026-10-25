@@ -202,7 +202,7 @@ def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(
     assert symbols[0]["status"] == public["status"] == "PARTIAL"
     assert symbols[0]["error"] == attempts[0]["reason"] == public["error"] == "执行不到位"
     assert (
-        core.execution_business_detail(store, 1, record["id"])["result"]["symbol_results"]["A"]["error"]
+        json.loads(core.execution_record_detail(store, 1, record["id"]))["result"]["symbol_results"]["A"]["error"]
         == symbol["error"]
     )
 

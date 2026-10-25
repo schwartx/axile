@@ -7,7 +7,6 @@ from collections.abc import Mapping
 import pytest
 
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
     persist_result,
@@ -15,6 +14,7 @@ from tests.unit.server._business_facts_test_support import (
     read_result,
     seed_account,
 )
+from tests.unit.server._native_read_views import read_view
 
 _NIGHT_TIME = "2026-10-19T21:00:00.123456+08:00"
 _NIGHT_NANO = 1792414800123456789
@@ -36,7 +36,7 @@ def _sqlite_round_trip(
         )
         if input_owner:
             return {"before_account_assets": read_before_assets(path, receipt["input_id"])}
-        return native_store_call(path, "read_execution_input", {"input_id": receipt["input_id"]})
+        return read_view(path, "read_execution_input", {"input_id": receipt["input_id"]})
     return read_result(path, persist_result(path, payload))
 
 
@@ -362,13 +362,13 @@ def test_tq_canonical_detail_matches_historical_evidence_across_transactions(nat
     )
     assert record["input_id"] is not None
     assert business_evidence(
-        native_store_call(native_database, "read_execution_input", {"input_id": record["input_id"]})
+        read_view(native_database, "read_execution_input", {"input_id": record["input_id"]})
     ) == business_evidence(raw_input)
     identity = {"account_id": 23, "record_id": record["id"]}
-    assert business_evidence(
-        native_store_call(native_database, "read_execution_result", identity)
-    ) == business_evidence(raw_result)
-    detail = native_store_call(native_database, "read_execution_detail", identity)
+    assert business_evidence(read_view(native_database, "read_execution_result", identity)) == business_evidence(
+        raw_result
+    )
+    detail = read_view(native_database, "read_execution_detail", identity)
     assert business_evidence(detail["input"]) == business_evidence(raw_input)
     assert business_evidence(detail["result"]) == business_evidence(raw_result)
     assert business_evidence(detail["account_id"]) == business_evidence(23)

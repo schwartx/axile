@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
@@ -15,7 +13,6 @@ from axile.server.asset_observations import is_asset_observation
 from axile.server.business_facts.assets import save_manual_asset_snapshot
 from axile.server.core.db import analysis_store
 from axile.server.db.models import (
-    AccountAssetSnapshot,
     AccountAssetSnapshotPublic,
 )
 from axile.server.error_details import exception_details
@@ -26,18 +23,6 @@ from axile.server.execution.registry import (
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 router = APIRouter()
-
-
-def _snapshot_public(snapshot: AccountAssetSnapshot, assets: dict[str, Any]) -> AccountAssetSnapshotPublic:
-    """显式组装资产事实，不让 ORM 属性隐式重建整份观测。"""
-    return AccountAssetSnapshotPublic(
-        id=snapshot.id,
-        account_id=snapshot.account_id,
-        assets=assets,
-        source=cast("Any", snapshot.source),
-        execution_id=snapshot.execution_id,
-        created_at=snapshot.created_at,
-    )
 
 
 @router.post("/{account_id}/assets/refresh", response_model=AccountAssetSnapshotPublic)
@@ -56,7 +41,7 @@ async def refresh_account_assets(account_id: int) -> AccountAssetSnapshotPublic:
             raise ValueError("渠道未返回可信账户资产")
         payload = assets.model_dump(mode="json")
         snapshot = await save_manual_asset_snapshot(account_id, payload)
-        return _snapshot_public(snapshot, payload)
+        return AccountAssetSnapshotPublic.model_validate({**snapshot, "assets": payload})
     except AccountConnectionUnavailable as exc:
         headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
         raise HTTPException(

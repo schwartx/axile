@@ -269,6 +269,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     migration_downgrade => crate::migrations::migration_downgrade,
     database_probe => crate::database_probe::probe,
     account_get => crate::accounts::account_get,
+    account_public => crate::accounts::account_public,
     account_create => crate::accounts::account_create,
     account_create_replay => crate::accounts::account_create_replay,
     account_copy => crate::accounts::account_copy,
@@ -277,7 +278,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     account_dashboard_context => crate::accounts::account_dashboard_context,
     account_next_run_context => crate::accounts::account_next_run_context,
     account_latest_portfolio => crate::accounts::account_latest_portfolio,
-    portfolio_latest_account => crate::accounts::portfolio_latest_account,
     account_stop_for_clear => crate::accounts::account_stop_for_clear,
     time_check_start => crate::time_check::start,
     time_check_persist => crate::time_check::persist,
@@ -304,7 +304,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     intent_finish => crate::intents::intent_finish,
     supplement_create_group => crate::supplements::create_group,
     supplement_step => crate::supplements::step,
-    supplement_execution_steps => crate::supplements::execution_steps,
+    supplement_has_execution_steps => crate::supplements::has_execution_steps,
     supplement_execution_requests => crate::supplements::execution_requests,
     supplement_validate_requests => crate::supplements::validate_requests,
     supplement_cancel_groups => crate::supplements::cancel_groups,
@@ -319,15 +319,11 @@ business_operations! { register_business_operations, business_operation, PyAny;
     target_operation => crate::target_ops::target_operation,
     persist_execute_record => crate::execution_ops::persist_execute_record,
     delete_execution_history => crate::execution_ops::delete_execution_history,
-    read_execution_input => crate::execution_ops::read_execution_input,
-    read_execution_result => crate::execution_ops::read_execution_result,
-    read_execution_detail => crate::execution_ops::read_execution_detail,
     asset_snapshot_write => crate::asset_ops::asset_snapshot_write,
     asset_snapshot_latest => crate::asset_ops::asset_snapshot_latest,
     append_execution_event => crate::audit_ops::append_execution_event,
     append_execution_artifact => crate::audit_ops::append_execution_artifact,
     append_execution_audit_batch => crate::audit_ops::append_execution_audit_batch,
-    resolve_execution_artifact => crate::audit_ops::resolve_execution_artifact,
     analysis_context => crate::analysis_ops::context,
     analysis_calendar_save => crate::analysis_ops::save_calendar,
     analysis_publication_committed => crate::analysis_ops::publication_committed,
@@ -425,11 +421,7 @@ macro_rules! detached_operations {
 }
 
 store_operations! { register_store_values, value, PyAny;
-    order_submission_summary(
-        account_id: i64,
-        start_ms: i64,
-        end_ms: i64,
-    ) => |connection| crate::submissions::summary(connection, account_id, start_ms, end_ms);
+
 
     #[allow(clippy::too_many_arguments)]
     submission_monitor(
@@ -443,11 +435,7 @@ store_operations! { register_store_values, value, PyAny;
         connection, account_id, day, timezone, start_ms, end_ms, now_ms,
     );
 
-    /// Internal business evidence stays as objects, not an HTTP JSON round trip.
-    execution_business_detail(
-        account_id: i64,
-        record_id: i64,
-    ) => |connection| crate::business_detail::read(connection, account_id, record_id);
+
 
 
 }
@@ -727,19 +715,6 @@ detached_operations! { register_queue_operations;
     ) -> () => crate::analysis_queue::fail;
 }
 
-/// Classify scalars read in the caller's SQLAlchemy transaction.
-#[pyfunction]
-#[pyo3(signature = (snapshot_id, compatible, error, active, versions_match))]
-fn publication_status(
-    snapshot_id: Option<&str>,
-    compatible: bool,
-    error: Option<&str>,
-    active: bool,
-    versions_match: bool,
-) -> &'static str {
-    snapshots::publication_status(snapshot_id, compatible, error, active, versions_match)
-}
-
 /// Calculate and atomically publish using a separate writer connection.
 #[pyfunction]
 fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<PyAny>> {
@@ -782,7 +757,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_json_operations(m)?;
     register_bytes_operations(m)?;
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
-    m.add_function(wrap_pyfunction!(publication_status, m)?)?;
     m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_execution_result, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;

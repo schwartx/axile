@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -13,7 +13,6 @@ from axile.server._native import _core
 from axile.server.api.routes.account_support import _apply_account_job
 from axile.server.core.scheduler import Scheduler
 from axile.server.db.models.account import AccountSnapshot
-from axile.server.db.models.account_runtime_sync import AccountRuntimeSync
 from axile.server.db.models.base import now_str
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
@@ -71,7 +70,7 @@ async def _finish_attempt(
     error: str | None,
     *,
     status: Literal["pending", "synchronized", "failed"],
-) -> AccountRuntimeSync:
+) -> dict[str, Any]:
     """审计每次尝试；成功与失败都只能更新自己对应的目标版本。"""
     value = await native_operation(
         "runtime_sync_finish_attempt",
@@ -84,7 +83,7 @@ async def _finish_attempt(
             "now": now_str(),
         },
     )
-    return AccountRuntimeSync.model_validate(value)
+    return value
 
 
 def _runtime_error_text(exc: Exception) -> str:
@@ -121,7 +120,7 @@ async def _reconcile_locked(
     account_id: int,
     sched: Scheduler,
     mode: Literal["startup", "day", "night"] | None = None,
-) -> AccountRuntimeSync:
+) -> dict[str, Any]:
     """锁内收敛最新目标；外部调用前关闭事务，回写仅影响对应 revision。"""
     while True:
         target = await _begin_attempt(account_id, scheduled=mode is not None)
@@ -133,11 +132,11 @@ async def _reconcile_locked(
             error = _runtime_error_text(exc)
             logger.exception("账户运行态对齐失败 account_id={} revision={}", account_id, target.revision)
         sync = await _finish_attempt(account_id, target.revision, target.attempt_id, error, status=status)
-        if sync.revision == target.revision:
+        if sync["revision"] == target.revision:
             return sync
 
 
-async def reconcile_account_runtime(account_id: int, sched: Scheduler) -> AccountRuntimeSync:
+async def reconcile_account_runtime(account_id: int, sched: Scheduler) -> dict[str, Any]:
     """串行对齐并收敛到最新版本；取消及柜台未初始化保留 pending，交由既有入口重试。"""
     async with account_runtime_lock(account_id):
         return await _reconcile_locked(account_id, sched)
@@ -147,7 +146,7 @@ async def reconcile_scheduled_account(
     account_id: int,
     sched: Scheduler,
     mode: Literal["startup", "day", "night"],
-) -> AccountRuntimeSync | None:
+) -> dict[str, Any] | None:
     """盘前准备复用完整对齐，锁内重新验证候选并保留天勤盘前重建语义。"""
     async with account_runtime_lock(account_id):
         try:

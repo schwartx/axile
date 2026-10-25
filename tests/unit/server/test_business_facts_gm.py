@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import JSON
 
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
@@ -18,6 +17,7 @@ from tests.unit.server._business_facts_test_support import (
     rows,
     seed_account,
 )
+from tests.unit.server._native_read_views import read_view
 
 _TABLES = {
     "assets": ("business_asset_snapshot", "business_asset_position", "business_asset_binding"),
@@ -275,7 +275,7 @@ def test_gm_input_roundtrip_keeps_strategy_account_and_quantity_targets_separate
         account_id=24,
         created_at="2026-10-20T09:29:59+08:00",
     )
-    decoded = native_store_call(native_database, "read_execution_input", {"input_id": "gm-input-241"})
+    decoded = read_view(native_database, "read_execution_input", {"input_id": "gm-input-241"})
     loaded = {name: rows(native_database, name) for name in _TABLES["inputs"]}
 
     assert business_evidence(decoded) == business_evidence(payload)

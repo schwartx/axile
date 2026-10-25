@@ -10,6 +10,7 @@ from axile.server.business_facts.artifacts import make_artifact_reference
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import sqlite_oracle
+from tests.unit.server._native_read_views import read_view
 
 
 @sqlite_oracle
@@ -74,7 +75,7 @@ def audit_artifacts(path, execution_id):
         key=lambda row: row["id"],
     )
     for row in data:
-        row["content"] = native_store_call(path, "resolve_execution_artifact", {"artifact": row})
+        row["content"] = read_view(path, "resolve_execution_artifact", {"artifact": row})
     return {"data": data, "count": len(data)}
 
 
@@ -97,7 +98,7 @@ def persist_result(path, payload, **changes):
 
 
 def read_result(path, record):
-    return native_store_call(path, "read_execution_result", {"account_id": 1, "record_id": record["id"]})
+    return read_view(path, "read_execution_result", {"account_id": 1, "record_id": record["id"]})
 
 
 def read_before_assets(path, input_id):
@@ -106,7 +107,7 @@ def read_before_assets(path, input_id):
     (observation,) = [
         row for row in rows(path, "business_asset_snapshot") if row["input_id"] == input_id and row["scope"] == "before"
     ]
-    return native_store_call(
+    return read_view(
         path,
         "resolve_execution_artifact",
         {

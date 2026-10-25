@@ -34,11 +34,6 @@ async def append_target_weight_snapshot(
     )
 
 
-async def get_latest_portfolio_target_snapshot(portfolio_id: int) -> dict[str, Any] | None:
-    """读取组合最近一条具有原始权重的计算快照。"""
-    return await native_operation("target_operation", {"op": "latest_portfolio", "portfolio_id": portfolio_id})
-
-
 async def get_latest_account_target_snapshot(account_id: int, portfolio_id: int) -> dict[str, Any] | None:
     """读取账户在当前组合下最近一条归一化权重快照。"""
     return await native_operation(
@@ -63,15 +58,6 @@ async def get_previous_account_target_snapshots(
             "before_id": before_id,
             "limit": limit,
         },
-    )
-
-
-async def read_target_snapshot_weights(*, account_id: int, execution_id: str | None) -> dict[str, float] | None:
-    """按执行定位账户权重，不加载整个目标历史。"""
-    if execution_id is None:
-        return None
-    return await native_operation(
-        "target_operation", {"op": "read_execution", "account_id": account_id, "execution_id": execution_id}
     )
 
 

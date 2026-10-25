@@ -9,13 +9,13 @@ from copy import deepcopy
 import pytest
 
 from axile.domain.execution import ExecutionArtifactType, ExecutionKind, ExecutionTerminateMode
-from axile.server.business_facts import repository
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.db.models import ExecuteRecord, ExecutionArtifact
 from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
 

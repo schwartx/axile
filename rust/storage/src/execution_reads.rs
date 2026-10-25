@@ -49,17 +49,73 @@ fn record_on(
 }
 
 fn persisted_status(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
-    let record = record_on(connection, text(request, "execution_id")?, None)?;
-    let symbols = match record.as_ref() {
-        Some(record) => result_symbols::read_outcome_symbols(
-            connection,
-            record["id"]
-                .as_i64()
-                .ok_or_else(|| invalid("执行记录身份无效"))?,
-        )?,
-        None => json!([]),
+    let id = text(request, "execution_id")?;
+    let intent = crate::intents::get_in_connection(connection, id)?;
+    let active = intent.as_ref().is_some_and(|value| {
+        matches!(
+            value["status"].as_str(),
+            Some("QUEUED" | "RUNNING" | "TERMINATING")
+        )
+    });
+    let record = if active {
+        None
+    } else {
+        record_on(connection, id, None)?
     };
-    Ok(json!({"record": record, "outcome_symbols": symbols}))
+    let Some(record) = record else {
+        return Ok(intent.map(|value| json!({
+            "execution_id":value["execution_id"], "account_id":value["account_id"],
+            "execution_kind":value["kind"], "status":value["status"],
+            "created_at":value["created_at"], "started_at":value["started_at"],
+            "finished_at":value["finished_at"], "error":value["error"],
+            "output_status":null, "record_id":null, "is_success":null,
+            "cancel_requested_at":value["cancel_requested_at"], "cancel_reason":value["cancel_reason"],
+            "terminate_mode":value["terminate_mode"],
+        })).unwrap_or(Value::Null));
+    };
+    let status = match record["task_status"].as_str() {
+        Some(
+            value @ ("QUEUED" | "RUNNING" | "TERMINATING" | "TERMINATED" | "SUCCEEDED" | "FAILED"
+            | "SKIPPED" | "PARTIAL"),
+        ) => value,
+        Some(_) => return Err(invalid("unknown execution task status")),
+        None => {
+            if record["is_success"] == 1 {
+                "SUCCEEDED"
+            } else {
+                "FAILED"
+            }
+        }
+    };
+    let symbols = result_symbols::read_outcome_symbols(
+        connection,
+        record["id"]
+            .as_i64()
+            .ok_or_else(|| invalid("执行记录身份无效"))?,
+    )?;
+    let optional_text = |name: &str| record[name].as_str().filter(|s| !s.trim().is_empty());
+    let mut payload = json!({
+        "execution_id":record["execution_id"], "account_id":record["account_id"],
+        "execution_kind":record["execution_kind"].as_str().filter(|value| matches!(*value,"rebalance"|"clear_positions")),
+        "status":status, "created_at":record["created_at"], "started_at":null,
+        "finished_at":record["termination_finished_at"].as_str().filter(|s| !s.is_empty()).map(Value::from).unwrap_or_else(||record["created_at"].clone()),
+        "error":if status == "TERMINATED" { None } else { optional_text("display_error") },
+        "output_status":optional_text("display_status"),
+        "outcome":record["display_outcome"], "outcome_reason":record["display_outcome_reason"],
+        "outcome_symbols":symbols, "record_id":record["id"], "is_success":record["is_success"],
+        "cancel_requested_at":record["termination_requested_at"], "cancel_reason":record["termination_reason"],
+        "terminate_mode":record["termination_mode"].as_str().filter(|value| matches!(*value,"graceful"|"cancel_pending")),
+    });
+    if status == "PARTIAL" {
+        if let Some(intent) = intent.filter(|value| {
+            value["status"] == "FAILED" && value["error"].as_str().is_some_and(|s| !s.is_empty())
+        }) {
+            payload["status"] = json!("FAILED");
+            payload["error"] = intent["error"].clone();
+            payload["output_status"] = json!("FAILED");
+        }
+    }
+    Ok(payload)
 }
 
 fn input_target(connection: &Connection, input_id: &str) -> Result<Value, AnalysisError> {
@@ -229,7 +285,54 @@ mod tests {
             CREATE TABLE execution_input(id TEXT,curr_target_state TEXT,curr_target_count INTEGER,
               sizing_context_state TEXT,long_leverage REAL,short_leverage REAL,weight_precision REAL);
             CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);").unwrap();
+        connection.execute_batch("CREATE TABLE execution_intent(execution_id TEXT,account_id INTEGER,kind TEXT,trigger_source TEXT,status TEXT,channel TEXT,algorithm TEXT,payload TEXT,created_at TEXT,started_at TEXT,finished_at TEXT,error TEXT,cancel_requested_at TEXT,cancel_reason TEXT,terminate_mode TEXT);").unwrap();
         connection
+    }
+
+    #[test]
+    fn status_preserves_active_intent_and_later_partial_failure_priority() {
+        let connection = fixture();
+        for name in [
+            "task_status",
+            "execution_id",
+            "execution_kind",
+            "display_status",
+            "display_error",
+            "display_outcome",
+            "display_outcome_reason",
+            "termination_finished_at",
+            "termination_requested_at",
+            "termination_reason",
+            "termination_mode",
+        ] {
+            if !["execution_id"].contains(&name) {
+                connection
+                    .execute_batch(&format!(
+                        "ALTER TABLE executerecord ADD COLUMN {name} TEXT;"
+                    ))
+                    .unwrap();
+            }
+        }
+        connection.execute_batch("INSERT INTO executerecord(id,account_id,is_success,created_at,task_status,execution_id,display_status,display_error,termination_mode) VALUES(7,1,0,'t','PARTIAL','status','PARTIAL','partial evidence','graceful');").unwrap();
+        connection.execute_batch("CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,node_kind TEXT,status TEXT,outcome TEXT,ordinal INTEGER);").unwrap();
+        let request = json!({"execution_id":"status"});
+        assert_eq!(
+            persisted_status(&connection, &request).unwrap()["status"],
+            "PARTIAL"
+        );
+        connection.execute_batch("INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at) VALUES('status',1,'rebalance','manual','QUEUED','ctp','SINGLE-MAKER','{}','t');").unwrap();
+        let queued = persisted_status(&connection, &request).unwrap();
+        assert_eq!(queued["status"], "QUEUED");
+        assert!(queued["record_id"].is_null());
+        connection
+            .execute_batch("UPDATE execution_intent SET status='FAILED',error='later failure';")
+            .unwrap();
+        let failed = persisted_status(&connection, &request).unwrap();
+        assert_eq!(failed["status"], "FAILED");
+        assert_eq!(failed["error"], "later failure");
+        assert_eq!(failed["output_status"], "FAILED");
+        assert_eq!(failed["record_id"], 7);
+        assert_eq!(failed["terminate_mode"], "graceful");
     }
 
     #[test]
@@ -298,7 +401,7 @@ mod tests {
                 &json!({"op":"status","execution_id":"missing"})
             )
             .unwrap(),
-            json!({"record":null,"outcome_symbols":[]})
+            Value::Null
         );
         assert!(read_on(&connection, &json!({"op":"last_target","account_id":true})).is_err());
     }

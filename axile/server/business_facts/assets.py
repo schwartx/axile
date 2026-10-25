@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from axile.server.db.models.account_asset import AccountAssetSnapshot
+from typing import Any
 
 
 def asset_fact_id(record_id: int, path: str = "/account_assets") -> str:
@@ -35,9 +32,8 @@ async def save_manual_asset_snapshot(
     *,
     created_at: str | None = None,
     result: Mapping[str, object] | None = None,
-) -> AccountAssetSnapshot:
+) -> dict[str, Any]:
     """一次提交手工观测头、类型化资产及持仓事实。"""
-    from axile.server.db.models.account_asset import AccountAssetSnapshot
     from axile.server.db.models.base import now_str
 
     receipt = await _asset_operation(
@@ -49,7 +45,7 @@ async def save_manual_asset_snapshot(
             "result": result,
         },
     )
-    return AccountAssetSnapshot.model_validate(receipt)
+    return receipt
 
 
 async def latest_asset_snapshot(account_id: int) -> dict[str, Any] | None:

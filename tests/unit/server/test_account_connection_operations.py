@@ -3,15 +3,16 @@
 import asyncio
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from axile.executor.connection_state import ConnectionObservation
 from axile.server.api.routes import account_connection as routes
 from axile.server.connection_runtime import observe_session, register_session
-from axile.server.connection_state import ConnectionBinding, connection_config_key, public_connection
+from axile.server.connection_state import ConnectionBinding, connection_config_key
 from axile.server.db.models.account_connection import AccountConnectionState
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import connection_view
 
 
 def client(account, monkeypatch):
@@ -23,6 +24,11 @@ def client(account, monkeypatch):
             raise routes.HTTPException(404, "账户不存在")
         return account
 
+    async def connection_response(account_id):
+        current = await get_account(account_id)
+        return Response(connection_view(current, detail=True).model_dump_json(), media_type="application/json")
+
+    monkeypatch.setattr(routes, "account_connection", connection_response)
     monkeypatch.setattr(routes, "_get_account_or_404", get_account)
     return TestClient(app)
 
@@ -75,7 +81,7 @@ def test_resident_status_roundtrips_without_migration(status):
     binding = ConnectionBinding(7, account.connection_state.config_key, "test")
     register_session(binding, lambda: True)
     observe_session(binding, 1, observed)
-    detail = public_connection(account, detail=True)
+    detail = connection_view(account, detail=True)
     assert detail.status == ("unavailable" if status == "cooldown" else status)
     assert detail.label == ("运行时状态" if status == "cooldown" else None)
 

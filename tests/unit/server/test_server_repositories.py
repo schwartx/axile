@@ -1,6 +1,7 @@
 """账户原生读取与当前组合绑定契约。"""
 
 import asyncio
+import json
 from contextlib import closing
 
 import pytest
@@ -12,7 +13,6 @@ from axile.server.db.models import AccountSnapshot
 from axile.server.repositories import (
     get_account,
     get_account_snapshot,
-    get_latest_account_id_by_portfolio_id,
     get_latest_portfolio_id_by_account_id,
 )
 from tests.conftest import native_store_call
@@ -43,14 +43,24 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
         )
 
     async def scenario():
-        assert await get_latest_account_id_by_portfolio_id(1) == 2
+        assert (
+            json.loads(native_store_call(native_database, "portfolio_query_json", {"op": "get", "portfolio_id": 1}))[
+                "account_id"
+            ]
+            == 2
+        )
         assert await get_latest_portfolio_id_by_account_id(1) is None
         with pytest.raises(HTTPException) as exc:
             await delete_portfolio(1)
         assert exc.value.status_code == 422
         with closing(oracle_connect(native_database)) as connection, connection:
             connection.execute("INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(2,NULL,'now')")
-        assert await get_latest_account_id_by_portfolio_id(1) is None
+        assert (
+            json.loads(native_store_call(native_database, "portfolio_query_json", {"op": "get", "portfolio_id": 1}))[
+                "account_id"
+            ]
+            is None
+        )
         await delete_portfolio(1)
         with pytest.raises(HTTPException) as exc:
             await delete_portfolio(1)

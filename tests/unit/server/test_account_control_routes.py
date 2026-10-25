@@ -18,9 +18,10 @@ from axile.server._native import _core
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
-from axile.server.db.models import Account, AccountRuntimeSync
+from axile.server.db.models import Account
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._native_read_views import account_view
 
 
 @pytest.fixture(autouse=True)
@@ -95,8 +96,8 @@ def _build_app() -> FastAPI:
     return app
 
 
-async def _synchronized_runtime_sync(account_id: int, *_args: object, **_kwargs: object) -> AccountRuntimeSync:
-    return AccountRuntimeSync(account_id=account_id, status="synchronized")
+async def _synchronized_runtime_sync(account_id: int, *_args: object, **_kwargs: object) -> dict:
+    return {"account_id": account_id, "status": "synchronized", "revision": 1, "attempts": 0}
 
 
 def _seed_account(database, **changes: object) -> Account:
@@ -137,7 +138,7 @@ def account_client(native_database, monkeypatch):
 def test_account_public_returns_connection_credentials_but_omits_webhook() -> None:
     account = _build_account(feishu_key="unique-feishu-webhook-key")
     account.account_config["password"] = "unique-account-password"
-    payload = account_crud_routes._account_public(account).model_dump_json()
+    payload = account_view(account).model_dump_json()
     assert "unique-account-password" in payload
     assert "unique-feishu-webhook-key" not in payload
     assert '"account_config"' not in payload and '"feishu_key"' not in payload
@@ -175,7 +176,7 @@ def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_cli
 def test_native_public_queries_match_existing_public_contract(account_client) -> None:
     client, database = account_client
     source = _seed_account(database, feishu_key="private-webhook")
-    expected = account_crud_routes._account_public(source).model_dump(mode="json")
+    expected = account_view(source).model_dump(mode="json")
     detail = client.get("/account/1")
     listing = client.get("/account/")
     assert detail.status_code == 200, detail.text

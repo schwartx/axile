@@ -139,7 +139,41 @@ fn persist_batch(connection: &Connection, entries: &[Value]) -> Result<Value, An
             let kind = entry.get("kind").and_then(Value::as_str);
             let result = match kind {
                 Some("event") => insert_event(connection, row),
-                Some("artifact") => insert_artifact(connection, row),
+                Some("artifact") => (|| {
+                    let mut row = row.clone();
+                    if row["artifact_type"]
+                        .as_str()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("execution_summary"))
+                        && row["content"].get("outcome_symbols").is_some()
+                    {
+                        let normalized = result_head::normalize_legacy_result(&row["content"])?;
+                        for name in [
+                            "status",
+                            "error",
+                            "reason_code",
+                            "outcome",
+                            "outcome_reason",
+                            "symbol_results",
+                        ] {
+                            if let Some(value) = normalized.get(name) {
+                                row["content"][name] = value.clone();
+                            }
+                        }
+                        row["content"].as_object_mut().unwrap().remove("memory");
+                        row["content"]["outcome_symbols"] = json!(normalized["symbol_results"]
+                            .as_object()
+                            .map(|symbols| symbols
+                                .iter()
+                                .filter(|(_, value)| matches!(
+                                    value["outcome"].as_str(),
+                                    Some("not_reached" | "blocked")
+                                ))
+                                .map(|(symbol, _)| symbol.clone())
+                                .collect::<Vec<_>>())
+                            .unwrap_or_default());
+                    }
+                    insert_artifact(connection, &row)
+                })(),
                 _ => Err(invalid(
                     entry
                         .get("error")
@@ -329,28 +363,6 @@ pub fn list_execution_artifacts_json(path: &str, request: &Value) -> Result<Valu
     list_snapshot(path, request, "execution_artifact")
 }
 
-pub fn resolve_execution_artifact(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let artifact = request
-        .get("artifact")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| AnalysisError::new("BUSINESS_FACTS_REFERENCE", "审计附件不是对象"))?;
-    let account_id =
-        match request.get("account_id") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(value.as_i64().ok_or_else(|| {
-                AnalysisError::new("BUSINESS_FACTS_REFERENCE", "审计账户身份无效")
-            })?),
-        };
-    let connection = storage_connection::open_reader(Path::new(path))?;
-    connection.execute_batch("BEGIN").map_err(sql)?;
-    let result = summary_refs::resolve_artifact_content(&connection, artifact, account_id);
-    let rollback = connection.execute_batch("ROLLBACK").map_err(sql);
-    match result {
-        Ok(value) => rollback.map(|_| value),
-        Err(error) => Err(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +394,60 @@ mod tests {
     }
 
     #[test]
+    fn current_summary_keeps_message_fallback_without_persisting_transport_context() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
+        persist_batch(&connection, &[json!({"kind":"artifact","row":{
+            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,"created_at":"t",
+            "content":{"status":"PARTIAL","error":null,"outcome_reason":null,"outcome_symbols":[],
+                "memory":{"message":"保留业务原因"},"symbol_results":{}}}})]).unwrap();
+        let saved: String = connection
+            .query_row("SELECT content FROM execution_artifact", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["error"], "保留业务原因");
+        assert_eq!(saved["outcome"], "not_reached");
+        assert!(saved.get("memory").is_none());
+    }
+
+    #[test]
+    fn current_summary_is_normalized_in_its_existing_write_stage() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
+        let content = json!({"status":"PARTIAL","outcome_symbols":[],"symbol_results":{
+            "first":{"status":"BLOCKED","error":"当前不在交易时间"},
+            "second":{"status":"NOOP"}},"summary":{"symbols_total":2},"reconciliation":[]});
+        let normalized = result_head::normalize_legacy_result(&content).unwrap();
+        persist_batch(
+            &connection,
+            &[json!({"kind":"artifact","row":{
+            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,
+            "content":content,"created_at":"t"}})],
+        )
+        .unwrap();
+        let saved: String = connection
+            .query_row("SELECT content FROM execution_artifact", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        for name in [
+            "status",
+            "error",
+            "reason_code",
+            "outcome",
+            "outcome_reason",
+            "symbol_results",
+        ] {
+            assert_eq!(saved.get(name), normalized.get(name));
+        }
+        assert_eq!(saved["outcome_symbols"], json!(["first"]));
+        assert_eq!(saved["summary"], json!({"symbols_total":2}));
+    }
+
+    #[test]
     fn batch_isolates_duplicate_and_bad_rows_and_returns_only_committed_notifications() {
         let connection = schema();
         let first = event("first", 1);
@@ -401,12 +467,15 @@ mod tests {
                 json!({"kind":"event","row":bad}),
                 json!({"kind":"invalid","error":"invalid JSON"}),
                 json!({"kind":"event","row":rejected}),
+                json!({"kind":"artifact","row":{"execution_id":"e1",
+                    "artifact_type":"execution_summary","schema_version":2,"created_at":"t",
+                    "content":{"status":[],"outcome_symbols":[]}}}),
                 json!({"kind":"event","row":event("last",0)}),
             ],
         )
         .unwrap();
         assert_eq!(receipt["count"], 3);
-        assert_eq!(receipt["failures"].as_array().unwrap().len(), 3);
+        assert_eq!(receipt["failures"].as_array().unwrap().len(), 4);
         assert_eq!(receipt["notifications"].as_array().unwrap().len(), 2);
         assert!(connection.is_autocommit());
         let page = list(
@@ -466,29 +535,20 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let artifact = json!({"execution_id":"e1","artifact_type":"standard_input","content":{
             "business_facts_ref":{"version":1,"view":"input","input_id":"input"}}});
-        let result = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":artifact,"account_id":7}),
-        )
-        .unwrap();
+        let result =
+            summary_refs::resolve_artifact_content(&connection, &artifact, Some(7)).unwrap();
         assert_eq!(result["input"], "frozen");
         assert_eq!(
             result["business_facts_ref"],
             artifact["content"]["business_facts_ref"]
         );
-        let wrong_account = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":artifact,"account_id":8}),
-        )
-        .unwrap_err();
+        let wrong_account =
+            summary_refs::resolve_artifact_content(&connection, &artifact, Some(8)).unwrap_err();
         assert_eq!(wrong_account.code, "BUSINESS_FACTS_REFERENCE");
         let mut foreign = artifact;
         foreign["execution_id"] = json!("e2");
-        let wrong_execution = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":foreign,"account_id":7}),
-        )
-        .unwrap_err();
+        let wrong_execution =
+            summary_refs::resolve_artifact_content(&connection, &foreign, Some(7)).unwrap_err();
         assert_eq!(wrong_execution.code, "BUSINESS_FACTS_REFERENCE");
         assert_eq!(std::fs::read(&path).unwrap(), before);
         drop(connection);

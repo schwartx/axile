@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._native_read_views import read_view
 
 
 @contextmanager
@@ -31,7 +32,7 @@ def _downgrade(database):
 
 
 def _load_input(database, input_id):
-    return native_store_call(database, "read_execution_input", {"input_id": input_id})
+    return read_view(database, "read_execution_input", {"input_id": input_id})
 
 
 @pytest.fixture
@@ -534,7 +535,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
         reference = extra["server_notification_context"]
         assert reference is not None
         assert reference == captured
-    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert business_evidence(result["extra"]["server_notification_context"]) == business_evidence(captured)
     with _connect(database) as connection:
         connection.exec_driver_sql(
@@ -542,7 +543,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
         )
         connection.exec_driver_sql("UPDATE notification_event SET context='{}' WHERE id='execution:migration-exec'")
         connection.exec_driver_sql("DELETE FROM notification_event WHERE id='execution:migration-exec'")
-    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert result["extra"]["server_notification_context"] == captured
 
 
@@ -628,5 +629,5 @@ def test_independent_asset_indices_version_account_and_preserve_execution_assets
             > previous_version
         )
         connection.exec_driver_sql("UPDATE business_asset_snapshot SET total_asset=15 WHERE record_id=1")
-    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert result["account_assets"]["total_asset"] == 15

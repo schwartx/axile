@@ -53,23 +53,6 @@ def test_append_preserves_nonfinite_evidence_and_native_symbol_key(monkeypatch):
     assert isinstance(forwarded["literal_marker"], dict) and forwarded["literal_marker"] == marker
 
 
-def test_execution_without_identity_skips_database_and_empty_target_is_preserved(monkeypatch):
-    native = AsyncMock(return_value={})
-    monkeypatch.setattr(snapshots, "native_operation", native)
-
-    assert asyncio.run(snapshots.read_target_snapshot_weights(account_id=2, execution_id=None)) is None
-    native.assert_not_awaited()
-    assert asyncio.run(snapshots.read_target_snapshot_weights(account_id=2, execution_id="e1")) == {}
-    native.assert_awaited_once_with(
-        "target_operation",
-        {
-            "op": "read_execution",
-            "account_id": 2,
-            "execution_id": "e1",
-        },
-    )
-
-
 def test_latest_snapshot_preserves_absent_normalized_weights(monkeypatch):
     native = AsyncMock(
         return_value={
@@ -84,6 +67,6 @@ def test_latest_snapshot_preserves_absent_normalized_weights(monkeypatch):
     )
     monkeypatch.setattr(snapshots, "native_operation", native)
 
-    value = asyncio.run(snapshots.get_latest_portfolio_target_snapshot(7))
+    value = asyncio.run(snapshots.get_latest_account_target_snapshot(2, 7))
     assert value is not None and value["raw_weights"] == {} and value.get("normalized_weights") is None
     assert snapshots.target_snapshot_public(value, weight_kind="raw").weights == {}

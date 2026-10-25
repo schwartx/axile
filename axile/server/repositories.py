@@ -28,11 +28,6 @@ async def stop_account_for_clear_positions(account_id: int) -> AccountSnapshot:
     return AccountSnapshot.model_validate(value)
 
 
-async def get_latest_account_id_by_portfolio_id(portfolio_id: int) -> int | None:
-    """获取最近绑定且当前仍指向该组合的账户 ID。"""
-    return await native_operation("portfolio_latest_account", {"portfolio_id": portfolio_id})
-
-
 async def get_latest_portfolio_id_by_account_id(account_id: int) -> int | None:
     """获取账户最后一条绑定历史所指向的组合。"""
     return await native_operation("account_latest_portfolio", {"account_id": account_id})

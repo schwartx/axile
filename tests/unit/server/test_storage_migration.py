@@ -10,6 +10,7 @@ from axile.server._native import _core
 from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.schema_contract import load_schema
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._native_read_views import read_view
 
 _FIXTURE = Path(__file__).parents[2] / "fixtures/rust_store/v0.22.0.sql"
 _INPUT = {"curr_target": {"A": 0.5}, "extra": {"zero": 0, "flag": False, "missing": None}}
@@ -71,7 +72,7 @@ def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(
             connection.execute("SELECT ranges FROM performance_snapshot").fetchone()[0] == "malformed historical cache"
         )
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    detail = native_store_call(old_database, "read_execution_detail", {"account_id": 1, "record_id": 7})
+    detail = read_view(old_database, "read_execution_detail", {"account_id": 1, "record_id": 7})
     assert detail["input"]["curr_target"] == _INPUT["curr_target"]
     assert detail["result"]["extra"] == _RESULT["extra"]
     with closing(oracle_connect(old_database)) as connection:

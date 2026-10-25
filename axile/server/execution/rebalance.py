@@ -396,9 +396,7 @@ async def trade(
         trigger_source=trigger_source,
     )
     if execution_id and account.supplement:
-        from axile.server.execution.supplement_notifications import execution_steps
-
-        if await execution_steps(execution_id):
+        if await native_operation("supplement_has_execution_steps", {"execution_id": execution_id}):
             standard_input.execution_notification_code = None
             standard_input.extra = {**standard_input.extra, "server_notification": True}
     long_leverage, short_leverage = resolve_account_leverages(account)

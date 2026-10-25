@@ -11,12 +11,12 @@ from uuid import uuid4
 
 import pytest
 
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.core import db
 from axile.server.execution.records import _persist_execute_record
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._native_read_views import read_execution_result, read_view
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def test_native_concurrent_terminal_writers_share_one_committed_record(database)
     with ThreadPoolExecutor(max_workers=2) as pool:
         first, second = list(pool.map(persist, results))
     assert first == second
-    stored = native_store_call(database, "read_execution_result", {"record_id": first["id"], "account_id": 1})
+    stored = read_view(database, "read_execution_result", {"record_id": first["id"], "account_id": 1})
     assert stored in results
     core = require_native_store("execution_records")
     page = json.loads(core.execution_records(core.Store(str(database)), 1, 0, 10))

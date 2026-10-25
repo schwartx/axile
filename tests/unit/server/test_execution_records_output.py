@@ -13,12 +13,12 @@ from axile.domain.execution import ExecutionKind
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
 from axile.server.execution import records
 from axile.server.execution.records import append_execute_record_from_output
 from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import read_execution_result
 
 
 def _output(*, status: ExecutionStatus, error: str | None, success: bool) -> UnifiedStandardOutput:

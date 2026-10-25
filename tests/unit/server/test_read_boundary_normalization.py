@@ -4,9 +4,9 @@ import asyncio
 import json
 
 from axile.server.api.routes.account_schedule import account_activity
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
 from axile.server.native_store import native_operation
+from tests.unit.server._native_read_views import read_execution_result
 from tests.unit.server._runtime_db_support import runtime_database
 
 _LEGACY_RAW = {

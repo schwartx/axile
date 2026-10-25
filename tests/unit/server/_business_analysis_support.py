@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import sqlite_oracle
+from tests.unit.server._native_read_views import read_view
 
 
 def analysis_record(*, input=None, result=None, **metadata):
@@ -155,7 +156,7 @@ async def load_record(session, record_id):
     row = _record_account(path, record_id)
     assert row is not None, f"测试执行记录不存在: {record_id}"
     return SimpleNamespace(
-        **native_store_call(
+        **read_view(
             path,
             "read_execution_detail",
             {

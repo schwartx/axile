@@ -13,7 +13,6 @@ import pytest
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account_settings import SupplementSettings
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from axile.server.execution import (
     dispatcher,
     intents,
@@ -27,6 +26,7 @@ from axile.server.execution import (
 from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.sqlite_oracle import connect as oracle_connect
 
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
@@ -495,7 +495,7 @@ def test_recovery_skips_missed_steps_but_keeps_future_last(monkeypatch, database
         execute(path, "UPDATE supplement_step SET status='finished' WHERE id=?", (steps[0].id,))
         now[0] = BASE + timedelta(seconds=seconds)
         scheduled = []
-        monkeypatch.setattr(supplements, "schedule_step", lambda current: scheduled.append(current.id))
+        monkeypatch.setattr(supplements, "schedule_step", lambda current: scheduled.append(current["id"]))
         await supplements.recover_supplements()
         assert scheduled == [steps[index].id for index in expected]
         assert group(path, planned.id)["status"] == "active"

@@ -14,7 +14,6 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
 from axile.server.business_facts.artifacts import make_artifact_reference
-from axile.server.business_facts.repository import read_execution_input
 from axile.server.core import db
 from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
@@ -29,6 +28,7 @@ from tests.unit.server._business_facts_test_support import (
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
+from tests.unit.server._native_read_views import read_execution_input, read_view
 
 
 @pytest.fixture
@@ -246,5 +246,5 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
     assert artifact["schema_version"] == 2
     assert "business_facts_ref" not in artifact["content"]
     assert business_evidence(
-        native_store_call(database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
+        read_view(database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
     ) == business_evidence(journal)

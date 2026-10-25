@@ -19,10 +19,11 @@ from tests.unit.server._business_facts_test_support import (
     seed_account,
     sql,
 )
+from tests.unit.server._native_read_views import read_view
 
 
 def _input(path, input_id="input-1"):
-    return native_store_call(path, "read_execution_input", {"input_id": input_id})
+    return read_view(path, "read_execution_input", {"input_id": input_id})
 
 
 def test_columns_store_facts_without_a_second_json_description(native_database):

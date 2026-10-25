@@ -74,7 +74,7 @@ def read_orders_snapshot(account: Any) -> dict[str, Any] | None:
 async def orders_frames(account_ids: set[int] | None = None) -> list[dict[str, Any]]:
     """组装 REST 与 SSE 共用的公开快照，不触发任何渠道请求。"""
     from axile.server.account_orders import query_account_orders
-    from axile.server.db.models.account import Account
+    from axile.server.db.models.account import AccountSnapshot
     from axile.server.native_store import native_operation
 
     accounts = await native_operation(
@@ -83,7 +83,7 @@ async def orders_frames(account_ids: set[int] | None = None) -> list[dict[str, A
     return [
         {
             "account_id": value["id"],
-            "snapshot": (await query_account_orders(Account.model_validate(value).snapshot())).model_dump(mode="json"),
+            "snapshot": (await query_account_orders(AccountSnapshot.model_validate(value))).model_dump(mode="json"),
         }
         for value in accounts
     ]

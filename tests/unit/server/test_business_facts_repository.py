@@ -7,13 +7,13 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts import repository
 from axile.server.execution import input_persistence
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, seed_account, sql
+from tests.unit.server._native_read_views import read_view
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def test_domains_cannot_replace_malformed_symbol_container(native_database):
         (record["id"],),
     )
     with pytest.raises(_core.NativeError, match="conflicting fact field"):
-        native_store_call(native_database, "read_execution_result", {"account_id": 1, "record_id": record["id"]})
+        read_view(native_database, "read_execution_result", {"account_id": 1, "record_id": record["id"]})
 
 
 def test_nonempty_result_root_array_is_rejected_before_writing(native_database):
@@ -83,11 +83,9 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
         assert business_evidence(detail["input"]) == business_evidence(frozen)
         assert business_evidence(detail["result"]) == business_evidence(output)
         identity = {"record_id": record["id"], "account_id": 2}
-        assert business_evidence(native_store_call(database, "read_execution_result", identity)) == business_evidence(
-            output
-        )
+        assert business_evidence(read_view(database, "read_execution_result", identity)) == business_evidence(output)
         assert business_evidence(
-            native_store_call(database, "read_execution_input", {"input_id": input_id})
+            read_view(database, "read_execution_input", {"input_id": input_id})
         ) == business_evidence(frozen)
         assert record["input_id"] == input_id
         assert record["result_input_id"] == (input_id if result_inputs else None)
@@ -112,7 +110,7 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
             with pytest.raises(ValueError):
                 await repository.read_execution_result(record)
             with pytest.raises(_core.NativeError):
-                native_store_call(database, "read_execution_result", identity)
+                read_view(database, "read_execution_result", identity)
 
     asyncio.run(check())
 
@@ -172,7 +170,7 @@ def test_foreign_input_is_rejected_on_read_and_write(database, reference, input_
     with pytest.raises(ValueError, match="input belongs to another account or execution"):
         asyncio.run(repository.read_execution_detail(record))
     with pytest.raises(_core.NativeError, match="input belongs to another account or execution"):
-        native_store_call(database, "read_execution_result", {"account_id": 2, "record_id": record["id"]})
+        read_view(database, "read_execution_result", {"account_id": 2, "record_id": record["id"]})
 
     # 终态只能首次提交；在新终态中验证发现冻结输入时的相同归属边界。
     sql(database, "UPDATE execution_input SET execution_id='write-attempt' WHERE id=?", (unrelated["input_id"],))
