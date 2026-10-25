@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -55,40 +55,6 @@ async def save_manual_asset_snapshot(
 async def latest_asset_snapshot(account_id: int) -> dict[str, Any] | None:
     """按历史编号读取最近可信资产，保留事实中的来源与观测时间。"""
     return await _asset_operation("asset_snapshot_latest", {"account_id": account_id})
-
-
-async def read_input_asset_observations(input_id: str) -> list[dict[str, object]]:
-    """读取已提交输入的原始前后观测，不依赖终态记录存续。"""
-    return await _asset_operation("asset_input_observations", {"input_id": input_id})
-
-
-async def read_snapshots_assets(
-    snapshots: Sequence[Any], *, include_positions: bool = True
-) -> dict[int, dict[str, object]]:
-    """一次读取已提交资产快照；标量读取不装载持仓子表。"""
-    if not snapshots:
-        return {}
-    rows = await _asset_operation(
-        "asset_snapshots_read",
-        {
-            "snapshots": [
-                {
-                    "id": snapshot.id,
-                    "account_id": snapshot.account_id,
-                    "asset_fact_id": snapshot.asset_fact_id,
-                    "execution_id": snapshot.execution_id,
-                }
-                for snapshot in snapshots
-            ],
-            "include_positions": include_positions,
-        },
-    )
-    return {row["id"]: row["assets"] for row in rows}
-
-
-async def read_snapshot_assets(snapshot: Any, *, include_positions: bool = True) -> dict[str, object]:
-    """显式读取一条已提交资产观测，拒绝不完整或越权引用。"""
-    return (await read_snapshots_assets([snapshot], include_positions=include_positions))[snapshot.id]
 
 
 async def _asset_operation(name: str, request: object) -> Any:

@@ -6,6 +6,7 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
+from axile.server.execution.input_persistence import persist_pre_execute_input_sync
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
@@ -242,18 +243,13 @@ def test_all_business_tables_have_no_generic_field_metadata(native_database):
             assert "numeric_kinds" not in columns
 
 
-def test_equal_audit_targets_share_one_frozen_input(monkeypatch, native_database):
+def test_pre_execute_input_and_equal_aliases_share_one_frozen_input(monkeypatch, native_database):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     payload = {"curr_target": {"A": 0}, "last_target": {}, "strategy_target": {"A": 0.3}, "trade_rules": {}}
-    receipt = freeze_input(
-        native_database,
-        payload,
-        execution_id="one",
-        audit_payload={**payload, "account_target": {"A": 0.0}},
-        audit_input_id="audit-one",
-    )
-    assert receipt["input_id"] == receipt["audit_id"]
+    audit_input = {**payload, "account_target": {"A": 0.0}}
+    input_id = persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input)
+    assert persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input) == input_id
     assert len(rows(native_database, "execution_input")) == 1
     assert len(rows(native_database, "execution_input_target")) == 2
 

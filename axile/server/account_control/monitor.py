@@ -232,15 +232,18 @@ class AccountControlMonitor:
             ]
             if warnings:
                 warning_sources.append({"instance_id": source["instance_id"], "warnings": warnings})
-        outcomes = (
-            []
-            if live is None
-            else [
-                event
-                for event in live.get("outcome_updates", [])
-                if self._outcomes.get(event["event_uid"]) != str((event["outcome"], event["metadata"]))
-            ]
-        )
+        # 迟到结果不受展示来源筛选；优先来源覆盖旧值，同一事件只保留最后结果。
+        updates = {
+            event["event_uid"]: event
+            for source, _, _ in reversed(self._sources.get(account_id, []))
+            if source is not None
+            for event in source.get("outcome_updates", [])
+        }
+        outcomes = [
+            event
+            for uid, event in updates.items()
+            if self._outcomes.get(uid) != str((event["outcome"], event["metadata"]))
+        ]
         return {
             "account_id": account_id,
             "trade_channel": account["trade_channel"],

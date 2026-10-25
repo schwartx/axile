@@ -1,7 +1,6 @@
-"""真实 SQLite 中执行前输入、审计变体与观测的保形和原子提交。"""
+"""真实 SQLite 中单输入与前观测的原子提交，以及旧双审计协议的拒绝边界。"""
 
 import asyncio
-import uuid
 
 import pytest
 
@@ -18,104 +17,68 @@ def database(native_database, monkeypatch):
     return native_database
 
 
-def test_pre_execute_bundle_preserves_primary_and_independent_audit_variant(database):
-    async def check():
-        primary = {"curr_target": {"A": 0}, "account_config": {"password": "synthetic"}}
-        audit = {
-            "curr_target": {"A": 0.0},
-            "last_target": {},
-            "strategy_target": {},
-            "account_target": {"A": 0.0},
-            "sizing_context": {},
-            "trade_rules": {},
-            "futures_close_policy": {},
-            "execution_notification_code": "synthetic",
-        }
-        before = {"total_asset": 0.0, "positions": [], "source": "real"}
-        audit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "axile.input-evidence:1:bundle:pre_execute_audit"))
-        receipt = freeze_input(
-            database,
-            primary,
-            execution_id="bundle",
-            audit_payload=audit,
-            audit_input_id=audit_id,
-            before_assets=before,
-        )
-        primary_id = receipt["input_id"]
-        assert receipt["audit_id"] == audit_id
-        assert primary_id != audit_id
-        assert (
-            freeze_input(
-                database,
-                primary,
-                execution_id="bundle",
-                audit_payload=audit,
-                audit_input_id=audit_id,
-                before_assets=before,
-            )
-            == receipt
-        )
-        assert await repository.read_execution_input(primary_id) == {"curr_target": {"A": 0}}
-        restored = await repository.read_execution_input(audit_id)
-        assert business_evidence(restored) == business_evidence(
-            {key: value for key, value in audit.items() if key != "execution_notification_code"}
-        )
-        assert restored["curr_target"]["A"] == 0
-        assert (await repository.read_execution_input(primary_id))["curr_target"]["A"] == 0
-        variants = rows(database, "execution_input")
-        assert len(variants) == 2
-        owner = next(row for row in variants if row["id"] == audit_id)
-        assert owner["execution_id"] is None
-        assert owner["owner_execution_id"] == "bundle"
-        snapshots = rows(database, "business_asset_snapshot")
-        assert len(snapshots) == 1
-        assert snapshots[0]["input_id"] == primary_id
-
-    asyncio.run(check())
+def test_pre_execute_bundle_preserves_single_audit_input_and_before_assets(database):
+    payload = {
+        "curr_target": {"A": 0.0},
+        "last_target": {},
+        "strategy_target": {},
+        "account_target": {"A": 0.0},
+        "sizing_context": {},
+        "trade_rules": {},
+        "futures_close_policy": {},
+        "account_config": {"password": "synthetic"},
+        "execution_notification_code": "synthetic",
+    }
+    before = {"total_asset": 0.0, "positions": [], "source": "real"}
+    receipt = freeze_input(database, payload, execution_id="bundle", before_assets=before)
+    assert receipt == {"input_id": "input-1"}
+    assert freeze_input(database, payload, execution_id="bundle", before_assets=before) == receipt
+    restored = asyncio.run(repository.read_execution_input(receipt["input_id"]))
+    assert business_evidence(restored) == business_evidence(
+        {key: value for key, value in payload.items() if key not in {"account_config", "execution_notification_code"}}
+    )
+    (owner,) = rows(database, "execution_input")
+    assert owner["id"] == receipt["input_id"]
+    assert owner["execution_id"] == owner["owner_execution_id"] == "bundle"
+    (snapshot,) = rows(database, "business_asset_snapshot")
+    assert snapshot["input_id"] == receipt["input_id"]
+    assert snapshot["total_asset"] == 0.0
 
 
-def test_variant_replay_with_different_content_is_rejected(database):
-    """同一审计变体身份重放时，内容必须与首次冻结一致。"""
-
-    async def check():
-        payload = {"curr_target": {"A": 0}}
+@pytest.mark.parametrize("keys", [("audit_payload",), ("audit_input_id",), ("audit_payload", "audit_input_id")])
+@pytest.mark.parametrize("value", [None, {}, [], "", False, "retired"])
+def test_retired_audit_keys_are_rejected_without_writing_facts(database, keys, value):
+    with pytest.raises(_core.NativeError, match="执行前双审计输入写入协议已停用") as caught:
         freeze_input(
             database,
-            payload,
-            execution_id="bundle-replay",
-            audit_payload={"curr_target": {"A": 1}},
-            audit_input_id="audit-replay",
+            {"curr_target": {"A": 0}},
+            before_assets={"total_asset": 0.0, "positions": []},
+            **dict.fromkeys(keys, value),
         )
-        with pytest.raises(_core.NativeError, match="Execution input variant replay differs from frozen input"):
-            freeze_input(
-                database,
-                payload,
-                execution_id="bundle-replay",
-                audit_payload={"curr_target": {"A": 2}},
-                audit_input_id="audit-replay",
-            )
+    assert caught.value.args[0] == "BUSINESS_FACTS"
+    for name in (
+        "execution_input",
+        "execution_input_target",
+        "execution_input_symbol",
+        "execution_input_plan",
+        "business_asset_snapshot",
+        "business_asset_position",
+    ):
+        assert rows(database, name) == []
 
-    asyncio.run(check())
 
-
-def test_variant_identity_conflict_rolls_back_primary_and_before_assets(database):
-    """审计变体身份被他人占用时，同事务内已写入的主输入与观测一并回滚。"""
-
-    async def check():
-        execution_id = "bundle-failed"
-        variant_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"axile.input-evidence:1:{execution_id}:pre_execute_audit"))
-        freeze_input(database, {"algorithm": "x"}, input_id=variant_id, execution_id="other-execution")
-        sql(database, "UPDATE execution_input SET execution_id=NULL WHERE id=?", (variant_id,))
-        with pytest.raises(_core.NativeError, match="Execution input variant identity has a different owner"):
-            freeze_input(
-                database,
-                {"curr_target": {}},
-                execution_id=execution_id,
-                audit_payload={"account_target": {"A": 0.3}},
-                audit_input_id=variant_id,
-                before_assets={"total_asset": 0.0, "positions": []},
-            )
-        assert [row["id"] for row in rows(database, "execution_input")] == [variant_id]
-        assert rows(database, "business_asset_snapshot") == []
-
-    asyncio.run(check())
+def test_before_asset_write_failure_rolls_back_primary_input(database):
+    sql(
+        database,
+        "CREATE TRIGGER reject_before_assets BEFORE INSERT ON business_asset_snapshot "
+        "BEGIN SELECT RAISE(ABORT,'synthetic before asset failure'); END",
+    )
+    with pytest.raises(_core.NativeError, match="synthetic before asset failure"):
+        freeze_input(
+            database,
+            {"curr_target": {"A": 0}},
+            before_assets={"total_asset": 0.0, "positions": []},
+        )
+    assert rows(database, "execution_input") == []
+    assert rows(database, "execution_input_target") == []
+    assert rows(database, "business_asset_snapshot") == []

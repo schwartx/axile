@@ -705,6 +705,8 @@ class WorkerBackendManager:
             _DEFAULT_PREPARE_RECV_TIMEOUT_SECONDS,
             termination_controller,
         )
+        if response.kind == "terminated":
+            self._handle_response(response)
         if response.kind != "result" or response.output_payload is None:
             raise WorkerBackendExecutionError.from_payload(response.error, "账户通道准备失败")
         return response.output_payload

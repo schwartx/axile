@@ -327,8 +327,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     read_execution_detail => crate::execution_ops::read_execution_detail,
     asset_snapshot_write => crate::asset_ops::asset_snapshot_write,
     asset_snapshot_latest => crate::asset_ops::asset_snapshot_latest,
-    asset_snapshots_read => crate::asset_ops::asset_snapshots_read,
-    asset_input_observations => crate::asset_ops::asset_input_observations,
     append_execution_event => crate::audit_ops::append_execution_event,
     append_execution_artifact => crate::audit_ops::append_execution_artifact,
     append_execution_audit_batch => crate::audit_ops::append_execution_audit_batch,

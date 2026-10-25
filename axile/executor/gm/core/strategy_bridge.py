@@ -22,7 +22,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 from loguru import logger
 
@@ -37,9 +37,8 @@ from axile.executor.gm.connection import (
 )
 from axile.executor.gm.core.api_bridge import (
     GMApiBridge,
-    GMBridgeRequestPayload,
-    GMSdkRequest,
-    GMSubscribeSymbolsRequest,
+    GMBridgeOperation,
+    GMSdkOperation,
 )
 from axile.executor.gm.core.bridge_context import (
     GMStartupHistoryEntry,
@@ -109,8 +108,10 @@ class GMBridgeRequest:
 
     Attributes
     ----------
-    request : GMBridgeRequestPayload
-        待在 GM runtime 上下文中执行的类型化请求。
+    operation : GMBridgeOperation
+        待在 GM runtime 上下文中执行的白名单操作。
+    kwargs : dict[str, Any]
+        直接传给 SDK 或订阅操作的关键字参数。
     future : Future[GMBridgeResult]
         回填执行结果的 Future；调用方超时后会将其取消。
     deadline : float | None
@@ -119,7 +120,8 @@ class GMBridgeRequest:
         消费端已把请求取出队列」这段无法用取消标志覆盖的竞态窗口。
     """
 
-    request: GMBridgeRequestPayload
+    operation: GMBridgeOperation
+    kwargs: dict[str, Any]
     future: Future[GMBridgeResult]
     deadline: float | None = None
 
@@ -466,22 +468,25 @@ class GMStrategyBridge:
             return []
 
         if self._running:
-            self._submit_request(GMSubscribeSymbolsRequest(symbols=new_symbols), timeout=timeout)
+            self._submit_request("subscribe_symbols", timeout=timeout, symbols=new_symbols)
 
         self._subscribe_symbols.extend(new_symbols)
         return new_symbols
 
-    def call(self, request: GMSdkRequest, timeout: float | None = 30.0) -> GMBridgeResult:
-        """在 bridge 的 run() 上下文里执行类型化 GM SDK 请求."""
-        return self._submit_request(request, timeout=timeout)
+    def call(self, operation: GMSdkOperation, timeout: float | None = 30.0, **kwargs: Any) -> GMBridgeResult:
+        """在 bridge 的 run() 上下文里执行 GM SDK 请求。"""
+        return self._submit_request(operation, timeout=timeout, **kwargs)
 
-    def _submit_request(self, request: GMBridgeRequestPayload, timeout: float | None = 30.0) -> GMBridgeResult:
+    def _submit_request(
+        self, operation: GMBridgeOperation, timeout: float | None = 30.0, **kwargs: Any
+    ) -> GMBridgeResult:
         """在 bridge 的 run() 上下文里执行 GM 请求."""
         if not self._running:
-            raise RuntimeError(f"GM bridge 未运行，无法执行操作: {request.operation}")
+            raise RuntimeError(f"GM bridge 未运行，无法执行操作: {operation}")
 
         bridge_request = GMBridgeRequest(
-            request=request,
+            operation=operation,
+            kwargs=kwargs,
             future=Future(),
             deadline=None if timeout is None else time.monotonic() + timeout,
         )
@@ -497,9 +502,7 @@ class GMStrategyBridge:
             # PENDING 态 cancel() 必然成功，直接关掉「请求仍在队列里」这一主导窗口；
             # 已被取出、尚未 dispatch 的残留窗口由消费端的 deadline 二次校验兜底。
             bridge_request.future.cancel()
-            raise TimeoutError(
-                f"GM bridge 调用超时: operation={bridge_request.request.operation}, timeout={timeout}"
-            ) from exc
+            raise TimeoutError(f"GM bridge 调用超时: operation={bridge_request.operation}, timeout={timeout}") from exc
 
     def _fail_pending_requests(self, error: Exception) -> None:
         """

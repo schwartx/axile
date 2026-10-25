@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from contextlib import closing
@@ -15,14 +14,19 @@ from axile.server._native import _core
 from axile.server.business_facts.assets import (
     asset_fact_id,
     input_after_asset_fact_id,
-    read_input_asset_observations,
-    read_snapshots_assets,
 )
 from axile.server.core import db
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, sql
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    read_before_assets,
+    read_result,
+    rows,
+    sql,
+)
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -199,10 +203,12 @@ def test_worker_after_observation_binds_without_duplicate_snapshot(database):
     after = {"account_assets": {"total_asset": 0, "update_time": "after", "positions": [{"symbol": "A", "volume": 0}]}}
     freeze_input(database, {}, input_id="pre-order-input", before_assets=before["account_assets"])
     receipt = _after(database, after)
-    occurrences = asyncio.run(read_input_asset_observations("pre-order-input"))
-    assert business_evidence({row["path"]: row["account_assets"] for row in occurrences}) == business_evidence(
-        {"/before_account_assets": before["account_assets"], "/after_account_assets": after["account_assets"]}
+    assert business_evidence(read_before_assets(database, "pre-order-input")) == business_evidence(
+        before["account_assets"]
     )
+    observations = rows(database, "business_asset_snapshot")
+    assert {row["path"] for row in observations} == {"/before_account_assets", "/after_account_assets"}
+    assert {row["input_id"] for row in observations} == {"pre-order-input"}
     linked_id = receipt["asset_id"]
     assert linked_id == input_after_asset_fact_id("pre-order-input")
     record = persist_result(database, after, execution_id="execution-1", created_at="2026-10-20T09:00:00")
@@ -250,11 +256,9 @@ def test_result_binding_and_scalar_read_reject_foreign_observation(database, mod
 def test_account_snapshot_reference_rejects_another_manual_snapshot(database):
     first = _manual(database, {"total_asset": 1})
     other = _manual(database, {"total_asset": 99})
-    first.asset_fact_id = other.asset_fact_id
-    with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets([first]))
-    with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets([first], include_positions=False))
+    _corrupt(database, "UPDATE account_asset_snapshot SET asset_fact_id=? WHERE id=?", (other.asset_fact_id, first.id))
+    with pytest.raises(_core.NativeError):
+        _core.asset_snapshots(_core.Store(str(database)), 1, 0, 100)
 
 
 def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zero(database):
@@ -270,7 +274,7 @@ def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zer
         _after(database, changed)
 
 
-def test_manual_snapshot_batch_reader_and_scalar_query_are_selective(database):
+def test_manual_snapshot_page_preserves_facts_and_rejects_incomplete_positions(database):
     snapshots = [
         _manual(database, {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]}) for key in (5, 6)
     ]
@@ -278,20 +282,11 @@ def test_manual_snapshot_batch_reader_and_scalar_query_are_selective(database):
         snapshot.id: {"total_asset": key, "positions": [{"symbol": "A", "volume": key}]}
         for snapshot, key in zip(snapshots, (5, 6), strict=True)
     }
-    scalar = asyncio.run(read_snapshots_assets(snapshots, include_positions=False))
-    assert business_evidence(scalar) == business_evidence(
-        {snapshot.id: {"total_asset": key} for snapshot, key in zip(snapshots, (5, 6), strict=True)}
-    )
-    assert business_evidence(asyncio.run(read_snapshots_assets(snapshots))) == business_evidence(payloads)
+    page = json.loads(_core.asset_snapshots(_core.Store(str(database)), 1, 0, 100))
+    assert business_evidence({row["id"]: row["assets"] for row in page["data"]}) == business_evidence(payloads)
     _corrupt(database, "DELETE FROM business_asset_position")
-    assert business_evidence(
-        asyncio.run(read_snapshots_assets(snapshots, include_positions=False))
-    ) == business_evidence(scalar)
-    with pytest.raises(ValueError, match="[Ii]ncomplete position facts"):
-        asyncio.run(read_snapshots_assets(snapshots))
-    snapshots[0].asset_fact_id = asset_fact_id(999)
-    with pytest.raises(ValueError):
-        asyncio.run(read_snapshots_assets(snapshots))
+    with pytest.raises(_core.NativeError, match="[Ii]ncomplete position facts"):
+        _core.asset_snapshots(_core.Store(str(database)), 1, 0, 100)
 
 
 @pytest.mark.parametrize("input_owned", [False, True])
@@ -347,7 +342,8 @@ def test_execution_asset_history_reuses_valid_canonical_root(database, input_own
         assert snapshot.source == "execution"
         assert snapshot.execution_id == execution_id
         assert snapshot.created_at == created_at
-        assert business_evidence(asyncio.run(read_snapshots_assets([snapshot]))) == business_evidence(
+        page = json.loads(_core.asset_snapshots(_core.Store(str(database)), 1, 0, 100))
+        assert business_evidence({row["id"]: row["assets"] for row in page["data"]}) == business_evidence(
             {snapshot.id: payload["account_assets"]}
         )
         expected = 1

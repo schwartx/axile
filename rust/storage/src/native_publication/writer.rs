@@ -136,7 +136,7 @@ pub(super) fn skip(
 pub(super) fn publish(
     connection: &Connection,
     task: &Task,
-    complete: &Value,
+    data_until: Option<&str>,
 ) -> Result<Value, AnalysisError> {
     crate::writer_scope::immediate(connection, || {
         if let Some(receipt) = already_published(connection, task)? {
@@ -153,19 +153,20 @@ pub(super) fn publish(
                 |row| row.get(0),
             )
             .map_err(sql)?;
-        snapshot(connection, task, complete)?;
+        snapshot(connection, task, data_until)?;
         staging::copy_results(connection, &task.snapshot_id)?;
         validate_view(connection, task)?;
         publish_pointer(connection, task)?;
         cleanup(connection, task, previous.as_deref())?;
-        let mut receipt = task.receipt(true, complete["data_until"].clone(), None);
-        receipt["row_counts"] = complete["row_counts"].clone();
-        Ok(receipt)
+        Ok(task.receipt(true, json!(data_until), None))
     })
 }
 
-fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<(), AnalysisError> {
-    let until = complete["data_until"].as_str();
+fn snapshot(
+    connection: &Connection,
+    task: &Task,
+    data_until: Option<&str>,
+) -> Result<(), AnalysisError> {
     connection.execute(
         "INSERT INTO main.performance_snapshot
          (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,
@@ -178,7 +179,7 @@ fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<()
             task.logic_version,
             task.engine_version,
             task.computed_at,
-            until,
+            data_until,
             "cs",
             task.fee_rate,
         ],
@@ -317,7 +318,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(stale_reason(&connection, &task).unwrap(), None);
-            let complete = json!({"data_until":"2026-10-20T09:00:00","row_counts":{}});
+            let data_until = Some("2026-10-20T09:00:00");
 
             // A fact commits after calculation finishes, before the publisher
             // obtains its final writer transaction. Another worker may also
@@ -333,7 +334,7 @@ mod tests {
                     .execute("UPDATE account_analysis SET running_token=?1", [token])
                     .unwrap();
             }
-            let receipt = publish(&connection, &task, &complete).unwrap();
+            let receipt = publish(&connection, &task, data_until).unwrap();
             assert_eq!(receipt["published"], false);
             assert_eq!(receipt["reason"], "source_changed");
             let state: (String, Option<i64>, Option<String>, bool) = connection
@@ -435,12 +436,7 @@ mod tests {
                  INSERT INTO native_stage.\"{name}\" VALUES('all');"
             )).unwrap();
         }
-        let error = publish(
-            &connection,
-            &task(),
-            &json!({"data_until":null,"row_counts":{}}),
-        )
-        .unwrap_err();
+        let error = publish(&connection, &task(), None).unwrap_err();
         assert_eq!(error.code, "SCHEMA_INCOMPATIBLE");
         assert_eq!(
             connection
@@ -475,14 +471,9 @@ mod tests {
     #[test]
     fn a_committed_snapshot_is_idempotent_even_after_a_new_claim() {
         let connection = fixture();
-        snapshot(
-            &connection,
-            &task(),
-            &json!({"data_until":"2026-10-20T09:00:00"}),
-        )
-        .unwrap();
+        snapshot(&connection, &task(), Some("2026-10-20T09:00:00")).unwrap();
         connection.execute("UPDATE account_analysis SET source_version=3,running_version=3,running_token='newer',current_snapshot='next'", []).unwrap();
-        let receipt = publish(&connection, &task(), &json!({})).unwrap();
+        let receipt = publish(&connection, &task(), None).unwrap();
         assert_eq!(receipt["published"], true);
         let token: String = connection
             .query_row("SELECT running_token FROM account_analysis", [], |row| {

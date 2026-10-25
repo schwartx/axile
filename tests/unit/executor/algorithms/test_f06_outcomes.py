@@ -10,6 +10,8 @@ from axile.executor.algorithms.core.base import AlgorithmInput
 from axile.executor.algorithms.defaults.pov import impl as pov
 from axile.executor.algorithms.defaults.single_maker import impl as maker
 from axile.executor.algorithms.defaults.twap import impl as twap
+from axile.executor.algorithms.utils import clock as clock_module
+from axile.executor.algorithms.utils import order_helper
 from axile.executor.constants.order_status import OrderStatus
 from axile.executor.models.execution_result import ExecutionStatus, outcome_from_status
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -40,6 +42,7 @@ class RecoveryRequired(RuntimeError):
     ],
 )
 def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=None, source="real"):
+    order_module = maker if module is maker else order_helper
     executor = MagicMock()
     executor.symbol = "rb2610"
     assets = UnifiedAccountAssets(available_cash=10000, total_asset=10000, market_value=0, positions=[], source=source)
@@ -67,7 +70,7 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
     now = [0.0]
     clock = MagicMock()
     clock.time.side_effect = lambda: now[0]
-    monkeypatch.setattr(module, "get_default_clock", lambda: clock)
+    monkeypatch.setattr(clock_module, "_default_clock", clock)
 
     def submit(*args, **kwargs):
         if case == "risk_block":
@@ -107,13 +110,13 @@ def test_algorithm_outcome(monkeypatch, module, case, expected, termination_at=N
         now[0] += 0.25
         return [order] if order is not None else []
 
-    monkeypatch.setattr(module, "submit_and_track_split_orders", split_submit)
+    monkeypatch.setattr(order_module, "submit_and_track_split_orders", split_submit)
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     else:
         executor.sleep_or_terminate.side_effect = lambda duration: now.__setitem__(0, now[0] + duration)
         monkeypatch.setattr(
-            module, "cancel_pending_orders_via_query", lambda _: ["1"] if case == "unknown_cancel" else []
+            order_helper, "cancel_pending_orders_via_query", lambda _: ["1"] if case == "unknown_cancel" else []
         )
         if module is twap:
             entry, params = twap.twap, twap.TwapParams(slices=1, total_duration=1, max_wait_seconds=1)
@@ -201,6 +204,7 @@ def test_algorithm_does_not_trade_when_start_snapshot_is_unknown(monkeypatch, mo
 
 @pytest.mark.parametrize("module", [maker, twap, pov], ids=["maker", "twap", "pov"])
 def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
+    order_module = maker if module is maker else order_helper
     executor = MagicMock()
     executor.symbol = "rb2610"
     assets = UnifiedAccountAssets(available_cash=10000, total_asset=10000, market_value=0, positions=[], source="real")
@@ -236,7 +240,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
     now = [0.0]
     clock = MagicMock()
     clock.time.side_effect = lambda: now[0]
-    monkeypatch.setattr(module, "get_default_clock", lambda: clock)
+    monkeypatch.setattr(clock_module, "_default_clock", clock)
 
     def split_submit(*args, **kwargs):
         _ = args, kwargs
@@ -254,9 +258,9 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
         now[0] += 0.25
         return [order]
 
-    monkeypatch.setattr(module, "submit_and_track_split_orders", split_submit)
-    if hasattr(module, "cancel_pending_orders_via_query"):
-        monkeypatch.setattr(module, "cancel_pending_orders_via_query", lambda _: [])
+    monkeypatch.setattr(order_module, "submit_and_track_split_orders", split_submit)
+    if module is not maker:
+        monkeypatch.setattr(order_helper, "cancel_pending_orders_via_query", lambda _: [])
     if module is maker:
         entry, params = maker.single_maker_callback, maker.SingleMakerParams(max_wait_seconds=1)
     elif module is twap:
@@ -274,6 +278,7 @@ def test_algorithm_keeps_tracker_cancel_error(monkeypatch, module):
 
 
 def _assert_mid_execution_termination(monkeypatch, module, executor, tracker, entry, input_data, stage):
+    order_module = maker if module is maker else order_helper
     stopped = ExecutionTerminated(reason="用户终止", mode="cancel_pending", cancel_failed_order_ids=["unconfirmed"])
     methods = {
         "checkpoint": executor.handle_termination_checkpoint,
@@ -281,7 +286,7 @@ def _assert_mid_execution_termination(monkeypatch, module, executor, tracker, en
         "sleep": executor.sleep_or_terminate,
     }
     if stage == "submit":
-        monkeypatch.setattr(module, "submit_and_track_split_orders", MagicMock(side_effect=stopped))
+        monkeypatch.setattr(order_module, "submit_and_track_split_orders", MagicMock(side_effect=stopped))
     else:
         methods[stage].side_effect = stopped
     if stage == "sleep" and module is twap:
@@ -319,7 +324,6 @@ def _assert_result_evidence(result, expected, case, volume, orders):
 @pytest.mark.parametrize("sign", [1, -1])
 def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, model_name, sign):
     from axile.common.order_param_model import OrderParamModel
-    from axile.executor.algorithms.utils import clock as clock_module
     from axile.executor.models.unified_account_assets import PositionDirection
     from tests.fixtures.algorithm_fakes import ClockStub
     from tests.unit.executor.algorithms.test_split_orders import _make_executor
@@ -379,6 +383,7 @@ def test_real_algorithm_crosses_zero_within_slice_budget(monkeypatch, module, mo
         else:
             assert "position_side" not in kwargs
         assert "deadline" not in kwargs
+        assert order_price == (101 if direction == OrderDirection.BUY else 99)
         order = place(direction, order_type, volume, order_price, **kwargs)
         current[0] += sign * volume
         submissions.append((clock.time(), volume))

@@ -196,6 +196,7 @@ export function AccountDetail({
 
   const recordList = activity.data?.data.flatMap((item) => item.kind === 'execution' ? [item.record] : []) ?? []
   const latestAssets = assetSnapshots.data?.data[0]?.assets
+  const positionsObserved = Array.isArray(latestAssets?.positions)
   const snapshotPositions = positionsOfAssets(latestAssets)
   const positions = snapshotPositions
   const equity = currentEquity(item)
@@ -204,7 +205,7 @@ export function AccountDetail({
     observedAt: item.asset_observed_at,
     previousClose: item.previous_close,
   })
-  const holdingsCount = latestAssets ? snapshotPositions.length : item.holdings_count
+  const holdingsCount = positionsObserved ? snapshotPositions.length : null
   const comparisonLoading = comparison.data === null && comparison.loading
   const comparisonError = comparison.error
   const comparisonReady = comparison.data?.off_symbol_count != null
@@ -224,7 +225,7 @@ export function AccountDetail({
         : `${plan.off} 只待调整`
   const targetCount = Object.values(weights.data?.account_weights ?? weights.data?.weights ?? {}).filter(weight => Math.abs(weight) > 1e-9).length
   const turnover = rebalanceTurnover(plan)
-  const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, !!latestAssets)
+  const currentHoldings = holdingPreviewRows(positions, observedTotalAsset(latestAssets, item.total_asset), weights.data, positionsObserved)
   const state = stateVerdict({ ...item, is_started: isStarted }, false)
   const gate = gateOf({ ...item, is_started: isStarted })
   // 执行态：服务端 live 优先，runner 仅首帧前乐观。queued ≠ 正在下单。
@@ -716,7 +717,7 @@ export function AccountDetail({
                   {driftHeadline}
                 </div>
                 <div className="mt-1.5 text-[14px] text-ink-2">
-                  当前 {!latestAssets ? '尚未查询' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
+                  当前 {!latestAssets ? '尚未查询' : holdingsCount == null ? '待刷新' : holdingsCount === 0 ? '空仓' : `${holdingsCount} 只`} · 目标 {weights.data?.calculated_at ? `${targetCount} 只` : '尚未计算'}
                 </div>
                 {plan.off > 0 && (
                   <>
@@ -735,7 +736,7 @@ export function AccountDetail({
                 <HoldingsPreviewTable
                   holdings={currentHoldings}
                   onSelect={(symbol, keyboardOpened) => { setHoldingSelection({ accountId, symbol, keyboardOpened }) }}
-                  observed={!!latestAssets}
+                  observed={positionsObserved}
                   currency={item.currency}
                   positionValueLabel={positionValueLabel}
                 />
@@ -744,7 +745,7 @@ export function AccountDetail({
           ) : null}
           <CurrentOrdersDialog state={currentOrders} units={channelDescriptor?.units} channel={item.trade_channel} />
           <HoldingDetailDialog symbol={selectedSymbol} restoreFocus={!!holdingSelection?.keyboardOpened}
-            positions={positions} observed={!!latestAssets}
+            positions={positions} observed={positionsObserved}
             observedAt={assetSnapshots.data?.data[0]?.created_at ?? null}
             target={weights.data} orders={currentOrders} currency={item.currency} units={channelDescriptor?.units}
             refreshing={assetSnapshots.refreshing || weights.refreshing}

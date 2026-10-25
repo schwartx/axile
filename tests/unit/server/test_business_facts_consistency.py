@@ -536,11 +536,8 @@ def test_result_asset_binding_cannot_read_another_execution_observation(
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
 @pytest.mark.parametrize("asset_account", [1, 2], ids=["other-execution", "other-account"])
-@pytest.mark.parametrize("include_positions", [False, True], ids=["scalar", "positions"])
-def test_account_snapshot_cannot_read_another_execution_asset(
-    tmp_path, monkeypatch, foreign_keys, asset_account, include_positions
-):
-    """执行历史资产引用被改归属时，标量与持仓读取都拒绝。"""
+def test_account_snapshot_cannot_read_another_execution_asset(tmp_path, monkeypatch, foreign_keys, asset_account):
+    """执行历史资产引用被改归属时，真实资产页拒绝。"""
     path = _database(tmp_path)
     local = _store(path, execution_id="snapshot-local")
     (snapshot,) = _rows(path, "SELECT * FROM account_asset_snapshot WHERE execution_id=?", (local.execution_id,))
@@ -561,11 +558,8 @@ def test_account_snapshot_cannot_read_another_execution_asset(
             )
     except sqlite3.IntegrityError:
         return
-    snapshot["asset_fact_id"] = borrowed["asset_id"]
     with pytest.raises(_core.NativeError):
-        native_store_call(
-            path, "asset_snapshots_read", {"snapshots": [snapshot], "include_positions": include_positions}
-        )
+        _core.asset_snapshots(_core.Store(str(path)), snapshot["account_id"], 0, 100)
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])

@@ -76,10 +76,10 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
         )
     assets = assets_snapshot["assets"]
     total_asset = assets.get("total_asset")
-    raw_positions = assets.get("positions")
-    positions = raw_positions if isinstance(raw_positions, list) else []
+    positions = assets.get("positions")
     if (
-        isinstance(total_asset, bool)
+        not isinstance(positions, list)
+        or isinstance(total_asset, bool)
         or not isinstance(total_asset, (int, float))
         or not math.isfinite(total_asset)
         or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)

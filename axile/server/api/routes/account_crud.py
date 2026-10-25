@@ -445,8 +445,8 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
         assets = latest_snapshot["assets"] if latest_snapshot is not None else {}
         raw_positions = assets.get("positions")
         positions: list[Any] = raw_positions if isinstance(raw_positions, list) else []
-        holdings_count = len(positions)
-        valuation_complete = all(
+        holdings_count = len(positions) if isinstance(raw_positions, list) else None
+        valuation_complete = isinstance(raw_positions, list) and all(
             isinstance(pos, dict) and isinstance(pos.get("market_value"), (int, float)) for pos in positions
         )
         position_weights = (

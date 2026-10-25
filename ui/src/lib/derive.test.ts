@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { integrityOf, needsAdjustmentAttention, gateOf, observedTotalAsset, positionsOf, rebalancePlan, stateVerdict } from './derive'
+import { holdingText, integrityOf, needsAdjustmentAttention, gateOf, observedTotalAsset, positionsOf, rebalancePlan, stateVerdict } from './derive'
 import type { AccountDashboardItem, ExecuteRecord, Position } from '../types/api'
 
 /** 造一个仪表盘项；只填两轴关心的字段，其余给中性占位。 */
@@ -44,6 +44,11 @@ test('无记录且无数 → 未知（不无证推定良好）', () => {
 
 test('有执行但无数 → 未知', () => {
   expect(integrityOf(item({ last_is_success: 0, last_exec_at: '2026-07-21T12:00:00', off_symbol_count: null })).integrity).toBe('unknown')
+})
+
+test('持仓未知不显示为空仓，真实零持仓仍显示空仓', () => {
+  expect(holdingText(null, [])).toBe('持仓待刷新')
+  expect(holdingText(0, [])).toBe('空仓')
 })
 
 // ── 档位（模式轴）：只由 is_started 派生 ──

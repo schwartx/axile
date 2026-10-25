@@ -106,6 +106,9 @@ fn update_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
         return Err(invalid("组合更新包含未知字段"));
     }
     for (key, value) in changes {
+        if matches!(key.as_str(), "name" | "market") && value.is_null() {
+            return Err(invalid(format!("组合字段 {key} 不可清空")));
+        }
         if !value.is_null() && !value.is_string() {
             return Err(invalid(format!("组合字段 {key} 必须是文本或空值")));
         }

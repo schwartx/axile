@@ -1,8 +1,7 @@
 """运行多进程执行 worker 的命令分派入口.
 
 该文件只保留 worker 命令级骨架：解析请求、准备执行器、写审计、
-回传响应和清理运行时。更细的请求解析、状态复用与响应规范化逻辑
-分别下沉到相邻辅助模块。
+回传响应和清理运行时。状态复用与响应规范化逻辑下沉到相邻辅助模块。
 """
 
 from __future__ import annotations
@@ -38,10 +37,6 @@ from axile.server.execution.worker_backend.worker_audit import (
     _append_failed_audit,
     _append_success_audit,
     _append_trade_pre_execute_audit,
-)
-from axile.server.execution.worker_backend.worker_requests import (
-    _parse_empty_positions_request,
-    _parse_execute_trade_request,
 )
 from axile.server.execution.worker_backend.worker_responses import (
     _build_error_payload,
@@ -113,6 +108,12 @@ def _handle_prepare(request: WorkerBackendRequest, state: _WorkerBackendState) -
                 "ready": True,
                 "trading_day": str(getattr(executor, "_trading_day", "") or ""),
             },
+        )
+    except ExecutionTerminated as exc:
+        return _build_terminated_response(
+            request_id=request.request_id,
+            account=account,
+            exc=exc,
         )
     except Exception as exc:  # noqa: BLE001 - IPC 边界统一返回结构化错误
         error = _build_error_payload(exc)
@@ -271,7 +272,16 @@ def _handle_execute_trade(
     WorkerBackendResponse
         对应的成功、终止或失败响应。
     """
-    context = _parse_execute_trade_request(request)
+    account = AccountSnapshot.model_validate(request.account_payload)
+    standard_input = UnifiedStandardInput.from_dict(
+        cast(dict[str, object], request.payload["standard_input"]),
+        channel_type=account.trade_channel,
+    )
+    audit_context = cast(dict[str, object], cast(dict[str, object], standard_input.extra).get("audit", {}))
+    algorithm_name = str(account.algorithm.get("method", "SINGLE-MAKER"))
+    trigger_source = cast(str, request.payload["trigger_source"])
+    audit_input = cast(dict[str, object], request.payload["audit_input"])
+    notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))
     executor = None
     termination_controller = _activate_worker_termination(state, request.execution_id)
     normalized_symbol_fields: dict[str, object] | None = None
@@ -279,23 +289,23 @@ def _handle_execute_trade(
         # worker 入口只保留命令级主线，具体的状态准备和审计细节都下沉到专用模块。
         executor = _resolve_prepared_executor(
             state=state,
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            audit_context=context.audit_context,
+            audit_context=audit_context,
             termination_controller=termination_controller,
         )
         normalize = getattr(executor, "_normalize_standard_input", lambda value: value)
         normalize_connected = getattr(executor, "_normalize_connected_standard_input", lambda value: value)
-        standard_input = cast(UnifiedStandardInput, normalize(context.standard_input))
+        standard_input = cast(UnifiedStandardInput, normalize(standard_input))
         standard_input = cast(UnifiedStandardInput, normalize_connected(standard_input))
         normalized_symbol_fields = {field: getattr(standard_input, field) for field in _SYMBOL_FIELDS}
-        audit_input = {**context.audit_input, **sanitize_standard_input_for_audit(standard_input)}
+        audit_input = {**audit_input, **sanitize_standard_input_for_audit(standard_input)}
         before_account_assets = _capture_before_account_snapshot(executor)
         _append_trade_pre_execute_audit(
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            algorithm_name=context.algorithm_name,
-            trigger_source=context.trigger_source,
+            algorithm_name=algorithm_name,
+            trigger_source=trigger_source,
             audit_input=audit_input,
             standard_input=standard_input,
             executor=executor,
@@ -308,14 +318,14 @@ def _handle_execute_trade(
                 standard_input,
                 cleanup=False,
                 retain_runtime=True,
-                **({"notification_snapshot": context.notification_snapshot} if context.notification_snapshot else {}),
+                **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
             ),
         )
         result = _dump_output_payload(output)
         _append_success_audit(
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            algorithm_name=context.algorithm_name,
+            algorithm_name=algorithm_name,
             output=output,
             result=result,
             executor=executor,
@@ -329,16 +339,16 @@ def _handle_execute_trade(
     except ExecutionTerminated as exc:
         return _build_terminated_response(
             request_id=request.request_id,
-            account=context.account,
+            account=account,
             exc=exc,
         )
     except Exception as exc:  # noqa: BLE001
         return _handle_worker_command_failure(
             request=request,
-            account=context.account,
-            algorithm_name=context.algorithm_name,
+            account=account,
+            algorithm_name=algorithm_name,
             executor=executor,
-            trigger_source=context.trigger_source,
+            trigger_source=trigger_source,
             exc=exc,
             log_message="worker backend execute_trade 失败",
             append_failed_audit=_append_failed_audit,
@@ -367,25 +377,34 @@ def _handle_empty_positions(
     WorkerBackendResponse
         对应的成功、终止或失败响应。
     """
-    context = _parse_empty_positions_request(request)
+    account = AccountSnapshot.model_validate(request.account_payload)
+    empty_kwargs = cast(dict[str, object], request.payload["empty_kwargs"])
+    resolved_algorithm = cast(dict[str, object], empty_kwargs["algorithm"])
+    audit_context = cast(
+        dict[str, object],
+        cast(dict[str, object], cast(dict[str, object], empty_kwargs["extra"])["audit"]),
+    )
+    algorithm_name = str(resolved_algorithm.get("method", "SINGLE-MAKER"))
+    audit_input = cast(dict[str, object], request.payload["audit_input"])
+    notification_snapshot = cast("dict[str, object] | None", request.payload.get("notification_snapshot"))
     executor = None
     termination_controller = _activate_worker_termination(state, request.execution_id)
     try:
         # 清仓和调仓共用同一套外层骨架，差异只保留在请求解析、pre-audit 和真实调用上。
         executor = _resolve_prepared_executor(
             state=state,
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            audit_context=context.audit_context,
+            audit_context=audit_context,
             termination_controller=termination_controller,
         )
         before_account_assets = _capture_before_account_snapshot(executor)
         _append_empty_positions_pre_execute_audit(
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            algorithm_name=context.algorithm_name,
+            algorithm_name=algorithm_name,
             executor=executor,
-            audit_input=context.audit_input,
+            audit_input=audit_input,
             before_account_assets=before_account_assets,
         )
         empty_positions = getattr(executor, "empty_positions")
@@ -394,15 +413,15 @@ def _handle_empty_positions(
             empty_positions(
                 cleanup=False,
                 retain_runtime=True,
-                **({"notification_snapshot": context.notification_snapshot} if context.notification_snapshot else {}),
-                **context.empty_kwargs,
+                **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
+                **empty_kwargs,
             ),
         )
         result = _dump_output_payload(output)
         _append_success_audit(
-            account=context.account,
+            account=account,
             execution_id=request.execution_id,
-            algorithm_name=context.algorithm_name,
+            algorithm_name=algorithm_name,
             output=output,
             result=result,
             executor=executor,
@@ -412,14 +431,14 @@ def _handle_empty_positions(
     except ExecutionTerminated as exc:
         return _build_terminated_response(
             request_id=request.request_id,
-            account=context.account,
+            account=account,
             exc=exc,
         )
     except Exception as exc:  # noqa: BLE001
         return _handle_worker_command_failure(
             request=request,
-            account=context.account,
-            algorithm_name=context.algorithm_name,
+            account=account,
+            algorithm_name=algorithm_name,
             executor=executor,
             trigger_source="empty_positions",
             exc=exc,

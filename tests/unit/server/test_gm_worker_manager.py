@@ -302,6 +302,52 @@ def test_empty_positions_keeps_paused_gm_session(monkeypatch: pytest.MonkeyPatch
     assert dropped == []
 
 
+def test_clear_positions_preserves_termination_during_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清仓准备期间的协作终止须穿过 worker IPC，不能降级为普通执行错误。"""
+    import pickle
+    from types import SimpleNamespace
+
+    from axile.server.execution.worker_backend import worker
+
+    manager = WorkerBackendManager()
+    account = build_account(id=2, trade_channel=TradeChannel.CTP)
+    state = worker._WorkerBackendState(account_id=2)
+    termination = ExecutionTerminated(
+        reason="operator_cancel",
+        mode="cancel_pending",
+        acked_at="2026-10-25T10:00:00+08:00",
+        cancel_failed_order_ids=["pending-order"],
+        forced=False,
+        cancel_attempted=True,
+        cancel_unconfirmed=True,
+    )
+    commands = []
+
+    def resolve(**kwargs):
+        assert kwargs["execution_id"] == "clear-prepare"
+        assert kwargs["termination_controller"] is not None
+        raise termination
+
+    def request_blocking(account_id, request, timeout, termination_controller):
+        assert account_id == 2
+        commands.append(request.command)
+        return pickle.loads(pickle.dumps(worker._handle_worker_request(request, state)))
+
+    monkeypatch.setattr(manager, "_current_session", lambda _account: SimpleNamespace(worker_alive=True))
+    monkeypatch.setattr(manager, "_request_blocking", request_blocking)
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", resolve)
+
+    with pytest.raises(ExecutionTerminated) as caught:
+        asyncio.run(
+            manager.empty_positions(account=account, empty_kwargs={}, audit_input={}, execution_id="clear-prepare")
+        )
+
+    assert caught.value.__dict__ == termination.__dict__
+    assert commands == ["prepare"]
+    assert state.active_execution_id is None
+    assert not state.termination_event.is_set()
+
+
 def test_empty_positions_drops_ctp_worker_after_session_recovery(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = WorkerBackendManager()
     account = build_account(id=2)

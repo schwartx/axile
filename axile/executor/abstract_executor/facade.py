@@ -114,10 +114,10 @@ class AbstractExecutorFacadeMixin:
                 getattr(exc, "execution_error", None) or "下单未确认成功，请查看执行详情；未据此认定订单已结束",
             )
             raise
-        executor.get_execution_query_runtime_bridge().handle_place_order_result(
-            order, fallback_symbol=normalized_symbol
-        )
-        executor.account_orders.apply(order)
+        if executor.account_orders.apply(order):
+            executor.get_execution_query_runtime_bridge().handle_place_order_result(
+                order, fallback_symbol=normalized_symbol
+            )
         return order
 
     @controlled_operation(

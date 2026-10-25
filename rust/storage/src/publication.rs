@@ -1,7 +1,7 @@
 //! Calculate from one read snapshot and insert directly into disk-backed staging.
 
 use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::AnalysisError;
 use crate::native_publication::task::Task;
@@ -333,7 +333,7 @@ pub(crate) fn write(
     source: &Connection,
     target: &Connection,
     task: &Task,
-) -> Result<Value, AnalysisError> {
+) -> Result<Option<String>, AnalysisError> {
     let calculation = crate::performance::PerformanceRequest {
         account_id: task.account_id,
         range: None,
@@ -365,14 +365,14 @@ pub(crate) fn write(
         .collect::<Result<Vec<_>, AnalysisError>>()?;
     crate::fact_cost_rows::trades(source, task.account_id, target, &bounds)?;
     let counts = events(source, task.account_id, &bounds, target)?;
-    let settings = ranges.last().expect("three ranges").header["settings"].clone();
-    let data_until = ranges.last().expect("three ranges").header["end"].clone();
+    let data_until = serde_json::from_value::<Option<String>>(
+        ranges.last().expect("three ranges").header["end"].clone(),
+    )
+    .map_err(|_| AnalysisError::new("INVALID_NATIVE_PUBLICATION", "invalid data_until"))?;
     for (((key, _, _), count), range) in bounds.iter().zip(counts).zip(ranges) {
         range_rows(target, key, range, count)?;
     }
-    Ok(
-        json!({"account_id":task.account_id,"source_version":task.source_version,"settings":settings,"data_until":data_until}),
-    )
+    Ok(data_until)
 }
 
 #[cfg(test)]

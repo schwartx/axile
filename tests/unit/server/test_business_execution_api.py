@@ -20,7 +20,13 @@ from axile.server.db.models.execution import ExecuteRecord
 from axile.server.target_weight_snapshots import TargetWeightSnapshotData
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    rows,
+    seed_historical_input,
+    sql,
+)
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
@@ -154,18 +160,19 @@ def test_activity_symbol_query_uses_projected_columns_and_account_scope(database
 def test_target_sizing_uses_immutable_audit_input_context(database):
     """历史审计输入与终态输入不同，换算精度必须跟随审计引用。"""
     terminal_input = {"channel_type": "ctp", "curr_target": {"rb2610": 1}}
-    frozen = freeze_input(
+    freeze_input(database, terminal_input, execution_id="sizing-context")
+    audit_id = seed_historical_input(
         database,
-        terminal_input,
-        execution_id="sizing-context",
-        audit_input_id="sizing-audit",
-        audit_payload={"sizing_context": {"weight_precision": 0.01}},
+        "sizing-audit",
+        "sizing-context",
+        sizing_context_state="value",
+        weight_precision=0.01,
     )
     _append_artifact(
         database,
         "sizing-context",
         ExecutionArtifactType.TARGET_SNAPSHOT,
-        make_artifact_reference(view="targets", input_id=frozen["audit_id"]),
+        make_artifact_reference(view="targets", input_id=audit_id),
     )
     record = persist_result(
         database,

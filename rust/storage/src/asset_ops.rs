@@ -389,17 +389,7 @@ pub(crate) fn ensure_execution_asset_snapshot(
     Ok(())
 }
 
-fn observation(
-    connection: &Connection,
-    root: &Map<String, Value>,
-    include_positions: bool,
-) -> Result<Value, AnalysisError> {
-    if !include_positions {
-        let mut scalar = root.clone();
-        scalar.insert("payload_kind".into(), json!("object"));
-        scalar.insert("positions_kind".into(), json!("absent"));
-        return crate::assets::observation_value(&scalar, &[]).map_err(invalid);
-    }
+fn observation(connection: &Connection, root: &Map<String, Value>) -> Result<Value, AnalysisError> {
     let positions = crate::business_detail::load(
         connection,
         "business_asset_position",
@@ -437,17 +427,10 @@ pub(crate) fn read_input_asset_observations(
         .map(|root| {
             Ok(json!({"asset_id": root.get("asset_id"),
         "path": root.get("path"), "scope": root.get("scope"),
-        "account_assets": observation(connection,root,true)?}))
+        "account_assets": observation(connection,root)?}))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Value::Array)
-}
-
-pub fn asset_input_observations(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let input_id = text(request, "input_id")?;
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        read_input_asset_observations(connection, input_id)
-    })
 }
 
 pub fn asset_snapshot_latest(path: &str, request: &Value) -> Result<Value, AnalysisError> {
@@ -460,69 +443,6 @@ pub fn asset_snapshot_latest(path: &str, request: &Value) -> Result<Value, Analy
             .and_then(|rows| rows.first())
             .cloned()
             .unwrap_or(Value::Null))
-    })
-}
-
-pub fn asset_snapshots_read(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let snapshots = request
-        .get("snapshots")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid("缺少资产快照列表"))?;
-    let include_positions = match request.get("include_positions") {
-        None => true,
-        Some(Value::Bool(value)) => *value,
-        _ => return Err(invalid("include_positions 必须是布尔值")),
-    };
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        let owner_query = format!(
-            "SELECT {} FROM account_asset_snapshot s
-            JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id WHERE s.id=?1",
-            crate::assets::OWNER_VALID
-        );
-        let mut output = Vec::with_capacity(snapshots.len());
-        for snapshot in snapshots {
-            let id = integer(snapshot, "id")?;
-            let heads = crate::business_detail::load(
-                connection,
-                "account_asset_snapshot",
-                "id",
-                &json!(id),
-            )
-            .map_err(invalid)?;
-            let head = heads.first().ok_or_else(|| invalid("账户资产观测不存在"))?;
-            for key in ["account_id", "asset_fact_id", "execution_id"] {
-                if head.get(key) != snapshot.get(key) {
-                    return Err(invalid("账户资产观测引用与账户或执行不匹配"));
-                }
-            }
-            let valid: Option<bool> = connection
-                .query_row(&owner_query, [id], |row| row.get(0))
-                .optional()
-                .map_err(sql)?;
-            if valid != Some(true) {
-                return Err(invalid("账户资产观测引用与账户或执行不匹配"));
-            }
-            let reference = head
-                .get("asset_fact_id")
-                .filter(|value| !value.is_null())
-                .ok_or_else(|| invalid("账户资产观测缺少结构化事实引用"))?;
-            let roots = crate::business_detail::load(
-                connection,
-                "business_asset_snapshot",
-                "asset_id",
-                reference,
-            )
-            .map_err(invalid)?;
-            let root = roots
-                .first()
-                .ok_or_else(|| invalid("账户资产观测结构化事实缺失"))?;
-            let assets = observation(connection, root, include_positions)?;
-            if !assets.is_object() {
-                return Err(invalid("账户资产观测不是对象"));
-            }
-            output.push(json!({"id":id,"assets":assets}));
-        }
-        Ok(Value::Array(output))
     })
 }
 
@@ -661,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_projection_does_not_read_position_facts() {
+    fn observation_requires_position_facts() {
         let connection = schema();
         let snapshot = write_manual_snapshot(
             &connection,
@@ -685,17 +605,49 @@ mod tests {
             } => Authorization::Deny,
             _ => Authorization::Allow,
         }));
-        let mut expected = json!({"total_asset":5.0,
-            "availability":{"cash":"absent","equity":"value","market_value":"absent"}});
-        assert_eq!(observation(&connection, root, false).unwrap(), expected);
-        let error = observation(&connection, root, true).unwrap_err();
+        let error = observation(&connection, root).unwrap_err();
         assert!(error.error.contains("business_asset_position"));
 
         connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        let mut expected = json!({"total_asset":5.0,
+            "availability":{"cash":"absent","equity":"value","market_value":"absent"}});
         expected["positions"] = json!([{"symbol":"A","volume":5.0,
             "availability":{"volume":"value","available_volume":"absent",
                 "market_value":"absent","avg_price":"absent"}}]);
-        assert_eq!(observation(&connection, root, true).unwrap(), expected);
+        assert_eq!(observation(&connection, root).unwrap(), expected);
+    }
+
+    #[test]
+    fn input_observations_survive_terminal_delete() {
+        let connection = schema();
+        input_and_record(&connection, Some("e1"));
+        let before = encode::encode_input_assets(
+            "i1",
+            &json!({"account_assets":{"total_asset":100,"positions":null}}),
+        )
+        .unwrap();
+        let after = encode::encode_input_after_assets(
+            "i1",
+            json!({"account_assets":{"total_asset":0,"positions":[null,"bad"]}})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        write_observation(&connection, before.as_ref()).unwrap();
+        write_observation(&connection, after.as_ref()).unwrap();
+        connection
+            .execute("DELETE FROM executerecord WHERE id=17", [])
+            .unwrap();
+        let observations = read_input_asset_observations(&connection, "i1").unwrap();
+        assert_eq!(observations.as_array().unwrap().len(), 2);
+        assert_eq!(observations[0]["scope"], "after_pending");
+        assert_eq!(observations[0]["account_assets"]["total_asset"], json!(0.0));
+        assert_eq!(
+            observations[0]["account_assets"]["positions"],
+            json!([null, "bad"])
+        );
+        assert_eq!(observations[1]["scope"], "before");
+        assert_eq!(observations[1]["account_assets"]["positions"], Value::Null);
     }
 
     #[test]
@@ -807,14 +759,10 @@ mod tests {
             "/symbol_results/SHFE.rb2610~1CNY~0hedge/account_assets"
         );
         assert_eq!(
-            observation(&connection, hedged, true).unwrap()["positions"],
+            observation(&connection, hedged).unwrap()["positions"],
             Value::Null
         );
-        assert!(observation(&connection, hedged, false)
-            .unwrap()
-            .get("positions")
-            .is_none());
         let root = roots.iter().find(|row| row["scope"] == "after").unwrap();
-        assert_eq!(observation(&connection, root, true).unwrap(), Value::Null);
+        assert_eq!(observation(&connection, root).unwrap(), Value::Null);
     }
 }

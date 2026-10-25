@@ -1,7 +1,6 @@
 //! Own the disk-backed temporary database and validate completion before publication.
 
 use rusqlite::Connection;
-use serde_json::Value;
 
 use crate::error::AnalysisError;
 
@@ -84,35 +83,7 @@ impl<'a> Staging<'a> {
         Ok(staged)
     }
 
-    pub(super) fn finish(
-        &self,
-        mut complete: Value,
-        account_id: i64,
-        source_version: i64,
-    ) -> Result<Value, AnalysisError> {
-        if complete["account_id"].as_i64() != Some(account_id)
-            || complete["source_version"].as_i64() != Some(source_version)
-        {
-            return Err(invalid("publication source identity changed"));
-        }
-        if !complete["data_until"].is_null() && !complete["data_until"].is_string() {
-            return Err(invalid("invalid data_until"));
-        }
-        let mut counts = serde_json::Map::new();
-        for name in RESULT_TABLES {
-            let count: i64 = self
-                .connection
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM native_stage.\"{name}\""),
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(sql)?;
-            if count > 0 {
-                counts.insert((*name).into(), Value::from(count));
-            }
-        }
-        complete["row_counts"] = Value::Object(counts);
+    pub(super) fn finish(&self) -> Result<(), AnalysisError> {
         let mut statement = self
             .connection
             .prepare(
@@ -128,7 +99,7 @@ impl<'a> Staging<'a> {
             return Err(invalid("publication must contain three complete ranges"));
         }
         self.connection.execute_batch("COMMIT;").map_err(sql)?;
-        Ok(complete)
+        Ok(())
     }
 }
 
@@ -226,7 +197,6 @@ pub(super) fn copy_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
@@ -268,11 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn finish_checks_identity_ranges_and_counts_persisted_rows() {
-        for case in ["valid", "identity", "version", "ranges", "until"] {
+    fn finish_checks_ranges_and_preserves_staging_until_copy() {
+        for valid in [true, false] {
             let connection = fixture();
             let staged = Staging::new(&connection).unwrap();
-            let last = if case == "ranges" { "90" } else { "all" };
+            let last = if valid { "all" } else { "90" };
             for key in ["30", "90", last] {
                 connection
                     .execute(
@@ -281,15 +251,9 @@ mod tests {
                     )
                     .unwrap();
             }
-            let complete = json!({"account_id":if case == "identity" { 2 } else { 1 },
-                "source_version":if case == "version" { 3 } else { 2 },
-                "data_until":if case == "until" { json!(1) } else { Value::Null }});
-            let result = staged.finish(complete, 1, 2);
-            if case == "valid" {
-                assert_eq!(
-                    result.unwrap()["row_counts"],
-                    json!({"performance_result_range":3})
-                );
+            let result = staged.finish();
+            if valid {
+                result.unwrap();
                 assert_eq!(
                     connection
                         .query_row(

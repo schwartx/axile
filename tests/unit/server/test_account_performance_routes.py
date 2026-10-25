@@ -4,7 +4,7 @@ import asyncio
 import json
 import sqlite3
 from contextlib import closing
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -88,6 +88,43 @@ def test_performance_route_computes_synchronously_without_backtest(client, monke
     assert response.json()["record_count"] == 2
     assert response.json()["backtest_included"] is False
     status.assert_awaited_once_with("/isolated/analysis.sqlite", 1)
+
+
+@pytest.mark.parametrize("include_backtest", [True, False])
+def test_ready_snapshot_invalidated_during_read_retries_or_uses_account_returns(client, monkeypatch, include_backtest):
+    content = b'{"record_count":2}'
+    read = Mock(side_effect=[_core.NativeError("SNAPSHOT_NOT_READY", "快照已更新"), content])
+    account_returns = Mock(return_value=content)
+    status = AsyncMock(side_effect=["ready", "pending", "ready"])
+    enqueue = AsyncMock()
+    monkeypatch.setattr(routes, "read_snapshot_status", status)
+    monkeypatch.setattr(routes._core, "performance_result", read)
+    monkeypatch.setattr(routes._core, "account_performance", account_returns)
+    monkeypatch.setattr(routes, "enqueue", enqueue)
+    monkeypatch.setattr(routes, "clock_async_sleep", AsyncMock())
+
+    response = client.get("/performance/1", params={"include_backtest": include_backtest})
+
+    assert response.status_code == 200, response.text
+    assert response.content == content
+    assert read.call_count == (2 if include_backtest else 1)
+    if include_backtest:
+        account_returns.assert_not_called()
+        enqueue.assert_awaited_once_with("/isolated/analysis.sqlite", 1)
+    else:
+        account_returns.assert_called_once()
+        enqueue.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "code,status_code", [("SNAPSHOT_EXPIRED", 410), ("INVALID_REQUEST", 422), ("DATABASE_QUERY", 503)]
+)
+def test_ready_snapshot_preserves_other_native_errors(client, monkeypatch, code, status_code):
+    monkeypatch.setattr(routes, "read_snapshot_status", AsyncMock(return_value="ready"))
+    monkeypatch.setattr(routes._core, "performance_result", Mock(side_effect=_core.NativeError(code, "查询失败")))
+    response = client.get("/performance/1")
+    assert response.status_code == status_code
+    assert response.json() == {"detail": {"code": code, "message": "查询失败"}}
 
 
 def test_performance_route_rejects_unknown_account_before_analysis(client, monkeypatch):

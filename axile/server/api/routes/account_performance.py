@@ -83,7 +83,7 @@ async def get_performance(
         if status == "ready":
             try:
                 async with asyncio.timeout(deadline - clock_monotonic()):
-                    content = await _op(
+                    content = await run_in_threadpool(
                         _core.performance_result,
                         store,
                         account_id,

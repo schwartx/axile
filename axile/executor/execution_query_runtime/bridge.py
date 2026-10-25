@@ -333,7 +333,8 @@ class ExecutionQueryRuntimeBridge:
         order : UnifiedOrder
             订单更新对象。
         """
-        self.handle_order_update(order)
+        if self._owner.account_orders.apply(order):
+            self.handle_order_update(order)
 
     def observe_trade_record(self, trade: TradeRecord) -> None:
         """

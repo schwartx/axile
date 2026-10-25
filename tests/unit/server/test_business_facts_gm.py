@@ -10,7 +10,14 @@ from sqlalchemy import JSON
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, seed_account
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    read_before_assets,
+    read_result,
+    rows,
+    seed_account,
+)
 
 _TABLES = {
     "assets": ("business_asset_snapshot", "business_asset_position", "business_asset_binding"),
@@ -194,9 +201,7 @@ def test_gm_pre_order_and_terminal_assets_are_independent_observations(native_da
     after["account_assets"]["positions"][0]["available_volume"] = 600
 
     freeze_input(native_database, {}, input_id="gm-input-240", before_assets=before["account_assets"])
-    observations = native_store_call(native_database, "asset_input_observations", {"input_id": "gm-input-240"})
-    assert len(observations) == 1
-    before_decoded = {"before_account_assets": observations[0]["account_assets"]}
+    before_decoded = {"before_account_assets": read_before_assets(native_database, "gm-input-240")}
     before_rows = {name: rows(native_database, name) for name in _TABLES["assets"]}
     after_decoded, after_rows = _roundtrip(native_database, "assets", after)
 

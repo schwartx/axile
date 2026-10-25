@@ -8,7 +8,13 @@ import pytest
 
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, seed_account
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    read_before_assets,
+    read_result,
+    seed_account,
+)
 
 _NIGHT_TIME = "2026-10-19T21:00:00.123456+08:00"
 _NIGHT_NANO = 1792414800123456789
@@ -29,10 +35,7 @@ def _sqlite_round_trip(
             **({"before_assets": payload["account_assets"]} if input_owner else {}),
         )
         if input_owner:
-            observations = native_store_call(path, "asset_input_observations", {"input_id": receipt["input_id"]})
-            assert len(observations) == 1
-            assert observations[0]["path"] == "/before_account_assets"
-            return {"before_account_assets": observations[0]["account_assets"]}
+            return {"before_account_assets": read_before_assets(path, receipt["input_id"])}
         return native_store_call(path, "read_execution_input", {"input_id": receipt["input_id"]})
     return read_result(path, persist_result(path, payload))
 

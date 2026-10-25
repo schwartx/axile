@@ -837,6 +837,8 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
         with engine.begin() as connection:
             snapshots = sa.Table("account_asset_snapshot", sa.MetaData(), autoload_with=connection)
             heads = {row["id"]: dict(row) for row in connection.execute(sa.select(snapshots)).mappings()}
+            facts = sa.Table("business_asset_snapshot", sa.MetaData(), autoload_with=connection)
+            observations = {row["asset_id"]: dict(row) for row in connection.execute(sa.select(facts)).mappings()}
         for source in expected_assets:
             snapshot = heads.get(source["id"])
             assert snapshot is not None
@@ -844,8 +846,29 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
             assert business_evidence({key: snapshot[key] for key in source if key != "assets"}) == business_evidence(
                 {key: value for key, value in source.items() if key != "assets"}
             )
-            payload = native_store_call(database, "asset_snapshots_read", {"snapshots": [snapshot]})[0]["assets"]
-            _assert_same_evidence(source["assets"], payload, f"snapshot/{source['id']}/assets")
+            assert snapshot["asset_fact_id"] in observations
+        unavailable = observations[heads[102]["asset_fact_id"]]
+        assert unavailable["account_snapshot_id"] == 102
+        assert unavailable["observation_valid"] is False
+        assert unavailable["equity_state"] == "null"
+        assert unavailable["positions_kind"] == "null"
+        assert unavailable["source"] == "unavailable"
+        assert unavailable["extra"] == {"native": []}
+
+        # 独立无效观测不会出现在可信资产页，往返必须仍保留全部原文证据。
+        _downgrade(database)
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            metadata.reflect(connection, only=["account_asset_snapshot", "target_weight_snapshot"])
+            for name, expected in (
+                ("account_asset_snapshot", expected_assets),
+                ("target_weight_snapshot", expected_targets),
+            ):
+                restored = {
+                    row["id"]: dict(row) for row in connection.execute(sa.select(metadata.tables[name])).mappings()
+                }
+                for source in expected:
+                    _assert_same_evidence(source, restored[source["id"]], f"{name}/{source['id']}/roundtrip")
     finally:
         engine.dispose()
 

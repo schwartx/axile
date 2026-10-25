@@ -50,7 +50,6 @@ def dashboard_database(native_database):
             "INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at) VALUES (?,?,?,'2026-10-20')",
             [(1, 1, 7), (2, 2, 7), (3, 2, None)],
         )
-    snapshots = []
     for snapshot_id, account_id, assets in [
         (1, 1, {"total_asset": 100, "positions": []}),
         (
@@ -70,12 +69,10 @@ def dashboard_database(native_database):
     ]:
         saved = _snapshot(path, account_id, assets, created_at=f"2026-10-{20 - snapshot_id:02d}T00:00:00")
         assert saved["id"] == snapshot_id
-        if snapshot_id in (2, 4):
-            snapshots.append(saved)
-    expected = {
-        row["id"]: row["assets"]
-        for row in native_store_call(path, "asset_snapshots_read", {"snapshots": snapshots, "include_positions": True})
-    }
+    expected = {}
+    for account_id in (1, 2):
+        latest = native_store_call(path, "asset_snapshot_latest", {"account_id": account_id})
+        expected[latest["id"]] = latest["assets"]
     for portfolio_id, payload in [
         (7, {"normalized_weights": {"old": 1}}),
         (7, {"normalized_weights": {}}),
@@ -154,10 +151,8 @@ def test_dashboard_rejects_corrupt_asset_facts(dashboard_database, mutation):
 @pytest.mark.parametrize("positions", [None, [], "invalid", [None, 7, {"volume": "bad", "market_value": None}]])
 def test_dashboard_position_container_parity(dashboard_database, positions):
     path, _ = dashboard_database
-    saved = _snapshot(path, 1, {"total_asset": 0, "positions": positions})
-    expected = native_store_call(path, "asset_snapshots_read", {"snapshots": [saved], "include_positions": True})[0][
-        "assets"
-    ]
+    _snapshot(path, 1, {"total_asset": 0, "positions": positions})
+    expected = native_store_call(path, "asset_snapshot_latest", {"account_id": 1})["assets"]
     assert inputs(path)["1"]["observation"]["assets"] == expected
     if not isinstance(positions, list):
         assert expected["positions"] == positions

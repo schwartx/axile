@@ -262,8 +262,8 @@ class AccountDashboardItemPublic(Model):
         最近一次快照的账户总权益。
     currency : str
         权益计价币种。
-    holdings_count : int
-        最近一次快照的持仓品种数。
+    holdings_count : Optional[int]
+        最近一次快照的持仓品种数；未取得有效持仓列表时为 ``None``。
     position_weights : List[float]
         最近一次快照各持仓的市值（降序，最多 12 项），用于持仓分布条。
     performance : dict
@@ -302,7 +302,7 @@ class AccountDashboardItemPublic(Model):
     next_run_time: Optional[str] = None
     total_asset: float
     currency: str
-    holdings_count: int
+    holdings_count: Optional[int]
     position_weights: List[float]
     performance: dict[str, Any]
     asset_observed_at: Optional[str] = None

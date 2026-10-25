@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts.assets import read_snapshot_assets
+from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
 from axile.server.execution.records import append_success_execute_record
@@ -47,7 +47,9 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         assert bindings[0]["path"] == "/account_assets"
         assert snapshot.asset_fact_id == bindings[0]["asset_id"]
         assert len(rows(native_database, "business_asset_snapshot")) == 1
-        assets = await read_snapshot_assets(snapshot)
+        latest = await latest_asset_snapshot(51)
+        assert latest is not None and latest["id"] == snapshot.id
+        assets = latest["assets"]
         canonical_result = await read_execution_result(record)
         assert assets == canonical_result["account_assets"]
         assert assets == {

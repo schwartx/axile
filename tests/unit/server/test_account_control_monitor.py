@@ -248,6 +248,51 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("stale_execution_source", [False, True])
+def test_account_operation_final_frame_preserves_late_outcomes(monkeypatch, stale_execution_source):
+    async def scenario():
+        async with database(monkeypatch) as (path, account, monitor):
+            stale = None
+
+            async def source(account_id):
+                monitor._sources[account_id] = [(providers.snapshot(account_id), clock_now_ms(), False)]
+                if stale is not None and stale_execution_source:
+                    monitor._sources[account_id].append((stale, clock_now_ms(), False))
+
+            monkeypatch.setattr(monitor, "_read_source", source)
+            first = await persistence.build_account_control_guard(account, "finished-execution")
+            first.begin_operation("place_order").record_outcome("submitted")
+            await persistence.flush_account_control_records(executor(first))
+            await monitor.refresh()
+            stale = providers.snapshot(account.id)
+
+            operation = await persistence.build_account_control_guard(
+                account,
+                "asset-refresh",
+                context_kind=AccountControlContextKind.ACCOUNT_OPERATION,
+                source=AccountControlSource.ACCOUNT_ASSETS,
+            )
+            operation.begin_operation("query_account").record_outcome("fetched")
+            await persistence.flush_account_control_records(executor(operation))
+            assert providers.snapshot(account.id)["instance_id"] == operation.instance_id
+            first.update_event_outcome(0, outcome="broker_rejected", metadata={"error_id": 31})
+
+            for _ in range(2):
+                await monitor.refresh()
+                with closing(sqlite3.connect(path)) as connection:
+                    assert connection.execute(
+                        "SELECT outcome FROM account_control_event WHERE execution_id='finished-execution'"
+                    ).fetchone() == ("broker_rejected",)
+                    assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (2,)
+                frame = monitor.frames[account.id]
+                assert used(frame) == 121
+                assert frame["status"] == "idle" and frame["instance_id"] is None
+                assert frame["execution_id"] is None
+                assert any(row["outcome"] == "broker_rejected" for row in frame["records"])
+
+    asyncio.run(scenario())
+
+
 def test_idle_interval_is_recomputed_without_reloading_history(monkeypatch):
     from axile.executor.algorithms.utils import clock as clock_module
 

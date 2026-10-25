@@ -1,19 +1,11 @@
-"""GM SDK 调用桥接与类型化请求定义."""
+"""GM SDK 操作白名单与调用桥接."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from enum import IntEnum
 from typing import Any, ClassVar, Literal, TypeAlias
 
 from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableType]
-    OrderSide_Buy,
-    OrderSide_Sell,
-    OrderType_Limit,
-    OrderType_Market,
-    PositionEffect_Close,
-    PositionEffect_Open,
     current,
     get_cash,  # pyright: ignore[reportUnknownVariableType, reportAttributeAccessIssue]
     get_execution_reports,
@@ -36,299 +28,6 @@ GMSdkOperation: TypeAlias = Literal[
 ]
 
 GMBridgeOperation: TypeAlias = GMSdkOperation | Literal["subscribe_symbols"]
-
-
-class GMOrderSide(IntEnum):
-    """
-    描述 GM 下单方向的桥接枚举.
-
-    Attributes
-    ----------
-    BUY : int
-        买入方向。
-    SELL : int
-        卖出方向。
-    """
-
-    BUY = OrderSide_Buy
-    SELL = OrderSide_Sell
-
-
-class GMOrderKind(IntEnum):
-    """
-    描述 GM 委托价格类型的桥接枚举.
-
-    Attributes
-    ----------
-    LIMIT : int
-        限价单。
-    MARKET : int
-        市价单。
-    """
-
-    LIMIT = OrderType_Limit
-    MARKET = OrderType_Market
-
-
-class GMPositionEffect(IntEnum):
-    """
-    描述 GM 开平仓语义的桥接枚举.
-
-    Attributes
-    ----------
-    OPEN : int
-        开仓。
-    CLOSE : int
-        平仓。
-    """
-
-    OPEN = PositionEffect_Open
-    CLOSE = PositionEffect_Close
-
-
-@dataclass(slots=True, frozen=True)
-class GetCashRequest:
-    """
-    描述 GM ``get_cash`` 调用的请求参数.
-
-    Attributes
-    ----------
-    account_id : str | None
-        可选的账户标识；为空时使用 GM 当前默认账户。
-    """
-
-    account_id: str | None = None
-
-    operation: ClassVar[GMSdkOperation] = "get_cash"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``get_cash`` 请求的关键字参数."""
-        return {"account_id": self.account_id} if self.account_id is not None else {}
-
-
-@dataclass(slots=True, frozen=True)
-class GetPositionRequest:
-    """
-    描述 GM ``get_position`` 调用的请求参数.
-
-    Attributes
-    ----------
-    account_id : str | None
-        可选的账户标识；为空时使用 GM 当前默认账户。
-    """
-
-    account_id: str | None = None
-
-    operation: ClassVar[GMSdkOperation] = "get_position"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``get_position`` 请求的关键字参数."""
-        return {"account_id": self.account_id} if self.account_id is not None else {}
-
-
-@dataclass(slots=True, frozen=True)
-class CurrentRequest:
-    """
-    描述 GM ``current`` 行情查询请求.
-
-    Attributes
-    ----------
-    symbols : list[str]
-        需要订阅或查询的标的代码列表。
-    """
-
-    symbols: list[str]
-
-    operation: ClassVar[GMSdkOperation] = "current"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``current`` 请求的关键字参数."""
-        return {"symbols": self.symbols}
-
-
-@dataclass(slots=True, frozen=True)
-class GetOrdersRequest:
-    """
-    描述 GM ``get_orders`` 查询请求.
-
-    Attributes
-    ----------
-    account_id : str | None
-        可选的账户标识；指定时仅返回该账户的订单。
-    """
-
-    account_id: str | None = None
-
-    operation: ClassVar[GMSdkOperation] = "get_orders"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``get_orders`` 请求的关键字参数."""
-        return {"account_id": self.account_id} if self.account_id is not None else {}
-
-
-@dataclass(slots=True, frozen=True)
-class GetUnfinishedOrdersRequest:
-    """
-    描述 GM ``get_unfinished_orders`` 查询请求.
-
-    Attributes
-    ----------
-    account_id : str | None
-        可选的账户标识；指定时仅返回该账户的未完成订单。
-    """
-
-    account_id: str | None = None
-
-    operation: ClassVar[GMSdkOperation] = "get_unfinished_orders"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``get_unfinished_orders`` 请求的关键字参数."""
-        return {"account_id": self.account_id} if self.account_id is not None else {}
-
-
-@dataclass(slots=True, frozen=True)
-class GetExecutionReportsRequest:
-    """
-    描述 GM ``get_execution_reports`` 查询请求.
-
-    Attributes
-    ----------
-    account_id : str | None
-        可选的账户标识；指定时仅返回该账户的成交回报。
-    """
-
-    account_id: str | None = None
-
-    operation: ClassVar[GMSdkOperation] = "get_execution_reports"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``get_execution_reports`` 请求的关键字参数."""
-        return {"account_id": self.account_id} if self.account_id is not None else {}
-
-
-@dataclass(slots=True, frozen=True)
-class GMCancelOrderTarget:
-    """
-    描述一次 GM 撤单请求中的目标订单.
-
-    Attributes
-    ----------
-    cl_ord_id : str
-        客户端订单标识。
-    account_id : str
-        订单所属账户标识。
-    """
-
-    cl_ord_id: str
-    account_id: str
-
-
-@dataclass(slots=True, frozen=True)
-class OrderCancelRequest:
-    """
-    描述 GM ``order_cancel`` 调用的请求参数.
-
-    Attributes
-    ----------
-    wait_cancel_orders : list[GMCancelOrderTarget]
-        需要撤销的目标订单列表。
-    """
-
-    wait_cancel_orders: list[GMCancelOrderTarget]
-
-    operation: ClassVar[GMSdkOperation] = "order_cancel"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``order_cancel`` 请求的关键字参数."""
-        return {
-            "wait_cancel_orders": [
-                {
-                    "cl_ord_id": cancel_order.cl_ord_id,
-                    "account_id": cancel_order.account_id,
-                }
-                for cancel_order in self.wait_cancel_orders
-            ]
-        }
-
-
-@dataclass(slots=True, frozen=True)
-class OrderVolumeRequest:
-    """
-    描述 GM ``order_volume`` 下单请求.
-
-    Attributes
-    ----------
-    symbol : str
-        下单标的代码。
-    volume : int
-        下单数量。
-    side : GMOrderSide
-        买卖方向。
-    order_type : GMOrderKind
-        委托价格类型。
-    position_effect : GMPositionEffect
-        开平仓语义。
-    price : float
-        报价价格。
-    account : str
-        下单账户标识。
-    """
-
-    symbol: str
-    volume: int
-    side: GMOrderSide
-    order_type: GMOrderKind
-    position_effect: GMPositionEffect
-    price: float
-    account: str
-
-    operation: ClassVar[GMSdkOperation] = "order_volume"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回 ``order_volume`` 请求的关键字参数."""
-        return {
-            "symbol": self.symbol,
-            "volume": self.volume,
-            "side": int(self.side),
-            "order_type": int(self.order_type),
-            "position_effect": int(self.position_effect),
-            "price": self.price,
-            "account": self.account,
-        }
-
-
-@dataclass(slots=True, frozen=True)
-class GMSubscribeSymbolsRequest:
-    """
-    描述 GM bridge 内部的标的订阅请求.
-
-    Attributes
-    ----------
-    symbols : list[str]
-        需要补充订阅的标的代码列表。
-    """
-
-    symbols: list[str]
-
-    operation: ClassVar[GMBridgeOperation] = "subscribe_symbols"
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """返回内部订阅请求的关键字参数."""
-        return {"symbols": self.symbols}
-
-
-GMSdkRequest: TypeAlias = (
-    GetCashRequest
-    | GetPositionRequest
-    | CurrentRequest
-    | GetOrdersRequest
-    | GetUnfinishedOrdersRequest
-    | GetExecutionReportsRequest
-    | OrderCancelRequest
-    | OrderVolumeRequest
-)
-
-GMBridgeRequestPayload: TypeAlias = GMSdkRequest | GMSubscribeSymbolsRequest
 
 
 class GMApiBridge:
@@ -372,13 +71,15 @@ class GMApiBridge:
         return None
 
     @classmethod
-    def execute_request(cls, request: GMSdkRequest) -> Any:
-        """执行类型化的 GM SDK 请求."""
+    def execute_request(cls, operation: GMSdkOperation, **kwargs: Any) -> Any:
+        """按白名单执行 GM SDK 请求，省略未指定的账户参数。"""
         try:
-            method = cls._SDK_OPERATION_METHODS[request.operation]
+            method = cls._SDK_OPERATION_METHODS[operation]
         except KeyError as exc:
-            raise ValueError(f"未知的 GM bridge 操作: {request.operation}") from exc
-        return method(**request.as_kwargs())
+            raise ValueError(f"未知的 GM bridge 操作: {operation}") from exc
+        if kwargs.get("account_id") is None:
+            kwargs.pop("account_id", None)
+        return method(**kwargs)
 
     @classmethod
     def get_cash(cls, **kwargs: Any) -> Any:

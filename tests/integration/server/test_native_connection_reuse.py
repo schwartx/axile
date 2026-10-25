@@ -248,7 +248,12 @@ def test_publication_can_repeat_after_stale_source_and_failed_commit(database: P
 
     first = native_store_call(database, "publish_store", request("first"))
     assert first["published"]
-    assert first["row_counts"]["performance_cost_execution"] == 1
+    assert _sql(database, "SELECT COUNT(*) FROM performance_cost_execution WHERE snapshot_id='first'") == [[1]]
+    assert _sql(
+        database,
+        "SELECT s.data_until,r.range_key,r.end FROM performance_snapshot s "
+        "JOIN performance_result_range r ON r.snapshot_id=s.id WHERE s.id='first' ORDER BY r.range_key",
+    ) == [[item.created_at, key, item.created_at] for key in ("30", "90", "all")]
 
     stale = request("stale")
     _sql(database, "UPDATE account_analysis SET source_version=source_version+1 WHERE account_id=1")
@@ -268,7 +273,18 @@ def test_publication_can_repeat_after_stale_source_and_failed_commit(database: P
     _sql(database, "DROP TRIGGER reject_publication")
     published = native_store_call(database, "publish_store", retry)
     assert published["published"]
-    assert published["row_counts"] == first["row_counts"]
+    assert _sql(
+        database,
+        "SELECT snapshot_id,COUNT(*) FROM performance_cost_execution GROUP BY snapshot_id ORDER BY snapshot_id",
+    ) == [["first", 1], ["retry", 1]]
+    assert _sql(
+        database, "SELECT snapshot_id,COUNT(*) FROM performance_result_range GROUP BY snapshot_id ORDER BY snapshot_id"
+    ) == [["first", 3], ["retry", 3]]
     assert _sql(database, "SELECT id FROM performance_snapshot ORDER BY id") == [["first"], ["retry"]]
-    assert _sql(database, "SELECT current_snapshot FROM account_analysis WHERE account_id=1") == [["retry"]]
+    assert _sql(
+        database,
+        "SELECT current_snapshot,source_version=published_version,running_version,running_token "
+        "FROM account_analysis WHERE account_id=1",
+    ) == [["retry", 1, None, None]]
+    assert _sql(database, "PRAGMA foreign_key_check") == []
     assert _sql(database, "PRAGMA wal_checkpoint(TRUNCATE)")[0][0] == 0

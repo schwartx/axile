@@ -152,7 +152,8 @@ export function formatMoney(v: number): string {
 }
 
 /** 持仓一句话描述。 */
-export function holdingText(count: number, weights: number[]): string {
+export function holdingText(count: number | null, weights: number[]): string {
+  if (count == null) return '持仓待刷新'
   if (count === 0) return '空仓'
   if (weights.length === 0) return `持有 ${count} 只 · 市值不可用`
   const max = weights.length ? Math.max(...weights.map(Math.abs)) : 0

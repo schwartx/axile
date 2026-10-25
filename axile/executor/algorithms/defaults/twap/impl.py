@@ -34,7 +34,6 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.algorithms.common.params import BaseAlgorithmParams
 from axile.executor.algorithms.core.base import (
     ALL_ORDER_PARAM_MODELS,
@@ -47,24 +46,20 @@ from axile.executor.algorithms.core.base import (
 from axile.executor.algorithms.exceptions import (
     RECOVERABLE_ALGORITHM_EXCEPTIONS,
     execution_error_message,
-    format_exception_message,
 )
 from axile.executor.algorithms.utils import (
-    determine_order_price,
     get_default_clock,
     setup_order_tracker,
-    submit_and_track_split_orders,
     teardown_order_tracker,
 )
 from axile.executor.algorithms.utils.final_position import read_final_position
-from axile.executor.algorithms.utils.order_tracker import OrderTracker
+from axile.executor.algorithms.utils.order_helper import execute_order_slice
 from axile.executor.algorithms.utils.outcome import summarize_outcome
 from axile.executor.algorithms.utils.trading import (
-    cancel_pending_orders_via_query,
     create_empty_result,
     create_unconfirmed_start_result,
 )
-from axile.executor.models.unified_account_assets import UnifiedAccountAssets, is_degraded_snapshot_source
+from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
 from axile.executor.models.unified_price import clone_price_data
 from axile.executor.termination import ExecutionTerminated
 
@@ -202,109 +197,6 @@ def compute_slice_quantity(
     return max(scheduled_cum - filled, 0.0)
 
 
-def _execute_one_slice(
-    executor: ExecutorProtocol,
-    tracker: OrderTracker,
-    direction: OrderDirection,
-    slice_qty: float,
-    params: TwapParams,
-    account_assets: UnifiedAccountAssets,
-    current_volume: float,
-    target_volume: float,
-    fill_wait_seconds: float,
-) -> dict[str, Any]:
-    """
-    执行单个切片：下单、等待成交、撤除未成交余量.
-
-    Parameters
-    ----------
-    executor : ExecutorProtocol
-        当前算法绑定的执行器会话。
-    tracker : OrderTracker
-        跨切片复用的订单跟踪器。
-    direction : OrderDirection
-        下单方向。
-    slice_qty : float
-        本片下单量。
-    params : TwapParams
-        TWAP 参数。
-    account_assets : UnifiedAccountAssets
-        本片开始时的账户资产快照。
-    current_volume : float
-        本片开始时的当前持仓量。
-    target_volume : float
-        整体目标持仓量。
-    fill_wait_seconds : float
-        本片等待成交的最长时间（秒）。
-
-    Returns
-    -------
-    dict[str, Any]
-        本片执行明细；下单失败时包含 ``error`` 字段。
-
-    Notes
-    -----
-    片末主动撤除未成交余量，避免其在后续片间等待期间成交，破坏累计进度表的量核对。
-    未成交余量会由下一片的累计进度自动补回。
-    """
-    order_type, price = determine_order_price(
-        direction,
-        executor.get_market_data(),
-        price_strategy=params.price_strategy,
-    )
-    detail: dict[str, Any] = {
-        "direction": direction.value,
-        "volume": slice_qty,
-        "order_type": order_type.value,
-        "price": price,
-    }
-
-    deadline = get_default_clock().time() + fill_wait_seconds
-    try:
-        orders = submit_and_track_split_orders(
-            executor,
-            tracker,
-            direction,
-            order_type,
-            slice_qty,
-            price,
-            target_volume=float(target_volume),
-            current_volume=float(current_volume),
-            leg_timeout_seconds=fill_wait_seconds,
-            deadline=deadline,
-        )
-        if not orders:
-            detail["skipped"] = "no_order_submitted"
-            return detail
-        detail["order_id"] = orders[0].order_id
-        detail["order_ids"] = [order.order_id for order in orders]
-        tracker.explicit_error = None
-        tracker.explicit_blocked_error = None
-    except MemoryError:
-        executor.logger.exception(f"{executor.symbol} 下单遇到不可恢复异常")
-        raise
-    except ExecutionTerminated:
-        raise
-    except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
-        if getattr(exc, "requires_session_recovery", False):
-            raise
-        if isinstance(exc, AccountControlBlockedError):
-            tracker.explicit_blocked_error = exc.execution_error
-        else:
-            tracker.explicit_error = execution_error_message(exc, "报单")
-        error_message = format_exception_message(exc)
-        executor.logger.error(f"{executor.symbol} 下单失败: {error_message}")
-        detail["error"] = error_message
-        return detail
-
-    tracker.wait_for_completion(timeout=max(0.0, deadline - get_default_clock().time()))
-    failed_cancels = cancel_pending_orders_via_query(executor)
-    if failed_cancels:
-        tracker.explicit_error = "撤单失败，订单终态尚未确认"
-        detail["cancel_error"] = f"撤单失败: {failed_cancels}"
-    return detail
-
-
 @register_algorithm(
     ALGORITHM_NAME,
     order_param_models=ALL_ORDER_PARAM_MODELS,
@@ -385,13 +277,12 @@ def twap(
                 executor.logger.info(
                     f"{symbol} 第 {slice_index}/{params.slices} 片: 下单 {slice_qty}（已成交 {filled}/{total_qty}）"
                 )
-                detail = _execute_one_slice(
+                detail = execute_order_slice(
                     executor,
                     tracker,
                     direction,
                     slice_qty,
-                    params,
-                    account_assets,
+                    params.price_strategy,
                     current_volume,
                     target_volume,
                     fill_wait,

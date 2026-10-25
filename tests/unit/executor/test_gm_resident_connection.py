@@ -38,7 +38,7 @@ def test_business_call_and_algorithm_subscription_do_not_reconnect(monkeypatch):
     instance = executor()
     monkeypatch.setattr(instance, "_ensure_strategy_bridge", lambda *args, **kwargs: pytest.fail("业务请求不能重连"))
     with pytest.raises(ConnectionError, match="未提交"):
-        instance._call_bridge(SimpleNamespace(operation="get_unfinished_orders"))
+        instance._call_bridge("get_unfinished_orders")
     with pytest.raises(ConnectionError):
         instance.initialize_websocket(["518880.SH"])
 
