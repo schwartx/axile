@@ -36,6 +36,17 @@ def seed_account(path, account_id=1):
     )
 
 
+def audit_artifacts(path, execution_id):
+    """独立读取审计行，再通过生产解析器核对原始附件证据。"""
+    data = sorted(
+        (row for row in rows(path, "execution_artifact") if row["execution_id"] == execution_id),
+        key=lambda row: row["id"],
+    )
+    for row in data:
+        row["content"] = native_store_call(path, "resolve_execution_artifact", {"artifact": row})
+    return {"data": data, "count": len(data)}
+
+
 def persist_result(path, payload, **changes):
     seed_account(path)
     return native_store_call(

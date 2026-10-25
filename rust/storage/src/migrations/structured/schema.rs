@@ -1,6 +1,28 @@
-//! 最终业务事实的表与列；main 以前的修订定义仍在 legacy。
+//! 0034 的最终表结构；业务事实与可重算分析缓存分别处理。
 
 use super::*;
+
+pub(super) const ANALYSIS_TABLES: &[&str] = &[
+    "performance_cost_transaction_fee",
+    "performance_cost_transaction",
+    "performance_cost_attempt",
+    "performance_cost_position",
+    "performance_cost_execution_symbol",
+    "performance_execution_fee",
+    "performance_result_daily_fee",
+    "performance_result_daily_cost",
+    "performance_result_event",
+    "performance_result_calendar_range",
+    "performance_result_binding",
+    "performance_result_fallback",
+    "performance_result_skip",
+    "performance_result_point",
+    "performance_result_range",
+    "performance_cost_trade",
+    "performance_cost_execution",
+    "performance_snapshot",
+    "analysis_calendar_day",
+];
 
 pub(super) fn add_columns(
     connection: &Connection,

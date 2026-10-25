@@ -205,12 +205,12 @@ def test_migration_roundtrip_reopens_warmed_readers_and_writers(database: Path) 
     store = core.Store(str(database))
     assert json.loads(core.asset_snapshots(store, 1, 0, 10))["count"] == 0
     for operation in ("migration_current", "migration_check"):
-        assert native_store_call(database, operation, {})["public"] == "0041"
+        assert native_store_call(database, operation, {})["public"] == "0034"
 
-    assert native_store_call(database, "migration_downgrade", {"public": "0033"})["public"] == "0033"
-    assert native_store_call(database, "migration_current", {})["public"] == "0033"
-    assert native_store_call(database, "migration_upgrade", {})["public"] == "0041"
-    assert native_store_call(database, "migration_check", {})["public"] == "0041"
+    assert native_store_call(database, "migration_downgrade", {"public": "0034"})["public"] == "0034"
+    assert native_store_call(database, "migration_current", {})["public"] == "0034"
+    assert native_store_call(database, "migration_upgrade", {})["public"] == "0034"
+    assert native_store_call(database, "migration_check", {})["public"] == "0034"
     assert json.loads(core.asset_snapshots(store, 1, 0, 10))["count"] == 0
     receipt = native_store_call(
         database, "account_update", {"account_id": 1, "patch": {"name": "after-migration"}, "now": _NOW}

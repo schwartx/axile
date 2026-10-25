@@ -27,7 +27,7 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
         triggers = connection.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name='account_identity_insert' ORDER BY name"
         ).fetchall()
-    for revision, autoincrement in (("0041", True), ("0033", False), ("0041", True)):
+    for revision, autoincrement in (("0034", True), ("0033", False), ("0034", True)):
         operation = "migration_upgrade" if autoincrement else "migration_downgrade"
         assert native_store_call(path, operation, {"public": revision})["public"] == revision
         with closing(oracle_connect(path)) as connection:
@@ -84,7 +84,7 @@ def test_account_identity_migration_failure_rolls_back_ddl_and_rows(tmp_path):
         insert_account(connection, build_account(id=7, portfolio_id=None))
         connection.execute(
             "CREATE TRIGGER reject_identity_revision BEFORE UPDATE ON alembic_version "
-            "WHEN NEW.version_num='0041' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
+            "WHEN NEW.version_num='0034' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
         )
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
         account = connection.execute("SELECT * FROM account").fetchall()

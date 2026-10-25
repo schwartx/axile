@@ -1,4 +1,4 @@
-//! 身份、引用及回退顺序保持冻结；纯字段编码复用业务编解码器。
+//! 0034 的身份、引用及回退顺序保持冻结；纯字段编码复用同版本业务编解码器。
 
 use uuid::Uuid;
 
@@ -168,9 +168,14 @@ fn result_children(record_id: i64, payload: &Value) -> Result<Vec<(&'static str,
     Ok(result)
 }
 pub(super) fn reconstruct_result(connection: &Connection, record: &Object) -> Result<Value> {
-    business_detail::read_result_for_migration(connection, integer(record, "account_id")?, integer(record, "id")?).map_err(error)
+    let result = business_detail::read_result_for_migration(
+        connection,
+        integer(record, "account_id")?,
+        integer(record, "id")?,
+    )
+    .map_err(error)?;
+    Ok(result)
 }
-
 fn record_for_execution(connection: &Connection, execution: &Value) -> Result<Option<Object>> {
     let Some(execution) = execution.as_str() else {
         return Ok(None);
@@ -858,7 +863,7 @@ fn pause_triggers(connection: &Connection) -> Result<Vec<Object>> {
 fn restore_triggers(connection: &Connection, triggers: &[Object], typed: bool) -> Result<()> {
     for trigger in triggers {
         let name = text(trigger, "name")?;
-        if name.starts_with("business_facts_0037_")
+        if name.starts_with("business_facts_0034_")
             || (typed
                 && [
                     "analysis_facts_record_update",
@@ -874,7 +879,7 @@ fn restore_triggers(connection: &Connection, triggers: &[Object], typed: bool) -
 }
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     let paused = pause_triggers(connection)?;
-    execute(connection, include_str!("business37.sql"))?;
+    execute(connection, include_str!("business.sql"))?;
     for (table, columns) in schema::business_columns() {
         schema::add_columns(connection, table, &columns)?;
     }
@@ -896,8 +901,8 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     guards::install_business(connection)
 }
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
-    if !rows(connection,"SELECT id FROM execution_input AS i WHERE NOT EXISTS(SELECT 1 FROM executerecord WHERE input_id=i.id OR result_input_id=i.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.input_id')=i.id) AND NOT EXISTS(SELECT 1 FROM execution_event WHERE json_valid(details) AND json_extract(details,'$.decision.business_facts_ref.input_id')=i.id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0037: unrepresented pending execution input; retain this database or restore its backup"));}
-    if !rows(connection,"SELECT asset_id FROM business_asset_snapshot AS a WHERE NOT EXISTS(SELECT 1 FROM business_asset_binding WHERE asset_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.asset_id')=a.asset_id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0037: unrepresented pending asset evidence; retain this database or restore its backup"));}
+    if !rows(connection,"SELECT id FROM execution_input AS i WHERE NOT EXISTS(SELECT 1 FROM executerecord WHERE input_id=i.id OR result_input_id=i.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.input_id')=i.id) AND NOT EXISTS(SELECT 1 FROM execution_event WHERE json_valid(details) AND json_extract(details,'$.decision.business_facts_ref.input_id')=i.id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0034: unrepresented pending execution input; retain this database or restore its backup"));}
+    if !rows(connection,"SELECT asset_id FROM business_asset_snapshot AS a WHERE NOT EXISTS(SELECT 1 FROM business_asset_binding WHERE asset_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.asset_id')=a.asset_id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0034: unrepresented pending asset evidence; retain this database or restore its backup"));}
     Ok(())
 }
 
@@ -1129,7 +1134,7 @@ mod tests {
             CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content JSON,created_at TEXT);
         ").unwrap();
         connection
-            .execute_batch(include_str!("business37.sql"))
+            .execute_batch(include_str!("business.sql"))
             .unwrap();
         let input = encode::encode_inputs(
             "frozen-input",

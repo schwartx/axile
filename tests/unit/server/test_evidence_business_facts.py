@@ -24,9 +24,9 @@ from tests.unit.server.test_evidence_export import _event
 
 def _event_details(path, event):
     native_store_call(path, "append_execution_event", _event(**event).model_dump(mode="json"))
-    return native_store_call(path, "list_execution_events", {"execution_id": event["execution_id"]})["data"][0][
-        "details"
-    ]
+    return json.loads(native_store_call(path, "list_execution_events_json", {"execution_id": event["execution_id"]}))[
+        "data"
+    ][0]["details"]
 
 
 def test_canonical_result_preserves_native_occurrences_and_truthful_source():

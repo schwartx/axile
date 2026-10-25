@@ -164,7 +164,7 @@ def observation(
     result = _mapping(record.result)
     assets = _mapping(result.get("account_assets"))
     asset = _number(assets.get("total_asset"))
-    if not is_asset_observation(assets, result):
+    if not is_asset_observation(assets):
         asset = None
     target_weight = _target(_mapping(record.input).get("curr_target"))
     if target_weight is None:

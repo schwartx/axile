@@ -1,4 +1,4 @@
-"""Revision 0037 trigger invariants and lossless historical Rust migration."""
+"""Revision 0034 trigger invariants and lossless historical Rust migration."""
 
 import json
 from contextlib import contextmanager
@@ -23,7 +23,7 @@ def _connect(database):
 
 
 def _upgrade(database):
-    return initialize_native_database(database, revision="0041")
+    return initialize_native_database(database, revision="0034")
 
 
 def _downgrade(database):
@@ -90,7 +90,7 @@ def _insert_trade(connection, *, record_id=1, price=1):
     )
 
 
-def test_child_write_invalidates_only_its_record_and_versions_account(fact_connection):
+def test_child_write_versions_only_its_account(fact_connection):
     connection = fact_connection
     _insert_trade(connection, price=0)
     assert business_evidence(
@@ -103,7 +103,7 @@ def test_child_write_invalidates_only_its_record_and_versions_account(fact_conne
     )
 
 
-def test_input_write_does_not_match_unrelated_null_result_input_refs(fact_connection):
+def test_input_write_does_not_version_unrelated_accounts(fact_connection):
     connection = fact_connection
     connection.exec_driver_sql(
         "INSERT INTO execution_input_target(input_id,role,map_key,value,audit_evidence) "
@@ -152,11 +152,14 @@ def test_analysis_publication_does_not_invalidate_business_source(fact_connectio
     connection = fact_connection
     before = connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     connection.exec_driver_sql(
-        "INSERT INTO performance_cost_execution(snapshot_id,record_id,time,success,noop,payload) VALUES('published',1,0,1,0,'{}')"
+        "INSERT INTO performance_snapshot(id,account_id,source_version,logic_version,engine_version,computed_at) VALUES('publication',1,1,'1','1','now')"
     )
     assert business_evidence(
         connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     ) == business_evidence(before)
+    assert business_evidence(
+        connection.exec_driver_sql("SELECT COUNT(*) FROM performance_snapshot").scalar_one()
+    ) == business_evidence(1)
 
 
 @pytest.fixture
@@ -277,7 +280,7 @@ def test_downgrade_rejects_unrepresented_pending_input_without_mutation(legacy_c
             connection.exec_driver_sql("SELECT * FROM execution_input ORDER BY id").all()
         ) == business_evidence(inputs_before)
         assert "raw_input" not in {column["name"] for column in sa.inspect(connection).get_columns("executerecord")}
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0041"
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0034"
 
 
 def test_terminal_delete_retains_asset_and_input_referenced_by_audit(legacy_connection):
@@ -363,9 +366,9 @@ def test_migrated_decision_cold_resolver_uses_explicit_original_selector(legacy_
     with _connect(database) as connection:
         _decision_event(connection, now, original)
     _upgrade(database)
-    resolved = native_store_call(database, "list_execution_events", {"execution_id": "migration-exec"})["data"][0][
-        "details"
-    ]
+    resolved = json.loads(
+        native_store_call(database, "list_execution_events_json", {"execution_id": "migration-exec"})
+    )["data"][0]["details"]
     decision = {key: value for key, value in resolved["decision"].items() if key != "business_facts_ref"}
     assert business_evidence(decision) == business_evidence(original["decision"])
     assert business_evidence(list(decision)) == business_evidence(list(original["decision"]))
@@ -581,7 +584,7 @@ def test_migration_context_dedup_requires_existing_outbox_and_downgrades_lossles
         ) == business_evidence("calling")
 
 
-def test_independent_asset_indices_preserve_old_execution_projections(legacy_connection):
+def test_independent_asset_indices_version_account_and_preserve_execution_assets(legacy_connection):
     database, metadata, now = legacy_connection
     with _connect(database) as connection:
         connection.execute(
@@ -625,3 +628,5 @@ def test_independent_asset_indices_preserve_old_execution_projections(legacy_con
             > previous_version
         )
         connection.exec_driver_sql("UPDATE business_asset_snapshot SET total_asset=15 WHERE record_id=1")
+    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    assert result["account_assets"]["total_asset"] == 15

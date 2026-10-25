@@ -1,7 +1,7 @@
 //! Python 绑定:每业务函数一个 typed 入口,进程内直调;纯透传查询返回 JSON 字节。
 
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyFloat, PyInt, PyTuple};
 use pyo3::Py;
@@ -177,6 +177,18 @@ fn business_request(stage: &str, request_json: &str) -> Result<Value, AnalysisEr
 }
 
 #[pyfunction]
+fn normalize_execution_result(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            let request = crate::json_codec::parse(request_json)
+                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error))?;
+            crate::business_facts_ops::result_head::normalize_legacy_result(&request)
+        })
+        .map_err(|error| PyTypeError::new_err(error.error))?;
+    json_to_py(py, &result)
+}
+
+#[pyfunction]
 fn execution_notification_context(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(|| {
@@ -257,7 +269,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     migration_downgrade => crate::migrations::migration_downgrade,
     database_probe => crate::database_probe::probe,
     account_get => crate::accounts::account_get,
-    account_list => crate::accounts::account_list,
     account_create => crate::accounts::account_create,
     account_create_replay => crate::accounts::account_create_replay,
     account_copy => crate::accounts::account_copy,
@@ -270,7 +281,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     portfolio_latest_account => crate::accounts::portfolio_latest_account,
     account_stop_for_clear => crate::accounts::account_stop_for_clear,
     time_check_start => crate::time_check::start,
-    time_check_get => crate::time_check::get,
     time_check_persist => crate::time_check::persist,
     time_check_save => crate::time_check::save,
     time_check_claim => crate::time_check::claim,
@@ -302,7 +312,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     supplement_cancel_groups => crate::supplements::cancel_groups,
     supplement_expire_group => crate::supplements::expire_group,
     supplement_recover => crate::supplements::recover_supplements,
-    runtime_sync_enqueue => crate::runtime_sync::enqueue,
     runtime_sync_begin_attempt => crate::runtime_sync::begin_attempt,
     runtime_sync_finish_attempt => crate::runtime_sync::finish_attempt,
     runtime_sync_scan => crate::runtime_sync::scan,
@@ -323,8 +332,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     append_execution_event => crate::audit_ops::append_execution_event,
     append_execution_artifact => crate::audit_ops::append_execution_artifact,
     append_execution_audit_batch => crate::audit_ops::append_execution_audit_batch,
-    list_execution_events => crate::audit_ops::list_execution_events,
-    list_execution_artifacts => crate::audit_ops::list_execution_artifacts,
     resolve_execution_artifact => crate::audit_ops::resolve_execution_artifact,
     analysis_context => crate::analysis_ops::context,
     analysis_calendar_save => crate::analysis_ops::save_calendar,
@@ -333,7 +340,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     control_monitor_inputs => crate::control_monitor::control_monitor_inputs,
     control_monitor_refresh => crate::control_monitor::control_monitor_refresh,
     control_monitor_recover => crate::control_monitor::control_monitor_recover,
-    control_quota_warnings => crate::control_monitor::control_quota_warnings,
     control_quota_pending => crate::control_monitor::control_quota_pending,
     control_load_baseline => crate::control_store::load_baseline,
     control_register_session => crate::control_store::register_session,
@@ -343,7 +349,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     save_submission_monitor => crate::submissions::save_submission_monitor,
     order_execution_links => crate::submissions::order_execution_links,
     maintenance_performance_dedupe => crate::maintenance_ops::performance_dedupe,
-    maintenance_dummy_repair => crate::maintenance_ops::dummy_repair,
     maintenance_replay_report => crate::maintenance_ops::replay_report,
     maintenance_replay_observe => crate::maintenance_ops::replay_observe,
 }
@@ -351,7 +356,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
 business_operations! { register_bytes_operations, business_bytes_operation, PyBytes;
     account_list_json => crate::accounts::account_list_json,
     account_info_json => crate::accounts::account_info_json,
-    account_runtime_sync_json => crate::accounts::account_runtime_sync_json,
     account_connection_json => crate::accounts::account_connection_json,
     account_portfolio_records_json => crate::accounts::account_portfolio_records_json,
 }
@@ -377,6 +381,10 @@ fn collect_evidence(
 }
 
 business_operations! { register_json_operations, business_json_operation, PyBytes;
+    list_execution_events_json => crate::audit_ops::list_execution_events_json,
+    list_execution_artifacts_json => crate::audit_ops::list_execution_artifacts_json,
+    account_runtime_sync_json => crate::runtime_sync::public_state,
+    notifications_get_system_json => crate::notifications::get_system,
     portfolio_query_json => crate::portfolio_ops::portfolio_query,
     portfolio_operation_json => crate::portfolio_ops::portfolio_operation,
     account_update_backtest => crate::accounts::account_update_backtest,
@@ -804,6 +812,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(publication_status, m)?)?;
     m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_execution_result, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
 }

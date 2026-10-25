@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
-
-const PREFIX: &str = "business_facts_0037_";
+const PREFIX: &str = "business_facts_0034_";
 #[derive(Clone)]
 struct ForeignKey {
     parent: String,
@@ -219,7 +218,7 @@ fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()
                 .map(|scope| scope.1.clone())
                 .collect::<Vec<_>>()
                 .join(" UNION ");
-            let body = format!("INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL;");
+            let body = format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL;");
             let condition = if action == "INSERT"
                 && ![
                     "executerecord",
@@ -334,7 +333,7 @@ fn cleanup(connection: &Connection, tables: &Registry) -> Result<()> {
 pub(super) fn drop_business(connection: &Connection) -> Result<()> {
     for row in rows(
         connection,
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'business_facts_0037_%'",
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'business_facts_0034_*'",
         [],
     )? {
         execute(
@@ -352,4 +351,15 @@ pub(super) fn install_business(connection: &Connection) -> Result<()> {
     parent_guards(connection, &tables)?;
     asset_guards(connection)?;
     cleanup(connection, &tables)
+}
+
+pub(super) fn install_analysis(connection: &Connection) -> Result<()> {
+    execute(connection,"CREATE TRIGGER analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL; END;")?;
+    let deletes = schema::ANALYSIS_TABLES
+        .iter()
+        .filter(|name| !matches!(**name, "performance_snapshot" | "analysis_calendar_day"))
+        .map(|name| format!("DELETE FROM {name} WHERE snapshot_id=OLD.id;"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    execute(connection, &format!("CREATE TRIGGER analysis_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN {deletes} END"))
 }

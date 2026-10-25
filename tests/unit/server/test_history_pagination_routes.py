@@ -23,8 +23,8 @@ from tests.unit.server._execution_test_support import build_account, insert_acco
 _ROUTES = [
     ("/account/execute_records/1", "execution_records", "executerecord"),
     ("/account/portfolio_records/1", "account_portfolio_records_json", "portfolioaccount"),
-    ("/account/executions/execution-1/events", "list_execution_events", "execution_event"),
-    ("/account/executions/execution-1/artifacts", "list_execution_artifacts", "execution_artifact"),
+    ("/account/executions/execution-1/events", "list_execution_events_json", "execution_event"),
+    ("/account/executions/execution-1/artifacts", "list_execution_artifacts_json", "execution_artifact"),
 ]
 
 

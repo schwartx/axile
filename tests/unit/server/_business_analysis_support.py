@@ -37,13 +37,13 @@ async def _release_oracle_connections(session) -> Path:
 def install_analysis_triggers(connection):
     """验证真实迁移已安装触发器；不再从生产 Python 迁移模块补建。"""
     revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-    assert revision == "0041", "请在打开测试事务前调用 initialize_native_database"
+    assert revision == "0034", "请在打开测试事务前调用 initialize_native_database"
     names = set(connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars())
     assert {
-        "analysis_facts_record_delete",
-        "business_facts_0037_record_cleanup",
-        "business_facts_0037_record_input_insert",
-        "business_facts_0037_asset_owner_update",
+        "analysis_snapshot_delete",
+        "business_facts_0034_record_cleanup",
+        "business_facts_0034_record_input_insert",
+        "business_facts_0034_asset_owner_update",
     } <= names
 
 
@@ -235,9 +235,11 @@ def record(index=1, **kwargs):
         created_at=(datetime(2026, 1, 1, 9) + timedelta(days=index - 1)).isoformat(),
         input={"curr_target": {"A": 1}},
         result={
+            "outcome": None,
             "account_assets": {"total_asset": 100 + index},
             "symbol_results": {
                 "A": {
+                    "outcome": None,
                     "first_tick": {"bid_price": 100 + index, "ask_price": 100 + index},
                     "sizing": {"unit_multiplier": 10},
                     "orders": [{"order_id": "buy", "direction": "BUY"}],
@@ -300,7 +302,6 @@ def _events(records, bindings, skips) -> list[dict]:
     from collections.abc import Mapping
 
     from axile.executor.session_closed import session_closed_scope
-    from axile.server.execution.legacy_compat import normalize_legacy_result
     from tests.unit.server._performance_costs_oracle import timestamp
 
     events = [
@@ -324,7 +325,7 @@ def _events(records, bindings, skips) -> list[dict]:
     for record in records:
         if record.is_success == 1:
             continue
-        raw = normalize_legacy_result(record.result)
+        raw = record.result
         if not isinstance(raw, Mapping):
             raise ValueError("Execution event result must be a mapping")
         status = raw.get("status")

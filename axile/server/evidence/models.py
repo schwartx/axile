@@ -63,14 +63,12 @@ class ExportBudget:
             raise EvidenceError("证据量超过导出上限，请缩小范围", code="EVIDENCE_TOO_LARGE", status=413)
 
 
-def parse_time(value: object, legacy_zone: ZoneInfo | None = None) -> datetime | None:
+def parse_time(value: object) -> datetime | None:
     """将已记录时间转换为 UTC；无时区历史时间采用声明的解释规则。"""
     if not isinstance(value, str) or not value:
         return None
     try:
         parsed = datetime.fromisoformat(value)
-        if parsed.tzinfo is None and legacy_zone is not None:
-            parsed = parsed.replace(tzinfo=legacy_zone)
         # tzinfo=None 时，astimezone 采用服务器本地时区，并按该日期处理夏令时。
         return parsed.astimezone(UTC)
     except (ValueError, OverflowError, OSError):
@@ -87,7 +85,6 @@ class EvidenceWindow:
     legacy_timezone: str | None = None
     start: datetime = field(init=False)
     end: datetime = field(init=False)
-    legacy_zone: ZoneInfo | None = field(init=False)
 
     def __post_init__(self) -> None:
         """校验日期和时区，并冻结对应 UTC 边界。"""
@@ -97,7 +94,8 @@ class EvidenceWindow:
             raise EvidenceError("日期范围须为 1～31 天", code="EVIDENCE_INVALID_RANGE")
         try:
             zone = ZoneInfo(self.timezone)
-            legacy = ZoneInfo(self.legacy_timezone) if self.legacy_timezone else None
+            if self.legacy_timezone:
+                ZoneInfo(self.legacy_timezone)
         except (ValueError, KeyError) as exc:
             raise EvidenceError("无效的 IANA 时区", code="EVIDENCE_INVALID_TIMEZONE") from exc
         try:
@@ -106,12 +104,6 @@ class EvidenceWindow:
             raise EvidenceError("结束日期超出支持范围", code="EVIDENCE_INVALID_RANGE") from exc
         object.__setattr__(self, "start", datetime.combine(self.start_date, datetime.min.time(), zone).astimezone(UTC))
         object.__setattr__(self, "end", datetime.combine(end_day, datetime.min.time(), zone).astimezone(UTC))
-        object.__setattr__(self, "legacy_zone", legacy)
-
-    def contains(self, value: object) -> bool | None:
-        """返回记录是否落在窗口内；无法解释的时间返回未知。"""
-        parsed = parse_time(value, self.legacy_zone)
-        return None if parsed is None else self.start <= parsed < self.end
 
     def contains_ms(self, value: int) -> bool:
         """按原始 Unix 毫秒时间判断控制事件窗口。"""

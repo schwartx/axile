@@ -141,10 +141,10 @@ def test_dashboard_rejects_corrupt_asset_facts(dashboard_database, mutation):
     path, _ = dashboard_database
     with closing(sqlite3.connect(path)) as connection, connection:
         guard = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE name='business_facts_0037_snapshot_asset_owner_update'"
+            "SELECT sql FROM sqlite_master WHERE name='business_facts_0034_snapshot_asset_owner_update'"
         ).fetchone()[0]
         # 历史损坏绕过一次写入守卫，恢复守卫后验证原生读取仍拒绝越权。
-        connection.execute("DROP TRIGGER business_facts_0037_snapshot_asset_owner_update")
+        connection.execute("DROP TRIGGER business_facts_0034_snapshot_asset_owner_update")
         connection.execute(mutation)
         connection.execute(guard)
     with pytest.raises(_core.NativeError, match="INVALID_DATA"):

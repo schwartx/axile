@@ -12,6 +12,7 @@ use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::business_facts_ops::summary_refs;
+use crate::control_audit::{context_kind, legacy_source};
 use crate::{asset_ops, audit_ops, business_detail, error::AnalysisError, storage_connection};
 
 const PAGE_SIZE: usize = 500;
@@ -360,29 +361,6 @@ impl<'a> Window<'a> {
     }
 }
 
-fn legacy_source(key: &str) -> Option<&'static str> {
-    let (prefix, tail) = key.split_once('-')?;
-    if tail.len() != 32
-        || !tail
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return None;
-    }
-    match prefix {
-        "orders" => Some("current_orders"),
-        "catalog" => Some("instrument_catalog"),
-        _ => None,
-    }
-}
-fn context_kind(kind: &str, key: &str) -> &'static str {
-    match kind {
-        "execution" => "execution",
-        "account_operation" => "account_operation",
-        "unknown" if legacy_source(key).is_some() => "account_operation",
-        _ => "unknown",
-    }
-}
 fn append_unique(list: &mut Value, value: Value) {
     let items = list.as_array_mut().expect("context list");
     if !items.contains(&value) {

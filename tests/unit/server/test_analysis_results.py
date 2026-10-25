@@ -10,7 +10,7 @@ from tests.conftest import initialize_native_database, require_native_store
 from tests.fixtures.rust_store.oracle_tables import RESULT_TABLES
 from tests.fixtures.rust_store.oracle_tables import analysis_snapshot as snapshots
 from tests.unit.server._analysis_results_support import iter_result_fact_batches
-from tests.unit.server.test_analysis_structured_migration import _connect
+from tests.unit.server._migration_support import _connect
 
 SETTINGS = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}
 ENGINE_VERSION = "equity-ledger-1"
@@ -165,8 +165,6 @@ def _database(tmp_path, snapshots_by_id):
                     logic_version="test",
                     engine_version=ENGINE_VERSION,
                     computed_at="2026-01-07T00:00:00",
-                    settings=SETTINGS,
-                    ranges={},
                     result_schema_version=2,
                     cost_schema_version=1,
                     read_view_schema_version=1,
@@ -211,10 +209,9 @@ def test_all_public_result_fields_round_trip_without_snapshot_json(tmp_path):
             )
             assert isinstance(content, bytes)
             assert json.loads(content) == expected["performance"]
-        # An intentionally empty legacy blob cannot supply any of these values.
         with _connect(database) as connection:
-            legacy = connection.execute(sa.select(snapshots.c.ranges)).scalar_one()
-        assert legacy == {}
+            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(performance_snapshot)")}
+        assert not {"settings", "ranges"} & columns
 
 
 def test_empty_result_preserves_nulls_and_required_calendar(tmp_path):

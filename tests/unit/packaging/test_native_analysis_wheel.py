@@ -110,17 +110,27 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "migration_upgrade",
         "migration_downgrade",
         "execution_notification_context",
+        "normalize_execution_result",
+        "list_execution_events_json",
+        "list_execution_artifacts_json",
+        "account_runtime_sync_json",
+        "notifications_get_system_json",
     } <= set(required)
 
 
 @pytest.mark.parametrize(
     ("head", "fact_schema", "missing", "error"),
     [
-        ("0041", 40, None, None),
-        ("0039", 40, None, "public migration head 0041"),
-        ("0041", 39, None, "analysis fact schema 40"),
-        ("0041", 40, "migration_upgrade", "missing required entrypoints"),
-        ("0041", 40, "execution_notification_context", "missing required entrypoints"),
+        ("0034", 40, None, None),
+        ("0033", 40, None, "public migration head 0034"),
+        ("0034", 39, None, "analysis fact schema 40"),
+        ("0034", 40, "migration_upgrade", "missing required entrypoints"),
+        ("0034", 40, "execution_notification_context", "missing required entrypoints"),
+        ("0034", 40, "normalize_execution_result", "missing required entrypoints"),
+        ("0034", 40, "list_execution_events_json", "missing required entrypoints"),
+        ("0034", 40, "list_execution_artifacts_json", "missing required entrypoints"),
+        ("0034", 40, "account_runtime_sync_json", "missing required entrypoints"),
+        ("0034", 40, "notifications_get_system_json", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(

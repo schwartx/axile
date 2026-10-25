@@ -224,7 +224,7 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
     )
     other = persist_result(database, {}, account_id=2, execution_id="keep-other", is_success=1)
     artifact = next(row for row in rows(database, "execution_artifact") if row["execution_id"] == "delete-summary")
-    assert "business_facts_ref" in artifact["content"]
+    assert artifact["content"] == journal
 
     if delete_account:
         message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))

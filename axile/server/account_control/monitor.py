@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
-from axile.executor.account_control.context import control_context_kind
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
 from axile.executor.account_control.models import AccountControlContextKind, AccountControlOverride
 from axile.executor.account_control.monitor import policy_fingerprint
@@ -178,8 +177,7 @@ class AccountControlMonitor:
         execution_sessions = [
             session
             for session in sessions
-            if control_context_kind(session.context_kind, session.execution_id)
-            != AccountControlContextKind.ACCOUNT_OPERATION
+            if session.effective_context_kind != AccountControlContextKind.ACCOUNT_OPERATION
         ]
         latest = max(execution_sessions, key=lambda session: session.id or 0, default=None)
         sources = self._sources.get(account_id, [])
@@ -210,8 +208,7 @@ class AccountControlMonitor:
         executions = [
             session
             for session in sessions
-            if control_context_kind(session.context_kind, session.execution_id)
-            != AccountControlContextKind.ACCOUNT_OPERATION
+            if session.effective_context_kind != AccountControlContextKind.ACCOUNT_OPERATION
         ]
         latest = max(executions, key=lambda session: session.id or 0, default=None)
         mark = (
@@ -295,8 +292,7 @@ class AccountControlMonitor:
         execution_sessions = [
             session
             for session in sessions
-            if control_context_kind(session.context_kind, session.execution_id)
-            != AccountControlContextKind.ACCOUNT_OPERATION
+            if session.effective_context_kind != AccountControlContextKind.ACCOUNT_OPERATION
         ]
         latest = max(execution_sessions, key=lambda session: session.id or 0, default=None)
         live, sampled, failed = self._live_source(account_id, sessions)

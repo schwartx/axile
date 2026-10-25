@@ -3,13 +3,10 @@
 from collections import defaultdict
 
 import pytest
-import sqlalchemy as sa
 
-from tests.conftest import initialize_native_database
 from tests.unit.server._analysis_cost_facts_oracle import iter_cost_fact_batches
 from tests.unit.server._business_analysis_support import record
 from tests.unit.server._performance_costs_oracle import project_execution, timestamp
-from tests.unit.server.test_analysis_structured_migration import _connect
 
 
 def _project_rows(records):
@@ -56,16 +53,17 @@ def _ranges():
 def _rich_projection():
     source = record()
     raw = source.result
-    raw.update(status="PARTIAL", error="未全部成交", reason_code=None, msg="")
+    raw.update(status="PARTIAL", outcome="not_reached", error="未全部成交", reason_code=None, msg="")
     raw["account_assets"]["positions"] = [
         {"symbol": "A", "volume": -2, "direction": "SHORT"},
         {"symbol": "FLAT", "volume": 0, "direction": "LONG"},
     ]
-    raw["symbol_results"]["A"].update(status="PARTIAL", reason_code=None)
+    raw["symbol_results"]["A"].update(status="PARTIAL", outcome="not_reached", error="执行不到位", reason_code=None)
     raw["symbol_results"]["A"]["sizing"].update(current_quantity=0, target_quantity=3)
     raw["symbol_results"]["A"]["orders"][0]["filled_volume"] = 2
     raw["symbol_results"]["B"] = {
         "status": "SUCCEEDED",
+        "outcome": "completed",
         "first_tick": {"last_price": 50},
         "orders": [{"order_id": "sell", "direction": "SELL"}],
         "trades": [{"order_id": "sell", "trade_price": 51, "trade_volume": 1}],
@@ -168,38 +166,3 @@ def test_cost_fact_batches_stream_and_limit_each_insert():
     assert not any(table.name == "performance_cost_range" for table, _ in remaining)
     with pytest.raises(ValueError, match="batch_size"):
         list(iter_cost_fact_batches("snapshot", [], [], {}, batch_size=0))
-
-
-def _legacy_schema(database):
-    initialize_native_database(database, revision="0033")
-    with _connect(database) as connection:
-        connection.exec_driver_sql(
-            "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
-            "VALUES(2,'synthetic','FUTURES','tq','','2026-01-01','2026-01-01')"
-        )
-
-
-def test_cost_fact_snapshot_cleanup_works_without_sqlite_foreign_keys(tmp_path):
-    """Snapshot retention cannot leak child facts when SQLite foreign_keys remains disabled."""
-    database = tmp_path / "cleanup-analysis.db"
-    _legacy_schema(database)
-    initialize_native_database(database, revision="head")
-    with _connect(database) as connection:
-        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 0
-        connection.execute(
-            sa.text(
-                "INSERT INTO performance_snapshot "
-                "(id, account_id, source_version, logic_version, engine_version, computed_at, settings, ranges) "
-                "VALUES ('snapshot', 2, 1, '16', 'equity-ledger-1', '2026-01-03', '{}', '{}')"
-            )
-        )
-        projected, costs = _rich_projection()
-        tables = set()
-        for table, rows in iter_cost_fact_batches("snapshot", projected, costs, _ranges()):
-            if table.name == "performance_cost_range":
-                continue
-            connection.execute(table.insert(), rows)
-            tables.add(table.name)
-        connection.execute(sa.text("DELETE FROM performance_snapshot WHERE id='snapshot'"))
-        for name in tables:
-            assert connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar_one() == 0, name

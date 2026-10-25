@@ -87,7 +87,9 @@ fn detail(connection: &Connection, record: &Object) -> Result<Value> {
         .get("account_id")
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid("invalid migration account id"))?;
-    business_detail::read(connection, account_id, id(record)?).map_err(AnalysisError::from)
+    let detail =
+        business_detail::read(connection, account_id, id(record)?).map_err(AnalysisError::from)?;
+    Ok(detail)
 }
 
 fn content(artifact: &Object) -> Value {
@@ -180,8 +182,12 @@ fn store_changes(
 }
 
 fn write_artifact(connection: &Connection, artifact: &Object, document: &Value) -> Result<()> {
-    connection.execute("UPDATE execution_artifact SET content=?1 WHERE id=?2",
-        params![document.to_string(), id(artifact)?]).map_err(sql)?;
+    connection
+        .execute(
+            "UPDATE execution_artifact SET content=?1 WHERE id=?2",
+            params![document.to_string(), id(artifact)?],
+        )
+        .map_err(sql)?;
     legacy::invalidate(connection, text(artifact, "execution_id"))
 }
 

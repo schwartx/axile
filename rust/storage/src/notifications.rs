@@ -250,7 +250,7 @@ pub fn get_system(path: &str, _request: &Value) -> Result<Value, AnalysisError> 
         connection.query_row(
             "SELECT finished_at,mode,event_type,execution_id,account_id,ok,error FROM system_notification_state WHERE id=1",
             [], |row| Ok(json!({"finished_at":row.get::<_,Option<String>>(0)?,"mode":row.get::<_,Option<String>>(1)?,"event_type":row.get::<_,Option<String>>(2)?,"execution_id":row.get::<_,Option<String>>(3)?,"account_id":row.get::<_,Option<i64>>(4)?,"ok":row.get::<_,Option<bool>>(5)?,"error":row.get::<_,Option<String>>(6)?})),
-        ).optional().map_err(database).map(|row| row.unwrap_or_else(|| json!({})))
+        ).optional().map_err(database).map(|row| row.unwrap_or_else(|| json!({"finished_at":null,"mode":null,"event_type":null,"execution_id":null,"account_id":null,"ok":null,"error":null})))
     })
 }
 

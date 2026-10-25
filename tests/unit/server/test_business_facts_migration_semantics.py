@@ -12,6 +12,7 @@ import sqlalchemy as sa
 
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
+from tests.unit.server._business_facts_test_support import audit_artifacts
 
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
 _BUSINESS_MAP_FIELDS = frozenset(
@@ -298,7 +299,7 @@ def _channel_documents():
     ]
 
 
-def _apply_0037(database):
+def _apply_0034(database):
     """Run the real Rust migration chain with every test-side connection closed."""
     return initialize_native_database(database)
 
@@ -637,7 +638,7 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
     """Historical records retain meaning through the actual one-time migration."""
     database, engine, expected = _migration_database(tmp_path, channel_documents=True)
     try:
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             columns = {column["name"] for column in sa.inspect(connection).get_columns("executerecord")}
             assert "raw_input" not in columns
@@ -689,7 +690,7 @@ def test_migration_shares_identical_input_and_keeps_differing_result_input(tmp_p
     """Input references preserve the independently recorded input observations."""
     database, engine, _ = _migration_database(tmp_path)
     try:
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             shared = connection.execute(sa.text("SELECT input_id, result_input_id FROM executerecord WHERE id=4")).one()
             different = connection.execute(
@@ -715,7 +716,7 @@ def test_migration_rejects_unmappable_roots_before_dropping_legacy_columns(tmp_p
             connection.execute(table.update().where(table.c.id == 12).values({column: invalid}))
             original_schema = _schema_signature(connection)
         with pytest.raises(require_native_store("migration_upgrade").NativeError) as failure:
-            _apply_0037(database)
+            _apply_0034(database)
         assert column in str(failure.value)
         assert "12" in str(failure.value)
         with engine.begin() as connection:
@@ -726,7 +727,7 @@ def test_migration_rejects_unmappable_roots_before_dropping_legacy_columns(tmp_p
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
             assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
             connection.execute(table.update().where(table.c.id == 12).values({column: {}}))
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             assert "raw_input" not in {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
     finally:
@@ -742,7 +743,7 @@ def test_migration_rejects_invalid_json_text_without_destroying_source(tmp_path,
             connection.execute(sa.text(f"UPDATE executerecord SET {column}=:value WHERE id=12"), {"value": "{"})
             original_schema = _schema_signature(connection)
         with pytest.raises(require_native_store("migration_upgrade").NativeError) as failure:
-            _apply_0037(database)
+            _apply_0034(database)
         assert column in str(failure.value)
         assert "12" in str(failure.value)
         with engine.begin() as connection:
@@ -754,7 +755,7 @@ def test_migration_rejects_invalid_json_text_without_destroying_source(tmp_path,
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
             assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
             connection.execute(sa.text(f"UPDATE executerecord SET {column}=:value WHERE id=12"), {"value": "{}"})
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             assert "raw_result" not in {item["name"] for item in sa.inspect(connection).get_columns("executerecord")}
     finally:
@@ -771,7 +772,7 @@ async def test_migration_preserves_small_malformed_root_states(tmp_path, column,
         with engine.begin() as connection:
             table = sa.Table("executerecord", sa.MetaData(), autoload_with=connection)
             connection.execute(table.update().where(table.c.id == 1).values({column: invalid}))
-        _apply_0037(database)
+        _apply_0034(database)
 
         detail = native_store_call(database, "read_execution_detail", {"account_id": 2, "record_id": 1})
         assert detail is not None
@@ -787,7 +788,7 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
     try:
         with engine.begin() as connection:
             expected_assets, expected_targets = _seed_historical_snapshots(connection)
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             inspector = sa.inspect(connection)
             assert "assets" not in {column["name"] for column in inspector.get_columns("account_asset_snapshot")}
@@ -853,7 +854,7 @@ def test_migration_stores_valid_stable_domains_in_columns_without_shadow_documen
     """Evidence reconstruction alone cannot excuse storing whole known trees in JSON."""
     database, engine, expected = _migration_database(tmp_path)
     try:
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             for table, expected_count in (
                 ("execution_order", 4),
@@ -942,7 +943,7 @@ async def test_migration_freezes_full_summary_and_restores_original_journal_wire
     try:
         with engine.begin() as connection:
             records, originals = _seed_summary_journals(connection)
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             table = sa.Table("execution_artifact", sa.MetaData(), autoload_with=connection)
             compacted = {
@@ -971,9 +972,7 @@ async def test_migration_freezes_full_summary_and_restores_original_journal_wire
             )
             hydrated.pop("business_facts_ref", None)
             _assert_same_evidence(originals[artifact_id]["content"], hydrated, "summary-cold-wire")
-            resolved = native_store_call(
-                database, "list_execution_artifacts", {"execution_id": records[record_id]["execution_id"]}
-            )["data"][0]["content"]
+            resolved = audit_artifacts(database, records[record_id]["execution_id"])["data"][0]["content"]
             resolved.pop("business_facts_ref", None)
             _assert_same_evidence(originals[artifact_id]["content"], resolved, "summary-owned-cold-read")
             _assert_same_evidence(records[record_id]["raw_result"], result, "summary-source-result")
@@ -995,7 +994,7 @@ async def test_migration_notification_references_require_matching_frozen_busines
     try:
         with engine.begin() as connection:
             records, original_events, _ = _seed_notification_outbox_evidence(connection)
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             metadata = sa.MetaData()
             metadata.reflect(connection, only=["execution_extension", "notification_event"])
@@ -1053,7 +1052,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
             # 版本落盘时失败，已转换的事实、摘要、通知引用和 DDL 必须一并回滚。
             connection.exec_driver_sql(
                 "CREATE TRIGGER fail_after_backfill BEFORE UPDATE OF version_num ON alembic_version "
-                "WHEN NEW.version_num='0041' "
+                "WHEN NEW.version_num='0034' "
                 "BEGIN SELECT RAISE(ABORT,'synthetic evidence verification failure'); END"
             )
             tables = {
@@ -1068,7 +1067,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
         with pytest.raises(
             require_native_store("migration_upgrade").NativeError, match="synthetic evidence verification failure"
         ):
-            _apply_0037(database)
+            _apply_0034(database)
         with engine.begin() as connection:
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
             assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
@@ -1076,7 +1075,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
                 current = [dict(row) for row in connection.execute(sa.select(table)).mappings()]
                 _assert_same_evidence(original_rows[name], current, f"rollback/{name}")
             connection.exec_driver_sql("DROP TRIGGER fail_after_backfill")
-        _apply_0037(database)
+        _apply_0034(database)
         with engine.begin() as connection:
             assert "raw_result" not in {
                 column["name"] for column in sa.inspect(connection).get_columns("executerecord")

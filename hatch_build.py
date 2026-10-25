@@ -24,8 +24,8 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
     raise RuntimeError('Native extension requires analysis fact schema 40')
-if getattr(module, 'PUBLIC_HEAD', None) != '0041':
-    raise RuntimeError('Native extension requires public migration head 0041')
+if getattr(module, 'PUBLIC_HEAD', None) != '0034':
+    raise RuntimeError('Native extension requires public migration head 0034')
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'execution_business_detail', 'asset_snapshots',
@@ -36,7 +36,9 @@ required = (
     'freeze_execution_input', 'freeze_execution_after_assets',
     'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
-    'execution_notification_context',
+    'execution_notification_context', 'normalize_execution_result',
+    'list_execution_events_json', 'list_execution_artifacts_json',
+    'account_runtime_sync_json', 'notifications_get_system_json',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

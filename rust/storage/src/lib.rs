@@ -38,7 +38,6 @@ pub(crate) mod fact_transactions;
 pub(crate) mod intents;
 pub mod journal;
 pub(crate) mod json_codec;
-pub(crate) mod legacy_execution;
 pub(crate) mod maintenance_ops;
 pub(crate) mod migrations;
 pub mod native_publication;

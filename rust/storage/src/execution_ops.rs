@@ -249,20 +249,6 @@ pub(crate) fn delete_execution_history_in(
         .map_err(sql)
 }
 
-/// 账户删除先清理审计及所有资产历史，再移除该账户剩余的冻结输入。
-pub(crate) fn delete_account_execution_inputs_in(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<(), AnalysisError> {
-    connection
-        .execute(
-            "DELETE FROM execution_input WHERE account_id=?1",
-            [account_id],
-        )
-        .map_err(sql)?;
-    Ok(())
-}
-
 fn read_snapshot<T>(
     path: &str,
     read: impl FnOnce(&Connection) -> Result<T, AnalysisError>,

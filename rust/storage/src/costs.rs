@@ -1,4 +1,4 @@
-//! 成本快照分页；类型化事实不读取 JSON，版本零保留冻结 payload 的兼容语义。
+//! 成本快照分页；只读取当前结构化结果。
 
 use std::collections::HashMap;
 
@@ -8,7 +8,6 @@ use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Row};
 use serde_json::{json, Map, Value};
 
 use crate::cost_summary::{sql_number, Summary, AGGREGATES};
-use crate::legacy_execution::{RAW_FIELDS as RAW_KEYS, SYMBOL_FIELDS as SYMBOL_KEYS};
 
 const EXECUTION_AGGREGATES: &str = "SELECT record_id,COUNT(*) AS trade_rows,COUNT(value) AS valued, \
     SUM(value) AS total_value,SUM(cost) AS total_cost, \
@@ -18,6 +17,23 @@ const EXECUTION_AGGREGATES: &str = "SELECT record_id,COUNT(*) AS trade_rows,COUN
     SUM(CAST(estimated AS INTEGER)) AS estimated_count, \
     COUNT(DISTINCT CASE WHEN quantity IS NOT NULL THEN symbol END) AS symbols \
     FROM filtered_trades GROUP BY record_id";
+const RAW_KEYS: [&str; 8] = [
+    "status",
+    "task_status",
+    "error",
+    "outcome",
+    "outcome_reason",
+    "reason_code",
+    "msg",
+    "execution_kind",
+];
+const SYMBOL_KEYS: [&str; 5] = [
+    "status",
+    "error",
+    "outcome",
+    "outcome_reason",
+    "reason_code",
+];
 
 fn failure(code: &str, message: &str) -> String {
     format!("{code}:{message}")
@@ -132,12 +148,9 @@ impl Scope {
         };
         let execution_columns = "snapshot_id,record_id,time,success,noop,key,execution_id,created_at,is_success,duration_sec,trade_count,symbol_count,position_count,positions_present,reason,raw_present,has_symbol_results,raw_status,raw_task_status,raw_error,raw_outcome,raw_outcome_reason,raw_reason_code,raw_msg,raw_execution_kind";
         let trade_columns = "snapshot_id,id,record_id,symbol,time,day,value,cost,loss_bp,fee,fee_currency,estimated,side,quantity,price,reference,reference_source";
-        // 旧表的 side/quantity 来自 payload，先投影再应用相同的过滤和聚合。
-        let trade_source = "performance_cost_trade".to_owned();
-        let selected_trade_columns = trade_columns;
         Ok(Self { cte: format!(
             "WITH base_executions AS (SELECT {execution_columns} FROM performance_cost_execution WHERE {}), \
-             filtered_trades AS (SELECT {selected_trade_columns} FROM {trade_source} WHERE {}), \
+             filtered_trades AS (SELECT {trade_columns} FROM performance_cost_trade WHERE {}), \
              filtered_executions AS (SELECT * FROM base_executions{}) ",
             execution_filters.join(" AND "), trade_filters.join(" AND "), execution_selection), args })
     }
@@ -671,87 +684,6 @@ pub(crate) fn snapshot_executions(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn legacy_database() -> Connection {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE performance_snapshot(id TEXT,account_id INTEGER,data_until TEXT,
-             logic_version TEXT,engine_version TEXT,cost_schema_version INTEGER,ranges TEXT);
-             CREATE TABLE performance_cost_execution(snapshot_id TEXT,record_id INTEGER,time REAL,
-             success INTEGER,noop INTEGER,payload TEXT);
-             CREATE TABLE performance_cost_trade(snapshot_id TEXT,id INTEGER,record_id INTEGER,symbol TEXT,
-             time REAL,day TEXT,value REAL,cost REAL,loss_bp REAL,fee REAL,fee_currency TEXT,estimated INTEGER,
-             payload TEXT);",
-        ).unwrap();
-        let ranges = json!({"all":{"performance":{"baseline":"2026-01-01T09:00:00",
-            "end":"2026-01-03T09:00:00"}},"30":{"performance":{"baseline":null,"end":null}}});
-        connection
-            .execute(
-                "INSERT INTO performance_snapshot VALUES('legacy',2,'2026-01-03T09:00:00',
-            '19','equity-ledger-1',0,?1)",
-                [ranges.to_string()],
-            )
-            .unwrap();
-        for (id, time, success, noop) in [
-            (1, "2026-01-02T09:00:00", true, false),
-            (2, "2026-01-03T09:00:00", false, false),
-            (3, "2026-01-01T09:00:00", true, true),
-        ] {
-            let payload = json!({"key":id.to_string(),"record":{"id":id,"execution_id":9007199254740993_i64,
-                "created_at":time,"is_success":i64::from(success),"raw_result":{"outcome":"completed",
-                    "symbol_results":{"A":{"status":"SUCCEEDED","trades":[{}]}}}},
-                "noop":noop,"tradeCount":null,"attempts":[{"symbol":"A","reason":"历史原因"}],
-                "positions":null,"transactions":[],"custom":true});
-            let timestamp = crate::snapshots::timestamp(time).unwrap() as f64 / 1000.0;
-            connection
-                .execute(
-                    "INSERT INTO performance_cost_execution VALUES('legacy',?1,?2,?3,?4,?5)",
-                    rusqlite::params![id, timestamp, success, noop, payload.to_string()],
-                )
-                .unwrap();
-        }
-        for (id, symbol, value, cost, side, quantity, fee, estimated) in [
-            (1, "A", Some(100.0), 2.0, "buy", Some(2.0), Some(0.0), false),
-            (2, "B", None, 7.0, "none", None, None, true),
-        ] {
-            let time = crate::snapshots::timestamp("2026-01-02T09:00:00").unwrap() as f64 / 1000.0;
-            let payload = json!({"symbol":symbol,"day":"2026-01-02","time":time,"timeEstimated":estimated,
-                "side":side,"quantity":quantity,"value":value,"cost":cost,"custom":9007199254740993_i64});
-            connection
-                .execute(
-                    "INSERT INTO performance_cost_trade VALUES('legacy',?1,1,?2,?3,'2026-01-02',
-                ?4,?5,200,?6,?7,?8,?9)",
-                    rusqlite::params![
-                        id,
-                        symbol,
-                        time,
-                        value,
-                        cost,
-                        fee,
-                        fee.map(|_| "CNY"),
-                        estimated,
-                        payload.to_string()
-                    ],
-                )
-                .unwrap();
-        }
-        connection
-    }
-
-    fn legacy_request(dimension: &str) -> Value {
-        json!({"account_id":2,"snapshot_id":"legacy","range":"all","dimension":dimension,
-            "sort":"time","limit":100,"cursor_scope":"scope","logic_version":"19",
-            "engine_version":"equity-ledger-1"})
-    }
-
-    #[test]
-    fn legacy_snapshots_expire_before_payloads_are_decoded() {
-        let connection = legacy_database();
-        connection.execute_batch("UPDATE performance_snapshot SET ranges='invalid JSON';").unwrap();
-        for dimension in ["execution", "trade", "symbol", "summary"] {
-            assert!(query_costs(&connection, &legacy_request(dimension)).unwrap_err().starts_with("SNAPSHOT_EXPIRED:"));
-        }
-    }
 
     #[test]
     fn empty_cursor_matches_first_page() {

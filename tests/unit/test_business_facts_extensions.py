@@ -71,7 +71,7 @@ def test_historical_non_object_root_does_not_become_empty_object(native_database
 
 def test_historical_scalar_nonfinite_root_is_json_safe(tmp_path):
     path = tmp_path / "legacy-scalar.db"
-    initialize_native_database(path, revision="0036")
+    initialize_native_database(path, revision="0033")
     seed_account(path)
     sql(
         path,

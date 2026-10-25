@@ -5,9 +5,8 @@ import json
 import sqlalchemy as sa
 
 from tests.conftest import native_store_call
-from tests.unit.server.test_analysis_structured_migration import _connect, _downgrade, _upgrade
-from tests.unit.server.test_analysis_structured_migration import database as structured_database  # noqa: F401
-from tests.unit.server.test_summary_guard_migration import _seed_legacy_evidence
+from tests.unit.server._migration_support import _connect, _downgrade, _upgrade
+from tests.unit.server._migration_support import database as structured_database  # noqa: F401
 
 
 def test_invalid_target_values_migrate_without_losing_original_evidence(request):
@@ -18,7 +17,6 @@ def test_invalid_target_values_migrate_without_losing_original_evidence(request)
         "normalized_weights": {"bad": [1, 2], "zero": 0},
     }
     with _connect(database) as connection:
-        _seed_legacy_evidence(connection)
         connection.execute(
             sa.text(
                 "INSERT INTO target_weight_snapshot(id,portfolio_id,account_id,execution_id,source,calculated_at,raw_weights,normalized_weights) "
@@ -26,7 +24,7 @@ def test_invalid_target_values_migrate_without_losing_original_evidence(request)
             ),
             {"raw": json.dumps(expected["raw_weights"]), "normalized": json.dumps(expected["normalized_weights"])},
         )
-    _upgrade(database, "0041")
+    _upgrade(database, "0034")
     actual = native_store_call(
         database, "target_operation", {"op": "latest_account", "account_id": 2, "portfolio_id": 11}
     )

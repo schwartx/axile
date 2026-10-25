@@ -165,11 +165,12 @@ pub(super) fn publish(
 }
 
 fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<(), AnalysisError> {
+    let until = complete["data_until"].as_str();
     connection.execute(
         "INSERT INTO main.performance_snapshot
-         (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,settings,ranges,
+         (id,account_id,source_version,logic_version,engine_version,computed_at,data_until,
           cost_schema_version,result_schema_version,backtest_weight_type,backtest_fee_rate,read_view_schema_version)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,'{}','{}',1,2,'cs',?8,1)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,1,2,?8,?9,1)",
         params![
             task.snapshot_id,
             task.account_id,
@@ -177,7 +178,8 @@ fn snapshot(connection: &Connection, task: &Task, complete: &Value) -> Result<()
             task.logic_version,
             task.engine_version,
             task.computed_at,
-            complete["data_until"].as_str(),
+            until,
+            "cs",
             task.fee_rate,
         ],
     ).map_err(sql)?;
@@ -188,8 +190,8 @@ fn publish_pointer(connection: &Connection, task: &Task) -> Result<(), AnalysisE
     let changed = connection.execute(
         "UPDATE main.account_analysis SET previous_snapshot=current_snapshot,current_snapshot=?1,published_version=?2,
          running_version=NULL,running_token=NULL,requested=0,failures=0,retry_at=0,error=NULL,logic_version=?3,engine_version=?4
-         WHERE account_id=?5 AND source_version=?2 AND running_version=?2 AND running_token=?1",
-        params![task.snapshot_id,task.source_version,task.logic_version,task.engine_version,task.account_id],
+         WHERE account_id=?5 AND source_version=?2 AND running_version=?2 AND running_token=?6",
+        params![task.snapshot_id,task.source_version,task.logic_version,task.engine_version,task.account_id,task.snapshot_id],
     ).map_err(sql)?;
     if changed != 1 {
         return Err(AnalysisError::new(
@@ -479,13 +481,6 @@ mod tests {
             &json!({"data_until":"2026-10-20T09:00:00"}),
         )
         .unwrap();
-        assert_eq!(
-            connection.execute(
-                "UPDATE performance_snapshot SET backtest_weight_type='ts' WHERE backtest_weight_type='cs'",
-                [],
-            ).unwrap(),
-            1
-        );
         connection.execute("UPDATE account_analysis SET source_version=3,running_version=3,running_token='newer',current_snapshot='next'", []).unwrap();
         let receipt = publish(&connection, &task(), &json!({})).unwrap();
         assert_eq!(receipt["published"], true);

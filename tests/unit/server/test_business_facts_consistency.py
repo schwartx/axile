@@ -20,6 +20,7 @@ from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
 
 _CREATED = "2026-10-20T09:30:00.000001"
@@ -167,7 +168,7 @@ def _artifact(path, execution_id):
 
 
 def _resolved(path, execution_id):
-    result = native_store_call(path, "list_execution_artifacts", {"execution_id": execution_id})
+    result = audit_artifacts(path, execution_id)
     assert result["count"] == 1
     return result["data"][0]["content"]
 

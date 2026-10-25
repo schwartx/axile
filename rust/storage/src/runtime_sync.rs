@@ -51,6 +51,31 @@ pub(crate) fn get_on(
         .map_err(database)
 }
 
+pub fn public_state(path: &str, value: &Value) -> Result<Value, AnalysisError> {
+    let account_id = value["account_id"]
+        .as_i64()
+        .ok_or_else(|| AnalysisError::new("INVALID_REQUEST", "account_id 必须为整数"))?;
+    crate::with_read_snapshot(Path::new(path), |connection| {
+        let state = connection.query_row(
+            "SELECT s.status,s.revision,s.attempts,s.last_error,s.last_attempt_at,s.synchronized_at FROM account a LEFT JOIN accountruntimesync s ON s.account_id=a.id WHERE a.id=?1",
+            [account_id], |row| Ok(json!({"status":row.get::<_,Option<String>>(0)?,"revision":row.get::<_,Option<i64>>(1)?,"attempts":row.get::<_,Option<i64>>(2)?,"last_error":row.get::<_,Option<String>>(3)?,"last_attempt_at":row.get::<_,Option<String>>(4)?,"synchronized_at":row.get::<_,Option<String>>(5)?})),
+        ).optional().map_err(database)?.ok_or_else(|| AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在"))?;
+        if state["status"].is_null() {
+            return Err(AnalysisError::new(
+                "ACCOUNT_SYNC_PENDING",
+                "账户运行态尚待首次同步",
+            ));
+        }
+        if !matches!(
+            state["status"].as_str(),
+            Some("pending" | "synchronized" | "failed")
+        ) {
+            return Err(AnalysisError::new("ACCOUNT_DATA", "账户运行态状态无效"));
+        }
+        Ok(state)
+    })
+}
+
 pub(crate) fn enqueue_on(
     connection: &Connection,
     account_id: i64,
@@ -84,30 +109,6 @@ pub(crate) fn delete_on(connection: &Connection, account_id: i64) -> Result<(), 
             .map_err(database)?;
     }
     Ok(())
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Enqueue {
-    account_id: i64,
-    reset_worker: bool,
-    #[serde(default)]
-    create_request_key: Option<String>,
-    now: String,
-}
-
-pub fn enqueue(path: &str, value: &Value) -> Result<Value, AnalysisError> {
-    let input: Enqueue = request(value)?;
-    let connection = open_writer(Path::new(path))?;
-    immediate(&connection, || {
-        enqueue_on(
-            &connection,
-            input.account_id,
-            input.reset_worker,
-            input.create_request_key.as_deref(),
-            &input.now,
-        )
-    })
 }
 
 #[derive(Deserialize)]

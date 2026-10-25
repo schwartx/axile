@@ -22,9 +22,7 @@ from axile.server.db.models import (
     AccountRebalancePlanPublic,
     AccountRebalancePlanRowPublic,
     ExecutionArtifactListPublic,
-    ExecutionArtifactPublic,
     ExecutionEventListPublic,
-    ExecutionEventPublic,
     ExecutionStatusPublic,
     ExecutionTerminateRequest,
     ExecutionTerminateResponse,
@@ -36,7 +34,6 @@ from axile.server.db.models import (
 )
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
-from axile.server.execution.legacy_compat import normalize_execution_event_details, normalize_legacy_result
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import (
@@ -464,43 +461,25 @@ async def _terminate_account_execution(
 async def execution_events(
     execution_id: str,
     pagination: HistoryPaginationDep,
-) -> ExecutionEventListPublic:
+) -> Response:
     """查询指定执行标识对应的事件流."""
-    page = await native_operation(
-        "list_execution_events", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
+    content = await native_operation(
+        "list_execution_events_json", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
     )
-    data = [
-        ExecutionEventPublic.model_validate(row).model_copy(
-            update={"details": normalize_execution_event_details(row["details"])}
-        )
-        for row in page["data"]
-    ]
-    return ExecutionEventListPublic(
-        data=data,
-        count=page["count"],
-    )
+    return Response(content=content, media_type="application/json")
 
 
 @router.get("/executions/{execution_id}/artifacts", response_model=ExecutionArtifactListPublic)
 async def execution_artifacts(
     execution_id: str,
     pagination: HistoryPaginationDep,
-) -> ExecutionArtifactListPublic:
+) -> Response:
     """查询指定执行标识对应的执行附件."""
-    page = await native_operation(
-        "list_execution_artifacts", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
+    content = await native_operation(
+        "list_execution_artifacts_json",
+        {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit},
     )
-    artifact_data: list[ExecutionArtifactPublic] = []
-    for row in page["data"]:
-        item = ExecutionArtifactPublic.model_validate(row)
-        content = item.content
-        if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY and isinstance(content, dict):
-            content = normalize_legacy_result(content)
-        artifact_data.append(item.model_copy(update={"content": content}))
-    return ExecutionArtifactListPublic(
-        data=artifact_data,
-        count=page["count"],
-    )
+    return Response(content=content, media_type="application/json")
 
 
 @router.post("/empty_positions/{account_id}", response_model=ExecutionTriggerResponse)

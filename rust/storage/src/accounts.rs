@@ -335,12 +335,6 @@ pub fn account_get(path: &str, request: &Value) -> Result<Value, AnalysisError> 
     })
 }
 
-pub fn account_list(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        Ok(json!(list_on(connection)?))
-    })
-}
-
 fn public_account(mut account: Value, request: &Value) -> Result<Value, AnalysisError> {
     let channel = account["trade_channel"]
         .as_str()
@@ -421,32 +415,6 @@ pub fn account_info_json(path: &str, request: &Value) -> Result<Vec<u8>, Analysi
             require_on(connection, account_id)?,
             request,
         )?)
-    })
-}
-
-pub fn account_runtime_sync_json(path: &str, request: &Value) -> Result<Vec<u8>, AnalysisError> {
-    let account_id = id(request)?;
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        let state: Option<Option<String>> = connection
-            .query_row(
-                "SELECT CASE WHEN r.account_id IS NOT NULL THEN json_object(
-             'status',r.status,'revision',r.revision,'attempts',r.attempts,
-             'last_error',r.last_error,'last_attempt_at',r.last_attempt_at,
-             'synchronized_at',r.synchronized_at) END
-             FROM account a LEFT JOIN accountruntimesync r ON r.account_id=a.id WHERE a.id=?1",
-                [account_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        match state {
-            None => Err(AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在")),
-            Some(None) => Err(AnalysisError::new(
-                "RUNTIME_SYNC_PENDING",
-                "账户运行态尚待首次同步",
-            )),
-            Some(Some(value)) => Ok(value.into_bytes()),
-        }
     })
 }
 

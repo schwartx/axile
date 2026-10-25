@@ -10,6 +10,7 @@ from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import (
+    audit_artifacts,
     freeze_input,
     persist_result,
     read_result,
@@ -190,9 +191,7 @@ def test_summary_reference_preserves_distinct_evidence_without_field_projection_
     compact = rows(native_database, "execution_artifact")[0]["content"]
     assert "business_facts_ref" not in compact
     assert compact["symbol_results"]["A"]["orders"]
-    hydrated = native_store_call(native_database, "list_execution_artifacts", {"execution_id": execution_id})["data"][
-        0
-    ]["content"]
+    hydrated = audit_artifacts(native_database, execution_id)["data"][0]["content"]
     hydrated.pop("business_facts_ref", None)
     assert business_evidence(hydrated) == business_evidence(content)
 
@@ -221,7 +220,7 @@ def test_summary_reference_rejects_invalid_projection_version(native_database, p
         },
     )
     with pytest.raises(_core.NativeError, match="审计业务事实引用版本或视图无效") as error:
-        native_store_call(native_database, "list_execution_artifacts", {"execution_id": execution_id})
+        audit_artifacts(native_database, execution_id)
     assert error.value.args[0] == "BUSINESS_FACTS_REFERENCE"
 
 

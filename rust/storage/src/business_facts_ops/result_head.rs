@@ -319,6 +319,16 @@ pub(crate) fn normalize_legacy_result(raw: &Value) -> Result<Value, AnalysisErro
     }
 }
 
+pub(crate) fn normalize_event_details(details: &mut Value) {
+    if text(details.get("error")).is_none() {
+        if let Some(error) = text(details.get("debug").and_then(|debug| debug.get("error")))
+            .filter(|error| !technical_text(error))
+        {
+            details["error"] = json!(error);
+        }
+    }
+}
+
 fn has_orders(result: &Map<String, Value>) -> bool {
     ["orders", "trades"]
         .iter()

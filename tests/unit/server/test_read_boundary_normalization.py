@@ -2,12 +2,7 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 
-import pytest
-
-from axile.server.api.deps import HistoryPagination
-from axile.server.api.routes import account_execution
 from axile.server.api.routes.account_schedule import account_activity
 from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models import ExecuteRecord
@@ -20,11 +15,6 @@ _LEGACY_RAW = {
     "symbol_results": {"rb2610": {"outcome": "not_reached", "final_volume": 2}},
     "memory": {"message": "RuntimeError: 下单通道断开"},
 }
-
-
-@pytest.fixture
-def pagination():
-    return HistoryPagination(skip=0, limit=20)
 
 
 def test_account_activity_normalizes_legacy(tmp_path, monkeypatch):
@@ -69,39 +59,3 @@ def test_account_activity_normalizes_legacy(tmp_path, monkeypatch):
     activity = payload["data"][0]
     assert activity["record"]["status"] == "FAILED"
     assert activity["record"]["error"] == "执行失败，具体原因见执行证据"
-
-
-def test_execution_artifacts_normalize_summary_only(monkeypatch, pagination):
-    """附件端点：仅执行摘要附件归一，其他附件形状不动。"""
-    summary = SimpleNamespace(
-        id=1,
-        execution_id="legacy-exec",
-        artifact_type="execution_summary",
-        schema_version=2,
-        content={"outcome": "blocked", "summary": {"symbols_total": 1}},
-        created_at="2026-09-01T09:00:00",
-        account_id=1,
-    )
-    target = SimpleNamespace(
-        id=2,
-        execution_id="legacy-exec",
-        artifact_type="target_snapshot",
-        schema_version=2,
-        content={"target": {"rb2610": 1}},
-        created_at="2026-09-01T09:00:00",
-        account_id=1,
-    )
-
-    async def read(name: str, request: object):
-        assert name == "list_execution_artifacts"
-        assert request == {"execution_id": "legacy-exec", "skip": 0, "limit": 20}
-        return {"count": 2, "data": [vars(summary), vars(target)]}
-
-    monkeypatch.setattr(account_execution, "native_operation", read)
-    payload = asyncio.run(account_execution.execution_artifacts(execution_id="legacy-exec", pagination=pagination))
-    by_type = {item.artifact_type: item for item in payload.data}
-    assert by_type["execution_summary"].content["status"] == "BLOCKED"
-    assert by_type["execution_summary"].content["error"] == "执行受阻，具体原因见执行证据"
-    assert by_type["execution_summary"].content["summary"] == {"symbols_total": 1}
-    # 目标快照不是执行结果，不做任何推断。
-    assert by_type["target_snapshot"].content == {"target": {"rb2610": 1}}

@@ -9,7 +9,7 @@ from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.server.api.routes.account_crud import _account_public
 from axile.server.db.models import Account, AccountCreate
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
-from tests.unit.server.test_analysis_structured_migration import _connect, _downgrade, _upgrade
+from tests.unit.server._migration_support import _connect, _downgrade, _upgrade
 
 
 def _account_data():

@@ -211,8 +211,8 @@ async def _account_operation(name: str, request: dict[str, object]) -> Any:
             "ACCOUNT_NOT_FOUND": 404,
             "PORTFOLIO_NOT_FOUND": 404,
             "ACCOUNT_CONFLICT": 409,
+            "ACCOUNT_SYNC_PENDING": 202,
             "ACCOUNT_INPUT": 422,
-            "RUNTIME_SYNC_PENDING": 202,
         }.get(code, 500)
         raise HTTPException(status_code, detail=str(message)) from exc
 
@@ -767,9 +767,9 @@ async def _update_account(
 
 @router.get("/{account_id}/runtime-sync", response_model=AccountRuntimeSyncPublic)
 async def account_runtime_sync_status(account_id: int) -> Response:
-    """只读取运行态同步的公开字段，不加载账户配置。"""
+    """查询账户运行态对齐的失败原因与重试计数。"""
     return Response(
-        await _account_operation("account_runtime_sync_json", {"account_id": account_id}),
+        content=await _account_operation("account_runtime_sync_json", {"account_id": account_id}),
         media_type="application/json",
     )
 

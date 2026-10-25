@@ -9,6 +9,7 @@ import pytest
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import account_runtime_sync as runtime
 from axile.server.native_store import native_operation
+from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._runtime_db_support import runtime_database, runtime_rows, runtime_sync
 
 
@@ -141,24 +142,31 @@ def test_same_account_serializes_without_blocking_other_accounts(tmp_path, monke
 
 
 def test_enqueue_is_atomic_and_preserves_reset_request(tmp_path):
-    """独立连接同时登记目标不丢版本、reset 或创建幂等键。"""
+    """账户业务操作并发登记目标不丢版本、reset 或创建幂等键。"""
 
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db", wal=True) as path:
+            created = await native_operation(
+                "account_create",
+                {
+                    "account": build_account(portfolio_id=None).model_dump(mode="json"),
+                    "idempotency_key": "create-1",
+                    "now": "2026-10-01",
+                },
+            )
+            account_id = created["account"]["id"]
             await native_operation(
-                "runtime_sync_enqueue",
-                {"account_id": 1, "reset_worker": True, "create_request_key": "create-1", "now": "2026-10-01"},
+                "account_update",
+                {"account_id": account_id, "patch": {"account_config": {"password": "changed"}}, "now": "2026-10-01"},
             )
             await asyncio.gather(
                 *(
-                    native_operation(
-                        "runtime_sync_enqueue", {"account_id": 1, "reset_worker": False, "now": "2026-10-01"}
-                    )
+                    native_operation("account_update", {"account_id": account_id, "patch": {}, "now": "2026-10-01"})
                     for _ in range(4)
                 )
             )
-            sync = runtime_sync(path)
-            assert (sync.revision, sync.reset_worker, sync.create_request_key) == (5, True, "create-1")
+            sync = runtime_sync(path, account_id)
+            assert (sync.revision, sync.reset_worker, sync.create_request_key) == (6, True, "create-1")
 
     asyncio.run(scenario())
 
@@ -168,9 +176,7 @@ def test_startup_retries_synchronized_accounts_and_isolates_failure(tmp_path, mo
 
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db") as path:
-            await native_operation(
-                "runtime_sync_enqueue", {"account_id": 1, "reset_worker": False, "now": "2026-10-01"}
-            )
+            await native_operation("account_update", {"account_id": 1, "patch": {}, "now": "2026-10-01"})
             runtime_rows(path, "UPDATE accountruntimesync SET status='synchronized' WHERE account_id=1")
             calls = []
 
@@ -217,7 +223,10 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                     raise WorkerBackendExecutionError("technical", execution_error="CTP 登录校验失败")
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
-            await native_operation("runtime_sync_enqueue", {"account_id": 1, "reset_worker": True, "now": "2026-10-01"})
+            await native_operation(
+                "account_update",
+                {"account_id": 1, "patch": {"account_config": {"password": "changed"}}, "now": "2026-10-01"},
+            )
             sync = await runtime.reconcile_account_runtime(1, MagicMock())
             assert (sync.status, sync.reset_worker) == ("pending", True)
             assert reason in sync.last_error and "Traceback" in sync.last_error

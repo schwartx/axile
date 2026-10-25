@@ -1,34 +1,70 @@
-//! main 0033 与最终 0041 的转换；所有写入均留在迁移引擎持有的事务内。
-
-use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Params};
-use serde_json::{Map, Value};
+//! 从已发布的 0033 直接迁至最终结构；所有转换由外层事务原子提交。
 
 use crate::error::AnalysisError;
-use crate::json_codec::number_value;
+use crate::json_codec::{self as json, number_value};
+use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Params};
+use serde_json::{Map, Value};
 
 mod account_identity;
 mod business;
 mod guards;
-use crate::json_codec as json;
-mod restore;
 mod schema;
 
 type Object = Map<String, Value>;
 type Result<T> = std::result::Result<T, AnalysisError>;
 
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
+    reset_analysis(connection)?;
+    for table in [
+        "performance_cost_trade",
+        "performance_cost_execution",
+        "performance_snapshot",
+    ] {
+        execute(connection, &format!("DROP TABLE {table}"))?;
+    }
+    execute(
+        connection,
+        "ALTER TABLE account_analysis ADD COLUMN running_token TEXT",
+    )?;
     execute(connection, include_str!("structured/analysis.sql"))?;
     business::upgrade(connection)?;
-    account_identity::upgrade(connection)
+    account_identity::upgrade(connection)?;
+    guards::install_analysis(connection)
 }
 
 pub(super) fn downgrade(connection: &Connection) -> Result<()> {
-    business::preflight_downgrade(connection)?;
-    restore::cost_payloads(connection)?;
-    restore::results(connection)?;
-    account_identity::downgrade(connection)?;
     business::downgrade(connection)?;
-    execute(connection, include_str!("structured/analysis-down.sql"))
+    account_identity::downgrade(connection)?;
+    reset_analysis(connection)?;
+    execute(
+        connection,
+        "DROP TRIGGER analysis_account_channel; DROP TRIGGER analysis_snapshot_delete",
+    )?;
+    execute(
+        connection,
+        "ALTER TABLE account_analysis DROP COLUMN running_token",
+    )?;
+    for table in schema::ANALYSIS_TABLES {
+        execute(connection, &format!("DROP TABLE {}", quote(table)))?;
+    }
+    let legacy = include_str!("legacy/0012.sql");
+    execute(
+        connection,
+        &legacy[legacy
+            .find("CREATE TABLE performance_snapshot")
+            .expect("frozen cache schema")..],
+    )
+}
+
+fn reset_analysis(connection: &Connection) -> Result<()> {
+    execute(
+        connection,
+        "UPDATE account_analysis SET
+        source_version=source_version+1,published_version=0,
+        requested=(requested OR current_snapshot IS NOT NULL OR running_version IS NOT NULL),
+        current_snapshot=NULL,previous_snapshot=NULL,running_version=NULL,
+        failures=0,retry_at=0,error=NULL,logic_version=NULL,engine_version=NULL",
+    )
 }
 
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
@@ -196,16 +232,4 @@ fn page(connection: &Connection, table: &str, after: i64) -> Result<Vec<Object>>
         ),
         [after],
     )
-}
-
-fn snapshot_ids(connection: &Connection, after: Option<&str>) -> Result<Vec<String>> {
-    let found = rows(
-        connection,
-        "SELECT id FROM performance_snapshot WHERE (?1 IS NULL OR id>?1) ORDER BY id LIMIT 100",
-        [after],
-    )?;
-    found
-        .iter()
-        .map(|row| text(row, "id").map(str::to_owned))
-        .collect()
 }

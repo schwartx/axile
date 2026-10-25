@@ -304,8 +304,8 @@ mod tests {
         for revision in 1..=33 {
             upgrade(&connection, revision).unwrap();
         }
-        for revision in [33, 41] {
-            if revision == 41 {
+        for revision in [33, 34] {
+            if revision == 34 {
                 crate::migrations::structured::upgrade(&connection).unwrap();
             }
             let mut query = connection

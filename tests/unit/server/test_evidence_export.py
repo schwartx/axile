@@ -581,8 +581,8 @@ def test_execution_environment_is_frozen_before_trade_and_clear(monkeypatch):
 def test_window_handles_dst_and_offset_aware_timestamps():
     window = EvidenceWindow(date(2026, 11, 1), date(2026, 11, 1), "America/New_York")
     assert (window.end - window.start).total_seconds() == 25 * 3600
-    assert window.contains("2026-11-01T01:30:00-04:00") is True
-    assert window.contains("2026-11-02T00:00:00-05:00") is False
+    assert window.contains_ms(int(datetime.fromisoformat("2026-11-01T01:30:00-04:00").timestamp() * 1000)) is True
+    assert window.contains_ms(int(datetime.fromisoformat("2026-11-02T00:00:00-05:00").timestamp() * 1000)) is False
 
 
 def test_control_only_execution_and_local_vs_broker_rejection(database):
@@ -654,6 +654,8 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert first["executions"] == second["executions"]
     assert first["export_id"] != second["export_id"]
     _seed(database, _record())
+    # 终态工厂会完成 intent；此场景显式模拟旧 intent 尚未收敛。
+    sql(database, "UPDATE execution_intent SET status='RUNNING',finished_at=NULL WHERE execution_id='exec-1'")
     third = _manifest(_zip(client.get("/account/executions/exec-1/evidence")))
     assert third["executions"][0]["task_status"] == "SUCCEEDED"
     assert third["executions"][0]["business_outcome"] == "not_reached"
