@@ -24,7 +24,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast, override
 
@@ -1030,69 +1030,6 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             }
         )
         return provisional_order
-
-    def _cancel_timeout_orders(self, account_id: str, timeout: int | float) -> None:
-        """撤销指定账户中超时未完成的委托订单."""
-        try:
-            logger.info(f"开始检查账户 [{account_id}] 是否存在超时委托，超时时间设定为 {timeout} 秒")
-            unfinished_orders = self._query_unfinished_order_records(account_id)
-            now = datetime.now(timezone.utc).astimezone()
-
-            to_cancel: list[dict[str, str]] = []
-
-            for order in unfinished_orders:
-                if order.extra.get("account_id") != account_id:
-                    continue
-
-                created_at_raw = order.create_time
-                if not created_at_raw:
-                    logger.warning(f"委托 {order.order_id} 缺少 created_at 字段，跳过处理")
-                    continue
-
-                created_at = datetime.fromisoformat(created_at_raw)
-                if created_at.tzinfo is None:
-                    created_at = created_at.replace(tzinfo=now.tzinfo)
-
-                elapsed_time = (now - created_at).total_seconds()
-                if elapsed_time > timeout:
-                    logger.info(
-                        f"委托超时，准备撤销：cl_ord_id={order.extra.get('cl_ord_id')}，"
-                        f"symbol={order.symbol}，委托时间={created_at}，"
-                        f"已等待 {elapsed_time:.2f} 秒"
-                    )
-                    to_cancel.append(
-                        {
-                            "cl_ord_id": str(order.extra["cl_ord_id"]),
-                            "account_id": str(order.extra["account_id"]),
-                        }
-                    )
-
-            if to_cancel:
-                self._submit_cancel_request(wait_cancel_orders=to_cancel)
-                logger.success(f"成功提交撤销请求，共 {len(to_cancel)} 个超时委托已处理")
-            else:
-                logger.info("没有发现任何超时的委托，无需撤销")
-
-        except Exception as e:
-            logger.exception(f"处理超时撤单时发生异常: {e}")
-
-    def _filter_recent_orders(self, within_seconds: int, account_id: str) -> list[UnifiedOrder]:
-        """过滤指定 account_id 的订单，并返回在 within_seconds 秒内创建的订单."""
-        now = datetime.now(timezone(timedelta(hours=8), "Asia/Shanghai"))
-        return [
-            order
-            for order in self._query_order_records(account_id)
-            if order.create_time is not None
-            and (
-                now
-                - (
-                    datetime.fromisoformat(order.create_time).replace(tzinfo=now.tzinfo)
-                    if datetime.fromisoformat(order.create_time).tzinfo is None
-                    else datetime.fromisoformat(order.create_time)
-                )
-            ).total_seconds()
-            <= within_seconds
-        ]
 
     # ==================== 重写父类方法 ====================
 

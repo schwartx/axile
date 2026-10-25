@@ -1,6 +1,6 @@
 """账户、组合绑定与执行记录的原生读取入口。"""
 
-from axile.server.db.models import Account, AccountSnapshot, ExecuteRecord
+from axile.server.db.models import Account, AccountSnapshot
 from axile.server.db.models.base import now_str
 from axile.server.native_store import native_operation
 
@@ -36,21 +36,3 @@ async def get_latest_account_id_by_portfolio_id(portfolio_id: int) -> int | None
 async def get_latest_portfolio_id_by_account_id(account_id: int) -> int | None:
     """获取账户最后一条绑定历史所指向的组合。"""
     return await native_operation("account_latest_portfolio", {"account_id": account_id})
-
-
-async def get_latest_success_execute_record_by_account_id(account_id: int | None) -> ExecuteRecord | None:
-    """读取账户最近一次成功执行的紧凑头记录。"""
-    if account_id is None:
-        return None
-    rows = await native_operation(
-        "recent_execution_records", {"account_id": account_id, "limit": 1, "success_only": True}
-    )
-    return ExecuteRecord.model_validate(rows[0]) if rows else None
-
-
-async def get_recent_execute_records_by_account_id(account_id: int | None, limit: int = 20) -> list[ExecuteRecord]:
-    """按 ID 倒序读取账户最近执行的紧凑头记录。"""
-    if account_id is None:
-        return []
-    rows = await native_operation("recent_execution_records", {"account_id": account_id, "limit": limit})
-    return [ExecuteRecord.model_validate(row) for row in rows]

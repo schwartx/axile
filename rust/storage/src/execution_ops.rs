@@ -260,37 +260,6 @@ fn read_snapshot<T>(
     )
 }
 
-/// 内部调用只返回主记录标量，不读取完整历史结果。
-pub fn recent_execution_records(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let account_id = integer(request, "account_id")?;
-    let limit = integer(request, "limit")?;
-    if limit < 0 {
-        return Err(facts_error("执行记录数量不能为负"));
-    }
-    let success_only = request
-        .get("success_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    read_snapshot(path, |connection| {
-        let mut statement = connection
-            .prepare(
-                "SELECT * FROM executerecord WHERE account_id=?1 AND (?2=0 OR is_success=1)
-                 ORDER BY id DESC LIMIT ?3",
-            )
-            .map_err(sql)?;
-        let mut rows = statement
-            .query(params![account_id, success_only, limit])
-            .map_err(sql)?;
-        let mut records = Vec::new();
-        while let Some(row) = rows.next().map_err(sql)? {
-            records.push(Value::Object(
-                crate::business_detail::decode(row, "executerecord").map_err(facts_error)?,
-            ));
-        }
-        Ok(Value::Array(records))
-    })
-}
-
 pub fn read_execution_input(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let input_id = text(request, "input_id")?;
     read_snapshot(path, |connection| {

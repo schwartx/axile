@@ -321,7 +321,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     target_operation => crate::target_ops::target_operation,
     persist_execute_record => crate::execution_ops::persist_execute_record,
     delete_execution_history => crate::execution_ops::delete_execution_history,
-    recent_execution_records => crate::execution_ops::recent_execution_records,
     read_execution_input => crate::execution_ops::read_execution_input,
     read_execution_result => crate::execution_ops::read_execution_result,
     read_execution_detail => crate::execution_ops::read_execution_detail,
