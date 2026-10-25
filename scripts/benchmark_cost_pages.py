@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import base64
 import hashlib
 import http.client
 import json
@@ -28,12 +27,13 @@ except ModuleNotFoundError:
 
 def client(port, identity, output):
     """Measure HTTP independently from the server and retain full response evidence."""
-    from axile.server.performance_details import CostQuery, _cursor
+    from axile.server.performance_details import CostQuery
 
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=12)
     requests = []
     try:
         for repeat in range(3):
+            first_page_cursor = None
             for options in (
                 {},
                 {"sort": "cost"},
@@ -47,10 +47,9 @@ def client(port, identity, output):
                 query = CostQuery(snapshot_id=identity, dimension="symbol", **values)
                 params = query.model_dump(exclude_none=True)
                 if offset:
-                    digest, _ = _cursor(query, 2)
-                    params["cursor"] = base64.urlsafe_b64encode(
-                        json.dumps({"scope": digest, "offset": offset}).encode()
-                    ).decode()
+                    if first_page_cursor is None:
+                        raise ValueError("Frozen source requires a second symbol cost page")
+                    params["cursor"] = first_page_cursor
                 start = time.perf_counter()
                 connection.request("GET", "/api/v1/account/performance/2/costs?" + urlencode(params))
                 response = connection.getresponse()
@@ -59,6 +58,8 @@ def client(port, identity, output):
                 if response.status != 200:
                     raise RuntimeError(f"HTTP {response.status}")
                 value = json.loads(body)
+                if not options:
+                    first_page_cursor = value["next_cursor"]
                 canonical = json.dumps(value, sort_keys=True, allow_nan=False).encode()
                 requests.append(
                     {

@@ -637,14 +637,14 @@ async def _lifecycle_hashes(sessions, layout: str) -> dict:
         artifact_digest, event_digest = hashlib.sha256(), hashlib.sha256()
         for execution_id in executions:
             for operation, digest in (
-                ("list_execution_artifacts", artifact_digest),
-                ("list_execution_events", event_digest),
+                ("list_execution_artifacts_json", artifact_digest),
+                ("list_execution_events_json", event_digest),
             ):
-                page = await native_operation(operation, {"execution_id": execution_id, "limit": 500})
+                page = json.loads(await native_operation(operation, {"execution_id": execution_id, "limit": 500}))
                 if page["count"] != len(page["data"]):
                     raise AssertionError("Lifecycle oracle requires all audit rows, not a partial page")
                 for row in page["data"]:
-                    if operation == "list_execution_artifacts":
+                    if operation == "list_execution_artifacts_json":
                         evidence = artifact_business_evidence(SimpleNamespace(**row), row["content"])
                     else:
                         evidence = event_business_evidence(
