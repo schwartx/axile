@@ -361,6 +361,9 @@ async def create_account(
         from axile.server.connection_events import connection_hub
 
         connection_hub.changed(cast("int", db_account.id))
+    except HTTPException:
+        await session.rollback()
+        raise
     except ValueError as exc:
         await session.rollback()
         logger.exception(f"创建账户失败: {exc}")
@@ -837,6 +840,9 @@ async def _update_account(
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(account_id)
+    except HTTPException:
+        await session.rollback()
+        raise
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc

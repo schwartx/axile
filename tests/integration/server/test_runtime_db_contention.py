@@ -64,6 +64,7 @@ def test_engine_connections_enable_wal_full_and_busy_timeout(tmp_path: Path) -> 
                     assert await connection.scalar(text("PRAGMA journal_mode")) == "wal"
                     assert await connection.scalar(text("PRAGMA busy_timeout")) == SQLITE_BUSY_TIMEOUT_MS
                     assert await connection.scalar(text("PRAGMA synchronous")) == 2
+                    assert await connection.scalar(text("PRAGMA foreign_keys")) == 1
             script = """
 import asyncio, sys
 from sqlalchemy import text
@@ -76,6 +77,7 @@ async def check():
         assert await conn.scalar(text("PRAGMA journal_mode")) == "wal"
         assert await conn.scalar(text("PRAGMA busy_timeout")) == 30000
         assert await conn.scalar(text("PRAGMA synchronous")) == 2
+        assert await conn.scalar(text("PRAGMA foreign_keys")) == 1
     await engine.dispose()
 asyncio.run(check())
 """

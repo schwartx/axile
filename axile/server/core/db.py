@@ -36,6 +36,7 @@ def register_sqlite_concurrency_pragmas(target_engine: AsyncEngine) -> None:
             cursor.execute("PRAGMA journal_mode=WAL")
             # 控制计数与审计的已提交数据需要掉电持久性，不能用 NORMAL 换吞吐。
             cursor.execute("PRAGMA synchronous=FULL")
+            cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()
 
