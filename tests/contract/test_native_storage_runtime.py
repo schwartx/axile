@@ -150,8 +150,8 @@ def _assert_native_migrations() -> None:
     _core.migration_upgrade(str(database), "{}")
     with closing(sqlite3.connect(database)) as oracle:
         assert list(oracle.iterdump()) == before
-    _core.migration_downgrade(str(database), '{"public":"0036"}')
-    assert _core.migration_current(str(database), "{}")["public"] == "0036"
+    _core.migration_downgrade(str(database), '{"public":"0033"}')
+    assert _core.migration_current(str(database), "{}")["public"] == "0033"
     _core.migration_upgrade(str(database), "{}")
     assert _core.migration_current(str(database), "{}")["public"] == "0041"
     plan = _core.migration_check(str(database), '{"public":"head"}')

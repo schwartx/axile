@@ -337,6 +337,16 @@ def test_native_cost_bytes_pass_through_route(tmp_path, monkeypatch, dimension, 
             if typed:
                 await _discard_legacy_json(sessions)
             query = CostQuery(snapshot_id="snapshot", dimension=dimension, **filters)
+            if not typed:
+                monkeypatch.setattr(routes, "analysis_store", lambda: _core.Store(str(database)))
+                monkeypatch.setattr(routes, "_get_account_or_404", AsyncMock())
+                app = FastAPI()
+                app.include_router(routes.router)
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    response = await client.get("/performance/2/costs", params=query.model_dump(exclude_none=True))
+                    assert response.status_code == 410
+                    assert response.json()["detail"]["code"] == "SNAPSHOT_EXPIRED"
+                return
             content = _core.query_costs(
                 _core.Store(str(database)),
                 2,

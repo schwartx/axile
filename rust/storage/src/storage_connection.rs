@@ -1,10 +1,9 @@
 //! 进程内共享 SQLite 空闲连接；业务入口只能打开已有文件。
 
-use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
@@ -83,7 +82,6 @@ struct Session {
     database: PathBuf,
     identity: FileIdentity,
     mode: Mode,
-    generation: Arc<AtomicU64>,
     epoch: u64,
     connection: Connection,
 }
@@ -91,7 +89,7 @@ struct Session {
 #[derive(Debug, Default)]
 struct State {
     idle: Vec<Session>,
-    generations: HashMap<PathBuf, Arc<AtomicU64>>,
+    epoch: u64,
 }
 
 #[derive(Debug)]
@@ -136,18 +134,9 @@ impl Registry {
 }
 
 impl State {
-    fn generation(&mut self, database: &Path) -> Arc<AtomicU64> {
-        self.generations
-            .retain(|_, generation| Arc::strong_count(generation) > 1);
-        Arc::clone(
-            self.generations
-                .entry(database.to_owned())
-                .or_insert_with(|| Arc::new(AtomicU64::new(0))),
-        )
-    }
-
-    fn invalidate(&mut self, database: &Path) {
-        self.idle.retain(|session| session.database != database);
+    fn invalidate(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.idle.clear();
     }
 }
 
@@ -198,12 +187,11 @@ impl Drop for ConnectionLease {
         }
         if !clean(&session.connection)
             || file_identity(&session.database).ok() != Some(session.identity)
-            || session.generation.load(Ordering::Acquire) != session.epoch
         {
             return;
         }
         if let Ok(mut state) = self.registry.lock() {
-            if session.generation.load(Ordering::Acquire) != session.epoch {
+            if state.epoch != session.epoch {
                 return;
             }
             let evicted = (state.idle.len() == MAX_IDLE).then(|| state.idle.remove(0));
@@ -214,10 +202,8 @@ impl Drop for ConnectionLease {
     }
 }
 
-/// 迁移前后让同路径缓存失效；活动操作仍由 SQLite 保持原有事务并发语义。
+/// 迁移及显式关闭前后统一清空最多八条缓存；活动操作仍由 SQLite 保持事务语义。
 pub(crate) struct MigrationGuard {
-    database: PathBuf,
-    generation: Arc<AtomicU64>,
     registry: &'static Registry,
 }
 
@@ -226,9 +212,8 @@ impl Drop for MigrationGuard {
         if self.registry.pid != std::process::id() {
             return;
         }
-        self.generation.fetch_add(1, Ordering::AcqRel);
         if let Ok(mut state) = self.registry.lock() {
-            state.invalidate(&self.database);
+            state.invalidate();
         }
     }
 }
@@ -260,17 +245,9 @@ fn database_path(database: &Path) -> Result<PathBuf, AnalysisError> {
 
 impl Registry {
     fn migration_guard(&'static self, database: &Path) -> Result<MigrationGuard, AnalysisError> {
-        let database = database_path(database)?;
-        let registry = self;
-        let mut state = registry.lock()?;
-        let generation = state.generation(&database);
-        generation.fetch_add(1, Ordering::AcqRel);
-        state.invalidate(&database);
-        Ok(MigrationGuard {
-            database,
-            generation,
-            registry,
-        })
+        database_path(database)?;
+        self.lock()?.invalidate();
+        Ok(MigrationGuard { registry: self })
     }
 }
 
@@ -346,7 +323,7 @@ impl Registry {
         let identity = match file_identity(&database) {
             Ok(identity) => identity,
             Err(error) => {
-                registry.lock()?.invalidate(&database);
+                registry.lock()?.idle.retain(|session| session.database != database);
                 return Err(AnalysisError::caused_by("DATABASE_OPEN", error));
             }
         };
@@ -354,8 +331,7 @@ impl Registry {
         state
             .idle
             .retain(|session| session.database != database || session.identity == identity);
-        let generation = state.generation(&database);
-        let epoch = generation.load(Ordering::Acquire);
+        let epoch = state.epoch;
         let session = state
             .idle
             .iter()
@@ -374,7 +350,6 @@ impl Registry {
                 database,
                 identity,
                 mode,
-                generation,
                 epoch,
             },
         };

@@ -304,7 +304,7 @@ def _apply_0037(database):
 
 
 def _downgrade(database):
-    return native_store_call(database, "migration_downgrade", {"public": "0036"})
+    return native_store_call(database, "migration_downgrade", {"public": "0033"})
 
 
 def _schema_signature(connection):
@@ -372,9 +372,9 @@ def _contains_document(value, document):
 
 
 def _migration_database(tmp_path: Path, *, channel_documents=False):
-    """Prepare a real 0036 database with no production payloads or credentials."""
+    """Prepare a real 0033 database with no production payloads or credentials."""
     database = tmp_path / "business-facts-migration.db"
-    initialize_native_database(database, revision="0036")
+    initialize_native_database(database, revision="0033")
     engine = sa.create_engine(f"sqlite:///{database}", poolclass=sa.pool.NullPool)
     with engine.begin() as connection:
         expected = _seed_historical_records(connection, channel_documents=channel_documents)
@@ -724,7 +724,7 @@ def test_migration_rejects_unmappable_roots_before_dropping_legacy_columns(tmp_p
             original = connection.execute(sa.select(table.c[column]).where(table.c.id == 12)).scalar_one()
             _assert_same_evidence(invalid, original, column)
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
             connection.execute(table.update().where(table.c.id == 12).values({column: {}}))
         _apply_0037(database)
         with engine.begin() as connection:
@@ -752,7 +752,7 @@ def test_migration_rejects_invalid_json_text_without_destroying_source(tmp_path,
                 connection.execute(sa.text(f"SELECT {column} FROM executerecord WHERE id=12")).scalar_one()
             ) == business_evidence("{")
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
             connection.execute(sa.text(f"UPDATE executerecord SET {column}=:value WHERE id=12"), {"value": "{}"})
         _apply_0037(database)
         with engine.begin() as connection:
@@ -1053,7 +1053,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
             # 版本落盘时失败，已转换的事实、摘要、通知引用和 DDL 必须一并回滚。
             connection.exec_driver_sql(
                 "CREATE TRIGGER fail_after_backfill BEFORE UPDATE OF version_num ON alembic_version "
-                "WHEN NEW.version_num='0037' "
+                "WHEN NEW.version_num='0041' "
                 "BEGIN SELECT RAISE(ABORT,'synthetic evidence verification failure'); END"
             )
             tables = {
@@ -1071,7 +1071,7 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
             _apply_0037(database)
         with engine.begin() as connection:
             assert business_evidence(_schema_signature(connection)) == business_evidence(original_schema)
-            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0036"
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
             for name, table in tables.items():
                 current = [dict(row) for row in connection.execute(sa.select(table)).mappings()]
                 _assert_same_evidence(original_rows[name], current, f"rollback/{name}")

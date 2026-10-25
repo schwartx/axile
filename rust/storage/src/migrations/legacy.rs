@@ -304,11 +304,9 @@ mod tests {
         for revision in 1..=33 {
             upgrade(&connection, revision).unwrap();
         }
-        for revision in [33, 39] {
-            if revision == 39 {
-                for step in 34..=39 {
-                    crate::migrations::structured::upgrade(&connection, step).unwrap();
-                }
+        for revision in [33, 41] {
+            if revision == 41 {
+                crate::migrations::structured::upgrade(&connection).unwrap();
             }
             let mut query = connection
                 .prepare("PRAGMA index_list(target_weight_snapshot)")

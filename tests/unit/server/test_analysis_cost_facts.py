@@ -5,8 +5,8 @@ from collections import defaultdict
 import pytest
 import sqlalchemy as sa
 
-from tests.conftest import initialize_native_database, native_store_call
-from tests.unit.server._analysis_cost_facts_oracle import COST_FACT_SCHEMA_VERSION, iter_cost_fact_batches
+from tests.conftest import initialize_native_database
+from tests.unit.server._analysis_cost_facts_oracle import iter_cost_fact_batches
 from tests.unit.server._business_analysis_support import record
 from tests.unit.server._performance_costs_oracle import project_execution, timestamp
 from tests.unit.server.test_analysis_structured_migration import _connect
@@ -179,96 +179,11 @@ def _legacy_schema(database):
         )
 
 
-@pytest.mark.parametrize("extra_count", [0, 105])
-def test_cost_facts_migration_backfills_and_downgrades_without_losing_legacy_payloads(tmp_path, extra_count):
-    """Upgrade freezes typed facts while downgrade retains original immutable snapshot evidence."""
-    database = tmp_path / "legacy-analysis.db"
-    _legacy_schema(database)
-    projected, costs = _rich_projection()
-    extra_projected, extra_costs = _project_rows([record(index + 2) for index in range(extra_count)])
-    projected.extend(extra_projected)
-    costs.extend({**row, "id": index + 2} for index, row in enumerate(extra_costs))
-    with _connect(database) as connection:
-        legacy = sa.MetaData()
-        legacy.reflect(connection)
-        connection.execute(
-            legacy.tables["performance_snapshot"].insert(),
-            {
-                "id": "snapshot",
-                "account_id": 2,
-                "source_version": 3,
-                "logic_version": "16",
-                "engine_version": "equity-ledger-1",
-                "computed_at": "2026-01-03T00:00:00",
-                "settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002},
-                "ranges": _ranges(),
-            },
-        )
-        connection.execute(
-            legacy.tables["performance_cost_execution"].insert(),
-            [{"snapshot_id": "snapshot", **row} for row in projected],
-        )
-        connection.execute(
-            legacy.tables["performance_cost_trade"].insert(),
-            [{"snapshot_id": "snapshot", **row} for row in costs],
-        )
-    initialize_native_database(database, revision="0034")
-    with _connect(database) as connection:
-        assert connection.execute(sa.text("SELECT cost_schema_version FROM performance_snapshot")).scalar_one() == (
-            COST_FACT_SCHEMA_VERSION
-        )
-        row = (
-            connection.execute(
-                sa.text(
-                    "SELECT positions_present, position_count, raw_reason_code, raw_present "
-                    "FROM performance_cost_execution WHERE record_id=1"
-                )
-            )
-            .mappings()
-            .one()
-        )
-        assert row["positions_present"] == 1
-        assert row["position_count"] == 1
-        assert row["raw_reason_code"] is None
-        assert row["raw_present"] & (1 << 5)
-        assert connection.execute(sa.text("SELECT COUNT(*) FROM performance_cost_position")).scalar_one() == 1
-        assert connection.execute(sa.text("SELECT COUNT(*) FROM performance_cost_transaction")).scalar_one() == (
-            2 + extra_count
-        )
-        assert (
-            connection.execute(
-                sa.text("SELECT value FROM performance_cost_transaction_fee WHERE record_id=1")
-            ).scalar_one()
-            == 0
-        )
-        assert (
-            connection.execute(sa.text("SELECT side FROM performance_cost_trade WHERE symbol='B'")).scalar_one()
-            == "sell"
-        )
-    native_store_call(database, "migration_downgrade", {"public": "0033"})
-    with _connect(database) as connection:
-        inspector = sa.inspect(connection)
-        assert "performance_cost_position" not in inspector.get_table_names()
-        assert "cost_schema_version" not in {row["name"] for row in inspector.get_columns("performance_snapshot")}
-        assert (
-            connection.execute(
-                sa.select(legacy.tables["performance_cost_execution"].c.payload).where(
-                    legacy.tables["performance_cost_execution"].c.record_id == 1
-                )
-            ).scalar_one()
-            == (projected[0]["payload"])
-        )
-        assert connection.execute(sa.select(legacy.tables["performance_snapshot"].c.ranges)).scalar_one() == _ranges()
-        assert connection.execute(sa.text("SELECT COUNT(*) FROM performance_cost_trade")).scalar_one() == (
-            2 + extra_count
-        )
-
-
 def test_cost_fact_snapshot_cleanup_works_without_sqlite_foreign_keys(tmp_path):
     """Snapshot retention cannot leak child facts when SQLite foreign_keys remains disabled."""
     database = tmp_path / "cleanup-analysis.db"
     _legacy_schema(database)
-    initialize_native_database(database, revision="0034")
+    initialize_native_database(database, revision="head")
     with _connect(database) as connection:
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 0
         connection.execute(
@@ -281,73 +196,10 @@ def test_cost_fact_snapshot_cleanup_works_without_sqlite_foreign_keys(tmp_path):
         projected, costs = _rich_projection()
         tables = set()
         for table, rows in iter_cost_fact_batches("snapshot", projected, costs, _ranges()):
+            if table.name == "performance_cost_range":
+                continue
             connection.execute(table.insert(), rows)
             tables.add(table.name)
         connection.execute(sa.text("DELETE FROM performance_snapshot WHERE id='snapshot'"))
         for name in tables:
             assert connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar_one() == 0, name
-
-
-def test_cost_fact_backfill_rejects_one_snapshot_atomically_without_blocking_others(tmp_path):
-    """Unsupported legacy fields keep the fallback readable and cannot publish half a fact set."""
-    database = tmp_path / "partial-backfill.db"
-    _legacy_schema(database)
-    projected, costs = _rich_projection()
-    bad_projected = [{**projected[0], "payload": {**projected[0]["payload"], "key": 123}}]
-    with _connect(database) as connection:
-        legacy = sa.MetaData()
-        legacy.reflect(connection)
-        for snapshot_id, execution_rows in (("bad", bad_projected), ("good", projected)):
-            connection.execute(
-                legacy.tables["performance_snapshot"].insert(),
-                {
-                    "id": snapshot_id,
-                    "account_id": 2,
-                    "source_version": 3,
-                    "logic_version": "16",
-                    "engine_version": "equity-ledger-1",
-                    "computed_at": "2026-01-03T00:00:00",
-                    "settings": {},
-                    "ranges": _ranges(),
-                },
-            )
-            connection.execute(
-                legacy.tables["performance_cost_execution"].insert(),
-                [{"snapshot_id": snapshot_id, **row} for row in execution_rows],
-            )
-            connection.execute(
-                legacy.tables["performance_cost_trade"].insert(),
-                [{"snapshot_id": snapshot_id, **row} for row in costs],
-            )
-    initialize_native_database(database, revision="0034")
-    with _connect(database) as connection:
-        assert dict(connection.execute(sa.text("SELECT id, cost_schema_version FROM performance_snapshot")).all()) == {
-            "bad": 0,
-            "good": COST_FACT_SCHEMA_VERSION,
-        }
-        assert (
-            connection.execute(
-                sa.text("SELECT COUNT(*) FROM performance_cost_range WHERE snapshot_id='bad'")
-            ).scalar_one()
-            == 0
-        )
-        assert (
-            connection.execute(
-                sa.text("SELECT COUNT(*) FROM performance_cost_transaction WHERE snapshot_id='bad'")
-            ).scalar_one()
-            == 0
-        )
-        assert (
-            connection.execute(
-                sa.text("SELECT COUNT(*) FROM performance_cost_transaction WHERE snapshot_id='good'")
-            ).scalar_one()
-            == 2
-        )
-        assert (
-            connection.execute(
-                sa.select(legacy.tables["performance_cost_execution"].c.payload).where(
-                    legacy.tables["performance_cost_execution"].c.snapshot_id == "bad"
-                )
-            ).scalar_one()
-            == bad_projected[0]["payload"]
-        )

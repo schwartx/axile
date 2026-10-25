@@ -9,9 +9,7 @@ use serde_json::{json, Value};
 use crate::error::AnalysisError;
 
 mod legacy;
-mod notification_refs;
 mod private;
-mod snapshot_refs;
 mod structured;
 
 pub const PUBLIC_HEAD: &str = "0041";
@@ -21,7 +19,7 @@ const PUBLIC_VERSION_TABLE: &str = "alembic_version";
 const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
-const LEGACY_HEAD: u32 = 36;
+const LEGACY_HEAD: u32 = 33;
 const PUBLIC_HEAD_NUMBER: u32 = 41;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
@@ -114,9 +112,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0041, private base/axon_0001")
+            invalid("supported targets: public 0012 through 0033 or 0041, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0041")
+            invalid("supported targets: public base/0001 through 0033 or 0041")
         }
     }
 }
@@ -142,7 +140,7 @@ fn revision_number(revision: &str) -> Option<u32> {
         return None;
     }
     let number = revision.parse::<u32>().ok()?;
-    (1..=PUBLIC_HEAD_NUMBER).contains(&number).then_some(number)
+    ((1..=LEGACY_HEAD).contains(&number) || number == PUBLIC_HEAD_NUMBER).then_some(number)
 }
 
 fn database_path(path: &str) -> Result<&Path, AnalysisError> {
@@ -315,18 +313,17 @@ fn move_public(
     upgrade: bool,
 ) -> Result<(), AnalysisError> {
     while current.public != target {
-        let revision = if upgrade {
-            current.public + 1
+        if upgrade && current.public == LEGACY_HEAD {
+            structured::upgrade(connection)?;
+            current.public = PUBLIC_HEAD_NUMBER;
+        } else if !upgrade && current.public == PUBLIC_HEAD_NUMBER {
+            structured::downgrade(connection)?;
+            current.public = LEGACY_HEAD;
         } else {
-            current.public
-        };
-        match (upgrade, revision <= 33) {
-            (true, true) => legacy::upgrade(connection, revision)?,
-            (true, false) => structured::upgrade(connection, revision)?,
-            (false, true) => legacy::downgrade(connection, revision)?,
-            (false, false) => structured::downgrade(connection, revision)?,
+            let revision = if upgrade { current.public + 1 } else { current.public };
+            if upgrade { legacy::upgrade(connection, revision)?; } else { legacy::downgrade(connection, revision)?; }
+            current.public = if upgrade { revision } else { revision - 1 };
         }
-        current.public = if upgrade { revision } else { revision - 1 };
         let revision = (current.public != 0).then(|| format!("{:04}", current.public));
         stamp(connection, PUBLIC_VERSION_TABLE, revision.as_deref())?;
     }
@@ -406,9 +403,6 @@ fn scan(
     policy: &Policy<'_>,
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
-    if current.public >= 39 && targets.public < 39 {
-        structured::preflight_downgrade_0039(connection)?;
-    }
     if current.public > LEGACY_HEAD && targets.public <= LEGACY_HEAD {
         structured::preflight_downgrade(connection)?;
     }
@@ -647,14 +641,14 @@ mod tests {
                 .targets(&request, false)
                 .is_err());
         }
-        let request = dual_request("0039", "head");
+        let request = dual_request("0041", "head");
         assert_eq!(
             Policy::parse(&request)
                 .unwrap()
                 .targets(&request, true)
                 .unwrap()
                 .public,
-            39
+            41
         );
         assert!(Policy::parse(&json!({}))
             .unwrap()
@@ -739,7 +733,7 @@ mod tests {
             "CREATE TABLE alembic_version(version_num VARCHAR(32) NOT NULL PRIMARY KEY, preserved TEXT DEFAULT 'yes'); \
              INSERT INTO alembic_version(version_num) VALUES('0038');",
         ).unwrap();
-        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0039")).unwrap();
+        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0041")).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT preserved FROM alembic_version", [], |row| row
@@ -761,7 +755,7 @@ mod tests {
     fn read_scope_is_query_only_and_cannot_mutate_existing_database() {
         let path = DatabasePath::new();
         let connection = Connection::open(path.as_str()).unwrap();
-        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0039")).unwrap();
+        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0041")).unwrap();
         let mode: String = connection
             .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
             .unwrap();
@@ -772,7 +766,7 @@ mod tests {
             assert!(connection
                 .execute("DELETE FROM alembic_version", [])
                 .is_err());
-            assert_eq!(state(Some(connection))?.public, 39);
+            assert_eq!(state(Some(connection))?.public, 41);
             Ok(())
         })
         .unwrap();

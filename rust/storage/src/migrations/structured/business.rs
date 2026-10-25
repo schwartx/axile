@@ -1,4 +1,4 @@
-//! 0037 的身份、引用及回退顺序保持冻结；纯字段编码复用同版本业务编解码器。
+//! 身份、引用及回退顺序保持冻结；纯字段编码复用业务编解码器。
 
 use uuid::Uuid;
 
@@ -7,7 +7,6 @@ use crate::business_detail;
 use crate::business_facts_ops::{
     encode, result_extensions, result_head, result_orders, result_symbols, result_trades,
 };
-use crate::migrations::{notification_refs, snapshot_refs};
 
 const TARGET_FIELDS: &[&str] = &[
     "curr_target",
@@ -169,17 +168,9 @@ fn result_children(record_id: i64, payload: &Value) -> Result<Vec<(&'static str,
     Ok(result)
 }
 pub(super) fn reconstruct_result(connection: &Connection, record: &Object) -> Result<Value> {
-    let mut result = business_detail::read_result_for_migration(
-        connection,
-        integer(record, "account_id")?,
-        integer(record, "id")?,
-    )
-    .map_err(error)?;
-    if let Some(result) = result.as_object_mut() {
-        notification_refs::hydrate(connection, record, result).map_err(error)?;
-    }
-    Ok(result)
+    business_detail::read_result_for_migration(connection, integer(record, "account_id")?, integer(record, "id")?).map_err(error)
 }
+
 fn record_for_execution(connection: &Connection, execution: &Value) -> Result<Option<Object>> {
     let Some(execution) = execution.as_str() else {
         return Ok(None);
@@ -902,7 +893,7 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
         }
     }
     restore_triggers(connection, &paused, true)?;
-    guards::install_business(connection, false)
+    guards::install_business(connection)
 }
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
     if !rows(connection,"SELECT id FROM execution_input AS i WHERE NOT EXISTS(SELECT 1 FROM executerecord WHERE input_id=i.id OR result_input_id=i.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.input_id')=i.id) AND NOT EXISTS(SELECT 1 FROM execution_event WHERE json_valid(details) AND json_extract(details,'$.decision.business_facts_ref.input_id')=i.id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0037: unrepresented pending execution input; retain this database or restore its backup"));}
@@ -936,30 +927,7 @@ fn restore_artifacts(connection: &Connection) -> Result<()> {
             return Ok(());
         };
         let view = text(reference, "view")?;
-        let fields = if view == "result" {
-            let records = rows(
-                connection,
-                "SELECT * FROM executerecord WHERE id=?",
-                [value(reference, "record_id").as_i64()],
-            )?;
-            let record = records
-                .first()
-                .filter(|record| value(record, "execution_id") == value(&row, "execution_id"))
-                .ok_or_else(|| {
-                    error(format!(
-                        "Cannot restore execution_artifact id={} path=/result_reference",
-                        value(&row, "id")
-                    ))
-                })?;
-            snapshot_refs::hydrate_summary_content(
-                &Value::Object(content.clone()),
-                &reconstruct_result(connection, record)?,
-                false,
-            )?
-            .as_object()
-            .ok_or_else(|| error("Frozen result view is unavailable"))?
-            .clone()
-        } else if matches!(view, "assets_before" | "assets_after") {
+        let fields = if matches!(view, "assets_before" | "assets_after") {
             serde_json::json!({"account_assets":asset_value(connection,text(reference,"asset_id")?)?}).as_object().unwrap().clone()
         } else {
             let input = load_input(connection, text(reference, "input_id")?)?;
@@ -1107,8 +1075,7 @@ pub(super) fn downgrade(connection: &Connection) -> Result<()> {
         execute(connection, &format!("DROP TABLE {}", quote(name)))?;
     }
     restore_triggers(connection, &paused, false)?;
-    guards::install34(connection)?;
-    guards::install35(connection)
+    Ok(())
 }
 
 #[cfg(test)]

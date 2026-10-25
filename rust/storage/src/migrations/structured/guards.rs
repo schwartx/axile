@@ -1,89 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
-use schema::{COST_CHILDREN, DERIVED, RESULT_NAMES, SOURCE_NAMES};
-
-pub(super) fn install34(connection: &Connection) -> Result<()> {
-    let deletes = COST_CHILDREN
-        .iter()
-        .copied()
-        .chain(["performance_cost_trade", "performance_cost_execution"])
-        .map(|name| format!("DELETE FROM {name} WHERE snapshot_id = OLD.id;"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_facts_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN {deletes} END"))?;
-    let clear="DELETE FROM replay_observation_symbol WHERE record_id = OLD.id; DELETE FROM replay_observation WHERE record_id = OLD.id;";
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_facts_record_delete AFTER DELETE ON executerecord BEGIN {clear} END; CREATE TRIGGER IF NOT EXISTS analysis_facts_record_update AFTER UPDATE OF raw_input,raw_result,created_at,account_id,execution_id ON executerecord BEGIN {clear} END;"))?;
-    execute(connection,"CREATE TRIGGER IF NOT EXISTS analysis_facts_observation_delete AFTER DELETE ON replay_observation BEGIN DELETE FROM replay_observation_symbol WHERE record_id=OLD.record_id; END; CREATE TRIGGER IF NOT EXISTS analysis_facts_account_delete AFTER DELETE ON account BEGIN DELETE FROM replay_observation_symbol WHERE record_id IN (SELECT record_id FROM replay_observation WHERE account_id=OLD.id); DELETE FROM replay_observation WHERE account_id=OLD.id; END;")?;
-    for action in ["INSERT", "UPDATE", "DELETE"] {
-        let refs = if action == "UPDATE" {
-            vec!["OLD", "NEW"]
-        } else if action == "DELETE" {
-            vec!["OLD"]
-        } else {
-            vec!["NEW"]
-        };
-        let body=refs.iter().map(|reference|format!("DELETE FROM replay_observation_symbol WHERE record_id IN (SELECT record_id FROM replay_observation WHERE execution_id={reference}.execution_id AND account_id={reference}.account_id); DELETE FROM replay_observation WHERE execution_id={reference}.execution_id AND account_id={reference}.account_id;")).collect::<Vec<_>>().join(" ");
-        execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_facts_target_{} AFTER {action} ON target_weight_snapshot BEGIN {body} END",action.to_lowercase()))?;
-    }
-    Ok(())
-}
-pub(super) fn drop34(connection: &Connection) -> Result<()> {
-    for name in [
-        "analysis_facts_snapshot_delete",
-        "analysis_facts_record_delete",
-        "analysis_facts_record_update",
-        "analysis_facts_observation_delete",
-        "analysis_facts_account_delete",
-        "analysis_facts_target_insert",
-        "analysis_facts_target_update",
-        "analysis_facts_target_delete",
-    ] {
-        execute(connection, &format!("DROP TRIGGER IF EXISTS {name}"))?;
-    }
-    Ok(())
-}
-pub(super) fn install35(connection: &Connection) -> Result<()> {
-    execute(connection,"CREATE TRIGGER IF NOT EXISTS analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL; END;")?;
-    let results = RESULT_NAMES
-        .iter()
-        .map(|name| format!("DELETE FROM {name} WHERE snapshot_id=OLD.id;"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_structured_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN {results} END"))?;
-    let source = SOURCE_NAMES[..SOURCE_NAMES.len() - 1]
-        .iter()
-        .map(|name| format!("DELETE FROM {name} WHERE record_id=OLD.record_id;"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_structured_source_delete AFTER DELETE ON analysis_source_execution BEGIN {source} END"))?;
-    let mut records = SOURCE_NAMES
-        .iter()
-        .map(|name| format!("DELETE FROM {name} WHERE record_id=OLD.id;"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    records.push_str(" DELETE FROM replay_observation_symbol WHERE record_id=OLD.id; DELETE FROM replay_observation WHERE record_id=OLD.id;");
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_structured_record_update AFTER UPDATE OF raw_input,raw_result,created_at,account_id,execution_id,is_success ON executerecord BEGIN {records} END; CREATE TRIGGER IF NOT EXISTS analysis_structured_record_delete AFTER DELETE ON executerecord BEGIN {records} END;"))?;
-    let mut accounts=SOURCE_NAMES[..SOURCE_NAMES.len()-1].iter().map(|name|format!("DELETE FROM {name} WHERE record_id IN (SELECT record_id FROM analysis_source_execution WHERE account_id=OLD.id);")).collect::<Vec<_>>().join(" ");
-    accounts.push_str(" DELETE FROM analysis_source_execution WHERE account_id=OLD.id;");
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS analysis_structured_account_delete AFTER DELETE ON account BEGIN {accounts} END"))
-}
-pub(super) fn drop35(connection: &Connection) -> Result<()> {
-    for name in [
-        "analysis_structured_snapshot_delete",
-        "analysis_structured_record_update",
-        "analysis_structured_record_delete",
-        "analysis_structured_source_delete",
-        "analysis_structured_account_delete",
-        "analysis_account_channel",
-    ] {
-        execute(connection, &format!("DROP TRIGGER IF EXISTS {name}"))?;
-    }
-    Ok(())
-}
-pub(super) fn install36(connection: &Connection) -> Result<()> {
-    execute(connection,"CREATE TRIGGER IF NOT EXISTS analysis_read_views_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN DELETE FROM performance_execution_fee WHERE snapshot_id=OLD.id; DELETE FROM performance_execution_summary WHERE snapshot_id=OLD.id; END")
-}
 
 const PREFIX: &str = "business_facts_0037_";
 #[derive(Clone)]
@@ -278,28 +195,8 @@ fn scopes(table: &Table, reference: &str, tables: &Registry) -> (String, String)
     accounts.extend(owners["asset"].iter().map(|item|format!("SELECT account_id FROM executerecord WHERE id IN (SELECT record_id FROM business_asset_binding WHERE asset_id IS {item})")));
     (joined(records), joined(accounts))
 }
-fn result_scope(table: &Table, reference: &str, tables: &Registry) -> String {
-    if [
-        "account_asset_snapshot",
-        "target_weight_snapshot",
-        "target_weight_snapshot_weight",
-    ]
-    .contains(&table.name.as_str())
-    {
-        return "SELECT NULL WHERE 0".into();
-    }
-    let owners = ownership(table, reference, tables, &BTreeSet::new());
-    let mut records = owners["record"]
-        .iter()
-        .map(|item| format!("SELECT {item} WHERE {item} IS NOT NULL"))
-        .collect::<Vec<_>>();
-    records.extend(owners["asset"].iter().map(|item| {
-        format!("SELECT record_id FROM business_asset_binding WHERE asset_id IS {item}")
-    }));
-    joined(records)
-}
 fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()> {
-    for table in tables {
+    for table in tables.iter().filter(|table| table.name != "executerecord") {
         for action in ["INSERT", "UPDATE", "DELETE"] {
             let refs = if action == "UPDATE" {
                 vec!["OLD", "NEW"]
@@ -322,14 +219,7 @@ fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()
                 .map(|scope| scope.1.clone())
                 .collect::<Vec<_>>()
                 .join(" UNION ");
-            let mut body = DERIVED
-                .iter()
-                .map(|name| format!("DELETE FROM {name} WHERE record_id IN ({records});"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if table.name != "executerecord" {
-                body.push_str(&format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL;"));
-            }
+            let body = format!("INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL;");
             let condition = if action == "INSERT"
                 && ![
                     "executerecord",
@@ -352,105 +242,6 @@ fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()
     }
     Ok(())
 }
-fn summary_sensitive(table: &Table) -> String {
-    let fields: &[&str] = match table.name.as_str() {
-        "executerecord" => &[
-            "id",
-            "account_id",
-            "execution_id",
-            "input_id",
-            "result_input_id",
-        ],
-        "execution_extension" => &["root_kind", "root_value"],
-        "execution_symbol_result" => &[
-            "record_id",
-            "path",
-            "ordinal",
-            "map_key",
-            "node_kind",
-            "invalid_value",
-            "audit_evidence",
-            "memory",
-        ],
-        _ => return "1".into(),
-    };
-    fields
-        .iter()
-        .map(|key| format!("{} IS NOT {}", column("OLD", key), column("NEW", key)))
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-fn install_summary(connection: &Connection, tables: &Registry, optimize: bool) -> Result<()> {
-    for table in tables {
-        if [
-            "account_asset_snapshot",
-            "target_weight_snapshot",
-            "target_weight_snapshot_weight",
-        ]
-        .contains(&table.name.as_str())
-        {
-            continue;
-        }
-        for action in ["INSERT", "UPDATE", "DELETE"] {
-            let reference = if action == "INSERT" { "NEW" } else { "OLD" };
-            let mut scope = result_scope(table, reference, tables);
-            let dependency = if action == "UPDATE" {
-                scope.push_str(" UNION ");
-                scope.push_str(&result_scope(table, "NEW", tables));
-                format!("((1) OR (1)) AND ({})", summary_sensitive(table))
-            } else {
-                "1".into()
-            };
-            let mut reference=format!("CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.view') END='result' AND CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.record_id') END IN ({scope}) AND ({dependency})");
-            if optimize && action == "INSERT" {
-                reference=format!("CASE WHEN typeof(content)='text' AND content NOT GLOB '*business_facts_ref*' AND content NOT GLOB '*\\u00*' THEN 0 ELSE ({reference}) END");
-            }
-            let exists=format!("EXISTS(SELECT 1 FROM execution_artifact WHERE execution_id IN (SELECT execution_id FROM executerecord WHERE id IN ({scope})) AND {reference})");
-            execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {} BEFORE {action} ON {} BEGIN SELECT RAISE(ABORT,'Execution summary must be materialized before changing its result') WHERE {exists}; END",quote(&format!("{PREFIX}{}_summary_{}",table.name,action.to_lowercase())),quote(&table.name)))?;
-        }
-    }
-    Ok(())
-}
-pub(super) fn replace_summary(connection: &Connection, optimize: bool) -> Result<()> {
-    for row in rows(
-        connection,
-        "SELECT name FROM sqlite_master WHERE type='trigger'",
-        [],
-    )? {
-        let name = text(&row, "name")?;
-        if name.starts_with(PREFIX)
-            && ["_summary_insert", "_summary_update", "_summary_delete"]
-                .iter()
-                .any(|suffix| name.ends_with(suffix))
-        {
-            execute(connection, &format!("DROP TRIGGER {}", quote(name)))?;
-        }
-    }
-    install_summary(connection, &registry(connection)?, optimize)
-}
-
-pub(super) fn drop_snapshot_references(connection: &Connection) -> Result<()> {
-    for row in rows(
-        connection,
-        "SELECT name FROM sqlite_master WHERE type='trigger'",
-        [],
-    )? {
-        let name = text(&row, "name")?;
-        if name.starts_with(PREFIX)
-            && (name.contains("_summary_")
-                || name.starts_with("business_facts_0037_notification_outbox_"))
-        {
-            execute(connection, &format!("DROP TRIGGER {}", quote(name)))?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn restore_snapshot_references(connection: &Connection) -> Result<()> {
-    replace_summary(connection, true)?;
-    outbox_guards(connection)
-}
-
 fn input_guards(connection: &Connection) -> Result<()> {
     for action in ["INSERT", "UPDATE"] {
         let checks=["input_id","result_input_id"].iter().map(|name|format!("SELECT RAISE(ABORT,'Execution input owner mismatch') WHERE NEW.{name} IS NOT NULL AND NOT EXISTS(SELECT 1 FROM execution_input WHERE id=NEW.{name} AND account_id=NEW.account_id);")).collect::<Vec<_>>().join(" ");
@@ -486,28 +277,6 @@ fn parent_guards(connection: &Connection, tables: &Registry) -> Result<()> {
                 execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {} BEFORE {action} ON {} BEGIN SELECT RAISE(ABORT,'Business fact owner missing') WHERE {present} AND NOT EXISTS(SELECT 1 FROM {} WHERE {predicate}); END",quote(&format!("{PREFIX}{}_owner_{suffix}_{}",table.name,action.to_lowercase())),quote(&table.name),quote(&constraint.parent)))?;
             }
         }
-    }
-    Ok(())
-}
-fn outbox_guards(connection: &Connection) -> Result<()> {
-    let referenced="EXISTS(SELECT 1 FROM execution_extension WHERE CASE WHEN json_valid(extra) THEN json_extract(extra,'$.server_notification_context.\"$axile_notification_context\"') END=1 AND CASE WHEN json_valid(extra) THEN json_extract(extra,'$.server_notification_context.event_id') END=OLD.id)";
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}notification_outbox_insert BEFORE INSERT ON notification_event BEGIN SELECT RAISE(ABORT,'Frozen notification context still references this outbox') WHERE {} AND NOT EXISTS(SELECT 1 FROM notification_event WHERE id=NEW.id AND account_id IS NEW.account_id AND event_type IS NEW.event_type AND context IS NEW.context); END",referenced.replace("OLD.id","NEW.id")))?;
-    for action in ["UPDATE", "DELETE"] {
-        let changed = if action == "DELETE" {
-            "1".into()
-        } else {
-            ["id", "account_id", "event_type", "context"]
-                .iter()
-                .map(|key| format!("{} IS NOT {}", column("OLD", key), column("NEW", key)))
-                .collect::<Vec<_>>()
-                .join(" OR ")
-        };
-        let columns = if action == "UPDATE" {
-            " OF id,account_id,event_type,context"
-        } else {
-            ""
-        };
-        execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}notification_outbox_{} BEFORE {action}{columns} ON notification_event BEGIN SELECT RAISE(ABORT,'Frozen notification context still references this outbox') WHERE ({changed}) AND {referenced}; END",action.to_lowercase()))?;
     }
     Ok(())
 }
@@ -575,14 +344,12 @@ pub(super) fn drop_business(connection: &Connection) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn install_business(connection: &Connection, optimize: bool) -> Result<()> {
+pub(super) fn install_business(connection: &Connection) -> Result<()> {
     execute(connection,"DROP TRIGGER IF EXISTS analysis_facts_record_update; DROP TRIGGER IF EXISTS analysis_structured_record_update")?;
     let tables = registry(connection)?;
     install_invalidation(connection, &tables)?;
     input_guards(connection)?;
     parent_guards(connection, &tables)?;
-    install_summary(connection, &tables, optimize)?;
-    outbox_guards(connection)?;
     asset_guards(connection)?;
     cleanup(connection, &tables)
 }

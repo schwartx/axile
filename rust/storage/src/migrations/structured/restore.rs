@@ -1,6 +1,30 @@
 use super::*;
-use analysis::{DAILY_FIELDS, TRANSACTION_FIELDS};
-use schema::{RAW_FIELDS, SYMBOL_FIELDS};
+const DAILY_FIELDS: &[(&str, &str)] = &[
+    ("value", "value"),
+    ("cost", "cost"),
+    ("loss_bp", "lossBp"),
+    ("coverage", "coverage"),
+    ("covered", "covered"),
+    ("count", "count"),
+    ("amount_complete", "amountComplete"),
+    ("fee_covered", "feeCovered"),
+    ("covered_value", "coveredValue"),
+    ("estimated", "estimated"),
+];
+const TRANSACTION_FIELDS: &[(&str, &str)] = &[
+    ("symbol", "symbol"),
+    ("side", "side"),
+    ("quantity", "quantity"),
+    ("price", "price"),
+    ("reference", "reference"),
+    ("reference_source", "referenceSource"),
+    ("time", "time"),
+    ("end_time", "endTime"),
+    ("time_estimated", "timeEstimated"),
+    ("before", "before"),
+    ("target", "target"),
+];
+use crate::legacy_execution::{RAW_FIELDS, SYMBOL_FIELDS};
 
 fn children(
     connection: &Connection,
@@ -287,197 +311,25 @@ pub(super) fn cost_payloads(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn json_fields(
-    alias: &str,
-    fields: &[&str],
-    booleans: &[&str],
-    numbers: &[&str],
-    renames: &[(&str, &str)],
-) -> String {
-    let mut parts = Vec::new();
-    for field in fields {
-        let mut expression = format!("{alias}.{}", quote(field));
-        if booleans.contains(field) {
-            expression = format!("json(CASE WHEN {expression} THEN 'true' ELSE 'false' END)");
-        } else if numbers.contains(field) {
-            expression = format!("json(_analysis_json_number({expression}))");
-        }
-        let public = renames
-            .iter()
-            .find(|(column, _)| column == field)
-            .map_or(*field, |(_, public)| *public);
-        parts.push(format!("'{public}'"));
-        parts.push(expression);
-    }
-    format!("json_object({})", parts.join(","))
-}
-fn array_expr(
-    table: &str,
-    fields: &[&str],
-    booleans: &[&str],
-    numbers: &[&str],
-    renames: &[(&str, &str)],
-    extra: &str,
-) -> String {
-    let object = json_fields("child", fields, booleans, numbers, renames);
-    format!("json((SELECT json_group_array(json(value)) FROM (SELECT {object} AS value FROM {table} AS child WHERE child.snapshot_id=r.snapshot_id AND child.range_key=r.range_key {extra} ORDER BY child.idx)))")
-}
-fn range_json() -> String {
-    let point_fields = &[
-        "date",
-        "observed_at",
-        "record_id",
-        "execution_id",
-        "account_return",
-        "account_equity",
-        "portfolio_return",
-        "account_daily_return",
-        "portfolio_daily_return",
-        "target_portfolio_return",
-        "target_portfolio_daily_return",
-        "difference",
-        "sizing_fallback",
-    ];
-    let points = array_expr(
-        "performance_result_point",
-        point_fields,
-        &["sizing_fallback"],
-        &point_fields[4..12],
-        &[],
-        "",
-    );
-    let fallbacks = array_expr(
-        "performance_result_fallback",
-        &["start", "end", "count"],
-        &[],
-        &[],
-        &[],
-        "",
-    );
-    let bindings = array_expr(
-        "performance_result_binding",
-        &["time", "portfolio_id"],
-        &[],
-        &[],
-        &[],
-        "",
-    );
-    let events = array_expr(
-        "performance_result_event",
-        &["time", "tag", "text", "execution_id"],
-        &[],
-        &[],
-        &[("execution_id", "executionId")],
-        "",
-    );
-    let skip_fields = json_fields(
-        "child",
-        &[
-            "count",
-            "missing_target",
-            "missing_ticks",
-            "first_time",
-            "last_time",
-        ],
-        &[],
-        &[],
-        &[],
-    );
-    let skips = |role: &str| {
-        format!("json((SELECT {skip_fields} FROM performance_result_skip AS child WHERE child.snapshot_id=r.snapshot_id AND child.range_key=r.range_key AND child.kind='{role}'))")
-    };
-    let closed = array_expr(
-        "performance_result_calendar_range",
-        &["start", "end"],
-        &[],
-        &[],
-        &[],
-        "AND child.kind='closed'",
-    );
-    let unavailable = array_expr(
-        "performance_result_calendar_range",
-        &["start", "end"],
-        &[],
-        &[],
-        &[],
-        "AND child.kind='unavailable'",
-    );
-    let settings="json_object('backtest_weight_type',s.backtest_weight_type,'backtest_fee_rate',json(_analysis_json_number(s.backtest_fee_rate)))";
-    let calendar=format!("json_object('status',r.calendar_status,'calendar_id',r.calendar_id,'label',r.calendar_label,'closed_ranges',{closed},'unavailable_ranges',{unavailable})");
-    let header = json_fields(
-        "r",
-        &[
-            "backtest_included",
-            "engine_version",
-            "baseline",
-            "end",
-            "record_count",
-            "observation_count",
-            "used_record_count",
-            "target_used_record_count",
-            "invalid_asset_count",
-            "sizing_fallback_count",
-        ],
-        &["backtest_included"],
-        &[],
-        &[],
-    );
-    let performance=format!("json_set({header},'$.settings',{settings},'$.range',r.range_key,'$.points',{points},'$.skips',{},'$.target_skips',{},'$.sizing_fallback_ranges',{fallbacks},'$.bindings',{bindings},'$.calendar',{calendar})",skips("portfolio"),skips("target"));
-    let executions="json((SELECT json_group_array(json(payload)) FROM (SELECT e.payload FROM performance_cost_execution AS e WHERE e.snapshot_id=r.snapshot_id AND e.time >= COALESCE((SELECT baseline FROM performance_cost_range WHERE snapshot_id=r.snapshot_id AND range_key=r.range_key),0) AND e.time <= COALESCE((SELECT end FROM performance_cost_range WHERE snapshot_id=r.snapshot_id AND range_key=r.range_key),-1) ORDER BY e.time,e.record_id)))";
-    let performance=format!("CASE WHEN r.range_key='all' THEN json_set({performance},'$.executions',{executions}) ELSE {performance} END");
-    let mut members = Vec::new();
-    for (index, (column, public)) in DAILY_FIELDS.iter().enumerate() {
-        let expression = if *public == "amountComplete" {
-            "CASE WHEN d.amount_complete THEN 'true' ELSE 'false' END".into()
-        } else {
-            format!("_analysis_json_number(d.{column})")
-        };
-        members.push(format!(
-            "SELECT '{public}' AS key,{expression} AS value WHERE d.present & {}",
-            1 << index
-        ));
-    }
-    members.push("SELECT 'fees' AS key,(SELECT json_group_object(currency,json(_analysis_json_number(value))) FROM (SELECT currency,value FROM performance_result_daily_fee AS fee WHERE fee.snapshot_id=d.snapshot_id AND fee.range_key=d.range_key AND fee.day=d.day ORDER BY currency)) AS value".into());
-    let daily = format!(
-        "json((SELECT json_group_object(key,json(value)) FROM ({})))",
-        members.join(" UNION ALL ")
-    );
-    let costs=format!("json((SELECT json_group_object(day,json(value)) FROM (SELECT d.day,{daily} AS value FROM performance_result_daily_cost AS d WHERE d.snapshot_id=r.snapshot_id AND d.range_key=r.range_key ORDER BY d.day)))");
-    format!("json_object('performance',json({performance}),'daily_costs',{costs},'events',{events},'event_count',r.event_count)")
-}
 pub(super) fn results(connection: &Connection) -> Result<()> {
-    use rusqlite::functions::FunctionFlags;
-    connection
-        .create_scalar_function(
-            "_analysis_json_number",
-            1,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-            |context| {
-                let value = match context.get::<SqlValue>(0)? {
-                    SqlValue::Null => Value::Null,
-                    SqlValue::Integer(number) => Value::from(number),
-                    SqlValue::Real(number) if number.is_finite() => Value::from(number),
-                    SqlValue::Real(_) => {
-                        return Err(rusqlite::Error::UserFunctionError(Box::new(
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "Out of range float values are not JSON compliant",
-                            ),
-                        )))
-                    }
-                    _ => return Err(rusqlite::Error::InvalidQuery),
-                };
-                serde_json::to_string(&value)
-                    .map_err(|failure| rusqlite::Error::UserFunctionError(Box::new(failure)))
-            },
-        )
-        .map_err(sql)?;
-    let expression = range_json();
-    let result=execute(connection,&format!("UPDATE performance_snapshot AS s SET ranges=(SELECT json_group_object(range_key,json(value)) FROM (SELECT r.range_key,{expression} AS value FROM performance_result_range AS r WHERE r.snapshot_id=s.id ORDER BY r.range_key)),settings=json_object('backtest_weight_type',s.backtest_weight_type,'backtest_fee_rate',json(_analysis_json_number(s.backtest_fee_rate))) WHERE s.result_schema_version=2 AND (s.ranges='{{}}' OR s.settings='{{}}')"));
-    let removed = connection
-        .remove_function("_analysis_json_number", 1)
-        .map_err(sql);
-    result.and(removed)
+    let mut after = None;
+    loop {
+      let ids = snapshot_ids(connection, after.as_deref())?;
+      if ids.is_empty() { break; }
+      after = ids.last().cloned();
+      for id in ids {
+        let version: i64 = connection.query_row("SELECT result_schema_version FROM performance_snapshot WHERE id=?1", [&id], |row| row.get(0)).map_err(sql)?;
+        if version != 2 { continue; }
+        let mut ranges = Object::new();
+        for range in ["30", "90", "all"] {
+            ranges.insert(range.into(), crate::result_reader::read(connection, &id, range, false).map_err(error)?);
+        }
+        let settings = crate::result_reader::settings(connection, &id).map_err(error)?;
+        connection.execute("UPDATE performance_snapshot SET ranges=?1,settings=?2 WHERE id=?3",
+            rusqlite::params![strict_json(&Value::Object(ranges))?, strict_json(&settings)?, id]).map_err(sql)?;
+      }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

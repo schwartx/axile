@@ -246,62 +246,19 @@ pub fn status(
     }))
 }
 
-fn range_header(
-    connection: &Connection,
-    snapshot_id: &str,
-    range_key: &str,
-) -> Result<Value, String> {
-    let range = scalar_row(
-        connection,
-        "SELECT engine_version,backtest_included,baseline,end,record_count,observation_count,
-                used_record_count,target_used_record_count,invalid_asset_count,sizing_fallback_count,
-                calendar_status,calendar_id,calendar_label,event_count
-         FROM performance_result_range WHERE snapshot_id=?1 AND range_key=?2",
-        &[&snapshot_id, &range_key],
-    )?
-    .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少区间结果")?;
-    let mut skips = Map::new();
-    let mut statement = connection
-        .prepare(
-            "SELECT kind,count,missing_target,missing_ticks,first_time,last_time
-             FROM performance_result_skip WHERE snapshot_id=?1 AND range_key=?2",
-        )
-        .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
-    let mut rows = statement
-        .query(rusqlite::params![snapshot_id, range_key])
-        .map_err(|error| format!("ANALYSIS_READ_ERROR: {error}"))?;
-    let read_error = |error: rusqlite::Error| format!("ANALYSIS_READ_ERROR: {error}");
-    while let Some(row) = rows.next().map_err(read_error)? {
-        let kind = row
-            .get_ref(0)
-            .map_err(read_error)?
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        skips.insert(
-            kind,
-            json!({"count": cell(row, 1).map_err(read_error)?, "missing_target": cell(row, 2).map_err(read_error)?,
-                   "missing_ticks": cell(row, 3).map_err(read_error)?, "first_time": cell(row, 4).map_err(read_error)?,
-                   "last_time": cell(row, 5).map_err(read_error)?}),
-        );
-    }
-    // backtest_included 是 Boolean 存储。
-    let backtest_included = range[1]
-        .as_i64()
-        .map_or(Value::Null, |value| json!(value != 0));
-    Ok(json!({
-        "range": range_key,
-        "engine_version": range[0],
-        "backtest_included": backtest_included,
-        "baseline": range[2], "end": range[3],
-        "record_count": range[4], "observation_count": range[5],
-        "used_record_count": range[6], "target_used_record_count": range[7],
-        "invalid_asset_count": range[8], "sizing_fallback_count": range[9],
-        "event_count": range[13],
-        "skips": skips.get("portfolio").cloned().unwrap_or(Value::Null),
-        "target_skips": skips.get("target").cloned().unwrap_or(Value::Null),
-        "calendar": {"status": range[10], "calendar_id": range[11], "label": range[12]},
-    }))
+fn range_header(connection: &Connection, snapshot_id: &str, range_key: &str) -> Result<Value, String> {
+    let sql_error = |error| format!("ANALYSIS_READ_ERROR: {error}");
+    let crate::result_reader::Header { mut performance, event_count, .. } =
+        crate::result_reader::header(connection, snapshot_id, range_key).map_err(sql_error)?
+            .ok_or("ANALYSIS_READ_VIEW_INCOMPLETE: 已发布的绩效版本缺少区间结果")?;
+    let skips = crate::result_reader::skips(connection, snapshot_id, range_key).map_err(sql_error)?;
+    performance["skips"] = skips.get("portfolio").cloned().unwrap_or(Value::Null);
+    performance["target_skips"] = skips.get("target").cloned().unwrap_or(Value::Null);
+    performance["event_count"] = json!(event_count);
+    let calendar = performance["calendar"].as_object_mut().expect("calendar header");
+    calendar.remove("closed_ranges");
+    calendar.remove("unavailable_ranges");
+    Ok(performance)
 }
 
 /// Summary rows are frozen per snapshot; the range only filters by time bounds.
@@ -355,10 +312,7 @@ fn result_tables(
         "points".into(),
         table(
             connection,
-            "SELECT date,observed_at,record_id,execution_id,account_return,account_equity,portfolio_return,
-                    account_daily_return,portfolio_daily_return,target_portfolio_return,
-                    target_portfolio_daily_return,difference,sizing_fallback
-             FROM performance_result_point WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+            crate::result_reader::POINTS_SQL,
             scope,
             &["date", "observed_at", "record_id", "execution_id", "account_return", "account_equity",
               "portfolio_return", "account_daily_return", "portfolio_daily_return", "target_portfolio_return",
@@ -370,8 +324,7 @@ fn result_tables(
         "bindings".into(),
         table(
             connection,
-            "SELECT time,portfolio_id FROM performance_result_binding
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+            crate::result_reader::BINDINGS_SQL,
             scope,
             &["time", "portfolio_id"],
             &[],
@@ -381,8 +334,7 @@ fn result_tables(
         "fallbacks".into(),
         table(
             connection,
-            "SELECT start,end,count FROM performance_result_fallback
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+            crate::result_reader::FALLBACKS_SQL,
             scope,
             &["start", "end", "count"],
             &[],
@@ -392,8 +344,7 @@ fn result_tables(
         "calendar_ranges".into(),
         table(
             connection,
-            "SELECT kind,start,end FROM performance_result_calendar_range
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY kind,idx",
+            crate::result_reader::CALENDAR_SQL,
             scope,
             &["kind", "start", "end"],
             &[],
@@ -403,11 +354,7 @@ fn result_tables(
         "daily_costs".into(),
         table(
             connection,
-            &format!(
-                "SELECT {} FROM performance_result_daily_cost
-                 WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day",
-                DAILY_COLUMNS.join(",")
-            ),
+            crate::result_reader::DAILY_COSTS_SQL,
             scope,
             DAILY_COLUMNS,
             DAILY_BOOLEANS,
@@ -417,8 +364,7 @@ fn result_tables(
         "daily_fees".into(),
         table(
             connection,
-            "SELECT day,currency,value FROM performance_result_daily_fee
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day,currency",
+            crate::result_reader::DAILY_FEES_SQL,
             scope,
             &["day", "currency", "value"],
             &[],
@@ -428,8 +374,7 @@ fn result_tables(
         "events".into(),
         table(
             connection,
-            "SELECT time,tag,text,execution_id FROM performance_result_event
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx LIMIT 100",
+            crate::result_reader::EVENTS_SQL,
             scope,
             &["time", "tag", "text", "execution_id"],
             &[],

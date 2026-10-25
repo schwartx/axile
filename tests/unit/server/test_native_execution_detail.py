@@ -340,13 +340,13 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     other = persist_result(
         path, source_result, raw_input=source_input, execution_id="foreign-frozen-owner", account_id=2, is_success=0
     )
-    notification = _event()
-    event_context = notification.context
+    notification = _event()[1]
+    event_context = notification["context"]
     _sql(
         path,
         "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) "
         "VALUES(?,1,?,'execution.finished',?,'pending')",
-        (notification.id, created_at, json.dumps(event_context)),
+        (notification["id"], created_at, json.dumps(event_context)),
     )
     record_id = head["id"]
     borrowed_rows, extra_rows = _oracle(
@@ -395,10 +395,10 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
                 _sql(
                     path,
                     "UPDATE notification_event SET context=? WHERE id=?",
-                    (json.dumps(context), notification.id),
+                    (json.dumps(context), notification["id"]),
                 )
             elif corruption == "outbox_deleted":
-                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification.id,))
+                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification["id"],))
             else:
                 _sql(path, "DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
             response = await client.get(f"/execute_records/1/{record_id}")

@@ -192,9 +192,11 @@ fn events(
 fn range_rows(
     target: &Connection,
     key: &str,
-    mut performance: Value,
+    range: crate::performance::Range,
     event_count: usize,
 ) -> Result<(), AnalysisError> {
+    let crate::performance::Range { mut header, points, sizing_fallback_ranges, skips, target_skips } = range;
+    let performance = &mut header;
     let mut insert = target.prepare_cached(
         r#"INSERT INTO native_stage.performance_result_point (
                 range_key, idx, date, observed_at, record_id, execution_id,
@@ -206,51 +208,47 @@ fn range_rows(
                 ?13, ?14, ?15
             )"#
     ).map_err(stage_error)?;
-    for (index, value) in take_array(&mut performance, "points")?
-        .into_iter()
-        .enumerate()
+    for (index, value) in points.into_iter().enumerate()
     {
         insert
             .execute(params![
                 key,
                 index,
-                value["date"].as_str(),
-                value["observed_at"].as_str(),
-                value["record_id"].as_i64(),
-                value["execution_id"].as_str(),
-                value["account_return"].as_f64(),
-                value["account_equity"].as_f64(),
-                value["portfolio_return"].as_f64(),
-                value["portfolio_daily_return"].as_f64(),
-                value["account_daily_return"].as_f64(),
-                value["target_portfolio_return"].as_f64(),
-                value["target_portfolio_daily_return"].as_f64(),
-                value["difference"].as_f64(),
-                value["sizing_fallback"].as_bool(),
+                value.date,
+                value.observed_at,
+                value.record_id,
+                value.execution_id,
+                finite(value.account_return),
+                finite(value.account_equity),
+                finite(value.portfolio_return),
+                finite(value.portfolio_daily_return),
+                finite(value.account_daily_return),
+                finite(value.target_portfolio_return),
+                finite(value.target_portfolio_daily_return),
+                finite(value.difference),
+                value.sizing_fallback,
             ])
             .map_err(stage_error)?;
     }
     let mut insert = target.prepare_cached(
         "INSERT INTO native_stage.performance_result_fallback(range_key,idx,start,end,count) VALUES(?1,?2,?3,?4,?5)"
     ).map_err(stage_error)?;
-    for (index, value) in take_array(&mut performance, "sizing_fallback_ranges")?
-        .into_iter()
-        .enumerate()
+    for (index, value) in sizing_fallback_ranges.into_iter().enumerate()
     {
         insert
             .execute(params![
                 key,
                 index,
-                value["start"].as_str(),
-                value["end"].as_str(),
-                value["count"].as_i64()
+                value.start,
+                value.end,
+                value.count
             ])
             .map_err(stage_error)?;
     }
     let mut insert = target.prepare_cached(
         "INSERT INTO native_stage.performance_result_binding(range_key,idx,time,portfolio_id) VALUES(?1,?2,?3,?4)"
     ).map_err(stage_error)?;
-    for (index, value) in take_array(&mut performance, "bindings")?
+    for (index, value) in take_array(performance, "bindings")?
         .into_iter()
         .enumerate()
     {
@@ -274,23 +272,10 @@ fn range_rows(
             )"#,
         )
         .map_err(stage_error)?;
-    for (field, kind) in [("skips", "portfolio"), ("target_skips", "target")] {
-        let value = performance
-            .get_mut(field)
-            .map(Value::take)
-            .unwrap_or(Value::Null);
-        if !value.is_null() {
-            insert
-                .execute(params![
-                    key,
-                    kind,
-                    value["count"].as_i64(),
-                    value["missing_target"].as_i64(),
-                    value["missing_ticks"].as_i64(),
-                    value["first_time"].as_str(),
-                    value["last_time"].as_str(),
-                ])
-                .map_err(stage_error)?;
+    for (value, kind) in [(skips, "portfolio"), (target_skips, "target")] {
+        if let Some(value) = value {
+            insert.execute(params![key, kind, value.count, value.missing_target,
+                value.missing_ticks, value.first_time, value.last_time]).map_err(stage_error)?;
         }
     }
     let mut calendar = performance["calendar"].take();
@@ -360,31 +345,30 @@ pub(crate) fn write(
         )),
         backtest_fee_rate: task.fee_rate,
     };
-    let mut ranges = crate::performance::performance(source, &calculation)?;
+    let ranges = crate::performance::calculate(source, &calculation)?;
     let bounds = ["30", "90", "all"]
-        .map(|key| {
+        .into_iter().zip(&ranges).map(|(key, range)| {
             Ok((
                 key,
-                ranges[key]["baseline"]
+                range.header["baseline"]
                     .as_str()
                     .map(numeric_time)
                     .transpose()?
                     .unwrap_or(0.0),
-                ranges[key]["end"]
+                range.header["end"]
                     .as_str()
                     .map(numeric_time)
                     .transpose()?
                     .unwrap_or(-1.0),
             ))
         })
-        .into_iter()
         .collect::<Result<Vec<_>, AnalysisError>>()?;
     crate::fact_cost_rows::trades(source, task.account_id, target, &bounds)?;
     let counts = events(source, task.account_id, &bounds, target)?;
-    let settings = ranges["all"]["settings"].clone();
-    let data_until = ranges["all"]["end"].clone();
-    for ((key, _, _), count) in bounds.iter().zip(counts) {
-        range_rows(target, key, ranges[*key].take(), count)?;
+    let settings = ranges.last().expect("three ranges").header["settings"].clone();
+    let data_until = ranges.last().expect("three ranges").header["end"].clone();
+    for (((key, _, _), count), range) in bounds.iter().zip(counts).zip(ranges) {
+        range_rows(target, key, range, count)?;
     }
     Ok(
         json!({"account_id":task.account_id,"source_version":task.source_version,"settings":settings,"data_until":data_until}),
