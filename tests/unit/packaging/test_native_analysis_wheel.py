@@ -76,7 +76,7 @@ def test_missing_extension_rejects_wheel(wheel_project: Path) -> None:
         build_wheel(wheel_project)
 
 
-@pytest.mark.parametrize("error", ["wrong architecture", "missing required entrypoints: dashboard_inputs"])
+@pytest.mark.parametrize("error", ["wrong architecture", "missing required entrypoints: account_dashboard_context"])
 def test_incompatible_extension_rejects_wheel(wheel_project: Path, native_process: dict[str, Any], error: str) -> None:
     native_process["extension_error"] = error
     with pytest.raises(RuntimeError, match=error):
@@ -97,6 +97,7 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
     )
     assert {
+        "account_dashboard_context",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
@@ -116,6 +117,7 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "account_runtime_sync_json",
         "notifications_get_system_json",
     } <= set(required)
+    assert not {"dashboard_inputs", "summaries"} & set(required)
 
 
 @pytest.mark.parametrize(

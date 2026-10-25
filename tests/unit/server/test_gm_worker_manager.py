@@ -22,6 +22,7 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerBackendRequest,
     WorkerBackendResponse,
 )
+from axile.server.portfolio_function import PortfolioFunctionError
 from tests.unit.server._execution_test_support import build_account
 
 
@@ -639,6 +640,7 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
     dropped: list[int] = []
+    error = PortfolioFunctionError("boom", error_line=2, error_type="RuntimeError")
 
     async def fake_to_thread(func: object, *args: object) -> WorkerBackendResponse:
         del func
@@ -647,7 +649,7 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload={"ok": False, "error": "boom", "error_type": "RuntimeError"},
+            output_payload={"portfolio_result": error},
         )
 
     async def fake_drop_account(account_id: int) -> None:
@@ -656,9 +658,9 @@ def test_calculate_portfolio_drops_worker_after_script_failure(monkeypatch: pyte
     monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     monkeypatch.setattr(manager, "drop_account", fake_drop_account)
 
-    result = asyncio.run(manager.calculate_portfolio(account, "code"))
-
-    assert result.ok is False
+    with pytest.raises(PortfolioFunctionError) as caught:
+        asyncio.run(manager.calculate_portfolio(account, "code"))
+    assert caught.value is error and caught.value.error_line == 2
     assert dropped == [2]
 
 
@@ -690,7 +692,19 @@ def test_calculate_portfolio_drops_worker_after_worker_error(monkeypatch: pytest
     assert dropped == [2]
 
 
-def test_calculate_portfolio_drops_worker_after_invalid_result(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "payload, error_type",
+    [
+        ({}, KeyError),
+        ({"ok": True, "target": "invalid"}, KeyError),
+        ({"portfolio_result": []}, TypeError),
+        ({"portfolio_result": {"x": True}}, TypeError),
+        ({"portfolio_result": {"x": float("nan")}}, ValueError),
+    ],
+)
+def test_calculate_portfolio_drops_worker_after_invalid_result(
+    monkeypatch: pytest.MonkeyPatch, payload, error_type
+) -> None:
     manager = WorkerBackendManager()
     monkeypatch.setattr(manager, "_check_read_session", lambda _: None)
     account = build_account(id=2)
@@ -703,20 +717,16 @@ def test_calculate_portfolio_drops_worker_after_invalid_result(monkeypatch: pyte
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload={"ok": True, "target": "invalid"},
+            output_payload=payload,
         )
 
     async def fake_drop_account(account_id: int) -> None:
         dropped.append(account_id)
 
-    def fail_from_payload(_payload: dict[str, object]) -> object:
-        raise ValueError("invalid worker result")
-
     monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     monkeypatch.setattr(manager, "drop_account", fake_drop_account)
-    monkeypatch.setattr(worker_manager_module.PortfolioFunctionResult, "from_payload", fail_from_payload)
 
-    with pytest.raises(ValueError, match="invalid worker result"):
+    with pytest.raises(error_type):
         asyncio.run(manager.calculate_portfolio(account, "code"))
 
     assert dropped == [2]
@@ -733,3 +743,55 @@ def test_drop_account_disposes_registered_worker(monkeypatch: pytest.MonkeyPatch
 
     assert manager._workers == {}
     assert disposed == [handle]
+
+
+@pytest.mark.parametrize("mode", ["success", "script_error", "prepare_error"])
+def test_calculate_worker_keeps_script_and_prepare_error_channels(monkeypatch, mode):
+    from axile.executor.ctp.ctp_execute import CtpSessionRecoveryRequired
+    from axile.server.context import SamplePortfolioExecutor
+    from axile.server.execution.worker_backend import worker
+    from axile.server.execution.worker_backend.worker_state import _WorkerBackendState
+
+    watches = []
+    finalized = []
+    executor = SamplePortfolioExecutor()
+
+    class Watchdog:
+        def __init__(self, *, args, **kwargs):
+            watches.append(args[0])
+
+        def start(self):
+            pass
+
+    def prepare(**kwargs):
+        if mode == "prepare_error":
+            raise CtpSessionRecoveryRequired("return_code=-2", return_code=-2)
+        return executor
+
+    monkeypatch.setattr(worker.threading, "Thread", Watchdog)
+    monkeypatch.setattr(worker, "_resolve_prepared_executor", prepare)
+    monkeypatch.setattr(worker, "_finalize_with_orders", lambda actual, state: finalized.append(actual))
+    code = "def calculate_portfolio(context):\n    return {'x': 0.25}\n"
+    if mode == "script_error":
+        code = "def calculate_portfolio(context):\n    raise ValueError('broken script')\n"
+    request = WorkerBackendRequest(
+        request_id="portfolio",
+        command="calculate_portfolio",
+        execution_id=None,
+        account_payload=build_account(id=2).model_dump(mode="json"),
+        payload={"code": code},
+    )
+    response = worker._handle_calculate_portfolio(request, _WorkerBackendState())
+    assert len(finalized) == 1
+    if mode == "prepare_error":
+        assert response.kind == "error" and response.error.type == "ctp_session_recovery_required"
+        assert response.error.retryable is True and watches == [] and finalized == [None]
+    else:
+        assert finalized == [executor] and len(watches) == 1 and watches[0].is_set()
+        assert response.kind == "result"
+        result = response.output_payload["portfolio_result"]
+        if mode == "script_error":
+            assert isinstance(result, PortfolioFunctionError)
+            assert result.error_line == 2 and result.error_type == "ValueError"
+        else:
+            assert result == {"x": 0.25}

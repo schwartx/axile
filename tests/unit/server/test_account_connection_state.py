@@ -1,6 +1,7 @@
 """使用真实 SQLite 验证最新状态、配置失效与跨进程观察去重。"""
 
 import json
+import pickle
 import sqlite3
 import threading
 import time
@@ -17,7 +18,7 @@ from axile.server.db.models import Account
 from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionState
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
-from axile.server.portfolio_function import PortfolioFunctionResult, portfolio_result_from_exception
+from axile.server.portfolio_function import _error_from_exception
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
@@ -111,9 +112,8 @@ def test_connection_scope_survives_worker_and_portfolio_wrapping():
     ConnectionMonitor().failed(original)
     worker = _build_error_payload(original)
     assert worker.error_scope == "account_connection"
-    result = portfolio_result_from_exception(original)
-    restored = PortfolioFunctionResult.from_payload(result.to_payload())
-    detail = exception_details(restored.error)
+    restored = pickle.loads(pickle.dumps(_error_from_exception(original)))
+    detail = exception_details(restored)
     assert detail["error_scope"] == "account_connection"
     assert "1026" in detail["technical_detail"]
     assert "更新令牌错误" in detail["traceback"]

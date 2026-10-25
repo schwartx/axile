@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from axile.server.portfolio_targets import calculate_portfolio_for_account
+from axile.server.portfolio_targets import PortfolioFunctionError, calculate_portfolio_for_account
 
 
 class _CancellingManager:
@@ -29,3 +29,28 @@ def test_calculate_portfolio_reraises_cancellation(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_portfolio_target_preserves_structured_errors_and_wraps_getter_failures(monkeypatch, structured):
+    error = (
+        PortfolioFunctionError("script", error_line=4, error_type="SyntaxError") if structured else RuntimeError("init")
+    )
+
+    def getter():
+        if not structured:
+            raise error
+
+        class Manager:
+            async def calculate_portfolio(self, *args, **kwargs):
+                raise error
+
+        return Manager()
+
+    monkeypatch.setattr("axile.server.execution.worker_backend.manager.get_worker_backend_manager", getter)
+    with pytest.raises(PortfolioFunctionError) as caught:
+        asyncio.run(calculate_portfolio_for_account(object(), "code"))
+    if structured:
+        assert caught.value is error and caught.value.error_line == 4
+    else:
+        assert caught.value.error_type == "RuntimeError" and caught.value.error_message == "init"

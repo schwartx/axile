@@ -452,30 +452,7 @@ store_operations! { register_store_values, value, PyAny;
         record_id: i64,
     ) => |connection| crate::business_detail::read(connection, account_id, record_id);
 
-    /// 同一只读快照中的卡片输入；插件和实时状态由 Python 收尾。
-    #[pyo3(signature = ( store, account_ids, logic_version, engine_version))]
-    dashboard_inputs(
-        account_ids: Vec<i64>,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| crate::dashboard::dashboard_inputs(
-        connection,
-        &account_ids,
-        logic_version,
-        engine_version,
-    );
 
-    #[pyo3(signature = (store, account_ids, logic_version, engine_version))]
-    summaries(
-        account_ids: Vec<i64>,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| snapshots::summaries_for_accounts(
-        connection,
-        &account_ids,
-        logic_version,
-        engine_version,
-    );
 }
 
 store_operations! { register_store_bytes, json_bytes, PyBytes;

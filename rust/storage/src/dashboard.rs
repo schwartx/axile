@@ -209,7 +209,7 @@ mod tests {
         );
         let writer = Connection::open(&path).unwrap();
         writer
-            .execute_batch("BEGIN; INSERT INTO portfolioaccount VALUES(2,1,NULL); COMMIT;")
+            .execute_batch("BEGIN; INSERT INTO portfolioaccount VALUES(2,1,NULL),(3,2,8); COMMIT;")
             .unwrap();
         let old = dashboard_inputs(&reader, &[1], "l", "e").unwrap();
         assert_eq!(old["1"]["portfolio_id"], 7);
@@ -218,6 +218,10 @@ mod tests {
         let new = dashboard_inputs(&reader, &[1], "l", "e").unwrap();
         assert_eq!(new["1"]["portfolio_id"], Value::Null);
         assert_eq!(new["1"]["target_weights"], Value::Null);
+        let subset = dashboard_inputs(&reader, &[2], "l", "e").unwrap();
+        assert_eq!(subset.as_object().unwrap().len(), 1);
+        assert_eq!(subset["2"]["portfolio_id"], 8);
+        assert!(subset.get("1").is_none());
         drop(writer);
         drop(reader);
         std::fs::remove_file(path).unwrap();

@@ -29,7 +29,7 @@ if getattr(module, 'PUBLIC_HEAD', None) != '0034':
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'execution_business_detail', 'asset_snapshots',
-    'account_performance', 'snapshot', 'query_costs', 'summaries', 'dashboard_inputs',
+    'account_performance', 'snapshot', 'query_costs', 'account_dashboard_context',
     'performance_result', 'status', 'publication_status', 'chart',
     'execution_summary', 'execution_detail', 'order_submission_summary',
     'order_submissions', 'submission_monitor', 'publish_store',

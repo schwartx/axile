@@ -32,7 +32,7 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerTerminationSignal,
 )
 from axile.server.execution.worker_backend.worker import run_worker_backend_loop
-from axile.server.portfolio_function import PortfolioFunctionResult
+from axile.server.portfolio_function import PortfolioFunctionError, _normalize_target
 from axile.server.portfolio_runner import (
     PORTFOLIO_FUNCTION_IPC_GRACE_SECONDS,
     PORTFOLIO_FUNCTION_TIMEOUT_SECONDS,
@@ -855,7 +855,7 @@ class WorkerBackendManager:
         code: str,
         *,
         execution_id: str | None = None,
-    ) -> PortfolioFunctionResult:
+    ) -> dict[str, float]:
         """通过账户常驻 worker 执行自定义组合函数，失败后丢弃 worker."""
         if execution_id is None:
             self._check_read_session(account)
@@ -879,13 +879,13 @@ class WorkerBackendManager:
                 await self.drop_account(_require_account_id(account))
             raise WorkerBackendExecutionError.from_payload(response.error, "自定义组合函数执行失败")
         try:
-            result = PortfolioFunctionResult.from_payload(response.output_payload)
+            result = response.output_payload["portfolio_result"]
+            if isinstance(result, PortfolioFunctionError):
+                raise result
+            return _normalize_target(result)
         except Exception:
             await self.drop_account(_require_account_id(account))
             raise
-        if not result.ok:
-            await self.drop_account(_require_account_id(account))
-        return result
 
     async def execute_trade(
         self,

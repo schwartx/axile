@@ -94,13 +94,14 @@ def dashboard_database(native_database):
     return path, expected
 
 
-def inputs(path, ids=(1, 2, 3)):
-    return _core.dashboard_inputs(_core.Store(str(path)), list(ids), LOGIC_VERSION, ENGINE_VERSION)
+def inputs(path):
+    return native_store_call(
+        path, "account_dashboard_context", {"logic_version": LOGIC_VERSION, "engine_version": ENGINE_VERSION}
+    )["inputs"]
 
 
 def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database):
     path, expected = dashboard_database
-    assert inputs(path, ()) == {}
     result = inputs(path)
     assert set(result) == {"1", "2", "3"}
     assert result["1"]["performance"] == {
@@ -123,7 +124,6 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     assert result["2"]["portfolio_id"] is None
     assert result["2"]["target_weights"] is None
     assert result["3"]["observation"] is None
-    assert set(inputs(path, (2,))) == {"2"}
 
 
 @pytest.mark.parametrize(
@@ -169,3 +169,24 @@ def test_dashboard_invalid_target_recovery(dashboard_database, value):
     path, _ = dashboard_database
     _target(path, 7, {"normalized_weights": value})
     assert inputs(path)["1"]["target_weights"] == ({"X": None} if isinstance(value, dict) else value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"logic_version": None},
+        {"logic_version": False},
+        {"logic_version": "20"},
+        {"logic_version": "20", "engine_version": None},
+    ],
+)
+def test_dashboard_context_requires_version_fields(native_database, payload):
+    with pytest.raises(_core.NativeError, match="缺少分析"):
+        native_store_call(native_database, "account_dashboard_context", payload)
+
+
+def test_dashboard_native_exports_follow_current_context_entrypoint():
+    assert callable(_core.account_dashboard_context)
+    assert not hasattr(_core, "dashboard_inputs")
+    assert not hasattr(_core, "summaries")

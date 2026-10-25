@@ -121,14 +121,11 @@ async def _execute_portfolio_function(
 
     """
     try:
-        result = await calculate_portfolio_for_account(
+        return await calculate_portfolio_for_account(
             account,
             portfolio.custom_calc_py_code,
             execution_id=execution_id,
         )
-        if not result.ok or result.target is None:
-            raise result.error or ValueError("自定义组合脚本执行失败")
-        return result.target
     except Exception as e:
         # 脚本错误行号对用户有定位价值；异常原文属于技术证据，只进 technical_detail 与日志。
         line = getattr(e, "error_line", None)

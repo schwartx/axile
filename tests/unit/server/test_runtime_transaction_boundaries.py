@@ -19,7 +19,6 @@ from axile.server.execution import ctp_channels
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend import manager as worker_manager
 from axile.server.native_store import native_operation
-from axile.server.portfolio_function import PortfolioFunctionResult
 from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 
 
@@ -66,7 +65,7 @@ def test_routes_release_transactions_before_worker(tmp_path, monkeypatch, entry,
 
                 async def calculate_portfolio(self, account, *_args, **_kwargs):
                     await write_from_worker(account)
-                    return PortfolioFunctionResult(ok=True, target={})
+                    return {}
 
                 async def prepare_account(self, account):
                     await write_from_worker(account)

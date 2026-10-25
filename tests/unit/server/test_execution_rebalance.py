@@ -1000,3 +1000,45 @@ def test_standard_input_execution_timeout_defaults_to_180() -> None:
     assert UnifiedStandardInput.from_dict(dict(payload)).execution_timeout == 180
     # 0 表示显式关闭 deadline（仿真路径依赖该语义），不能被默认值覆盖。
     assert UnifiedStandardInput.from_dict({**payload, "execution_timeout": 0}).execution_timeout == 0
+
+
+@pytest.mark.parametrize("mode", ["success", "script_error", "cancelled"])
+def test_portfolio_exception_contract_preserves_rebalance_audit(monkeypatch, mode):
+    from unittest.mock import AsyncMock
+
+    from axile.server.portfolio_function import PortfolioFunctionError
+
+    account = build_account(id=2)
+    error = PortfolioFunctionError(
+        "remote original",
+        error_line=12,
+        error_type="ValueError",
+        formatted_traceback="remote traceback",
+        error_scope="account_connection",
+    )
+    calculate = AsyncMock(return_value={"x": 0.25})
+    if mode != "success":
+        calculate.side_effect = asyncio.CancelledError() if mode == "cancelled" else error
+    record = AsyncMock()
+    monkeypatch.setattr(rebalance_execution, "calculate_portfolio_for_account", calculate)
+    monkeypatch.setattr(rebalance_execution, "append_error_execute_record", record)
+    call = rebalance_execution._execute_portfolio_function(
+        account, SimpleNamespace(custom_calc_py_code="code"), "e", None
+    )
+    if mode == "success":
+        assert asyncio.run(call) == {"x": 0.25}
+        record.assert_not_awaited()
+    elif mode == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(call)
+        record.assert_not_awaited()
+    else:
+        with pytest.raises(ValueError, match="第 12 行") as caught:
+            asyncio.run(call)
+        assert caught.value.__cause__ is error
+        fields = record.await_args.kwargs
+        assert fields["account_id"] == 2 and fields["execution_id"] == "e" and fields["error"] is error
+        assert fields["raw_result"]["technical_detail"] == "remote original"
+        assert fields["raw_result"]["traceback"] == "remote traceback"
+        assert fields["raw_result"]["error_scope"] == "account_connection"
+    calculate.assert_awaited_once_with(account, "code", execution_id="e")

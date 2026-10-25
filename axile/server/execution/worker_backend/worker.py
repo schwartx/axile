@@ -55,7 +55,7 @@ from axile.server.execution.worker_backend.worker_state import (
     _resolve_prepared_executor,
     _WorkerBackendState,
 )
-from axile.server.portfolio_function import calculate_portfolio_target
+from axile.server.portfolio_function import PortfolioFunctionError, calculate_portfolio_target
 from axile.server.portfolio_runner import PORTFOLIO_FUNCTION_TIMEOUT_SECONDS
 
 _SYMBOL_FIELDS = (
@@ -229,11 +229,15 @@ def _handle_calculate_portfolio(
             daemon=True,
         )
         watchdog.start()
-        result = calculate_portfolio_target(code, Context(cast("PortfolioExecutor", executor)))
+        context = Context(cast("PortfolioExecutor", executor))
+        try:
+            result = calculate_portfolio_target(code, context)
+        except PortfolioFunctionError as exc:
+            result = exc
         return WorkerBackendResponse(
             request_id=request.request_id,
             kind="result",
-            output_payload=result.to_payload(),
+            output_payload={"portfolio_result": result},
             channel_type=account.trade_channel,
         )
     except Exception as exc:  # noqa: BLE001 - IPC 边界统一返回结构化错误
