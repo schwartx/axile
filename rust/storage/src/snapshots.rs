@@ -1,11 +1,6 @@
-//! Persisted performance wire results, read without Python model reconstruction.
-//!
-//! Current snapshots use typed result tables and scalar settings, with no JSON
-//! reads. Marker-zero snapshots retain an explicit legacy result decoder; this
-//! compatibility path never reads raw execution input or trade payloads.
+//! Published performance results from current structured tables.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::de::{self, SeqAccess, Visitor};
 use serde_json::{json, Value};
 
 /// Publication state shared by snapshot, card, view and Python wait readers.
@@ -87,7 +82,6 @@ struct Snapshot {
     result_schema_version: i64,
     settings: Value,
     selected: Value,
-    executions: Option<String>,
 }
 
 impl Snapshot {
@@ -151,7 +145,6 @@ fn read(
                     result_schema_version: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
                     settings: Value::Null,
                     selected: Value::Null,
-                    executions: None,
                 })
             },
         )
@@ -166,63 +159,17 @@ fn read(
         }
     }
     if let Some(row) = snapshot.as_mut().filter(|row| row.compatible(request)) {
-        match row.result_schema_version {
-            0 => read_legacy(connection, row, request, performance_only)?,
-            2 => {
-                let id = row.id.as_deref().expect("compatible snapshots have an id");
-                row.selected =
-                    crate::result_reader::read(connection, id, request.range, performance_only)?;
-                // Settings are two scalar fields; copying them does not duplicate
-                // the growing result arrays or execution history.
-                row.settings = row.selected["performance"]["settings"].clone();
-            }
-            version => {
-                return Err(format!(
-                    "SNAPSHOT_SCHEMA_UNSUPPORTED: result schema {version}"
-                ))
-            }
+        if row.result_schema_version != 2 {
+            return Err(format!(
+                "SNAPSHOT_SCHEMA_UNSUPPORTED: result schema {}",
+                row.result_schema_version
+            ));
         }
+        let id = row.id.as_deref().expect("compatible snapshots have an id");
+        row.selected = crate::result_reader::read(connection, id, request.range, performance_only)?;
+        row.settings = row.selected["performance"]["settings"].clone();
     }
     Ok(snapshot)
-}
-
-fn read_legacy(
-    connection: &Connection,
-    snapshot: &mut Snapshot,
-    request: &Request<'_>,
-    performance_only: bool,
-) -> Result<(), String> {
-    let path = format!("$.\"{}\"", request.range);
-    let (settings, selected, executions): (String, Option<String>, Option<String>) = connection
-        .query_row(
-            "SELECT settings,
-                    json_extract(ranges,
-                        CASE WHEN ?3 THEN ?2 || '.performance' ELSE ?2 END),
-                    CASE WHEN ?2 != '$.\"all\"'
-                                   AND json_type(ranges, ?2 || '.performance.executions') IS NULL
-                         THEN json_extract(ranges, '$.all.performance.executions')
-                         ELSE NULL END
-             FROM performance_snapshot WHERE id = ?1",
-            params![snapshot.id, path, performance_only],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|error| format!("SNAPSHOT_READ: {error}"))?;
-    snapshot.settings = parse_json(Some(&settings))?;
-    snapshot.selected = if performance_only {
-        let mut wrapper = json!({});
-        wrapper["performance"] = parse_json(selected.as_deref())?;
-        wrapper
-    } else {
-        parse_json(selected.as_deref())?
-    };
-    snapshot.executions = executions;
-    Ok(())
-}
-
-fn parse_json(value: Option<&str>) -> Result<Value, String> {
-    value.map_or(Ok(Value::Null), |value| {
-        serde_json::from_str(value).map_err(|error| format!("SNAPSHOT_INVALID: {error}"))
-    })
 }
 
 /// Return the existing PerformanceSnapshot envelope, including stale results.
@@ -236,12 +183,9 @@ pub fn query(connection: &Connection, value: &Value) -> Result<Value, String> {
         .map(|row| row.selected.take())
         .unwrap_or(Value::Null);
     let snapshot = row.as_ref().filter(|row| row.compatible(&request));
-    if let Some(row) = snapshot {
+    if snapshot.is_some() {
         if !selected.is_object() {
             return Err("SNAPSHOT_INVALID: requested range is missing".into());
-        }
-        if row.result_schema_version == 0 {
-            project_executions(&mut selected["performance"], row.executions.as_deref())?;
         }
     }
     let mut response = json!({
@@ -288,9 +232,6 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
     if !result.is_object() {
         return Err("SNAPSHOT_INVALID: requested performance range is missing".into());
     }
-    if row.result_schema_version == 0 {
-        project_executions(&mut result, row.executions.as_deref())?;
-    }
     if value.get("include_backtest").and_then(Value::as_bool) == Some(false) {
         result["backtest_included"] = json!(false);
         result["skips"] = Value::Null;
@@ -308,91 +249,8 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
     Ok(result)
 }
 
-fn project_executions(performance: &mut Value, executions: Option<&str>) -> Result<(), String> {
-    let Some(performance) = performance.as_object_mut() else {
-        return Err("SNAPSHOT_INVALID: performance must be an object".into());
-    };
-    if performance.contains_key("executions") {
-        return Ok(());
-    }
-    let bounds = || {
-        Some((
-            timestamp(performance.get("baseline")?.as_str()?)?,
-            timestamp(performance.get("end")?.as_str()?)?,
-        ))
-    };
-    let selected = match (bounds(), executions) {
-        (Some((start, end)), Some(executions)) if executions.trim_start().starts_with('[') => {
-            let mut decoder = serde_json::Deserializer::from_str(executions);
-            let selected =
-                serde::Deserializer::deserialize_seq(&mut decoder, ExecutionFilter { start, end })
-                    .map_err(|error| format!("SNAPSHOT_INVALID: {error}"))?;
-            decoder
-                .end()
-                .map_err(|error| format!("SNAPSHOT_INVALID: {error}"))?;
-            selected
-        }
-        _ => Vec::new(),
-    };
-    // Pydantic previously supplied this default for empty/legacy range results.
-    performance.insert("executions".into(), Value::Array(selected));
-    Ok(())
-}
-
-struct ExecutionFilter {
-    start: i64,
-    end: i64,
-}
-
-impl<'de> Visitor<'de> for ExecutionFilter {
-    type Value = Vec<Value>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("an array of persisted execution projections")
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-        let mut selected = Vec::new();
-        // Decode one projection at a time. Unselected history is dropped before
-        // decoding the next row rather than building a second full object tree.
-        while let Some(execution) = sequence.next_element::<Value>()? {
-            let Some(created_at) = execution
-                .get("record")
-                .and_then(|record| record.get("created_at"))
-                .and_then(Value::as_str)
-            else {
-                continue;
-            };
-            let when = timestamp(created_at)
-                .ok_or_else(|| de::Error::custom("execution timestamp is invalid"))?;
-            if self.start <= when && when <= self.end {
-                selected.push(execution);
-            }
-        }
-        Ok(selected)
-    }
-}
-
 pub(crate) fn timestamp(value: &str) -> Option<i64> {
-    crate::calendar::timestamp_micros(value).ok()
-}
-
-/// 批量账户卡片摘要:状态 + 全区间曲线末点,兼容 typed(2)与 legacy ranges JSON。
-pub fn summaries(connection: &Connection, request: &Value) -> Result<Value, String> {
-    let account_ids: Vec<i64> = request
-        .get("account_ids")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_i64).collect())
-        .ok_or("INVALID_REQUEST: account_ids must be an array of integers")?;
-    let expected_logic = request
-        .get("logic_version")
-        .and_then(Value::as_str)
-        .ok_or("INVALID_REQUEST: logic_version must be a nonempty string")?;
-    let expected_engine = request
-        .get("engine_version")
-        .and_then(Value::as_str)
-        .ok_or("INVALID_REQUEST: engine_version must be a nonempty string")?;
-    summaries_for_accounts(connection, &account_ids, expected_logic, expected_engine)
+    crate::calendar::local_time(value).ok().map(crate::calendar::timestamp_micros)
 }
 
 pub(crate) fn summaries_for_accounts(
@@ -407,7 +265,7 @@ pub(crate) fn summaries_for_accounts(
     let placeholders = vec!["?"; account_ids.len()].join(",");
     let sql = format!(
         "SELECT s.account_id,s.source_version,s.published_version,s.requested,s.running_version,s.error,\
-p.id,p.computed_at,p.logic_version,p.engine_version,p.result_schema_version,p.ranges \
+p.id,p.computed_at,p.logic_version,p.engine_version,p.result_schema_version \
 FROM account_analysis s LEFT JOIN performance_snapshot p ON s.current_snapshot=p.id \
 WHERE s.account_id IN ({placeholders})"
     );
@@ -462,7 +320,6 @@ WHERE s.account_id IN ({placeholders})"
         let logic: Option<String> = row.get(8).map_err(read_error)?;
         let engine: Option<String> = row.get(9).map_err(read_error)?;
         let schema_version: Option<i64> = row.get(10).map_err(read_error)?;
-        let ranges: Option<String> = row.get(11).map_err(read_error)?;
         let has_snapshot = snapshot_id.as_deref().is_some_and(|id| !id.is_empty());
         let incompatible = has_snapshot
             && (logic.as_deref() != Some(expected_logic)
@@ -476,22 +333,15 @@ WHERE s.account_id IN ({placeholders})"
         );
         let points = if incompatible || !has_snapshot {
             Value::Array(Vec::new())
-        } else if schema_version == Some(2) {
+        } else {
+            if schema_version != Some(2) {
+                return Err("SNAPSHOT_SCHEMA_UNSUPPORTED: unsupported result schema".into());
+            }
             let points = typed_points
                 .get(snapshot_id.as_deref().expect("checked"))
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             serde_json::to_value(points).map_err(|error| format!("SUMMARY_ENCODE: {error}"))?
-        } else {
-            ranges
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-                .and_then(|mut value| {
-                    value
-                        .pointer_mut("/all/performance/points")
-                        .map(Value::take)
-                })
-                .unwrap_or_else(|| Value::Array(Vec::new()))
         };
         let last = points.as_array().and_then(|items| items.last());
         let pick = |field: &str| {
@@ -520,6 +370,7 @@ mod tests {
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE account_analysis (
@@ -530,13 +381,18 @@ mod tests {
                  CREATE TABLE performance_snapshot (
                      id TEXT PRIMARY KEY, account_id INTEGER, source_version INTEGER,
                      logic_version TEXT, engine_version TEXT, computed_at TEXT, data_until TEXT,
-                     settings TEXT, ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 0);
-                 CREATE TABLE performance_result_point (
-                     snapshot_id TEXT,range_key TEXT,idx INTEGER,date TEXT,observed_at TEXT,
-                     record_id INTEGER,execution_id TEXT,account_return REAL,account_equity REAL,
-                     portfolio_return REAL,account_daily_return REAL,portfolio_daily_return REAL,
-                     target_portfolio_return REAL,target_portfolio_daily_return REAL,difference REAL,
-                     sizing_fallback INTEGER NOT NULL DEFAULT 0);",
+                     settings TEXT, ranges TEXT, result_schema_version INTEGER NOT NULL DEFAULT 2,backtest_weight_type TEXT DEFAULT 'cs',backtest_fee_rate REAL DEFAULT 0.0002);
+                 ",
+            ).unwrap();
+        let schema = include_str!("migrations/structured/analysis.sql").replace(
+            "sizing_fallback BOOLEAN NOT NULL",
+            "sizing_fallback BOOLEAN NOT NULL DEFAULT 0",
+        );
+        connection
+            .execute_batch(
+                &schema[schema
+                    .find("CREATE TABLE performance_cost_execution")
+                    .unwrap()..],
             )
             .unwrap();
         connection
@@ -547,31 +403,17 @@ mod tests {
     }
 
     fn publish(connection: &Connection) {
-        let performance = |range: &str| {
-            json!({
-                "range": range, "baseline": "2026-10-01T00:00:00+08:00", "end": "2026-10-02T00:00:00+08:00",
-                "backtest_included": true, "used_record_count": 9, "skips": {"count": 1},
-                "points": [{"portfolio_return": 0.02, "portfolio_daily_return": 0.01, "difference": 0.01,
-                            "account_return": 0.03}]
-            })
-        };
-        let mut all = performance("all");
-        all["executions"] = json!([
-            {"record": {"id": 1, "created_at": "2026-09-30T15:59:59Z"}},
-            {"record": {"id": 2, "created_at": "2026-10-01T00:00:00"}},
-            {"record": {"id": 3, "created_at": "2026-10-01T16:00:00Z"}},
-            {"record": {"id": 4, "created_at": "2026-10-02T00:00:01+08:00"}},
-            {"record": null}
-        ]);
-        let ranges = json!({
-            "all": {"performance": all, "daily_costs": {}, "events": [], "event_count": 0},
-            "30": {"performance": performance("30"), "daily_costs": {}, "events": [], "event_count": 0},
-            "90": {"performance": performance("90"), "daily_costs": {}, "events": [], "event_count": 0}
-        });
-        connection.execute(
-            "INSERT INTO performance_snapshot (id, account_id, source_version, logic_version, engine_version, computed_at, data_until, settings, ranges) VALUES ('s1', 1, 1, '18', 'equity-ledger-1', '2026-10-02', NULL, ?1, ?2)",
-            params![json!({"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}).to_string(), ranges.to_string()],
-        ).unwrap();
+        connection.execute_batch("INSERT INTO performance_snapshot(id,account_id,source_version,logic_version,engine_version,computed_at)
+            VALUES('s1',1,1,'18','equity-ledger-1','2026-10-02');
+            INSERT INTO performance_cost_execution(snapshot_id,record_id,time,success,noop,execution_id,created_at,is_success,symbol_count,trade_count,position_count,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete,covered_value,estimated,has_transactions)
+            VALUES('s1',2,1790812800000,1,0,'e2','2026-10-01T00:00:00',1,0,0,0,NULL,NULL,NULL,NULL,0,0,0,1,0,0,0),
+                  ('s1',3,1790870400000,1,0,'e3','2026-10-01T16:00:00Z',1,0,0,0,NULL,NULL,NULL,NULL,0,0,0,1,0,0,0);").unwrap();
+        for range in ["30", "90", "all"] {
+            connection.execute("INSERT INTO performance_result_range(snapshot_id,range_key,backtest_included,engine_version,baseline,end,record_count,observation_count,used_record_count,target_used_record_count,invalid_asset_count,calendar_status,event_count)
+                VALUES('s1',?1,1,'equity-ledger-1','2026-10-01T00:00:00+08:00','2026-10-02T00:00:00+08:00',0,0,9,0,0,'not_required',0)",[range]).unwrap();
+            connection.execute("INSERT INTO performance_result_point(snapshot_id,range_key,idx,date,observed_at,account_return,portfolio_return,portfolio_daily_return,difference,sizing_fallback)
+                VALUES('s1',?1,0,'2026-10-01','2026-10-01T00:00:00',0.03,0.02,0.01,0.01,0)",[range]).unwrap();
+        }
         connection.execute("INSERT INTO account_analysis (account_id, published_version, current_snapshot) VALUES (1, 1, 's1')", []).unwrap();
     }
 
@@ -652,7 +494,11 @@ mod tests {
                 crate::views::status(&connection, 1, "18", "equity-ledger-1").unwrap()["status"],
                 expected
             );
-            assert_eq!(summaries(&connection, &json!({"account_ids": [1], "logic_version": "18", "engine_version": "equity-ledger-1"})).unwrap()["1"]["status"], expected);
+            assert_eq!(
+                summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap()["1"]
+                    ["status"],
+                expected
+            );
         }
     }
 
@@ -746,40 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn range_projection_uses_inclusive_bounds_and_shanghai_naive_time() {
-        let connection = database();
-        publish(&connection);
-        for range in ["30", "90"] {
-            let snapshot = query(&connection, &request(range)).unwrap();
-            let ids: Vec<_> = snapshot["result"]["executions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["record"]["id"].as_i64().unwrap())
-                .collect();
-            assert_eq!(ids, vec![2, 3]);
-        }
-        assert_eq!(
-            query(&connection, &request("all")).unwrap()["result"]["executions"]
-                .as_array()
-                .unwrap()
-                .len(),
-            5
-        );
-    }
-
-    #[test]
-    fn explicitly_persisted_range_execution_lists_are_preserved() {
-        let connection = database();
-        publish(&connection);
-        connection.execute("UPDATE performance_snapshot SET ranges = json_set(ranges, '$.\"30\".performance.executions', json('[]'))", []).unwrap();
-        assert_eq!(
-            query(&connection, &request("30")).unwrap()["result"]["executions"],
-            json!([])
-        );
-    }
-
-    #[test]
     fn ready_result_can_omit_backtest_without_changing_account_returns() {
         let connection = database();
         publish(&connection);
@@ -845,10 +657,7 @@ mod tests {
         let connection = database();
         publish(&connection);
         connection
-            .execute(
-                "UPDATE performance_snapshot SET ranges = 'invalid JSON'",
-                [],
-            )
+            .execute("UPDATE performance_result_point SET date = x'ff'", [])
             .unwrap();
         assert!(performance_result(&connection, &request("all"))
             .unwrap_err()
@@ -885,7 +694,7 @@ mod tests {
         writer
             .execute_batch(
                 "UPDATE account_analysis SET source_version = 2;
-                 UPDATE performance_snapshot SET ranges = 'invalid JSON';",
+                 UPDATE performance_result_point SET date = x'ff';",
             )
             .unwrap();
         assert_eq!(
@@ -900,15 +709,6 @@ mod tests {
         drop(reader);
         drop(writer);
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn empty_ranges_keep_public_execution_list_default() {
-        let connection = database();
-        publish(&connection);
-        connection.execute("UPDATE performance_snapshot SET ranges = json_set(ranges, '$.\"30\".performance.baseline', NULL)", []).unwrap();
-        let result = query(&connection, &request("30")).unwrap();
-        assert_eq!(result["result"]["executions"], json!([]));
     }
 
     #[test]
@@ -929,25 +729,10 @@ mod tests {
     }
 
     #[test]
-    fn summaries_preserve_request_validation_before_empty_accounts() {
-        let connection = database();
-        for ids in [json!([]), json!([null, true, "1", 1.5])] {
-            let mut request = json!({"account_ids": ids});
-            assert_eq!(
-                summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: logic_version must be a nonempty string"
-            );
-            request["logic_version"] = json!("");
-            assert_eq!(
-                summaries(&connection, &request).unwrap_err(),
-                "INVALID_REQUEST: engine_version must be a nonempty string"
-            );
-            request["engine_version"] = json!("");
-            assert_eq!(summaries(&connection, &request).unwrap(), json!({}));
-        }
+    fn empty_summary_batch_needs_no_schema() {
         assert_eq!(
-            summaries(&connection, &json!({"account_ids": 1})).unwrap_err(),
-            "INVALID_REQUEST: account_ids must be an array of integers"
+            summaries_for_accounts(&Connection::open_in_memory().unwrap(), &[], "18", "e").unwrap(),
+            json!({})
         );
     }
 
@@ -963,17 +748,7 @@ mod tests {
             ('a','all',2,'later','t2',20),('b','all',0,'other','tb',99),
             ('a','all',1,'earlier','t1',10),('a','month',3,'excluded','x',999),
             ('d','all',0,'incompatible','x',999);").unwrap();
-        let result = summaries(
-            &connection,
-            &json!({"account_ids":[1,2,3,4],
-            "logic_version":"18","engine_version":"e"}),
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            summaries_for_accounts(&connection, &[1, 2, 3, 4], "18", "e").unwrap()
-        );
-        assert_eq!(result, summaries(&connection, &json!({"account_ids":[1,null,"2",2,true,3,4,1.5], "logic_version":"18", "engine_version":"e"})).unwrap());
+        let result = summaries_for_accounts(&connection, &[1, 2, 3, 4], "18", "e").unwrap();
         assert_eq!(result["1"]["points"][0]["account_equity"], 10.0);
         assert_eq!(result["1"]["account_equity"], 20.0);
         assert_eq!(result["2"]["account_equity"], 99.0);
@@ -993,17 +768,16 @@ mod tests {
                  INSERT INTO performance_snapshot (id,account_id,source_version,logic_version,engine_version,
                   computed_at,settings,ranges,result_schema_version) VALUES
                  ('s1',1,3,'18','equity-ledger-1','2026-10-02T00:00:00','{}',
-                  '{\"all\":{\"performance\":{\"points\":[{\"observed_at\":\"t1\",\"account_equity\":100.0,\"account_daily_return\":0.01}]}}}',0),
-                 ('s2',2,1,'18','equity-ledger-1','2026-10-02T00:00:00','{}','{}',0),
-                 ('s3',3,3,'17','equity-ledger-1','2026-10-02T00:00:00','{}','{}',0),
-                 ('s5',5,3,'18','old-engine','2026-10-02T00:00:00','{}','{}',0);",
+                  '{\"all\":{\"performance\":{\"points\":[{\"observed_at\":\"t1\",\"account_equity\":100.0,\"account_daily_return\":0.01}]}}}',2),
+                 ('s2',2,1,'18','equity-ledger-1','2026-10-02T00:00:00','{}','{}',2),
+                 ('s3',3,3,'17','equity-ledger-1','2026-10-02T00:00:00','{}','{}',2),
+                 ('s5',5,3,'18','old-engine','2026-10-02T00:00:00','{}','{}',2);",
             )
             .unwrap();
-        let result = summaries(
-            &connection,
-            &json!({"account_ids": [1, 2, 3, 4, 5, 6], "logic_version": "18", "engine_version": "equity-ledger-1"}),
-        )
-        .unwrap();
+        connection.execute("INSERT INTO performance_result_point(snapshot_id,range_key,idx,date,observed_at,account_equity,account_daily_return,sizing_fallback) VALUES('s1','all',0,'day','t1',100,0.01,0)",[]).unwrap();
+        let result =
+            summaries_for_accounts(&connection, &[1, 2, 3, 4, 5, 6], "18", "equity-ledger-1")
+                .unwrap();
         assert_eq!(result["1"]["status"], "ready");
         assert_eq!(result["1"]["snapshot_id"], "s1");
         assert_eq!(result["1"]["account_equity"], 100.0);
@@ -1015,27 +789,5 @@ mod tests {
         assert_eq!(result["4"]["status"], "empty");
         assert_eq!(result["5"]["status"], "pending");
         assert!(result.get("6").is_none());
-        assert_eq!(
-            result,
-            summaries_for_accounts(&connection, &[1, 2, 3, 4, 5, 6], "18", "equity-ledger-1")
-                .unwrap()
-        );
-        for (ranges, expected) in [
-            ("invalid", json!([])),
-            ("{}", json!([])),
-            (r#"{"all":{"performance":{"points":null}}}"#, Value::Null),
-            (r#"{"all":{"performance":{"points":42}}}"#, json!(42)),
-        ] {
-            connection
-                .execute(
-                    "UPDATE performance_snapshot SET ranges=?1 WHERE id='s1'",
-                    [ranges],
-                )
-                .unwrap();
-            let result =
-                summaries_for_accounts(&connection, &[1], "18", "equity-ledger-1").unwrap();
-            assert_eq!(result["1"]["points"], expected);
-            assert_eq!(result["1"]["account_equity"], Value::Null);
-        }
     }
 }

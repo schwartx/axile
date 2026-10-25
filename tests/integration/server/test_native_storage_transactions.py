@@ -15,6 +15,7 @@ from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissio
 from axile.server import order_submissions as submissions
 from tests.conftest import native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _NOW = "2026-10-23T09:30:00+08:00"
 _LATER = "2026-10-23T09:31:00+08:00"
@@ -148,9 +149,8 @@ def _freeze(path: Path, execution_id: str) -> str:
 
 
 def _terminal(path: Path, execution_id: str, **changes: object) -> dict:
-    return native_store_call(
+    return persist_record_fixture(
         path,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": execution_id,
@@ -226,7 +226,7 @@ def _intent(path: Path, execution_id: str, *, step_id: str | None = None, runnin
 @pytest.mark.parametrize("frozen", [False, True])
 @pytest.mark.parametrize("stage", ["asset_history", "facts_complete"])
 def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, stage: str) -> None:
-    core = require_native_store("persist_execute_record")
+    core = require_native_store("persist_execution_state")
     execution_id = "terminal-rollback"
     if frozen:
         _freeze(database, execution_id)
@@ -269,7 +269,7 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
 
 
 def test_lost_worker_response_preserves_frozen_facts_and_first_terminal(database: Path) -> None:
-    core = require_native_store("persist_execute_record")
+    core = require_native_store("persist_execution_state")
     execution_id = "unknown-worker-response"
     input_id = _freeze(database, execution_id)
     frozen_assets = _rows(database, "business_asset_snapshot")
@@ -453,7 +453,6 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
 ) -> None:
     core = require_native_store(operation)
     execution_id = "supplement-finish"
-    _terminal(database, execution_id)
     _intent(database, execution_id, step_id=_group(database, "group-finish"), running=True)
     table, event = (
         ("notification_event", "INSERT") if stage == "outbox_insert" else ("supplement_group", "UPDATE OF status")
@@ -470,13 +469,14 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
             "now": _LATER,
         }
     with pytest.raises(core.NativeError) as caught:
-        native_store_call(database, operation, request)
+        _terminal(database, execution_id)
     assert caught.value.args[0]
     assert stage in caught.value.args[1]
     assert _snapshot(database) == before
 
     _sql(database, "DROP TRIGGER fail_finish")
-    assert native_store_call(database, operation, request)["changed"]
+    _terminal(database, execution_id)
+    assert not native_store_call(database, operation, request)["changed"]
     assert _rows(database, "execution_intent")[0]["status"] == "SUCCEEDED"
     assert _rows(database, "supplement_step")[0]["status"] == "finished"
     assert _rows(database, "supplement_group")[0]["status"] == "completed"
@@ -493,8 +493,11 @@ def test_terminal_transition_supplement_outbox_and_snapshot_are_atomic(
 def test_frozen_notification_still_checks_execution_facts_before_finishing(database: Path) -> None:
     core = require_native_store("intent_finish")
     execution_id = "incomplete-frozen-result"
-    record = _terminal(database, execution_id)
     _intent(database, execution_id, step_id=_group(database, "incomplete-result"), running=True)
+    record = _terminal(database, execution_id)
+    # 模拟历史结果已有捕获正文，intent 与待发通知尚未提交。
+    _sql(database, "UPDATE execution_intent SET status='RUNNING'")
+    _sql(database, "DELETE FROM notification_event")
     _sql(database, "UPDATE executerecord SET facts_complete=0 WHERE id=?", (record["id"],))
     before = _snapshot(database)
 
@@ -547,7 +550,7 @@ def test_failed_recovery_terminal_commit_remains_recoverable(
     from axile.server.execution.intents import PROCESS_INTERRUPTED_REASON
     from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 
-    core = require_native_store("intent_recovery", "persist_execute_record")
+    core = require_native_store("intent_recovery", "persist_execution_state")
     execution_id = "interrupted-running"
     queued_id = "still-queued"
     _intent(database, execution_id, step_id=_group(database, "recover-group"), running=True)
@@ -583,26 +586,22 @@ def test_failed_recovery_terminal_commit_remains_recoverable(
         "CREATE TRIGGER fail_recovery BEFORE INSERT ON executerecord "
         "BEGIN SELECT RAISE(ABORT,'recovery-terminal'); END",
     )
+    before = _snapshot(database)
     try:
         with pytest.raises(core.NativeError) as caught:
             asyncio.run(dispatcher.recover_intents_on_startup())
         assert caught.value.args[0] == "BUSINESS_FACTS_SQL"
         assert "recovery-terminal" in caught.value.args[1]
         assert not _rows(database, "executerecord")
-        events = _rows(database, "notification_event")
-        assert len(events) == (0 if interrupted_status == "RUNNING" else 1)
-        statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
-        assert statuses == {execution_id: interrupted_status, queued_id: "QUEUED", "ordinary-failed": "FAILED"}
+        assert _snapshot(database) == before
         _sql(database, "DROP TRIGGER fail_recovery")
         asyncio.run(dispatcher.recover_intents_on_startup())
         statuses = {row["execution_id"]: row["status"] for row in _rows(database, "execution_intent")}
         assert statuses == {execution_id: "FAILED", queued_id: "QUEUED", "ordinary-failed": "FAILED"}
         records = _rows(database, "executerecord")
         assert len(records) == 1 and records[0]["execution_id"] == execution_id
-        committed_events = _rows(database, "notification_event")
-        assert len(committed_events) == 1
-        if interrupted_status == "FAILED":
-            assert committed_events == events
+        events = _rows(database, "notification_event")
+        assert len(events) == 1
         committed = _snapshot(database)
         asyncio.run(dispatcher.recover_intents_on_startup())
         assert _snapshot(database) == committed

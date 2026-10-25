@@ -78,7 +78,7 @@ pub fn page(
         symbols
             .entry(row.get(0).map_err(database)?)
             .or_default()
-            .insert(row.get(1).map_err(database)?, fields);
+            .insert(row.get(1).map_err(database)?, Value::Object(fields));
     }
 
     let mut summaries = HashMap::new();

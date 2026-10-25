@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from threading import RLock
 from uuid import uuid4
 
-from axile.server.db.models.account import Account
+from axile.server.connection_runtime import public_session_views
 from axile.server.native_store import native_operation
 
 type Change = tuple[int, set[int] | None]
@@ -93,15 +93,17 @@ connection_hub = ConnectionEventHub()
 
 async def connection_frames(account_ids: set[int] | None = None) -> list[dict[str, object]]:
     """只读取账户与运行态缓存，绝不初始化执行器或探测交易连接。"""
-    from axile.server.connection_state import public_connection
-
     accounts = await native_operation(
-        "connection_accounts", {"account_ids": sorted(account_ids) if account_ids is not None else None}
+        "connection_accounts",
+        {
+            "account_ids": sorted(account_ids) if account_ids is not None else None,
+            "live_sessions": public_session_views(),
+        },
     )
     return [
         {
             "account_id": value["id"],
-            "connection": public_connection(Account.model_validate(value), detail=True).model_dump(mode="json"),
+            "connection": value["connection"],
         }
         for value in accounts
     ]

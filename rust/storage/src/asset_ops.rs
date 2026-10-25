@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use crate::business_facts_ops::{encode, facts_error as invalid, sql};
+use crate::business_facts_ops::{encode, facts_error as invalid, insert_rows, sql};
 use crate::error::AnalysisError;
 
 fn integer(request: &Value, key: &str) -> Result<i64, AnalysisError> {
@@ -168,27 +168,19 @@ pub(crate) fn write_result_assets(
         insert_asset(connection, row)?;
     }
     insert_positions(connection, &positions)?;
-    let mut statement = connection
-        .prepare_cached(
-            r#"INSERT INTO business_asset_binding (
-                "record_id", "path", "asset_id", "scope", "ordinal", "map_key"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6
-            )"#,
-        )
-        .map_err(sql)?;
-    for row in &bindings {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("path").and_then(Value::as_str),
-                row.get("asset_id").and_then(Value::as_str),
-                row.get("scope").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("map_key").and_then(Value::as_str)
-            ])
-            .map_err(sql)?;
-    }
+    insert_rows(
+        connection,
+        "business_asset_binding",
+        &bindings,
+        &[
+            ("record_id", "integer"),
+            ("path", "text"),
+            ("asset_id", "text"),
+            ("scope", "text"),
+            ("ordinal", "integer"),
+            ("map_key", "text"),
+        ],
+    )?;
 
     validate_result_asset_ownership(connection, record_id)
 }
@@ -208,87 +200,67 @@ pub(crate) fn insert_asset(
     connection: &Connection,
     row: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
-    let mut statement = connection.prepare_cached(r#"INSERT INTO business_asset_snapshot (
-                "asset_id", "record_id", "input_id", "account_snapshot_id", "path", "scope",
-                "ordinal", "map_key", "payload_kind", "payload_value", "audit_evidence", "cash_state",
-                "equity_state", "market_state", "positions_kind", "positions_count", "positions_value", "observation_valid",
-                "available_cash", "total_asset", "market_value", "currency", "update_time", "source",
-                "extra"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25
-            )"#).map_err(sql)?;
-    statement
-        .execute(rusqlite::params![
-            row.get("asset_id").and_then(Value::as_str),
-            row.get("record_id").and_then(Value::as_i64),
-            row.get("input_id").and_then(Value::as_str),
-            row.get("account_snapshot_id").and_then(Value::as_i64),
-            row.get("path").and_then(Value::as_str),
-            row.get("scope").and_then(Value::as_str),
-            row.get("ordinal").and_then(Value::as_i64),
-            row.get("map_key").and_then(Value::as_str),
-            row.get("payload_kind").and_then(Value::as_str),
-            encode::json_text(row.get("payload_value"))?,
-            encode::json_text(row.get("audit_evidence"))?,
-            row.get("cash_state").and_then(Value::as_str),
-            row.get("equity_state").and_then(Value::as_str),
-            row.get("market_state").and_then(Value::as_str),
-            row.get("positions_kind").and_then(Value::as_str),
-            row.get("positions_count").and_then(Value::as_i64),
-            encode::json_text(row.get("positions_value"))?,
-            row.get("observation_valid").and_then(Value::as_bool),
-            row.get("available_cash").and_then(Value::as_f64),
-            row.get("total_asset").and_then(Value::as_f64),
-            row.get("market_value").and_then(Value::as_f64),
-            row.get("currency").and_then(Value::as_str),
-            row.get("update_time").and_then(Value::as_str),
-            row.get("source").and_then(Value::as_str),
-            encode::json_text(row.get("extra"))?,
-        ])
-        .map_err(sql)?;
-    Ok(())
+    insert_rows(
+        connection,
+        "business_asset_snapshot",
+        std::slice::from_ref(row),
+        &[
+            ("asset_id", "text"),
+            ("record_id", "integer"),
+            ("input_id", "text"),
+            ("account_snapshot_id", "integer"),
+            ("path", "text"),
+            ("scope", "text"),
+            ("ordinal", "integer"),
+            ("map_key", "text"),
+            ("payload_kind", "text"),
+            ("payload_value", "json"),
+            ("audit_evidence", "json"),
+            ("cash_state", "text"),
+            ("equity_state", "text"),
+            ("market_state", "text"),
+            ("positions_kind", "text"),
+            ("positions_count", "integer"),
+            ("positions_value", "json"),
+            ("observation_valid", "boolean"),
+            ("available_cash", "number"),
+            ("total_asset", "number"),
+            ("market_value", "number"),
+            ("currency", "text"),
+            ("update_time", "text"),
+            ("source", "text"),
+            ("extra", "json"),
+        ],
+    )
 }
 
 fn insert_positions(
     connection: &Connection,
     rows: &[Map<String, Value>],
 ) -> Result<(), AnalysisError> {
-    let mut statement = connection.prepare_cached(r#"INSERT INTO business_asset_position (
-                "asset_id", "ordinal", "payload_kind", "payload_value", "audit_evidence", "volume_state",
-                "available_volume_state", "market_value_state", "avg_price_state", "symbol", "volume", "available_volume",
-                "market_value", "direction", "avg_price", "extra"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16
-            )"#).map_err(sql)?;
-    for row in rows {
-        statement
-            .execute(rusqlite::params![
-                row.get("asset_id").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("payload_kind").and_then(Value::as_str),
-                encode::json_text(row.get("payload_value"))?,
-                encode::json_text(row.get("audit_evidence"))?,
-                row.get("volume_state").and_then(Value::as_str),
-                row.get("available_volume_state").and_then(Value::as_str),
-                row.get("market_value_state").and_then(Value::as_str),
-                row.get("avg_price_state").and_then(Value::as_str),
-                row.get("symbol").and_then(Value::as_str),
-                row.get("volume").and_then(Value::as_f64),
-                row.get("available_volume").and_then(Value::as_f64),
-                row.get("market_value").and_then(Value::as_f64),
-                row.get("direction").and_then(Value::as_str),
-                row.get("avg_price").and_then(Value::as_f64),
-                encode::json_text(row.get("extra"))?,
-            ])
-            .map_err(sql)?;
-    }
-    Ok(())
+    insert_rows(
+        connection,
+        "business_asset_position",
+        rows,
+        &[
+            ("asset_id", "text"),
+            ("ordinal", "integer"),
+            ("payload_kind", "text"),
+            ("payload_value", "json"),
+            ("audit_evidence", "json"),
+            ("volume_state", "text"),
+            ("available_volume_state", "text"),
+            ("market_value_state", "text"),
+            ("avg_price_state", "text"),
+            ("symbol", "text"),
+            ("volume", "number"),
+            ("available_volume", "number"),
+            ("market_value", "number"),
+            ("direction", "text"),
+            ("avg_price", "number"),
+            ("extra", "json"),
+        ],
+    )
 }
 
 /// 只查询归属标量，供审计在装载大载荷前拒绝越权引用。
@@ -389,17 +361,7 @@ pub(crate) fn ensure_execution_asset_snapshot(
     Ok(())
 }
 
-fn observation(
-    connection: &Connection,
-    root: &Map<String, Value>,
-    include_positions: bool,
-) -> Result<Value, AnalysisError> {
-    if !include_positions {
-        let mut scalar = root.clone();
-        scalar.insert("payload_kind".into(), json!("object"));
-        scalar.insert("positions_kind".into(), json!("absent"));
-        return crate::assets::observation_value(&scalar, &[]).map_err(invalid);
-    }
+fn observation(connection: &Connection, root: &Map<String, Value>) -> Result<Value, AnalysisError> {
     let positions = crate::business_detail::load(
         connection,
         "business_asset_position",
@@ -437,17 +399,10 @@ pub(crate) fn read_input_asset_observations(
         .map(|root| {
             Ok(json!({"asset_id": root.get("asset_id"),
         "path": root.get("path"), "scope": root.get("scope"),
-        "account_assets": observation(connection,root,true)?}))
+        "account_assets": observation(connection,root)?}))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Value::Array)
-}
-
-pub fn asset_input_observations(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let input_id = text(request, "input_id")?;
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        read_input_asset_observations(connection, input_id)
-    })
 }
 
 pub fn asset_snapshot_latest(path: &str, request: &Value) -> Result<Value, AnalysisError> {
@@ -460,69 +415,6 @@ pub fn asset_snapshot_latest(path: &str, request: &Value) -> Result<Value, Analy
             .and_then(|rows| rows.first())
             .cloned()
             .unwrap_or(Value::Null))
-    })
-}
-
-pub fn asset_snapshots_read(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let snapshots = request
-        .get("snapshots")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid("缺少资产快照列表"))?;
-    let include_positions = match request.get("include_positions") {
-        None => true,
-        Some(Value::Bool(value)) => *value,
-        _ => return Err(invalid("include_positions 必须是布尔值")),
-    };
-    crate::with_read_snapshot(Path::new(path), |connection| {
-        let owner_query = format!(
-            "SELECT {} FROM account_asset_snapshot s
-            JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id WHERE s.id=?1",
-            crate::assets::OWNER_VALID
-        );
-        let mut output = Vec::with_capacity(snapshots.len());
-        for snapshot in snapshots {
-            let id = integer(snapshot, "id")?;
-            let heads = crate::business_detail::load(
-                connection,
-                "account_asset_snapshot",
-                "id",
-                &json!(id),
-            )
-            .map_err(invalid)?;
-            let head = heads.first().ok_or_else(|| invalid("账户资产观测不存在"))?;
-            for key in ["account_id", "asset_fact_id", "execution_id"] {
-                if head.get(key) != snapshot.get(key) {
-                    return Err(invalid("账户资产观测引用与账户或执行不匹配"));
-                }
-            }
-            let valid: Option<bool> = connection
-                .query_row(&owner_query, [id], |row| row.get(0))
-                .optional()
-                .map_err(sql)?;
-            if valid != Some(true) {
-                return Err(invalid("账户资产观测引用与账户或执行不匹配"));
-            }
-            let reference = head
-                .get("asset_fact_id")
-                .filter(|value| !value.is_null())
-                .ok_or_else(|| invalid("账户资产观测缺少结构化事实引用"))?;
-            let roots = crate::business_detail::load(
-                connection,
-                "business_asset_snapshot",
-                "asset_id",
-                reference,
-            )
-            .map_err(invalid)?;
-            let root = roots
-                .first()
-                .ok_or_else(|| invalid("账户资产观测结构化事实缺失"))?;
-            let assets = observation(connection, root, include_positions)?;
-            if !assets.is_object() {
-                return Err(invalid("账户资产观测不是对象"));
-            }
-            output.push(json!({"id":id,"assets":assets}));
-        }
-        Ok(Value::Array(output))
     })
 }
 
@@ -661,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_projection_does_not_read_position_facts() {
+    fn observation_requires_position_facts() {
         let connection = schema();
         let snapshot = write_manual_snapshot(
             &connection,
@@ -685,17 +577,49 @@ mod tests {
             } => Authorization::Deny,
             _ => Authorization::Allow,
         }));
-        let mut expected = json!({"total_asset":5.0,
-            "availability":{"cash":"absent","equity":"value","market_value":"absent"}});
-        assert_eq!(observation(&connection, root, false).unwrap(), expected);
-        let error = observation(&connection, root, true).unwrap_err();
+        let error = observation(&connection, root).unwrap_err();
         assert!(error.error.contains("business_asset_position"));
 
         connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        let mut expected = json!({"total_asset":5.0,
+            "availability":{"cash":"absent","equity":"value","market_value":"absent"}});
         expected["positions"] = json!([{"symbol":"A","volume":5.0,
             "availability":{"volume":"value","available_volume":"absent",
                 "market_value":"absent","avg_price":"absent"}}]);
-        assert_eq!(observation(&connection, root, true).unwrap(), expected);
+        assert_eq!(observation(&connection, root).unwrap(), expected);
+    }
+
+    #[test]
+    fn input_observations_survive_terminal_delete() {
+        let connection = schema();
+        input_and_record(&connection, Some("e1"));
+        let before = encode::encode_input_assets(
+            "i1",
+            &json!({"account_assets":{"total_asset":100,"positions":null}}),
+        )
+        .unwrap();
+        let after = encode::encode_input_after_assets(
+            "i1",
+            json!({"account_assets":{"total_asset":0,"positions":[null,"bad"]}})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        write_observation(&connection, before.as_ref()).unwrap();
+        write_observation(&connection, after.as_ref()).unwrap();
+        connection
+            .execute("DELETE FROM executerecord WHERE id=17", [])
+            .unwrap();
+        let observations = read_input_asset_observations(&connection, "i1").unwrap();
+        assert_eq!(observations.as_array().unwrap().len(), 2);
+        assert_eq!(observations[0]["scope"], "after_pending");
+        assert_eq!(observations[0]["account_assets"]["total_asset"], json!(0.0));
+        assert_eq!(
+            observations[0]["account_assets"]["positions"],
+            json!([null, "bad"])
+        );
+        assert_eq!(observations[1]["scope"], "before");
+        assert_eq!(observations[1]["account_assets"]["positions"], Value::Null);
     }
 
     #[test]
@@ -807,14 +731,10 @@ mod tests {
             "/symbol_results/SHFE.rb2610~1CNY~0hedge/account_assets"
         );
         assert_eq!(
-            observation(&connection, hedged, true).unwrap()["positions"],
+            observation(&connection, hedged).unwrap()["positions"],
             Value::Null
         );
-        assert!(observation(&connection, hedged, false)
-            .unwrap()
-            .get("positions")
-            .is_none());
         let root = roots.iter().find(|row| row["scope"] == "after").unwrap();
-        assert_eq!(observation(&connection, root, true).unwrap(), Value::Null);
+        assert_eq!(observation(&connection, root).unwrap(), Value::Null);
     }
 }

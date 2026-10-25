@@ -1,25 +1,26 @@
 """
 执行记录持久化辅助函数.
 
-按执行场景统一封装成功、失败与 terminated 三类 ``ExecuteRecord`` 的落库逻辑。
+按执行场景统一封装成功、失败与 terminated 三类 ``dict[str, Any]`` 的落库逻辑。
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import cast
+from typing import Any, cast
 
 import loguru
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, ExecutionTerminateMode
-from axile.executor.models.execution_result import ExecutionStatus
+from axile.executor.models.execution_result import ExecutionStatus, outcome_from_status
+from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import session_closed_scope
 from axile.executor.termination import TERMINATION_TRIGGER_OPERATOR
 from axile.server._native import _core
 from axile.server.business_facts.summary_refs import raise_business_fact_error
-from axile.server.db.models import ExecuteRecord
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.base import now_str
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.native_store import native_operation
 
 
@@ -30,11 +31,11 @@ async def _persist_execute_record(
     raw_input: dict[str, object] | None,
     raw_result: dict[str, object],
     is_success: int,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """一次原生事务提交终态、输入、结果事实、资产历史与完整摘要快照。"""
     try:
         stored = await native_operation(
-            "persist_execute_record",
+            "persist_execution_state",
             {
                 "account_id": account_id,
                 "execution_id": execution_id,
@@ -51,16 +52,7 @@ async def _persist_execute_record(
     from axile.server.execution.notification_outbox import wake_notifications
 
     wake_notifications(stored["account_id"])
-    return ExecuteRecord.model_validate(stored)
-
-
-def resolve_record_task_status(record: ExecuteRecord | None) -> ExecutionTaskStatus:
-    """从业务证据解析任务终态，休市未完成不能记作成功或异常失败。"""
-    if record is None:
-        return ExecutionTaskStatus.FAILED
-    if record.task_status is not None:
-        return ExecutionTaskStatus(record.task_status)
-    return ExecutionTaskStatus.SUCCEEDED if record.is_success == 1 else ExecutionTaskStatus.FAILED
+    return stored
 
 
 async def append_error_execute_record(
@@ -72,7 +64,7 @@ async def append_error_execute_record(
     logger: "loguru.Logger" = loguru.logger,
     *,
     error: Exception | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     添加失败的执行记录.
 
@@ -95,7 +87,7 @@ async def append_error_execute_record(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         已写入数据库的失败执行记录。
     """
     if error is not None and execution_id is not None:
@@ -132,20 +124,74 @@ async def append_error_execute_record(
     return record
 
 
-def _recorded_error(error: BaseException | None, account_id: int | None, execution_id: str) -> ExecuteRecord | None:
+def _recorded_error(error: BaseException | None, account_id: int | None, execution_id: str) -> dict[str, Any] | None:
     """只复用同账户、同执行的已提交记录，显式异常链允许出现环。"""
     seen: set[int] = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
         record = error.__dict__.get("_axile_execution_record")
         if (
-            isinstance(record, ExecuteRecord)
-            and record.account_id == account_id
-            and record.execution_id == execution_id
+            isinstance(record, dict)
+            and record.get("account_id") == account_id
+            and record.get("execution_id") == execution_id
         ):
             return record
         error = error.__cause__
     return None
+
+
+async def append_execute_record_from_output(
+    *,
+    account: AccountContext,
+    raw_input: dict[str, object],
+    output: UnifiedStandardOutput,
+    execution_id: str | None,
+    execution_kind: ExecutionKind,
+) -> dict[str, Any]:
+    """
+    根据统一输出结果持久化执行记录.
+
+    Parameters
+    ----------
+    account : Account
+        当前执行所属账户。
+    raw_input : dict[str, object]
+        原始输入的字典快照。
+    output : UnifiedStandardOutput
+        执行器返回的统一输出对象。
+    execution_id : str | None
+        当前 execution 标识。
+    execution_kind : ExecutionKind
+        本次执行类型（``rebalance`` / ``clear_positions``），写入成功记录供上层区分。
+
+    Returns
+    -------
+    dict[str, Any]
+        持久化后的执行记录。
+    """
+    result = output.model_dump(mode="json")
+    result["execution_kind"] = execution_kind.value
+    if isinstance(result.get("inputs"), dict):
+        result["inputs"] = sanitize_execution_input(result["inputs"])
+    # 落库边界按当前 status 重新派生展示结论，防止绕过校验器的中途改写造成两套结论分离。
+    result["outcome"] = outcome_from_status(output.status).value
+    result["outcome_reason"] = output.outcome_reason
+    if output.success:
+        return await append_success_execute_record(
+            account,
+            raw_input,
+            result,
+            execution_id,
+            execution_kind=execution_kind,
+        )
+
+    return await append_error_execute_record(
+        account_id=account.id,
+        raw_input=raw_input,
+        raw_result=result,
+        msg=output.get_error_message() or "执行未成功完成",
+        execution_id=execution_id,
+    )
 
 
 async def append_success_execute_record(
@@ -154,7 +200,7 @@ async def append_success_execute_record(
     result: dict[str, object],
     execution_id: str | None = None,
     execution_kind: ExecutionKind | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     添加成功的执行记录.
 
@@ -174,7 +220,7 @@ async def append_success_execute_record(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         已写入数据库的成功执行记录。
     """
     persisted_raw_result = dict(result)
@@ -207,7 +253,7 @@ async def append_terminated_execute_record(
     cancel_unconfirmed: bool = False,
     raw_input: dict[str, object] | None = None,
     raw_result: dict[str, object] | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     添加 terminated 状态的执行记录.
 
@@ -243,7 +289,7 @@ async def append_terminated_execute_record(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         已写入数据库的 terminated 执行记录。
     """
     persisted_raw_result = dict(raw_result or {})

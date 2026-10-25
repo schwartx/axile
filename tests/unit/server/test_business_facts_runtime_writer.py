@@ -11,7 +11,6 @@ import pytest
 from axile.domain.execution import ExecutionTaskStatus
 from axile.server._native import _core
 from axile.server.business_facts.summary_refs import BusinessFactReferenceError
-from axile.server.db.models import ExecuteRecord
 from axile.server.execution import input_persistence, records
 from axile.server.execution.worker_backend import worker_audit
 from scripts.business_facts_contract import business_evidence
@@ -87,19 +86,16 @@ def test_post_order_assets_commit_is_required(monkeypatch):
         )
 
 
-def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
-    native = AsyncMock(
-        return_value={
-            "id": 101,
-            "account_id": 1,
-            "execution_id": "terminal",
-            "is_success": 1,
-            "task_status": "SUCCEEDED",
-            "input_id": "durable-normalized-input",
-            "created_at": "frozen-time",
-            "facts_complete": True,
-        }
-    )
+def test_terminal_facts_use_durable_input_and_commit_once(native_database, monkeypatch):
+    import json
+
+    from axile.server.core import db
+    from tests.unit.server._business_facts_test_support import seed_account
+    from tests.unit.server._native_read_views import receipt_record
+
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    seed_account(native_database)
+    native = AsyncMock(wraps=records.native_operation)
     monkeypatch.setattr(records, "native_operation", native)
     monkeypatch.setattr(records, "now_str", lambda: "frozen-time")
     raw_input = {"curr_target": {"A": 0.1}, "account_config": {"secret": "synthetic"}}
@@ -108,6 +104,18 @@ def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
         "task_status": "SUCCEEDED",
         "inputs": {"curr_target": {}, "account_config": {"secret": "synthetic"}, "feishu_key": "synthetic"},
     }
+    _core.freeze_execution_input(
+        str(native_database),
+        json.dumps(
+            {
+                "account_id": 1,
+                "execution_id": "terminal",
+                "input_id": "durable-normalized-input",
+                "created_at": "frozen-time",
+                "payload": raw_input,
+            }
+        ),
+    )
     record = asyncio.run(
         records._persist_execute_record(
             account_id=1,
@@ -117,17 +125,17 @@ def test_terminal_facts_use_durable_input_and_commit_once(monkeypatch):
             is_success=1,
         )
     )
-    assert record.input_id == "durable-normalized-input"
+    assert receipt_record(record)["input_id"] == "durable-normalized-input"
     native.assert_awaited_once()
     command, request = native.await_args.args
-    assert command == "persist_execute_record"
+    assert command == "persist_execution_state"
     assert request["raw_input"] is raw_input
     assert request["raw_result"] is result
     assert request["created_at"] == "frozen-time"
     assert request["account_id"] == 1
     assert request["execution_id"] == "terminal"
     assert uuid.UUID(request["input_id"]) != uuid.UUID(request["result_input_id"])
-    assert business_evidence(record.task_status) == business_evidence("SUCCEEDED")
+    assert business_evidence(record["status"]) == business_evidence("SUCCEEDED")
     assert "account_config" in result["inputs"]
 
 
@@ -181,8 +189,25 @@ def test_invalid_journal_reference_keeps_domain_error(monkeypatch):
 
 
 @pytest.mark.parametrize("status", ["SKIPPED", "PARTIAL", "TERMINATED"])
-def test_task_status_uses_canonical_terminal_column(status):
-    record = ExecuteRecord(account_id=1, is_success=0, task_status=status)
-    assert business_evidence(records.resolve_record_task_status(record)) == business_evidence(
-        ExecutionTaskStatus(status)
+def test_task_status_uses_canonical_terminal_column(status, native_database):
+    import json
+
+    from tests.unit.server._business_facts_test_support import seed_account
+
+    seed_account(native_database)
+    receipt = _core.persist_execution_state(
+        str(native_database),
+        json.dumps(
+            {
+                "account_id": 1,
+                "execution_id": "terminal-column",
+                "input_id": "input",
+                "result_input_id": "result",
+                "created_at": "frozen",
+                "is_success": 0,
+                "raw_input": {},
+                "raw_result": {"task_status": status},
+            }
+        ),
     )
+    assert business_evidence(receipt["status"]) == business_evidence(ExecutionTaskStatus(status))

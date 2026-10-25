@@ -5,10 +5,10 @@ import sqlite3
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-from axile.server.db.models import AccountRuntimeSync
 from axile.server.native_store import native_operation
 from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
@@ -22,11 +22,11 @@ def runtime_rows(path: Path, statement: str, parameters: Sequence[Any] = ()) -> 
         return connection.execute(statement, parameters).fetchall()
 
 
-def runtime_sync(path: Path, account_id: int = 1) -> AccountRuntimeSync:
+def runtime_sync(path: Path, account_id: int = 1) -> SimpleNamespace:
     """从独立连接观察生产操作已提交的同步状态。"""
     rows = runtime_rows(path, "SELECT * FROM accountruntimesync WHERE account_id=?", (account_id,))
     assert len(rows) == 1
-    return AccountRuntimeSync.model_validate(dict(rows[0]))
+    return SimpleNamespace(**(dict(rows[0]) | {"reset_worker": bool(rows[0]["reset_worker"])}))
 
 
 @asynccontextmanager

@@ -12,12 +12,12 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server import channel_capabilities
 from axile.server import utils as server_utils
-from axile.server.business_facts.repository import read_execution_detail
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountUpdate
 from axile.server.execution import records as execution_records
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import insert_account
+from tests.unit.server._native_read_views import read_execution_detail
 
 
 def _build_account() -> Account:
@@ -87,7 +87,7 @@ def test_append_error_execute_record_sanitizes_account_config(record_database: P
     )
     detail = asyncio.run(read_execution_detail(record))
 
-    assert detail["id"] == record.id
+    assert detail["id"] == record["record_id"]
     assert business_evidence(detail["input"], context="input") == business_evidence(
         {"symbol": "rb2610"}, context="input"
     )
@@ -100,9 +100,9 @@ def test_append_error_execute_record_sanitizes_account_config(record_database: P
         "outcome_reason": "boom",
         "task_status": "FAILED",
     }
-    assert record.status == "FAILED"
-    assert record.error == "boom"
-    assert record.is_success == 0
+    assert record["output_status"] == "FAILED"
+    assert record["error"] == "boom"
+    assert record["is_success"] == 0
 
 
 def test_append_terminated_execute_record_persists_termination_metadata(record_database: Path) -> None:
@@ -124,7 +124,7 @@ def test_append_terminated_execute_record_persists_termination_metadata(record_d
     )
     detail = asyncio.run(read_execution_detail(record))
 
-    assert detail["id"] == record.id
+    assert detail["id"] == record["record_id"]
     assert business_evidence(detail["input"], context="input") == business_evidence(
         {"symbol": "ag2612"}, context="input"
     )
@@ -132,8 +132,8 @@ def test_append_terminated_execute_record_persists_termination_metadata(record_d
     assert result["task_status"] == ExecutionTaskStatus.TERMINATED.value
     assert result["execution_kind"] == ExecutionKind.CLEAR_POSITIONS.value
     assert result["termination"]["cancel_failed_order_ids"] == ["oid-1"]
-    assert record.task_status == ExecutionTaskStatus.TERMINATED.value
-    assert record.termination_reason == "manual stop"
+    assert record["status"] == ExecutionTaskStatus.TERMINATED.value
+    assert record["cancel_reason"] == "manual stop"
 
 
 def test_trade_channel_check_records_error_when_dependency_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:

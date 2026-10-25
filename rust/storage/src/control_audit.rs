@@ -71,24 +71,28 @@ fn decision(value: &str) -> Result<&'static str, AnalysisError> {
     }
 }
 
-pub(crate) fn context_kind<'a>(value: &'a str, context_id: &str) -> &'a str {
-    if matches!(value, "execution" | "account_operation") {
-        return value;
-    }
-    let legacy = context_id
-        .strip_prefix("orders-")
-        .or_else(|| context_id.strip_prefix("catalog-"));
-    if value == "unknown"
-        && legacy.is_some_and(|id| {
-            id.len() == 32
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
+pub(crate) fn legacy_source(context_id: &str) -> Option<&'static str> {
+    let (prefix, tail) = context_id.split_once('-')?;
+    if tail.len() != 32
+        || !tail
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        "account_operation"
-    } else {
-        "unknown"
+        return None;
+    }
+    match prefix {
+        "orders" => Some("current_orders"),
+        "catalog" => Some("instrument_catalog"),
+        _ => None,
+    }
+}
+
+pub(crate) fn context_kind(value: &str, context_id: &str) -> &'static str {
+    match value {
+        "execution" => "execution",
+        "account_operation" => "account_operation",
+        "unknown" if legacy_source(context_id).is_some() => "account_operation",
+        _ => "unknown",
     }
 }
 
@@ -248,12 +252,33 @@ mod tests {
 
     #[test]
     fn legacy_context_only_accepts_exact_reserved_id() {
-        let legacy = format!("catalog-{}", "a".repeat(32));
-        assert_eq!(context_kind("unknown", &legacy), "account_operation");
-        assert_eq!(context_kind("execution", &legacy), "execution");
-        assert_eq!(context_kind("invalid", &legacy), "unknown");
-        assert_eq!(context_kind("unknown", &(legacy + "x")), "unknown");
-        assert_eq!(context_kind("unknown", "orders-deadbeef"), "unknown");
+        for (id, source) in [
+            (format!("orders-{}", "a".repeat(32)), Some("current_orders")),
+            (
+                format!("catalog-{}", "0".repeat(32)),
+                Some("instrument_catalog"),
+            ),
+            (format!("catalog-{}", "a".repeat(33)), None),
+            (format!("orders-{}", "A".repeat(32)), None),
+            (format!("orders-{}", "a".repeat(31)), None),
+            (format!("orders-{}\n", "a".repeat(32)), None),
+            (format!("plugin-{}", "a".repeat(32)), None),
+            ("orders-deadbeef".into(), None),
+        ] {
+            assert_eq!(legacy_source(&id), source, "{id:?}");
+            assert_eq!(
+                context_kind("unknown", &id),
+                if source.is_some() {
+                    "account_operation"
+                } else {
+                    "unknown"
+                },
+                "{id:?}"
+            );
+            assert_eq!(context_kind("execution", &id), "execution");
+            assert_eq!(context_kind("account_operation", &id), "account_operation");
+            assert_eq!(context_kind("invalid", &id), "unknown");
+        }
     }
 
     #[test]

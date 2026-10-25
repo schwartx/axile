@@ -1,4 +1,4 @@
-"""Revision 0037 trigger invariants and lossless historical Rust migration."""
+"""Revision 0034 trigger invariants and lossless historical Rust migration."""
 
 import json
 from contextlib import contextmanager
@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.unit.server._native_read_views import read_view
 
 
 @contextmanager
@@ -23,15 +24,15 @@ def _connect(database):
 
 
 def _upgrade(database):
-    return initialize_native_database(database, revision="0037")
+    return initialize_native_database(database, revision="0034")
 
 
 def _downgrade(database):
-    return native_store_call(database, "migration_downgrade", {"public": "0036"})
+    return native_store_call(database, "migration_downgrade", {"public": "0033"})
 
 
 def _load_input(database, input_id):
-    return native_store_call(database, "read_execution_input", {"input_id": input_id})
+    return read_view(database, "read_execution_input", {"input_id": input_id})
 
 
 @pytest.fixture
@@ -71,16 +72,6 @@ def fact_connection(tmp_path):
         yield connection
 
 
-def _seed_derived(connection):
-    connection.exec_driver_sql("INSERT INTO analysis_source_execution(record_id,account_id) VALUES(1,1),(2,2)")
-    connection.exec_driver_sql(
-        "INSERT INTO replay_observation(record_id,account_id,time,sizing_fallback,target_present,"
-        "target_weight_present,target_units_present,target_quantities_present) "
-        "VALUES(1,1,'synthetic',0,0,0,0,0),(2,2,'synthetic',0,0,0,0,0)"
-    )
-    connection.exec_driver_sql("INSERT INTO replay_observation_symbol(record_id,symbol) VALUES(1,'A'),(2,'A')")
-
-
 def _insert_trade(connection, *, record_id=1, price=1):
     connection.execute(
         table("business_trade").insert(),
@@ -100,16 +91,9 @@ def _insert_trade(connection, *, record_id=1, price=1):
     )
 
 
-def test_child_write_invalidates_only_its_record_and_versions_account(fact_connection):
+def test_child_write_versions_only_its_account(fact_connection):
     connection = fact_connection
-    _seed_derived(connection)
     _insert_trade(connection, price=0)
-    assert business_evidence(
-        connection.exec_driver_sql("SELECT record_id FROM analysis_source_execution").scalars().all()
-    ) == business_evidence([2])
-    assert business_evidence(
-        connection.exec_driver_sql("SELECT record_id FROM replay_observation").scalars().all()
-    ) == business_evidence([2])
     assert business_evidence(
         connection.exec_driver_sql("SELECT account_id,source_version FROM account_analysis ORDER BY account_id").all()
     ) == business_evidence(
@@ -120,16 +104,12 @@ def test_child_write_invalidates_only_its_record_and_versions_account(fact_conne
     )
 
 
-def test_input_write_does_not_match_unrelated_null_result_input_refs(fact_connection):
+def test_input_write_does_not_version_unrelated_accounts(fact_connection):
     connection = fact_connection
-    _seed_derived(connection)
     connection.exec_driver_sql(
         "INSERT INTO execution_input_target(input_id,role,map_key,value,audit_evidence) "
         "VALUES('one','curr_target','A',0,'{}')"
     )
-    assert business_evidence(
-        connection.exec_driver_sql("SELECT record_id FROM analysis_source_execution").scalars().all()
-    ) == business_evidence([2])
     assert business_evidence(
         connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=2").scalar_one()
     ) == business_evidence(1)
@@ -138,14 +118,7 @@ def test_input_write_does_not_match_unrelated_null_result_input_refs(fact_connec
 def test_reparent_update_invalidates_old_and_new_owners(fact_connection):
     connection = fact_connection
     _insert_trade(connection)
-    _seed_derived(connection)
     connection.exec_driver_sql("UPDATE business_trade SET record_id=2 WHERE record_id=1 AND path='/trades/0'")
-    assert business_evidence(
-        connection.exec_driver_sql("SELECT COUNT(*) FROM analysis_source_execution").scalar_one()
-    ) == business_evidence(0)
-    assert business_evidence(
-        connection.exec_driver_sql("SELECT COUNT(*) FROM replay_observation").scalar_one()
-    ) == business_evidence(0)
     assert business_evidence(
         connection.exec_driver_sql("SELECT account_id,source_version FROM account_analysis ORDER BY account_id").all()
     ) == business_evidence(
@@ -179,19 +152,21 @@ def test_record_delete_cleans_children_even_with_foreign_keys_off(fact_connectio
 def test_analysis_publication_does_not_invalidate_business_source(fact_connection):
     connection = fact_connection
     before = connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
-    connection.exec_driver_sql("INSERT INTO analysis_source_execution(record_id,account_id) VALUES(1,1)")
+    connection.exec_driver_sql(
+        "INSERT INTO performance_snapshot(id,account_id,source_version,logic_version,engine_version,computed_at) VALUES('publication',1,1,'1','1','now')"
+    )
     assert business_evidence(
         connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     ) == business_evidence(before)
     assert business_evidence(
-        connection.exec_driver_sql("SELECT COUNT(*) FROM analysis_source_execution").scalar_one()
+        connection.exec_driver_sql("SELECT COUNT(*) FROM performance_snapshot").scalar_one()
     ) == business_evidence(1)
 
 
 @pytest.fixture
 def legacy_connection(tmp_path):
     database = tmp_path / "business-migration.db"
-    initialize_native_database(database, revision="0036")
+    initialize_native_database(database, revision="0033")
     with _connect(database) as connection:
         metadata = sa.MetaData()
         metadata.reflect(connection, only=["account", "executerecord", "execution_artifact"])
@@ -306,7 +281,7 @@ def test_downgrade_rejects_unrepresented_pending_input_without_mutation(legacy_c
             connection.exec_driver_sql("SELECT * FROM execution_input ORDER BY id").all()
         ) == business_evidence(inputs_before)
         assert "raw_input" not in {column["name"] for column in sa.inspect(connection).get_columns("executerecord")}
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0037"
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0034"
 
 
 def test_terminal_delete_retains_asset_and_input_referenced_by_audit(legacy_connection):
@@ -392,9 +367,9 @@ def test_migrated_decision_cold_resolver_uses_explicit_original_selector(legacy_
     with _connect(database) as connection:
         _decision_event(connection, now, original)
     _upgrade(database)
-    resolved = native_store_call(database, "list_execution_events", {"execution_id": "migration-exec"})["data"][0][
-        "details"
-    ]
+    resolved = json.loads(
+        native_store_call(database, "list_execution_events_json", {"execution_id": "migration-exec"})
+    )["data"][0]["details"]
     decision = {key: value for key, value in resolved["decision"].items() if key != "business_facts_ref"}
     assert business_evidence(decision) == business_evidence(original["decision"])
     assert business_evidence(list(decision)) == business_evidence(list(original["decision"]))
@@ -560,7 +535,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
         reference = extra["server_notification_context"]
         assert reference is not None
         assert reference == captured
-    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert business_evidence(result["extra"]["server_notification_context"]) == business_evidence(captured)
     with _connect(database) as connection:
         connection.exec_driver_sql(
@@ -568,7 +543,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
         )
         connection.exec_driver_sql("UPDATE notification_event SET context='{}' WHERE id='execution:migration-exec'")
         connection.exec_driver_sql("DELETE FROM notification_event WHERE id='execution:migration-exec'")
-    result = native_store_call(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
     assert result["extra"]["server_notification_context"] == captured
 
 
@@ -610,7 +585,7 @@ def test_migration_context_dedup_requires_existing_outbox_and_downgrades_lossles
         ) == business_evidence("calling")
 
 
-def test_independent_asset_indices_preserve_old_execution_projections(legacy_connection):
+def test_independent_asset_indices_version_account_and_preserve_execution_assets(legacy_connection):
     database, metadata, now = legacy_connection
     with _connect(database) as connection:
         connection.execute(
@@ -627,45 +602,6 @@ def test_independent_asset_indices_preserve_old_execution_projections(legacy_con
         )
     _upgrade(database)
     with _connect(database) as connection:
-        legacy = sa.MetaData()
-        legacy.reflect(
-            connection, only=["analysis_source_execution", "replay_observation", "replay_observation_symbol"]
-        )
-        source_execution = legacy.tables["analysis_source_execution"]
-        replay_observation = legacy.tables["replay_observation"]
-        connection.execute(
-            source_execution.insert(),
-            {
-                "record_id": 1,
-                "account_id": 1,
-                "execution_id": "migration-exec",
-                "created_at": now,
-                "is_success": 1,
-                "time": 100.0,
-                "success": True,
-                "noop": False,
-                "trade_count": 0,
-            },
-        )
-        connection.execute(
-            replay_observation.insert(),
-            {
-                "record_id": 1,
-                "account_id": 1,
-                "execution_id": "migration-exec",
-                "time": now,
-                "asset": 10,
-                "sizing_fallback": True,
-                "target_present": True,
-                "target_weight_present": True,
-                "target_units_present": False,
-                "target_quantities_present": False,
-            },
-        )
-        connection.execute(
-            legacy.tables["replay_observation_symbol"].insert(),
-            {"record_id": 1, "symbol": "A", "target": 1, "target_weight": 1},
-        )
         previous_version = connection.exec_driver_sql(
             "SELECT source_version FROM account_analysis WHERE account_id=1"
         ).scalar_one()
@@ -688,20 +624,10 @@ def test_independent_asset_indices_preserve_old_execution_projections(legacy_con
     )
     assert manual["id"] == 102
     with _connect(database) as connection:
-        assert business_evidence(
-            connection.execute(sa.select(source_execution.c.record_id)).scalars().all()
-        ) == business_evidence([1])
-        assert business_evidence(
-            connection.execute(sa.select(replay_observation.c.record_id)).scalars().all()
-        ) == business_evidence([1])
         assert (
             connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
             > previous_version
         )
         connection.exec_driver_sql("UPDATE business_asset_snapshot SET total_asset=15 WHERE record_id=1")
-        assert business_evidence(
-            connection.execute(sa.select(sa.func.count()).select_from(source_execution)).scalar_one()
-        ) == business_evidence(0)
-        assert business_evidence(
-            connection.execute(sa.select(sa.func.count()).select_from(replay_observation)).scalar_one()
-        ) == business_evidence(0)
+    result = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    assert result["account_assets"]["total_asset"] == 15

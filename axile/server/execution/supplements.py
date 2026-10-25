@@ -11,7 +11,7 @@ from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.core.scheduler import scheduler
 from axile.server.cron import SCHEDULER_TIMEZONE, combine_cron_triggers, is_blank_cron_expr, parse_cron_expr
 from axile.server.db.models import AccountSnapshot
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
+from axile.server.db.models.base import new_execution_id
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_account_snapshot
 from axile.server.supplement_plan import plan_supplements
@@ -55,44 +55,40 @@ async def create_group(account_id: int, base: datetime) -> None:
         if trigger.get_next_fire_time(None, base) != base:
             return
         planned, expires = plan_supplements(account.trade_channel, account.cron_expr, account.supplement, base)
-        group = SupplementGroup(
-            account_id=account_id,
-            fingerprint=fingerprint(account),
-            base_scheduled_at=base.isoformat(),
-            expires_at=expires.isoformat(),
-            configured_count=account.supplement.count,
-            effective_count=len(planned) - 1,
-        )
+        group = {
+            "id": new_execution_id(),
+            "account_id": account_id,
+            "fingerprint": fingerprint(account),
+            "base_scheduled_at": base.isoformat(),
+            "expires_at": expires.isoformat(),
+            "configured_count": account.supplement.count,
+            "effective_count": len(planned) - 1,
+        }
         steps = [
-            SupplementStep(group_id=group.id, index=index, scheduled_at=when.isoformat())
+            {"id": new_execution_id(), "group_id": group["id"], "index": index, "scheduled_at": when.isoformat()}
             for index, when in enumerate(planned)
         ]
         created = await native_operation(
-            "supplement_create_group",
-            {
-                "account_id": account_id,
-                "group": group.model_dump(mode="json"),
-                "steps": [step.model_dump() for step in steps],
-            },
+            "supplement_create_group", {"account_id": account_id, "group": group, "steps": steps}
         )
         if created is None:
             return
-        group = SupplementGroup.model_validate(created["group"])
-        steps = [SupplementStep.model_validate(step) for step in created["steps"]]
+        group, steps = created["group"], created["steps"]
+
     schedule_expiration(group)
     for step in steps[1:]:
         schedule_step(step)
-    await fire_step(steps[0].id)
+    await fire_step(steps[0]["id"])
 
 
-def schedule_expiration(group: SupplementGroup) -> None:
+def schedule_expiration(group: dict[str, Any]) -> None:
     """到期检查遗漏唤醒；已开跑执行继续按原有语义收尾。"""
     scheduler.add_job(
         expire_group,
         trigger="date",
-        run_date=datetime.fromisoformat(group.expires_at),
-        args=[group.id],
-        id=f"supplement-expiry:{group.id}",
+        run_date=datetime.fromisoformat(group["expires_at"]),
+        args=[group["id"]],
+        id=f"supplement-expiry:{group['id']}",
         replace_existing=True,
         misfire_grace_time=None,
     )
@@ -105,14 +101,14 @@ async def expire_group(group_id: str) -> None:
         await _after_cancel(result["account_id"])
 
 
-def schedule_step(step: SupplementStep) -> None:
+def schedule_step(step: dict[str, Any]) -> None:
     """调度器只保存唤醒信号，持久化步骤才是执行依据。"""
     scheduler.add_job(
         fire_step,
         trigger="date",
-        run_date=datetime.fromisoformat(step.scheduled_at),
-        args=[step.id],
-        id=f"supplement:{step.id}",
+        run_date=datetime.fromisoformat(step["scheduled_at"]),
+        args=[step["id"]],
+        id=f"supplement:{step['id']}",
         replace_existing=True,
         misfire_grace_time=1,
     )
@@ -174,9 +170,9 @@ async def recover_supplements() -> None:
     """原子跳过错过的步骤，提交后只恢复未来唤醒。"""
     result = await native_operation("supplement_recover", {"now": clock_now(tz=SCHEDULER_TIMEZONE).isoformat()})
     for item in result["groups"]:
-        schedule_expiration(SupplementGroup.model_validate(item["group"]))
+        schedule_expiration(item["group"])
         for step in item["steps"]:
-            schedule_step(SupplementStep.model_validate(step))
+            schedule_step(step)
     for account_id in result["account_ids"]:
         await _after_cancel(account_id)
 

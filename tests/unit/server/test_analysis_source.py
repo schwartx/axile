@@ -1,6 +1,6 @@
 """Analysis derives canonical facts without persistent intermediate input tables."""
 
-from tests.unit.server.test_analysis_structured_migration import _connect
+from tests.unit.server._migration_support import _connect
 
 
 def test_runtime_metadata_contains_only_business_inputs_and_frozen_outputs(native_database):

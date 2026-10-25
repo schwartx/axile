@@ -13,7 +13,6 @@ import pytest
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server.cron import SCHEDULER_TIMEZONE
 from axile.server.db.models.account_settings import SupplementSettings
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from axile.server.execution import (
     dispatcher,
     intents,
@@ -27,7 +26,9 @@ from axile.server.execution import (
 from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
+from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._native_read_views import persist_record_fixture
 
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
 
@@ -157,7 +158,7 @@ def test_result_commit_survives_interruption_replay_and_restart(database, status
             "CREATE TRIGGER reject_finish BEFORE INSERT ON notification_event BEGIN SELECT RAISE(ABORT,'before-commit'); END",
         )
         with pytest.raises(_core.NativeError, match="before-commit"):
-            call(path, "persist_execute_record", request)
+            persist_record_fixture(path, request)
         assert not query(path, "SELECT * FROM executerecord")
         assert (await intents.get_intent(execution_id)).status == ExecutionTaskStatus.RUNNING
         assert step(path, steps[0].id)["status"] == "queued"
@@ -168,7 +169,7 @@ def test_result_commit_survives_interruption_replay_and_restart(database, status
             [
                 sys.executable,
                 "-c",
-                "import os,sys; from axile.server._native import _core; _core.persist_execute_record(sys.argv[1],sys.argv[2]); os._exit(73)",
+                "import os,sys; from axile.server._native import _core; _core.persist_execution_state(sys.argv[1],sys.argv[2]); os._exit(73)",
                 str(path),
                 json.dumps(request),
             ],
@@ -180,10 +181,8 @@ def test_result_commit_survives_interruption_replay_and_restart(database, status
         assert len(saved) == 1 and saved[0]["task_status"] == status
         assert (await intents.get_intent(execution_id)).status.value == status
         assert step(path, steps[0].id)["status"] == "finished"
-        replay = call(
-            path,
-            "persist_execute_record",
-            {**request, "is_success": 0, "raw_result": {"status": "FAILED", "error": "late retry"}},
+        replay = persist_record_fixture(
+            path, {**request, "is_success": 0, "raw_result": {"status": "FAILED", "error": "late retry"}}
         )
         assert replay["id"] == saved[0]["id"]
         assert query(path, "SELECT * FROM executerecord") == saved
@@ -208,7 +207,7 @@ def test_postcommit_failure_keeps_execution_success_and_future_supplements(datab
     async def lose_receipt(name, request, **kwargs):
         nonlocal lost
         result = await operation(name, request, **kwargs)
-        if name == "persist_execute_record" and not lost:
+        if name == "persist_execution_state" and not lost:
             lost = True
             raise RuntimeError("receipt lost after commit")
         return result
@@ -261,7 +260,7 @@ def test_postcommit_failure_keeps_execution_success_and_future_supplements(datab
             assert group(path, planned.id)["status"] == "active"
             assert step(path, steps[-1].id)["status"] == "pending"
         finally:
-            registry._clear_execution_task_state(execution_id)
+            registry._execution_tasks.pop(execution_id, None)
 
     asyncio.run(run())
 
@@ -495,7 +494,7 @@ def test_recovery_skips_missed_steps_but_keeps_future_last(monkeypatch, database
         execute(path, "UPDATE supplement_step SET status='finished' WHERE id=?", (steps[0].id,))
         now[0] = BASE + timedelta(seconds=seconds)
         scheduled = []
-        monkeypatch.setattr(supplements, "schedule_step", lambda current: scheduled.append(current.id))
+        monkeypatch.setattr(supplements, "schedule_step", lambda current: scheduled.append(current["id"]))
         await supplements.recover_supplements()
         assert scheduled == [steps[index].id for index in expected]
         assert group(path, planned.id)["status"] == "active"

@@ -3,7 +3,6 @@
 import asyncio
 from dataclasses import dataclass, field
 from threading import Event, Lock
-from typing import cast
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import (
@@ -16,10 +15,9 @@ from axile.domain.execution import (
 )
 from axile.executor.termination import ExecutionTerminationController
 from axile.server.db.models import (
-    ExecuteRecord,
     now_str,
 )
-from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
+from axile.server.execution.records import append_terminated_execute_record
 from axile.server.execution_audit import append_execution_event
 from axile.server.native_store import native_operation
 
@@ -222,11 +220,6 @@ def set_execution_task_state(execution_id: str, state: ExecutionTaskState) -> No
         _execution_tasks[execution_id] = state
 
 
-def _clear_execution_task_state(execution_id: str) -> None:
-    with _execution_tasks_lock:
-        _execution_tasks.pop(execution_id, None)
-
-
 def _evict_terminal_execution_task_state(execution_id: str) -> None:
     """仅在任务仍处于终态时，从内存注册表移除其状态条目。"""
     with _execution_tasks_lock:
@@ -352,108 +345,6 @@ def _serialize_execution_task_state(state: ExecutionTaskState) -> dict[str, obje
     }
 
 
-def _coerce_execution_task_status(value: object) -> ExecutionTaskStatus | None:
-    """将持久化值安全收敛为任务生命周期状态."""
-    if isinstance(value, ExecutionTaskStatus):
-        return value
-    if isinstance(value, str):
-        try:
-            return ExecutionTaskStatus(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _coerce_execution_kind(value: object) -> ExecutionKind | None:
-    """将持久化值安全收敛为 execution 类型."""
-    if isinstance(value, ExecutionKind):
-        return value
-    if isinstance(value, str):
-        try:
-            return ExecutionKind(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _coerce_execution_terminate_mode(value: object) -> ExecutionTerminateMode | None:
-    """将持久化值安全收敛为 terminate mode."""
-    if isinstance(value, ExecutionTerminateMode):
-        return value
-    if isinstance(value, str):
-        try:
-            return ExecutionTerminateMode(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _coerce_optional_text(value: object) -> str | None:
-    """把任意值收敛为非空字符串；空白与非字符串视为缺失."""
-    if isinstance(value, str) and value.strip():
-        return value
-    return None
-
-
-def execution_record_outcome(
-    record: ExecuteRecord | None,
-    *,
-    outcome_symbols: list[str] | None = None,
-) -> dict[str, object]:
-    """读取类型化展示结论；品种名单由定向查询提供。"""
-    return {
-        "outcome": None if record is None else record.display_outcome,
-        "outcome_reason": None if record is None else record.display_outcome_reason,
-        "outcome_symbols": [] if outcome_symbols is None else outcome_symbols,
-    }
-
-
-def execution_record_output_status(record: ExecuteRecord | None) -> str | None:
-    """读取执行器状态，不混用任务状态与业务结论。"""
-    return None if record is None else _coerce_optional_text(record.display_status)
-
-
-def execution_record_output_error(record: ExecuteRecord | None) -> str | None:
-    """读取已经在写入或迁移时规范化的人话错误。"""
-    return None if record is None else _coerce_optional_text(record.display_error)
-
-
-async def load_record_outcome_symbols(record: ExecuteRecord | None) -> list[str]:
-    """仅读取未到位或受阻的品种键，不组装完整执行结果。"""
-    if record is None or record.id is None:
-        return []
-    return await native_operation("execution_read", {"op": "outcome_symbols", "record_id": record.id})
-
-
-def _build_persisted_execution_status(
-    record: ExecuteRecord,
-    *,
-    outcome_symbols: list[str] | None = None,
-) -> dict[str, object]:
-    """仅根据执行头与定向品种查询回放任务生命周期状态。"""
-    task_status = _coerce_execution_task_status(record.task_status)
-    if task_status is None:
-        task_status = resolve_record_task_status(record)
-
-    return {
-        "execution_id": cast("str", record.execution_id),
-        "account_id": record.account_id,
-        "execution_kind": _coerce_execution_kind(record.execution_kind),
-        "status": task_status,
-        "created_at": record.created_at,
-        "started_at": None,
-        "finished_at": record.termination_finished_at or record.created_at,
-        "error": None if task_status == ExecutionTaskStatus.TERMINATED else execution_record_output_error(record),
-        "output_status": execution_record_output_status(record),
-        **execution_record_outcome(record, outcome_symbols=outcome_symbols),
-        "record_id": record.id,
-        "is_success": record.is_success,
-        "cancel_requested_at": record.termination_requested_at,
-        "cancel_reason": record.termination_reason,
-        "terminate_mode": _coerce_execution_terminate_mode(record.termination_mode),
-    }
-
-
 def _acknowledge_execution_termination(execution_id: str, acked_at: str) -> None:
     """在执行线程首次观测到 terminate 请求时更新内存状态."""
     _ = acked_at
@@ -546,32 +437,7 @@ async def get_execution_status(execution_id: str) -> dict[str, object] | None:
     if state is not None:
         return _serialize_execution_task_state(state)
 
-    from axile.server.execution.intents import get_intent, serialize_intent
-
-    intent = await get_intent(execution_id)
-    if intent is not None and intent.status in {
-        ExecutionTaskStatus.QUEUED,
-        ExecutionTaskStatus.RUNNING,
-        ExecutionTaskStatus.TERMINATING,
-    }:
-        return serialize_intent(intent)
-
-    persisted = await native_operation("execution_read", {"op": "status", "execution_id": execution_id})
-    record = None if persisted["record"] is None else ExecuteRecord.model_validate(persisted["record"])
-
-    if record is None:
-        return serialize_intent(intent) if intent is not None else None
-
-    payload = _build_persisted_execution_status(record, outcome_symbols=persisted["outcome_symbols"])
-    # 业务记录写入后，任务收尾仍可能异常；重启不能用休市结果掩盖该异常。
-    if (
-        payload["status"] == ExecutionTaskStatus.PARTIAL
-        and intent is not None
-        and intent.status == ExecutionTaskStatus.FAILED
-        and getattr(intent, "error", None)
-    ):
-        payload.update(status=ExecutionTaskStatus.FAILED, error=intent.error, output_status="FAILED")
-    return payload
+    return await native_operation("execution_read", {"op": "status", "execution_id": execution_id})
 
 
 def create_termination_controller(execution_id: str, cancel_event: Event) -> ExecutionTerminationController:
@@ -673,8 +539,8 @@ async def _finalize_terminated_queued_execution(
     )
     update_execution_task_state(
         state.execution_id,
-        record_id=record.id,
-        is_success=record.is_success,
+        record_id=record["record_id"],
+        is_success=record["is_success"],
     )
     if state.channel is None or not state.algorithm:
         return

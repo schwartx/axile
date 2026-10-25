@@ -1,16 +1,7 @@
 """补发开跑前的日历判断；终态通知在原生 intent 事务内产生。"""
 
-from axile.server.db.models.supplement import SupplementStep
 from axile.server.execution.supplements import calendar_context
 from axile.server.native_store import native_operation
-
-
-async def execution_steps(execution_id: str) -> list[SupplementStep]:
-    """读取执行承接的全部触发关联。"""
-    return [
-        SupplementStep.model_validate(step)
-        for step in await native_operation("supplement_execution_steps", {"execution_id": execution_id})
-    ]
 
 
 async def validate_execution_requests(execution_id: str) -> bool:

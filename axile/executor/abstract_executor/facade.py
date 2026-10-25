@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from axile.executor.abstract_executor.support import _coerce_object_dict, _coerce_trade_rules
@@ -41,23 +40,6 @@ Notes
 
 def _executor(owner: object) -> AbstractExecutor:
     return cast("AbstractExecutor", owner)
-
-
-@dataclass(frozen=True)
-class _EmptyPositionsPlan:
-    """清仓 facade 在执行前整理出的标准输入快照."""
-
-    curr_target: dict[str, float]
-    last_target: dict[str, float]
-    trade_rules: dict[str, dict[str, object]]
-    futures_close_policy: dict[str, object]
-    algorithm: dict[str, object]
-    forbidden_symbols: list[str]
-    feishu_key: str | None
-    execution_notification_code: str | None
-    feishu_account: dict[str, object]
-    extra: dict[str, object]
-    execution_timeout: int
 
 
 class AbstractExecutorFacadeMixin:
@@ -114,10 +96,10 @@ class AbstractExecutorFacadeMixin:
                 getattr(exc, "execution_error", None) or "下单未确认成功，请查看执行详情；未据此认定订单已结束",
             )
             raise
-        executor.get_execution_query_runtime_bridge().handle_place_order_result(
-            order, fallback_symbol=normalized_symbol
-        )
-        executor.account_orders.apply(order)
+        if executor.account_orders.apply(order):
+            executor.get_execution_query_runtime_bridge().handle_place_order_result(
+                order, fallback_symbol=normalized_symbol
+            )
         return order
 
     @controlled_operation(
@@ -508,14 +490,11 @@ class AbstractExecutorFacadeMixin:
         if not account_config:
             raise ValueError("账户配置不能为空，请确保在初始化时传入account_config")
 
-        plan = self._plan_empty_positions(
+        standard_input = self._build_empty_positions_standard_input(
+            account_config=account_config,
             positions=account_assets.positions,
             curr_target=curr_target,
             kwargs=kwargs,
-        )
-        standard_input = self._build_empty_positions_standard_input(
-            account_config=account_config,
-            plan=plan,
         )
 
         result = executor.execute(
@@ -526,17 +505,21 @@ class AbstractExecutorFacadeMixin:
         )
         return result
 
-    def _plan_empty_positions(
+    def _build_empty_positions_standard_input(
         self,
+        *,
+        account_config: object,
         positions: list[Position],
         curr_target: dict[str, float],
         kwargs: dict[str, object],
-    ) -> _EmptyPositionsPlan:
+    ) -> UnifiedStandardInput:
         """
-        解析清仓流程需要的目标、规则与通知配置.
+        解析清仓配置并直接构造标准输入.
 
         Parameters
         ----------
+        account_config : object
+            当前执行器持有的账户配置。
         positions : list[Position]
             当前账户持仓列表。
         curr_target : dict[str, float]
@@ -546,8 +529,8 @@ class AbstractExecutorFacadeMixin:
 
         Returns
         -------
-        _EmptyPositionsPlan
-            构造标准输入前整理好的清仓计划。
+        UnifiedStandardInput
+            传给统一执行引擎的清仓标准输入。
         """
         executor = _executor(self)
         default_rules = executor._get_default_trade_rules_for_empty(list(curr_target))
@@ -561,7 +544,7 @@ class AbstractExecutorFacadeMixin:
         feishu_key_raw = kwargs.get("feishu_key")
         notification_code_raw = kwargs.get("execution_notification_code")
         timeout_raw = kwargs.get("execution_timeout")
-        return _EmptyPositionsPlan(
+        return UnifiedStandardInput(
             curr_target=curr_target,
             last_target=executor._calculate_last_target_unified(positions),
             trade_rules={**default_rules, **user_rules},
@@ -573,45 +556,9 @@ class AbstractExecutorFacadeMixin:
             feishu_account=_coerce_object_dict(kwargs.get("feishu_account", {})),
             extra=_coerce_object_dict(kwargs.get("extra", {})),
             execution_timeout=as_timeout_int(timeout_raw, DEFAULT_CLEAR_TIMEOUT),
-        )
-
-    def _build_empty_positions_standard_input(
-        self,
-        *,
-        account_config: object,
-        plan: _EmptyPositionsPlan,
-    ) -> UnifiedStandardInput:
-        """
-        根据清仓计划构造标准输入对象.
-
-        Parameters
-        ----------
-        account_config : object
-            当前执行器持有的账户配置对象。
-        plan : _EmptyPositionsPlan
-            已整理好的清仓计划。
-
-        Returns
-        -------
-        UnifiedStandardInput
-            传给统一执行引擎的清仓标准输入。
-        """
-        executor = _executor(self)
-        return UnifiedStandardInput(
             channel_type=executor.channel_type,
             account_config=account_config,
-            algorithm=plan.algorithm,
-            trade_rules=plan.trade_rules,
-            futures_close_policy=plan.futures_close_policy,
-            forbidden_symbols=plan.forbidden_symbols,
             risk_symbols=[],
-            curr_target=plan.curr_target,
-            last_target=plan.last_target,
-            feishu_key=plan.feishu_key,
-            execution_notification_code=plan.execution_notification_code,
-            feishu_account=plan.feishu_account,
-            extra=plan.extra,
-            execution_timeout=plan.execution_timeout,
         )
 
     def _build_empty_positions_curr_target(self, positions: list[Position]) -> dict[str, float]:

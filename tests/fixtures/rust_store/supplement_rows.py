@@ -1,4 +1,4 @@
-"""内部补发组、步骤与持久化通知 outbox，不提供独立 API。"""
+"""独立 SQL 夹具行；生产流程不再依赖这些搬运模型。"""
 
 from pydantic import Field
 

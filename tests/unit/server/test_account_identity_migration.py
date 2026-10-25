@@ -12,7 +12,7 @@ from tests.unit.server._execution_test_support import build_account, insert_acco
 
 def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_path):
     path = tmp_path / "identity.db"
-    initialize_native_database(path, revision="0039")
+    initialize_native_database(path, revision="0033")
     with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, build_account(id=7, portfolio_id=None))
         connection.executescript(
@@ -25,9 +25,9 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
         before = connection.execute("SELECT * FROM account").fetchall()
         settings = connection.execute("SELECT * FROM account_settings").fetchall()
         triggers = connection.execute(
-            "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name"
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name='account_identity_insert' ORDER BY name"
         ).fetchall()
-    for revision, autoincrement in (("0040", True), ("0039", False), ("0040", True)):
+    for revision, autoincrement in (("0034", True), ("0033", False), ("0034", True)):
         operation = "migration_upgrade" if autoincrement else "migration_downgrade"
         assert native_store_call(path, operation, {"public": revision})["public"] == revision
         with closing(oracle_connect(path)) as connection:
@@ -35,7 +35,9 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
             assert connection.execute("SELECT * FROM account_settings").fetchall() == settings
             assert connection.execute("SELECT * FROM account_identity_view").fetchall() == [(7, before[0][0])]
             assert (
-                connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name").fetchall()
+                connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name='account_identity_insert' ORDER BY name"
+                ).fetchall()
                 == triggers
             )
             assert connection.execute("SELECT name FROM sqlite_master WHERE name='account_identity_name'").fetchone()
@@ -51,7 +53,7 @@ def test_account_identity_upgrade_and_downgrade_preserve_schema_and_data(tmp_pat
 
 def test_account_identity_upgrade_skips_legacy_orphan_ids(tmp_path):
     path = tmp_path / "orphan.db"
-    initialize_native_database(path, revision="0039")
+    initialize_native_database(path, revision="0033")
     with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO accountruntimesync(account_id,revision,status,reset_worker,create_request_key,attempts,requested_at) "
@@ -77,12 +79,12 @@ def test_account_identity_upgrade_skips_legacy_orphan_ids(tmp_path):
 
 def test_account_identity_migration_failure_rolls_back_ddl_and_rows(tmp_path):
     path = tmp_path / "rollback.db"
-    initialize_native_database(path, revision="0039")
+    initialize_native_database(path, revision="0033")
     with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, build_account(id=7, portfolio_id=None))
         connection.execute(
             "CREATE TRIGGER reject_identity_revision BEFORE UPDATE ON alembic_version "
-            "WHEN NEW.version_num='0040' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
+            "WHEN NEW.version_num='0034' BEGIN SELECT RAISE(ABORT,'identity rejected'); END"
         )
         schema = connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
         account = connection.execute("SELECT * FROM account").fetchall()
@@ -91,4 +93,4 @@ def test_account_identity_migration_failure_rolls_back_ddl_and_rows(tmp_path):
     with closing(oracle_connect(path)) as connection:
         assert connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall() == schema
         assert connection.execute("SELECT * FROM account").fetchall() == account
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0039",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0033",)]

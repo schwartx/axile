@@ -336,7 +336,7 @@ def test_terminate_queued_intent_without_memory_returns_state(monkeypatch: pytes
         return True
 
     async def fake_append_terminated_execute_record(**_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(id=1, is_success=0)
+        return {"record_id": 1, "is_success": 0}
 
     monkeypatch.setattr(execution_registry, "append_execution_event", fake_append_execution_event)
     monkeypatch.setattr(
@@ -351,7 +351,7 @@ def test_terminate_queued_intent_without_memory_returns_state(monkeypatch: pytes
             assert submitted.execution_id is not None
             execution_id = submitted.execution_id
             clear_queued_execution(1, execution_id)
-            execution_registry._clear_execution_task_state(execution_id)
+            execution_registry._execution_tasks.pop(execution_id, None)
             assert get_execution_task_state(execution_id) is None
             try:
                 state = await execution_registry.terminate_running_account_execution(
@@ -366,7 +366,7 @@ def test_terminate_queued_intent_without_memory_returns_state(monkeypatch: pytes
                 )
             finally:
                 execution_registry.clear_running_execution(1, execution_id)
-                execution_registry._clear_execution_task_state(execution_id)
+                execution_registry._execution_tasks.pop(execution_id, None)
 
     memory_status, db_status = asyncio.run(_run())
     assert memory_status == ExecutionTaskStatus.TERMINATED
@@ -401,7 +401,7 @@ def test_terminate_terminating_intent_without_memory_sets_cancel_event(
                 mode=ExecutionTerminateMode.GRACEFUL,
             )
             clear_queued_execution(1, execution_id)
-            execution_registry._clear_execution_task_state(execution_id)
+            execution_registry._execution_tasks.pop(execution_id, None)
             try:
                 state = await execution_registry.terminate_running_account_execution(
                     1,
@@ -416,6 +416,6 @@ def test_terminate_terminating_intent_without_memory_sets_cancel_event(
                 )
             finally:
                 execution_registry.clear_running_execution(1, execution_id)
-                execution_registry._clear_execution_task_state(execution_id)
+                execution_registry._execution_tasks.pop(execution_id, None)
 
     assert asyncio.run(_run()) is True

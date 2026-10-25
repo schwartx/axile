@@ -11,11 +11,6 @@ def record_system_notification_result(result: SystemNotificationStatePublic) -> 
     native_operation_sync("notifications_record_system", result.model_dump(mode="json"))
 
 
-def get_system_notification_result() -> SystemNotificationStatePublic:
-    """读取持久化摘要；从未发送时返回空结果。"""
-    return SystemNotificationStatePublic.model_validate(native_operation_sync("notifications_get_system", {}))
-
-
 def record_notification_result(
     account_id: int,
     execution_id: str | None,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import traceback
-from dataclasses import dataclass
 from typing import cast
 
 from axile.common.function_contract import accepts_context
@@ -33,51 +32,6 @@ class PortfolioFunctionError(ValueError):
         self.error_message: str | None = error_message
         self.formatted_traceback: str | None = formatted_traceback
         self.error_scope = error_scope
-
-
-@dataclass(slots=True)
-class PortfolioFunctionResult:
-    """组合函数的结构化执行结果."""
-
-    ok: bool
-    target: dict[str, float] | None = None
-    error: PortfolioFunctionError | None = None
-
-    def to_payload(self) -> dict[str, object]:
-        """转换为可跨 worker 管道传输的字典."""
-        if self.ok:
-            return {"ok": True, "target": dict(self.target or {})}
-        error = self.error or PortfolioFunctionError("自定义组合函数执行失败")
-        return {
-            "ok": False,
-            "error": str(error),
-            "error_line": error.error_line,
-            "error_offset": error.error_offset,
-            "error_type": error.error_type,
-            "error_message": error.error_message,
-            "traceback": error.formatted_traceback,
-            "error_scope": error.error_scope,
-        }
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, object]) -> "PortfolioFunctionResult":
-        """从 worker 响应恢复结构化执行结果."""
-        if payload.get("ok") is True:
-            raw_target = payload.get("target")
-            return cls(ok=True, target=cast("dict[str, float]", raw_target if isinstance(raw_target, dict) else {}))
-        message = str(payload.get("error") or payload.get("error_message") or "自定义组合函数执行失败")
-        return cls(
-            ok=False,
-            error=PortfolioFunctionError(
-                message,
-                error_line=cast("int | None", payload.get("error_line")),
-                error_offset=cast("int | None", payload.get("error_offset")),
-                error_type=str(payload.get("error_type") or "RuntimeError"),
-                error_message=str(payload.get("error_message") or message),
-                formatted_traceback=str(payload.get("traceback") or ""),
-                error_scope=cast("str | None", payload.get("error_scope")),
-            ),
-        )
 
 
 def _error_from_exception(exc: BaseException) -> PortfolioFunctionError:
@@ -121,7 +75,7 @@ def _normalize_target(target: object) -> dict[str, float]:
     return normalized
 
 
-def calculate_portfolio_target(code: str, context: Context) -> PortfolioFunctionResult:
+def calculate_portfolio_target(code: str, context: Context) -> dict[str, float]:
     """在当前 Python 运行环境执行 ``calculate_portfolio(context)``."""
     try:
         namespace: dict[str, object] = {}
@@ -131,22 +85,15 @@ def calculate_portfolio_target(code: str, context: Context) -> PortfolioFunction
             raise ValueError("脚本必须定义 calculate_portfolio(context) 函数")
         if not accepts_context(function):
             raise TypeError("calculate_portfolio 必须是同步函数，且只能接收一个位置参数 context")
-        return PortfolioFunctionResult(ok=True, target=_normalize_target(function(context)))
+        return _normalize_target(function(context))
     except BaseException as exc:  # noqa: BLE001 - 用户函数错误需结构化返回
         if bool(getattr(exc, "requires_session_recovery", False)):
             raise
-        return PortfolioFunctionResult(ok=False, error=_error_from_exception(exc))
-
-
-def portfolio_result_from_exception(exc: BaseException) -> PortfolioFunctionResult:
-    """把执行器准备或 IPC 异常转换为组合函数结果."""
-    return PortfolioFunctionResult(ok=False, error=_error_from_exception(exc))
+        raise _error_from_exception(exc) from exc
 
 
 __all__ = [
     "PortfolioFunctionError",
-    "PortfolioFunctionResult",
     "_normalize_target",
     "calculate_portfolio_target",
-    "portfolio_result_from_exception",
 ]

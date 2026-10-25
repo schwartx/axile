@@ -44,10 +44,13 @@ fn sessions_on(
     ).map_err(database)?;
     let rows = statement
         .query_map([account_id], |row| {
+            let execution_id: String = row.get(3)?;
+            let kind: String = row.get(4)?;
             Ok(json!({
                 "id":row.get::<_,i64>(0)?,"instance_id":row.get::<_,String>(1)?,
-                "account_id":row.get::<_,i64>(2)?,"execution_id":row.get::<_,String>(3)?,
-                "context_kind":row.get::<_,String>(4)?,"source":row.get::<_,String>(5)?,
+                "account_id":row.get::<_,i64>(2)?,"execution_id":execution_id,
+                "context_kind":kind,"source":row.get::<_,String>(5)?,
+                "effective_context_kind":crate::control_audit::context_kind(&kind,&execution_id),
                 "timezone":row.get::<_,String>(6)?,"started_at_ms":row.get::<_,i64>(7)?,
                 "finished_at_ms":row.get::<_,Option<i64>>(8)?,"status":row.get::<_,String>(9)?
             }))
@@ -222,14 +225,6 @@ fn pending_on(connection: &Connection) -> Result<Vec<i64>, AnalysisError> {
 pub fn control_quota_pending(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     Ok(json!({"account_ids":pending_on(&connection)?}))
-}
-
-pub fn control_quota_warnings(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let connection = crate::writer_scope::open_writer(Path::new(path))?;
-    let created_at = text(request, "created_at")?;
-    crate::writer_scope::immediate(&connection, || {
-        enqueue_quota_warnings_on(&connection, &request["warnings"], created_at)
-    })
 }
 
 fn history_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {

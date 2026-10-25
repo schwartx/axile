@@ -30,28 +30,23 @@ from axile.executor import feishu_notifications
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.server._native import _core
 from axile.server.api.routes import account_feishu
-from axile.server.business_facts import repository as fact_repository
 from axile.server.business_facts.artifacts import (
-    BusinessFactReferenceError,
     make_artifact_reference,
-    resolve_artifact_content,
 )
-from axile.server.business_facts.assets import (
-    input_after_asset_fact_id,
-    input_asset_fact_id,
-)
-from axile.server.business_facts.repository import read_execution_detail
+from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.collect import collect_evidence
 from axile.server.evidence.models import EvidenceError, EvidenceLimits, EvidenceProfile, ExportBudget
 from axile.server.execution import records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server import _native_read_views as fact_repository
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import read_execution_detail, read_view
 from tests.unit.server.test_evidence_export import _seed
 
 _EXECUTION = "facts-notification-evidence"
@@ -517,7 +512,7 @@ async def _store_preterminal_observations(path):
         ("targets", ExecutionArtifactType.TARGET_SNAPSHOT, None),
         ("rules", ExecutionArtifactType.TRADE_RULES_SNAPSHOT, None),
         ("assets_before", ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE, input_asset_fact_id(input_id)),
-        ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, input_after_asset_fact_id(input_id)),
+        ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, f"input:{input_id}:/after_account_assets"),
     ):
         _seed(
             path,
@@ -656,9 +651,9 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
     assert item.record is None and item.artifacts == []
     observations = {row["asset_id"]: row for row in item.asset_observations}
     assert business_evidence(observations[input_asset_fact_id(input_id)]["account_assets"]) == business_evidence(before)
-    assert business_evidence(observations[input_after_asset_fact_id(input_id)]["account_assets"]) == business_evidence(
-        after
-    )
+    assert business_evidence(
+        observations[f"input:{input_id}:/after_account_assets"]["account_assets"]
+    ) == business_evidence(after)
     assert all(row["input_id"] == input_id for row in observations.values())
     if with_target_event:
         decision = item.events[0]["details"]["decision"]
@@ -678,7 +673,7 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
                 before
             )
             assert business_evidence(
-                assets[input_after_asset_fact_id(input_id)]["account_assets"]
+                assets[f"input:{input_id}:/after_account_assets"]["account_assets"]
             ) == business_evidence(after)
             manifest = json.loads(archive.read("manifest.json"))
             coverage = manifest["executions"][0]["coverage"]
@@ -700,8 +695,12 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
 def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database, fault):
     """事实身份相同也不能越过账户、执行和前后观测时点边界。"""
     input_id, _, _ = asyncio.run(_store_preterminal_observations(facts_database))
+    if fault == "account":
+        from tests.unit.server._business_facts_test_support import seed_account
+
+        seed_account(facts_database, 2)
     content = make_artifact_reference(
-        view="assets_after", input_id=input_id, asset_id=input_after_asset_fact_id(input_id)
+        view="assets_after", input_id=input_id, asset_id=f"input:{input_id}:/after_account_assets"
     )
     if fault == "observation_role":
         content["business_facts_ref"]["view"] = "assets_before"
@@ -712,10 +711,15 @@ def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database,
     }
 
     async def resolve():
-        return await resolve_artifact_content(artifact, account_id=2 if fault == "account" else 1)
+        return read_view(
+            facts_database,
+            "resolve_execution_artifact",
+            {"artifact": artifact, "account_id": 2 if fault == "account" else 1},
+        )
 
-    with pytest.raises(BusinessFactReferenceError, match="时点" if fault == "observation_role" else "执行账户"):
+    with pytest.raises(_core.NativeError, match="时点" if fault == "observation_role" else "账户") as raised:
         asyncio.run(resolve())
+    assert raised.value.args[0] == ("EVIDENCE_NOT_FOUND" if fault == "account" else "BUSINESS_FACTS_REFERENCE")
 
 
 def test_business_storage_has_no_complete_raw_document_columns(facts_database):
@@ -796,7 +800,9 @@ def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_datab
     async def read_summary():
         artifact = _get(facts_database, "execution_artifact")
         stored = deepcopy(artifact.content)
-        hydrated = await resolve_artifact_content(artifact, account_id=1)
+        hydrated = read_view(
+            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
+        )
         return stored, hydrated
 
     stored, hydrated = asyncio.run(read_summary())
@@ -857,7 +863,9 @@ def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
 
     async def read_summary():
         artifact = _get(facts_database, "execution_artifact")
-        return artifact.content, await resolve_artifact_content(artifact, account_id=1)
+        return artifact.content, read_view(
+            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
+        )
 
     stored, hydrated = asyncio.run(read_summary())
     assert business_evidence(stored["symbol_results"]["rb2610"]["orders"]) == business_evidence(

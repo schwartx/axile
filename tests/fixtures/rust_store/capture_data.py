@@ -54,11 +54,11 @@ def capture(source: Path, output: Path) -> None:
         from alembic.migration import MigrationContext
         from alembic.operations import Operations
         from alembic.script import ScriptDirectory
+        from tests.unit.server.test_analysis_structured_migration import _ranges
 
         import axile
         from tests.unit.server import test_business_facts_migration_semantics as historical
         from tests.unit.server.test_analysis_cost_facts import _rich_projection
-        from tests.unit.server.test_analysis_structured_migration import _ranges
 
         assert Path(axile.__file__).resolve() == source / "axile/__init__.py", axile.__file__
         versions = source / "axile/server/alembic/versions"

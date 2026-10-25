@@ -54,7 +54,19 @@ fn invalid(message: &str) -> String {
 }
 
 fn cell(row: &Row<'_>, name: &str) -> Result<Value, String> {
-    Ok(match row.get_ref(name).map_err(database)? {
+    if name == "payload_kind" || name == "positions_kind" || name.ends_with("_state") {
+        return row
+            .get::<_, String>(name)
+            .map(Value::String)
+            .map_err(database);
+    }
+    if name == "positions_count" {
+        return row
+            .get::<_, Option<i64>>(name)
+            .map(|value| json!(value))
+            .map_err(database);
+    }
+    let value = match row.get_ref(name).map_err(database)? {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(value) => json!(value),
         ValueRef::Real(value) => serde_json::Number::from_f64(value)
@@ -76,22 +88,58 @@ fn cell(row: &Row<'_>, name: &str) -> Result<Value, String> {
             }
         }
         ValueRef::Blob(_) => return Err(invalid("unexpected asset blob")),
-    })
+    };
+    if name == "audit_evidence" && !value.is_null() && !value.is_object() {
+        return Err(invalid("invalid audit evidence"));
+    }
+    Ok(value)
 }
 
-fn columns(row: &Row<'_>, fields: &[&str]) -> Result<Map<String, Value>, String> {
+pub(crate) fn position(row: &Row<'_>) -> Result<Value, String> {
+    position_value(|name| cell(row, name))
+}
+
+pub(crate) fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<Value, String> {
+    if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
+        return Err(invalid("account asset observation is not an object"));
+    }
+    observation_with(
+        |name| cell(row, name),
+        |count| {
+            if count != Some(positions.len() as i64) {
+                return Err(invalid("incomplete position facts"));
+            }
+            positions
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (index, item))| {
+                    if *index != ordinal as i64 {
+                        return Err(invalid("invalid position occurrence sequence"));
+                    }
+                    Ok(item.clone())
+                })
+                .collect()
+        },
+    )
+}
+
+fn map_cell(row: &Map<String, Value>, name: &str) -> Result<Value, String> {
+    Ok(row.get(name).cloned().unwrap_or(Value::Null))
+}
+
+fn columns(
+    read: &impl Fn(&str) -> Result<Value, String>,
+    fields: &[&str],
+) -> Result<Map<String, Value>, String> {
     let mut view = Map::new();
     for &name in fields {
-        let value = cell(row, name)?;
+        let value = read(name)?;
         if !value.is_null() {
             view.insert(name.into(), value);
         }
     }
-    let evidence = cell(row, "audit_evidence")?;
-    if !evidence.is_null() {
-        let evidence = evidence
-            .as_object()
-            .ok_or_else(|| invalid("invalid audit evidence"))?;
+    let evidence = read("audit_evidence")?;
+    if let Some(evidence) = evidence.as_object() {
         if !evidence.is_empty() {
             view.insert("audit_evidence".into(), Value::Object(evidence.clone()));
         }
@@ -101,119 +149,12 @@ fn columns(row: &Row<'_>, fields: &[&str]) -> Result<Map<String, Value>, String>
 
 fn availability(
     view: &mut Map<String, Value>,
-    row: &Row<'_>,
+    read: &impl Fn(&str) -> Result<Value, String>,
     fields: &[(&str, &str, &str)],
 ) -> Result<(), String> {
     let mut states = Map::new();
     for &(label, field, column) in fields {
-        let state: String = row.get(column).map_err(database)?;
-        if !["absent", "null", "value", "invalid"].contains(&state.as_str()) {
-            return Err(invalid("invalid availability"));
-        }
-        states.insert(label.into(), json!(state));
-        if state == "null" {
-            view.insert(field.into(), Value::Null);
-        }
-    }
-    view.insert("availability".into(), Value::Object(states));
-    Ok(())
-}
-
-pub(crate) fn position(row: &Row<'_>) -> Result<Value, String> {
-    if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
-        return cell(row, "payload_value");
-    }
-    let mut view = columns(row, POSITION_FIELDS)?;
-    availability(
-        &mut view,
-        row,
-        &[
-            ("volume", "volume", "volume_state"),
-            (
-                "available_volume",
-                "available_volume",
-                "available_volume_state",
-            ),
-            ("market_value", "market_value", "market_value_state"),
-            ("avg_price", "avg_price", "avg_price_state"),
-        ],
-    )?;
-    Ok(Value::Object(view))
-}
-
-pub(crate) fn observation(row: &Row<'_>, positions: &[(i64, Value)]) -> Result<Value, String> {
-    if row.get::<_, String>("payload_kind").map_err(database)? != "object" {
-        return Err(invalid("account asset observation is not an object"));
-    }
-    let mut view = columns(row, ASSET_FIELDS)?;
-    availability(
-        &mut view,
-        row,
-        &[
-            ("cash", "available_cash", "cash_state"),
-            ("equity", "total_asset", "equity_state"),
-            ("market_value", "market_value", "market_state"),
-        ],
-    )?;
-    match row
-        .get::<_, String>("positions_kind")
-        .map_err(database)?
-        .as_str()
-    {
-        "array" => {
-            if row
-                .get::<_, Option<i64>>("positions_count")
-                .map_err(database)?
-                != Some(positions.len() as i64)
-            {
-                return Err(invalid("incomplete position facts"));
-            }
-            let mut values = Vec::with_capacity(positions.len());
-            for (ordinal, (index, item)) in positions.iter().enumerate() {
-                if *index != ordinal as i64 {
-                    return Err(invalid("invalid position occurrence sequence"));
-                }
-                values.push(item.clone());
-            }
-            view.insert("positions".into(), Value::Array(values));
-        }
-        "absent" => {}
-        _ => {
-            view.insert("positions".into(), cell(row, "positions_value")?);
-        }
-    }
-    Ok(Value::Object(view))
-}
-
-fn map_cell(row: &Map<String, Value>, name: &str) -> Result<Value, String> {
-    Ok(row.get(name).cloned().unwrap_or(Value::Null))
-}
-
-fn map_columns(row: &Map<String, Value>, fields: &[&str]) -> Result<Map<String, Value>, String> {
-    let mut view = Map::new();
-    for &name in fields {
-        let value = map_cell(row, name)?;
-        if !value.is_null() {
-            view.insert(name.into(), value);
-        }
-    }
-    let evidence = map_cell(row, "audit_evidence")?;
-    if let Some(evidence) = evidence.as_object() {
-        if !evidence.is_empty() {
-            view.insert("audit_evidence".into(), Value::Object(evidence.clone()));
-        }
-    }
-    Ok(view)
-}
-
-fn map_availability(
-    view: &mut Map<String, Value>,
-    row: &Map<String, Value>,
-    fields: &[(&str, &str, &str)],
-) -> Result<(), String> {
-    let mut states = Map::new();
-    for &(label, field, column) in fields {
-        let state = map_cell(row, column)?;
+        let state = read(column)?;
         let Some(state) = state.as_str() else {
             return Err(invalid("invalid availability"));
         };
@@ -234,52 +175,68 @@ pub(crate) fn observation_value(
     root: &Map<String, Value>,
     positions: &[Map<String, Value>],
 ) -> Result<Value, String> {
-    if map_cell(root, "payload_kind")?.as_str() != Some("object") {
-        return map_cell(root, "payload_value");
+    observation_with(
+        |name| map_cell(root, name),
+        |count| {
+            if count != Some(positions.len() as i64) {
+                return Err(invalid("incomplete position facts"));
+            }
+            let mut sorted: Vec<_> = positions.iter().collect();
+            sorted.sort_by_key(|row| row.get("ordinal").and_then(Value::as_i64).unwrap_or(-1));
+            sorted
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, row)| {
+                    if row.get("ordinal").and_then(Value::as_i64) != Some(ordinal as i64) {
+                        return Err(invalid("invalid position occurrence sequence"));
+                    }
+                    position_value(|name| map_cell(row, name))
+                })
+                .collect()
+        },
+    )
+}
+
+fn observation_with(
+    read: impl Fn(&str) -> Result<Value, String>,
+    positions: impl FnOnce(Option<i64>) -> Result<Vec<Value>, String>,
+) -> Result<Value, String> {
+    if read("payload_kind")?.as_str() != Some("object") {
+        return read("payload_value");
     }
-    let mut view = map_columns(root, ASSET_FIELDS)?;
-    map_availability(
+    let mut view = columns(&read, ASSET_FIELDS)?;
+    availability(
         &mut view,
-        root,
+        &read,
         &[
             ("cash", "available_cash", "cash_state"),
             ("equity", "total_asset", "equity_state"),
             ("market_value", "market_value", "market_state"),
         ],
     )?;
-    match map_cell(root, "positions_kind")?.as_str() {
+    match read("positions_kind")?.as_str() {
         Some("array") => {
-            let count = map_cell(root, "positions_count")?.as_i64();
-            if count != Some(positions.len() as i64) {
-                return Err(invalid("incomplete position facts"));
-            }
-            let mut sorted: Vec<&Map<String, Value>> = positions.iter().collect();
-            sorted.sort_by_key(|row| row.get("ordinal").and_then(Value::as_i64).unwrap_or(-1));
-            let mut values = Vec::with_capacity(sorted.len());
-            for (ordinal, row) in sorted.iter().enumerate() {
-                if row.get("ordinal").and_then(Value::as_i64) != Some(ordinal as i64) {
-                    return Err(invalid("invalid position occurrence sequence"));
-                }
-                values.push(position_value(row)?);
-            }
-            view.insert("positions".into(), Value::Array(values));
+            view.insert(
+                "positions".into(),
+                Value::Array(positions(read("positions_count")?.as_i64())?),
+            );
         }
         Some("absent") => {}
         _ => {
-            view.insert("positions".into(), map_cell(root, "positions_value")?);
+            view.insert("positions".into(), read("positions_value")?);
         }
     }
     Ok(Value::Object(view))
 }
 
-fn position_value(row: &Map<String, Value>) -> Result<Value, String> {
-    if map_cell(row, "payload_kind")?.as_str() != Some("object") {
-        return map_cell(row, "payload_value");
+fn position_value(read: impl Fn(&str) -> Result<Value, String>) -> Result<Value, String> {
+    if read("payload_kind")?.as_str() != Some("object") {
+        return read("payload_value");
     }
-    let mut view = map_columns(row, POSITION_FIELDS)?;
-    map_availability(
+    let mut view = columns(&read, POSITION_FIELDS)?;
+    availability(
         &mut view,
-        row,
+        &read,
         &[
             ("volume", "volume", "volume_state"),
             (
@@ -412,8 +369,17 @@ mod tests {
             "bad"
         );
         assert_eq!(result["positions"], json!([]));
-        let mut broken = row;
+        assert_eq!(result, observation_value(row.as_object().unwrap(), &[]).unwrap());
+        let mut broken = row.clone();
         broken["positions_count"] = json!(1);
-        assert!(read(&broken).is_err());
+        assert_eq!(read(&broken).unwrap_err(), observation_value(broken.as_object().unwrap(), &[]).unwrap_err());
+        broken = row.clone();
+        broken["cash_state"] = Value::Null;
+        assert!(read(&broken).unwrap_err().starts_with("ASSET_READ_ERROR:"));
+        assert!(observation_value(broken.as_object().unwrap(), &[]).unwrap_err().contains("invalid availability"));
+        broken = row;
+        broken["audit_evidence"] = json!([]);
+        assert!(read(&broken).unwrap_err().contains("invalid audit evidence"));
+        assert!(observation_value(broken.as_object().unwrap(), &[]).unwrap().get("audit_evidence").is_none());
     }
 }

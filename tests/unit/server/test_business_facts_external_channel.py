@@ -8,8 +8,14 @@ from copy import deepcopy
 import pytest
 
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, read_result, rows, sql
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    read_before_assets,
+    read_result,
+    rows,
+    sql,
+)
 
 
 def _sql_round_trip(path, payload: Mapping[str, object]):
@@ -307,9 +313,7 @@ def test_custom_before_and_after_assets_are_independent_observations(native_data
     after["positions"][0]["volume"] = 0.25
     receipt = freeze_input(native_database, {}, input_id="offline-custom-before", before_assets=before)
     actual, loaded = _sql_round_trip(native_database, {"account_assets": after})
-    observations = native_store_call(native_database, "asset_input_observations", {"input_id": receipt["input_id"]})
-    assert len(observations) == 1
-    actual["before_account_assets"] = observations[0]["account_assets"]
+    actual["before_account_assets"] = read_before_assets(native_database, receipt["input_id"])
 
     assert business_evidence(actual) == business_evidence({"account_assets": after, "before_account_assets": before})
     snapshots = loaded["business_asset_snapshot"]

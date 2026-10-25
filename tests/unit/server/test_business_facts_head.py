@@ -2,8 +2,8 @@
 
 import pytest
 
-from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import persist_result, read_result, rows
 
 

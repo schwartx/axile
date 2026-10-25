@@ -8,11 +8,9 @@ from loguru import logger
 
 from axile.server._native import _core
 from axile.server.db.models import (
-    Message,
     Portfolio,
     PortfolioCreate,
     PortfolioListPublic,
-    PortfolioPublic,
     PortfolioUpdate,
     TargetWeightSnapshotPublic,
     ValidateCustomCalcRequest,
@@ -25,11 +23,9 @@ from axile.server.error_details import exception_details
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import clear_target_refresh, try_register_target_refresh
 from axile.server.native_store import native_operation
+from axile.server.portfolio_function import PortfolioFunctionError, _error_from_exception
 from axile.server.portfolio_runner import calculate_sample_portfolio
-from axile.server.portfolio_targets import (
-    calculate_portfolio_for_account,
-    portfolio_result_from_exception,
-)
+from axile.server.portfolio_targets import calculate_portfolio_for_account
 from axile.server.target_weight_snapshots import append_target_weight_snapshot, target_snapshot_public
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
@@ -46,19 +42,19 @@ async def _portfolio_native(name: str, request: object) -> Any:
         raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED, response_model=PortfolioPublic)
-async def create_portfolio(portfolio: PortfolioCreate) -> PortfolioPublic:
+@router.post("/", status_code=status.HTTP_201_CREATED)
+async def create_portfolio(portfolio: PortfolioCreate) -> Response:
     """创建一个由自定义函数计算目标权重的组合。"""
     try:
         value = await _portfolio_native(
-            "portfolio_operation", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
+            "portfolio_operation_json", {"op": "create", "portfolio": Portfolio.model_validate(portfolio).model_dump()}
         )
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("创建组合失败: {}", exc)
         raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
-    return PortfolioPublic.model_validate(value)
+    return Response(value, media_type="application/json", status_code=201)
 
 
 @router.get("/", response_model=PortfolioListPublic)
@@ -67,7 +63,7 @@ async def list_portfolios() -> Response:
     return Response(await _portfolio_native("portfolio_query_json", {"op": "list"}), media_type="application/json")
 
 
-@router.get("/{portfolio_id:int}", response_model=PortfolioPublic)
+@router.get("/{portfolio_id:int}")
 async def portfolio_info(portfolio_id: int) -> Response:
     """获取组合详情和当前绑定账户。"""
     return Response(
@@ -77,19 +73,20 @@ async def portfolio_info(portfolio_id: int) -> Response:
 
 
 @router.delete("/{portfolio_id:int}")
-async def delete_portfolio(portfolio_id: int) -> Message:
+async def delete_portfolio(portfolio_id: int) -> Response:
     """删除未绑定账户的组合。"""
-    return Message.model_validate(
-        await _portfolio_native("portfolio_operation", {"op": "delete", "portfolio_id": portfolio_id})
+    return Response(
+        await _portfolio_native("portfolio_operation_json", {"op": "delete", "portfolio_id": portfolio_id}),
+        media_type="application/json",
     )
 
 
-@router.patch("/{portfolio_id:int}", response_model=PortfolioPublic)
-async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> PortfolioPublic:
+@router.patch("/{portfolio_id:int}")
+async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Response:
     """局部更新组合；自定义函数不可清空。"""
     try:
         value = await _portfolio_native(
-            "portfolio_operation",
+            "portfolio_operation_json",
             {
                 "op": "update",
                 "portfolio_id": portfolio_id,
@@ -102,27 +99,24 @@ async def update_portfolio(portfolio_id: int, portfolio: PortfolioUpdate) -> Por
     except Exception as exc:
         logger.exception("更新组合失败: {}", exc)
         raise HTTPException(status_code=500, detail=f"服务器错误: {exc}") from exc
-    return PortfolioPublic.model_validate(value)
+    return Response(value, media_type="application/json", status_code=200)
 
 
 async def resolve_portfolio_target(portfolio: Portfolio, account: AccountContext | None) -> dict[str, float]:
     """执行组合函数并返回未经账户杠杆和精度处理的目标权重."""
     try:
         if account is None:
-            result = await asyncio.to_thread(calculate_sample_portfolio, portfolio.custom_calc_py_code)
-        else:
-            result = await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
+            return await asyncio.to_thread(calculate_sample_portfolio, portfolio.custom_calc_py_code)
+        return await calculate_portfolio_for_account(account, portfolio.custom_calc_py_code)
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
-    if not result.ok or result.target is None:
-        error = result.error or ValueError("自定义组合函数执行失败")
+    except PortfolioFunctionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=exception_details(error, "自定义组合函数执行失败"),
-        )
-    return result.target
+            detail=exception_details(exc, "自定义组合函数执行失败"),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, exception_details(exc, "目标计算失败")) from exc
 
 
 @router.get("/{portfolio_id:int}/target_snapshot", response_model=TargetWeightSnapshotPublic)
@@ -169,10 +163,7 @@ async def _run_custom_calc_validation(
         else:
             result = await calculate_portfolio_for_account(account, custom_calc_py_code)
     except BaseException as exc:  # noqa: BLE001 - 校验接口统一返回执行器与 IPC 错误
-        result = portfolio_result_from_exception(exc)
-    if not result.ok or result.target is None:
-        error = result.error or portfolio_result_from_exception(ValueError("自定义组合函数执行失败")).error
-        assert error is not None
+        error = exc if isinstance(exc, PortfolioFunctionError) else _error_from_exception(exc)
         return ValidateCustomCalcResponse(
             valid=False,
             error=str(error),
@@ -182,7 +173,7 @@ async def _run_custom_calc_validation(
             error_type=error.error_type,
             error_message=error.error_message,
         )
-    return ValidateCustomCalcResponse(valid=True, target=result.target)
+    return ValidateCustomCalcResponse(valid=True, target=result)
 
 
 @router.post("/validate_custom_calc", response_model=ValidateCustomCalcResponse)

@@ -7,12 +7,12 @@ import asyncio
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts.assets import read_snapshot_assets
-from axile.server.business_facts.repository import read_execution_result
-from axile.server.db.models import AccountAssetSnapshot, ExecuteRecord
+from axile.server.business_facts.assets import latest_asset_snapshot
 from axile.server.execution.records import append_success_execute_record
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import rows, seed_account, sql
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import read_execution_result
 
 
 def test_success_record_persists_matching_asset_snapshot(native_database, monkeypatch) -> None:
@@ -33,21 +33,23 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         records = rows(native_database, "executerecord")
         assert len(records) == 1
         record = ExecuteRecord.model_validate(records[0])
-        assert record.id == saved.id
+        assert record.id == saved["record_id"]
         snapshots = rows(native_database, "account_asset_snapshot")
         assert len(snapshots) == 1
-        snapshot = AccountAssetSnapshot.model_validate(snapshots[0])
-        assert snapshot.account_id == 51
-        assert snapshot.execution_id == "exec-assets-51"
-        assert snapshot.source == "execution"
-        assert snapshot.created_at == record.created_at
+        snapshot = snapshots[0]
+        assert snapshot["account_id"] == 51
+        assert snapshot["execution_id"] == "exec-assets-51"
+        assert snapshot["source"] == "execution"
+        assert snapshot["created_at"] == record.created_at
         bindings = rows(native_database, "business_asset_binding")
         assert len(bindings) == 1
         assert bindings[0]["record_id"] == record.id
         assert bindings[0]["path"] == "/account_assets"
-        assert snapshot.asset_fact_id == bindings[0]["asset_id"]
+        assert snapshot["asset_fact_id"] == bindings[0]["asset_id"]
         assert len(rows(native_database, "business_asset_snapshot")) == 1
-        assets = await read_snapshot_assets(snapshot)
+        latest = await latest_asset_snapshot(51)
+        assert latest is not None and latest["id"] == snapshot["id"]
+        assets = latest["assets"]
         canonical_result = await read_execution_result(record)
         assert assets == canonical_result["account_assets"]
         assert assets == {

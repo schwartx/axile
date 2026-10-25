@@ -1,34 +1,36 @@
 """冻结输入与历史目标的存储契约。"""
 
 import asyncio
+import json
 
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts import repository
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
-    get_latest_portfolio_target_snapshot,
-    read_target_snapshot_weights,
+    get_previous_account_target_snapshots,
 )
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
+from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
     persist_result,
     read_result,
     rows,
     seed_account,
+    seed_historical_input,
     sql,
 )
+from tests.unit.server._native_read_views import read_view
 
 _INPUT_TABLES = ("execution_input", "execution_input_target", "execution_input_symbol", "execution_input_plan")
 
 
 def _read_input(path, input_id="input-1"):
-    return native_store_call(path, "read_execution_input", {"input_id": input_id})
+    return read_view(path, "read_execution_input", {"input_id": input_id})
 
 
 def _roundtrip(path, payload):
@@ -92,6 +94,7 @@ def test_input_missing_null_empty_malformed_and_root_evidence(native_database, p
 
 @pytest.mark.parametrize("payload", [{}, {"curr_target": None}, {"curr_target": {}}, {"curr_target": {"A": 0}}])
 def test_read_input_reuses_header_without_changing_collection_states(native_database, monkeypatch, payload):
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     expected, _ = _roundtrip(native_database, payload)
     calls = []
 
@@ -99,9 +102,7 @@ def test_read_input_reuses_header_without_changing_collection_states(native_data
         calls.append((name, request))
         return native_store_call(native_database, name, request)
 
-    monkeypatch.setattr(repository, "native_operation", read)
     assert asyncio.run(repository.read_execution_input("input-1")) == expected
-    assert calls == [("read_execution_input", {"input_id": "input-1"})]
 
 
 def test_read_input_rejects_mismatched_header_before_querying(native_database):
@@ -187,17 +188,19 @@ def test_persist_replays_identity_and_selective_target_reads(native_database):
         "target": None,
     }
 
-    variant_one = freeze_input(
-        native_database, payload, audit_payload={"curr_target": {"rb2610": 1}}, audit_input_id="variant-one"
-    )["audit_id"]
-    variant_two = freeze_input(
-        native_database, payload, audit_payload={"curr_target": {"rb2610": 2}}, audit_input_id="variant-two"
-    )["audit_id"]
-    assert variant_one != variant_two
+    for input_id, value in (("variant-one", 1), ("variant-two", 2)):
+        seed_historical_input(native_database, input_id, "execution-1", curr_target_state="value", curr_target_count=1)
+        sql(
+            native_database,
+            "INSERT INTO execution_input_target(input_id,role,map_key,value,audit_evidence) "
+            "VALUES(?,'curr_target','rb2610',?,'{}')",
+            (input_id, value),
+        )
+        assert _read_input(native_database, input_id)["curr_target"] == {"rb2610": value}
     owners = [
         row["owner_execution_id"]
         for row in rows(native_database, "execution_input")
-        if row["id"] in (variant_one, variant_two)
+        if row["id"] in ("variant-one", "variant-two")
     ]
     assert owners == ["execution-1", "execution-1"]
     ordered = {"curr_target": {"rb2610": 0, "ag2612": 1}}
@@ -259,36 +262,46 @@ def test_target_snapshot_services_explicitly_load_typed_maps(native_database, mo
             normalized_weights={"CF2701": 0.0, "CF701": -0.15},
             source="manual",
         )
-        assert snapshot.raw_weights == {"CF2701": 0, "CF701": -0.05}
-        assert snapshot.normalized_weights == {"CF2701": 0.0, "CF701": -0.15}
+        assert snapshot["raw_weights"] == {"CF2701": 0, "CF701": -0.05}
+        assert snapshot["normalized_weights"] == {"CF2701": 0.0, "CF701": -0.15}
         assert await get_latest_account_target_snapshot(1, 2) == snapshot
-        assert await get_latest_portfolio_target_snapshot(2) == snapshot
-        assert await read_target_snapshot_weights(account_id=1, execution_id=None) is None
+        assert (
+            json.loads(
+                _core.portfolio_query_json(
+                    str(native_database), json.dumps({"op": "target_snapshot", "portfolio_id": 2})
+                )
+            )["weights"]
+            == snapshot["raw_weights"]
+        )
         sql(
             native_database,
             "UPDATE target_weight_snapshot SET execution_id='snapshot-execution' WHERE id=?",
-            (snapshot.id,),
+            (snapshot["id"],),
         )
-        assert await read_target_snapshot_weights(account_id=1, execution_id="snapshot-execution") == {
+        assert (await get_latest_account_target_snapshot(1, 2))["normalized_weights"] == {
             "CF2701": 0.0,
             "CF701": -0.15,
         }
+        previous = await get_previous_account_target_snapshots(1, 2, before_id=snapshot["id"] + 1, limit=1)
+        assert len(previous) == 1 and previous[0]["id"] == snapshot["id"]
+        assert previous[0]["normalized_weights"] == snapshot["normalized_weights"]
+        assert await get_previous_account_target_snapshots(1, 2, before_id=snapshot["id"]) == []
+        assert await get_previous_account_target_snapshots(2, 2, before_id=snapshot["id"] + 1) == []
         assert {"raw_weights", "normalized_weights"}.isdisjoint(rows(native_database, "target_weight_snapshot")[0])
 
     asyncio.run(check())
 
 
 def test_input_variants_keep_owner_anchor_without_unique_execution_alias(native_database):
-    primary = freeze_input(
-        native_database, {"curr_target": {}}, audit_payload={"curr_target": None}, audit_input_id="variant"
-    )
+    primary = freeze_input(native_database, {"curr_target": {}})
+    variant_id = seed_historical_input(native_database, "variant", "execution-1", curr_target_state="null")
     anonymous = persist_result(native_database, {}, raw_input={})["input_id"]
     heads = {row["id"]: row for row in rows(native_database, "execution_input")}
     assert heads[primary["input_id"]]["owner_execution_id"] == "execution-1"
-    assert heads[primary["audit_id"]]["owner_execution_id"] == "execution-1"
-    assert heads[primary["audit_id"]]["execution_id"] is None
+    assert heads[variant_id]["owner_execution_id"] == "execution-1"
+    assert heads[variant_id]["execution_id"] is None
     assert heads[anonymous]["owner_execution_id"] is None
-    assert _read_input(native_database, primary["audit_id"])["curr_target"] is None
+    assert _read_input(native_database, variant_id)["curr_target"] is None
     assert "owner_execution_id" not in _read_input(native_database, primary["input_id"])
 
 

@@ -6,7 +6,7 @@ from copy import deepcopy
 import sqlalchemy as sa
 
 from tests.conftest import initialize_native_database
-from tests.unit.server.test_analysis_structured_migration import _connect, _downgrade, _upgrade
+from tests.unit.server._migration_support import _connect, _downgrade, _upgrade
 
 
 def test_migrate_only_unambiguous_partial_sessions(tmp_path):

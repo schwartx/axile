@@ -12,6 +12,7 @@ from axile.server import connection_events, connection_runtime, connection_state
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_connection import AccountConnectionState
 from axile.server.db.models.account_order import AccountOrdersPublic
+from tests.unit.server._native_read_views import connection_view
 
 
 @pytest.fixture(autouse=True)
@@ -133,14 +134,14 @@ def test_public_history_does_not_advertise_a_live_session_or_credentials():
         manually_disconnected=True,
         last_failure={"observed_at": "failed", "message": "old failure", "error": {"technical_detail": "original"}},
     )
-    detail = connection_state.public_connection(value, detail=True)
+    detail = connection_view(value, detail=True)
     assert detail.status == "disconnected" and not detail.worker_alive
     assert detail.last_success_at == "last-access" and detail.last_failure.message == "old failure"
     assert detail.error is None and detail.presentation is None
     assert "private-password" not in detail.model_dump_json()
     assert "private-webhook" not in detail.model_dump_json()
     value.account_config = {"password": "replacement"}
-    assert connection_state.public_connection(value).status == "uninitialized"
+    assert connection_view(value).status == "uninitialized"
 
 
 def test_public_session_batch_is_detached_and_preserves_expiry_and_cooldown(monkeypatch):
@@ -172,7 +173,13 @@ def test_public_session_batch_is_detached_and_preserves_expiry_and_cooldown(monk
 
 def test_connection_and_orders_streams_use_native_account_scan_and_filter_credentials(monkeypatch):
     value = account()
-    scan = AsyncMock(side_effect=[[value.model_dump(mode="json")], [value.model_dump(mode="json")], []])
+    scan = AsyncMock(
+        side_effect=[
+            [value.model_dump(mode="json") | {"connection": connection_view(value).model_dump(mode="json")}],
+            [value.model_dump(mode="json")],
+            [],
+        ]
+    )
     monkeypatch.setattr(connection_events, "native_operation", scan)
     # orders_frames imports the shared native facade at its call boundary.
     from axile.server import account_orders, native_store
@@ -183,9 +190,15 @@ def test_connection_and_orders_streams_use_native_account_scan_and_filter_creden
     connections = asyncio.run(connection_events.connection_frames({2, 1}))
     orders = asyncio.run(orders_live.orders_frames({1}))
     assert asyncio.run(connection_events.connection_frames(set())) == []
-    assert scan.await_args_list[0].args == ("connection_accounts", {"account_ids": [1, 2]})
+    assert scan.await_args_list[0].args == (
+        "connection_accounts",
+        {"account_ids": [1, 2], "live_sessions": connection_runtime.public_session_views()},
+    )
     assert scan.await_args_list[1].args == ("connection_accounts", {"account_ids": [1]})
-    assert scan.await_args_list[2].args == ("connection_accounts", {"account_ids": []})
+    assert scan.await_args_list[2].args == (
+        "connection_accounts",
+        {"account_ids": [], "live_sessions": connection_runtime.public_session_views()},
+    )
     assert connections[0]["connection"]["status"] == "uninitialized"
     assert orders[0]["snapshot"]["complete"]
     assert query.await_args.args[0].account_config == value.account_config

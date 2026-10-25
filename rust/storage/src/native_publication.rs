@@ -30,11 +30,11 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
         if let Some(reason) = writer::stale_reason(source, &task)? {
             return Ok(Err(reason));
         }
-        let complete = publication::write(source, &connection, &task)?;
-        Ok(Ok(complete))
+        let data_until = publication::write(source, &connection, &task)?;
+        Ok(Ok(data_until))
     })?;
-    let complete = match result {
-        Ok(complete) => complete,
+    let data_until = match result {
+        Ok(data_until) => data_until,
         Err(reason) => {
             // The staging transaction never wrote main. End it before obtaining
             // main's writer slot so no old main reader is upgraded into a writer.
@@ -44,8 +44,8 @@ pub fn publish(database: &Path, request: &Value) -> Result<Value, AnalysisError>
             return writer::skip(&connection, &task, reason);
         }
     };
-    let complete = staged.finish(complete, task.account_id, task.source_version)?;
-    writer::publish(&connection, &task, &complete)
+    staged.finish()?;
+    writer::publish(&connection, &task, data_until.as_deref())
 }
 
 #[cfg(test)]

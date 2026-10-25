@@ -175,26 +175,6 @@ async def mark_intent_finished(
     wake_notifications(result["intent"]["account_id"])
 
 
-def serialize_intent(intent: IntentSnapshot) -> dict[str, object]:
-    """把 intent 快照编成 ExecutionStatusPublic 同形载荷."""
-    return {
-        "execution_id": intent.execution_id,
-        "account_id": intent.account_id,
-        "execution_kind": intent.kind,
-        "status": intent.status,
-        "created_at": intent.created_at,
-        "started_at": intent.started_at,
-        "finished_at": intent.finished_at,
-        "error": intent.error,
-        "output_status": None,
-        "record_id": None,
-        "is_success": None,
-        "cancel_requested_at": intent.cancel_requested_at,
-        "cancel_reason": intent.cancel_reason,
-        "terminate_mode": intent.terminate_mode,
-    }
-
-
 def _conflict(
     *,
     kind: ExecutionKind,

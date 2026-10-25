@@ -129,6 +129,14 @@ def _latest_result(account: AccountContext, result: dict[str, Any]) -> dict[str,
         and (mirrored.get("generation", 0), mirrored.get("version", 0))
         >= (result.get("generation", 0), result.get("version", 0))
     ):
+        if mirrored.get("generation", 0) == result.get("generation", 0):
+            # 最近终态窗口不包含所有显式核实结果；同一代数的确认不能被采样丢弃。
+            resolved = {
+                (row["symbol"], row["order_id"]): row
+                for snapshot in (result, mirrored)
+                for row in snapshot.get("resolved", [])
+            }
+            return {**mirrored, "resolved": list(resolved.values())}
         return mirrored
     return result
 

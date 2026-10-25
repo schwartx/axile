@@ -24,11 +24,19 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast, override
 
 import psutil
+from gm.api import (  # type: ignore
+    OrderSide_Buy,
+    OrderSide_Sell,
+    OrderType_Limit,
+    OrderType_Market,
+    PositionEffect_Close,
+    PositionEffect_Open,
+)
 from loguru import logger
 
 from axile.channels.schedule_clock import CN_STOCK_WINDOWS, is_within_schedule_windows
@@ -43,21 +51,7 @@ from axile.executor.gm.common import (
     from_gm_price,
 )
 from axile.executor.gm.connection import report_gm_failure
-from axile.executor.gm.core.api_bridge import (
-    CurrentRequest,
-    GetCashRequest,
-    GetExecutionReportsRequest,
-    GetOrdersRequest,
-    GetPositionRequest,
-    GetUnfinishedOrdersRequest,
-    GMCancelOrderTarget,
-    GMOrderKind,
-    GMOrderSide,
-    GMPositionEffect,
-    GMSdkRequest,
-    OrderCancelRequest,
-    OrderVolumeRequest,
-)
+from axile.executor.gm.core.api_bridge import GMSdkOperation
 from axile.executor.gm.core.callback_dispatcher import GMCallbackDispatcher
 from axile.executor.gm.core.strategy_bridge import GMStrategyBridge
 from axile.executor.models.execution_result import TargetSizingDecision, TargetSizingStatus
@@ -365,7 +359,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         self._callback_monitoring = True
         return self._strategy_bridge
 
-    def _call_bridge(self, request: GMSdkRequest, *, timeout: float = 30.0) -> Any:
+    def _call_bridge(self, operation: GMSdkOperation, *, timeout: float = 30.0, **kwargs: Any) -> Any:
         """统一通过当前执行器持有的 bridge 调用 GM SDK."""
         if getattr(self, "_gm_config", None) is None:
             raise RuntimeError("GMExecutor 尚未初始化连接配置，无法调用 GM bridge")
@@ -373,9 +367,9 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if bridge is None or not self._verify_connection():
             raise ConnectionError("GM 交易连接不可用，请通过账户连接入口恢复；本次请求未提交")
         # GM 对无效账户也可能返回空列表；空持仓/订单不能证明账户有效。
-        if request.operation == "get_cash" and getattr(request, "account_id", None) in {None, self.account_id}:
+        if operation == "get_cash" and kwargs.get("account_id") in {None, self.account_id}:
             with connection_monitor(self).accessing():
-                cash = bridge.call(request, timeout=timeout)
+                cash = bridge.call(operation, timeout=timeout, **kwargs)
                 returned_account = cash.get("account_id") if isinstance(cash, dict) else None
                 if not cash or returned_account not in {None, "", self.account_id}:
                     error = RuntimeError(
@@ -392,7 +386,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
                     logger.error("{}", error)
                     raise error
                 return cash
-        return bridge.call(request, timeout=timeout)
+        return bridge.call(operation, timeout=timeout, **kwargs)
 
     # ==================== 实现 UnifiedCallbackClient 接口 ====================
 
@@ -454,11 +448,11 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         logger.info(f"准备查询持仓: account_id={self.account_id}")
         positions = cast(
             "list[Any]",
-            self._call_bridge(GetPositionRequest(account_id=self.account_id), timeout=10.0),
+            self._call_bridge("get_position", account_id=self.account_id, timeout=10.0),
         )
         logger.info(f"持仓查询完成: account_id={self.account_id}, positions={len(positions)}")
         logger.info(f"准备查询资金: account_id={self.account_id}")
-        raw_cash = self._call_bridge(GetCashRequest(account_id=self.account_id), timeout=10.0)
+        raw_cash = self._call_bridge("get_cash", account_id=self.account_id, timeout=10.0)
         logger.info(f"资金查询完成: account_id={self.account_id}, has_cash={bool(raw_cash)}")
         total_asset, available_cash, cash_diagnostics = _gm_cash_snapshot(raw_cash)
 
@@ -538,7 +532,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         market_data: dict[str, UnifiedPriceData] = {}
         try:
             logger.info(f"准备调用 current 获取行情快照, symbol_count={len(gm_symbols)}")
-            current_ticks = self._call_bridge(CurrentRequest(symbols=gm_symbols), timeout=10.0)
+            current_ticks = self._call_bridge("current", symbols=gm_symbols, timeout=10.0)
             logger.info(
                 f"current 调用完成, symbol_count={len(gm_symbols)}, tick_count={len(current_ticks) if current_ticks else 0}"
             )
@@ -592,7 +586,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             convert_gm_order_to_unified(order)
             for order in cast(
                 "list[dict[str, Any]]",
-                self._call_bridge(GetUnfinishedOrdersRequest(account_id=self.account_id), timeout=10.0),
+                self._call_bridge("get_unfinished_orders", account_id=self.account_id, timeout=10.0),
             )
             if order.get("account_id") == query_account_id
         ]
@@ -606,7 +600,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             convert_gm_trade_to_trade_record(trade)
             for trade in cast(
                 "list[dict[str, Any]]",
-                self._call_bridge(GetExecutionReportsRequest(account_id=self.account_id), timeout=10.0),
+                self._call_bridge("get_execution_reports", account_id=self.account_id, timeout=10.0),
             )
             if trade.get("account_id") == query_account_id
         ]
@@ -620,7 +614,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             convert_gm_order_to_unified(order)
             for order in cast(
                 "list[dict[str, Any]]",
-                self._call_bridge(GetOrdersRequest(account_id=self.account_id), timeout=10.0),
+                self._call_bridge("get_orders", account_id=self.account_id, timeout=10.0),
             )
             if order.get("account_id") == query_account_id
         ]
@@ -636,10 +630,10 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
     def _submit_cancel_request(
         self,
         *,
-        wait_cancel_orders: list[GMCancelOrderTarget],
+        wait_cancel_orders: list[dict[str, str]],
     ) -> None:
         """执行纯 GM 撤单请求，不处理账户控制."""
-        self._call_bridge(OrderCancelRequest(wait_cancel_orders=wait_cancel_orders), timeout=10.0)
+        self._call_bridge("order_cancel", wait_cancel_orders=wait_cancel_orders, timeout=10.0)
 
     def _cancel_order_impl(self, symbol: str, order_id: str) -> bool:
         """
@@ -664,7 +658,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
         try:
             self._submit_cancel_request(
-                wait_cancel_orders=[GMCancelOrderTarget(cl_ord_id=order_id, account_id=self.account_id)],
+                wait_cancel_orders=[{"cl_ord_id": order_id, "account_id": self.account_id}],
             )
             logger.info(f"撤销订单请求已提交: {symbol} 订单ID {order_id}")
             return True
@@ -717,7 +711,6 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if getattr(self, "_execution_query_runtime_observers_registered", False):
             return
         bridge = self.get_execution_query_runtime_bridge()
-        self._callback_dispatcher.register_order_observer(self.account_orders.apply)
         self._callback_dispatcher.register_order_observer(bridge.observe_order_update)
         self._callback_dispatcher.register_trade_observer(bridge.observe_trade_record)
         self._callback_dispatcher.register_trade_observer(self.account_orders.activity.observe_trade)
@@ -743,30 +736,29 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
         if not self.account_id:
             raise ValueError("账户ID未初始化")
 
-        side = GMOrderSide.BUY if direction == OrderDirection.BUY else GMOrderSide.SELL
-        position_effect = GMPositionEffect.OPEN if direction == OrderDirection.BUY else GMPositionEffect.CLOSE
-        gm_order_type = GMOrderKind.LIMIT if order_type == OrderType.LIMIT else GMOrderKind.MARKET
+        side = OrderSide_Buy if direction == OrderDirection.BUY else OrderSide_Sell
+        position_effect = PositionEffect_Open if direction == OrderDirection.BUY else PositionEffect_Close
+        gm_order_type = OrderType_Limit if order_type == OrderType.LIMIT else OrderType_Market
         order_price = price if order_type == OrderType.LIMIT and price > 0 else 0
         gm_volume = int(volume)
-        if side is GMOrderSide.SELL and position_effect is GMPositionEffect.CLOSE:
+        if side == OrderSide_Sell and position_effect == PositionEffect_Close:
             self._ensure_gm_sell_close_supported(symbol=symbol, requested_volume=gm_volume)
 
         logger.info(
             f"准备下单: symbol={symbol}, volume={volume}, "
-            f"side={'买开' if side is GMOrderSide.BUY else '卖平'}, order_type={order_type}, 价格={order_price}"
+            f"side={'买开' if side == OrderSide_Buy else '卖平'}, order_type={order_type}, 价格={order_price}"
         )
 
         try:
             order_result = self._call_bridge(
-                OrderVolumeRequest(
-                    symbol=GM_SYMBOL_RESOLVER.to_gm(symbol),
-                    volume=gm_volume,
-                    side=side,
-                    order_type=gm_order_type,
-                    position_effect=position_effect,
-                    price=order_price,
-                    account=self.account_id,
-                ),
+                "order_volume",
+                symbol=GM_SYMBOL_RESOLVER.to_gm(symbol),
+                volume=gm_volume,
+                side=side,
+                order_type=gm_order_type,
+                position_effect=position_effect,
+                price=order_price,
+                account=self.account_id,
                 timeout=10.0,
             )
         except Exception:
@@ -808,7 +800,7 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
 
         positions = cast(
             "list[Any]",
-            self._call_bridge(GetPositionRequest(account_id=self.account_id), timeout=10.0),
+            self._call_bridge("get_position", account_id=self.account_id, timeout=10.0),
         )
         if not positions:
             return 0.0
@@ -1038,69 +1030,6 @@ class GMExecutor(AbstractExecutor, UnifiedCallbackClient):
             }
         )
         return provisional_order
-
-    def _cancel_timeout_orders(self, account_id: str, timeout: int | float) -> None:
-        """撤销指定账户中超时未完成的委托订单."""
-        try:
-            logger.info(f"开始检查账户 [{account_id}] 是否存在超时委托，超时时间设定为 {timeout} 秒")
-            unfinished_orders = self._query_unfinished_order_records(account_id)
-            now = datetime.now(timezone.utc).astimezone()
-
-            to_cancel: list[GMCancelOrderTarget] = []
-
-            for order in unfinished_orders:
-                if order.extra.get("account_id") != account_id:
-                    continue
-
-                created_at_raw = order.create_time
-                if not created_at_raw:
-                    logger.warning(f"委托 {order.order_id} 缺少 created_at 字段，跳过处理")
-                    continue
-
-                created_at = datetime.fromisoformat(created_at_raw)
-                if created_at.tzinfo is None:
-                    created_at = created_at.replace(tzinfo=now.tzinfo)
-
-                elapsed_time = (now - created_at).total_seconds()
-                if elapsed_time > timeout:
-                    logger.info(
-                        f"委托超时，准备撤销：cl_ord_id={order.extra.get('cl_ord_id')}，"
-                        f"symbol={order.symbol}，委托时间={created_at}，"
-                        f"已等待 {elapsed_time:.2f} 秒"
-                    )
-                    to_cancel.append(
-                        GMCancelOrderTarget(
-                            cl_ord_id=str(order.extra["cl_ord_id"]),
-                            account_id=str(order.extra["account_id"]),
-                        )
-                    )
-
-            if to_cancel:
-                self._submit_cancel_request(wait_cancel_orders=to_cancel)
-                logger.success(f"成功提交撤销请求，共 {len(to_cancel)} 个超时委托已处理")
-            else:
-                logger.info("没有发现任何超时的委托，无需撤销")
-
-        except Exception as e:
-            logger.exception(f"处理超时撤单时发生异常: {e}")
-
-    def _filter_recent_orders(self, within_seconds: int, account_id: str) -> list[UnifiedOrder]:
-        """过滤指定 account_id 的订单，并返回在 within_seconds 秒内创建的订单."""
-        now = datetime.now(timezone(timedelta(hours=8), "Asia/Shanghai"))
-        return [
-            order
-            for order in self._query_order_records(account_id)
-            if order.create_time is not None
-            and (
-                now
-                - (
-                    datetime.fromisoformat(order.create_time).replace(tzinfo=now.tzinfo)
-                    if datetime.fromisoformat(order.create_time).tzinfo is None
-                    else datetime.fromisoformat(order.create_time)
-                )
-            ).total_seconds()
-            <= within_seconds
-        ]
 
     # ==================== 重写父类方法 ====================
 

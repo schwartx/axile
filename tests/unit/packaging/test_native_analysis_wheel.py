@@ -76,7 +76,7 @@ def test_missing_extension_rejects_wheel(wheel_project: Path) -> None:
         build_wheel(wheel_project)
 
 
-@pytest.mark.parametrize("error", ["wrong architecture", "missing required entrypoints: dashboard_inputs"])
+@pytest.mark.parametrize("error", ["wrong architecture", "missing required entrypoints: account_dashboard_context"])
 def test_incompatible_extension_rejects_wheel(wheel_project: Path, native_process: dict[str, Any], error: str) -> None:
     native_process["extension_error"] = error
     with pytest.raises(RuntimeError, match=error):
@@ -97,6 +97,13 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
     )
     assert {
+        "account_dashboard_context",
+        "account_public",
+        "connection_accounts",
+        "execution_read",
+        "supplement_has_execution_steps",
+        "submission_monitor_json",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
@@ -110,17 +117,40 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "migration_upgrade",
         "migration_downgrade",
         "execution_notification_context",
+        "normalize_execution_result",
+        "list_execution_events_json",
+        "list_execution_artifacts_json",
+        "account_runtime_sync_json",
+        "notifications_get_system_json",
     } <= set(required)
+    assert not {
+        "dashboard_inputs",
+        "summaries",
+        "publication_status",
+        "order_submission_summary",
+        "submission_monitor",
+    } & set(required)
 
 
 @pytest.mark.parametrize(
     ("head", "fact_schema", "missing", "error"),
     [
-        ("0041", 40, None, None),
-        ("0039", 40, None, "public migration head 0041"),
-        ("0041", 39, None, "analysis fact schema 40"),
-        ("0041", 40, "migration_upgrade", "missing required entrypoints"),
-        ("0041", 40, "execution_notification_context", "missing required entrypoints"),
+        ("0034", 40, None, None),
+        ("0033", 40, None, "public migration head 0034"),
+        ("0034", 39, None, "analysis fact schema 40"),
+        ("0034", 40, "migration_upgrade", "missing required entrypoints"),
+        ("0034", 40, "account_public", "missing required entrypoints"),
+        ("0034", 40, "submission_monitor_json", "missing required entrypoints"),
+        ("0034", 40, "persist_execution_state", "missing required entrypoints"),
+        ("0034", 40, "connection_accounts", "missing required entrypoints"),
+        ("0034", 40, "execution_read", "missing required entrypoints"),
+        ("0034", 40, "supplement_has_execution_steps", "missing required entrypoints"),
+        ("0034", 40, "execution_notification_context", "missing required entrypoints"),
+        ("0034", 40, "normalize_execution_result", "missing required entrypoints"),
+        ("0034", 40, "list_execution_events_json", "missing required entrypoints"),
+        ("0034", 40, "list_execution_artifacts_json", "missing required entrypoints"),
+        ("0034", 40, "account_runtime_sync_json", "missing required entrypoints"),
+        ("0034", 40, "notifications_get_system_json", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(

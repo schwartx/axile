@@ -26,6 +26,28 @@ from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
+def test_native_session_classification_preserves_raw_audit_fields(native_database):
+    from axile.server.db.models.account_control_session import AccountControlSession
+    from tests.conftest import native_store_call
+    from tests.unit.server._business_facts_test_support import seed_account
+    from tests.unit.server._runtime_db_support import runtime_rows
+
+    seed_account(native_database)
+    runtime_rows(
+        native_database,
+        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
+        ("catalog-" + "a" * 32,),
+    )
+    (session,) = native_store_call(native_database, "control_monitor_inputs", {})["sessions"]
+    assert session["context_kind"] == session["source"] == "unknown"
+    assert session["effective_context_kind"] == "account_operation"
+    assert "effective_context_kind" not in AccountControlSession.model_validate(session).model_dump()
+    assert tuple(runtime_rows(native_database, "SELECT context_kind,source FROM account_control_session")[0]) == (
+        "unknown",
+        "unknown",
+    )
+
+
 @sqlite_oracle
 def save_account(path, account):
     """测试 oracle 直接保存账户配置，生产路径不调用 SQLite。"""
@@ -222,6 +244,51 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
                 )
             assert len(monitor.frames[1]["records"]) == 4
             assert any(e["outcome"] == "broker_rejected" for e in monitor.frames[1]["records"])
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stale_execution_source", [False, True])
+def test_account_operation_final_frame_preserves_late_outcomes(monkeypatch, stale_execution_source):
+    async def scenario():
+        async with database(monkeypatch) as (path, account, monitor):
+            stale = None
+
+            async def source(account_id):
+                monitor._sources[account_id] = [(providers.snapshot(account_id), clock_now_ms(), False)]
+                if stale is not None and stale_execution_source:
+                    monitor._sources[account_id].append((stale, clock_now_ms(), False))
+
+            monkeypatch.setattr(monitor, "_read_source", source)
+            first = await persistence.build_account_control_guard(account, "finished-execution")
+            first.begin_operation("place_order").record_outcome("submitted")
+            await persistence.flush_account_control_records(executor(first))
+            await monitor.refresh()
+            stale = providers.snapshot(account.id)
+
+            operation = await persistence.build_account_control_guard(
+                account,
+                "asset-refresh",
+                context_kind=AccountControlContextKind.ACCOUNT_OPERATION,
+                source=AccountControlSource.ACCOUNT_ASSETS,
+            )
+            operation.begin_operation("query_account").record_outcome("fetched")
+            await persistence.flush_account_control_records(executor(operation))
+            assert providers.snapshot(account.id)["instance_id"] == operation.instance_id
+            first.update_event_outcome(0, outcome="broker_rejected", metadata={"error_id": 31})
+
+            for _ in range(2):
+                await monitor.refresh()
+                with closing(sqlite3.connect(path)) as connection:
+                    assert connection.execute(
+                        "SELECT outcome FROM account_control_event WHERE execution_id='finished-execution'"
+                    ).fetchone() == ("broker_rejected",)
+                    assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (2,)
+                frame = monitor.frames[account.id]
+                assert used(frame) == 121
+                assert frame["status"] == "idle" and frame["instance_id"] is None
+                assert frame["execution_id"] is None
+                assert any(row["outcome"] == "broker_rejected" for row in frame["records"])
 
     asyncio.run(scenario())
 

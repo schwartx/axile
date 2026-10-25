@@ -11,7 +11,7 @@ Axile GM Callback Bridge Strategy.
 import queue
 import time
 from datetime import datetime
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 from gm.api import *  # type: ignore  # noqa: F401, F403
 from gm.api._errors import GmError
@@ -19,10 +19,9 @@ from gm.csdk.c_sdk import TickLikeDict2  # type: ignore
 from gm.model import DictLikeAccountStatus, DictLikeExecRpt, DictLikeOrder  # type: ignore
 from gm.model.storage import Context  # type: ignore
 
-from axile.common.trade_channel import TradeChannel
 from axile.executor.gm.common import (
     AccConnectionState,
-    _build_gm_trade_id,
+    convert_gm_trade_to_trade_record,
     from_gm_price,
 )
 from axile.executor.gm.connection import (
@@ -32,7 +31,7 @@ from axile.executor.gm.connection import (
     report_gm_failure,
     report_runtime_failure,
 )
-from axile.executor.gm.core.api_bridge import GMApiBridge, GMBridgeRequestPayload, GMSubscribeSymbolsRequest
+from axile.executor.gm.core.api_bridge import GMApiBridge, GMBridgeOperation
 from axile.executor.gm.core.bridge_context import GMStrategyRuntimeContext, get_gm_strategy_runtime_context
 from axile.executor.gm.core.callback_dispatcher import GMRuntimeLogLevel
 from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
@@ -149,30 +148,20 @@ def _convert_execrpt_to_trade(execrpt: DictLikeExecRpt) -> TradeRecord:
     if isinstance(trade_time, datetime):
         trade_time = trade_time.isoformat()
 
-    return TradeRecord.create(
-        trade_id=_build_gm_trade_id(
-            exec_id=getattr(execrpt, "exec_id", None),
-            cl_ord_id=getattr(execrpt, "cl_ord_id", None),
-            exchange_order_id=getattr(execrpt, "order_id", None),
-            symbol=getattr(execrpt, "symbol", None),
-            trade_time=trade_time,
-            trade_volume=float(getattr(execrpt, "volume", 0) or 0),
-            trade_price=float(getattr(execrpt, "price", 0) or 0),
-        ),
-        symbol=str(getattr(execrpt, "symbol", "") or ""),
-        order_id=str(getattr(execrpt, "cl_ord_id", None) or getattr(execrpt, "order_id", None) or ""),
-        trade_time=str(trade_time) if trade_time else "",
-        trade_volume=float(getattr(execrpt, "volume", 0) or 0),
-        trade_price=float(getattr(execrpt, "price", 0) or 0),
-        extra={
-            "channel_type": TradeChannel.GM,
-            "account_id": getattr(execrpt, "account_id", None),
-            "symbol": str(getattr(execrpt, "symbol", "") or ""),
+    trade = convert_gm_trade_to_trade_record(
+        {
+            "exec_id": getattr(execrpt, "exec_id", None),
             "cl_ord_id": getattr(execrpt, "cl_ord_id", None),
-            "exchange_order_id": getattr(execrpt, "order_id", None),
-            "raw_trade_data": (dict(execrpt) if hasattr(execrpt, "__iter__") else {}),  # pyright: ignore[reportUnknownArgumentType]
-        },
+            "order_id": getattr(execrpt, "order_id", None),
+            "symbol": str(getattr(execrpt, "symbol", "") or ""),
+            "created_at": str(trade_time) if trade_time else "",
+            "volume": float(getattr(execrpt, "volume", 0) or 0),
+            "price": float(getattr(execrpt, "price", 0) or 0),
+            "account_id": getattr(execrpt, "account_id", None),
+        }
     )
+    trade.extra["raw_trade_data"] = dict(execrpt) if hasattr(execrpt, "__iter__") else {}  # pyright: ignore[reportUnknownArgumentType]
+    return trade
 
 
 def _convert_tick_to_unified(tick: TickLikeDict2) -> UnifiedPriceData:
@@ -523,13 +512,11 @@ def _process_bridge_requests(_context: Context) -> None:
         # SDK——延迟执行一笔已被上层判定失败、且可能已经重试过的下单/撤单，
         # 风险远大于少执行一笔。
         if request.is_expired():
-            request.future.set_exception(
-                TimeoutError(f"GM bridge 请求已过期，跳过执行: operation={request.request.operation}")
-            )
+            request.future.set_exception(TimeoutError(f"GM bridge 请求已过期，跳过执行: operation={request.operation}"))
             continue
 
         try:
-            result = _dispatch_bridge_request(request.request)
+            result = _dispatch_bridge_request(request.operation, request.kwargs)
         except Exception as exc:
             request.future.set_exception(exc)
         else:
@@ -562,11 +549,11 @@ def _subscribe_runtime_symbols(symbols: list[str]) -> list[str]:
     return new_symbols
 
 
-def _dispatch_bridge_request(request: GMBridgeRequestPayload):
-    """分发 bridge 请求到对应的 GM SDK 调用."""
-    if isinstance(request, GMSubscribeSymbolsRequest):
-        return _subscribe_runtime_symbols(request.symbols)
-    return GMApiBridge.execute_request(request)
+def _dispatch_bridge_request(operation: GMBridgeOperation, kwargs: dict[str, Any]):
+    """分发 bridge 请求到对应的 GM SDK 调用。"""
+    if operation == "subscribe_symbols":
+        return _subscribe_runtime_symbols(kwargs["symbols"])
+    return GMApiBridge.execute_request(operation, **kwargs)
 
 
 def _stop_bridge_timer() -> None:

@@ -49,6 +49,14 @@ class PortfolioUpdate(Model):
     status: Optional[str] = None
     tag: Optional[str] = None
 
+    @field_validator("name", "market")
+    @classmethod
+    def validate_required_text(cls, value: str | None) -> str:
+        """更新名称和交易市场时拒绝空值；省略字段保持原值。"""
+        if value is None:
+            raise ValueError("组合名称和交易市场不可清空")
+        return value
+
     @field_validator("custom_calc_py_code")
     @classmethod
     def validate_custom_calc_py_code(cls, value: str | None) -> str | None:
@@ -88,15 +96,6 @@ class ValidateCustomCalcResponse(Model):
     error_offset: Optional[int] = None
     error_type: Optional[str] = None
     error_message: Optional[str] = None
-
-
-class PortfolioPublic(PortfolioBase):
-    """完整版组合信息, 包含当前绑定账户."""
-
-    id: Optional[int]
-    updated_at: str
-    created_at: str
-    account_id: Optional[int]
 
 
 class PortfolioLitePublic(PortfolioBase):

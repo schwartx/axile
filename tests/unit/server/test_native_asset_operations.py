@@ -4,13 +4,11 @@ import asyncio
 import json
 import sqlite3
 from contextlib import closing
-from types import SimpleNamespace
 
 import pytest
 
 from axile.server._native import _core
 from axile.server.business_facts import assets
-from axile.server.db.models.account_asset import AccountAssetSnapshot
 
 _SCHEMA = """
 CREATE TABLE account(id INTEGER PRIMARY KEY);
@@ -107,45 +105,18 @@ def test_latest_trusted_filters_before_selection_and_preserves_evidence(asset_da
 def test_snapshot_read_rejects_foreign_manual_reference_and_incomplete_positions(asset_database):
     first = _save(asset_database, {"total_asset": 0, "positions": [{"symbol": "A", "volume": 1}]})
     other = _save(asset_database, {"total_asset": 100}, account_id=2)
-    request = {"snapshots": [first], "include_positions": True}
-    assert _call(asset_database, "asset_snapshots_read", request)[0]["assets"]["positions"][0]["volume"] == 1
+    request = {"account_id": 1}
+    assert _call(asset_database, "asset_snapshot_latest", request)["assets"]["positions"][0]["volume"] == 1
     with closing(sqlite3.connect(asset_database)) as connection, connection:
         connection.execute("DELETE FROM business_asset_position WHERE asset_id=?", (first["asset_fact_id"],))
     with pytest.raises(_core.NativeError):
-        _call(asset_database, "asset_snapshots_read", request)
-    request["include_positions"] = False
-    assert "positions" not in _call(asset_database, "asset_snapshots_read", request)[0]["assets"]
+        _call(asset_database, "asset_snapshot_latest", request)
     with closing(sqlite3.connect(asset_database)) as connection, connection:
         connection.execute(
             "UPDATE account_asset_snapshot SET asset_fact_id=? WHERE id=?", (other["asset_fact_id"], first["id"])
         )
-    first["asset_fact_id"] = other["asset_fact_id"]
     with pytest.raises(_core.NativeError):
-        _call(asset_database, "asset_snapshots_read", request)
-
-
-def test_input_observations_survive_terminal_delete(asset_database):
-    before = _save(asset_database, {"total_asset": 100, "positions": None})
-    after = _save(asset_database, {"total_asset": 0, "positions": [None, "bad"]})
-    with closing(sqlite3.connect(asset_database)) as connection, connection:
-        connection.execute("INSERT INTO execution_input VALUES('i1',1,'e1','e1')")
-        connection.execute("INSERT INTO executerecord VALUES(17,1,'e1','i1',NULL,'t')")
-        for snapshot, path, scope in (
-            (before, "/before_account_assets", "before"),
-            (after, "/after_account_assets", "after_pending"),
-        ):
-            connection.execute(
-                "UPDATE business_asset_snapshot SET account_snapshot_id=NULL,input_id='i1',path=?,scope=? "
-                "WHERE asset_id=?",
-                (path, scope, snapshot["asset_fact_id"]),
-            )
-        connection.execute("DELETE FROM account_asset_snapshot")
-        connection.execute("DELETE FROM executerecord")
-    observations = _call(asset_database, "asset_input_observations", {"input_id": "i1"})
-    assert [row["scope"] for row in observations] == ["after_pending", "before"]
-    assert observations[0]["account_assets"]["total_asset"] == 0
-    assert observations[0]["account_assets"]["positions"] == [None, "bad"]
-    assert observations[1]["account_assets"]["positions"] is None
+        _call(asset_database, "asset_snapshot_latest", request)
 
 
 def test_manual_facade_crosses_once_with_clock_and_invalid_number_evidence(monkeypatch):
@@ -168,8 +139,8 @@ def test_manual_facade_crosses_once_with_clock_and_invalid_number_evidence(monke
     raw_assets = {"total_asset": float("inf")}
     raw_result = {"account_assets": raw_assets}
     saved = asyncio.run(assets.save_manual_asset_snapshot(1, raw_assets, created_at="clock-time", result=raw_result))
-    assert isinstance(saved, AccountAssetSnapshot)
-    assert saved.id == 7
+    assert isinstance(saved, dict)
+    assert saved["id"] == 7
     assert requests == [
         (
             "asset_snapshot_write",
@@ -183,40 +154,6 @@ def test_manual_facade_crosses_once_with_clock_and_invalid_number_evidence(monke
     ]
     assert requests[0][1]["account_assets"] is raw_assets
     assert requests[0][1]["result"] is raw_result
-
-
-def test_snapshot_facade_batches_identity_and_propagates_read_failure(monkeypatch):
-    import axile.server.native_store as native_store
-
-    requests = []
-
-    async def operation(name, request):
-        requests.append((name, request))
-        return [{"id": 7, "assets": {"total_asset": 0}}]
-
-    monkeypatch.setattr(native_store, "native_operation", operation)
-    snapshot = SimpleNamespace(id=7, account_id=1, asset_fact_id="snapshot:7:/account_assets", execution_id=None)
-    assert asyncio.run(assets.read_snapshots_assets([snapshot], include_positions=False)) == {7: {"total_asset": 0}}
-    assert requests == [
-        (
-            "asset_snapshots_read",
-            {
-                "snapshots": [
-                    {"id": 7, "account_id": 1, "asset_fact_id": "snapshot:7:/account_assets", "execution_id": None}
-                ],
-                "include_positions": False,
-            },
-        )
-    ]
-    assert asyncio.run(assets.read_snapshots_assets([])) == {}
-    assert len(requests) == 1
-
-    async def failure(*_args):
-        raise ValueError("wrong owner")
-
-    monkeypatch.setattr(native_store, "native_operation", failure)
-    with pytest.raises(ValueError, match="wrong owner"):
-        asyncio.run(assets.read_snapshot_assets(snapshot))
 
 
 def test_asset_facade_preserves_value_error_for_corrupt_facts(monkeypatch):

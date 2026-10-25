@@ -27,6 +27,11 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
     monkeypatch.setattr(analysis._core, "ANALYSIS_FACT_SCHEMA", 40)
     for name in (
         "publish_store",
+        "account_public",
+        "connection_accounts",
+        "execution_read",
+        "supplement_has_execution_steps",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
@@ -41,11 +46,16 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
     ):
         monkeypatch.setattr(analysis._core, name, lambda *args: None, raising=False)
     analysis.ensure_native_capabilities()
+    for name in ("account_public", "connection_accounts", "execution_read", "supplement_has_execution_steps"):
+        with monkeypatch.context() as scoped:
+            scoped.delattr(analysis._core, name)
+            with pytest.raises(RuntimeError, match=name):
+                analysis.ensure_native_capabilities()
     monkeypatch.delattr(analysis._core, "analysis_publication_committed")
     with pytest.raises(RuntimeError, match="analysis_publication_committed"):
         analysis.ensure_native_capabilities()
     monkeypatch.delattr(analysis._core, "ANALYSIS_FACT_SCHEMA")
-    with pytest.raises(RuntimeError, match="schema 0039"):
+    with pytest.raises(RuntimeError, match="schema 0034"):
         analysis.ensure_native_capabilities()
 
 

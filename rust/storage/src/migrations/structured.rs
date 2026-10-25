@@ -1,51 +1,70 @@
-//! 0034—0041 转换；所有写入均留在迁移引擎持有的事务内。
+//! 从已发布的 0033 直接迁至最终结构；所有转换由外层事务原子提交。
 
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
+use crate::error::AnalysisError;
+use crate::json_codec::{self as json, number_value};
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection, Params};
 use serde_json::{Map, Value};
 
-use crate::error::AnalysisError;
-use crate::json_codec::number_value;
-
 mod account_identity;
-mod analysis;
 mod business;
-mod direct;
-mod full_snapshots;
 mod guards;
-use crate::json_codec as json;
-mod restore;
 mod schema;
 
 type Object = Map<String, Value>;
 type Result<T> = std::result::Result<T, AnalysisError>;
 
-pub(super) fn upgrade(connection: &Connection, revision: u32) -> Result<()> {
-    match revision {
-        34 => analysis::upgrade34(connection),
-        35 => analysis::upgrade35(connection),
-        36 => analysis::upgrade36(connection),
-        37 => business::upgrade(connection),
-        38 => guards::replace_summary(connection, true),
-        39 => direct::upgrade(connection),
-        40 => account_identity::upgrade(connection),
-        41 => full_snapshots::upgrade(connection),
-        _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
+pub(super) fn upgrade(connection: &Connection) -> Result<()> {
+    reset_analysis(connection)?;
+    for table in [
+        "performance_cost_trade",
+        "performance_cost_execution",
+        "performance_snapshot",
+    ] {
+        execute(connection, &format!("DROP TABLE {table}"))?;
     }
+    execute(
+        connection,
+        "ALTER TABLE account_analysis ADD COLUMN running_token TEXT",
+    )?;
+    execute(connection, include_str!("structured/analysis.sql"))?;
+    business::upgrade(connection)?;
+    account_identity::upgrade(connection)?;
+    guards::install_analysis(connection)
 }
 
-pub(super) fn downgrade(connection: &Connection, revision: u32) -> Result<()> {
-    match revision {
-        34 => analysis::downgrade34(connection),
-        35 => analysis::downgrade35(connection),
-        36 => analysis::downgrade36(connection),
-        37 => business::downgrade(connection),
-        38 => guards::replace_summary(connection, false),
-        39 => direct::downgrade(connection),
-        40 => account_identity::downgrade(connection),
-        41 => full_snapshots::downgrade(connection),
-        _ => Err(error(format!("Unknown structured revision: {revision:04}"))),
+pub(super) fn downgrade(connection: &Connection) -> Result<()> {
+    business::downgrade(connection)?;
+    account_identity::downgrade(connection)?;
+    reset_analysis(connection)?;
+    execute(
+        connection,
+        "DROP TRIGGER analysis_account_channel; DROP TRIGGER analysis_snapshot_delete",
+    )?;
+    execute(
+        connection,
+        "ALTER TABLE account_analysis DROP COLUMN running_token",
+    )?;
+    for table in schema::ANALYSIS_TABLES {
+        execute(connection, &format!("DROP TABLE {}", quote(table)))?;
     }
+    let legacy = include_str!("legacy/0012.sql");
+    execute(
+        connection,
+        &legacy[legacy
+            .find("CREATE TABLE performance_snapshot")
+            .expect("frozen cache schema")..],
+    )
+}
+
+fn reset_analysis(connection: &Connection) -> Result<()> {
+    execute(
+        connection,
+        "UPDATE account_analysis SET
+        source_version=source_version+1,published_version=0,
+        requested=(requested OR current_snapshot IS NOT NULL OR running_version IS NOT NULL),
+        current_snapshot=NULL,previous_snapshot=NULL,running_version=NULL,
+        failures=0,retry_at=0,error=NULL,logic_version=NULL,engine_version=NULL",
+    )
 }
 
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
@@ -138,16 +157,6 @@ fn json_value(value: &Value) -> Result<Value> {
     }
 }
 
-fn from_sql(value: SqlValue) -> Result<Value> {
-    Ok(match value {
-        SqlValue::Null => Value::Null,
-        SqlValue::Integer(value) => Value::from(value),
-        SqlValue::Real(value) => number_value(value),
-        SqlValue::Text(value) => Value::String(value),
-        SqlValue::Blob(value) => blob_value(value),
-    })
-}
-
 fn blob_value(value: Vec<u8>) -> Value {
     use base64::Engine;
     serde_json::json!({"$historical_sqlite_blob":base64::engine::general_purpose::STANDARD.encode(value)})
@@ -223,119 +232,4 @@ fn page(connection: &Connection, table: &str, after: i64) -> Result<Vec<Object>>
         ),
         [after],
     )
-}
-
-fn snapshot_ids(connection: &Connection, after: Option<&str>) -> Result<Vec<String>> {
-    let found = rows(
-        connection,
-        "SELECT id FROM performance_snapshot WHERE (?1 IS NULL OR id>?1) ORDER BY id LIMIT 100",
-        [after],
-    )?;
-    found
-        .iter()
-        .map(|row| text(row, "id").map(str::to_owned))
-        .collect()
-}
-
-fn savepoint<T>(connection: &Connection, work: impl FnOnce() -> Result<T>) -> Result<T> {
-    execute(connection, "SAVEPOINT structured_conversion")?;
-    match work() {
-        Ok(result) => {
-            execute(connection, "RELEASE structured_conversion")?;
-            Ok(result)
-        }
-        Err(failure) => {
-            execute(
-                connection,
-                "ROLLBACK TO structured_conversion; RELEASE structured_conversion",
-            )?;
-            Err(failure)
-        }
-    }
-}
-
-fn millis(source: &str, shanghai: bool) -> Result<f64> {
-    let mut normalized = source.to_owned();
-    if let Some((offset, separator)) = source.char_indices().nth(10) {
-        if source.as_bytes().get(4) == Some(&b'-')
-            && source.as_bytes().get(7) == Some(&b'-')
-            && separator != 'T'
-        {
-            normalized.replace_range(offset..offset + separator.len_utf8(), "T");
-        }
-    }
-    let aware = DateTime::parse_from_rfc3339(&normalized).ok().or_else(|| {
-        [
-            "%Y-%m-%dT%H:%M:%S%.f%#z",
-            "%Y-%m-%dT%H:%M%#z",
-            "%Y%m%dT%H%M%S%.f%#z",
-        ]
-        .iter()
-        .find_map(|format| DateTime::parse_from_str(&normalized, format).ok())
-    });
-    if let Some(parsed) = aware {
-        return Ok((parsed.timestamp() as f64
-            + f64::from(parsed.timestamp_subsec_micros()) / 1_000_000.0)
-            * 1000.0);
-    }
-    let parsed = ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M", "%Y%m%dT%H%M%S%.f"]
-        .iter()
-        .find_map(|format| NaiveDateTime::parse_from_str(&normalized, format).ok())
-        .or_else(|| {
-            NaiveDate::parse_from_str(&normalized, "%Y-%m-%d")
-                .ok()
-                .and_then(|day| day.and_hms_opt(0, 0, 0))
-        })
-        .ok_or_else(|| error("Invalid historical timestamp"))?;
-    let instant = if shanghai {
-        chrono_tz::Asia::Shanghai
-            .from_local_datetime(&parsed)
-            .earliest()
-            .map(|date| date.fixed_offset())
-            .or_else(|| {
-                let previous = parsed.checked_sub_signed(chrono::Duration::days(1))?;
-                let offset = chrono_tz::Asia::Shanghai
-                    .from_local_datetime(&previous)
-                    .earliest()?
-                    .fixed_offset();
-                offset.offset().from_local_datetime(&parsed).single()
-            })
-    } else {
-        FixedOffset::east_opt(8 * 3600)
-            .and_then(|offset| offset.from_local_datetime(&parsed).single())
-    }
-    .ok_or_else(|| error("Invalid historical local timestamp"))?;
-    Ok(
-        (instant.timestamp() as f64 + f64::from(instant.timestamp_subsec_micros()) / 1_000_000.0)
-            * 1000.0,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn historical_timestamp_modes_keep_shanghai_and_fixed_offset_distinct() {
-        assert_eq!(
-            millis("2026-10-23T08:00:00", false).unwrap(),
-            millis("2026-10-23T00:00:00Z", false).unwrap()
-        );
-        assert_ne!(
-            millis("1990-07-01T08:00:00", true).unwrap(),
-            millis("1990-07-01T08:00:00", false).unwrap()
-        );
-        assert_eq!(
-            millis("2026-10-23 08:00:00+0800", false).unwrap(),
-            millis("2026-10-23T00:00:00Z", false).unwrap()
-        );
-        assert_eq!(
-            millis("1990-04-15T02:30:00", true).unwrap(),
-            millis("1990-04-15T02:30:00+08:00", false).unwrap()
-        );
-    }
-}
-
-pub(super) fn preflight_downgrade_0039(connection: &Connection) -> Result<()> {
-    direct::memory_preflight(connection)
 }

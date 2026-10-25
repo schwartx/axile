@@ -17,12 +17,20 @@ from axile.server.cron import (
 from axile.server.db.models import Account
 from axile.server.db.models.account import AccountContext
 from axile.server.execution.scheduler import create_job, delete_job
-from axile.server.repositories import get_account, get_latest_portfolio_id_by_account_id
+from axile.server.repositories import get_account, get_account_snapshot
 
 
 async def _get_account_or_404(account_id: int) -> Account:
     """读取账户，不存在时抛出 404."""
     account = await get_account(account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
+    return account
+
+
+async def _get_account_snapshot_or_404(account_id: int) -> AccountContext:
+    """直接读取独立执行快照，不存在时保持账户 404。"""
+    account = await get_account_snapshot(account_id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="账户不存在")
     return account
@@ -76,25 +84,6 @@ def _build_empty_positions_algorithm(
         "method": method,
         "params": params,
     }
-
-
-async def _reconcile_account_job(
-    sched: SchedDep,
-    account: AccountContext,
-) -> None:
-    """
-    对齐账户的调度任务状态.
-
-    Parameters
-    ----------
-    sched : SchedDep
-        当前调度器实例。
-    account : Account
-        需要对齐调度状态的账户对象。
-    """
-    account_id = cast("int", account.id)
-    latest_portfolio_id = await get_latest_portfolio_id_by_account_id(account_id)
-    await _apply_account_job(sched, account, latest_portfolio_id)
 
 
 async def _apply_account_job(sched: SchedDep, account: AccountContext, latest_portfolio_id: int | None) -> None:

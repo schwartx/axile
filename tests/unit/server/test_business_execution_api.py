@@ -13,17 +13,22 @@ from fastapi import HTTPException
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
-from axile.server.business_facts.artifacts import make_artifact_reference, resolve_artifact_content
-from axile.server.business_facts.repository import read_execution_input
+from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.core import db
-from axile.server.db.models.execution import ExecuteRecord
-from axile.server.target_weight_snapshots import TargetWeightSnapshotData
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
-from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
+from tests.unit.server._business_facts_test_support import (
+    freeze_input,
+    persist_result,
+    rows,
+    seed_historical_input,
+    sql,
+)
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
+from tests.unit.server._native_read_views import read_execution_input, read_view
 
 
 @pytest.fixture
@@ -154,18 +159,19 @@ def test_activity_symbol_query_uses_projected_columns_and_account_scope(database
 def test_target_sizing_uses_immutable_audit_input_context(database):
     """历史审计输入与终态输入不同，换算精度必须跟随审计引用。"""
     terminal_input = {"channel_type": "ctp", "curr_target": {"rb2610": 1}}
-    frozen = freeze_input(
+    freeze_input(database, terminal_input, execution_id="sizing-context")
+    audit_id = seed_historical_input(
         database,
-        terminal_input,
-        execution_id="sizing-context",
-        audit_input_id="sizing-audit",
-        audit_payload={"sizing_context": {"weight_precision": 0.01}},
+        "sizing-audit",
+        "sizing-context",
+        sizing_context_state="value",
+        weight_precision=0.01,
     )
     _append_artifact(
         database,
         "sizing-context",
         ExecutionArtifactType.TARGET_SNAPSHOT,
-        make_artifact_reference(view="targets", input_id=frozen["audit_id"]),
+        make_artifact_reference(view="targets", input_id=audit_id),
     )
     record = persist_result(
         database,
@@ -174,7 +180,7 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
         is_success=1,
         raw_input=terminal_input,
     )
-    snapshot = TargetWeightSnapshotData(
+    snapshot = dict(
         id=1,
         portfolio_id=1,
         account_id=1,
@@ -224,7 +230,7 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
     )
     other = persist_result(database, {}, account_id=2, execution_id="keep-other", is_success=1)
     artifact = next(row for row in rows(database, "execution_artifact") if row["execution_id"] == "delete-summary")
-    assert "business_facts_ref" in artifact["content"]
+    assert artifact["content"] == journal
 
     if delete_account:
         message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))
@@ -239,6 +245,6 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
     artifact = next(row for row in rows(database, "execution_artifact") if row["id"] == artifact["id"])
     assert artifact["schema_version"] == 2
     assert "business_facts_ref" not in artifact["content"]
-    assert business_evidence(asyncio.run(resolve_artifact_content(artifact, account_id=1))) == business_evidence(
-        journal
-    )
+    assert business_evidence(
+        read_view(database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
+    ) == business_evidence(journal)

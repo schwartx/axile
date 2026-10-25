@@ -1,28 +1,29 @@
 """
 编排调仓 execution 的输入解析与入口流程.
 
-该模块负责把账户、组合函数和历史执行快照整理成后端执行层可消费的
-标准请求。队列认领、执行收尾和审计落库由相邻模块负责。
+该模块准备调仓输入、调用账户 worker 并归档结果。队列认领与任务收尾由 lifecycle 负责。
 """
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import loguru
 
 from axile.common.gm_symbols import normalize_gm_standard_input
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind
+from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.models.unified_input import UnifiedStandardInput
+from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
-from axile.server.db.models import Account, ExecuteRecord, Portfolio
+from axile.server.db.models import Portfolio
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.error_details import exception_details
-from axile.server.execution import backend as execution_backend
 from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
-from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.notification_assets import load_notification_snapshot
-from axile.server.execution.records import append_error_execute_record
+from axile.server.execution.records import append_error_execute_record, append_execute_record_from_output
+from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 from axile.server.native_store import native_operation
 from axile.server.portfolio_targets import calculate_portfolio_for_account
 from axile.server.repositories import get_account_snapshot
@@ -121,14 +122,11 @@ async def _execute_portfolio_function(
 
     """
     try:
-        result = await calculate_portfolio_for_account(
+        return await calculate_portfolio_for_account(
             account,
             portfolio.custom_calc_py_code,
             execution_id=execution_id,
         )
-        if not result.ok or result.target is None:
-            raise result.error or ValueError("自定义组合脚本执行失败")
-        return result.target
     except Exception as e:
         # 脚本错误行号对用户有定位价值；异常原文属于技术证据，只进 technical_detail 与日志。
         line = getattr(e, "error_line", None)
@@ -286,83 +284,12 @@ def _build_rebalance_standard_input(
     return standard_input
 
 
-async def _build_rebalance_backend_request(
-    *,
-    account: AccountContext,
-    curr_target: dict[str, float],
-    execution_id: str | None,
-    trigger_source: str,
-    logger: "loguru.Logger",
-    normalized_target: dict[str, float] | None = None,
-) -> execution_backend.RebalanceBackendRequest:
-    """
-    组装后端执行调仓所需的请求对象.
-
-    Parameters
-    ----------
-    account : Account
-        当前待执行的账户对象。
-    curr_target : dict[str, float]
-        原始目标权重。
-    execution_id : str | None
-        当前 execution 标识。
-    trigger_source : str
-        触发来源。
-    logger : loguru.Logger
-        当前执行使用的日志对象。
-
-    Returns
-    -------
-    execution_backend.RebalanceBackendRequest
-        可直接交给 backend 执行层的请求对象。
-    """
-    if isinstance(account, Account):
-        account = account.snapshot()
-    if normalized_target is None:
-        normalized_target = _normalize_rebalance_target(account, curr_target)
-    last_target = await _load_last_target_snapshot(account)
-    notification_snapshot = await load_notification_snapshot(account)
-    # 审计输入、执行器输入与回传给调用方的 curr_target 必须共享同一份
-    # 规范化结果，避免回放执行时出现“显示目标”和“实际下单目标”不一致。
-    standard_input = _build_rebalance_standard_input(
-        account=account,
-        curr_target=normalized_target,
-        last_target=last_target,
-        execution_id=execution_id,
-        trigger_source=trigger_source,
-    )
-    if execution_id and account.supplement:
-        from axile.server.execution.supplement_notifications import execution_steps
-
-        if await execution_steps(execution_id):
-            standard_input.execution_notification_code = None
-            standard_input.extra = {**standard_input.extra, "server_notification": True}
-    long_leverage, short_leverage = resolve_account_leverages(account)
-    standard_input_dict = standard_input.to_dict()
-    audit_input = sanitize_standard_input_for_audit(standard_input_dict)
-    audit_input["strategy_target"] = dict(curr_target)
-    audit_input["sizing_context"] = {
-        "long_leverage": long_leverage,
-        "short_leverage": short_leverage,
-        "weight_precision": account.weight_precision,
-    }
-    return execution_backend.RebalanceBackendRequest(
-        account=account,
-        standard_input_dict=standard_input_dict,
-        audit_input=audit_input,
-        execution_id=execution_id,
-        trigger_source=trigger_source,
-        logger=logger,
-        notification_snapshot=notification_snapshot,
-    )
-
-
 async def _run_account_rebalance(
     account_id: int,
     execution_id: str,
     trigger_source: str = "scheduler",
     logger: "loguru.Logger | None" = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     加载账户并执行队列已认领的调仓任务.
 
@@ -379,7 +306,7 @@ async def _run_account_rebalance(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         本次调仓完成后持久化的执行记录。
     """
     if logger is None:
@@ -426,7 +353,7 @@ async def trade(
     logger: "loguru.Logger | None" = None,
     cleanup: bool = True,
     normalized_target: dict[str, float] | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     为账户执行一次调仓任务，并持久化结果.
 
@@ -447,18 +374,76 @@ async def trade(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         本次调仓对应的执行记录。
     """
     if logger is None:
         logger = loguru.logger
 
-    request = await _build_rebalance_backend_request(
+    if normalized_target is None:
+        normalized_target = _normalize_rebalance_target(account, curr_target)
+    last_target = await _load_last_target_snapshot(account)
+    notification_snapshot = await load_notification_snapshot(account)
+    # 审计输入、执行器输入与回传给调用方的 curr_target 必须共享同一份
+    # 规范化结果，避免回放执行时出现“显示目标”和“实际下单目标”不一致。
+    standard_input = _build_rebalance_standard_input(
         account=account,
-        curr_target=curr_target,
+        curr_target=normalized_target,
+        last_target=last_target,
         execution_id=execution_id,
         trigger_source=trigger_source,
-        logger=logger,
-        normalized_target=normalized_target,
     )
-    return await execution_backend.run_rebalance_via_backend(request=request)
+    if execution_id and account.supplement:
+        if await native_operation("supplement_has_execution_steps", {"execution_id": execution_id}):
+            standard_input.execution_notification_code = None
+            standard_input.extra = {**standard_input.extra, "server_notification": True}
+    long_leverage, short_leverage = resolve_account_leverages(account)
+    standard_input_dict = standard_input.to_dict()
+    audit_input = sanitize_execution_input(standard_input_dict)
+    audit_input["strategy_target"] = dict(curr_target)
+    audit_input["sizing_context"] = {
+        "long_leverage": long_leverage,
+        "short_leverage": short_leverage,
+        "weight_precision": account.weight_precision,
+    }
+    if execution_id is not None:
+        from axile.server.execution.intents import promote_intent_to_running
+
+        await promote_intent_to_running(execution_id, cast("int", account.id))
+    try:
+        output, normalized_symbol_fields = await get_worker_backend_manager().execute_trade(
+            account=account,
+            standard_input_dict=standard_input_dict,
+            audit_input=audit_input,
+            execution_id=execution_id,
+            trigger_source=trigger_source,
+            **({"notification_snapshot": notification_snapshot} if notification_snapshot else {}),
+        )
+        raw_input = dict(standard_input_dict)
+        if normalized_symbol_fields is not None:
+            raw_input.update(normalized_symbol_fields)
+        record = await append_execute_record_from_output(
+            account=account,
+            raw_input=raw_input,
+            output=output,
+            execution_id=execution_id,
+            execution_kind=ExecutionKind.REBALANCE,
+        )
+        logger.info(f"交易完成 record_id={record['record_id']} success={record['is_success']}")
+        return record
+    except ExecutionTerminated:
+        logger.warning(f"交易被终止 trigger={trigger_source}")
+        raise
+    except Exception as exc:
+        # 摘要说明执行阶段；原文与实际 traceback 单独留存。
+        msg = execution_error_message(exc, "调仓执行")
+        await append_error_execute_record(
+            account_id=account.id,
+            raw_input=standard_input_dict,
+            msg=msg,
+            raw_result=exception_details(exc),
+            execution_id=execution_id,
+            error=exc,
+        )
+        logger.opt(exception=exc).error("{}", msg)
+        raise

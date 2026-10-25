@@ -13,7 +13,6 @@ from axile.server.db.models import (
     AccountPublic,
     AccountSnapshot,
     AccountUpdate,
-    ExecuteRecord,
     ExecuteRecordPublic,
     ExecutionArtifact,
     ExecutionEvent,
@@ -22,6 +21,7 @@ from axile.server.db.models import (
     PortfolioLitePublic,
     PortfolioUpdate,
 )
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 
 
 def account_data() -> dict:
@@ -61,6 +61,7 @@ import axile
 from axile.server.db import models
 assert Path(axile.__file__).resolve().is_relative_to(Path.cwd())
 assert not hasattr(models.Account, '__table__')
+assert not hasattr(models.Account, 'snapshot')
 assert not hasattr(models, 'SQLModel')
 assert not hasattr(models, 'PydanticJSONType')
 """,
@@ -103,7 +104,7 @@ def test_account_uses_validated_id(account_id):
 
 def test_account_snapshot_and_validated_patch_do_not_mutate_original():
     account = Account.model_validate(account_data())
-    snapshot = account.snapshot()
+    snapshot = AccountSnapshot.model_validate(account.model_dump())
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert account.account_config["nested"]["secret"] == "test-only"

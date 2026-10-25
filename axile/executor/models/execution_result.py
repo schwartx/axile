@@ -175,7 +175,7 @@ class AlgorithmResult(BaseModel):
         -------
         派生只发生在构造与校验时；构造之后修改 ``status``（直接赋值或
         ``model_copy(update=...)``）不会触发重派生，会得到分离结论。
-        需要改状态时必须重建实例；落库边界 ``execution_records_output``
+        需要改状态时必须重建实例；落库边界 ``records``
         会按当前 status 重派生兜底。
         """
         if "outcome" not in self.model_fields_set:

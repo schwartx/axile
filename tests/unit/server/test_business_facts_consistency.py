@@ -13,14 +13,17 @@ import pytest
 
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
-from axile.server.business_facts import repository
 from axile.server.business_facts.artifacts import REFERENCE_KEY, make_artifact_reference
-from axile.server.db.models import ExecuteRecord, ExecutionArtifact
+from axile.server.db.models import ExecutionArtifact
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server import _native_read_views as repository
+from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 _CREATED = "2026-10-20T09:30:00.000001"
 
@@ -122,9 +125,8 @@ def _freeze(path, *, account_id=1, execution_id="facts-one", payload=None, creat
 
 def _store(path, *, execution_id="facts-one", account_id=1, payload=None, result=None, is_success=1):
     return ExecuteRecord.model_validate(
-        native_store_call(
+        persist_record_fixture(
             path,
-            "persist_execute_record",
             {
                 "account_id": account_id,
                 "execution_id": execution_id,
@@ -167,7 +169,7 @@ def _artifact(path, execution_id):
 
 
 def _resolved(path, execution_id):
-    result = native_store_call(path, "list_execution_artifacts", {"execution_id": execution_id})
+    result = audit_artifacts(path, execution_id)
     assert result["count"] == 1
     return result["data"][0]["content"]
 
@@ -535,11 +537,8 @@ def test_result_asset_binding_cannot_read_another_execution_observation(
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
 @pytest.mark.parametrize("asset_account", [1, 2], ids=["other-execution", "other-account"])
-@pytest.mark.parametrize("include_positions", [False, True], ids=["scalar", "positions"])
-def test_account_snapshot_cannot_read_another_execution_asset(
-    tmp_path, monkeypatch, foreign_keys, asset_account, include_positions
-):
-    """执行历史资产引用被改归属时，标量与持仓读取都拒绝。"""
+def test_account_snapshot_cannot_read_another_execution_asset(tmp_path, monkeypatch, foreign_keys, asset_account):
+    """执行历史资产引用被改归属时，真实资产页拒绝。"""
     path = _database(tmp_path)
     local = _store(path, execution_id="snapshot-local")
     (snapshot,) = _rows(path, "SELECT * FROM account_asset_snapshot WHERE execution_id=?", (local.execution_id,))
@@ -560,11 +559,8 @@ def test_account_snapshot_cannot_read_another_execution_asset(
             )
     except sqlite3.IntegrityError:
         return
-    snapshot["asset_fact_id"] = borrowed["asset_id"]
     with pytest.raises(_core.NativeError):
-        native_store_call(
-            path, "asset_snapshots_read", {"snapshots": [snapshot], "include_positions": include_positions}
-        )
+        _core.asset_snapshots(_core.Store(str(path)), snapshot["account_id"], 0, 100)
 
 
 @pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
@@ -656,17 +652,22 @@ def test_terminal_write_never_rebuilds_previously_committed_worker_summary(tmp_p
 )
 def test_summary_reference_rejects_foreign_account_or_execution(tmp_path, account_id, execution_id):
     """正确的结果编号也不能在其他账户或执行上下文解析。"""
-    from axile.server.business_facts.artifacts import resolve_artifact_content
 
     path = _database(tmp_path)
     _, artifact, _ = _store_summary(path)
     assert REFERENCE_KEY not in artifact.content
     assert (
-        asyncio.run(
-            resolve_artifact_content(
-                {"execution_id": execution_id, "artifact_type": artifact.artifact_type, "content": artifact.content},
-                account_id=account_id,
-            )
+        read_view(
+            path,
+            "resolve_execution_artifact",
+            {
+                "artifact": {
+                    "execution_id": execution_id,
+                    "artifact_type": artifact.artifact_type,
+                    "content": artifact.content,
+                },
+                "account_id": account_id,
+            },
         )
         == artifact.content
     )

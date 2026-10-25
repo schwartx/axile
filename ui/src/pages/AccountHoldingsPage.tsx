@@ -87,7 +87,7 @@ export function AccountHoldingsPage() {
   // 逐只对照会把「实际持有」误判为空仓并给出「买入建仓」的危险建议。此时降级为「待刷新」，
   // 不展示可能翻倍的调仓计划（对齐 derive.ts 头部「不能确定的不编」原则）。
   const holdingsCount = item?.holdings_count ?? 0
-  const holdingsStale = !latestAssets || (positions.length === 0 && holdingsCount > 0)
+  const holdingsStale = !Array.isArray(latestAssets?.positions) || (positions.length === 0 && holdingsCount > 0)
 
   return (
     <AccountConnectionContext.Provider value={{ accountId, handled: !disconnected && !account.error && connection.status === 'unavailable' }}><section>
@@ -129,7 +129,9 @@ export function AccountHoldingsPage() {
           <div className="text-[15px] text-ink-3">尚无目标权重，点击刷新按钮计算后再查看持仓对照。</div>
         ) : holdingsStale ? (
           <div className="text-[15px] leading-relaxed text-warn">
-            {!latestAssets ? '尚未查询账户资产。' : `持仓数据待刷新：当前持有 ${holdingsCount} 个品种，但资产观测未返回持仓明细。`}
+            {!latestAssets ? '尚未查询账户资产。' : !Array.isArray(latestAssets.positions)
+              ? '持仓数据待刷新：资产观测未返回有效持仓明细。'
+              : `持仓数据待刷新：当前持有 ${holdingsCount} 个品种，但资产观测未返回持仓明细。`}
             <span className="mt-1 block text-ink-3">
               为避免给出「买入建仓」等错误调仓建议，这里暂不展示逐只对照；在账户详情刷新账户资产后即可查看。
             </span>

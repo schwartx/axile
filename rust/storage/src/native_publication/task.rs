@@ -10,11 +10,9 @@ pub(crate) struct Task {
     pub account_id: i64,
     pub source_version: i64,
     pub snapshot_id: String,
-    pub claim_token: String,
     pub logic_version: String,
     pub engine_version: String,
     pub computed_at: String,
-    pub weight_type: String,
     pub fee_rate: f64,
     pub trade_channel: String,
     pub include_backtest: bool,
@@ -48,8 +46,7 @@ impl Task {
             return Err(invalid("publish_store requires protocol 1"));
         }
         let snapshot_id = string(request, "snapshot_id", 128)?;
-        let claim_token = string(request, "claim_token", 128)?;
-        if snapshot_id != claim_token {
+        if snapshot_id != string(request, "claim_token", 128)? {
             return Err(invalid("snapshot_id and claim_token must match"));
         }
         let computed_at = string(request, "computed_at", 64)?;
@@ -58,16 +55,14 @@ impl Task {
         {
             return Err(invalid("computed_at must be an ISO timestamp"));
         }
-        let (weight_type, fee_rate) = settings(&request["settings"])?;
+        let fee_rate = settings(&request["settings"])?;
         Ok(Self {
             account_id: integer(request, "account_id")?,
             source_version: integer(request, "expected_source_version")?,
             snapshot_id,
-            claim_token,
             logic_version: string(request, "logic_version", 128)?,
             engine_version: string(request, "engine_version", 128)?,
             computed_at,
-            weight_type,
             fee_rate,
             trade_channel: string(request, "trade_channel", 128)?,
             include_backtest: request
@@ -96,18 +91,16 @@ impl Task {
     }
 }
 
-pub(super) fn settings(value: &Value) -> Result<(String, f64), AnalysisError> {
+pub(super) fn settings(value: &Value) -> Result<f64, AnalysisError> {
+    // Historical ts is accepted; publication stores cs for both weight types.
     value["backtest_weight_type"]
         .as_str()
         .filter(|value| matches!(*value, "cs" | "ts"))
         .ok_or_else(|| invalid("settings.backtest_weight_type must be cs or ts"))?;
-    let fee = value["backtest_fee_rate"]
+    value["backtest_fee_rate"]
         .as_f64()
         .filter(|value| value.is_finite() && (0.0..1.0).contains(value))
-        .ok_or_else(|| invalid("settings.backtest_fee_rate must be finite and in [0,1)"))?;
-    // Match PerformanceSettings.account_weight_mode and performance::handle:
-    // historical ts is accepted, but account funds are always summed as cs.
-    Ok(("cs".to_owned(), fee))
+        .ok_or_else(|| invalid("settings.backtest_fee_rate must be finite and in [0,1)"))
 }
 
 #[cfg(test)]
@@ -124,12 +117,18 @@ mod tests {
 
     #[test]
     fn identity_and_types_are_checked_before_database_access() {
-        assert_eq!(Task::parse(&request()).unwrap().weight_type, "cs");
-        let mut value = request();
-        value["claim_token"] = json!("another");
-        assert_eq!(Task::parse(&value).unwrap_err().code, "INVALID_REQUEST");
-        value = request();
-        value["expected_source_version"] = json!(true);
-        assert!(Task::parse(&value).is_err());
+        assert_eq!(Task::parse(&request()).unwrap().fee_rate, 0.0);
+        for (path, invalid) in [
+            ("/claim_token", json!("another")),
+            ("/expected_source_version", json!(true)),
+            ("/snapshot_id", Value::Null),
+            ("/claim_token", json!("")),
+            ("/settings/backtest_weight_type", json!("invalid")),
+            ("/settings/backtest_fee_rate", json!(1.0)),
+        ] {
+            let mut value = request();
+            *value.pointer_mut(path).unwrap() = invalid;
+            assert_eq!(Task::parse(&value).unwrap_err().code, "INVALID_REQUEST");
+        }
     }
 }

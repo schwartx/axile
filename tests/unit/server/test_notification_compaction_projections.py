@@ -10,12 +10,12 @@ import pytest
 
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
 from axile.server._native import _core
-from axile.server.business_facts.repository import read_execution_result
 from axile.server.db.models.schedule import ActivityExecutionRecord
-from axile.server.db.models.supplement import SupplementGroup, SupplementStep
 from tests.conftest import native_store_call
+from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.unit.server._business_facts_test_support import persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import read_execution_result
 from tests.unit.server.test_evidence_export import _seed as seed_rows
 
 _EXECUTION = "notification-compaction-projections"

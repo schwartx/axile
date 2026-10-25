@@ -1,6 +1,7 @@
 """使用真实 SQLite 验证最新状态、配置失效与跨进程观察去重。"""
 
 import json
+import pickle
 import sqlite3
 import threading
 import time
@@ -14,13 +15,15 @@ from axile.executor.connection_state import ConnectionMonitor, ConnectionObserva
 from axile.server import connection_state as service
 from axile.server.core import db
 from axile.server.db.models import Account
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionState
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
-from axile.server.portfolio_function import PortfolioFunctionResult, portfolio_result_from_exception
-from tests.conftest import native_store_call
+from axile.server.portfolio_function import _error_from_exception
+from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._native_read_views import connection_view
 
 
 def _account(path):
@@ -52,6 +55,32 @@ def database(native_database, monkeypatch):
     return native_database, _account(native_database)
 
 
+def test_native_account_scan_preserves_filter_order_and_read_errors(database):
+    path, _ = database
+    core = require_native_store("connection_accounts")
+    with closing(oracle_connect(path)) as connection, connection:
+        insert_account(connection, build_account(id=3, portfolio_id=None))
+    for request, expected in [
+        ({}, [1, 3]),
+        ({"account_ids": None}, [1, 3]),
+        ({"account_ids": []}, []),
+        ({"account_ids": [3, 2, 1, 3]}, [1, 3]),
+        ({"account_ids": [2]}, []),
+    ]:
+        rows = native_store_call(path, "connection_accounts", request)
+        assert [row["id"] for row in rows] == expected
+    for invalid in [[0], [-1], ["1"], [None]]:
+        with pytest.raises(core.NativeError) as failure:
+            native_store_call(path, "connection_accounts", {"account_ids": invalid})
+        assert failure.value.args[0] == "INVALID_REQUEST"
+    with closing(oracle_connect(path)) as connection, connection:
+        connection.execute("UPDATE account_settings SET connection='[]' WHERE account_id=3")
+    assert [row["id"] for row in native_store_call(path, "connection_accounts", {"account_ids": [1]})] == [1]
+    with pytest.raises(core.NativeError) as failure:
+        native_store_call(path, "connection_accounts", {"account_ids": [3, 2, 1]})
+    assert failure.value.args[0] == "ACCOUNT_DATA"
+
+
 def test_single_row_overwrite_recovery_and_restart(database):
     path, account = database
     binding = service.begin_connection_instance(account)
@@ -68,7 +97,7 @@ def test_single_row_overwrite_recovery_and_restart(database):
     monitor.succeeded()
     # 独立连接模拟服务重新读取，正常结果不保留任何旧错误。
     current = _account(path)
-    detail = service.public_connection(current, detail=True)
+    detail = connection_view(current, detail=True)
     assert detail.status == "uninitialized"
     assert detail.last_failure.message == "最新错误"
     assert detail.error is None
@@ -98,7 +127,7 @@ def test_changed_config_rejects_old_runtime_and_clears_error(database):
     native_store_call(
         path, "account_update", {"account_id": 1, "patch": {"account_config": current.account_config}, "now": "changed"}
     )
-    assert service.public_connection(current).status == "uninitialized"
+    assert connection_view(current).status == "uninitialized"
     service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
     assert service.begin_connection_instance(account) is None
     assert service.begin_connection_instance(current) is not None
@@ -111,9 +140,8 @@ def test_connection_scope_survives_worker_and_portfolio_wrapping():
     ConnectionMonitor().failed(original)
     worker = _build_error_payload(original)
     assert worker.error_scope == "account_connection"
-    result = portfolio_result_from_exception(original)
-    restored = PortfolioFunctionResult.from_payload(result.to_payload())
-    detail = exception_details(restored.error)
+    restored = pickle.loads(pickle.dumps(_error_from_exception(original)))
+    detail = exception_details(restored)
     assert detail["error_scope"] == "account_connection"
     assert "1026" in detail["technical_detail"]
     assert "更新令牌错误" in detail["traceback"]
@@ -163,7 +191,7 @@ def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(d
     detail = AccountConnectionDetail.model_validate_json(response.body)
     assert _states(path) == before
     assert detail.last_failure.error["technical_detail"] == "1026"
-    summary = account_crud._account_public(current).connection
+    summary = connection_view(current)
     assert summary.status == "uninitialized" and summary.last_failure_at == "now"
 
 
@@ -191,8 +219,8 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
     }
     monitor.failed(RuntimeError("SDK 原始错误"), label="此前未注册的自由文案", presentation=content)
     current = _account(path)
-    summary = service.public_connection(current).model_dump()
-    detail = service.public_connection(current, detail=True).model_dump()
+    summary = connection_view(current).model_dump()
+    detail = connection_view(current, detail=True).model_dump()
     assert summary["label"] is None
     assert "error" not in summary and "presentation" not in summary
     assert detail["last_failure"]["presentation"]["title"] == "测试渠道自由详情"
@@ -272,7 +300,7 @@ def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
             "UPDATE account_connection_state SET presentation=? WHERE account_id=1",
             (json.dumps({"title": 123, "sections": "invalid"}),),
         )
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.presentation is None
     assert detail.last_failure.label == "有效标签" and detail.last_failure.error["technical_detail"] == "完整证据"
 
@@ -289,23 +317,23 @@ def test_current_session_requires_live_worker_and_host_reconciliation(database, 
     collector.observe_session(ConnectionObservation("connecting", "start"))
     collector.observe(ConnectionObservation("ok", "sdk-initialized"))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "connecting"
     assert detail.last_success_at is None
     collector.observe(ConnectionObservation("ok", "account-read", kind="access"))
     collector.observe_session(ConnectionObservation("ok", "reconciled"))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "ready" and detail.worker_alive
     assert detail.last_success_at == "account-read"
     now[0] = 6
-    assert service.public_connection(_account(path)).status == "unknown"
+    assert connection_view(_account(path)).status == "unknown"
     # Heartbeat repeats the same evidence, restoring freshness without inventing access success.
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path))
+    detail = connection_view(_account(path))
     assert detail.status == "ready" and detail.last_success_at == "account-read"
     alive[0] = False
-    detail = service.public_connection(_account(path))
+    detail = connection_view(_account(path))
     assert detail.status == "disconnected" and not detail.worker_alive
 
 
@@ -322,17 +350,17 @@ def test_recovered_history_survives_success_and_does_not_advertise_old_failure(d
     collector.observe(ConnectionObservation("ok", "access", kind="access"))
     collector.observe_session(ConnectionObservation("ok", "ready"))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "ready" and detail.error is None
     assert detail.last_success_at == "access"
     assert detail.last_failure.message == "native timeout"
     collector.observe(ConnectionObservation("error", "disconnect", "trade disconnected", {}))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "unavailable" and detail.message == "trade disconnected"
     collector.observe(ConnectionObservation("ok", "native-login"))
     service.consume_connection_snapshot(collector.snapshot())
-    assert service.public_connection(_account(path)).status == "unavailable"
+    assert connection_view(_account(path)).status == "unavailable"
 
 
 def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure(database):
@@ -347,7 +375,7 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     service.end_connection_instance(binding, "连接准备超时", TimeoutError("original timeout"))
     collector.observe_session(ConnectionObservation("ok", "late success"))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "unavailable" and not detail.worker_alive
     assert detail.retry_after_seconds > 0
     assert detail.last_failure.error["technical_detail"] == "original timeout"
@@ -370,7 +398,7 @@ def test_active_business_failure_does_not_change_connection(database):
     service.consume_connection_snapshot(collector.snapshot())
     # No connection event is published for a plain business rejection.
     assert "error_scope" not in exception_details(ValueError("余额不足"))
-    assert service.public_connection(_account(path)).status == "ready"
+    assert connection_view(_account(path)).status == "ready"
 
 
 def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(database):
@@ -389,7 +417,7 @@ def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(
     asyncio.run(service.recover_connection_sessions())
     collector.observe_session(ConnectionObservation("ok", "late-old-worker"))
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "disconnected" and not detail.worker_alive
     assert detail.last_success_at == "last-access" and detail.manually_disconnected
     newer = service.begin_connection_instance(account)
@@ -447,10 +475,10 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
     path, account = database
     monkeypatch.setattr(manager_module, "run_worker_backend_loop", _offline_session_worker)
     manager = WorkerBackendManager()
-    snapshot = account.snapshot()
+    snapshot = AccountSnapshot.model_validate(account.model_dump())
 
     def status():
-        return service.public_connection(_account(path), detail=True)
+        return connection_view(_account(path), detail=True)
 
     async def run():
         await manager.prepare_account(snapshot)
@@ -536,7 +564,7 @@ def test_concurrent_first_requests_share_one_worker_observation_identity(databas
     barrier = threading.Barrier(2)
 
     def bind(index):
-        request = WorkerBackendRequest(str(index), "prepare", account.snapshot().model_dump(mode="json"), None, {})
+        request = WorkerBackendRequest(str(index), "prepare", account.model_dump(mode="json"), None, {})
         barrier.wait(timeout=2)
         WorkerBackendManager._bind_connection_request(handle, request)
         return request.connection_binding
@@ -567,7 +595,7 @@ def test_host_cooldown_keeps_channel_presentation_and_original_evidence(database
     state = resident.ResidentConnectionState(account_id=1, connection_observer=collector.observe_session)
     resident._failed(state, wrapped)
     service.consume_connection_snapshot(collector.snapshot())
-    detail = service.public_connection(_account(path), detail=True)
+    detail = connection_view(_account(path), detail=True)
     assert detail.status == "unavailable"
     assert detail.label == "渠道原始标签"
     assert detail.presentation.title == "渠道明确的故障"

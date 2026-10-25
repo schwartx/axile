@@ -43,19 +43,19 @@ class AccountOrderBook:
         with self._lock:
             return self.version
 
-    def apply(self, order: UnifiedOrder) -> None:
-        """应用原生回报；同一订单的累计成交和终态不能倒退。"""
+    def apply(self, order: UnifiedOrder) -> bool:
+        """应用原生回报，返回是否接纳；累计成交和终态回退时返回 False。"""
         with self._lock:
             key = order.symbol, order.order_id
             previous = self._orders.get(key)
             value = merge_order(previous, order)
             if previous is not None:
                 if previous.is_completed() and not value.is_completed():
-                    return
+                    return False
                 if value.filled_volume < previous.filled_volume:
-                    return
+                    return False
                 if value == previous:
-                    return
+                    return True
             self.version += 1
             self.sampled_at = clock_now_iso()
             self._orders[key] = value
@@ -63,6 +63,7 @@ class AccountOrderBook:
             self._orders.move_to_end(key)
             self._changed[key] = self.version
             self._trim()
+            return True
 
     def replace(self, orders: list[UnifiedOrder], watermark: int, *, drop_missing: bool = False) -> None:
         """安装完整基线；重放查询期间的回报，缺失旧挂单保持未知。"""

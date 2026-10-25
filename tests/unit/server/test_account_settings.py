@@ -12,6 +12,7 @@ from axile.server.db.models import Account, AccountNotificationState, AccountSna
 from axile.server.execution import notification_state
 from tests.conftest import initialize_native_database, native_store_call
 from tests.unit.server._execution_test_support import insert_account
+from tests.unit.server._native_read_views import account_view
 
 
 def account_data() -> dict:
@@ -44,7 +45,7 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     with closing(sqlite3.connect(native_database)) as connection, connection:
         insert_account(connection, Account(**account_data()))
     loaded = stored_account(native_database)
-    snapshot = loaded.snapshot()
+    snapshot = AccountSnapshot.model_validate(loaded.model_dump())
     assert isinstance(snapshot, AccountSnapshot)
     snapshot.account_config["nested"]["secret"] = "changed"
     assert loaded.account_config["nested"]["secret"] == "test-only"
@@ -128,13 +129,11 @@ def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch,
 
 
 def test_public_response_exposes_success_summary_without_credentials():
-    from axile.server.api.routes.account_crud import _account_public
-
     account = Account(**account_data())
     account.notification_state = AccountNotificationState(
         account_id=1, execution_id="exec-1", last_success_at="2026-09-30T10:00:00"
     )
-    public = _account_public(account).model_dump(mode="json")
+    public = account_view(account).model_dump(mode="json")
     assert public["notification_state"]["execution_id"] == "exec-1"
     assert public["notification_state"]["last_success_at"] == "2026-09-30T10:00:00"
     assert public["notification_state"]["last_attempt_ok"] is None

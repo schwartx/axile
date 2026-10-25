@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
@@ -39,8 +39,11 @@ fn open_connection(path: &str) -> Result<ConnectionLease, AnalysisError> {
     crate::storage_connection::open_writer(Path::new(path), false)
 }
 
-/// 冻结执行前输入与观测,或在同事务内附带独立的审计输入变体。
+/// 在同一事务中冻结执行前输入与观测。
 pub fn freeze_execution_input(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+    if request.get("audit_payload").is_some() || request.get("audit_input_id").is_some() {
+        return Err(facts_error("执行前双审计输入写入协议已停用"));
+    }
     let account_id = request
         .get("account_id")
         .and_then(Value::as_i64)
@@ -58,13 +61,6 @@ pub fn freeze_execution_input(path: &str, request: &Value) -> Result<Value, Anal
         .and_then(Value::as_str)
         .ok_or_else(|| facts_error("缺少创建时间"))?;
     let payload = request.get("payload").unwrap_or(&Value::Null);
-    let audit_payload = request
-        .get("audit_payload")
-        .filter(|value| !value.is_null());
-    let audit_input_id = request.get("audit_input_id").and_then(Value::as_str);
-    if audit_payload.is_some() != audit_input_id.is_some() {
-        return Err(facts_error("审计输入变体必须同时携带标识"));
-    }
     let before_assets = request
         .get("before_assets")
         .filter(|value| !value.is_null());
@@ -82,24 +78,7 @@ pub fn freeze_execution_input(path: &str, request: &Value) -> Result<Value, Anal
         if let Some(before) = before_assets {
             persist_before_assets(&connection, &input_id, before)?;
         }
-        let audit_id = match audit_payload {
-            None => Value::Null,
-            Some(audit) => {
-                if same_audit_variant(payload, audit)? {
-                    json!(input_id)
-                } else {
-                    json!(persist_owned_variant(
-                        &connection,
-                        account_id,
-                        execution_id,
-                        audit_input_id.expect("checked"),
-                        audit,
-                        created_at,
-                    )?)
-                }
-            }
-        };
-        Ok(json!({"input_id": input_id, "audit_id": audit_id}))
+        Ok(json!({"input_id": input_id}))
     })
 }
 
@@ -175,59 +154,6 @@ pub(crate) fn persist_input(
     Ok(input_id.to_owned())
 }
 
-/// 以确定性标识冻结独立审计变体;重放必须与已冻结内容一致。
-fn persist_owned_variant(
-    connection: &Connection,
-    account_id: i64,
-    owner_execution_id: &str,
-    input_id: &str,
-    payload: &Value,
-    created_at: &str,
-) -> Result<String, AnalysisError> {
-    let existing = connection
-        .query_row(
-            "SELECT id, account_id, execution_id, owner_execution_id FROM execution_input WHERE id=?1",
-            [input_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(sql)?;
-    if let Some((_, stored_account, stored_execution, stored_owner)) = existing {
-        if stored_account != account_id
-            || stored_execution.is_some()
-            || stored_owner.as_deref() != Some(owner_execution_id)
-        {
-            return Err(facts_error(
-                "Execution input variant identity has a different owner",
-            ));
-        }
-        if !replay_matches(connection, input_id, payload)? {
-            return Err(facts_error(
-                "Execution input variant replay differs from frozen input",
-            ));
-        }
-        return Ok(input_id.to_owned());
-    }
-    let batch = encode_inputs(
-        input_id,
-        payload,
-        account_id,
-        None,
-        created_at,
-        Some(owner_execution_id),
-    )
-    .map_err(facts_error)?;
-    write_input(connection, &batch)?;
-    Ok(input_id.to_owned())
-}
-
 /// 按执行标识定位冻结输入并校验归属;匿名输入的属主由 owner 字段决定。
 pub(crate) fn find_execution_input(
     connection: &Connection,
@@ -282,15 +208,7 @@ pub(crate) fn load_input_value(
     let head = crate::business_detail::load(connection, "execution_input", "id", &id)
         .map_err(facts_error)?;
     let head = head.first().ok_or_else(|| facts_error("执行输入不存在"))?;
-    let targets =
-        crate::business_detail::load(connection, "execution_input_target", "input_id", &id)
-            .map_err(facts_error)?;
-    let symbols =
-        crate::business_detail::load(connection, "execution_input_symbol", "input_id", &id)
-            .map_err(facts_error)?;
-    let plans = crate::business_detail::load(connection, "execution_input_plan", "input_id", &id)
-        .map_err(facts_error)?;
-    crate::business_detail::decode_input(head, &targets, &symbols, &plans).map_err(facts_error)
+    crate::business_detail::load_input_children(connection, &id, head).map_err(facts_error)
 }
 
 fn persist_before_assets(
@@ -311,19 +229,6 @@ fn persist_before_assets(
         crate::asset_ops::write_observation(connection, batch.as_ref())?;
     }
     Ok(())
-}
-
-/// Python 侧 audit 判定:审计输入的归一化键在主输入上取值一致。
-fn same_audit_variant(payload: &Value, audit: &Value) -> Result<bool, AnalysisError> {
-    let primary = canonical_input(payload).map_err(facts_error)?;
-    let normalized = encode::normalize_targets(audit);
-    let audit_canonical = canonical_input(audit).map_err(facts_error)?;
-    Ok(normalized.keys().all(|key| {
-        py_eq(
-            primary.get(key).unwrap_or(&Value::Null),
-            audit_canonical.get(key).unwrap_or(&Value::Null),
-        )
-    }))
 }
 
 pub(crate) fn matching_after_asset(
@@ -363,114 +268,153 @@ pub(crate) fn write_input(
     connection: &Connection,
     (head, targets, symbols, plans): &encode::InputRows,
 ) -> Result<(), AnalysisError> {
-    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_input (
-                "id", "account_id", "execution_id", "owner_execution_id", "created_at", "root_kind",
-                "root_value", "channel_type", "execution_timeout", "algorithm", "symbol_algorithms", "trade_rules",
-                "futures_close_policy", "feishu_key", "feishu_account", "extra", "long_leverage", "short_leverage",
-                "weight_precision", "curr_target_state", "last_target_state", "strategy_target_state", "forbidden_symbols_state", "risk_symbols_state",
-                "sizing_context_state", "quantities_state", "target_units_state", "curr_target_count", "last_target_count", "strategy_target_count",
-                "quantities_count", "target_units_count", "forbidden_symbols_count", "risk_symbols_count", "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30,
-                ?31, ?32, ?33, ?34, ?35
-            )"#).map_err(sql)?;
-    statement
-        .execute(rusqlite::params![
-            head.get("id").and_then(Value::as_str),
-            head.get("account_id").and_then(Value::as_i64),
-            head.get("execution_id").and_then(Value::as_str),
-            head.get("owner_execution_id").and_then(Value::as_str),
-            head.get("created_at").and_then(Value::as_str),
-            head.get("root_kind").and_then(Value::as_str),
-            encode::json_text(head.get("root_value"))?,
-            head.get("channel_type").and_then(Value::as_str),
-            head.get("execution_timeout").and_then(Value::as_i64),
-            encode::json_text(head.get("algorithm"))?,
-            encode::json_text(head.get("symbol_algorithms"))?,
-            encode::json_text(head.get("trade_rules"))?,
-            encode::json_text(head.get("futures_close_policy"))?,
-            encode::json_text(head.get("feishu_key"))?,
-            encode::json_text(head.get("feishu_account"))?,
-            encode::json_text(head.get("extra"))?,
-            head.get("long_leverage").and_then(Value::as_f64),
-            head.get("short_leverage").and_then(Value::as_f64),
-            head.get("weight_precision").and_then(Value::as_f64),
-            head.get("curr_target_state").and_then(Value::as_str),
-            head.get("last_target_state").and_then(Value::as_str),
-            head.get("strategy_target_state").and_then(Value::as_str),
-            head.get("forbidden_symbols_state").and_then(Value::as_str),
-            head.get("risk_symbols_state").and_then(Value::as_str),
-            head.get("sizing_context_state").and_then(Value::as_str),
-            head.get("quantities_state").and_then(Value::as_str),
-            head.get("target_units_state").and_then(Value::as_str),
-            head.get("curr_target_count").and_then(Value::as_i64),
-            head.get("last_target_count").and_then(Value::as_i64),
-            head.get("strategy_target_count").and_then(Value::as_i64),
-            head.get("quantities_count").and_then(Value::as_i64),
-            head.get("target_units_count").and_then(Value::as_i64),
-            head.get("forbidden_symbols_count").and_then(Value::as_i64),
-            head.get("risk_symbols_count").and_then(Value::as_i64),
-            encode::json_text(head.get("audit_evidence"))?,
-        ])
-        .map_err(sql)?;
-    let mut statement = connection.prepare_cached("INSERT INTO execution_input_target (\"input_id\",\"role\",\"map_key\",\"value\",\"audit_evidence\") VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
-    for row in targets {
-        statement
-            .execute(rusqlite::params![
-                row.get("input_id").and_then(Value::as_str),
-                row.get("role").and_then(Value::as_str),
-                row.get("map_key").and_then(Value::as_str),
-                row.get("value").and_then(Value::as_f64),
-                encode::json_text(row.get("audit_evidence"))?
-            ])
-            .map_err(sql)?;
-    }
-    let mut statement = connection.prepare_cached("INSERT INTO execution_input_symbol (\"input_id\",\"role\",\"ordinal\",\"value\",\"audit_evidence\") VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
-    for row in symbols {
-        statement
-            .execute(rusqlite::params![
-                row.get("input_id").and_then(Value::as_str),
-                row.get("role").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("value").and_then(Value::as_str),
-                encode::json_text(row.get("audit_evidence"))?
-            ])
-            .map_err(sql)?;
-    }
+    insert_rows(
+        connection,
+        "execution_input",
+        std::slice::from_ref(head),
+        &[
+            ("id", "text"),
+            ("account_id", "integer"),
+            ("execution_id", "text"),
+            ("owner_execution_id", "text"),
+            ("created_at", "text"),
+            ("root_kind", "text"),
+            ("root_value", "json"),
+            ("channel_type", "text"),
+            ("execution_timeout", "integer"),
+            ("algorithm", "json"),
+            ("symbol_algorithms", "json"),
+            ("trade_rules", "json"),
+            ("futures_close_policy", "json"),
+            ("feishu_key", "json"),
+            ("feishu_account", "json"),
+            ("extra", "json"),
+            ("long_leverage", "number"),
+            ("short_leverage", "number"),
+            ("weight_precision", "number"),
+            ("curr_target_state", "text"),
+            ("last_target_state", "text"),
+            ("strategy_target_state", "text"),
+            ("forbidden_symbols_state", "text"),
+            ("risk_symbols_state", "text"),
+            ("sizing_context_state", "text"),
+            ("quantities_state", "text"),
+            ("target_units_state", "text"),
+            ("curr_target_count", "integer"),
+            ("last_target_count", "integer"),
+            ("strategy_target_count", "integer"),
+            ("quantities_count", "integer"),
+            ("target_units_count", "integer"),
+            ("forbidden_symbols_count", "integer"),
+            ("risk_symbols_count", "integer"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    insert_rows(
+        connection,
+        "execution_input_target",
+        targets,
+        &[
+            ("input_id", "text"),
+            ("role", "text"),
+            ("map_key", "text"),
+            ("value", "number"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    insert_rows(
+        connection,
+        "execution_input_symbol",
+        symbols,
+        &[
+            ("input_id", "text"),
+            ("role", "text"),
+            ("ordinal", "integer"),
+            ("value", "text"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    insert_rows(
+        connection,
+        "execution_input_plan",
+        plans,
+        &[
+            ("input_id", "text"),
+            ("symbol", "text"),
+            ("quantity", "number"),
+            ("units", "number"),
+            ("quantity_state", "text"),
+            ("units_state", "text"),
+            ("audit_evidence", "json"),
+        ],
+    )
+}
+
+/// 固定表列的事实绑定；JSON 列保留文本 null 与 SQL NULL 的区别。
+pub(crate) fn insert_rows(
+    connection: &Connection,
+    table: &'static str,
+    rows: &[Map<String, Value>],
+    columns: &[(&str, &str)],
+) -> Result<(), AnalysisError> {
+    use rusqlite::params_from_iter;
+    let names = columns
+        .iter()
+        .map(|(name, _)| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let marks = vec!["?"; columns.len()].join(",");
     let mut statement = connection
-        .prepare_cached(
-            r#"INSERT INTO execution_input_plan (
-                "input_id", "symbol", "quantity", "units", "quantity_state", "units_state",
-                "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7
-            )"#,
-        )
+        .prepare_cached(&format!("INSERT INTO {table} ({names}) VALUES ({marks})"))
         .map_err(sql)?;
-    for row in plans {
-        statement
-            .execute(rusqlite::params![
-                row.get("input_id").and_then(Value::as_str),
-                row.get("symbol").and_then(Value::as_str),
-                row.get("quantity").and_then(Value::as_f64),
-                row.get("units").and_then(Value::as_f64),
-                row.get("quantity_state").and_then(Value::as_str),
-                row.get("units_state").and_then(Value::as_str),
-                encode::json_text(row.get("audit_evidence"))?,
-            ])
-            .map_err(sql)?;
+    for row in rows {
+        let values = bind_columns(row, columns)?;
+        statement.execute(params_from_iter(values)).map_err(sql)?;
     }
     Ok(())
+}
+
+pub(crate) fn bind_columns(
+    row: &Map<String, Value>,
+    columns: &[(&str, &str)],
+) -> Result<Vec<SqlValue>, AnalysisError> {
+    columns
+        .iter()
+        .map(|(name, kind)| {
+            let value = row.get(*name);
+            Ok(match *kind {
+                "text" => SqlValue::from(value.and_then(Value::as_str).map(str::to_owned)),
+                "integer" => SqlValue::from(value.and_then(Value::as_i64)),
+                "number" => SqlValue::from(value.and_then(Value::as_f64)),
+                "boolean" => SqlValue::from(value.and_then(Value::as_bool)),
+                "json" => SqlValue::from(encode::json_text(value)?),
+                _ => unreachable!("fixed fact column type"),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_fact_bindings_preserve_json_nulls_types_large_integers_and_rollback() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE binding_test(t TEXT,i INTEGER,n REAL,b INTEGER,j TEXT,s TEXT,missing TEXT); CREATE TABLE required_test(t TEXT NOT NULL)").unwrap();
+        let row = json!({"t":7,"i":9007199254740993_i64,"n":"wrong type","b":false,"j":null,"s":"保留\n正文"});
+        insert_rows(&connection, "binding_test", &[row.as_object().unwrap().clone()], &[
+            ("t","text"),("i","integer"),("n","number"),("b","boolean"),
+            ("j","json"),("s","json"),("missing","json"),
+        ]).unwrap();
+        assert!(connection.query_row("SELECT t IS NULL AND i=9007199254740993 AND n IS NULL AND b=0 AND typeof(j)='text' AND json_type(j)='null' AND json_extract(s,'$')=?1 AND missing IS NULL FROM binding_test",["保留\n正文"],|row| row.get::<_,bool>(0)).unwrap());
+        let error = writer_scope::immediate(&connection, || insert_rows(&connection, "required_test", &[
+            json!({"t":"first"}).as_object().unwrap().clone(), Map::new(),
+        ], &[("t","text")])).unwrap_err();
+        assert_eq!(error.code, "BUSINESS_FACTS_SQL");
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM required_test", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+    }
+
 
     fn schema() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
@@ -562,6 +506,26 @@ mod tests {
     }
 
     #[test]
+    fn input_loading_preserves_missing_input_and_child_errors() {
+        let connection = schema();
+        let error = load_input_value(&connection, "missing").unwrap_err();
+        assert_eq!(error.code, "BUSINESS_FACTS");
+        assert_eq!(error.error, "执行输入不存在");
+
+        let batch = encode_inputs("scalar", &json!(false), 7, None, "t", None).unwrap();
+        write_input(&connection, &batch).unwrap();
+        connection
+            .execute_batch("DROP TABLE execution_input_plan")
+            .unwrap();
+        let error = load_input_value(&connection, "scalar").unwrap_err();
+        assert_eq!(error.code, "BUSINESS_FACTS");
+        assert_eq!(
+            error.error,
+            "EXECUTION_READ_ERROR: no such table: execution_input_plan"
+        );
+    }
+
+    #[test]
     fn sanitize_masks_credentials_before_freezing() {
         let payload = json!({"account_config": {"secret": 1}, "feishu_key": "live-key",
             "execution_notification_code": "code", "algorithm": "x"});
@@ -579,18 +543,25 @@ mod tests {
     }
 
     #[test]
-    fn audit_variant_key_rule_matches_python_semantics() {
-        let payload = json!({"algorithm": "x", "extra": 1});
-        let audit_same = json!({"algorithm": "x", "extra": 1.0});
-        assert!(same_audit_variant(&payload, &audit_same).unwrap());
-        let audit_differ = json!({"algorithm": "y", "extra": 1});
-        assert!(!same_audit_variant(&payload, &audit_differ).unwrap());
-    }
-
-    #[test]
-    fn invalid_audit_variant_is_not_treated_as_null_input() {
-        let audit = json!({"execution_timeout":"invalid", "audit_evidence":{"invalid_fields":[]}});
-        assert!(same_audit_variant(&Value::Null, &audit).is_err());
+    fn retired_audit_keys_are_rejected_before_opening_storage() {
+        for keys in [
+            &["audit_payload"][..],
+            &["audit_input_id"][..],
+            &["audit_payload", "audit_input_id"][..],
+        ] {
+            for value in [Value::Null, json!({}), json!([]), json!(""), json!(false)] {
+                let mut request = json!({
+                    "account_id": 7, "execution_id": "e1", "input_id": "i1",
+                    "created_at": "t", "payload": {}, "before_assets": {},
+                });
+                for key in keys {
+                    request[*key] = value.clone();
+                }
+                let error = freeze_execution_input("/dev/null/axon-s5.db", &request).unwrap_err();
+                assert_eq!(error.code, "BUSINESS_FACTS");
+                assert_eq!(error.error, "执行前双审计输入写入协议已停用");
+            }
+        }
     }
 
     #[test]

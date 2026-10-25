@@ -1,9 +1,10 @@
 """绩效路由复用原生读写；成本 JSON 字节直接透传。"""
 
 import asyncio
+import json
 import sqlite3
 from contextlib import closing
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -26,7 +27,7 @@ def client(monkeypatch):
 
 def test_cost_response_passes_native_json_bytes_through():
     content = b'{"data": [], "count": 0}'
-    response = routes._cost_response(content)
+    response = routes._json_response(content)
     assert response.body is content
     assert response.media_type == "application/json"
 
@@ -81,12 +82,49 @@ def test_performance_route_computes_synchronously_without_backtest(client, monke
     }
     status = AsyncMock(return_value="empty")
     monkeypatch.setattr(routes, "read_snapshot_status", status)
-    monkeypatch.setattr(routes._core, "account_performance", lambda *args: payload)
+    monkeypatch.setattr(routes._core, "account_performance", lambda *args: json.dumps(payload).encode())
     response = client.get("/performance/1", params={"include_backtest": False})
     assert response.status_code == 200
     assert response.json()["record_count"] == 2
     assert response.json()["backtest_included"] is False
     status.assert_awaited_once_with("/isolated/analysis.sqlite", 1)
+
+
+@pytest.mark.parametrize("include_backtest", [True, False])
+def test_ready_snapshot_invalidated_during_read_retries_or_uses_account_returns(client, monkeypatch, include_backtest):
+    content = b'{"record_count":2}'
+    read = Mock(side_effect=[_core.NativeError("SNAPSHOT_NOT_READY", "快照已更新"), content])
+    account_returns = Mock(return_value=content)
+    status = AsyncMock(side_effect=["ready", "pending", "ready"])
+    enqueue = AsyncMock()
+    monkeypatch.setattr(routes, "read_snapshot_status", status)
+    monkeypatch.setattr(routes._core, "performance_result", read)
+    monkeypatch.setattr(routes._core, "account_performance", account_returns)
+    monkeypatch.setattr(routes, "enqueue", enqueue)
+    monkeypatch.setattr(routes, "clock_async_sleep", AsyncMock())
+
+    response = client.get("/performance/1", params={"include_backtest": include_backtest})
+
+    assert response.status_code == 200, response.text
+    assert response.content == content
+    assert read.call_count == (2 if include_backtest else 1)
+    if include_backtest:
+        account_returns.assert_not_called()
+        enqueue.assert_awaited_once_with("/isolated/analysis.sqlite", 1)
+    else:
+        account_returns.assert_called_once()
+        enqueue.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "code,status_code", [("SNAPSHOT_EXPIRED", 410), ("INVALID_REQUEST", 422), ("DATABASE_QUERY", 503)]
+)
+def test_ready_snapshot_preserves_other_native_errors(client, monkeypatch, code, status_code):
+    monkeypatch.setattr(routes, "read_snapshot_status", AsyncMock(return_value="ready"))
+    monkeypatch.setattr(routes._core, "performance_result", Mock(side_effect=_core.NativeError(code, "查询失败")))
+    response = client.get("/performance/1")
+    assert response.status_code == status_code
+    assert response.json() == {"detail": {"code": code, "message": "查询失败"}}
 
 
 def test_performance_route_rejects_unknown_account_before_analysis(client, monkeypatch):
@@ -113,21 +151,20 @@ def test_snapshot_route_reads_published_snapshot(client, monkeypatch):
         "events": [],
         "event_count": 0,
     }
-    monkeypatch.setattr(routes._core, "snapshot", lambda *args: payload)
+    monkeypatch.setattr(routes._core, "snapshot", lambda *args: json.dumps(payload).encode())
     response = client.get("/performance/1/snapshot")
     assert response.status_code == 200
     assert response.json() == payload
 
 
 def test_backtest_save_uses_one_native_account_transaction(client, monkeypatch):
-    write = AsyncMock(
-        return_value={"id": 1, "name": "account", "backtest_weight_type": "cs", "backtest_fee_rate": 0.01}
-    )
+    write = AsyncMock(return_value=b'{ "backtest_weight_type":"cs", "backtest_fee_rate":0.01 }')
     monkeypatch.setattr(routes, "native_operation", write)
     monkeypatch.setattr(routes, "now_str", lambda: "2026-01-01T09:00:00")
     response = client.patch("/performance-settings/1", json={"backtest_weight_type": "ts", "backtest_fee_rate": 0.01})
     assert response.status_code == 200
     assert response.json() == {"backtest_weight_type": "cs", "backtest_fee_rate": 0.01}
+    assert response.content == write.return_value
     write.assert_awaited_once_with(
         "account_update_backtest",
         {

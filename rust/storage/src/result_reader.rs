@@ -3,9 +3,32 @@
 //! Intermediate history never crosses the language boundary. These allocations
 //! are the requested public response, not a second copy of persisted JSON.
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+
+pub(crate) const POINTS_SQL: &str = "SELECT date,observed_at,record_id,execution_id,account_return,account_equity,
+                portfolio_return,account_daily_return,portfolio_daily_return,
+                target_portfolio_return,target_portfolio_daily_return,difference,sizing_fallback
+         FROM performance_result_point WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx";
+
+pub(crate) const BINDINGS_SQL: &str = "SELECT time,portfolio_id FROM performance_result_binding
+         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx";
+
+pub(crate) const FALLBACKS_SQL: &str = "SELECT start,end,count FROM performance_result_fallback
+         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx";
+
+pub(crate) const CALENDAR_SQL: &str = "SELECT kind,start,end FROM performance_result_calendar_range
+         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY kind,idx";
+
+pub(crate) const DAILY_FEES_SQL: &str = "SELECT day,currency,value FROM performance_result_daily_fee
+         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day,currency";
+
+pub(crate) const EVENTS_SQL: &str = "SELECT time,tag,text,execution_id FROM performance_result_event
+             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx LIMIT 100";
+
+pub(crate) const DAILY_COSTS_SQL: &str = "SELECT day,value,cost,loss_bp,coverage,covered,count,amount_complete,fee_covered,covered_value,estimated,present
+         FROM performance_result_daily_cost WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day";
 
 fn sql_error(error: rusqlite::Error) -> String {
     format!("SNAPSHOT_READ: {error}")
@@ -48,14 +71,14 @@ fn rows(
     Ok(result)
 }
 
-struct Header {
-    performance: Value,
-    baseline: Option<String>,
-    end: Option<String>,
-    event_count: i64,
+pub(crate) struct Header {
+    pub(crate) performance: Value,
+    pub(crate) baseline: Option<String>,
+    pub(crate) end: Option<String>,
+    pub(crate) event_count: i64,
 }
 
-fn header(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Header, String> {
+pub(crate) fn header(connection: &Connection, snapshot_id: &str, range: &str) -> rusqlite::Result<Option<Header>> {
     connection
         .query_row(
             "SELECT backtest_included,engine_version,baseline,end,
@@ -96,7 +119,7 @@ fn header(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Hea
                 })
             },
         )
-        .map_err(sql_error)
+        .optional()
 }
 
 // Field order matches serde_json::Map's sorted wire order, including nulls.
@@ -144,10 +167,7 @@ pub(crate) fn typed_points(
 ) -> Result<Vec<Point>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT date,observed_at,record_id,execution_id,account_return,account_equity,
-                portfolio_return,account_daily_return,portfolio_daily_return,
-                target_portfolio_return,target_portfolio_daily_return,difference,sizing_fallback
-         FROM performance_result_point WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+            POINTS_SQL,
         )
         .map_err(sql_error)?;
     let mut cursor = statement
@@ -167,35 +187,25 @@ fn points(connection: &Connection, snapshot_id: &str, range: &str) -> Result<Vec
         .collect()
 }
 
-fn attach_skips(
-    connection: &Connection,
-    snapshot_id: &str,
-    range: &str,
-    performance: &mut Value,
-) -> Result<(), String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT kind,count,missing_target,missing_ticks,first_time,last_time
-         FROM performance_result_skip WHERE snapshot_id=?1 AND range_key=?2",
-        )
-        .map_err(sql_error)?;
-    let mut cursor = statement
-        .query(params![snapshot_id, range])
-        .map_err(sql_error)?;
-    while let Some(row) = cursor.next().map_err(sql_error)? {
-        let kind: String = row.get(0).map_err(sql_error)?;
+pub(crate) fn skips(connection: &Connection, snapshot_id: &str, range: &str) -> rusqlite::Result<Map<String, Value>> {
+    let mut statement = connection.prepare(
+        "SELECT kind,count,missing_target,missing_ticks,first_time,last_time
+         FROM performance_result_skip WHERE snapshot_id=?1 AND range_key=?2")?;
+    let rows = statement.query_map(params![snapshot_id, range], |row| Ok((row.get::<_, String>(0)?, json!({
+        "count": row.get::<_, i64>(1)?, "missing_target": row.get::<_, i64>(2)?,
+        "missing_ticks": row.get::<_, i64>(3)?, "first_time": row.get::<_, Option<String>>(4)?,
+        "last_time": row.get::<_, Option<String>>(5)?,
+    }))))?;
+    rows.collect()
+}
+
+fn attach_skips(connection: &Connection, snapshot_id: &str, range: &str, performance: &mut Value) -> Result<(), String> {
+    for (kind, value) in skips(connection, snapshot_id, range).map_err(sql_error)? {
         let field = match kind.as_str() {
-            "portfolio" => "skips",
-            "target" => "target_skips",
+            "portfolio" => "skips", "target" => "target_skips",
             _ => return Err("SNAPSHOT_INVALID: unknown skip kind".into()),
         };
-        performance[field] = json!({
-            "count": row.get::<_, i64>(1).map_err(sql_error)?,
-            "missing_target": row.get::<_, i64>(2).map_err(sql_error)?,
-            "missing_ticks": row.get::<_, i64>(3).map_err(sql_error)?,
-            "first_time": row.get::<_, Option<String>>(4).map_err(sql_error)?,
-            "last_time": row.get::<_, Option<String>>(5).map_err(sql_error)?,
-        });
+        performance[field] = value;
     }
     Ok(())
 }
@@ -208,8 +218,7 @@ fn attach_calendar(
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
-            "SELECT kind,start,end FROM performance_result_calendar_range
-         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+            CALENDAR_SQL,
         )
         .map_err(sql_error)?;
     let mut cursor = statement
@@ -250,9 +259,7 @@ fn daily_costs(connection: &Connection, snapshot_id: &str, range: &str) -> Resul
     ];
     let mut statement = connection
         .prepare(
-            "SELECT day,present,value,cost,loss_bp,coverage,covered,count,
-                amount_complete,fee_covered,covered_value,estimated
-         FROM performance_result_daily_cost WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day",
+            DAILY_COSTS_SQL,
         )
         .map_err(sql_error)?;
     let mut cursor = statement
@@ -261,16 +268,16 @@ fn daily_costs(connection: &Connection, snapshot_id: &str, range: &str) -> Resul
     let mut daily = Map::new();
     while let Some(row) = cursor.next().map_err(sql_error)? {
         let day: String = row.get(0).map_err(sql_error)?;
-        let present: i64 = row.get(1).map_err(sql_error)?;
+        let present: i64 = row.get(11).map_err(sql_error)?;
         let mut summary = Map::new();
         for (index, field) in fields.iter().enumerate() {
             if present & (1 << index) == 0 {
                 continue;
             }
             let value = match index {
-                4 | 5 | 7 | 9 => json!(row.get::<_, Option<i64>>(index + 2).map_err(sql_error)?),
-                6 => json!(row.get::<_, Option<bool>>(index + 2).map_err(sql_error)?),
-                _ => json!(row.get::<_, Option<f64>>(index + 2).map_err(sql_error)?),
+                4 | 5 | 7 | 9 => json!(row.get::<_, Option<i64>>(index + 1).map_err(sql_error)?),
+                6 => json!(row.get::<_, Option<bool>>(index + 1).map_err(sql_error)?),
+                _ => json!(row.get::<_, Option<f64>>(index + 1).map_err(sql_error)?),
             };
             summary.insert((*field).into(), value);
         }
@@ -281,8 +288,7 @@ fn daily_costs(connection: &Connection, snapshot_id: &str, range: &str) -> Resul
     drop(statement);
     let mut statement = connection
         .prepare(
-            "SELECT day,currency,value FROM performance_result_daily_fee
-         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY day,currency",
+            DAILY_FEES_SQL,
         )
         .map_err(sql_error)?;
     let mut cursor = statement
@@ -317,15 +323,15 @@ pub(crate) fn read(
         baseline,
         end,
         event_count,
-    } = header(connection, snapshot_id, range)?;
+    } = header(connection, snapshot_id, range).map_err(sql_error)?
+        .ok_or_else(|| sql_error(rusqlite::Error::QueryReturnedNoRows))?;
     performance["settings"] = settings(connection, snapshot_id)?;
     performance["points"] = Value::Array(points(connection, snapshot_id, range)?);
     attach_skips(connection, snapshot_id, range, &mut performance)?;
     attach_calendar(connection, snapshot_id, range, &mut performance)?;
     performance["sizing_fallback_ranges"] = Value::Array(rows(
         connection,
-        "SELECT start,end,count FROM performance_result_fallback
-         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+        FALLBACKS_SQL,
         snapshot_id,
         range,
         |row| {
@@ -337,8 +343,7 @@ pub(crate) fn read(
     )?);
     performance["bindings"] = Value::Array(rows(
         connection,
-        "SELECT time,portfolio_id FROM performance_result_binding
-         WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx",
+        BINDINGS_SQL,
         snapshot_id,
         range,
         |row| {
@@ -362,8 +367,7 @@ pub(crate) fn read(
         result["daily_costs"] = daily_costs(connection, snapshot_id, range)?;
         result["events"] = Value::Array(rows(
             connection,
-            "SELECT time,tag,text,execution_id FROM performance_result_event
-             WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx LIMIT 100",
+            EVENTS_SQL,
             snapshot_id,
             range,
             |row| {

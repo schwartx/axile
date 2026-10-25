@@ -7,11 +7,10 @@ import pytest
 
 from axile.domain.execution import ExecutionTaskStatus
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, session_closed_scope
-from axile.server.business_facts.repository import read_execution_result
-from axile.server.db.models import ExecuteRecord
 from axile.server.execution import records, registry
-from axile.server.execution.records import resolve_record_task_status
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import persist_result, seed_account
+from tests.unit.server._native_read_views import read_execution_result, status_view
 
 
 def closed_result():
@@ -52,7 +51,7 @@ def test_real_errors_alongside_closed_symbols_are_not_session_skips(native_datab
     raw["symbol_results"]["ag2612"] = {"status": failure, "reason_code": "CHANNEL.QUERY_FAILED"}
     assert session_closed_scope(raw) is None
     record = _record(native_database, raw)
-    assert resolve_record_task_status(record) == ExecutionTaskStatus.FAILED
+    assert status_view(record)["status"] == ExecutionTaskStatus.FAILED
 
 
 def test_order_evidence_and_termination_prevent_session_skip():
@@ -103,7 +102,7 @@ def test_closed_and_open_noop_is_partial_and_keeps_unhandled_target(native_datab
     raw["status"] = "PARTIAL"
     raw["symbol_results"]["ag2612"] = {"status": "NOOP", "final_volume": -6, "target_volume": -6}
     assert session_closed_scope(raw) == "partial"
-    assert resolve_record_task_status(_record(native_database, raw)) == ExecutionTaskStatus.PARTIAL
+    assert status_view(_record(native_database, raw))["status"] == ExecutionTaskStatus.PARTIAL
 
 
 @pytest.mark.parametrize("partial", [False, True])
@@ -144,8 +143,8 @@ def test_session_skip_persistence_and_status_replay_do_not_claim_success(monkeyp
     assert result["status"] == raw["status"]
     assert result["symbol_results"]["m2701"]["final_volume"] is None
     assert not hasattr(record, "raw_result")
-    assert resolve_record_task_status(record) == expected
-    replay = registry._build_persisted_execution_status(record)
+    assert record["status"] == expected
+    replay = asyncio.run(registry.get_execution_status("session-skip"))
     assert replay["status"] == expected
     assert replay["output_status"] == raw["status"]
     assert replay["is_success"] == 0
@@ -176,4 +175,4 @@ def test_skipped_task_is_terminal_and_cannot_be_terminated_again(terminal):
         assert not changed
         assert registry.get_execution_task_state(execution_id).status == terminal
     finally:
-        registry._clear_execution_task_state(execution_id)
+        registry._execution_tasks.pop(execution_id, None)

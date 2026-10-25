@@ -92,15 +92,15 @@ impl<'a> HeaderReader<'a> {
                 created_at, is_success, duration_sec, trade_count, symbol_count, position_count,
                 positions_present, reason, raw_present, has_symbol_results, raw_status, raw_task_status,
                 raw_error, raw_outcome, raw_outcome_reason, raw_reason_code, raw_msg, raw_execution_kind,
-                payload, value, cost, loss_bp, coverage, covered,
+                value, cost, loss_bp, coverage, covered,
                 count, fee_covered, amount_complete, covered_value, estimated, has_transactions
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6,
                 ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18,
                 ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30,
-                ?31, ?32, ?33, ?34, ?35, ?36
+                ?25, ?26, ?27, ?28, ?29,
+                ?30, ?31, ?32, ?33, ?34, ?35
             )"#).map_err(stage_error)?;
         insert
             .execute(params![
@@ -133,7 +133,6 @@ impl<'a> HeaderReader<'a> {
                 raw[5],
                 raw[6],
                 raw[7],
-                "{}",
                 finite(summary.value),
                 finite(summary.cost),
                 finite(summary.loss_bp()),
@@ -150,12 +149,11 @@ impl<'a> HeaderReader<'a> {
         let mut rows = self.symbols.query([record]).map_err(sql_error)?;
         while let Some(row) = rows.next().map_err(sql_error)? {
             let display = crate::executions::symbol_from_row(row)?;
-            let mut present = 0_i64;
-            for (index, name) in crate::executions::SYMBOL_FIELDS.iter().enumerate() {
-                if display.get(*name).is_some() {
-                    present |= 1 << index;
-                }
-            }
+            let fields = crate::executions::SYMBOL_FIELDS.map(|name| display.get(name));
+            let present = fields.iter().enumerate().fold(0_i64, |mask, (index, value)| {
+                mask | (i64::from(value.is_some()) << index)
+            });
+            let fields = fields.map(|value| value.and_then(serde_json::Value::as_str));
             target
                 .prepare_cached(
                     r#"INSERT INTO native_stage.performance_cost_execution_symbol (
@@ -171,11 +169,11 @@ impl<'a> HeaderReader<'a> {
                     record,
                     row.get::<_, String>(0).map_err(sql_error)?,
                     present,
-                    display["status"].as_str(),
-                    display["error"].as_str(),
-                    display["outcome"].as_str(),
-                    display["outcome_reason"].as_str(),
-                    display["reason_code"].as_str(),
+                    fields[0],
+                    fields[1],
+                    fields[2],
+                    fields[3],
+                    fields[4],
                 ])
                 .map_err(stage_error)?;
         }

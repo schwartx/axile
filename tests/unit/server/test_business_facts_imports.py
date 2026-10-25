@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize(
-    "module", ["axile.server.business_facts.repository", "axile.server.native_store", "axile.server.db.models"]
-)
+@pytest.mark.parametrize("module", ["axile.server.repositories", "axile.server.native_store", "axile.server.db.models"])
 def test_fact_entrypoints_register_schema_in_fresh_interpreter(module, tmp_path):
     root = Path(__file__).resolve().parents[3]
     result = subprocess.run(
@@ -36,19 +34,19 @@ import axile
 assert Path(axile.__file__).resolve() == Path.cwd() / 'axile/__init__.py'
 importlib.import_module(sys.argv[1])
 from pydantic import BaseModel
-from axile.server.db.models import Account, ExecuteRecord
+from axile.server.db.models import Account, ExecuteRecordPublic
 from axile.server.native_store import native_operation_sync
 
-for model in (Account, ExecuteRecord):
+for model in (Account, ExecuteRecordPublic):
     assert issubclass(model, BaseModel)
     assert not hasattr(model, '__table__')
 assert not {'sqlalchemy', 'sqlmodel', 'alembic', 'aiosqlite'} & sys.modules.keys()
 native_operation_sync('migration_upgrade', {}, database=sys.argv[2])
-schema = json.loads(Path('tests/fixtures/rust_store/public-0039.json').read_text())
+schema = json.loads(Path('tests/fixtures/rust_store/public-0034.json').read_text())
 with closing(sqlite3.connect(sys.argv[2])) as connection, connection:
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert set(schema['table_columns']) <= tables
-    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0041',)]
+    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0034',)]
     assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
 """,
             module,

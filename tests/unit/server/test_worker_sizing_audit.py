@@ -10,11 +10,11 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
-from axile.server.execution.execution_records_output import sanitize_standard_input_for_audit
+from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.worker_backend import worker_audit
-from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import FakeExecutor, build_account, capture_worker_audit_batch
+from tests.unit.server._native_read_views import read_view
 
 
 def test_worker_target_reference_and_summary_keep_sizing(
@@ -62,7 +62,7 @@ def test_worker_target_reference_and_summary_keep_sizing(
     persist_input = Mock(wraps=worker_audit.persist_pre_execute_input_sync)
     monkeypatch.setattr(worker_audit, "persist_pre_execute_input_sync", persist_input)
     audit_input = {
-        **sanitize_standard_input_for_audit(standard_input),
+        **sanitize_execution_input(standard_input.to_dict()),
         "strategy_target": {"m2701": -0.06},
         "sizing_context": {
             "long_leverage": 1.0,
@@ -108,7 +108,7 @@ def test_worker_target_reference_and_summary_keep_sizing(
     assert standard["schema_version"] == target["schema_version"] == 3
     assert standard["content"] == {"business_facts_ref": {"version": 1, "view": "input", "input_id": input_id}}
     assert target["content"] == {"business_facts_ref": {"version": 1, "view": "targets", "input_id": input_id}}
-    frozen_input = native_store_call(native_database, "read_execution_input", {"input_id": input_id})
+    frozen_input = read_view(native_database, "read_execution_input", {"input_id": input_id})
     assert frozen_input["strategy_target"] == {"m2701": -0.06}
     assert frozen_input["curr_target"] == {"m2701": -0.18}
     assert "account_target" not in frozen_input

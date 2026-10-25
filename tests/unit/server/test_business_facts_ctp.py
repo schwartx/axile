@@ -7,8 +7,8 @@ from copy import deepcopy
 import pytest
 
 from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import persist_result, seed_account
+from tests.unit.server._native_read_views import read_view
 
 _CREATED_AT = "2026-10-16T21:05:01+08:00"
 _TRADE_TIME = "2026-10-16T21:05:00+08:00"
@@ -33,9 +33,9 @@ def _roundtrip(
     assert record["input_id"] is not None
     identity = {"account_id": 22, "record_id": record["id"]}
     return (
-        native_store_call(path, "read_execution_input", {"input_id": record["input_id"]}),
-        native_store_call(path, "read_execution_result", identity),
-        native_store_call(path, "read_execution_detail", identity),
+        read_view(path, "read_execution_input", {"input_id": record["input_id"]}),
+        read_view(path, "read_execution_result", identity),
+        read_view(path, "read_execution_detail", identity),
     )
 
 

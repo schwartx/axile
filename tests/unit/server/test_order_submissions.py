@@ -75,7 +75,9 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
         ]:
             submissions._save_fact(database, row)
 
-        summary = _core.order_submission_summary(_core.Store(database), 1, start, end)
+        summary = json.loads(
+            _core.order_submissions(_core.Store(database), 1, "2026-10-20", "Asia/Shanghai", start, end, 1)
+        )["summary"]
         assert summary["recorded"] == 4
         assert summary["sync_accepted"] == summary["sync_rejected"] == summary["broker_rejected"] == 1
         assert summary["unknown"] == 2
@@ -117,7 +119,9 @@ def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path
         raw = next(row for row in rows if row["order_id"] == "raw-script")
         assert raw["source"] == "script" and raw["broker_status"] == "acknowledged"
         assert any(row["submission_uid"] == "boundary" for row in rows)
-        summary = _core.order_submission_summary(_core.Store(database), 1, start, end)
+        summary = json.loads(
+            _core.order_submissions(_core.Store(database), 1, "2026-10-20", "Asia/Shanghai", start, end, 1)
+        )["summary"]
         assert summary["recorded"] == 6
         assert summary["sync_accepted"] == 3
         assert summary["broker_acknowledged"] == 1

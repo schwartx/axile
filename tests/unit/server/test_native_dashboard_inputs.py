@@ -50,7 +50,6 @@ def dashboard_database(native_database):
             "INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at) VALUES (?,?,?,'2026-10-20')",
             [(1, 1, 7), (2, 2, 7), (3, 2, None)],
         )
-    snapshots = []
     for snapshot_id, account_id, assets in [
         (1, 1, {"total_asset": 100, "positions": []}),
         (
@@ -70,12 +69,10 @@ def dashboard_database(native_database):
     ]:
         saved = _snapshot(path, account_id, assets, created_at=f"2026-10-{20 - snapshot_id:02d}T00:00:00")
         assert saved["id"] == snapshot_id
-        if snapshot_id in (2, 4):
-            snapshots.append(saved)
-    expected = {
-        row["id"]: row["assets"]
-        for row in native_store_call(path, "asset_snapshots_read", {"snapshots": snapshots, "include_positions": True})
-    }
+    expected = {}
+    for account_id in (1, 2):
+        latest = native_store_call(path, "asset_snapshot_latest", {"account_id": account_id})
+        expected[latest["id"]] = latest["assets"]
     for portfolio_id, payload in [
         (7, {"normalized_weights": {"old": 1}}),
         (7, {"normalized_weights": {}}),
@@ -97,13 +94,14 @@ def dashboard_database(native_database):
     return path, expected
 
 
-def inputs(path, ids=(1, 2, 3)):
-    return _core.dashboard_inputs(_core.Store(str(path)), list(ids), LOGIC_VERSION, ENGINE_VERSION)
+def inputs(path):
+    return native_store_call(
+        path, "account_dashboard_context", {"logic_version": LOGIC_VERSION, "engine_version": ENGINE_VERSION}
+    )["inputs"]
 
 
 def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database):
     path, expected = dashboard_database
-    assert inputs(path, ()) == {}
     result = inputs(path)
     assert set(result) == {"1", "2", "3"}
     assert result["1"]["performance"] == {
@@ -126,7 +124,6 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     assert result["2"]["portfolio_id"] is None
     assert result["2"]["target_weights"] is None
     assert result["3"]["observation"] is None
-    assert set(inputs(path, (2,))) == {"2"}
 
 
 @pytest.mark.parametrize(
@@ -141,10 +138,10 @@ def test_dashboard_rejects_corrupt_asset_facts(dashboard_database, mutation):
     path, _ = dashboard_database
     with closing(sqlite3.connect(path)) as connection, connection:
         guard = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE name='business_facts_0037_snapshot_asset_owner_update'"
+            "SELECT sql FROM sqlite_master WHERE name='business_facts_0034_snapshot_asset_owner_update'"
         ).fetchone()[0]
         # 历史损坏绕过一次写入守卫，恢复守卫后验证原生读取仍拒绝越权。
-        connection.execute("DROP TRIGGER business_facts_0037_snapshot_asset_owner_update")
+        connection.execute("DROP TRIGGER business_facts_0034_snapshot_asset_owner_update")
         connection.execute(mutation)
         connection.execute(guard)
     with pytest.raises(_core.NativeError, match="INVALID_DATA"):
@@ -154,10 +151,8 @@ def test_dashboard_rejects_corrupt_asset_facts(dashboard_database, mutation):
 @pytest.mark.parametrize("positions", [None, [], "invalid", [None, 7, {"volume": "bad", "market_value": None}]])
 def test_dashboard_position_container_parity(dashboard_database, positions):
     path, _ = dashboard_database
-    saved = _snapshot(path, 1, {"total_asset": 0, "positions": positions})
-    expected = native_store_call(path, "asset_snapshots_read", {"snapshots": [saved], "include_positions": True})[0][
-        "assets"
-    ]
+    _snapshot(path, 1, {"total_asset": 0, "positions": positions})
+    expected = native_store_call(path, "asset_snapshot_latest", {"account_id": 1})["assets"]
     assert inputs(path)["1"]["observation"]["assets"] == expected
     if not isinstance(positions, list):
         assert expected["positions"] == positions
@@ -174,3 +169,24 @@ def test_dashboard_invalid_target_recovery(dashboard_database, value):
     path, _ = dashboard_database
     _target(path, 7, {"normalized_weights": value})
     assert inputs(path)["1"]["target_weights"] == ({"X": None} if isinstance(value, dict) else value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"logic_version": None},
+        {"logic_version": False},
+        {"logic_version": "20"},
+        {"logic_version": "20", "engine_version": None},
+    ],
+)
+def test_dashboard_context_requires_version_fields(native_database, payload):
+    with pytest.raises(_core.NativeError, match="缺少分析"):
+        native_store_call(native_database, "account_dashboard_context", payload)
+
+
+def test_dashboard_native_exports_follow_current_context_entrypoint():
+    assert callable(_core.account_dashboard_context)
+    assert not hasattr(_core, "dashboard_inputs")
+    assert not hasattr(_core, "summaries")

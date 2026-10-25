@@ -2,11 +2,10 @@
 
 from collections.abc import Mapping
 from math import isfinite
-from typing import Any, cast
+from typing import Any
 
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import is_degraded_snapshot_source
-from axile.server.execution.legacy_compat import normalize_legacy_result
 
 # 判定「持仓量约等于零」的绝对容差。
 _QTY_EPS = 1e-9
@@ -15,23 +14,20 @@ _ATTAINED_TOLERANCE = 0.01
 
 
 def build_execution_outcome_details(result: Mapping[str, object]) -> dict[str, object]:
-    """转发状态/错误契约与展示结论及未到位品种；旧记录先经读时归一，不猜测。"""
-    normalized = cast("dict[str, object]", normalize_legacy_result(dict(result)))
-    symbols = normalized.get("symbol_results")
+    """转发当前结果；审计写入阶段统一规范展示字段。"""
     forwarded: dict[str, object] = {
-        key: normalized[key]
+        key: result[key]
         for key in ("status", "error", "reason_code", "outcome", "outcome_reason", "symbol_results")
-        if key in normalized
+        if key in result
     }
-    forwarded["outcome_symbols"] = (
-        [
-            symbol
-            for symbol, value in symbols.items()
-            if isinstance(value, dict) and value.get("outcome") in {"not_reached", "blocked"}
-        ]
-        if isinstance(symbols, dict)
-        else []
-    )
+    memory = result.get("memory")
+    if isinstance(memory, dict):
+        context = {
+            key: memory[key] for key in ("message", "symbol_decision_reason_code") if isinstance(memory.get(key), str)
+        }
+        if context:
+            forwarded["memory"] = context
+    forwarded["outcome_symbols"] = []  # 审计写入阶段从规范化结果生成最终列表。
     return forwarded
 
 

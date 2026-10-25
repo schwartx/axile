@@ -203,6 +203,12 @@ async def serve(config: dict) -> None:
             is_success=payload["is_success"],
             **options,
         )
+        if isinstance(record, dict):
+            return {
+                "id": record["record_id"],
+                "execution_id": record["execution_id"],
+                "is_success": record["is_success"],
+            }
         return {"id": record.id, "execution_id": record.execution_id, "is_success": record.is_success}
 
     prioritize_benchmark_routes(_app.router.routes)

@@ -17,16 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_schedule
-from axile.server.business_facts.repository import read_execution_detail
-from axile.server.execution.legacy_compat import normalize_legacy_result
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_read_oracle import ExecuteRecordDetailPublic
 from tests.unit.server._execution_test_support import build_account, insert_account
-from tests.unit.server._performance_costs_oracle import project_execution
+from tests.unit.server._native_read_views import read_execution_detail
 from tests.unit.server.test_business_facts_tq import tq_historical_payloads
 from tests.unit.server.test_notification_compaction_projections import _CREATED, _EXECUTION, _event, _result
 
-# 预期取自同库的冻结 0039 原生查询，经旧 HTTP 展示函数处理后的输出。
+# 预期取自同库的冻结 0034 原生查询，经旧 HTTP 展示函数处理后的输出。
 _DISPLAY_EDGE_CASES = [
     ("null", None, {"outcome": None}),
     ("invalid", "invalid", {"outcome": None}),
@@ -177,31 +175,9 @@ def test_execution_response_reuses_complete_legacy_display_contract(
     asyncio.run(scenario())
 
 
-def _expected_detail(head, detail):
-    """公开 DTO 的默认值与旧品种展示投影独立于原生 HTTP 编码。"""
-    normalized = normalize_legacy_result(detail["result"])
-    symbols = normalized.get("symbol_results") if isinstance(normalized, dict) else None
-    projected, _ = project_execution(SimpleNamespace(**detail))
-    return ExecuteRecordDetailPublic.model_validate(
-        {
-            **head,
-            **detail,
-            "symbol_results": {
-                symbol: {
-                    key: item[key]
-                    for key in ("status", "error", "outcome", "outcome_reason", "reason_code")
-                    if key in item
-                }
-                if isinstance(item, dict)
-                else {}
-                for symbol, item in symbols.items()
-            }
-            if isinstance(symbols, dict)
-            else None,
-            "trade_count": projected["tradeCount"],
-            "symbol_count": projected["symbolCount"],
-        }
-    ).model_dump(mode="json")
+def _expected_detail(head, detail, summary):
+    """公开 DTO 默认值与固定摘要独立于原生 HTTP 编码。"""
+    return ExecuteRecordDetailPublic.model_validate({**head, **detail, **summary}).model_dump(mode="json")
 
 
 def _accounts(path):
@@ -239,16 +215,35 @@ def _historical_corruption(path, name, statement, parameters):
     _oracle(path, statements)
 
 
+_EMPTY_SUMMARY = {"symbol_results": None, "trade_count": 0, "symbol_count": 0}
+
+
 @pytest.mark.parametrize(
-    "source_input,source_result",
+    "source_input,source_result,summary",
     [
-        tq_historical_payloads(),
-        (None, []),
-        (False, "invalid"),
-        ({}, {}),
+        (
+            *tq_historical_payloads(),
+            {
+                "symbol_results": {
+                    "rb2701": {"status": "SUCCEEDED", "outcome": "completed"},
+                    "ag2612": {
+                        "status": "BLOCKED",
+                        "error": "执行受阻，具体原因见执行证据",
+                        "outcome": "blocked",
+                        "reason_code": "COMMON.SESSION.CLOSED",
+                    },
+                },
+                "trade_count": 1,
+                "symbol_count": 1,
+            },
+        ),
+        (None, [], _EMPTY_SUMMARY),
+        (False, "invalid", _EMPTY_SUMMARY),
+        ({}, {}, _EMPTY_SUMMARY),
         (
             {"channel_type": "ctp", "curr_target": {}, "last_target": None},
             {"status": "NOOP", "execution_time": 0.0, "symbol_results": {}},
+            {**_EMPTY_SUMMARY, "symbol_results": {}},
         ),
         (
             {"curr_target": {"rb2610": 1}, "extra": {"zero": 0, "null": None}},
@@ -265,10 +260,19 @@ def _historical_corruption(path, name, statement, parameters):
                     }
                 },
             },
+            {
+                "symbol_results": {
+                    "rb2610": {"status": "FAILED", "error": "执行失败，具体原因见执行证据", "outcome": "error"}
+                },
+                "trade_count": 1,
+                "symbol_count": 1,
+            },
         ),
     ],
 )
-def test_native_detail_matches_repository_and_summary(native_database, monkeypatch, source_input, source_result):
+def test_native_detail_matches_repository_and_summary(
+    native_database, monkeypatch, source_input, source_result, summary
+):
     path = native_database
     _accounts(path)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
@@ -289,7 +293,7 @@ def test_native_detail_matches_repository_and_summary(native_database, monkeypat
         )
 
     async def scenario():
-        expected = _expected_detail(head, await read_execution_detail(head))
+        expected = _expected_detail(head, await read_execution_detail(head), summary)
         query = Mock(wraps=_core.execution_record_detail)
         monkeypatch.setattr(_core, "execution_record_detail", query)
         with patch.object(
@@ -340,13 +344,13 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     other = persist_result(
         path, source_result, raw_input=source_input, execution_id="foreign-frozen-owner", account_id=2, is_success=0
     )
-    notification = _event()
-    event_context = notification.context
+    _, notification = _event()
+    event_context = notification["context"]
     _sql(
         path,
         "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) "
         "VALUES(?,1,?,'execution.finished',?,'pending')",
-        (notification.id, created_at, json.dumps(event_context)),
+        (notification["id"], created_at, json.dumps(event_context)),
     )
     record_id = head["id"]
     borrowed_rows, extra_rows = _oracle(
@@ -365,7 +369,15 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     assert extra["server_notification_context"] == captured
 
     async def scenario():
-        expected = _expected_detail(head, await read_execution_detail(head))
+        expected = _expected_detail(
+            head,
+            await read_execution_detail(head),
+            {
+                "symbol_results": {"A": {"status": "PARTIAL", "error": "执行不到位", "outcome": "not_reached"}},
+                "trade_count": 1,
+                "symbol_count": 1,
+            },
+        )
         assert expected["input"]["plan"]["quantities"] == {"A": 0, "B": None}
         assert expected["input"]["plan"]["units"] == {"A": 2}
         assert expected["result"]["extra"]["server_notification_context"] == captured
@@ -395,10 +407,10 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
                 _sql(
                     path,
                     "UPDATE notification_event SET context=? WHERE id=?",
-                    (json.dumps(context), notification.id),
+                    (json.dumps(context), notification["id"]),
                 )
             elif corruption == "outbox_deleted":
-                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification.id,))
+                _sql(path, "DELETE FROM notification_event WHERE id=?", (notification["id"],))
             else:
                 _sql(path, "DELETE FROM execution_input_plan WHERE input_id=?", (head["input_id"],))
             response = await client.get(f"/execute_records/1/{record_id}")

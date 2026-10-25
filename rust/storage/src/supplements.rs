@@ -288,12 +288,16 @@ pub fn step(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     })
 }
 
-pub fn execution_steps(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+pub fn has_execution_steps(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     read(path, |connection| {
-        Ok(json!(linked_steps(
-            connection,
-            text(request, "execution_id")?
-        )?))
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM supplement_step WHERE execution_id=?1)",
+                [text(request, "execution_id")?],
+                |row| row.get::<_, bool>(0),
+            )
+            .map(Value::Bool)
+            .map_err(database)
     })
 }
 

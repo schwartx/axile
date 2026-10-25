@@ -22,9 +22,7 @@ from axile.server.db.models import (
     AccountRebalancePlanPublic,
     AccountRebalancePlanRowPublic,
     ExecutionArtifactListPublic,
-    ExecutionArtifactPublic,
     ExecutionEventListPublic,
-    ExecutionEventPublic,
     ExecutionStatusPublic,
     ExecutionTerminateRequest,
     ExecutionTerminateResponse,
@@ -36,7 +34,6 @@ from axile.server.db.models import (
 )
 from axile.server.error_details import exception_details
 from axile.server.execution.ctp_channels import reconcile_china_channel_account
-from axile.server.execution.legacy_compat import normalize_execution_event_details, normalize_legacy_result
 from axile.server.execution.lifecycle import enqueue_empty_positions, enqueue_execute_trade
 from axile.server.execution.rebalance import _normalize_rebalance_target
 from axile.server.execution.registry import (
@@ -53,7 +50,6 @@ from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
 from axile.server.repositories import get_latest_portfolio_id_by_account_id, stop_account_for_clear_positions
 from axile.server.target_weight_snapshots import (
-    TargetWeightSnapshotData,
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
     get_previous_account_target_snapshots,
@@ -72,29 +68,30 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
         return AccountRebalancePlanPublic()
     snapshot = await get_latest_account_target_snapshot(account_id, portfolio_id)
     assets_snapshot = await latest_asset_snapshot(account_id)
-    if snapshot is None or assets_snapshot is None or not isinstance(snapshot.normalized_weights, dict):
+    target = None if snapshot is None else snapshot.get("normalized_weights")
+    if snapshot is None or assets_snapshot is None or not isinstance(target, dict):
         return AccountRebalancePlanPublic(
             observed_at=None if assets_snapshot is None else assets_snapshot["created_at"],
-            target_calculated_at=None if snapshot is None else snapshot.calculated_at,
+            target_calculated_at=None if snapshot is None else snapshot["calculated_at"],
         )
     assets = assets_snapshot["assets"]
     total_asset = assets.get("total_asset")
-    raw_positions = assets.get("positions")
-    positions = raw_positions if isinstance(raw_positions, list) else []
+    positions = assets.get("positions")
     if (
-        isinstance(total_asset, bool)
+        not isinstance(positions, list)
+        or isinstance(total_asset, bool)
         or not isinstance(total_asset, (int, float))
         or not math.isfinite(total_asset)
         or any(not isinstance(pos, dict) or pos.get("market_value") is None for pos in positions)
     ):
         return AccountRebalancePlanPublic(
             observed_at=assets_snapshot["created_at"],
-            target_calculated_at=snapshot.calculated_at,
+            target_calculated_at=snapshot["calculated_at"],
         )
     plugin = get_channel(account.trade_channel)
     plan = plan_executable_target(
         positions,
-        snapshot.normalized_weights,
+        target,
         float(total_asset),
         canonicalize_symbol=plugin.canonicalize_symbol,
         quantize_target_quantity=plugin.quantize_target_quantity,
@@ -115,7 +112,7 @@ async def account_rebalance_plan(account_id: int) -> AccountRebalancePlanPublic:
         ],
         off_symbol_count=plan.off_symbol_count,
         observed_at=assets_snapshot["created_at"],
-        target_calculated_at=snapshot.calculated_at,
+        target_calculated_at=snapshot["calculated_at"],
     )
 
 
@@ -199,20 +196,20 @@ def _sizing_rows_from_facts(
 
 
 async def _sizing_evidence_for_snapshot(
-    snapshot: TargetWeightSnapshotData,
+    snapshot: dict[str, Any],
     *,
     canonicalize: _Canonicalize,
     strategy_weights: dict[str, float],
     account_weights: dict[str, float],
 ) -> _SizingEvidence:
-    status = "pending_execution" if snapshot.source == "manual" or not snapshot.execution_id else "unavailable"
+    status = "pending_execution" if snapshot["source"] == "manual" or not snapshot["execution_id"] else "unavailable"
     rows: dict[str, TargetSizingRowPublic] = {}
     null_target_quantity = False
     inflight = False
-    if snapshot.execution_id:
+    if snapshot["execution_id"]:
         evidence = await native_operation(
             "execution_read",
-            {"op": "target_sizing", "execution_id": snapshot.execution_id, "account_id": snapshot.account_id},
+            {"op": "target_sizing", "execution_id": snapshot["execution_id"], "account_id": snapshot["account_id"]},
         )
         versions = evidence["artifact_versions"]
         input_id = evidence["input_id"]
@@ -255,8 +252,8 @@ async def _sizing_evidence_for_snapshot(
         status=status,
         rows=rows,
         quantities=quantities,
-        sizing_execution_id=snapshot.execution_id,
-        sizing_calculated_at=snapshot.calculated_at,
+        sizing_execution_id=snapshot["execution_id"],
+        sizing_calculated_at=snapshot["calculated_at"],
         null_target_quantity=null_target_quantity,
         inflight=inflight,
     )
@@ -264,30 +261,35 @@ async def _sizing_evidence_for_snapshot(
 
 async def _account_target_public(
     account: object,
-    snapshot: TargetWeightSnapshotData | None,
+    snapshot: dict[str, Any] | None,
 ) -> TargetWeightSnapshotPublic:
     """返回账户权重与同权重最近一次完整数量换算证据."""
     if snapshot is None:
         return TargetWeightSnapshotPublic()
     plugin = get_channel(getattr(account, "trade_channel"))
-    strategy_weights = _canonical_weight_map(snapshot.raw_weights, plugin.canonicalize_symbol)
-    account_weights = _canonical_weight_map(snapshot.normalized_weights, plugin.canonicalize_symbol)
+    strategy_weights = _canonical_weight_map(snapshot.get("raw_weights"), plugin.canonicalize_symbol)
+    account_weights = _canonical_weight_map(snapshot.get("normalized_weights"), plugin.canonicalize_symbol)
     evidence = await _sizing_evidence_for_snapshot(
         snapshot,
         canonicalize=plugin.canonicalize_symbol,
         strategy_weights=strategy_weights,
         account_weights=account_weights,
     )
-    if evidence.status != "available" and not evidence.inflight and snapshot.id is not None and snapshot.account_id:
+    if (
+        evidence.status != "available"
+        and not evidence.inflight
+        and snapshot["id"] is not None
+        and snapshot["account_id"]
+    ):
         previous_snapshots = await get_previous_account_target_snapshots(
-            snapshot.account_id,
-            snapshot.portfolio_id,
-            before_id=snapshot.id,
+            snapshot["account_id"],
+            snapshot["portfolio_id"],
+            before_id=snapshot["id"],
         )
         for previous in previous_snapshots:
             if not _canonical_weights_equal(
-                previous.normalized_weights,
-                snapshot.normalized_weights,
+                previous.get("normalized_weights"),
+                snapshot.get("normalized_weights"),
                 plugin.canonicalize_symbol,
             ):
                 continue
@@ -464,43 +466,25 @@ async def _terminate_account_execution(
 async def execution_events(
     execution_id: str,
     pagination: HistoryPaginationDep,
-) -> ExecutionEventListPublic:
+) -> Response:
     """查询指定执行标识对应的事件流."""
-    page = await native_operation(
-        "list_execution_events", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
+    content = await native_operation(
+        "list_execution_events_json", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
     )
-    data = [
-        ExecutionEventPublic.model_validate(row).model_copy(
-            update={"details": normalize_execution_event_details(row["details"])}
-        )
-        for row in page["data"]
-    ]
-    return ExecutionEventListPublic(
-        data=data,
-        count=page["count"],
-    )
+    return Response(content=content, media_type="application/json")
 
 
 @router.get("/executions/{execution_id}/artifacts", response_model=ExecutionArtifactListPublic)
 async def execution_artifacts(
     execution_id: str,
     pagination: HistoryPaginationDep,
-) -> ExecutionArtifactListPublic:
+) -> Response:
     """查询指定执行标识对应的执行附件."""
-    page = await native_operation(
-        "list_execution_artifacts", {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit}
+    content = await native_operation(
+        "list_execution_artifacts_json",
+        {"execution_id": execution_id, "skip": pagination.skip, "limit": pagination.limit},
     )
-    artifact_data: list[ExecutionArtifactPublic] = []
-    for row in page["data"]:
-        item = ExecutionArtifactPublic.model_validate(row)
-        content = item.content
-        if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY and isinstance(content, dict):
-            content = normalize_legacy_result(content)
-        artifact_data.append(item.model_copy(update={"content": content}))
-    return ExecutionArtifactListPublic(
-        data=artifact_data,
-        count=page["count"],
-    )
+    return Response(content=content, media_type="application/json")
 
 
 @router.post("/empty_positions/{account_id}", response_model=ExecutionTriggerResponse)

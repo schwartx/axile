@@ -9,7 +9,6 @@ from fastapi import HTTPException
 
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.api.routes import account_assets
-from axile.server.db.models.account_asset import AccountAssetSnapshot
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 
 
@@ -17,7 +16,9 @@ from axile.server.execution.resident_connection import AccountConnectionUnavaila
 def route_dependencies(monkeypatch):
     account = SimpleNamespace(id=41)
     read = AsyncMock(return_value=account)
-    save = AsyncMock(return_value=AccountAssetSnapshot(id=7, account_id=41, source="manual", created_at="clock-time"))
+    save = AsyncMock(
+        return_value=dict(id=7, account_id=41, source="manual", execution_id=None, created_at="clock-time")
+    )
     clear = []
     monkeypatch.setattr(account_assets, "_get_account_or_404", read)
     monkeypatch.setattr(account_assets, "save_manual_asset_snapshot", save)

@@ -411,7 +411,7 @@ export interface AccountDashboardItem {
   next_run_time: string | null
   total_asset: number
   currency: string
-  holdings_count: number
+  holdings_count: number | null
   /** 各持仓市值绝对值降序（最多 12），用于敞口条。 */
   position_weights: number[]
   /** 已发布的全区间绩效；金额、日收益与曲线同版。 */
@@ -608,7 +608,7 @@ export interface ValidateCustomCalcResult {
 export interface AccountAssets {
   total_asset?: number
   currency?: string
-  positions?: Position[]
+  positions?: Position[] | null
   [k: string]: unknown
 }
 

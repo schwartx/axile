@@ -106,6 +106,9 @@ fn update_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
         return Err(invalid("组合更新包含未知字段"));
     }
     for (key, value) in changes {
+        if matches!(key.as_str(), "name" | "market") && value.is_null() {
+            return Err(invalid(format!("组合字段 {key} 不可清空")));
+        }
         if !value.is_null() && !value.is_string() {
             return Err(invalid(format!("组合字段 {key} 必须是文本或空值")));
         }
@@ -183,13 +186,8 @@ fn bound_context_on(connection: &Connection, request: &Value) -> Result<Value, A
 }
 
 fn target_public(snapshot: Option<Value>) -> Result<Value, AnalysisError> {
-    let Some(snapshot) = snapshot else {
-        return Ok(
-            json!({"weights":{}, "quantities":null, "strategy_weights":null,
-            "account_weights":null, "sizing":null, "calculated_at":null,
-            "source":null, "execution_id":null, "context_account_id":null}),
-        );
-    };
+    let has_snapshot = snapshot.is_some();
+    let snapshot = snapshot.unwrap_or(Value::Null);
     let weights = match &snapshot["raw_weights"] {
         Value::Object(weights) if weights.values().all(Value::is_number) => json!(weights),
         Value::Null | Value::Bool(false) => json!({}),
@@ -198,7 +196,7 @@ fn target_public(snapshot: Option<Value>) -> Result<Value, AnalysisError> {
         Value::Number(value) if value.as_f64() == Some(0.0) => json!({}),
         _ => return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照权重无效")),
     };
-    if !matches!(snapshot["source"].as_str(), Some("manual" | "execution")) {
+    if has_snapshot && !matches!(snapshot["source"].as_str(), Some("manual" | "execution")) {
         return Err(AnalysisError::new("TARGET_INVALID", "组合目标快照来源无效"));
     }
     Ok(json!({"weights": weights,
@@ -359,17 +357,49 @@ mod tests {
 
     #[test]
     fn target_http_view_keeps_empty_fallback_and_rejects_invalid_weights() {
-        assert_eq!(target_public(None).unwrap()["weights"], json!({}));
-        for raw in [json!({}), json!([]), json!(null), json!(0)] {
+        assert_eq!(
+            target_public(None).unwrap(),
+            json!({"weights":{},"quantities":null,
+            "strategy_weights":null,"account_weights":null,"sizing":null,"calculated_at":null,
+            "source":null,"execution_id":null,"context_account_id":null})
+        );
+        for raw in [
+            json!({}),
+            json!([]),
+            json!(null),
+            json!(0),
+            json!(false),
+            json!(""),
+        ] {
             assert_eq!(
-                target_public(Some(json!({"raw_weights":raw,"source":"manual"}))).unwrap()
-                    ["weights"],
+                target_public(Some(json!({"raw_weights":raw,"source":"manual"}))).unwrap()["weights"],
                 json!({})
             );
         }
-        assert!(
-            target_public(Some(json!({"raw_weights":{"bad":null},"source":"manual"}))).is_err()
-        );
+        assert!(target_public(Some(json!({"raw_weights":{"bad":null},"source":"manual"}))).is_err());
         assert!(target_public(Some(json!({"raw_weights":[1],"source":"manual"}))).is_err());
+    }
+
+    #[test]
+    fn target_http_view_keeps_metadata_and_rejects_malformed_snapshots() {
+        for snapshot in [
+            Value::Null,
+            json!({}),
+            json!({"raw_weights":{},"source":"invalid"}),
+        ] {
+            let error = target_public(Some(snapshot)).unwrap_err();
+            assert_eq!(error.code, "TARGET_INVALID");
+            assert_eq!(error.error, "组合目标快照来源无效");
+        }
+        assert_eq!(
+            target_public(Some(
+                json!({"raw_weights":{"native":0.5},"source":"execution",
+            "calculated_at":"t","execution_id":"e1","account_id":2})
+            ))
+            .unwrap(),
+            json!({"weights":{"native":0.5},"quantities":null,"strategy_weights":null,
+                "account_weights":null,"sizing":null,"calculated_at":"t","source":"execution",
+                "execution_id":"e1","context_account_id":2})
+        );
     }
 }

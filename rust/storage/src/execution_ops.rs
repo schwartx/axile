@@ -69,7 +69,7 @@ fn facts_row(
 }
 
 /// 首条执行结果、任务终态、补发结算与待发通知在同一事务提交。
-pub fn persist_execute_record(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+pub fn persist_execution_state(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
     crate::writer_scope::immediate(&connection, || {
         let record = persist_execute_record_in(&connection, request)?;
@@ -92,7 +92,10 @@ pub fn persist_execute_record(path: &str, request: &Value) -> Result<Value, Anal
                 }),
             )?;
         }
-        Ok(record)
+        crate::execution_reads::record_status(
+            &connection,
+            record.as_object().expect("persisted record"),
+        )
     })
 }
 
@@ -247,102 +250,6 @@ pub(crate) fn delete_execution_history_in(
             [account_id],
         )
         .map_err(sql)
-}
-
-/// 账户删除先清理审计及所有资产历史，再移除该账户剩余的冻结输入。
-pub(crate) fn delete_account_execution_inputs_in(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<(), AnalysisError> {
-    connection
-        .execute(
-            "DELETE FROM execution_input WHERE account_id=?1",
-            [account_id],
-        )
-        .map_err(sql)?;
-    Ok(())
-}
-
-fn read_snapshot<T>(
-    path: &str,
-    read: impl FnOnce(&Connection) -> Result<T, AnalysisError>,
-) -> Result<T, AnalysisError> {
-    crate::with_read_snapshot_errors(
-        Path::new(path),
-        read,
-        ("BUSINESS_FACTS_SQL", "BUSINESS_FACTS_SQL"),
-    )
-}
-
-/// 内部调用只返回主记录标量，不读取完整历史结果。
-pub fn recent_execution_records(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let account_id = integer(request, "account_id")?;
-    let limit = integer(request, "limit")?;
-    if limit < 0 {
-        return Err(facts_error("执行记录数量不能为负"));
-    }
-    let success_only = request
-        .get("success_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    read_snapshot(path, |connection| {
-        let mut statement = connection
-            .prepare(
-                "SELECT * FROM executerecord WHERE account_id=?1 AND (?2=0 OR is_success=1)
-                 ORDER BY id DESC LIMIT ?3",
-            )
-            .map_err(sql)?;
-        let mut rows = statement
-            .query(params![account_id, success_only, limit])
-            .map_err(sql)?;
-        let mut records = Vec::new();
-        while let Some(row) = rows.next().map_err(sql)? {
-            records.push(Value::Object(
-                crate::business_detail::decode(row, "executerecord").map_err(facts_error)?,
-            ));
-        }
-        Ok(Value::Array(records))
-    })
-}
-
-pub fn read_execution_input(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let input_id = text(request, "input_id")?;
-    read_snapshot(path, |connection| {
-        facts::load_input_value(connection, input_id)
-    })
-}
-
-fn execution_detail(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
-    let record_id = integer(request, "record_id")?;
-    let account_id = integer(request, "account_id")?;
-    let head = record_row(connection, record_id)?;
-    let payload =
-        crate::business_detail::read(connection, account_id, record_id).map_err(facts_error)?;
-    let mut detail = Map::new();
-    for name in [
-        "id",
-        "account_id",
-        "execution_id",
-        "created_at",
-        "is_success",
-    ] {
-        detail.insert(name.into(), head.get(name).cloned().unwrap_or(Value::Null));
-    }
-    detail.insert("input".into(), payload["input"].clone());
-    detail.insert("result".into(), payload["result"].clone());
-    Ok(Value::Object(detail))
-}
-
-pub fn read_execution_detail(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    read_snapshot(path, |connection| execution_detail(connection, request))
-}
-
-pub fn read_execution_result(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let record_id = integer(request, "record_id")?;
-    let account_id = integer(request, "account_id")?;
-    read_snapshot(path, |connection| {
-        crate::business_detail::read_result(connection, account_id, record_id).map_err(facts_error)
-    })
 }
 
 #[cfg(test)]

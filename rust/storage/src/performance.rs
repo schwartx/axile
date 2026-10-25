@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{Duration, NaiveDateTime, Timelike};
+use chrono::{Duration, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension};
 #[cfg(test)]
 use rusqlite::params;
@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::replay::{Observation, ReplayClose, ReplayLedger};
+use crate::result_reader::Point;
 
 const ENGINE_VERSION: &str = "equity-ledger-1";
 
@@ -30,12 +31,7 @@ fn canonical_time(value: NaiveDateTime) -> String {
 }
 
 fn display_time(value: &str) -> Result<String, String> {
-    let parsed = parse_time(value)?;
-    Ok(if parsed.nanosecond() == 0 {
-        parsed.format("%Y-%m-%dT%H:%M:%S").to_string()
-    } else {
-        canonical_time(parsed)
-    })
+    Ok(crate::calendar::display_time(parse_time(value)?))
 }
 
 #[derive(Clone)]
@@ -63,12 +59,12 @@ struct DaySamples {
 }
 
 #[derive(Default, Serialize)]
-struct Skips {
-    count: usize,
-    missing_target: usize,
-    missing_ticks: usize,
-    first_time: Option<String>,
-    last_time: Option<String>,
+pub(crate) struct Skips {
+    pub(crate) count: usize,
+    pub(crate) missing_target: usize,
+    pub(crate) missing_ticks: usize,
+    pub(crate) first_time: Option<String>,
+    pub(crate) last_time: Option<String>,
 }
 
 /// Tracks the same carried target as build_wbt_input, without materializing bars.
@@ -135,10 +131,20 @@ impl Participants {
 }
 
 #[derive(Serialize)]
-struct FallbackRange {
-    start: String,
-    end: String,
-    count: usize,
+pub(crate) struct FallbackRange {
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) count: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct Range {
+    #[serde(flatten)]
+    pub(crate) header: Value,
+    pub(crate) points: Vec<Point>,
+    pub(crate) sizing_fallback_ranges: Vec<FallbackRange>,
+    pub(crate) skips: Option<Skips>,
+    pub(crate) target_skips: Option<Skips>,
 }
 
 struct RangeState {
@@ -236,7 +242,7 @@ impl RangeState {
         Ok(())
     }
 
-    fn finish(self, settings: &Value, record_count: i64, include_backtest: bool) -> Value {
+    fn finish(self, settings: &Value, record_count: i64, include_backtest: bool) -> Range {
         let executable_start = self.executable.start.clone();
         let target_start = self.target.start.clone();
         let executable_daily = self.executable.ledger.map(ReplayLedger::finish);
@@ -250,8 +256,8 @@ impl RangeState {
             target_start.as_deref(),
             &self.fallback_days,
         );
-        let baseline = points.first().and_then(|point| point.get("date")).cloned();
-        json!({
+        let baseline = points.first().map(|point| point.date.clone());
+        let header = json!({
             "settings": settings,
             "backtest_included": include_backtest,
             "engine_version": ENGINE_VERSION,
@@ -263,16 +269,17 @@ impl RangeState {
             "used_record_count": if include_backtest { self.executable.used } else { 0 },
             "target_used_record_count": if include_backtest { self.target.used } else { 0 },
             "invalid_asset_count": self.invalid_assets,
-            "skips": if include_backtest && self.count > 0 { serde_json::to_value(&self.executable.skips).ok() } else { None },
-            "target_skips": if include_backtest && self.count > 0 { serde_json::to_value(&self.target.skips).ok() } else { None },
             "sizing_fallback_count": if include_backtest && self.count > 0 { Some(self.fallback_count) } else { None },
-            "sizing_fallback_ranges": self.fallback_ranges,
-            "points": points,
             "bindings": [],
             "executions": [],
             "calendar": {"status":"unavailable", "calendar_id":null, "label":null,
                 "closed_ranges":[], "unavailable_ranges":[]}
-        })
+        });
+        Range {
+            header, points, sizing_fallback_ranges: self.fallback_ranges,
+            skips: (include_backtest && self.count > 0).then_some(self.executable.skips),
+            target_skips: (include_backtest && self.count > 0).then_some(self.target.skips),
+        }
     }
 }
 
@@ -301,7 +308,7 @@ fn merge_daily(
     target_daily: Option<&BTreeMap<String, ReplayClose>>,
     target_start: Option<&str>,
     fallback_days: &BTreeSet<String>,
-) -> Vec<Value> {
+) -> Vec<Point> {
     let Some(base) = baseline else {
         return Vec::new();
     };
@@ -309,15 +316,13 @@ fn merge_daily(
     let from_backtest = daily.is_some() && start.is_some_and(|when| when <= base.time.as_str());
     let from_target =
         target_daily.is_some() && target_start.is_some_and(|when| when <= base.time.as_str());
-    let mut points = vec![json!({
-        "date":base.time, "observed_at":base.time, "record_id":base.id,
-        "execution_id":base.execution_id, "account_return":0.0, "account_equity":base_asset,
-        "portfolio_return":if from_backtest { Some(0.0) } else { None },
-        "account_daily_return":null, "portfolio_daily_return":null,
-        "target_portfolio_return":if from_target { Some(0.0) } else { None },
-        "target_portfolio_daily_return":null, "sizing_fallback":false,
-        "difference":if from_backtest { Some(0.0) } else { None }
-    })];
+    let mut points = vec![Point {
+        date: base.time.clone(), observed_at: base.time.clone(), record_id: Some(base.id),
+        execution_id: base.execution_id.clone(), account_return: Some(0.0), account_equity: Some(base_asset),
+        portfolio_return: from_backtest.then_some(0.0), account_daily_return: None, portfolio_daily_return: None,
+        target_portfolio_return: from_target.then_some(0.0), target_portfolio_daily_return: None,
+        sizing_fallback: false, difference: from_backtest.then_some(0.0),
+    }];
     let mut previous_asset = Some(base_asset);
     let (mut portfolio, mut target_portfolio) = (0.0, 0.0);
     for (day, samples) in days {
@@ -337,17 +342,16 @@ fn merge_daily(
         if let Some(close) = target_close {
             target_portfolio = close.cumulative_return;
         }
-        points.push(json!({
-            "date":day, "observed_at":last.time, "record_id":last.id,
-            "execution_id":last.execution_id, "account_return":account, "account_equity":last.asset,
-            "portfolio_return":close.map(|value| value.cumulative_return),
-            "account_daily_return":account_daily,
-            "portfolio_daily_return":close.and_then(|value| value.daily_return),
-            "target_portfolio_return":target_close.map(|value| value.cumulative_return),
-            "target_portfolio_daily_return":target_close.and_then(|value| value.daily_return),
-            "sizing_fallback":fallback_days.contains(day),
-            "difference":account.and_then(|account| close.map(|value| account-value.cumulative_return))
-        }));
+        points.push(Point {
+            date: day.clone(), observed_at: last.time.clone(), record_id: Some(last.id),
+            execution_id: last.execution_id.clone(), account_return: account, account_equity: last.asset,
+            portfolio_return: close.map(|value| value.cumulative_return), account_daily_return: account_daily,
+            portfolio_daily_return: close.and_then(|value| value.daily_return),
+            target_portfolio_return: target_close.map(|value| value.cumulative_return),
+            target_portfolio_daily_return: target_close.and_then(|value| value.daily_return),
+            sizing_fallback: fallback_days.contains(day),
+            difference: account.and_then(|account| close.map(|value| account-value.cumulative_return)),
+        });
     }
     points
 }
@@ -359,8 +363,7 @@ fn scan(
     start: &str,
     mut consume: impl FnMut(&Observation) -> Result<(), String>,
 ) -> Result<(), String> {
-    crate::fact_observation::scan(connection, account_id, start, |item| {
-        let mut item = item.clone();
+    crate::fact_observation::scan(connection, account_id, start, |mut item| {
         item.time = display_time(&item.time)?;
         consume(&item)
     })
@@ -395,15 +398,6 @@ fn check_observation_facts(connection: &Connection, account_id: i64) -> Result<(
     crate::fact_integrity::validate(connection, account_id)
 }
 
-/// Reuse native metadata assembly when emitting normalized publication rows.
-pub fn enrich_metadata(
-    connection: &Connection,
-    account_id: i64,
-    performance: &mut Value,
-) -> Result<(), String> {
-    crate::calendar::enrich(connection, account_id, performance)
-}
-
 /// 读路径性能计算的领域入参:账户、可选区间与回测语义。
 pub struct PerformanceRequest {
     pub account_id: i64,
@@ -423,6 +417,17 @@ pub enum SourceVersionCheck {
 }
 
 pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Result<Value, String> {
+    let mut ranges = calculate(connection, request)?;
+    if request.range.is_some() {
+        return serde_json::to_value(ranges.pop()).map_err(|error| error.to_string());
+    }
+    ranges.into_iter().map(|range| {
+        Ok((range.header["range"].as_str().expect("calculated range").to_owned(),
+            serde_json::to_value(range).map_err(|error| error.to_string())?))
+    }).collect::<Result<serde_json::Map<_, _>, String>>().map(Value::Object)
+}
+
+pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -> Result<Vec<Range>, String> {
     let account_id = request.account_id;
     check_source_version(connection, account_id, request.expected_source_version)?;
     if request.require_observation_facts {
@@ -469,7 +474,7 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
         baselines.push(RangeBaseline {key,cutoff,candidate:None,fallback_equity:None});
     }
     crate::fact_observation::scan(connection, account_id, "", |item| {
-        for baseline in &mut baselines { baseline.push(item); }
+        for baseline in &mut baselines { baseline.push(&item); }
         Ok(())
     })?;
     let mut states = Vec::new();
@@ -521,27 +526,13 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
             Ok(())
         })?;
     }
-    if request.range.is_some() {
-        let mut result = states.pop().expect("one requested range").finish(
-            &settings,
-            record_count,
-            include_backtest,
-        );
+    states.into_iter().map(|state| {
+        let mut range = state.finish(&settings, record_count, include_backtest);
         if include_metadata {
-            enrich_metadata(connection, account_id, &mut result)?;
+            crate::calendar::enrich(connection, account_id, &mut range.header)?;
         }
-        return Ok(result);
-    }
-    let mut result = serde_json::Map::new();
-    for state in states {
-        let key = state.key;
-        let mut performance = state.finish(&settings, record_count, include_backtest);
-        if include_metadata {
-            enrich_metadata(connection, account_id, &mut performance)?;
-        }
-        result.insert(key.to_owned(), performance);
-    }
-    Ok(Value::Object(result))
+        Ok(range)
+    }).collect()
 }
 
 #[cfg(test)]

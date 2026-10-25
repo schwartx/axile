@@ -137,10 +137,6 @@ class Account(AccountSnapshot):
         """允许历史未配置账户的空算法，已配置算法保留参数校验。"""
         return super()._check_algorithm_field(value) if value else value
 
-    def snapshot(self) -> AccountSnapshot:
-        """复制为可独立修改的执行账户快照。"""
-        return AccountSnapshot.model_validate(self.model_dump()).model_copy(deep=True)
-
 
 type AccountContext = AccountSnapshot
 
@@ -262,8 +258,8 @@ class AccountDashboardItemPublic(Model):
         最近一次快照的账户总权益。
     currency : str
         权益计价币种。
-    holdings_count : int
-        最近一次快照的持仓品种数。
+    holdings_count : Optional[int]
+        最近一次快照的持仓品种数；未取得有效持仓列表时为 ``None``。
     position_weights : List[float]
         最近一次快照各持仓的市值（降序，最多 12 项），用于持仓分布条。
     performance : dict
@@ -302,7 +298,7 @@ class AccountDashboardItemPublic(Model):
     next_run_time: Optional[str] = None
     total_asset: float
     currency: str
-    holdings_count: int
+    holdings_count: Optional[int]
     position_weights: List[float]
     performance: dict[str, Any]
     asset_observed_at: Optional[str] = None

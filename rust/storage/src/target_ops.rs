@@ -91,7 +91,7 @@ pub(crate) fn encode_snapshot_weights(
 pub(crate) fn decode_snapshot_weights(
     head: &Value,
     rows: &[Value],
-) -> Result<Value, AnalysisError> {
+) -> Result<Map<String, Value>, AnalysisError> {
     let mut result = Map::new();
     let mut invalid_values = Map::<String, Value>::new();
     for role in ROLES {
@@ -129,7 +129,7 @@ pub(crate) fn decode_snapshot_weights(
             json!({"invalid_target_values": invalid_values}),
         );
     }
-    Ok(Value::Object(result))
+    Ok(result)
 }
 
 fn json_column(row: &Row<'_>, name: &str) -> rusqlite::Result<Value> {
@@ -157,18 +157,14 @@ fn head(row: &Row<'_>) -> rusqlite::Result<Value> {
     }))
 }
 
-fn snapshot_view(head: &Value, rows: &[Value]) -> Result<Value, AnalysisError> {
-    let mut view = head.as_object().expect("snapshot head").clone();
+fn snapshot_view(mut head: Value, rows: &[Value]) -> Result<Value, AnalysisError> {
+    let weights = decode_snapshot_weights(&head, rows)?;
+    let view = head.as_object_mut().expect("snapshot head");
     view.remove("raw_weights_kind");
     view.remove("normalized_weights_kind");
     view.remove("weights_metadata");
-    view.extend(
-        decode_snapshot_weights(head, rows)?
-            .as_object()
-            .expect("decoded weights")
-            .clone(),
-    );
-    Ok(Value::Object(view))
+    view.extend(weights);
+    Ok(head)
 }
 
 fn views(connection: &Connection, heads: Vec<Value>) -> Result<Vec<Value>, AnalysisError> {
@@ -193,7 +189,7 @@ fn views(connection: &Connection, heads: Vec<Value>) -> Result<Vec<Value>, Analy
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
     heads
-        .iter()
+        .into_iter()
         .map(|head| {
             let children: Vec<_> = rows
                 .iter()
@@ -238,15 +234,12 @@ pub(crate) fn append_target_snapshot(
             ])
             .map_err(sql)?;
     }
-    let mut head = columns.as_object().expect("weight columns").clone();
-    head.extend(
-        json!({"id": id, "portfolio_id": portfolio_id, "account_id": account_id,
-        "source": source, "execution_id": execution_id, "calculated_at": calculated_at})
-        .as_object()
+    let mut view = json!({"id": id, "portfolio_id": portfolio_id, "account_id": account_id,
+        "source": source, "execution_id": execution_id, "calculated_at": calculated_at});
+    view.as_object_mut()
         .expect("snapshot identity")
-        .clone(),
-    );
-    snapshot_view(&Value::Object(head), &rows)
+        .extend(decode_snapshot_weights(&columns, &rows)?);
+    Ok(view)
 }
 
 fn latest(
@@ -302,42 +295,6 @@ pub(crate) fn previous_account_target_snapshots(
     views(connection, heads)
 }
 
-pub(crate) fn read_execution_target_weights(
-    connection: &Connection,
-    account_id: i64,
-    execution_id: &str,
-) -> Result<Value, AnalysisError> {
-    let head = connection
-        .query_row(
-            "SELECT id,normalized_weights_kind,weights_metadata FROM target_weight_snapshot WHERE account_id=?1 AND execution_id=?2 ORDER BY id DESC LIMIT 1",
-            params![account_id, execution_id],
-            |row| Ok(json!({"id": row.get::<_, i64>(0)?, "raw_weights_kind":"missing",
-                "normalized_weights_kind":row.get::<_, String>(1)?,
-                "weights_metadata":json_column(row, "weights_metadata")?})),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some(head) = head else {
-        return Ok(Value::Null);
-    };
-    let mut rows = Vec::new();
-    if head["normalized_weights_kind"] == "mapping" {
-        let mut statement = connection.prepare("SELECT map_key,value,audit_evidence FROM target_weight_snapshot_weight WHERE snapshot_id=?1 AND role='normalized_weights' ORDER BY map_key").map_err(sql)?;
-        rows = statement
-            .query_map([integer(&head, "id")?], |row| {
-                Ok(
-                    json!({"role":"normalized_weights", "map_key":row.get::<_, String>(0)?,
-                "value":row.get::<_, Option<f64>>(1)?,
-                "audit_evidence":json_column(row, "audit_evidence")?}),
-                )
-            })
-            .map_err(sql)?
-            .collect::<Result<_, _>>()
-            .map_err(sql)?;
-    }
-    Ok(decode_snapshot_weights(&head, &rows)?["normalized_weights"].clone())
-}
-
 /// 独立追加拥有一次写事务；读取在同一个只读快照内加载头和明细。
 pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let operation = text(request, "op")?;
@@ -350,11 +307,6 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection.execute_batch("BEGIN DEFERRED;").map_err(sql)?;
     match operation {
-        "latest_portfolio" => Ok(latest_portfolio_target_snapshot(
-            &connection,
-            integer(request, "portfolio_id")?,
-        )?
-        .unwrap_or(Value::Null)),
         "latest_account" => Ok(latest_account_target_snapshot(
             &connection,
             integer(request, "account_id")?,
@@ -368,12 +320,6 @@ pub fn target_operation(path: &str, request: &Value) -> Result<Value, AnalysisEr
             integer(request, "before_id")?,
             optional_integer(request, "limit")?.unwrap_or(50),
         )?)),
-        "read_execution" => match optional_text(request, "execution_id")? {
-            Some(id) => {
-                read_execution_target_weights(&connection, integer(request, "account_id")?, id)
-            }
-            None => Ok(Value::Null),
-        },
         _ => Err(invalid("未知目标权重快照操作")),
     }
 }
@@ -395,7 +341,10 @@ mod tests {
             json!({"raw_weights": [1,2]}),
         ] {
             let (head, rows) = encode_snapshot_weights(1, &payload).unwrap();
-            assert_eq!(decode_snapshot_weights(&head, &rows).unwrap(), payload);
+            assert_eq!(
+                Value::Object(decode_snapshot_weights(&head, &rows).unwrap()),
+                payload
+            );
         }
         let payload = json!({"raw_weights": {"rb2610": 0.25, " SHFE.rb2610 ": true, "big": 9007199254740993_u64, "nil": null}, "normalized_weights": {"bad": [1,2], "nf": {"invalid_number": "inf"}}});
         let (head, rows) = encode_snapshot_weights(1, &payload).unwrap();
@@ -443,13 +392,84 @@ mod tests {
         assert_eq!(previous.len(), 1);
         assert_eq!(previous[0]["execution_id"], "e1");
         assert_eq!(
-            read_execution_target_weights(&connection, 2, "e3").unwrap(),
+            latest_account_target_snapshot(&connection, 2, 7)
+                .unwrap()
+                .unwrap()["normalized_weights"],
             json!({})
         );
         assert_eq!(
-            read_execution_target_weights(&connection, 99, "e1").unwrap(),
+            latest_account_target_snapshot(&connection, 99, 7)
+                .unwrap()
+                .unwrap_or(Value::Null),
             Value::Null
         );
+    }
+
+    #[test]
+    fn appended_view_matches_persisted_view_without_storage_columns() {
+        let connection = Connection::open_in_memory().unwrap();
+        schema(&connection);
+        for (index, payload) in [
+            json!({}),
+            json!({"raw_weights":null,"normalized_weights":null}),
+            json!({"raw_weights":{},"normalized_weights":{}}),
+            json!({"raw_weights":{" native ":1,"invalid":true},"normalized_weights":[1,2]}),
+            json!({"raw_weights":[1,2],"normalized_weights":{"native":0.0}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut request = json!({"portfolio_id":7,"account_id":2,"source":"execution",
+                "execution_id":format!("e{index}"),"calculated_at":"t"});
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(payload.as_object().unwrap().clone());
+            let saved = append_target_snapshot(&connection, &request).unwrap();
+            let stored = connection
+                .query_row(
+                    &format!("SELECT {HEAD_COLUMNS} FROM target_weight_snapshot WHERE id=?1"),
+                    [saved["id"].as_i64().unwrap()],
+                    head,
+                )
+                .unwrap();
+            assert_eq!(
+                views(&connection, vec![stored]).unwrap(),
+                vec![saved.clone()]
+            );
+            for key in [
+                "raw_weights_kind",
+                "normalized_weights_kind",
+                "weights_metadata",
+            ] {
+                assert!(saved.get(key).is_none());
+            }
+            if let Some(value) = saved["raw_weights"].get(" native ") {
+                assert_eq!(value.to_string(), "1.0");
+                assert_eq!(
+                    saved["audit_evidence"]["invalid_target_values"]["raw_weights"]["invalid"]
+                        ["invalid_fields"]["value"],
+                    true
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn negative_zero_keeps_append_and_sqlite_read_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        schema(&connection);
+        let saved = append_target_snapshot(
+            &connection,
+            &json!({"portfolio_id":7,
+            "raw_weights":{"native":-0.0},"source":"manual","calculated_at":"t"}),
+        )
+        .unwrap();
+        let stored = latest_portfolio_target_snapshot(&connection, 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved["raw_weights"]["native"].to_string(), "-0.0");
+        assert_eq!(stored["raw_weights"]["native"].to_string(), "0.0");
     }
 
     #[test]

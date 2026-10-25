@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
-from axile.executor.account_control.models import AccountControlOverride, AccountControlPolicy
 from axile.executor.account_control.presets import (
     ACCOUNT_CONTROL_PRESETS,
     ensure_account_control_preset_compatible,
@@ -15,46 +13,6 @@ from axile.executor.account_control.registry import ensure_default_account_contr
 from axile.server.api.routes.account_support import _get_account_or_404
 
 router = APIRouter()
-
-
-class AccountControlPresetPublic(BaseModel):
-    """流控预设方案的展示信息."""
-
-    key: str
-    display_name: str
-    description: str
-
-
-class AccountControlOperationPublic(BaseModel):
-    """流控操作的展示信息."""
-
-    key: str
-    display_name: str
-    description: str
-    category: str
-    groups: list[str] = Field(default_factory=list)
-
-
-class AccountControlGroupPublic(BaseModel):
-    """共享限制组的展示信息."""
-
-    key: str
-    display_name: str
-    description: str
-
-
-class AccountControlPolicyPublic(BaseModel):
-    """账户流控编辑器使用的完整只读模型."""
-
-    preset_key: str
-    preset_display_name: str
-    compatible_presets: list[AccountControlPresetPublic]
-    timezone_display_name: str
-    override: AccountControlOverride | None
-    preset_policy: AccountControlPolicy
-    effective_policy: AccountControlPolicy
-    operations: list[AccountControlOperationPublic]
-    groups: list[AccountControlGroupPublic]
 
 
 _PRESET_META = {
@@ -94,23 +52,23 @@ _GROUP_META = {
 }
 
 
-def _compatible_presets(trade_channel: object) -> list[AccountControlPresetPublic]:
-    result: list[AccountControlPresetPublic] = []
+def _compatible_presets(trade_channel: object) -> list[dict]:
+    result: list[dict] = []
     for key in ACCOUNT_CONTROL_PRESETS:
         try:
             ensure_account_control_preset_compatible(key, trade_channel)  # type: ignore[arg-type]
         except ValueError:
             continue
         name, description = _PRESET_META.get(key, ("扩展方案", "渠道提供的流控预设方案"))
-        result.append(AccountControlPresetPublic(key=key, display_name=name, description=description))
+        result.append(dict(key=key, display_name=name, description=description))
     return result
 
 
-@router.get("/{account_id}/control/policy", response_model=AccountControlPolicyPublic)
+@router.get("/{account_id}/control/policy")
 async def get_account_control_policy(
     account_id: int,
     preset_key: str | None = Query(default=None),
-) -> AccountControlPolicyPublic:
+) -> dict:
     """读取或无副作用预览账户流控配置."""
     account = await _get_account_or_404(account_id)
     selected_key = preset_key or account.account_control_preset
@@ -122,14 +80,14 @@ async def get_account_control_policy(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     registry = ensure_default_account_control_registry_bootstrapped()
-    operations: list[AccountControlOperationPublic] = []
+    operations: list[dict] = []
     for index, operation in enumerate(registry.operations.values(), start=1):
         name, description, category = _OPERATION_META.get(
             operation.key,
             (f"扩展操作 {index}", "渠道提供的扩展流控操作", "扩展操作"),
         )
         operations.append(
-            AccountControlOperationPublic(
+            dict(
                 key=operation.key,
                 display_name=name,
                 description=description,
@@ -138,29 +96,25 @@ async def get_account_control_policy(
             )
         )
 
-    groups: list[AccountControlGroupPublic] = []
+    groups: list[dict] = []
     for index, group in enumerate(registry.groups.values(), start=1):
         name, description = _GROUP_META.get(
             group.key,
             (f"扩展共享限制 {index}", "渠道提供的共享流控限制"),
         )
-        groups.append(AccountControlGroupPublic(key=group.key, display_name=name, description=description))
+        groups.append(dict(key=group.key, display_name=name, description=description))
 
     preset_name, _ = _PRESET_META.get(selected_key, ("扩展方案", ""))
-    return AccountControlPolicyPublic(
+    return dict(
         preset_key=selected_key,
         preset_display_name=preset_name,
         compatible_presets=_compatible_presets(account.trade_channel),
         timezone_display_name=(
             "中国标准时间（UTC+8）" if effective_policy.timezone == "Asia/Shanghai" else "账户配置时区"
         ),
-        override=account.account_control_override,
-        preset_policy=AccountControlPolicy.model_validate(
-            preset_policy.model_dump(exclude={"preset_key", "operation_groups"})
-        ),
-        effective_policy=AccountControlPolicy.model_validate(
-            effective_policy.model_dump(exclude={"preset_key", "operation_groups"})
-        ),
+        override=account.account_control_override.model_dump(mode="json") if account.account_control_override else None,
+        preset_policy=preset_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
+        effective_policy=effective_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
         operations=operations,
         groups=groups,
     )

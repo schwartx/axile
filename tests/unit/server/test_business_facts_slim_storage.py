@@ -6,10 +6,12 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
+from axile.server.execution.input_persistence import persist_pre_execute_input_sync
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import (
+    audit_artifacts,
     freeze_input,
     persist_result,
     read_result,
@@ -17,10 +19,11 @@ from tests.unit.server._business_facts_test_support import (
     seed_account,
     sql,
 )
+from tests.unit.server._native_read_views import read_view
 
 
 def _input(path, input_id="input-1"):
-    return native_store_call(path, "read_execution_input", {"input_id": input_id})
+    return read_view(path, "read_execution_input", {"input_id": input_id})
 
 
 def test_columns_store_facts_without_a_second_json_description(native_database):
@@ -190,9 +193,7 @@ def test_summary_reference_preserves_distinct_evidence_without_field_projection_
     compact = rows(native_database, "execution_artifact")[0]["content"]
     assert "business_facts_ref" not in compact
     assert compact["symbol_results"]["A"]["orders"]
-    hydrated = native_store_call(native_database, "list_execution_artifacts", {"execution_id": execution_id})["data"][
-        0
-    ]["content"]
+    hydrated = audit_artifacts(native_database, execution_id)["data"][0]["content"]
     hydrated.pop("business_facts_ref", None)
     assert business_evidence(hydrated) == business_evidence(content)
 
@@ -221,7 +222,7 @@ def test_summary_reference_rejects_invalid_projection_version(native_database, p
         },
     )
     with pytest.raises(_core.NativeError, match="审计业务事实引用版本或视图无效") as error:
-        native_store_call(native_database, "list_execution_artifacts", {"execution_id": execution_id})
+        audit_artifacts(native_database, execution_id)
     assert error.value.args[0] == "BUSINESS_FACTS_REFERENCE"
 
 
@@ -243,18 +244,13 @@ def test_all_business_tables_have_no_generic_field_metadata(native_database):
             assert "numeric_kinds" not in columns
 
 
-def test_equal_audit_targets_share_one_frozen_input(monkeypatch, native_database):
+def test_pre_execute_input_and_equal_aliases_share_one_frozen_input(monkeypatch, native_database):
     seed_account(native_database)
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     payload = {"curr_target": {"A": 0}, "last_target": {}, "strategy_target": {"A": 0.3}, "trade_rules": {}}
-    receipt = freeze_input(
-        native_database,
-        payload,
-        execution_id="one",
-        audit_payload={**payload, "account_target": {"A": 0.0}},
-        audit_input_id="audit-one",
-    )
-    assert receipt["input_id"] == receipt["audit_id"]
+    audit_input = {**payload, "account_target": {"A": 0.0}}
+    input_id = persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input)
+    assert persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input) == input_id
     assert len(rows(native_database, "execution_input")) == 1
     assert len(rows(native_database, "execution_input_target")) == 2
 

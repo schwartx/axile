@@ -4,10 +4,30 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from axile.executor.feishu_notifications import build_execution_notification_context
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.server.api.routes import account_feishu
 from tests.unit.server._execution_test_support import build_account
+
+
+@pytest.mark.parametrize(
+    "snapshot,expected",
+    [
+        (None, {}),
+        ({}, {}),
+        ({"normalized_weights": None}, {}),
+        ({"normalized_weights": {}}, {}),
+        ({"normalized_weights": {"rb2610": 0.0, "ag2612": -0.5}}, {"rb2610": 0.0, "ag2612": -0.5}),
+    ],
+)
+def test_notification_sample_target_preserves_missing_empty_and_signed_weights(monkeypatch, snapshot, expected):
+    account = build_account(portfolio_id=7)
+    native = AsyncMock(return_value=snapshot)
+    monkeypatch.setattr(account_feishu, "get_latest_account_target_snapshot", native)
+    assert asyncio.run(account_feishu._load_sample_target_weights(account)) == expected
+    native.assert_awaited_once_with(account.id, 7)
 
 
 def test_notification_preview_uses_native_context(monkeypatch) -> None:

@@ -8,11 +8,11 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts.repository import read_execution_input, read_execution_result
 from axile.server.execution import records
-from axile.server.target_weight_snapshots import append_target_weight_snapshot, read_target_snapshot_weights
+from axile.server.target_weight_snapshots import append_target_weight_snapshot, get_latest_account_target_snapshot
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import persist_result, rows, seed_account, sql
+from tests.unit.server._native_read_views import read_execution_input, read_execution_result, receipt_record
 
 
 @pytest.fixture
@@ -69,10 +69,10 @@ def test_record_fact_freezes_final_sizing_and_commits_with_record(database) -> N
         assert sizing["target_quantity"] == 2.0
         assert sizing["unit_notional"] == 300.0
         assert result["account_assets"]["total_asset"] == 1000.0
-        assert record.facts_complete
+        assert receipt_record(record)["facts_complete"]
         assert len(rows(database, "account_asset_snapshot")) == 1
-        assert record.input_id is not None
-        assert await read_execution_input(record.input_id) == {"curr_target": {"A": 0.9}}
+        assert receipt_record(record)["input_id"] is not None
+        assert await read_execution_input(receipt_record(record)["input_id"]) == {"curr_target": {"A": 0.9}}
 
     asyncio.run(scenario())
 
@@ -117,8 +117,7 @@ def test_late_target_refreshes_only_matching_execution_fact(database) -> None:
             source="execution",
             execution_id="late",
         )
-        assert await read_target_snapshot_weights(account_id=1, execution_id="late") == {"A": 0.6}
-        assert await read_target_snapshot_weights(account_id=1, execution_id="unrelated") is None
+        assert (await get_latest_account_target_snapshot(1, 1))["normalized_weights"] == {"A": 0.6}
 
     asyncio.run(scenario())
 
@@ -147,11 +146,11 @@ def test_duplicate_record_retains_first_source_facts_and_projects_once(database)
             raw_result={"status": "FAILED", "error": "late failure"},
             is_success=0,
         )
-        assert first.id == second.id
+        assert first["record_id"] == second["record_id"]
         assert {name: rows(database, name) for name in committed} == committed
         assert rows(database, "account_analysis") == version
         assert (await read_execution_result(second))["status"] == "NOOP"
-        assert second.facts_complete
+        assert receipt_record(second)["facts_complete"]
 
     asyncio.run(scenario())
 
@@ -166,11 +165,11 @@ def test_unsupported_source_shape_preserves_business_record_and_marks_fact(datab
             is_success=0,
         )
         persisted = rows(database, "executerecord")
-        assert len(persisted) == 1 and persisted[0]["id"] == record.id
+        assert len(persisted) == 1 and persisted[0]["id"] == record["record_id"]
         result = await read_execution_result(record)
         assert "status" not in result
         assert "123" in str(result["audit_evidence"])
-        assert persisted[0]["facts_complete"] and record.facts_complete
+        assert persisted[0]["facts_complete"] and receipt_record(record)["facts_complete"]
 
     asyncio.run(scenario())
 

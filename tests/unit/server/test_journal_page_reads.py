@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from axile.server._native import _core
 from axile.server.api.routes import account_schedule
-from axile.server.db.models import ExecuteRecord
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle

@@ -15,6 +15,7 @@ from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _NOW = "2026-01-02T09:00:00+08:00"
 _PRECISE = "2026-01-01T09:00:00.000006+08:00"
@@ -58,9 +59,8 @@ def database(native_database: Path) -> Path:
 
 
 def _persist(database: Path, created_at: str, result: dict, execution_id: str = "regression") -> dict:
-    return native_store_call(
+    return persist_record_fixture(
         database,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": execution_id,
@@ -104,6 +104,7 @@ def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_w
     core = require_native_store("queue_enqueue", "queue_claim", "queue_status")
     _persist(database, _PRECISE, _RESULT)
     monkeypatch.setattr(analysis, "database_path", lambda: str(database))
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(database))
     manager = analysis.AnalysisManager()
     claims = []
 
@@ -201,7 +202,7 @@ def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(
     assert symbols[0]["status"] == public["status"] == "PARTIAL"
     assert symbols[0]["error"] == attempts[0]["reason"] == public["error"] == "执行不到位"
     assert (
-        core.execution_business_detail(store, 1, record["id"])["result"]["symbol_results"]["A"]["error"]
+        json.loads(core.execution_record_detail(store, 1, record["id"]))["result"]["symbol_results"]["A"]["error"]
         == symbol["error"]
     )
 

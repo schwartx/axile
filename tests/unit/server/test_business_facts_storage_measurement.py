@@ -1,5 +1,7 @@
 """Protect storage benchmark evidence, integrity and physical-size accounting."""
 
+import asyncio
+import hashlib
 import json
 import socket
 import sqlite3
@@ -11,6 +13,7 @@ import pytest
 from axile.domain.execution import ExecutionArtifactType
 from scripts.benchmark_business_fact_storage import (
     DatasetSpec,
+    _lifecycle_hashes,
     analysis_fact_hashes,
     artifact_business_evidence,
     checkpoint_storage,
@@ -176,3 +179,75 @@ def test_event_comparison_keeps_hydrated_fields_and_detects_unrequested_defaults
     hydrated["decision"]["last_target"] = {}
     assert event_business_evidence(event, hydrated) != before
     assert event_business_evidence(event, {"decision": {"curr_target": {"S": None}}}) != before
+
+
+@pytest.mark.parametrize("partial", [None, "list_execution_artifacts_json", "list_execution_events_json"])
+def test_lifecycle_hashes_use_native_audit_pages_and_reject_incomplete_evidence(native_database, monkeypatch, partial):
+    from axile.server import native_store
+
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    execution_id = "benchmark-audit"
+    created = "2026-01-02T03:04:05"
+    artifact = {
+        "id": 1,
+        "execution_id": execution_id,
+        "artifact_type": "execution_summary",
+        "schema_version": 1,
+        "content": {"complete": False, "fees": None},
+        "created_at": created,
+    }
+    event = {
+        "id": 1,
+        "execution_id": execution_id,
+        "account_id": 1,
+        "channel": "ctp",
+        "algorithm": "SINGLE-MAKER",
+        "schema_version": 1,
+        "event_uid": "benchmark-event",
+        "event_type": "execution_failed",
+        "status": "ERROR",
+        "reason_family": "SYSTEM",
+        "reason_code": "COMMON.EXECUTION_FAILED",
+        "symbol": None,
+        "intent_id": None,
+        "order_id": None,
+        "client_order_id": None,
+        "ts_local_created": created,
+        "ts_exchange": None,
+        "ts_persisted": created,
+        "seq": 7,
+        "details": {"error": "original", "retry_after": 1791680400},
+    }
+    with closing(sqlite3.connect(native_database)) as connection, connection:
+        connection.execute(
+            "INSERT INTO executerecord(account_id,execution_id,created_at,is_success) VALUES(1,?,?,0)",
+            (execution_id, created),
+        )
+        for table, row in (("execution_artifact", artifact), ("execution_event", event)):
+            connection.execute(
+                f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+                tuple(json.dumps(value) if isinstance(value, dict) else value for value in row.values()),
+            )
+    if partial:
+        read = native_store.native_operation
+
+        async def incomplete(operation, request):
+            page = json.loads(await read(operation, request))
+            if operation == partial:
+                page["count"] += 1
+            return json.dumps(page).encode()
+
+        monkeypatch.setattr(native_store, "native_operation", incomplete)
+        with pytest.raises(AssertionError, match="all audit rows"):
+            asyncio.run(_lifecycle_hashes(None, "typed"))
+    else:
+        expected_artifact = {
+            "execution_id": execution_id,
+            "type": artifact["artifact_type"],
+            "content": artifact["content"],
+            "created_at": created,
+        }
+        assert asyncio.run(_lifecycle_hashes(None, "typed")) == {
+            "artifacts": hashlib.sha256(semantic_hash(expected_artifact).encode()).hexdigest(),
+            "events": hashlib.sha256(semantic_hash(event).encode()).hexdigest(),
+        }

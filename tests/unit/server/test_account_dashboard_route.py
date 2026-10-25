@@ -18,7 +18,7 @@ class _Scheduler:
 
 def _client(monkeypatch, assets, *, target=None):
     context = {
-        "accounts": [_build_account().model_dump(mode="json")],
+        "accounts": [_build_account().model_dump(mode="json") | {"connection": {"status": "uninitialized"}}],
         "inputs": {
             "1": {
                 "observation": {"assets": assets, "created_at": "2026-08-26T21:35:11"} if assets is not None else None,
@@ -94,6 +94,7 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
         {
             "logic_version": account_crud.LOGIC_VERSION,
             "engine_version": account_crud.ENGINE_VERSION,
+            "live_sessions": account_crud.public_session_views(),
         },
     )
 
@@ -128,7 +129,29 @@ def test_dashboard_empty_zero_and_top_twelve(monkeypatch, assets):
     assert item["off_symbol_count"] is None
     assert item["running_execution_id"] == "live" and item["running_phase"] == "submitting"
     assert item["currency"] == "CNY" and item["performance"]["status"] == "empty"
-    assert item["holdings_count"] == (14 if assets and assets["positions"] else 0)
+    assert item["holdings_count"] == (None if assets is None else 14 if assets["positions"] else 0)
     assert item["position_weights"] == (list(range(14, 2, -1)) if assets and assets["positions"] else [])
     assert (item["asset_observed_at"] is None) == (assets is None)
     assert "assets" not in item and "target_weights" not in item
+
+
+@pytest.mark.parametrize("target", [{}, {"rb2610": 0.1}], ids=["flat-target", "open-target"])
+@pytest.mark.parametrize(
+    "assets, known",
+    [
+        ({"total_asset": 100}, False),
+        ({"total_asset": 100, "positions": None}, False),
+        ({"total_asset": 100, "positions": "invalid"}, False),
+        ({"total_asset": 100, "positions": []}, True),
+    ],
+    ids=["missing", "null", "invalid", "flat"],
+)
+def test_dashboard_distinguishes_unknown_positions_from_flat(monkeypatch, target, assets, known):
+    client, _ = _client(monkeypatch, assets, target=target)
+    response = client.get("/account/dashboard")
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert item["holdings_count"] == (0 if known else None)
+    assert item["off_symbol_count"] == (len(target) if known else None)
+    assert item["position_weights"] == []
+    assert item["asset_observed_at"] == "2026-08-26T21:35:11"

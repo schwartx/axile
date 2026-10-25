@@ -151,3 +151,95 @@ def test_portfolio_queries_forward_native_json_without_decoding(monkeypatch):
     assert response.body == body
     assert response.media_type == "application/json"
     native.assert_awaited_once_with("portfolio_query_json", {"op": "list"})
+
+
+def test_portfolio_write_receipts_keep_persisted_fields_status_and_errors(native_database, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axile.server.api.routes import portfolio as routes
+
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        created = client.post("/portfolio/", json={"name": "组合", "market": "期货", "custom_calc_py_code": CODE})
+        assert created.status_code == 201, created.text
+        value = created.json()
+        identity = value["id"]
+        assert value["account_id"] is None and value["description"] is None
+        assert value["status"] is None and value["tag"] is None
+        assert value["custom_calc_py_code"] == CODE
+        detail = f"/portfolio/{identity}"
+        assert created.content == client.get(detail).content
+        assert client.patch(detail, json={"custom_calc_py_code": None}).status_code == 422
+        assert client.patch(detail, json={"custom_calc_py_code": " "}).status_code == 422
+        updated = client.patch(detail, json={"name": "更新后", "description": "说明", "status": "active", "tag": "tag"})
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "更新后" and updated.json()["description"] == "说明"
+        assert updated.content == client.get(detail).content
+        assert client.patch(detail, json={}).content == updated.content
+        cleared = client.patch(detail, json={"description": None, "status": None, "tag": None})
+        assert cleared.status_code == 200
+        assert all(cleared.json()[field] is None for field in ("description", "status", "tag"))
+        assert cleared.json()["name"] == "更新后" and cleared.json()["market"] == "期货"
+        deleted = client.delete(detail)
+        assert deleted.status_code == 200 and deleted.json() == {"message": "成功删除组合"}
+        assert client.get(detail).status_code == client.patch(detail, json={}).status_code == 404
+        assert client.delete(detail).status_code == 404
+
+
+@pytest.mark.parametrize("field", ["name", "market"])
+def test_portfolio_patch_rejects_null_required_fields(native_database, monkeypatch, field):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axile.server.api.routes import portfolio as routes
+
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as client:
+        created = client.post("/portfolio/", json={"name": "组合", "market": "期货", "custom_calc_py_code": CODE})
+        assert created.status_code == 201, created.text
+        detail = f"/portfolio/{created.json()['id']}"
+        response = client.patch(detail, json={field: None, "description": "不可写入"})
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"][0]["loc"] == ["body", field]
+        assert client.get(detail).content == created.content
+
+
+@pytest.mark.parametrize("field", ["name", "market"])
+def test_native_portfolio_patch_rejects_null_required_fields_without_writes(native_database, field):
+    from axile.server._native import _core
+    from tests.conftest import native_store_call
+
+    created = native_store_call(
+        native_database,
+        "portfolio_operation",
+        {
+            "op": "create",
+            "portfolio": {
+                "name": "组合",
+                "market": "期货",
+                "custom_calc_py_code": CODE,
+                "created_at": "before",
+                "updated_at": "before",
+            },
+        },
+    )
+    identity = created["id"]
+    with pytest.raises(_core.NativeError) as caught:
+        native_store_call(
+            native_database,
+            "portfolio_operation",
+            {
+                "op": "update",
+                "portfolio_id": identity,
+                "changes": {field: None, "description": "不可写入"},
+                "updated_at": "after",
+            },
+        )
+    assert caught.value.args[0] == "VALIDATION"
+    saved = native_store_call(native_database, "portfolio_operation", {"op": "context", "portfolio_id": identity})
+    assert saved["portfolio"] == {key: value for key, value in created.items() if key != "account_id"}

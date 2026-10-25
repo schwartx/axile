@@ -1,6 +1,5 @@
 """结构化执行业务事实的归档来源与快照语义。"""
 
-import asyncio
 import json
 from zipfile import ZipFile
 
@@ -19,14 +18,15 @@ from axile.server.evidence.models import (
 from axile.server.evidence.report import execution_report, result_payload
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import freeze_input
+from tests.unit.server._native_read_views import read_view
 from tests.unit.server.test_evidence_export import _event
 
 
 def _event_details(path, event):
     native_store_call(path, "append_execution_event", _event(**event).model_dump(mode="json"))
-    return native_store_call(path, "list_execution_events", {"execution_id": event["execution_id"]})["data"][0][
-        "details"
-    ]
+    return json.loads(native_store_call(path, "list_execution_events_json", {"execution_id": event["execution_id"]}))[
+        "data"
+    ][0]["details"]
 
 
 def test_canonical_result_preserves_native_occurrences_and_truthful_source():
@@ -152,7 +152,7 @@ def test_target_event_ref_only_emits_selected_fields_and_existing_diagnostics(mo
         "artifact_type": "target_snapshot",
         "content": fact_artifacts.make_artifact_reference(view="targets", input_id="typed-input"),
     }
-    target = asyncio.run(fact_artifacts.resolve_artifact_content(artifact, account_id=1))
+    target = read_view(native_database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
     assert {key: value for key, value in target.items() if key != "business_facts_ref"} == {
         key: value for key, value in payload.items() if key != "account_target"
     }

@@ -117,7 +117,7 @@ pub(crate) fn scan(
     connection: &Connection,
     account: i64,
     start: &str,
-    mut consume: impl FnMut(&Observation) -> Result<(), String>,
+    mut consume: impl FnMut(Observation) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
@@ -132,7 +132,7 @@ pub(crate) fn scan(
     let mut reader = ObservationReader::new(connection).map_err(|error| error.to_string())?;
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
         let id: i64 = row.get(0).map_err(|error| error.to_string())?;
-        consume(&reader.read(account, id)?)?;
+        consume(reader.read(account, id)?)?;
     }
     Ok(())
 }

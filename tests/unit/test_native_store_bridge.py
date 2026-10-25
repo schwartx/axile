@@ -66,7 +66,7 @@ def test_native_operation_rejects_nonfinite_before_native_call(monkeypatch, valu
 @pytest.mark.parametrize(
     "name",
     [
-        "persist_execute_record",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "asset_snapshot_write",
@@ -308,7 +308,7 @@ except _core.NativeError:
     assert corruption == "malformed_json"
 else:
     raise AssertionError("invalid account JSON did not raise")
-assert _core.migration_current(database, "{}")["public"] == "0041"
+assert _core.migration_current(database, "{}")["public"] == "0034"
 print("native-process-alive")
 """
     result = subprocess.run(

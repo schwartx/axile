@@ -317,7 +317,7 @@ class OrderTracker:
 
     def on_order_update(self, order: UnifiedOrder) -> None:
         """收敛订单状态回调并驱动完成/兜底逻辑。"""
-        fallback_submission: tuple[UnifiedOrder, dict[str, Any], float] | None = None
+        fallback_submission: tuple[UnifiedOrder, dict[str, Any]] | None = None
 
         with self.lock:
             tracked_order_id = self._resolve_order_target_id(order)
@@ -346,7 +346,7 @@ class OrderTracker:
                 if fallback_pending_cancel and chase_info is not None:
                     remaining_volume = self._get_effective_remaining_volume(tracked_order_id, order)
                     if remaining_volume > 0:
-                        fallback_submission = (order, dict(chase_info), remaining_volume)
+                        fallback_submission = (order, dict(chase_info))
                         self._fallback_submitting.add(tracked_order_id)
                     if tracked_order_id in self._chase_info:
                         del self._chase_info[tracked_order_id]
@@ -364,8 +364,8 @@ class OrderTracker:
                     self.all_done_event.set()
 
         if fallback_submission is not None:
-            completed_order, fallback_info, remaining_volume = fallback_submission
-            self._submit_market_fallback_order(completed_order, fallback_info, remaining_volume)
+            completed_order, fallback_info = fallback_submission
+            self._submit_market_fallback_order(completed_order, fallback_info)
 
     def on_trade_record(self, trade: TradeRecord) -> None:
         """成交回调，用于增量更新已跟踪订单的成交进度."""
@@ -889,8 +889,6 @@ class OrderTracker:
                             }
                         },
                     )
-                    with self.lock:
-                        self._chasing_order_id = None
                     continue
 
                 # 剩余量必须在撤单确认之后再算：确认前的快照默认「旧单已死」，
@@ -933,22 +931,16 @@ class OrderTracker:
                     self._update_chase_info(order_id, new_order)
                     self._set_order_error(order_id, None)
 
-                with self.lock:
-                    self._chasing_order_id = None
-
-            except (MemoryError, ExecutionTerminated):
-                with self.lock:
-                    self._chasing_order_id = None
-                raise
             except RECOVERABLE_ALGORITHM_EXCEPTIONS as exc:
-                with self.lock:
-                    self._chasing_order_id = None
                 if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
                     getattr(exc, "requires_session_recovery", False)
                 ):
                     raise
                 self._logger.error(f"追单失败 {symbol}: {exc}")
                 self._set_order_error(order_id, execution_error_message(exc, "追单"))
+            finally:
+                with self.lock:
+                    self._chasing_order_id = None
 
         self._fallback_to_market_order()
 
@@ -1166,7 +1158,6 @@ class OrderTracker:
         self,
         completed_order: UnifiedOrder,
         chase_info: dict[str, Any],
-        remaining_volume: float | None = None,
     ) -> None:
         """终态确认后按市价边界提交一批子单，提交期间禁止提前完成。"""
         order_id = completed_order.order_id
@@ -1177,109 +1168,104 @@ class OrderTracker:
             self._fallback_submitting.add(order_id)
             self.all_done_event.clear()
         try:
-            self._submit_market_fallback_batch(completed_order, chase_info)
+            symbol = chase_info["symbol"]
+            direction = chase_info["direction"]
+            remaining = self._get_effective_remaining_volume(order_id, completed_order)
+            submitted = 0.0
+            if remaining <= 0 or self._submission_expired(chase_info):
+                return
+            if not self._is_market_fallback_price_safe(completed_order, chase_info):
+                self._mark_market_fallback_failed(
+                    order_id,
+                    reason_code="COMMON.MARKET_FALLBACK_PRICE_PROTECTION",
+                    message="当前盘口偏离原限价过大，已停止自动市价兜底",
+                    symbol=symbol,
+                    details={"remaining_volume": remaining},
+                )
+                return
+            try:
+                getter = getattr(self.executor, "get_order_volume_bounds", None)
+                bounds = (
+                    cast("tuple[int | None, int | None] | None", getter(OrderType.MARKET, chase_info.get("trade_rule")))
+                    if callable(getter)
+                    else None
+                )
+                slices = (
+                    split_order_volumes(remaining, bounds[1], min_size=bounds[0]) if bounds is not None else [remaining]
+                )
+                for index, chunk in enumerate(slices, 1):
+                    if self._submission_expired(chase_info):
+                        return
+                    market_order = self.executor.place_order(
+                        direction, OrderType.MARKET, chunk, price=0, **_chase_place_kwargs(chase_info)
+                    )
+                    submitted += chunk
+                    self.add_order(
+                        market_order,
+                        direction=direction,
+                        position_side=chase_info.get("position_side"),
+                        offset_flag=chase_info.get("offset_flag"),
+                        trade_rule=chase_info.get("trade_rule"),
+                        chase_enabled=False,
+                    )
+                    if market_order.is_completed():
+                        self.on_order_update(market_order)
+                    self.executor.emit_audit_event(
+                        event_type=ExecutionEventType.ORDER_SUBMITTED,
+                        status=ExecutionEventStatus.WARNING,
+                        reason_family=ExecutionReasonFamily.EXECUTION_STRATEGY,
+                        reason_code="COMMON.MARKET_FALLBACK_ORDER_SUBMITTED",
+                        symbol=symbol,
+                        order_id=market_order.order_id,
+                        details={
+                            "fallback": {
+                                "original_order_id": order_id,
+                                "child_index": index,
+                                "child_volume": chunk,
+                                "submitted_volume": submitted,
+                                "remaining_volume": remaining - submitted,
+                                "direction": direction.value,
+                                "position_side": chase_info.get("position_side"),
+                            }
+                        },
+                    )
+            except (MemoryError, *RECOVERABLE_ALGORITHM_EXCEPTIONS) as exc:
+                self._set_order_error(order_id, execution_error_message(exc, "报单"))
+                self._mark_market_fallback_failed(
+                    order_id,
+                    reason_code="COMMON.MARKET_FALLBACK_ORDER_FAILED",
+                    message=f"市价单兜底失败: {format_exception_message(exc)}",
+                    symbol=symbol,
+                    details={
+                        "original_order_id": order_id,
+                        "submitted_volume": submitted,
+                        "remaining_volume": remaining - submitted,
+                    },
+                )
+                if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
+                    getattr(exc, "requires_session_recovery", False)
+                ):
+                    raise
+                return
+            if submitted < remaining:
+                self._mark_market_fallback_failed(
+                    order_id,
+                    reason_code="COMMON.MARKET_FALLBACK_VOLUME_GAP",
+                    message="市价拆单存在未提交缺口",
+                    symbol=symbol,
+                    details={
+                        "original_order_id": order_id,
+                        "submitted_volume": submitted,
+                        "remaining_volume": remaining - submitted,
+                    },
+                )
+            else:
+                self._set_order_error(order_id, None)
         finally:
             with self.lock:
                 self._fallback_submitting.discard(order_id)
                 if not self.pending_orders and self._chasing_order_id is None and not self._fallback_submitting:
                     self.all_done_event.set()
-
-    def _submit_market_fallback_batch(self, completed_order: UnifiedOrder, chase_info: dict[str, Any]) -> None:
-        """保留已提交子单；失败或数量不可覆盖时明确记录缺口。"""
-        order_id = completed_order.order_id
-        symbol = chase_info["symbol"]
-        direction = chase_info["direction"]
-        remaining = self._get_effective_remaining_volume(order_id, completed_order)
-        submitted = 0.0
-        if remaining <= 0 or self._submission_expired(chase_info):
-            return
-        if not self._is_market_fallback_price_safe(completed_order, chase_info):
-            self._mark_market_fallback_failed(
-                order_id,
-                reason_code="COMMON.MARKET_FALLBACK_PRICE_PROTECTION",
-                message="当前盘口偏离原限价过大，已停止自动市价兜底",
-                symbol=symbol,
-                details={"remaining_volume": remaining},
-            )
-            return
-        try:
-            getter = getattr(self.executor, "get_order_volume_bounds", None)
-            bounds = (
-                cast("tuple[int | None, int | None] | None", getter(OrderType.MARKET, chase_info.get("trade_rule")))
-                if callable(getter)
-                else None
-            )
-            slices = (
-                split_order_volumes(remaining, bounds[1], min_size=bounds[0]) if bounds is not None else [remaining]
-            )
-            for index, chunk in enumerate(slices, 1):
-                if self._submission_expired(chase_info):
-                    return
-                market_order = self.executor.place_order(
-                    direction, OrderType.MARKET, chunk, price=0, **_chase_place_kwargs(chase_info)
-                )
-                submitted += chunk
-                self.add_order(
-                    market_order,
-                    direction=direction,
-                    position_side=chase_info.get("position_side"),
-                    offset_flag=chase_info.get("offset_flag"),
-                    trade_rule=chase_info.get("trade_rule"),
-                    chase_enabled=False,
-                )
-                if market_order.is_completed():
-                    self.on_order_update(market_order)
-                self.executor.emit_audit_event(
-                    event_type=ExecutionEventType.ORDER_SUBMITTED,
-                    status=ExecutionEventStatus.WARNING,
-                    reason_family=ExecutionReasonFamily.EXECUTION_STRATEGY,
-                    reason_code="COMMON.MARKET_FALLBACK_ORDER_SUBMITTED",
-                    symbol=symbol,
-                    order_id=market_order.order_id,
-                    details={
-                        "fallback": {
-                            "original_order_id": order_id,
-                            "child_index": index,
-                            "child_volume": chunk,
-                            "submitted_volume": submitted,
-                            "remaining_volume": remaining - submitted,
-                            "direction": direction.value,
-                            "position_side": chase_info.get("position_side"),
-                        }
-                    },
-                )
-        except (MemoryError, *RECOVERABLE_ALGORITHM_EXCEPTIONS) as exc:
-            self._set_order_error(order_id, execution_error_message(exc, "报单"))
-            self._mark_market_fallback_failed(
-                order_id,
-                reason_code="COMMON.MARKET_FALLBACK_ORDER_FAILED",
-                message=f"市价单兜底失败: {format_exception_message(exc)}",
-                symbol=symbol,
-                details={
-                    "original_order_id": order_id,
-                    "submitted_volume": submitted,
-                    "remaining_volume": remaining - submitted,
-                },
-            )
-            if isinstance(exc, (MemoryError, ExecutionTerminated)) or bool(
-                getattr(exc, "requires_session_recovery", False)
-            ):
-                raise
-            return
-        if submitted < remaining:
-            self._mark_market_fallback_failed(
-                order_id,
-                reason_code="COMMON.MARKET_FALLBACK_VOLUME_GAP",
-                message="市价拆单存在未提交缺口",
-                symbol=symbol,
-                details={
-                    "original_order_id": order_id,
-                    "submitted_volume": submitted,
-                    "remaining_volume": remaining - submitted,
-                },
-            )
-        else:
-            self._set_order_error(order_id, None)
 
     def _is_market_fallback_price_safe(self, completed_order: UnifiedOrder, chase_info: dict[str, Any]) -> bool:
         """使用最新盘口做简单价格保护，避免极端行情直接扫市价单."""

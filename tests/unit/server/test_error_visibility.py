@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from axile.server.api.deps import HistoryPagination
 from axile.server.api.routes import account_assets, account_execution
 from axile.server.api.routes.account_crud import execute_record_detail, list_execute_records
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.manager import WorkerBackendManager
 from axile.server.execution.worker_backend.protocol import WorkerBackendResponse
@@ -49,7 +50,9 @@ def test_enqueue_error_returns_original_with_actual_traceback(route, monkeypatch
         call = route(account_id=1)
     else:
         monkeypatch.setattr(
-            account_execution, "stop_account_for_clear_positions", AsyncMock(return_value=build_account().snapshot())
+            account_execution,
+            "stop_account_for_clear_positions",
+            AsyncMock(return_value=AccountSnapshot.model_validate(build_account().model_dump())),
         )
         monkeypatch.setattr(account_execution, "delete_job", Mock())
         monkeypatch.setattr(account_execution, "reconcile_china_channel_account", AsyncMock())
@@ -97,7 +100,7 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
             records = []
             for index in range(1, 604):
                 record = await native_operation(
-                    "persist_execute_record",
+                    "persist_execution_state",
                     {
                         "account_id": 1 if index <= 602 else 2,
                         "execution_id": f"exec-{index}" if index <= 602 else "other-account",
@@ -110,7 +113,7 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
                     },
                 )
                 records.append(record)
-            first_id, other_id = records[0]["id"], records[-1]["id"]
+            first_id, other_id = records[0]["record_id"], records[-1]["record_id"]
             page = HistoryPagination(skip=0, limit=1)
             result = json.loads((await list_execute_records(1, page, execution_id="exec-1", record_id=first_id)).body)
             assert result["count"] == 1
@@ -118,7 +121,11 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
             assert "result" not in result["data"][0]
             detail = json.loads((await execute_record_detail(1, first_id)).body)
             assert detail["result"]["technical_detail"] == RAW
-            for execution_id, record_id in [("exec-1", records[1]["id"]), ("other-account", None), (None, other_id)]:
+            for execution_id, record_id in [
+                ("exec-1", records[1]["record_id"]),
+                ("other-account", None),
+                (None, other_id),
+            ]:
                 result = json.loads(
                     (await list_execute_records(1, page, execution_id=execution_id, record_id=record_id)).body
                 )
@@ -131,6 +138,6 @@ def test_exact_record_filters_share_account_scope_count_and_pagination(tmp_path,
             assert skipped["data"] == []
             unfiltered = json.loads((await list_execute_records(1, page)).body)
             assert unfiltered["count"] == 602
-            assert unfiltered["data"][0]["id"] == records[-2]["id"]
+            assert unfiltered["data"][0]["id"] == records[-2]["record_id"]
 
     asyncio.run(run())

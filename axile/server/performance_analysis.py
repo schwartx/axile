@@ -21,7 +21,12 @@ def ensure_native_capabilities() -> None:
     """Reject obsolete extensions before any background services start."""
     required = (
         "close_database",
+        "account_public",
+        "connection_accounts",
+        "execution_read",
+        "supplement_has_execution_steps",
         "publish_store",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
@@ -35,7 +40,7 @@ def ensure_native_capabilities() -> None:
         "analysis_publication_committed",
     )
     if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 40:
-        raise RuntimeError("Native analysis extension requires direct business facts schema 0039; rebuild the wheel")
+        raise RuntimeError("Native analysis extension requires direct business facts schema 0034; rebuild the wheel")
     missing = [name for name in required if not callable(getattr(_core, name, None))]
     if missing:
         raise RuntimeError(f"Native analysis extension must export {', '.join(missing)}; rebuild the wheel")

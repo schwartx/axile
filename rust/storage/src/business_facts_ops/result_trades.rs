@@ -6,7 +6,6 @@ use serde_json::{json, Map, Value};
 use super::encode::{audit_value, join_pointer, store_columns, valid, Rows};
 use super::facts_error;
 use super::result_orders::CONVERSION_FIELDS;
-use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const TRADE_FIELDS: &[(&str, &str)] = &[
@@ -26,15 +25,14 @@ fn conversion_row(record_id: i64, path: &str, value: &Value) -> Result<Map<Strin
         CONVERSION_FIELDS,
         &[],
     )?;
-    let mut row = json!({
+    let Value::Object(mut row) = json!({
         "record_id": record_id, "trade_path": path,
         "state": if value.is_object() { "object" } else { "malformed" },
         "malformed_value": if value.is_object() { Value::Null } else { audit_value(value) },
         "audit_evidence": evidence
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     row.extend(columns);
     Ok(row)
 }
@@ -59,7 +57,7 @@ fn trade_row(
     let currency = extra
         .and_then(|extra| extra.get("commission_asset"))
         .filter(|value| value.is_string());
-    let mut row = json!({
+    let Value::Object(mut row) = json!({
         "record_id": record_id, "path": join_pointer(collection_path, &ordinal.to_string()),
         "collection_path": collection_path, "ordinal": ordinal,
         "state": if payload.is_some() { "object" } else { "malformed" },
@@ -71,10 +69,9 @@ fn trade_row(
             Some(_) if fee.is_some() => "value", _ => "invalid"
         },
         "audit_evidence": evidence
-    })
-    .as_object()
-    .expect("object literal")
-    .clone();
+    }) else {
+        unreachable!("object literal")
+    };
     row.extend(columns);
     for key in ["trade_id", "order_id"] {
         let state = match payload.and_then(|payload| payload.get(key)) {
@@ -102,19 +99,17 @@ fn append_collection(
         return Ok(());
     };
     let path = join_pointer(scope, "trades");
-    collections.push(
-        json!({
-            "record_id": record_id, "path": path, "parent_path": scope,
-            "ordinal": ordinal, "map_key": map_key,
-            "state": if value.is_array() { "array" } else { "malformed" },
-            "member_count": value.as_array().map(Vec::len),
-            "malformed_value": if value.is_array() { Value::Null } else { audit_value(value) },
-            "audit_evidence": {}
-        })
-        .as_object()
-        .expect("object literal")
-        .clone(),
-    );
+    let Value::Object(collection) = json!({
+        "record_id": record_id, "path": path, "parent_path": scope,
+        "ordinal": ordinal, "map_key": map_key,
+        "state": if value.is_array() { "array" } else { "malformed" },
+        "member_count": value.as_array().map(Vec::len),
+        "malformed_value": if value.is_array() { Value::Null } else { audit_value(value) },
+        "audit_evidence": {}
+    }) else {
+        unreachable!("object literal")
+    };
+    collections.push(collection);
     if let Some(values) = value.as_array() {
         for (index, member) in values.iter().enumerate() {
             let row = trade_row(record_id, &path, index, member)?;
@@ -176,92 +171,66 @@ pub(crate) fn insert_trades(
 ) -> Result<(), AnalysisError> {
     let (collections, trades, conversions) =
         encode_trades(record_id, payload).map_err(facts_error)?;
-    let mut statement = connection
-        .prepare_cached(
-            r#"INSERT INTO business_trade_collection (
-                "record_id", "path", "parent_path", "ordinal", "map_key", "state",
-                "member_count", "malformed_value", "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9
-            )"#,
-        )
-        .map_err(sql)?;
-    for row in &collections {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("path").and_then(Value::as_str),
-                row.get("parent_path").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("map_key").and_then(Value::as_str),
-                row.get("state").and_then(Value::as_str),
-                row.get("member_count").and_then(Value::as_i64),
-                encode::json_text(row.get("malformed_value"))?,
-                encode::json_text(row.get("audit_evidence"))?,
-            ])
-            .map_err(sql)?;
-    }
-    let mut statement = connection.prepare_cached(r#"INSERT INTO business_trade (
-                "record_id", "path", "collection_path", "ordinal", "state", "malformed_value",
-                "symbol", "trade_time", "trade_id", "order_id", "trade_volume", "trade_price",
-                "trade_value", "extra", "trade_id_state", "order_id_state", "conversion_recorded", "fee",
-                "fee_state", "fee_currency", "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21
-            )"#).map_err(sql)?;
-    for row in &trades {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("path").and_then(Value::as_str),
-                row.get("collection_path").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("state").and_then(Value::as_str),
-                encode::json_text(row.get("malformed_value"))?,
-                row.get("symbol").and_then(Value::as_str),
-                row.get("trade_time").and_then(Value::as_str),
-                encode::json_text(row.get("trade_id"))?,
-                encode::json_text(row.get("order_id"))?,
-                row.get("trade_volume").and_then(Value::as_f64),
-                row.get("trade_price").and_then(Value::as_f64),
-                row.get("trade_value").and_then(Value::as_f64),
-                encode::json_text(row.get("extra"))?,
-                row.get("trade_id_state").and_then(Value::as_str),
-                row.get("order_id_state").and_then(Value::as_str),
-                row.get("conversion_recorded").and_then(Value::as_bool),
-                row.get("fee").and_then(Value::as_f64),
-                row.get("fee_state").and_then(Value::as_str),
-                row.get("fee_currency").and_then(Value::as_str),
-                encode::json_text(row.get("audit_evidence"))?,
-            ])
-            .map_err(sql)?;
-    }
-    let mut statement = connection.prepare_cached(r#"INSERT INTO business_trade_conversion (
-                "record_id", "trade_path", "state", "malformed_value", "price_currency", "value_currency",
-                "rate", "reference", "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9
-            )"#).map_err(sql)?;
-    for row in &conversions {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("trade_path").and_then(Value::as_str),
-                row.get("state").and_then(Value::as_str),
-                encode::json_text(row.get("malformed_value"))?,
-                row.get("price_currency").and_then(Value::as_str),
-                row.get("value_currency").and_then(Value::as_str),
-                row.get("rate").and_then(Value::as_f64),
-                encode::json_text(row.get("reference"))?,
-                encode::json_text(row.get("audit_evidence"))?,
-            ])
-            .map_err(sql)?;
-    }
+    super::insert_rows(
+        connection,
+        "business_trade_collection",
+        &collections,
+        &[
+            ("record_id", "integer"),
+            ("path", "text"),
+            ("parent_path", "text"),
+            ("ordinal", "integer"),
+            ("map_key", "text"),
+            ("state", "text"),
+            ("member_count", "integer"),
+            ("malformed_value", "json"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    super::insert_rows(
+        connection,
+        "business_trade",
+        &trades,
+        &[
+            ("record_id", "integer"),
+            ("path", "text"),
+            ("collection_path", "text"),
+            ("ordinal", "integer"),
+            ("state", "text"),
+            ("malformed_value", "json"),
+            ("symbol", "text"),
+            ("trade_time", "text"),
+            ("trade_id", "json"),
+            ("order_id", "json"),
+            ("trade_volume", "number"),
+            ("trade_price", "number"),
+            ("trade_value", "number"),
+            ("extra", "json"),
+            ("trade_id_state", "text"),
+            ("order_id_state", "text"),
+            ("conversion_recorded", "boolean"),
+            ("fee", "number"),
+            ("fee_state", "text"),
+            ("fee_currency", "text"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    super::insert_rows(
+        connection,
+        "business_trade_conversion",
+        &conversions,
+        &[
+            ("record_id", "integer"),
+            ("trade_path", "text"),
+            ("state", "text"),
+            ("malformed_value", "json"),
+            ("price_currency", "text"),
+            ("value_currency", "text"),
+            ("rate", "number"),
+            ("reference", "json"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
     Ok(())
 }
 

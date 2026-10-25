@@ -266,25 +266,6 @@ def _copy_scope_policy(scope_policy: AccountControlScopePolicy | None) -> Accoun
     return AccountControlScopePolicy.model_validate(scope_policy.model_dump(mode="json"))
 
 
-def _merge_scope_policies(
-    base_scope: AccountControlScopePolicy | None,
-    override_scope: AccountControlScopePolicy | None,
-) -> AccountControlScopePolicy | None:
-    if base_scope is None and override_scope is None:
-        return None
-    if base_scope is None:
-        return _copy_scope_policy(override_scope)
-    if override_scope is None:
-        return _copy_scope_policy(base_scope)
-    return AccountControlScopePolicy(
-        per_minute=base_scope.per_minute if override_scope.per_minute is None else override_scope.per_minute,
-        per_day=base_scope.per_day if override_scope.per_day is None else override_scope.per_day,
-        min_interval_ms=base_scope.min_interval_ms
-        if override_scope.min_interval_ms is None
-        else override_scope.min_interval_ms,
-    )
-
-
 class AccountControlAttempt:
     """
     表示一次已经放行的账户控制尝试.

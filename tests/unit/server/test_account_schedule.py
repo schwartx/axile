@@ -242,16 +242,12 @@ def test_native_schedule_reads_settings_and_commits_calendar_skip(tmp_path, monk
 def _patch_reconcile(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     events: list[str] = []
 
-    async def fake_portfolio(*_args: object) -> int:
-        return 11
-
     async def fake_create(*_args: object, **_kwargs: object) -> None:
         events.append("create")
 
     def fake_delete(*_args: object) -> None:
         events.append("delete")
 
-    monkeypatch.setattr(account_support, "get_latest_portfolio_id_by_account_id", fake_portfolio)
     monkeypatch.setattr(account_support, "create_job", fake_create)
     monkeypatch.setattr(account_support, "delete_job", fake_delete)
     return events
@@ -266,7 +262,7 @@ def test_reconcile_recreates_when_compact_str_collides_but_hours_differ(
     existing = SimpleNamespace(trigger=combine_cron_triggers(parse_cron_expr("0 10 * * * | 0 15 * * *")))
     sched = SimpleNamespace(get_job=lambda _job_id: existing)
 
-    asyncio.run(account_support._reconcile_account_job(sched, account))
+    asyncio.run(account_support._apply_account_job(sched, account, 11))
 
     assert events == ["delete", "create"]
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Literal
 
 from axile.server.business_facts.summary_refs import (
     REFERENCE_KEY,
@@ -73,21 +73,3 @@ def _validate_select_fields(reference: Mapping[str, object], view: str) -> None:
         or len(set(selected)) != len(selected)
     ):
         raise BusinessFactReferenceError("审计业务事实引用的字段选择无效")
-
-
-async def resolve_artifact_content(artifact: Any, *, account_id: int | None = None) -> dict[str, object]:
-    """在一次原生只读快照中校验归属并解析附件，保留独立历史证据。"""
-    from axile.server._native import _core
-    from axile.server.native_store import native_operation
-
-    fields = {
-        key: artifact.get(key) if isinstance(artifact, Mapping) else getattr(artifact, key)
-        for key in ("execution_id", "artifact_type", "content")
-    }
-    fields["artifact_type"] = getattr(fields["artifact_type"], "value", fields["artifact_type"])
-    try:
-        return await native_operation("resolve_execution_artifact", {"artifact": fields, "account_id": account_id})
-    except _core.NativeError as error:
-        if error.args and error.args[0] == "BUSINESS_FACTS_REFERENCE":
-            raise BusinessFactReferenceError(error.args[1]) from None
-        raise

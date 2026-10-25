@@ -18,12 +18,10 @@ from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
-from axile.server.business_facts.artifacts import parse_artifact_reference, resolve_artifact_content
-from axile.server.business_facts.assets import input_after_asset_fact_id, input_asset_fact_id
-from axile.server.business_facts.repository import read_execution_result
+from axile.server.business_facts.artifacts import parse_artifact_reference
+from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
-from axile.server.execution.backend import _dump_output_result
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from scripts.business_facts_contract import business_evidence
@@ -33,6 +31,7 @@ from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
 from tests.unit.server._business_analysis_support import _events
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
+from tests.unit.server._native_read_views import read_execution_result, read_view
 from tests.unit.server._performance_costs_oracle import project_execution
 from tests.unit.server.test_evidence_export import _seed
 
@@ -174,10 +173,12 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             "version": 1,
             "view": "assets_after",
             "input_id": input_id,
-            "asset_id": input_after_asset_fact_id(input_id),
+            "asset_id": f"input:{input_id}:/after_account_assets",
         }
         assert "account_assets" not in after.content
-        resolved = await resolve_artifact_content(after, account_id=1)
+        resolved = read_view(
+            path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
+        )
         assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
         summary = next(
             item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY
@@ -203,7 +204,7 @@ def build_contract_wire(case, monkeypatch):
         _standard_input(),
         [_algorithm_result(case)],
     )
-    raw = _dump_output_result(output)
+    raw = output.model_dump(mode="json")
     worker_raw = _dump_output_payload(output)
     assert {k: v for k, v in raw.items() if k != "inputs"} == worker_raw
     json.dumps(worker_raw, allow_nan=False)

@@ -873,14 +873,57 @@ def test_market_fallback_clears_only_its_own_error(monkeypatch):
     tracker._set_order_error("A", "A 未恢复")
     tracker._set_order_error("B", "B 未恢复")
     monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *args: True)
-    tracker._submit_market_fallback_batch(
+    tracker._submit_market_fallback_order(
         _build_pending_order("B"), {"symbol": executor.symbol, "direction": OrderDirection.BUY}
     )
     assert tracker.explicit_error == "A 未恢复"
-    tracker._submit_market_fallback_batch(
+    tracker._submit_market_fallback_order(
         _build_pending_order("A"), {"symbol": executor.symbol, "direction": OrderDirection.BUY}
     )
     assert tracker.explicit_error is None
+
+
+def test_market_fallback_entry_submits_only_one_batch(monkeypatch):
+    executor = _ChaseExecutor()
+    tracker = OrderTracker(executor=executor)
+    monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *_: True)
+    completed = _build_pending_order("fallback-once")
+    info = {"symbol": executor.symbol, "direction": OrderDirection.BUY}
+
+    tracker._submit_market_fallback_order(completed, info)
+    submitted = executor._placed
+    pending = set(tracker.pending_orders)
+    tracker._submit_market_fallback_order(completed, info)
+
+    assert submitted > 0 and executor._placed == submitted
+    assert set(tracker.pending_orders) == pending
+    assert not tracker._fallback_submitting
+    assert not tracker.all_done_event.is_set()
+
+
+@pytest.mark.parametrize("fatal", ["memory", "termination"])
+def test_market_fallback_entry_releases_marker_on_fatal_error(monkeypatch, fatal):
+    from axile.executor.termination import ExecutionTerminated
+
+    executor = _ChaseExecutor()
+    tracker = OrderTracker(executor=executor)
+    monkeypatch.setattr(tracker, "_is_market_fallback_price_safe", lambda *_: True)
+    error = (
+        MemoryError("allocation failed") if fatal == "memory" else ExecutionTerminated(reason="stop", mode="graceful")
+    )
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(executor, "place_order", fail)
+    with pytest.raises(type(error)) as raised:
+        tracker._submit_market_fallback_order(
+            _build_pending_order("fallback-fatal"), {"symbol": executor.symbol, "direction": OrderDirection.BUY}
+        )
+
+    assert raised.value is error
+    assert not tracker._fallback_submitting
+    assert tracker.all_done_event.is_set()
 
 
 def test_market_fallback_cancel_propagates_ctp_session_recovery_without_marking_failure() -> None:

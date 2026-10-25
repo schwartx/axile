@@ -38,7 +38,7 @@ async def _prepare_accounts(
         async with semaphore:
             try:
                 sync = await reconcile_scheduled_account(account_id, scheduler, mode)
-                if sync is not None and sync.status == "synchronized":
+                if sync is not None and sync["status"] == "synchronized":
                     logger.info("通道准备完成 account_id={} mode={}", account_id, mode)
             except Exception:  # noqa: BLE001 - 单账户失败不得阻断其他账户
                 logger.exception("通道准备失败 account_id={} mode={}", account_id, mode)

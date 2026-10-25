@@ -121,17 +121,6 @@ pub fn start(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     })
 }
 
-pub fn get(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
-    let mut connection = crate::storage_connection::open_reader(Path::new(path))?;
-    let transaction = connection.transaction().map_err(database_error)?;
-    let result = json!({
-        "settings": read_settings(&transaction)?,
-        "state": read_state(&transaction)?,
-    });
-    transaction.rollback().map_err(database_error)?;
-    Ok(result)
-}
-
 pub fn persist(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     object(&request["state"], "state")?;
     let connection = open_writer(Path::new(path))?;
@@ -222,8 +211,9 @@ mod tests {
         assert_eq!(restored["state"]["alerts"]["offset"]["offset_ms"], 600);
         assert_eq!(claim(path_str, &json!({})).unwrap()["claimed"], true);
         assert_eq!(claim(path_str, &json!({})).unwrap()["claimed"], false);
+        let connection = crate::storage_connection::open_reader(&path).unwrap();
         assert_eq!(
-            get(path_str, &json!({})).unwrap()["state"]["first_claimed"],
+            read_state(&connection).unwrap().unwrap()["first_claimed"],
             true
         );
         std::fs::remove_file(path).unwrap();
@@ -250,13 +240,14 @@ mod tests {
             .unwrap(),
             false
         );
-        let stored = get(path_str, &json!({})).unwrap();
+        let connection = crate::storage_connection::open_reader(&path).unwrap();
         assert_eq!(
-            stored["settings"],
+            read_settings(&connection).unwrap().unwrap(),
             json!({"source": "tencent", "version": 1})
         );
+        let state = read_state(&connection).unwrap();
         assert!(persist(path_str, &json!({"state": []})).is_err());
-        assert_eq!(get(path_str, &json!({})).unwrap()["state"], stored["state"]);
+        assert_eq!(read_state(&connection).unwrap(), state);
         std::fs::remove_file(path).unwrap();
     }
 }

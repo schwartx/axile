@@ -5,8 +5,8 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Response
 
 from axile.executor.connection_progress import ConnectionTable
-from axile.server.api.routes.account_support import _get_account_or_404
-from axile.server.connection_state import public_connection
+from axile.server.api.routes.account_crud import account_connection
+from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
@@ -14,7 +14,7 @@ from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend.manager import get_worker_backend_manager
 
 router = APIRouter()
-_reconnect_tasks: dict[int, asyncio.Task[AccountConnectionDetail]] = {}
+_reconnect_tasks: dict[int, asyncio.Task[Response]] = {}
 
 
 def _check_idle(account_id: int) -> None:
@@ -30,22 +30,21 @@ async def _operate_connection(account: AccountContext, *, reconnect: bool) -> No
         await manager.disconnect_account(account)
 
 
-async def _connection_operation(account_id: int, *, reconnect: bool) -> AccountConnectionDetail:
+async def _connection_operation(account_id: int, *, reconnect: bool) -> Response:
     async with account_runtime_lock(account_id):
         _check_idle(account_id)
-        account = (await _get_account_or_404(account_id)).snapshot()
+        account = await _get_account_snapshot_or_404(account_id)
         try:
             await _operate_connection(account, reconnect=reconnect)
         except Exception as exc:
             # 原始连接证据仍由渠道/宿主保存；HTTP 摘要不推断凭证失效。
             message = str(getattr(exc, "execution_error", None) or "账户连接操作失败，请查看连接详情")
             raise HTTPException(502, detail=message) from exc
-        refreshed = await _get_account_or_404(account_id)
-        return AccountConnectionDetail.model_validate(public_connection(refreshed, detail=True))
+        return await account_connection(account_id)
 
 
 @router.post("/{account_id}/connection/reconnect", response_model=AccountConnectionDetail)
-async def reconnect_account(account_id: int) -> AccountConnectionDetail:
+async def reconnect_account(account_id: int) -> Response:
     """显式恢复连接，可绕过冷却；健康会话仍复用，不重放下单或撤单。"""
     await _get_account_or_404(account_id)
     task = _reconnect_tasks.get(account_id)
@@ -65,7 +64,7 @@ async def reconnect_account(account_id: int) -> AccountConnectionDetail:
 
 
 @router.post("/{account_id}/connection/disconnect", response_model=AccountConnectionDetail)
-async def disconnect_account(account_id: int) -> AccountConnectionDetail:
+async def disconnect_account(account_id: int) -> Response:
     """主动断开账户会话；定时任务的启停配置保持独立。"""
     return await _connection_operation(account_id, reconnect=False)
 

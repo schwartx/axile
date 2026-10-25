@@ -264,21 +264,17 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
         from axile.server.account_activity_runtime import run_activity_command
 
         return run_activity_command(executor, payload)
-    book = getattr(executor, "account_orders", None)
+    book = executor.account_orders
 
     def publish(order: UnifiedOrder) -> dict[str, Any]:
-        if book is not None:
-            order = book.activity.enrich_orders([order])[0][0]
+        order = book.activity.enrich_orders([order])[0][0]
         return public_order(order)
 
-    snapshot = book.snapshot() if book is not None else None
-    if payload["command"] == "query" or snapshot is None or payload["command"] == "cancel" and not snapshot["complete"]:
-        orders = executor.get_pending_orders(None)
-        if book is not None:
-            orders = book.snapshot()["data"]
-    else:
-        orders = snapshot["data"]
-    active = {(order.symbol, order.order_id): order for order in orders if not order.is_completed()}
+    snapshot = book.snapshot()
+    if payload["command"] == "query" or payload["command"] == "cancel" and not snapshot["complete"]:
+        executor.get_pending_orders(None)
+        snapshot = book.snapshot()
+    active = {(order.symbol, order.order_id): order for order in snapshot["data"] if not order.is_completed()}
     if payload["command"] == "cancel":
         key = payload["symbol"], payload["order_id"]
         order = active.get(key)
@@ -311,19 +307,17 @@ def run_order_command(executor: Any, payload: dict[str, Any]) -> dict[str, Any]:
             # 局部终态核实失败不丢弃已经成功读取的账户委托；上层继续保留未知状态。
             order = None
         if order is not None:
-            if book is not None:
-                book.apply(order)
+            book.apply(order)
             resolved.append(publish(order))
-    current = book.snapshot() if book is not None else None
+    current = book.snapshot()
     terminals = {(row["symbol"], row["order_id"]): row for row in resolved}
-    if current is not None:
-        for order in current["resolved"]:
-            terminals.setdefault((order.symbol, order.order_id), publish(order))
+    for order in current["resolved"]:
+        terminals.setdefault((order.symbol, order.order_id), publish(order))
     return {
-        "data": [publish(order) for order in (current["data"] if current else active.values())],
-        "complete": current["complete"] if current else True,
-        "error": current["error"] if current else None,
-        "version": current["version"] if current else 0,
+        "data": [publish(order) for order in current["data"]],
+        "complete": current["complete"],
+        "error": current["error"],
+        "version": current["version"],
         "resolved": list(terminals.values()),
         "cancel_failures": _cancellation_failures(executor, payload.get("tracked", [])),
         "sampled_at": clock_now_iso(),

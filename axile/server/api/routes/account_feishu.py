@@ -224,9 +224,8 @@ async def _load_sample_target_weights(account: AccountContext) -> dict[str, floa
     if account.id is None or account.portfolio_id is None:
         return {}
     snapshot = await get_latest_account_target_snapshot(account.id, account.portfolio_id)
-    if snapshot is None or not snapshot.normalized_weights:
-        return {}
-    return dict(snapshot.normalized_weights)
+    weights = None if snapshot is None else snapshot.get("normalized_weights")
+    return dict(weights or {})
 
 
 async def _build_sample_output(

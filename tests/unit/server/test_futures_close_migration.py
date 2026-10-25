@@ -6,10 +6,11 @@ import pytest
 import sqlalchemy as sa
 
 from axile.executor.futures_close_policy import FuturesClosePolicy
-from axile.server.api.routes.account_crud import _account_public
 from axile.server.db.models import Account, AccountCreate
+from axile.server.db.models.account import AccountSnapshot
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
-from tests.unit.server.test_analysis_structured_migration import _connect, _downgrade, _upgrade
+from tests.unit.server._migration_support import _connect, _downgrade, _upgrade
+from tests.unit.server._native_read_views import account_view
 
 
 def _account_data():
@@ -117,8 +118,8 @@ def test_account_policy_survives_json_settings_public_and_worker_snapshot(native
     stored = native_store_call(native_database, "account_get", {"account_id": created["account"]["id"]})
     account = Account.model_validate(stored)
     assert account.futures_close_policy.overrides == {"AG": "today_first"}
-    assert account.snapshot().futures_close_policy == policy
-    assert _account_public(account).futures_close_policy == policy
+    assert AccountSnapshot.model_validate(account.model_dump()).futures_close_policy == policy
+    assert account_view(account).futures_close_policy == policy
 
 
 def test_downgrade_restores_snapshot_but_rejects_changed_policy_before_writes(tmp_path):

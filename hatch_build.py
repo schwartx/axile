@@ -24,19 +24,22 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
     raise RuntimeError('Native extension requires analysis fact schema 40')
-if getattr(module, 'PUBLIC_HEAD', None) != '0041':
-    raise RuntimeError('Native extension requires public migration head 0041')
+if getattr(module, 'PUBLIC_HEAD', None) != '0034':
+    raise RuntimeError('Native extension requires public migration head 0034')
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
-    'execution_record_detail', 'execution_business_detail', 'asset_snapshots',
-    'account_performance', 'snapshot', 'query_costs', 'summaries', 'dashboard_inputs',
-    'performance_result', 'status', 'publication_status', 'chart',
-    'execution_summary', 'execution_detail', 'order_submission_summary',
-    'order_submissions', 'submission_monitor', 'publish_store',
-    'freeze_execution_input', 'freeze_execution_after_assets',
+    'execution_record_detail', 'asset_snapshots',
+    'account_performance', 'snapshot', 'query_costs', 'account_dashboard_context',
+    'performance_result', 'status', 'chart',
+    'execution_summary', 'execution_detail',
+    'order_submissions', 'submission_monitor_json', 'publish_store',
+    'persist_execution_state', 'freeze_execution_input', 'freeze_execution_after_assets',
     'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
-    'execution_notification_context',
+    'execution_notification_context', 'normalize_execution_result',
+    'list_execution_events_json', 'list_execution_artifacts_json',
+    'account_public', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
+    'account_runtime_sync_json', 'notifications_get_system_json',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

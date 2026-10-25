@@ -18,9 +18,10 @@ from axile.server._native import _core
 from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud as account_crud_routes
-from axile.server.db.models import Account, AccountRuntimeSync
+from axile.server.db.models import Account
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._native_read_views import account_view
 
 
 @pytest.fixture(autouse=True)
@@ -78,13 +79,9 @@ def _build_account(
 
 
 def _account_payload() -> dict[str, object]:
-    return (
-        _build_account()
-        .snapshot()
-        .model_dump(
-            mode="json",
-            exclude={"id", "created_at", "updated_at", "copied_from_account_id", "copied_from_account_name"},
-        )
+    return _build_account().model_dump(
+        mode="json",
+        exclude={"id", "created_at", "updated_at", "copied_from_account_id", "copied_from_account_name"},
     )
 
 
@@ -95,8 +92,8 @@ def _build_app() -> FastAPI:
     return app
 
 
-async def _synchronized_runtime_sync(account_id: int, *_args: object, **_kwargs: object) -> AccountRuntimeSync:
-    return AccountRuntimeSync(account_id=account_id, status="synchronized")
+async def _synchronized_runtime_sync(account_id: int, *_args: object, **_kwargs: object) -> dict:
+    return {"account_id": account_id, "status": "synchronized", "revision": 1, "attempts": 0}
 
 
 def _seed_account(database, **changes: object) -> Account:
@@ -137,17 +134,45 @@ def account_client(native_database, monkeypatch):
 def test_account_public_returns_connection_credentials_but_omits_webhook() -> None:
     account = _build_account(feishu_key="unique-feishu-webhook-key")
     account.account_config["password"] = "unique-account-password"
-    payload = account_crud_routes._account_public(account).model_dump_json()
+    payload = account_view(account).model_dump_json()
     assert "unique-account-password" in payload
     assert "unique-feishu-webhook-key" not in payload
     assert '"account_config"' not in payload and '"feishu_key"' not in payload
     assert '"account_configured":true' in payload and '"feishu_configured":true' in payload
 
 
+def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_client) -> None:
+    client, database = account_client
+    _seed_account(database)
+    for sync_status in ("pending", "synchronized", "failed"):
+        with closing(oracle_connect(database)) as connection, connection:
+            connection.execute(
+                "UPDATE accountruntimesync SET status=?,revision=?,attempts=3,last_error=?,"
+                "last_attempt_at='2026-10-24T09:00:00',create_request_key='private' WHERE account_id=1",
+                (sync_status, 2**63 - 1, "等待核对"),
+            )
+        response = client.get("/account/1/runtime-sync")
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "status": sync_status,
+            "revision": 2**63 - 1,
+            "attempts": 3,
+            "last_error": "等待核对",
+            "last_attempt_at": "2026-10-24T09:00:00",
+            "synchronized_at": None,
+        }
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute("DELETE FROM accountruntimesync WHERE account_id=1")
+    missing = client.get("/account/1/runtime-sync")
+    assert missing.status_code == 202 and missing.json() == {"detail": "账户运行态尚待首次同步"}
+    absent = client.get("/account/999/runtime-sync")
+    assert absent.status_code == 404 and absent.json() == {"detail": "账户不存在"}
+
+
 def test_native_public_queries_match_existing_public_contract(account_client) -> None:
     client, database = account_client
     source = _seed_account(database, feishu_key="private-webhook")
-    expected = account_crud_routes._account_public(source).model_dump(mode="json")
+    expected = account_view(source).model_dump(mode="json")
     detail = client.get("/account/1")
     listing = client.get("/account/")
     assert detail.status_code == 200, detail.text
@@ -218,7 +243,7 @@ def test_create_rejects_invalid_configuration_before_write(account_client, patch
     response = client.post("/account/", json=payload)
     assert response.status_code == 422
     assert message in response.json()["detail"]
-    assert native_store_call(database, "account_list", {}) == []
+    assert client.get("/account/").json() == {"data": []}
 
 
 def test_create_account_requires_explicit_account_control_preset(account_client) -> None:
@@ -320,7 +345,7 @@ def test_invalid_weight_precision_does_not_mutate(account_client, weight_precisi
     assert client.patch("/account/1", json={"weight_precision": weight_precision}).status_code == 422
     assert _load_account(database).weight_precision == 0.001
     assert client.post("/account/", json=_account_payload() | {"weight_precision": weight_precision}).status_code == 422
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 def test_update_same_channel_preserves_omitted_credentials(account_client) -> None:
@@ -374,7 +399,7 @@ def test_copy_rejects_active_source(account_client, monkeypatch, condition) -> N
     elif condition == "queued":
         monkeypatch.setattr(account_crud_routes, "get_queued_execution_id", lambda _id: "queued")
     assert client.post("/account/1/copy", json={"name": "新账户"}).status_code == 409
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 def test_copy_preserves_config_and_starts_without_source_history(account_client) -> None:
@@ -422,7 +447,7 @@ def test_create_idempotency_replays_before_custom_validation(account_client) -> 
     replay = client.post("/account/", headers={"Idempotency-Key": "create-1"}, json=invalid)
     assert replay.status_code == 202
     assert replay.json()["id"] == first.json()["id"]
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
 
 
 @pytest.mark.parametrize("new_key", ["old-create", "new-create"])
@@ -446,7 +471,7 @@ def test_deleted_account_recreation_and_idempotent_retry_are_isolated(account_cl
     )
     assert replay.status_code == 202, replay.text
     assert replay.json()["id"] == new_id
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
     if new_key != "old-create":
         assert native_store_call(database, "account_create_replay", {"idempotency_key": "old-create"}) is None
 
@@ -730,7 +755,7 @@ def test_copy_rejects_concurrently_changed_source_configuration(account_client, 
     monkeypatch.setattr(account_crud_routes, "native_operation", concurrent_update)
     response = client.post("/account/1/copy", json={"name": "新账户"})
     assert response.status_code == 409, response.text
-    assert len(native_store_call(database, "account_list", {})) == 1
+    assert len(client.get("/account/").json()["data"]) == 1
     assert _load_account(database).account_config["token"] == "new-secret"
 
 

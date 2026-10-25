@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{params, types::ValueRef, Connection, Row};
 use serde_json::{json, Map, Value};
 
-use crate::business_facts_ops::summary_refs;
+use crate::business_facts_ops::{result_head, summary_refs};
 use crate::{error::AnalysisError, storage_connection, writer_scope};
 
 fn invalid(message: impl ToString) -> AnalysisError {
@@ -139,7 +139,41 @@ fn persist_batch(connection: &Connection, entries: &[Value]) -> Result<Value, An
             let kind = entry.get("kind").and_then(Value::as_str);
             let result = match kind {
                 Some("event") => insert_event(connection, row),
-                Some("artifact") => insert_artifact(connection, row),
+                Some("artifact") => (|| {
+                    let mut row = row.clone();
+                    if row["artifact_type"]
+                        .as_str()
+                        .is_some_and(|value| value.eq_ignore_ascii_case("execution_summary"))
+                        && row["content"].get("outcome_symbols").is_some()
+                    {
+                        let normalized = result_head::normalize_legacy_result(&row["content"])?;
+                        for name in [
+                            "status",
+                            "error",
+                            "reason_code",
+                            "outcome",
+                            "outcome_reason",
+                            "symbol_results",
+                        ] {
+                            if let Some(value) = normalized.get(name) {
+                                row["content"][name] = value.clone();
+                            }
+                        }
+                        row["content"].as_object_mut().unwrap().remove("memory");
+                        row["content"]["outcome_symbols"] = json!(normalized["symbol_results"]
+                            .as_object()
+                            .map(|symbols| symbols
+                                .iter()
+                                .filter(|(_, value)| matches!(
+                                    value["outcome"].as_str(),
+                                    Some("not_reached" | "blocked")
+                                ))
+                                .map(|(symbol, _)| symbol.clone())
+                                .collect::<Vec<_>>())
+                            .unwrap_or_default());
+                    }
+                    insert_artifact(connection, &row)
+                })(),
                 _ => Err(invalid(
                     entry
                         .get("error")
@@ -246,9 +280,13 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
             |row| row.get(0),
         )
         .map_err(sql)?;
+    let columns = match table {
+        "execution_event" => "id,execution_id,account_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,client_order_id,ts_local_created,ts_exchange,ts_persisted,seq,details",
+        _ => "id,execution_id,artifact_type,schema_version,content,created_at",
+    };
     let mut statement = connection
         .prepare(&format!(
-            "SELECT * FROM {table} WHERE execution_id=?1 ORDER BY id LIMIT ?2 OFFSET ?3"
+            "SELECT {columns} FROM {table} WHERE execution_id=?1 ORDER BY id LIMIT ?2 OFFSET ?3"
         ))
         .map_err(sql)?;
     let mut cursor = statement
@@ -257,55 +295,72 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
     let mut data = Vec::new();
     while let Some(row) = cursor.next().map_err(sql)? {
         let mut item = decode_row(row, table)?;
+        integer(&item, "id")?;
+        integer(&item, "schema_version")?;
         if table == "execution_event" {
             item["details"] = summary_refs::resolve_event_details(connection, &item, None)?;
+            public_event(&mut item)?;
         } else {
             item["content"] = summary_refs::resolve_artifact_content(connection, &item, None)?;
+            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|execution_summary|environment_snapshot")?;
+            if !item["content"].is_object() {
+                return Err(invalid("附件内容必须是对象"));
+            }
+            if item["artifact_type"] == "execution_summary" {
+                item["content"] = result_head::normalize_legacy_result(&item["content"])?;
+            }
         }
         data.push(item);
     }
     Ok(json!({"count":count,"data":data}))
 }
 
-fn list_snapshot(path: &str, request: &Value, table: &str) -> Result<Value, AnalysisError> {
-    let connection = storage_connection::open_reader(Path::new(path))?;
-    connection.execute_batch("BEGIN").map_err(sql)?;
-    let result = list(&connection, request, table);
-    let rollback = connection.execute_batch("ROLLBACK").map_err(sql);
-    match result {
-        Ok(value) => rollback.map(|_| value),
-        Err(error) => Err(error),
+fn enum_field(item: &Value, key: &str, choices: &str) -> Result<(), AnalysisError> {
+    if choices
+        .split('|')
+        .any(|choice| item[key].as_str() == Some(choice))
+    {
+        Ok(())
+    } else {
+        Err(invalid(format!("审计字段 {key} 无效")))
     }
 }
 
-pub fn list_execution_events(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+fn public_event(item: &mut Value) -> Result<(), AnalysisError> {
+    integer(item, "account_id")?;
+    integer(item, "seq")?;
+    enum_field(item, "event_type", "execution_started|execution_termination_requested|execution_termination_acked|execution_terminated|input_snapshotted|instruments_waiting|instruments_ready|instruments_failed|target_computed|futures_close_planned|symbol_decision_made|symbol_skipped|order_submitted|order_acknowledged|order_terminal|execution_completed|execution_failed")?;
+    enum_field(item, "status", "INFO|SUCCESS|WARNING|ERROR")?;
+    enum_field(
+        item,
+        "reason_family",
+        "INPUT|RISK|MARKET_RULE|ACCOUNT_STATE|EXECUTION_STRATEGY|EXCHANGE|SYSTEM",
+    )?;
+    let channel = text(item, "channel")?
+        .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
+        .to_lowercase();
+    if channel.is_empty() || !item["details"].is_object() {
+        return Err(invalid("事件渠道或详情无效"));
+    }
+    item["channel"] = json!(channel);
+    result_head::normalize_event_details(&mut item["details"]);
+    Ok(())
+}
+
+fn list_snapshot(path: &str, request: &Value, table: &str) -> Result<Value, AnalysisError> {
+    crate::with_read_snapshot_errors(
+        Path::new(path),
+        |connection| list(connection, request, table),
+        ("EXECUTION_AUDIT_SQL", "EXECUTION_AUDIT_SQL"),
+    )
+}
+
+pub fn list_execution_events_json(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     list_snapshot(path, request, "execution_event")
 }
 
-pub fn list_execution_artifacts(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+pub fn list_execution_artifacts_json(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     list_snapshot(path, request, "execution_artifact")
-}
-
-pub fn resolve_execution_artifact(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let artifact = request
-        .get("artifact")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| AnalysisError::new("BUSINESS_FACTS_REFERENCE", "审计附件不是对象"))?;
-    let account_id =
-        match request.get("account_id") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(value.as_i64().ok_or_else(|| {
-                AnalysisError::new("BUSINESS_FACTS_REFERENCE", "审计账户身份无效")
-            })?),
-        };
-    let connection = storage_connection::open_reader(Path::new(path))?;
-    connection.execute_batch("BEGIN").map_err(sql)?;
-    let result = summary_refs::resolve_artifact_content(&connection, artifact, account_id);
-    let rollback = connection.execute_batch("ROLLBACK").map_err(sql);
-    match result {
-        Ok(value) => rollback.map(|_| value),
-        Err(error) => Err(error),
-    }
 }
 
 #[cfg(test)]
@@ -339,6 +394,60 @@ mod tests {
     }
 
     #[test]
+    fn current_summary_keeps_message_fallback_without_persisting_transport_context() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
+        persist_batch(&connection, &[json!({"kind":"artifact","row":{
+            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,"created_at":"t",
+            "content":{"status":"PARTIAL","error":null,"outcome_reason":null,"outcome_symbols":[],
+                "memory":{"message":"保留业务原因"},"symbol_results":{}}}})]).unwrap();
+        let saved: String = connection
+            .query_row("SELECT content FROM execution_artifact", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["error"], "保留业务原因");
+        assert_eq!(saved["outcome"], "not_reached");
+        assert!(saved.get("memory").is_none());
+    }
+
+    #[test]
+    fn current_summary_is_normalized_in_its_existing_write_stage() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
+        let content = json!({"status":"PARTIAL","outcome_symbols":[],"symbol_results":{
+            "first":{"status":"BLOCKED","error":"当前不在交易时间"},
+            "second":{"status":"NOOP"}},"summary":{"symbols_total":2},"reconciliation":[]});
+        let normalized = result_head::normalize_legacy_result(&content).unwrap();
+        persist_batch(
+            &connection,
+            &[json!({"kind":"artifact","row":{
+            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,
+            "content":content,"created_at":"t"}})],
+        )
+        .unwrap();
+        let saved: String = connection
+            .query_row("SELECT content FROM execution_artifact", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        for name in [
+            "status",
+            "error",
+            "reason_code",
+            "outcome",
+            "outcome_reason",
+            "symbol_results",
+        ] {
+            assert_eq!(saved.get(name), normalized.get(name));
+        }
+        assert_eq!(saved["outcome_symbols"], json!(["first"]));
+        assert_eq!(saved["summary"], json!({"symbols_total":2}));
+    }
+
+    #[test]
     fn batch_isolates_duplicate_and_bad_rows_and_returns_only_committed_notifications() {
         let connection = schema();
         let first = event("first", 1);
@@ -358,12 +467,15 @@ mod tests {
                 json!({"kind":"event","row":bad}),
                 json!({"kind":"invalid","error":"invalid JSON"}),
                 json!({"kind":"event","row":rejected}),
+                json!({"kind":"artifact","row":{"execution_id":"e1",
+                    "artifact_type":"execution_summary","schema_version":2,"created_at":"t",
+                    "content":{"status":[],"outcome_symbols":[]}}}),
                 json!({"kind":"event","row":event("last",0)}),
             ],
         )
         .unwrap();
         assert_eq!(receipt["count"], 3);
-        assert_eq!(receipt["failures"].as_array().unwrap().len(), 3);
+        assert_eq!(receipt["failures"].as_array().unwrap().len(), 4);
         assert_eq!(receipt["notifications"].as_array().unwrap().len(), 2);
         assert!(connection.is_autocommit());
         let page = list(
@@ -423,29 +535,20 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let artifact = json!({"execution_id":"e1","artifact_type":"standard_input","content":{
             "business_facts_ref":{"version":1,"view":"input","input_id":"input"}}});
-        let result = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":artifact,"account_id":7}),
-        )
-        .unwrap();
+        let result =
+            summary_refs::resolve_artifact_content(&connection, &artifact, Some(7)).unwrap();
         assert_eq!(result["input"], "frozen");
         assert_eq!(
             result["business_facts_ref"],
             artifact["content"]["business_facts_ref"]
         );
-        let wrong_account = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":artifact,"account_id":8}),
-        )
-        .unwrap_err();
+        let wrong_account =
+            summary_refs::resolve_artifact_content(&connection, &artifact, Some(8)).unwrap_err();
         assert_eq!(wrong_account.code, "BUSINESS_FACTS_REFERENCE");
         let mut foreign = artifact;
         foreign["execution_id"] = json!("e2");
-        let wrong_execution = resolve_execution_artifact(
-            path.to_str().unwrap(),
-            &json!({"artifact":foreign,"account_id":7}),
-        )
-        .unwrap_err();
+        let wrong_execution =
+            summary_refs::resolve_artifact_content(&connection, &foreign, Some(7)).unwrap_err();
         assert_eq!(wrong_execution.code, "BUSINESS_FACTS_REFERENCE");
         assert_eq!(std::fs::read(&path).unwrap(), before);
         drop(connection);
