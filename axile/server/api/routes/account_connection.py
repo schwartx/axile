@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Response
 
 from axile.executor.connection_progress import ConnectionTable
 from axile.server.api.routes.account_crud import account_connection
-from axile.server.api.routes.account_support import _get_account_or_404
+from axile.server.api.routes.account_support import _get_account_or_404, _get_account_snapshot_or_404
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.account_connection import AccountConnectionDetail
 from axile.server.execution.registry import get_queued_execution_id, get_running_execution_id
@@ -33,7 +33,7 @@ async def _operate_connection(account: AccountContext, *, reconnect: bool) -> No
 async def _connection_operation(account_id: int, *, reconnect: bool) -> Response:
     async with account_runtime_lock(account_id):
         _check_idle(account_id)
-        account = (await _get_account_or_404(account_id)).snapshot()
+        account = await _get_account_snapshot_or_404(account_id)
         try:
             await _operate_connection(account, reconnect=reconnect)
         except Exception as exc:

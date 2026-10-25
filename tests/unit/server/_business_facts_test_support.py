@@ -10,7 +10,7 @@ from axile.server.business_facts.artifacts import make_artifact_reference
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import sqlite_oracle
-from tests.unit.server._native_read_views import read_view
+from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 
 @sqlite_oracle
@@ -81,9 +81,8 @@ def audit_artifacts(path, execution_id):
 
 def persist_result(path, payload, **changes):
     seed_account(path)
-    return native_store_call(
+    return persist_record_fixture(
         path,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": None,

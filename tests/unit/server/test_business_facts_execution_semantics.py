@@ -16,11 +16,10 @@ from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server._native import _core
-from axile.server.db.models import ExecuteRecord
 from axile.server.execution import input_persistence, rebalance, records
-from axile.server.execution.records import resolve_record_task_status
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._native_read_views import read_execution_input, read_execution_result, status_view
@@ -133,7 +132,7 @@ def test_terminal_facts_keep_output_lifecycle_and_outcome_distinct(
                     msg=str(result["error"]),
                     execution_id="semantic-result",
                 )
-            persisted = _persisted(path, record.id)
+            persisted = _persisted(path, record["record_id"])
             assert persisted is not None
             reconstructed = await read_execution_result(persisted)
             assert business_evidence(persisted.status) == business_evidence(output_status)
@@ -144,9 +143,7 @@ def test_terminal_facts_keep_output_lifecycle_and_outcome_distinct(
             assert reconstructed["success"] is bool(is_success)
             assert business_evidence(reconstructed["execution_time"]) == business_evidence(0)
             assert business_evidence(reconstructed["execution_kind"]) == business_evidence(kind)
-            assert business_evidence(resolve_record_task_status(persisted)) == business_evidence(
-                ExecutionTaskStatus(task_status)
-            )
+            assert business_evidence(record["status"]) == business_evidence(ExecutionTaskStatus(task_status))
             replay = status_view(persisted)
             assert business_evidence(replay["status"]) == business_evidence(task_status)
             assert business_evidence(replay["output_status"]) == business_evidence(output_status)
@@ -191,7 +188,7 @@ def test_termination_preserves_original_output_and_cancellation_evidence(
                 raw_input=_input({}),
                 raw_result=raw_result,
             )
-            persisted = _persisted(path, record.id)
+            persisted = _persisted(path, record["record_id"])
             assert persisted is not None
             result = await read_execution_result(persisted)
             assert business_evidence(persisted.is_success) == business_evidence(0)
@@ -305,7 +302,7 @@ def test_mutated_output_status_rederives_outcome_before_real_persistence(
                 execution_id="semantic-mutated-output",
                 execution_kind=ExecutionKind.CLEAR_POSITIONS,
             )
-            persisted = _persisted(path, record.id)
+            persisted = _persisted(path, record["record_id"])
             assert persisted is not None
             result = await read_execution_result(persisted)
             assert business_evidence(result["status"]) == business_evidence("PARTIAL")

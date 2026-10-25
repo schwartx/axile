@@ -137,10 +137,6 @@ class Account(AccountSnapshot):
         """允许历史未配置账户的空算法，已配置算法保留参数校验。"""
         return super()._check_algorithm_field(value) if value else value
 
-    def snapshot(self) -> AccountSnapshot:
-        """复制为可独立修改的执行账户快照。"""
-        return AccountSnapshot.model_validate(self.model_dump()).model_copy(deep=True)
-
 
 type AccountContext = AccountSnapshot
 

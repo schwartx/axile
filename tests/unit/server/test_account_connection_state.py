@@ -15,6 +15,7 @@ from axile.executor.connection_state import ConnectionMonitor, ConnectionObserva
 from axile.server import connection_state as service
 from axile.server.core import db
 from axile.server.db.models import Account
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_connection import AccountConnectionDetail, AccountConnectionState
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
@@ -474,7 +475,7 @@ def test_real_process_session_reuse_disconnect_and_reconnect_without_broker(data
     path, account = database
     monkeypatch.setattr(manager_module, "run_worker_backend_loop", _offline_session_worker)
     manager = WorkerBackendManager()
-    snapshot = account.snapshot()
+    snapshot = AccountSnapshot.model_validate(account.model_dump())
 
     def status():
         return connection_view(_account(path), detail=True)
@@ -563,7 +564,7 @@ def test_concurrent_first_requests_share_one_worker_observation_identity(databas
     barrier = threading.Barrier(2)
 
     def bind(index):
-        request = WorkerBackendRequest(str(index), "prepare", account.snapshot().model_dump(mode="json"), None, {})
+        request = WorkerBackendRequest(str(index), "prepare", account.model_dump(mode="json"), None, {})
         barrier.wait(timeout=2)
         WorkerBackendManager._bind_connection_request(handle, request)
         return request.connection_binding

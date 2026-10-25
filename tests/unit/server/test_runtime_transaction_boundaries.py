@@ -78,7 +78,7 @@ def test_routes_release_transactions_before_worker(tmp_path, monkeypatch, entry,
                 await account_assets.refresh_account_assets(1)
             elif entry == "feishu":
                 account = await _get_account_or_404(1)
-                await account_feishu._build_test_card(account.snapshot())
+                await account_feishu._build_test_card(AccountSnapshot.model_validate(account.model_dump()))
             elif entry == "account_target":
                 await account_execution.refresh_account_target_snapshot(1)
             elif entry == "portfolio_target":

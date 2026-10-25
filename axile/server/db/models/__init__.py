@@ -36,7 +36,6 @@ from axile.server.db.models.account_notification import AccountNotificationState
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.base import new_execution_id, now_ms, now_str
 from axile.server.db.models.execution import (
-    ExecuteRecord,
     ExecuteRecordBase,
     ExecuteRecordPublic,
     ExecutionArtifact,
@@ -113,7 +112,6 @@ __all__ = [
     "PortfolioAccountPublic",
     "PortfolioAccountListPublic",
     "ExecuteRecordBase",
-    "ExecuteRecord",
     "ExecuteRecordPublic",
     "ExecutionEventBase",
     "ExecutionEvent",

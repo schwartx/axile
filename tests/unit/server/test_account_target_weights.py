@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import sqlalchemy as sa
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -10,8 +11,10 @@ from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionArtifactType
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
-from axile.server.db.models import Account, ExecutionArtifact, Portfolio
+from axile.server.db.models import Account, ExecutionArtifact, ExecutionEvent, Portfolio
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.intents import SubmitResult
+from tests.fixtures.rust_store.oracle_tables import table
 
 
 class _RouteData:
@@ -87,7 +90,7 @@ def _build_app(data: _RouteData, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     async def account(account_id: int):
         if data.account is None or data.account.id != account_id:
             raise HTTPException(status_code=404, detail="账户不存在")
-        return data.account.snapshot()
+        return AccountSnapshot.model_validate(data.account.model_dump())
 
     async def read(name: str, request: dict[str, object]) -> dict[str, object]:
         if name == "portfolio_operation":
@@ -728,7 +731,7 @@ def test_clear_all_waits_for_atomic_stop_before_scheduler_and_worker(monkeypatch
     app = _build_app(data, monkeypatch)
     calls: list[str] = []
     assert data.account is not None
-    stopped = data.account.snapshot().model_copy(update={"is_started": False})
+    stopped = AccountSnapshot.model_validate(data.account.model_dump()).model_copy(update={"is_started": False})
 
     async def stop(account_id: int):
         assert account_id == 1
@@ -756,7 +759,7 @@ def test_clear_all_waits_for_atomic_stop_before_scheduler_and_worker(monkeypatch
 
 
 @pytest.mark.parametrize("kind", ["events", "artifacts"])
-def test_audit_http_pages_normalize_hydrated_legacy_content(monkeypatch, kind):
+def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, monkeypatch, kind):
     calls: list[object] = []
     if kind == "events":
         row = {
@@ -780,9 +783,29 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(monkeypatch, kind):
             "content": {"outcome": "not_reached", "msg": "目标尚未到位"},
         }
 
+    model = ExecutionEvent if kind == "events" else ExecutionArtifact
+    values = [model(**(row | {"id": identity})).model_dump(mode="json") for identity in range(5, 14)]
+    if kind == "events":
+        for value in values:
+            value["event_uid"] = f"legacy-event-{value['id']}"
+    else:
+        kinds = [value.value for value in ExecutionArtifactType if value != ExecutionArtifactType.EXECUTION_SUMMARY]
+        kinds.insert(2, ExecutionArtifactType.EXECUTION_SUMMARY.value)
+        # 历史大小写变体保留原始身份；读取时再归一为公开枚举。
+        for value, artifact_type in zip(values, [*kinds, "EXECUTION_SUMMARY"], strict=True):
+            value["artifact_type"] = artifact_type
+    engine = sa.create_engine(f"sqlite:///{native_database}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(table("execution_event" if kind == "events" else "execution_artifact").insert(), values)
+    finally:
+        engine.dispose()
+
+    read = account_execution_routes.native_operation
+
     async def page(name: str, request: dict[str, object]):
         calls.append((name, request))
-        return {"count": 9, "data": [row]}
+        return await read(name, request, database=str(native_database))
 
     monkeypatch.setattr(account_execution_routes, "native_operation", page)
     app = FastAPI()
@@ -795,4 +818,4 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(monkeypatch, kind):
     assert content["error"] == "目标尚未到位"
     if kind == "artifacts":
         assert content["status"] == "PARTIAL"
-    assert calls == [(f"list_execution_{kind}", {"execution_id": "legacy", "skip": 2, "limit": 5})]
+    assert calls == [(f"list_execution_{kind}_json", {"execution_id": "legacy", "skip": 2, "limit": 5})]

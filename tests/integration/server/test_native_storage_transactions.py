@@ -15,6 +15,7 @@ from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissio
 from axile.server import order_submissions as submissions
 from tests.conftest import native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _NOW = "2026-10-23T09:30:00+08:00"
 _LATER = "2026-10-23T09:31:00+08:00"
@@ -148,9 +149,8 @@ def _freeze(path: Path, execution_id: str) -> str:
 
 
 def _terminal(path: Path, execution_id: str, **changes: object) -> dict:
-    return native_store_call(
+    return persist_record_fixture(
         path,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": execution_id,
@@ -226,7 +226,7 @@ def _intent(path: Path, execution_id: str, *, step_id: str | None = None, runnin
 @pytest.mark.parametrize("frozen", [False, True])
 @pytest.mark.parametrize("stage", ["asset_history", "facts_complete"])
 def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, stage: str) -> None:
-    core = require_native_store("persist_execute_record")
+    core = require_native_store("persist_execution_state")
     execution_id = "terminal-rollback"
     if frozen:
         _freeze(database, execution_id)
@@ -269,7 +269,7 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
 
 
 def test_lost_worker_response_preserves_frozen_facts_and_first_terminal(database: Path) -> None:
-    core = require_native_store("persist_execute_record")
+    core = require_native_store("persist_execution_state")
     execution_id = "unknown-worker-response"
     input_id = _freeze(database, execution_id)
     frozen_assets = _rows(database, "business_asset_snapshot")
@@ -550,7 +550,7 @@ def test_failed_recovery_terminal_commit_remains_recoverable(
     from axile.server.execution.intents import PROCESS_INTERRUPTED_REASON
     from axile.server.execution.registry import clear_queued_execution, clear_running_execution
 
-    core = require_native_store("intent_recovery", "persist_execute_record")
+    core = require_native_store("intent_recovery", "persist_execution_state")
     execution_id = "interrupted-running"
     queued_id = "still-queued"
     _intent(database, execution_id, step_id=_group(database, "recover-group"), running=True)

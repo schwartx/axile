@@ -1,11 +1,13 @@
 """Keep service benchmarking honest about semantics and memory boundaries."""
 
 import ast
+import asyncio
 import json
 import socket
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -212,6 +214,35 @@ def test_adapters_remain_reachable_with_embedded_spa_catchall():
     routes = [api, spa, adapter]
     prioritize_benchmark_routes(routes)
     assert routes == [adapter, api, spa]
+
+
+@pytest.mark.parametrize(
+    ("record", "sessions"),
+    [
+        pytest.param({"record_id": 3, "execution_id": "e3", "is_success": 0}, None, id="native-receipt"),
+        pytest.param(SimpleNamespace(id=3, execution_id="e3", is_success=0), None, id="legacy-native"),
+        pytest.param(SimpleNamespace(id=3, execution_id="e3", is_success=0), object(), id="legacy-session"),
+    ],
+)
+def test_write_adapter_preserves_receipt_and_legacy_record_heads(record, sessions):
+    tree = ast.parse(Path(service.__file__).read_text())
+    server = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve")
+    handler = next(node for node in server.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "write")
+    handler.decorator_list = []
+    writer = AsyncMock(return_value=record)
+    scope = {
+        "Body": lambda: None,
+        "records": SimpleNamespace(_persist_execute_record=writer),
+        "sessions": sessions,
+        "config": {"account_id": 7},
+    }
+    exec(compile(ast.Module(body=[handler], type_ignores=[]), service.__file__, "exec"), scope)
+    payload = {"execution_id": "e3", "raw_input": {"curr_target": {"A": 0}}, "raw_result": {}, "is_success": 0}
+
+    assert asyncio.run(scope["write"](payload)) == {"id": 3, "execution_id": "e3", "is_success": 0}
+    writer.assert_awaited_once_with(
+        account_id=7, **payload, **({"session_factory": sessions} if sessions is not None else {})
+    )
 
 
 def test_write_verification_rejects_success_response_without_committed_rows(monkeypatch):

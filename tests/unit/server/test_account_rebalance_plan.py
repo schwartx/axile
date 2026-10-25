@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.server.api.routes import account_execution
+from axile.server.db.models.account import AccountSnapshot
 from tests.unit.server.test_account_control_routes import _build_account
 
 
@@ -22,7 +23,11 @@ from tests.unit.server.test_account_control_routes import _build_account
     ids=["missing", "null", "invalid", "flat"],
 )
 def test_rebalance_plan_distinguishes_unknown_positions_from_flat(monkeypatch, target, assets, known):
-    monkeypatch.setattr(account_execution, "_get_account_or_404", AsyncMock(return_value=_build_account().snapshot()))
+    monkeypatch.setattr(
+        account_execution,
+        "_get_account_or_404",
+        AsyncMock(return_value=AccountSnapshot.model_validate(_build_account().model_dump())),
+    )
     monkeypatch.setattr(account_execution, "get_latest_portfolio_id_by_account_id", AsyncMock(return_value=7))
     monkeypatch.setattr(
         account_execution,

@@ -10,10 +10,11 @@ import pytest
 
 from axile.domain.execution import ExecutionArtifactType, ExecutionKind, ExecutionTerminateMode
 from axile.server.business_facts.artifacts import make_artifact_reference
-from axile.server.db.models import ExecuteRecord, ExecutionArtifact
+from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence, records
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import audit_artifacts
@@ -148,9 +149,9 @@ def test_missing_worker_response_persists_failure_without_inventing_result_asset
             )
             assert business_evidence(_resolved_artifact(path)["account_assets"]) == business_evidence(_AFTER_ASSETS)
             late_success = await _append_terminal("success", _WORKER_RESULT)
-            assert late_success.id == record.id
-            assert late_success.is_success == 0
-            assert late_success.task_status == stored.task_status
+            assert late_success["record_id"] == record["record_id"]
+            assert late_success["is_success"] == 0
+            assert late_success["status"] == stored.task_status
             result = await repository.read_execution_result(late_success)
             assert "account_assets" not in result
             assert _asset_evidence(path) == frozen_evidence
@@ -166,9 +167,9 @@ def test_matching_after_observation_reuses_immutable_fact(tmp_path, monkeypatch,
             payload = {"account_assets": deepcopy(_AFTER_ASSETS)}
             record = await _append_terminal(terminal, payload)
             assert payload == {"account_assets": _AFTER_ASSETS}
-            assert record.facts_complete
-            assert record.is_success == int(terminal == "success")
-            assert record.input_id == input_id
+            assert repository.receipt_record(record)["facts_complete"]
+            assert record["is_success"] == int(terminal == "success")
+            assert repository.receipt_record(record)["input_id"] == input_id
             result = await repository.read_execution_result(record)
             assert business_evidence(result["account_assets"]) == business_evidence(_AFTER_ASSETS)
             assert _asset_evidence(path) == frozen_evidence

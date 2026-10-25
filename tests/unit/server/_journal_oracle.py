@@ -5,8 +5,9 @@ from typing import Any
 
 import sqlalchemy as sa
 
-from axile.server.db.models import ExecuteRecord, ExecutionActivity
+from axile.server.db.models import ExecutionActivity
 from axile.server.db.models.schedule import ActivityExecutionRecord
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._performance_costs_oracle import summarize

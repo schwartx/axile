@@ -15,7 +15,6 @@ from axile.domain.execution import (
 )
 from axile.executor.termination import ExecutionTerminationController
 from axile.server.db.models import (
-    ExecuteRecord,
     now_str,
 )
 from axile.server.execution.records import append_terminated_execute_record
@@ -221,11 +220,6 @@ def set_execution_task_state(execution_id: str, state: ExecutionTaskState) -> No
         _execution_tasks[execution_id] = state
 
 
-def _clear_execution_task_state(execution_id: str) -> None:
-    with _execution_tasks_lock:
-        _execution_tasks.pop(execution_id, None)
-
-
 def _evict_terminal_execution_task_state(execution_id: str) -> None:
     """仅在任务仍处于终态时，从内存注册表移除其状态条目。"""
     with _execution_tasks_lock:
@@ -349,43 +343,6 @@ def _serialize_execution_task_state(state: ExecutionTaskState) -> dict[str, obje
         "cancel_reason": state.cancel_reason,
         "terminate_mode": state.terminate_mode,
     }
-
-
-def _coerce_optional_text(value: object) -> str | None:
-    """把任意值收敛为非空字符串；空白与非字符串视为缺失."""
-    if isinstance(value, str) and value.strip():
-        return value
-    return None
-
-
-def execution_record_outcome(
-    record: ExecuteRecord | None,
-    *,
-    outcome_symbols: list[str] | None = None,
-) -> dict[str, object]:
-    """读取类型化展示结论；品种名单由定向查询提供。"""
-    return {
-        "outcome": None if record is None else record.display_outcome,
-        "outcome_reason": None if record is None else record.display_outcome_reason,
-        "outcome_symbols": [] if outcome_symbols is None else outcome_symbols,
-    }
-
-
-def execution_record_output_status(record: ExecuteRecord | None) -> str | None:
-    """读取执行器状态，不混用任务状态与业务结论。"""
-    return None if record is None else _coerce_optional_text(record.display_status)
-
-
-def execution_record_output_error(record: ExecuteRecord | None) -> str | None:
-    """读取已经在写入或迁移时规范化的人话错误。"""
-    return None if record is None else _coerce_optional_text(record.display_error)
-
-
-async def load_record_outcome_symbols(record: ExecuteRecord | None) -> list[str]:
-    """仅读取未到位或受阻的品种键，不组装完整执行结果。"""
-    if record is None or record.id is None:
-        return []
-    return await native_operation("execution_read", {"op": "outcome_symbols", "record_id": record.id})
 
 
 def _acknowledge_execution_termination(execution_id: str, acked_at: str) -> None:
@@ -582,8 +539,8 @@ async def _finalize_terminated_queued_execution(
     )
     update_execution_task_state(
         state.execution_id,
-        record_id=record.id,
-        is_success=record.is_success,
+        record_id=record["record_id"],
+        is_success=record["is_success"],
     )
     if state.channel is None or not state.algorithm:
         return

@@ -15,6 +15,7 @@ from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _NOW = "2026-01-02T09:00:00+08:00"
 _PRECISE = "2026-01-01T09:00:00.000006+08:00"
@@ -58,9 +59,8 @@ def database(native_database: Path) -> Path:
 
 
 def _persist(database: Path, created_at: str, result: dict, execution_id: str = "regression") -> dict:
-    return native_store_call(
+    return persist_record_fixture(
         database,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": execution_id,

@@ -2,10 +2,10 @@
 
 from fastapi import FastAPI, HTTPException
 
-from axile.server.api.routes.account_crud import _account_public
 from axile.server.api.routes.algorithms import router as algorithms_router
 from axile.server.api.routes.capabilities import router as capabilities_router
 from axile.server.db.models import Account, AccountUpdate
+from tests.unit.server._native_read_views import account_view
 
 app = FastAPI()
 app.include_router(algorithms_router, prefix="/api/v1")
@@ -59,7 +59,7 @@ def runtime_sync(account_id: int):
 @app.get("/api/v1/account/{account_id}")
 def account_info(account_id: int):
     """真实公开响应模型必须保留平仓规则。"""
-    return _account_public(_accounts[account_id]).model_dump(mode="json") | {"runtime_sync": sync()}
+    return account_view(_accounts[account_id]).model_dump(mode="json") | {"runtime_sync": sync()}
 
 
 @app.patch("/api/v1/account/{account_id}")

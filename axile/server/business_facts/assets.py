@@ -6,24 +6,9 @@ from collections.abc import Mapping
 from typing import Any
 
 
-def asset_fact_id(record_id: int, path: str = "/account_assets") -> str:
-    """返回终态记录中某个资产观测的稳定发生标识。"""
-    return f"record:{record_id}:{path}"
-
-
 def input_asset_fact_id(input_id: str) -> str:
     """返回执行前资产观测标识，允许尚未产生终态记录。"""
     return f"input:{input_id}:/before_account_assets"
-
-
-def input_after_asset_fact_id(input_id: str) -> str:
-    """返回 worker 在终态记录之前保存的执行后观测标识。"""
-    return f"input:{input_id}:/after_account_assets"
-
-
-def snapshot_asset_fact_id(snapshot_id: int) -> str:
-    """返回一次手工资产观测的稳定发生标识。"""
-    return f"snapshot:{snapshot_id}:/account_assets"
 
 
 async def save_manual_asset_snapshot(

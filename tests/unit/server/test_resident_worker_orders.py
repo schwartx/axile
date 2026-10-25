@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import pytest
 
 from axile.common.trade_channel import TradeChannel
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.resident_connection import AccountConnectionUnavailable
 from axile.server.execution.worker_backend import orders, worker_state
 from tests.unit.server._execution_test_support import build_account
@@ -12,7 +13,7 @@ from tests.unit.server.test_resident_connection import Executor
 
 
 def setup_worker(monkeypatch):
-    account = build_account(id=7, trade_channel=TradeChannel.GM).snapshot()
+    account = AccountSnapshot.model_validate(build_account(id=7, trade_channel=TradeChannel.GM).model_dump())
     state = worker_state._WorkerBackendState()
     created, initialized, closed, commands = [], [], [], []
 

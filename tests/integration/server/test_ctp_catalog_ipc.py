@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from axile.executor.instrument_catalog import InstrumentCatalog
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.resident_connection import disconnect_resident_executor, executor_config_signature
 from axile.server.execution.worker_backend import worker as worker_entry
 from axile.server.execution.worker_backend import worker_state
@@ -29,7 +30,7 @@ def test_initialization_error_survives_catalog_end_and_explicit_cleanup_failures
     provider.end.side_effect = BrokenPipeError("end failed")
     close = Mock(side_effect=RuntimeError("native close failed") if release_fails else None)
     executor = SimpleNamespace(_verify_connection=lambda: False, set_instrument_catalog_provider=Mock(), close=close)
-    account = build_account().snapshot()
+    account = AccountSnapshot.model_validate(build_account().model_dump())
     state = worker_state._WorkerBackendState(
         executor=executor,
         account_id=account.id,
@@ -93,7 +94,7 @@ def test_catalog_end_failure_retains_executor_until_explicit_disconnect(monkeypa
     original = BrokenPipeError("end failed")
     provider.end.side_effect = original
     executor = SimpleNamespace(_verify_connection=lambda: False, set_instrument_catalog_provider=Mock())
-    account = build_account().snapshot()
+    account = AccountSnapshot.model_validate(build_account().model_dump())
     state = worker_state._WorkerBackendState(
         executor=executor,
         account_id=account.id,

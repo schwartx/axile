@@ -11,10 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from axile.server._native import _core
-from axile.server.business_facts.assets import (
-    asset_fact_id,
-    input_after_asset_fact_id,
-)
 from axile.server.core import db
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
@@ -210,7 +206,7 @@ def test_worker_after_observation_binds_without_duplicate_snapshot(database):
     assert {row["path"] for row in observations} == {"/before_account_assets", "/after_account_assets"}
     assert {row["input_id"] for row in observations} == {"pre-order-input"}
     linked_id = receipt["asset_id"]
-    assert linked_id == input_after_asset_fact_id("pre-order-input")
+    assert linked_id == "input:pre-order-input:/after_account_assets"
     record = persist_result(database, after, execution_id="execution-1", created_at="2026-10-20T09:00:00")
     assert rows(database, "business_asset_binding")[0]["asset_id"] == linked_id
     assert business_evidence(_asset_view(read_result(database, record))) == business_evidence(after)
@@ -264,11 +260,11 @@ def test_account_snapshot_reference_rejects_another_manual_snapshot(database):
 def test_after_snapshot_matching_preserves_nonfinite_diagnostic_and_negative_zero(database):
     freeze_input(database, {}, input_id="input-nonfinite")
     after = {"account_assets": {"total_asset": 0, "extra": {"diagnostic": float("nan"), "native": -0.0}}}
-    assert _after(database, after)["asset_id"] == input_after_asset_fact_id("input-nonfinite")
-    assert _after(database, deepcopy(after))["asset_id"] == input_after_asset_fact_id("input-nonfinite")
+    assert _after(database, after)["asset_id"] == "input:input-nonfinite:/after_account_assets"
+    assert _after(database, deepcopy(after))["asset_id"] == "input:input-nonfinite:/after_account_assets"
     changed = deepcopy(after)
     changed["account_assets"]["extra"]["native"] = 0.0
-    assert _after(database, changed)["asset_id"] == input_after_asset_fact_id("input-nonfinite")
+    assert _after(database, changed)["asset_id"] == "input:input-nonfinite:/after_account_assets"
     changed["account_assets"]["extra"]["native"] = 1
     with pytest.raises(_core.NativeError, match="不一致"):
         _after(database, changed)
@@ -319,7 +315,7 @@ def test_execution_asset_history_reuses_valid_canonical_root(database, input_own
     assert rows(database, "executerecord") == []
     sql(database, "DROP TRIGGER fail_terminal")
     record = persist_result(database, payload, execution_id=terminal_execution_id, created_at=created_at)
-    reference = input_after_asset_fact_id("history-input") if input_owned else asset_fact_id(record["id"])
+    reference = "input:history-input:/after_account_assets" if input_owned else f"record:{record['id']}:/account_assets"
     if input_owned and execution_id is None:
         # 旧记录可无执行标识；事实仍由真实冻结和终态阶段生成。
         _corrupt(database, "UPDATE executerecord SET execution_id=NULL WHERE id=?", (record["id"],))

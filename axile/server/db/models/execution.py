@@ -66,14 +66,6 @@ class ExecuteRecordBase(Model):
     termination_cancel_count: int | None = Field(default=None, exclude=True)
 
 
-class ExecuteRecord(ExecuteRecordBase):
-    """执行记录及其账户身份与创建时间。"""
-
-    id: Optional[int] = Field(default=None)
-    account_id: int
-    created_at: str = Field(default_factory=now_str)
-
-
 class ExecuteRecordPublic(ExecuteRecordBase):
     """执行记录的公开表示."""
 

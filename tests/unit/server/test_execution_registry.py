@@ -14,8 +14,8 @@ from axile.domain.execution import (
     ExecutionTaskStatus,
     ExecutionTerminateMode,
 )
-from axile.server.db.models import ExecuteRecord
 from axile.server.execution import registry as execution_registry
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._native_read_views import status_view
 
 
@@ -53,7 +53,7 @@ def test_get_execution_status_prefers_in_memory_task_state() -> None:
     try:
         payload = asyncio.run(execution_registry.get_execution_status(execution_id))
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
     assert payload is not None
     assert payload["execution_id"] == execution_id
@@ -136,7 +136,7 @@ def test_request_execution_termination_marks_running_task_terminating() -> None:
             mode=ExecutionTerminateMode.CANCEL_PENDING,
         )
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
     assert transitioned is True
     assert updated_state is not None
@@ -165,7 +165,7 @@ def test_request_execution_termination_marks_queued_task_terminated() -> None:
             mode=ExecutionTerminateMode.GRACEFUL,
         )
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
     assert transitioned is True
     assert updated_state is not None
@@ -216,7 +216,7 @@ def test_registry_helper_functions_cover_status_serialization(
             "terminate_mode": None,
         }
     finally:
-        execution_registry._clear_execution_task_state("queued-exec")
+        execution_registry._execution_tasks.pop("queued-exec", None)
 
     from axile.server._native import _core
 
@@ -298,7 +298,7 @@ def test_terminate_running_account_execution_persists_immediately_terminated_que
     async def fake_append_terminated_execute_record(**kwargs: object) -> SimpleNamespace:
         assert kwargs["execution_id"] == execution_id
         assert kwargs["cancel_attempted"] is False
-        return SimpleNamespace(id=888, is_success=0)
+        return {"record_id": 888, "is_success": 0}
 
     monkeypatch.setattr(execution_registry, "append_execution_event", fake_append_execution_event)
     monkeypatch.setattr(execution_registry, "append_terminated_execute_record", fake_append_terminated_execute_record)
@@ -324,7 +324,7 @@ def test_terminate_running_account_execution_persists_immediately_terminated_que
             ExecutionEventType.EXECUTION_TERMINATED,
         ]
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
         execution_registry.clear_running_execution(1, execution_id)
 
 
@@ -356,7 +356,7 @@ def test_request_execution_termination_is_idempotent_when_already_terminating() 
             mode=ExecutionTerminateMode.GRACEFUL,
         )
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
     assert first_transitioned is True
     assert first_state is not None
@@ -398,7 +398,7 @@ def test_terminate_running_account_execution_idempotent_for_queued(
     async def fake_append_terminated_execute_record(**_: object) -> SimpleNamespace:
         nonlocal record_append_calls
         record_append_calls += 1
-        return SimpleNamespace(id=888, is_success=0)
+        return {"record_id": 888, "is_success": 0}
 
     monkeypatch.setattr(execution_registry, "append_execution_event", fake_append_execution_event)
     monkeypatch.setattr(execution_registry, "append_terminated_execute_record", fake_append_terminated_execute_record)
@@ -421,7 +421,7 @@ def test_terminate_running_account_execution_idempotent_for_queued(
         ]
         assert record_append_calls == 1
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
         execution_registry.clear_running_execution(1, execution_id)
 
 
@@ -470,7 +470,7 @@ def test_terminate_running_account_execution_idempotent_for_running(
         assert second_state is not None
         assert second_state.status == ExecutionTaskStatus.TERMINATING
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
         execution_registry.clear_running_execution(1, execution_id)
 
 
@@ -499,7 +499,7 @@ def test_finalize_execution_task_state_drops_refs_and_defers_evict() -> None:
         assert retained.task is None
         assert retained.cancel_event is None
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
 
 def test_finalize_execution_task_state_evicts_immediately_without_loop() -> None:
@@ -518,7 +518,7 @@ def test_finalize_execution_task_state_evicts_immediately_without_loop() -> None
         execution_registry.finalize_execution_task_state(execution_id)
         assert execution_registry.get_execution_task_state(execution_id) is None
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
 
 def test_finalize_execution_task_state_ignores_non_terminal() -> None:
@@ -543,7 +543,7 @@ def test_finalize_execution_task_state_ignores_non_terminal() -> None:
         assert retained.cancel_event is event
         assert retained.task is not None
     finally:
-        execution_registry._clear_execution_task_state(execution_id)
+        execution_registry._execution_tasks.pop(execution_id, None)
 
 
 @pytest.mark.parametrize(
@@ -587,8 +587,8 @@ def test_execution_record_output_error_reads_typed_field() -> None:
         display_status="BLOCKED",
         display_error="5 个品种因交易时段不可执行",
     )
-    assert execution_registry.execution_record_output_error(record) == "5 个品种因交易时段不可执行"
-    assert execution_registry.execution_record_output_status(record) == "BLOCKED"
+    assert status_view(record)["error"] == "5 个品种因交易时段不可执行"
+    assert status_view(record)["output_status"] == "BLOCKED"
 
 
 def test_persisted_status_keeps_task_output_and_outcome_separate() -> None:
@@ -628,8 +628,8 @@ def test_status_uses_persisted_display_fields_without_exposing_technical_error()
         display_error="执行失败，具体原因见执行证据",
         display_outcome="error",
     )
-    assert execution_registry.execution_record_output_error(record) == "执行失败，具体原因见执行证据"
-    assert execution_registry.execution_record_outcome(record)["outcome"] == "error"
+    assert status_view(record)["error"] == "执行失败，具体原因见执行证据"
+    assert status_view(record)["outcome"] == "error"
     assert record.error == "RuntimeError: channel query failed"
 
 

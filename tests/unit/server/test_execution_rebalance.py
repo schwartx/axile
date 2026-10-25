@@ -172,13 +172,13 @@ def test_trade_serializes_success_result_to_json_safe_dict(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         result = cast("dict[str, object]", cast(UnifiedStandardOutput, output).model_dump(mode="json"))
         captured["account"] = account
         captured["raw_input"] = raw_input
         captured["result"] = result
         captured["execution_id"] = execution_id
-        return SimpleNamespace(id=101, is_success=1)
+        return {"record_id": 101, "is_success": 1}
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
@@ -226,11 +226,11 @@ def test_trade_builds_model_before_execute_and_persists_dict(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, output
         captured["raw_input"] = raw_input
         captured["execution_id"] = execution_id
-        return SimpleNamespace(id=105, is_success=1)
+        return {"record_id": 105, "is_success": 1}
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: fake_executor)
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
@@ -277,9 +277,9 @@ def test_trade_defaults_gm_ashare_short_leverage_to_zero_when_unset(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output, execution_id
-        return SimpleNamespace(id=108, is_success=1)
+        return {"record_id": 108, "is_success": 1}
 
     monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
@@ -325,11 +325,11 @@ def test_trade_routes_gm_account_to_worker_manager(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, output
         captured["raw_input"] = raw_input
         captured["execution_id"] = execution_id
-        return SimpleNamespace(id=205, is_success=1)
+        return {"record_id": 205, "is_success": 1}
 
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("GM 路径不应在主进程创建执行器")
@@ -381,9 +381,9 @@ def test_trade_routes_ctp_account_to_worker_manager(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output, execution_id
-        return SimpleNamespace(id=305, is_success=1)
+        return {"record_id": 305, "is_success": 1}
 
     def unexpected_create_executor_instance(_account: Account) -> FakeExecutor:
         raise AssertionError("PROCESS 策略下不应走线程执行器")
@@ -458,7 +458,7 @@ def test_trade_persists_failed_gm_worker_output(
         output: UnifiedStandardOutput,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account
         raw_result = cast("dict[str, object]", output.model_dump(mode="json"))
         captured_error_record.update(
@@ -470,7 +470,7 @@ def test_trade_persists_failed_gm_worker_output(
                 "execution_id": execution_id,
             }
         )
-        return SimpleNamespace(id=401, is_success=0)
+        return {"record_id": 401, "is_success": 0}
 
     monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
@@ -484,8 +484,8 @@ def test_trade_persists_failed_gm_worker_output(
         )
     )
 
-    assert record.id == 401
-    assert record.is_success == 0
+    assert record["record_id"] == 401
+    assert record["is_success"] == 0
     assert captured_error_record["execution_id"] == "exec-gm-worker-error-1"
     assert captured_error_record["msg"] == "boom"
     assert captured_error_record["raw_result"]["extra"]["worker_error"] == {
@@ -516,9 +516,9 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
         captured.update(kwargs)
         return SimpleNamespace(id=1)
 
-    async def fake_trade(_account: Account, _target: dict[str, float], **kwargs: object) -> SimpleNamespace:
+    async def fake_trade(_account: Account, _target: dict[str, float], **kwargs: object) -> dict[str, object]:
         captured["trade_normalized_target"] = kwargs["normalized_target"]
-        return SimpleNamespace(id=10, is_success=1)
+        return {"record_id": 10, "is_success": 1}
 
     monkeypatch.setattr(rebalance_execution, "_load_rebalance_account", fake_load)
     monkeypatch.setattr(rebalance_execution, "trade_channel_check", fake_check)
@@ -528,7 +528,7 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
 
     result = asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="exec-target-1"))
 
-    assert result.is_success == 1
+    assert result["is_success"] == 1
     assert captured["raw_weights"] == raw_target
     assert captured["normalized_weights"] == {"rb2610": 1.0, "ag2612": -1.5}
     assert captured["normalized_weights"] is captured["trade_normalized_target"]
@@ -549,10 +549,10 @@ def test_trade_passes_execution_id_to_persisted_record(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output
         captured["execution_id"] = execution_id
-        return SimpleNamespace(id=105, is_success=1)
+        return {"record_id": 105, "is_success": 1}
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(rebalance_execution, "append_execute_record_from_output", fake_append_output_record)
@@ -608,9 +608,9 @@ def test_trade_emits_execution_events_and_artifacts(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output, execution_id
-        return SimpleNamespace(id=106, is_success=1)
+        return {"record_id": 106, "is_success": 1}
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: FakeExecutor())
     monkeypatch.setattr(
@@ -727,9 +727,9 @@ def test_trade_prepares_execution_runtime_before_pre_execute_audit_events(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output, execution_id
-        return SimpleNamespace(id=107, is_success=1)
+        return {"record_id": 107, "is_success": 1}
 
     def fake_create_executor_instance(_account: Account) -> _RuntimeAwareExecutor:
         nonlocal fake_executor
@@ -827,7 +827,7 @@ def test_trade_completion_event_matches_output_status(
         output: UnifiedStandardOutput,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account
         raw_result = cast("dict[str, object]", output.model_dump(mode="json"))
         captured_error_record.update(
@@ -839,7 +839,7 @@ def test_trade_completion_event_matches_output_status(
                 "execution_id": execution_id,
             }
         )
-        return SimpleNamespace(id=301, is_success=expected_is_success)
+        return {"record_id": 301, "is_success": expected_is_success}
 
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda _account, **kwargs: _UnsuccessfulExecutor())
     monkeypatch.setattr(
@@ -864,8 +864,8 @@ def test_trade_completion_event_matches_output_status(
         )
     )
 
-    assert record.id == 301
-    assert record.is_success == expected_is_success
+    assert record["record_id"] == 301
+    assert record["is_success"] == expected_is_success
     assert captured_error_record["account_id"] == 1
     assert captured_error_record["execution_id"] == "exec-unsuccessful-1"
     assert captured_error_record["msg"] == error_message
@@ -899,9 +899,9 @@ def test_trade_binds_account_control_guard(
         output: object,
         execution_id: str | None = None,
         execution_kind: object = None,
-    ) -> SimpleNamespace:
+    ) -> dict[str, object]:
         _ = account, raw_input, output, execution_id
-        return SimpleNamespace(id=201, is_success=1)
+        return {"record_id": 201, "is_success": 1}
 
     async def fake_build_account_control_guard(_account: Account, execution_id: str | None, **kwargs) -> object:
         assert kwargs == {"context_kind": "execution", "source": "algorithm"}

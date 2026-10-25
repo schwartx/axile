@@ -102,6 +102,8 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "connection_accounts",
         "execution_read",
         "supplement_has_execution_steps",
+        "submission_monitor_json",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
@@ -121,7 +123,13 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "account_runtime_sync_json",
         "notifications_get_system_json",
     } <= set(required)
-    assert not {"dashboard_inputs", "summaries", "publication_status", "order_submission_summary"} & set(required)
+    assert not {
+        "dashboard_inputs",
+        "summaries",
+        "publication_status",
+        "order_submission_summary",
+        "submission_monitor",
+    } & set(required)
 
 
 @pytest.mark.parametrize(
@@ -132,6 +140,8 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         ("0034", 39, None, "analysis fact schema 40"),
         ("0034", 40, "migration_upgrade", "missing required entrypoints"),
         ("0034", 40, "account_public", "missing required entrypoints"),
+        ("0034", 40, "submission_monitor_json", "missing required entrypoints"),
+        ("0034", 40, "persist_execution_state", "missing required entrypoints"),
         ("0034", 40, "connection_accounts", "missing required entrypoints"),
         ("0034", 40, "execution_read", "missing required entrypoints"),
         ("0034", 40, "supplement_has_execution_steps", "missing required entrypoints"),

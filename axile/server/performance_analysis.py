@@ -26,6 +26,7 @@ def ensure_native_capabilities() -> None:
         "execution_read",
         "supplement_has_execution_steps",
         "publish_store",
+        "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",

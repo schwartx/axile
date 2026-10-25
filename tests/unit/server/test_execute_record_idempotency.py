@@ -13,10 +13,10 @@ import pytest
 
 from axile.server.core import db
 from axile.server.execution.records import _persist_execute_record
-from tests.conftest import native_store_call, require_native_store
+from tests.conftest import require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
-from tests.unit.server._native_read_views import read_execution_result, read_view
+from tests.unit.server._native_read_views import persist_record_fixture, read_execution_result, read_view
 
 
 @pytest.fixture
@@ -45,14 +45,14 @@ def test_duplicate_execution_record_returns_first(database) -> None:
             raw_result={"task_status": "TERMINATED", "finalized": True},
             is_success=0,
         )
-        return first.id, second, await read_execution_result(second)
+        return first["record_id"], second, await read_execution_result(second)
 
     first_id, second, result = asyncio.run(scenario())
-    assert first_id == second.id
+    assert first_id == second["record_id"]
     assert isinstance(result, dict)
     assert result == {"task_status": "TERMINATED"}
     assert "finalized" not in result
-    assert second.task_status == "TERMINATED"
+    assert second["status"] == "TERMINATED"
 
 
 def test_native_concurrent_terminal_writers_share_one_committed_record(database) -> None:
@@ -62,9 +62,8 @@ def test_native_concurrent_terminal_writers_share_one_committed_record(database)
 
     def persist(result):
         barrier.wait(timeout=2)
-        return native_store_call(
+        return persist_record_fixture(
             database,
-            "persist_execute_record",
             {
                 "account_id": 1,
                 "execution_id": "exec-race",
@@ -112,6 +111,6 @@ def test_unique_id_conflict_without_execution_id_still_raises(database) -> None:
         return records
 
     first, second = asyncio.run(scenario())
-    assert first.id != second.id
+    assert first["record_id"] != second["record_id"]
     with closing(oracle_connect(database)) as connection:
         assert connection.execute("SELECT count(*) FROM executerecord WHERE execution_id IS NULL").fetchone()[0] == 2

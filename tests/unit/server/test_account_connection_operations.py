@@ -10,6 +10,7 @@ from axile.executor.connection_state import ConnectionObservation
 from axile.server.api.routes import account_connection as routes
 from axile.server.connection_runtime import observe_session, register_session
 from axile.server.connection_state import ConnectionBinding, connection_config_key
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.db.models.account_connection import AccountConnectionState
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import connection_view
@@ -30,6 +31,11 @@ def client(account, monkeypatch):
 
     monkeypatch.setattr(routes, "account_connection", connection_response)
     monkeypatch.setattr(routes, "_get_account_or_404", get_account)
+
+    async def snapshot(account_id):
+        return AccountSnapshot.model_validate((await get_account(account_id)).model_dump())
+
+    monkeypatch.setattr(routes, "_get_account_snapshot_or_404", snapshot)
     return TestClient(app)
 
 
@@ -116,6 +122,11 @@ def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch):
             return account
 
         monkeypatch.setattr(routes, "_get_account_or_404", get_account)
+
+        async def snapshot(account_id):
+            return AccountSnapshot.model_validate((await get_account(account_id)).model_dump())
+
+        monkeypatch.setattr(routes, "_get_account_snapshot_or_404", snapshot)
         monkeypatch.setattr(routes, "_operate_connection", operate)
         first = asyncio.create_task(routes.reconnect_account(7))
         await entered.wait()
@@ -128,3 +139,30 @@ def test_concurrent_failed_reconnects_share_one_attempt(monkeypatch):
         assert not routes._reconnect_tasks
 
     asyncio.run(scenario())
+
+
+def test_rest_snapshot_is_loaded_once_and_remains_independent(native_database, monkeypatch):
+    from contextlib import closing
+
+    from axile.server.api.routes import account_support
+    from axile.server.core import db
+    from axile.server.db.models.account import AccountSnapshot
+    from tests.sqlite_oracle import connect
+    from tests.unit.server._execution_test_support import insert_account
+
+    monkeypatch.setattr(db, "database_path", lambda: str(native_database))
+    with closing(connect(native_database)) as connection, connection:
+        insert_account(connection, build_account(id=7))
+    monkeypatch.setattr(account_support, "get_account", lambda _id: pytest.fail("不得重建完整 Account"))
+
+    async def read():
+        first = await account_support._get_account_snapshot_or_404(7)
+        first.account_config["local-change"] = True
+        second = await account_support._get_account_snapshot_or_404(7)
+        assert type(first) is AccountSnapshot
+        assert "local-change" not in second.account_config
+        with pytest.raises(routes.HTTPException) as error:
+            await account_support._get_account_snapshot_or_404(999)
+        assert error.value.status_code == 404 and error.value.detail == "账户不存在"
+
+    asyncio.run(read())

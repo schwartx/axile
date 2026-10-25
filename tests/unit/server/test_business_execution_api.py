@@ -15,9 +15,9 @@ from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.core import db
-from axile.server.db.models.execution import ExecuteRecord
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
     persist_result,

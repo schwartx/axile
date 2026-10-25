@@ -33,10 +33,7 @@ from axile.server.api.routes import account_feishu
 from axile.server.business_facts.artifacts import (
     make_artifact_reference,
 )
-from axile.server.business_facts.assets import (
-    input_after_asset_fact_id,
-    input_asset_fact_id,
-)
+from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
 from axile.server.evidence.archive import build_archive
 from axile.server.evidence.collect import collect_evidence
@@ -515,7 +512,7 @@ async def _store_preterminal_observations(path):
         ("targets", ExecutionArtifactType.TARGET_SNAPSHOT, None),
         ("rules", ExecutionArtifactType.TRADE_RULES_SNAPSHOT, None),
         ("assets_before", ExecutionArtifactType.ACCOUNT_SNAPSHOT_BEFORE, input_asset_fact_id(input_id)),
-        ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, input_after_asset_fact_id(input_id)),
+        ("assets_after", ExecutionArtifactType.ACCOUNT_SNAPSHOT, f"input:{input_id}:/after_account_assets"),
     ):
         _seed(
             path,
@@ -654,9 +651,9 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
     assert item.record is None and item.artifacts == []
     observations = {row["asset_id"]: row for row in item.asset_observations}
     assert business_evidence(observations[input_asset_fact_id(input_id)]["account_assets"]) == business_evidence(before)
-    assert business_evidence(observations[input_after_asset_fact_id(input_id)]["account_assets"]) == business_evidence(
-        after
-    )
+    assert business_evidence(
+        observations[f"input:{input_id}:/after_account_assets"]["account_assets"]
+    ) == business_evidence(after)
     assert all(row["input_id"] == input_id for row in observations.values())
     if with_target_event:
         decision = item.events[0]["details"]["decision"]
@@ -676,7 +673,7 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
                 before
             )
             assert business_evidence(
-                assets[input_after_asset_fact_id(input_id)]["account_assets"]
+                assets[f"input:{input_id}:/after_account_assets"]["account_assets"]
             ) == business_evidence(after)
             manifest = json.loads(archive.read("manifest.json"))
             coverage = manifest["executions"][0]["coverage"]
@@ -703,7 +700,7 @@ def test_asset_reference_rejects_wrong_owner_or_observation_role(facts_database,
 
         seed_account(facts_database, 2)
     content = make_artifact_reference(
-        view="assets_after", input_id=input_id, asset_id=input_after_asset_fact_id(input_id)
+        view="assets_after", input_id=input_id, asset_id=f"input:{input_id}:/after_account_assets"
     )
     if fault == "observation_role":
         content["business_facts_ref"]["view"] = "assets_before"

@@ -48,6 +48,46 @@ fn record_on(
         .map_err(invalid)
 }
 
+pub(crate) fn record_status(
+    connection: &Connection,
+    record: &Map<String, Value>,
+) -> Result<Value, AnalysisError> {
+    let status = match record["task_status"].as_str() {
+        Some(
+            value @ ("QUEUED" | "RUNNING" | "TERMINATING" | "TERMINATED" | "SUCCEEDED" | "FAILED"
+            | "SKIPPED" | "PARTIAL"),
+        ) => value,
+        Some(_) => return Err(invalid("unknown execution task status")),
+        None => {
+            if record["is_success"] == 1 {
+                "SUCCEEDED"
+            } else {
+                "FAILED"
+            }
+        }
+    };
+    let symbols = result_symbols::read_outcome_symbols(
+        connection,
+        record["id"]
+            .as_i64()
+            .ok_or_else(|| invalid("执行记录身份无效"))?,
+    )?;
+    let optional_text = |name: &str| record[name].as_str().filter(|s| !s.trim().is_empty());
+    let payload = json!({
+        "execution_id":record["execution_id"], "account_id":record["account_id"],
+        "execution_kind":record["execution_kind"].as_str().filter(|value| matches!(*value,"rebalance"|"clear_positions")),
+        "status":status, "created_at":record["created_at"], "started_at":null,
+        "finished_at":record["termination_finished_at"],
+        "error":optional_text("display_error"),
+        "output_status":optional_text("display_status"),
+        "outcome":record["display_outcome"], "outcome_reason":record["display_outcome_reason"],
+        "outcome_symbols":symbols, "record_id":record["id"], "is_success":record["is_success"],
+        "cancel_requested_at":record["termination_requested_at"], "cancel_reason":record["termination_reason"],
+        "terminate_mode":record["termination_mode"].as_str().filter(|value| matches!(*value,"graceful"|"cancel_pending")),
+    });
+    Ok(payload)
+}
+
 fn persisted_status(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let id = text(request, "execution_id")?;
     let intent = crate::intents::get_in_connection(connection, id)?;
@@ -73,40 +113,16 @@ fn persisted_status(connection: &Connection, request: &Value) -> Result<Value, A
             "terminate_mode":value["terminate_mode"],
         })).unwrap_or(Value::Null));
     };
-    let status = match record["task_status"].as_str() {
-        Some(
-            value @ ("QUEUED" | "RUNNING" | "TERMINATING" | "TERMINATED" | "SUCCEEDED" | "FAILED"
-            | "SKIPPED" | "PARTIAL"),
-        ) => value,
-        Some(_) => return Err(invalid("unknown execution task status")),
-        None => {
-            if record["is_success"] == 1 {
-                "SUCCEEDED"
-            } else {
-                "FAILED"
-            }
-        }
-    };
-    let symbols = result_symbols::read_outcome_symbols(
-        connection,
-        record["id"]
-            .as_i64()
-            .ok_or_else(|| invalid("执行记录身份无效"))?,
-    )?;
-    let optional_text = |name: &str| record[name].as_str().filter(|s| !s.trim().is_empty());
-    let mut payload = json!({
-        "execution_id":record["execution_id"], "account_id":record["account_id"],
-        "execution_kind":record["execution_kind"].as_str().filter(|value| matches!(*value,"rebalance"|"clear_positions")),
-        "status":status, "created_at":record["created_at"], "started_at":null,
-        "finished_at":record["termination_finished_at"].as_str().filter(|s| !s.is_empty()).map(Value::from).unwrap_or_else(||record["created_at"].clone()),
-        "error":if status == "TERMINATED" { None } else { optional_text("display_error") },
-        "output_status":optional_text("display_status"),
-        "outcome":record["display_outcome"], "outcome_reason":record["display_outcome_reason"],
-        "outcome_symbols":symbols, "record_id":record["id"], "is_success":record["is_success"],
-        "cancel_requested_at":record["termination_requested_at"], "cancel_reason":record["termination_reason"],
-        "terminate_mode":record["termination_mode"].as_str().filter(|value| matches!(*value,"graceful"|"cancel_pending")),
-    });
-    if status == "PARTIAL" {
+    let mut payload = record_status(connection, &record)?;
+    payload["finished_at"] = record["termination_finished_at"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(Value::from)
+        .unwrap_or_else(|| record["created_at"].clone());
+    if payload["status"] == "TERMINATED" {
+        payload["error"] = Value::Null;
+    }
+    if payload["status"] == "PARTIAL" {
         if let Some(intent) = intent.filter(|value| {
             value["status"] == "FAILED" && value["error"].as_str().is_some_and(|s| !s.is_empty())
         }) {
@@ -259,9 +275,6 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "op")? {
         "status" => persisted_status(connection, request),
-        "outcome_symbols" => {
-            result_symbols::read_outcome_symbols(connection, integer(request, "record_id")?)
-        }
         "target_sizing" => target_sizing(connection, request),
         "last_target" => last_target(connection, request),
         _ => Err(invalid("未知执行读取阶段")),
@@ -333,6 +346,18 @@ mod tests {
         assert_eq!(failed["output_status"], "FAILED");
         assert_eq!(failed["record_id"], 7);
         assert_eq!(failed["terminate_mode"], "graceful");
+        connection
+            .execute_batch(
+                "UPDATE executerecord SET task_status='TERMINATED',termination_finished_at=NULL;",
+            )
+            .unwrap();
+        let row = record_on(&connection, "status", None).unwrap().unwrap();
+        let receipt = record_status(&connection, &row).unwrap();
+        assert!(receipt["finished_at"].is_null());
+        assert_eq!(receipt["error"], "partial evidence");
+        let persisted = persisted_status(&connection, &request).unwrap();
+        assert_eq!(persisted["finished_at"], "t");
+        assert!(persisted["error"].is_null());
     }
 
     #[test]

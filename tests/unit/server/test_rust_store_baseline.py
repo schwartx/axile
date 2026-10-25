@@ -66,8 +66,8 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
         return wire
 
     core = SimpleNamespace(
-        EVIDENCE_INPUT_STAGES=("persist_execute_record",),
-        persist_execute_record=capture,
+        EVIDENCE_INPUT_STAGES=("persist_execution_state",),
+        persist_execution_state=capture,
         migration_check=capture,
     )
     monkeypatch.setattr(support, "require_native_store", lambda *_operations: core)
@@ -77,7 +77,7 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
         "negative": float("-inf"),
         "literal": {"invalid_number": "nan"},
     }
-    decoded = json.loads(support.native_store_call("synthetic.db", "persist_execute_record", request))
+    decoded = json.loads(support.native_store_call("synthetic.db", "persist_execution_state", request))
     assert math.isnan(decoded["nan"])
     assert decoded["positive"] == float("inf")
     assert decoded["negative"] == float("-inf")
@@ -86,7 +86,7 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
         support.native_store_call("synthetic.db", "migration_check", request)
     del core.EVIDENCE_INPUT_STAGES
     with pytest.raises(ValueError, match="Out of range float values"):
-        support.native_store_call("synthetic.db", "persist_execute_record", request)
+        support.native_store_call("synthetic.db", "persist_execution_state", request)
     literal = {"invalid_number": "nan"}
     assert json.loads(support.native_store_call("synthetic.db", "migration_check", literal)) == literal
     assert len(calls) == 2

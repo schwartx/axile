@@ -12,13 +12,15 @@ from fastapi.testclient import TestClient
 
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.server.api.routes import account_evidence
-from axile.server.db.models import Account, ExecuteRecord
+from axile.server.db.models import Account
 from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
 from axile.server.evidence.models import EvidenceLimits, ExportBudget
 from axile.server.execution.worker_backend import worker, worker_state
 from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
 from tests.conftest import native_store_call
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import rows as stored_rows
+from tests.unit.server._native_read_views import persist_record_fixture
 from tests.unit.server.test_evidence_export import _seed_rows as seed_rows
 
 pytestmark = pytest.mark.slow
@@ -60,9 +62,8 @@ def seed(database, *rows):
     seed_rows(database, *(row for row in rows if not isinstance(row, ExecuteRecord)))
     for row in rows:
         if isinstance(row, ExecuteRecord):
-            native_store_call(
+            persist_record_fixture(
                 database,
-                "persist_execute_record",
                 {
                     "account_id": row.account_id,
                     "execution_id": row.execution_id,

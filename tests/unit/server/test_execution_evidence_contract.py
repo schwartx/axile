@@ -19,7 +19,7 @@ from axile.executor.models.unified_account_assets import Position, PositionDirec
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
 from axile.server.business_facts.artifacts import parse_artifact_reference
-from axile.server.business_facts.assets import input_after_asset_fact_id, input_asset_fact_id
+from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
 from axile.server.execution.worker_backend import worker_audit
@@ -173,7 +173,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             "version": 1,
             "view": "assets_after",
             "input_id": input_id,
-            "asset_id": input_after_asset_fact_id(input_id),
+            "asset_id": f"input:{input_id}:/after_account_assets",
         }
         assert "account_assets" not in after.content
         resolved = read_view(

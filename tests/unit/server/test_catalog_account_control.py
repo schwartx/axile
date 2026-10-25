@@ -10,6 +10,7 @@ from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.models import AccountControlBucketType
 from axile.executor.ctp.ctp_execute import CTPExecutor
 from axile.server.account_control import providers
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import execution_account_control as persistence
 from axile.server.execution.catalog_control import catalog_control_scope
 from tests.sqlite_oracle import connect as oracle_connect
@@ -37,7 +38,7 @@ def test_independent_catalog_flush_preserves_running_usage_and_audit_ownership(n
         )
         with closing(oracle_connect(native_database)) as connection, connection:
             insert_account(connection, account)
-        snapshot = account.snapshot()
+        snapshot = AccountSnapshot.model_validate(account.model_dump())
         executor = CTPExecutor(TradeChannel.CTP)
         active = await persistence.build_account_control_guard(snapshot, "active-execution")
         executor.set_account_control_guard(active)

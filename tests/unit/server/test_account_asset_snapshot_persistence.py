@@ -8,8 +8,8 @@ import pytest
 
 from axile.server._native import _core
 from axile.server.business_facts.assets import latest_asset_snapshot
-from axile.server.db.models import ExecuteRecord
 from axile.server.execution.records import append_success_execute_record
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import rows, seed_account, sql
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import read_execution_result
@@ -33,7 +33,7 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         records = rows(native_database, "executerecord")
         assert len(records) == 1
         record = ExecuteRecord.model_validate(records[0])
-        assert record.id == saved.id
+        assert record.id == saved["record_id"]
         snapshots = rows(native_database, "account_asset_snapshot")
         assert len(snapshots) == 1
         snapshot = snapshots[0]

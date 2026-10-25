@@ -14,15 +14,16 @@ import pytest
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
 from axile.server.business_facts.artifacts import REFERENCE_KEY, make_artifact_reference
-from axile.server.db.models import ExecuteRecord, ExecutionArtifact
+from axile.server.db.models import ExecutionArtifact
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
+from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
-from tests.unit.server._native_read_views import read_view
+from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 _CREATED = "2026-10-20T09:30:00.000001"
 
@@ -124,9 +125,8 @@ def _freeze(path, *, account_id=1, execution_id="facts-one", payload=None, creat
 
 def _store(path, *, execution_id="facts-one", account_id=1, payload=None, result=None, is_success=1):
     return ExecuteRecord.model_validate(
-        native_store_call(
+        persist_record_fixture(
             path,
-            "persist_execute_record",
             {
                 "account_id": account_id,
                 "execution_id": execution_id,

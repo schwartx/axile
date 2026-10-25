@@ -79,13 +79,9 @@ def _build_account(
 
 
 def _account_payload() -> dict[str, object]:
-    return (
-        _build_account()
-        .snapshot()
-        .model_dump(
-            mode="json",
-            exclude={"id", "created_at", "updated_at", "copied_from_account_id", "copied_from_account_name"},
-        )
+    return _build_account().model_dump(
+        mode="json",
+        exclude={"id", "created_at", "updated_at", "copied_from_account_id", "copied_from_account_name"},
     )
 
 

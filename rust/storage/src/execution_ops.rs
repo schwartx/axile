@@ -69,7 +69,7 @@ fn facts_row(
 }
 
 /// 首条执行结果、任务终态、补发结算与待发通知在同一事务提交。
-pub fn persist_execute_record(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+pub fn persist_execution_state(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
     crate::writer_scope::immediate(&connection, || {
         let record = persist_execute_record_in(&connection, request)?;
@@ -92,7 +92,10 @@ pub fn persist_execute_record(path: &str, request: &Value) -> Result<Value, Anal
                 }),
             )?;
         }
-        Ok(record)
+        crate::execution_reads::record_status(
+            &connection,
+            record.as_object().expect("persisted record"),
+        )
     })
 }
 

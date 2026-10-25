@@ -14,6 +14,7 @@ import pytest
 from scripts.benchmark_structured_publication import record
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _NOW = "2026-10-23T09:30:00+08:00"
 _SQL = """
@@ -50,9 +51,8 @@ def database(native_database: Path) -> Path:
 
 
 def _persist(database: Path, execution_id: str) -> None:
-    native_store_call(
+    persist_record_fixture(
         database,
-        "persist_execute_record",
         {
             "account_id": 1,
             "execution_id": execution_id,
@@ -222,10 +222,8 @@ def test_migration_roundtrip_reopens_warmed_readers_and_writers(database: Path) 
 def test_publication_can_repeat_after_stale_source_and_failed_commit(database: Path) -> None:
     core = require_native_store("publish_store", "queue_claim", "queue_enqueue")
     item = record(0, 1)
-    native_store_call(
-        database,
-        "persist_execute_record",
-        {**vars(item), "input_id": "publication-input", "result_input_id": "publication-result"},
+    persist_record_fixture(
+        database, {**vars(item), "input_id": "publication-input", "result_input_id": "publication-result"}
     )
 
     def request(token: str) -> dict:

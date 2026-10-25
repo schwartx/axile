@@ -1,6 +1,6 @@
 """清仓执行场景."""
 
-from typing import cast
+from typing import Any, cast
 
 import loguru
 
@@ -8,7 +8,6 @@ from axile.domain.execution import ExecutionEventStatus, ExecutionEventType, Exe
 from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
-from axile.server.db.models import Account, ExecuteRecord
 from axile.server.db.models.account import AccountContext
 from axile.server.error_details import exception_details, json_error_value
 from axile.server.execution.execution_algorithms import resolve_empty_positions_algorithm
@@ -24,7 +23,7 @@ async def _run_clear_positions(
     account: AccountContext,
     execution_id: str,
     algorithm: dict[str, object] | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     执行队列已认领的清仓任务，并持久化执行记录.
 
@@ -39,11 +38,9 @@ async def _run_clear_positions(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         本次清仓对应的执行记录。
     """
-    if isinstance(account, Account):
-        account = account.snapshot()
     logger = loguru.logger
     with logger.contextualize(
         **execution_log_context(
@@ -108,7 +105,7 @@ async def _run_clear_positions(
             )
             logger.info(
                 f"名称={account.name} | 渠道={account.trade_channel} | 清仓完成 | "
-                f"execution_id={execution_id} | record_id={record.id} | success={record.is_success}"
+                f"execution_id={execution_id} | record_id={record['record_id']} | success={record['is_success']}"
             )
             return record
         except ExecutionTerminated:

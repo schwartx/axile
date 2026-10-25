@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from axile.executor.instrument_catalog import CatalogError, InstrumentCatalog
 from axile.server.api.routes import instrument_catalog as routes
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import catalog_preheat
 from axile.server.trading_calendar import CalendarDecisionStatus
 from tests.unit.server._execution_test_support import build_account
@@ -65,7 +66,7 @@ def test_catalog_api_is_async_and_does_not_wait_for_account_login(monkeypatch):
 
 
 def test_exact_query_uses_detached_account_snapshot(monkeypatch):
-    account = build_account().snapshot()
+    account = AccountSnapshot.model_validate(build_account().model_dump())
     calls: list[object] = []
 
     async def load(account_id: int):
@@ -91,7 +92,7 @@ def test_exact_query_uses_detached_account_snapshot(monkeypatch):
 @pytest.mark.parametrize("missing", [False, True])
 def test_exact_query_preserves_structured_error(monkeypatch, missing):
     async def load(_account_id: int):
-        return None if missing else build_account().snapshot()
+        return None if missing else AccountSnapshot.model_validate(build_account().model_dump())
 
     async def query(*_args, **_kwargs):
         raise CatalogError("合约不存在", "CATALOG.NOT_FOUND", causes=[{"symbol": "missing"}])

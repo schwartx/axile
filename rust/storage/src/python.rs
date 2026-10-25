@@ -18,7 +18,7 @@ use crate::snapshots;
 create_exception!(_core, NativeError, PyException, "原生数据库操作错误");
 
 const EVIDENCE_INPUT_STAGES: [&str; 6] = [
-    "persist_execute_record",
+    "persist_execution_state",
     "freeze_execution_input",
     "freeze_execution_after_assets",
     "asset_snapshot_write",
@@ -84,15 +84,6 @@ impl Store {
 }
 
 impl Store {
-    fn value(
-        &self,
-        py: Python<'_>,
-        task: impl FnOnce(&Connection) -> Result<Value, String> + Send,
-    ) -> PyResult<Py<PyAny>> {
-        let result = py.detach(|| self.with_snapshot(task)).map_err(raise)?;
-        json_to_py(py, &result)
-    }
-
     fn json_bytes(
         &self,
         py: Python<'_>,
@@ -317,7 +308,7 @@ business_operations! { register_business_operations, business_operation, PyAny;
     runtime_sync_record_schedule_skip => crate::runtime_sync::record_schedule_skip,
     portfolio_operation => crate::portfolio_ops::portfolio_operation,
     target_operation => crate::target_ops::target_operation,
-    persist_execute_record => crate::execution_ops::persist_execute_record,
+    persist_execution_state => crate::execution_ops::persist_execution_state,
     delete_execution_history => crate::execution_ops::delete_execution_history,
     asset_snapshot_write => crate::asset_ops::asset_snapshot_write,
     asset_snapshot_latest => crate::asset_ops::asset_snapshot_latest,
@@ -418,26 +409,6 @@ macro_rules! detached_operations {
             Ok(())
         }
     };
-}
-
-store_operations! { register_store_values, value, PyAny;
-
-
-    #[allow(clippy::too_many_arguments)]
-    submission_monitor(
-        account_id: i64,
-        day: &str,
-        timezone: &str,
-        start_ms: i64,
-        end_ms: i64,
-        now_ms: i64,
-    ) => |connection| crate::submissions::monitor(
-        connection, account_id, day, timezone, start_ms, end_ms, now_ms,
-    );
-
-
-
-
 }
 
 store_operations! { register_store_bytes, json_bytes, PyBytes;
@@ -751,7 +722,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;
     register_queue_operations(m)?;
-    register_store_values(m)?;
     register_store_bytes(m)?;
     register_business_operations(m)?;
     register_json_operations(m)?;

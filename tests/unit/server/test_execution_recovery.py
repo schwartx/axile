@@ -9,6 +9,7 @@ import pytest
 
 from axile.common.trade_channel import TradeChannel
 from axile.domain.execution import ExecutionKind, ExecutionTaskStatus
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import dispatcher as dispatcher_module
 from axile.server.execution import intents as intents_module
 from axile.server.execution import records as records_module
@@ -52,7 +53,7 @@ def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted
     queued = _intent("queue-1", ExecutionTaskStatus.QUEUED)
     saved: dict[str, IntentSnapshot] = {item.execution_id: item for item in (interrupted, queued)}
     calls: list[tuple[str, object]] = []
-    account = build_account(id=3).snapshot()
+    account = AccountSnapshot.model_validate(build_account(id=3).model_dump())
 
     async def list_intents(*statuses: ExecutionTaskStatus):
         return [item for item in saved.values() if item.status in statuses]
@@ -90,7 +91,7 @@ def test_recover_interrupts_running_and_restores_queued(monkeypatch, interrupted
     finally:
         registry.clear_running_execution(3, interrupted.execution_id)
         registry.clear_queued_execution(3, queued.execution_id)
-        registry._clear_execution_task_state(queued.execution_id)
+        registry._execution_tasks.pop(queued.execution_id, None)
 
 
 def test_recovery_fails_queued_intent_for_deleted_account(monkeypatch) -> None:

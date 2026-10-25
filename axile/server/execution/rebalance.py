@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import loguru
 
@@ -16,7 +16,7 @@ from axile.executor.algorithms.exceptions import execution_error_message
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.termination import ExecutionTerminated
 from axile.server.core.log_config import execution_log_context
-from axile.server.db.models import Account, ExecuteRecord, Portfolio
+from axile.server.db.models import Portfolio
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.error_details import exception_details
 from axile.server.execution.execution_algorithms import resolve_account_leverages, resolve_execution_algorithm_name
@@ -289,7 +289,7 @@ async def _run_account_rebalance(
     execution_id: str,
     trigger_source: str = "scheduler",
     logger: "loguru.Logger | None" = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     加载账户并执行队列已认领的调仓任务.
 
@@ -306,7 +306,7 @@ async def _run_account_rebalance(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         本次调仓完成后持久化的执行记录。
     """
     if logger is None:
@@ -353,7 +353,7 @@ async def trade(
     logger: "loguru.Logger | None" = None,
     cleanup: bool = True,
     normalized_target: dict[str, float] | None = None,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     为账户执行一次调仓任务，并持久化结果.
 
@@ -374,14 +374,12 @@ async def trade(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         本次调仓对应的执行记录。
     """
     if logger is None:
         logger = loguru.logger
 
-    if isinstance(account, Account):
-        account = account.snapshot()
     if normalized_target is None:
         normalized_target = _normalize_rebalance_target(account, curr_target)
     last_target = await _load_last_target_snapshot(account)
@@ -431,7 +429,7 @@ async def trade(
             execution_id=execution_id,
             execution_kind=ExecutionKind.REBALANCE,
         )
-        logger.info(f"交易完成 record_id={record.id} success={record.is_success}")
+        logger.info(f"交易完成 record_id={record['record_id']} success={record['is_success']}")
         return record
     except ExecutionTerminated:
         logger.warning(f"交易被终止 trigger={trigger_source}")

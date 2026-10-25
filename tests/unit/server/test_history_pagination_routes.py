@@ -16,9 +16,9 @@ from axile.server.api.deps import get_scheduler
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud
 from axile.server.db.models import ExecutionArtifact, ExecutionEvent
-from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.unit.server._execution_test_support import build_account, insert_account
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _ROUTES = [
     ("/account/execute_records/1", "execution_records", "executerecord"),
@@ -59,9 +59,8 @@ def _seed(path, name, count):
         insert_account(connection, build_account(id=1, portfolio_id=None))
     if name == "executerecord":
         for identity in range(1, count + 1):
-            native_store_call(
+            persist_record_fixture(
                 path,
-                "persist_execute_record",
                 {
                     "account_id": 1,
                     "execution_id": f"pagination-{identity}",

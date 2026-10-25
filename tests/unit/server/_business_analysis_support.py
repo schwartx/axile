@@ -15,7 +15,7 @@ from sqlalchemy.pool import NullPool
 
 from tests.conftest import initialize_native_database, native_store_call
 from tests.sqlite_oracle import sqlite_oracle
-from tests.unit.server._native_read_views import read_view
+from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 
 def analysis_record(*, input=None, result=None, **metadata):
@@ -124,9 +124,8 @@ async def persist_records(session, records):
     path = await _release_oracle_connections(session)
     tables = _prepare_records(path, [record.id for record in records if record.id is not None])
     for record in records:
-        saved = native_store_call(
+        saved = persist_record_fixture(
             path,
-            "persist_execute_record",
             {
                 "account_id": record.account_id,
                 "execution_id": record.execution_id,

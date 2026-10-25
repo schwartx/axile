@@ -124,7 +124,7 @@ async def read_execution_result(record):
         return read_view(
             database_path(),
             "read_execution_result",
-            {"record_id": identity["id"], "account_id": identity["account_id"]},
+            {"record_id": identity.get("record_id", identity.get("id")), "account_id": identity["account_id"]},
         )
     except _core.NativeError as error:
         if error.args[0] in {"BUSINESS_FACTS", "INVALID_DATA"}:
@@ -140,7 +140,7 @@ async def read_execution_detail(record):
         return read_view(
             database_path(),
             "read_execution_detail",
-            {"record_id": identity["id"], "account_id": identity["account_id"]},
+            {"record_id": identity.get("record_id", identity.get("id")), "account_id": identity["account_id"]},
         )
     except _core.NativeError as error:
         if error.args[0] in {"BUSINESS_FACTS", "INVALID_DATA"}:
@@ -251,3 +251,36 @@ def account_view(account):
             "", json.dumps({"account": values, "runtime_sync": None, **_account_read_request()}, ensure_ascii=False)
         )
     )
+
+
+def persist_record_fixture(path, request):
+    """真实写入后从独立 SQL oracle 取得造数行，不模拟旧原生出口。"""
+    from tests.unit.server._business_facts_test_support import rows
+
+    receipt = _core.persist_execution_state(str(path), json.dumps(request, ensure_ascii=False, allow_nan=True))
+    return next(row for row in rows(path, "executerecord") if row["id"] == receipt["record_id"])
+
+
+def execution_receipt(*, record_id=1, account_id=1, status="FAILED", is_success=0, **fields):
+    """生命周期编排用例的独立输入回执，预期由各用例明确指定。"""
+    return {
+        "record_id": record_id,
+        "account_id": account_id,
+        "status": status,
+        "is_success": is_success,
+        "finished_at": None,
+        "error": None,
+        "output_status": None,
+        "outcome": None,
+        "outcome_reason": None,
+        "outcome_symbols": [],
+        **fields,
+    }
+
+
+def receipt_record(receipt):
+    """由独立 SQL oracle 检查真实回执对应的持久化行。"""
+    from axile.server.core.db import database_path
+    from tests.unit.server._business_facts_test_support import rows
+
+    return next(row for row in rows(database_path(), "executerecord") if row["id"] == receipt["record_id"])

@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import loguru
 
@@ -19,7 +20,6 @@ from axile.executor.termination import (
     ExecutionTerminated,
 )
 from axile.server.db.models import (
-    ExecuteRecord,
     now_str,
 )
 from axile.server.db.models.account import AccountSnapshot
@@ -35,23 +35,19 @@ from axile.server.execution.intents import (
     submit_intent,
     sync_account_live,
 )
-from axile.server.execution.records import append_terminated_execute_record, resolve_record_task_status
+from axile.server.execution.records import append_terminated_execute_record
 from axile.server.execution.registry import (
     ExecutionTaskState,
     clear_queued_execution,
     clear_running_execution,
-    execution_record_outcome,
-    execution_record_output_error,
-    execution_record_output_status,
     finalize_execution_task_state,
     get_execution_task_state,
-    load_record_outcome_symbols,
     update_execution_task_state,
 )
 from axile.server.execution_audit import append_execution_event
 from axile.server.repositories import get_account_snapshot
 
-type ExecutionRunner = Callable[[str], Awaitable[ExecuteRecord]]
+type ExecutionRunner = Callable[[str], Awaitable[dict[str, Any]]]
 
 _TIMEOUT_ALERT_BUDGET_SECONDS = 5.0
 """总超时告警的发送预算（秒）。.
@@ -168,18 +164,20 @@ def _mark_execution_finished(
     execution_id: str,
     *,
     finished_at: str,
-    record: ExecuteRecord,
+    record: dict[str, Any],
 ) -> None:
     """按已提交的执行记录更新内存终态。"""
     update_execution_task_state(
         execution_id,
-        status=resolve_record_task_status(record),
+        status=ExecutionTaskStatus(record["status"]),
         finished_at=finished_at,
-        record_id=record.id,
-        is_success=record.is_success,
-        error=execution_record_output_error(record),
-        output_status=execution_record_output_status(record),
-        **execution_record_outcome(record),
+        record_id=record["record_id"],
+        is_success=record["is_success"],
+        error=record["error"],
+        output_status=record["output_status"],
+        outcome=record["outcome"],
+        outcome_reason=record["outcome_reason"],
+        outcome_symbols=record["outcome_symbols"],
     )
 
 
@@ -240,7 +238,7 @@ async def _record_terminated_execution(
     requested_at: str,
     finished_at: str,
     termination: _TerminationSnapshot,
-) -> ExecuteRecord:
+) -> dict[str, Any]:
     """
     持久化 terminated 执行记录并同步更新内存态.
 
@@ -263,7 +261,7 @@ async def _record_terminated_execution(
 
     Returns
     -------
-    ExecuteRecord
+    dict[str, Any]
         持久化后的 terminated 执行记录。
     """
     record = await append_terminated_execute_record(
@@ -288,7 +286,7 @@ async def _record_terminated_execution(
     # 先落内存态再发告警：告警链路里的 get_external_ip 会串行探测多个外网服务，
     # 而超时终止恰恰常发生在网络劣化时——放在前面会把 TERMINATED 的可见时间拖上几十秒。
     _mark_execution_finished(execution_id, record=record, finished_at=finished_at)
-    if resolve_record_task_status(record) != ExecutionTaskStatus.TERMINATED:
+    if record["status"] != ExecutionTaskStatus.TERMINATED:
         return record
     if current_state is not None and current_state.channel is not None and current_state.algorithm:
         await append_execution_event(
@@ -413,8 +411,7 @@ async def _run_execution_task(
             record = await append_error_execute_record(
                 account_id=account_id, msg=str(e), execution_id=execution_id, raw_result=exception_details(e), error=e
             )
-        _mark_execution_finished(execution_id, record=record, finished_at=record.termination_finished_at or now_str())
-        update_execution_task_state(execution_id, outcome_symbols=await load_record_outcome_symbols(record))
+        _mark_execution_finished(execution_id, record=record, finished_at=record["finished_at"] or now_str())
     finally:
         # 渠道锁被刷新占用：intent 仍是 QUEUED，不能拆内存槽，否则终止会 409。
         if not keep_queued:
@@ -426,7 +423,7 @@ async def run_queued_execution(intent: IntentSnapshot) -> None:
     """执行一张已入队的调仓或清仓任务，共用完成、失败与终止收尾。"""
     from axile.server.execution import clear_positions, rebalance
 
-    async def runner(execution_id: str) -> ExecuteRecord:
+    async def runner(execution_id: str) -> dict[str, Any]:
         if intent.kind == ExecutionKind.CLEAR_POSITIONS:
             account = await _require_account(intent.account_id)
             return await clear_positions._run_clear_positions(

@@ -10,6 +10,7 @@ from axile.domain.execution import ExecutionKind, ExecutionTaskStatus, Execution
 from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
 from axile.server.db.models import Account
+from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.registry import ExecutionTaskState
 
 
@@ -43,7 +44,7 @@ def _build_app(account: Account | None, monkeypatch) -> FastAPI:
     async def load(account_id: int):
         if account is None or account.id != account_id:
             raise HTTPException(status_code=404, detail="账户不存在")
-        return account.snapshot()
+        return AccountSnapshot.model_validate(account.model_dump())
 
     async def cancel(_account_id: int, _reason: str):
         return False

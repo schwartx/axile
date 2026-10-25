@@ -4,7 +4,6 @@ import asyncio
 import json
 
 from axile.server.api.routes.account_schedule import account_activity
-from axile.server.db.models import ExecuteRecord
 from axile.server.native_store import native_operation
 from tests.unit.server._native_read_views import read_execution_result
 from tests.unit.server._runtime_db_support import runtime_database
@@ -28,7 +27,7 @@ def test_account_activity_normalizes_legacy(tmp_path, monkeypatch):
     async def scenario():
         async with runtime_database(path):
             stored = await native_operation(
-                "persist_execute_record",
+                "persist_execution_state",
                 {
                     "account_id": 1,
                     "execution_id": "legacy-exec",
@@ -40,7 +39,7 @@ def test_account_activity_normalizes_legacy(tmp_path, monkeypatch):
                     "result_input_id": "legacy-result-input",
                 },
             )
-            record = ExecuteRecord.model_validate(stored)
+            record = stored
             # 旧存储已补任务终态和数量存在性；业务原字段仍须完整保留。
             assert await read_execution_result(record) == {
                 **_LEGACY_RAW,
