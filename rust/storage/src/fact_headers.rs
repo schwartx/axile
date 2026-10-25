@@ -149,12 +149,11 @@ impl<'a> HeaderReader<'a> {
         let mut rows = self.symbols.query([record]).map_err(sql_error)?;
         while let Some(row) = rows.next().map_err(sql_error)? {
             let display = crate::executions::symbol_from_row(row)?;
-            let mut present = 0_i64;
-            for (index, name) in crate::executions::SYMBOL_FIELDS.iter().enumerate() {
-                if display.get(*name).is_some() {
-                    present |= 1 << index;
-                }
-            }
+            let fields = crate::executions::SYMBOL_FIELDS.map(|name| display.get(name));
+            let present = fields.iter().enumerate().fold(0_i64, |mask, (index, value)| {
+                mask | (i64::from(value.is_some()) << index)
+            });
+            let fields = fields.map(|value| value.and_then(serde_json::Value::as_str));
             target
                 .prepare_cached(
                     r#"INSERT INTO native_stage.performance_cost_execution_symbol (
@@ -170,11 +169,11 @@ impl<'a> HeaderReader<'a> {
                     record,
                     row.get::<_, String>(0).map_err(sql_error)?,
                     present,
-                    display["status"].as_str(),
-                    display["error"].as_str(),
-                    display["outcome"].as_str(),
-                    display["outcome_reason"].as_str(),
-                    display["reason_code"].as_str(),
+                    fields[0],
+                    fields[1],
+                    fields[2],
+                    fields[3],
+                    fields[4],
                 ])
                 .map_err(stage_error)?;
         }

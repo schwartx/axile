@@ -1,6 +1,7 @@
 //! 唯一的执行通知投影；正常执行、预览和补发共用，不打开数据库。
 
 use crate::business_facts_ops::encode::is_truthy as truthy;
+use crate::business_facts_ops::result_head::{outcome_from_status, session_code, status_from_outcome};
 use crate::error::AnalysisError;
 use crate::json_codec::number_value;
 use serde_json::{json, Map, Value};
@@ -97,24 +98,15 @@ fn successful(value: &Value) -> bool {
 }
 
 fn outcome(status: &Value) -> Value {
-    json!(match status.as_str() {
-        Some("SUCCEEDED" | "NOOP") => "completed",
-        Some("PARTIAL") => "not_reached",
-        Some("BLOCKED") => "blocked",
-        Some("FAILED") => "error",
-        _ => "unknown",
-    })
+    json!(status.as_str().and_then(outcome_from_status).unwrap_or("unknown"))
 }
 
 fn result_metadata(result: &Value, default_status: &str) -> Value {
     let status = result.get("status").cloned().unwrap_or_else(|| {
-        json!(match result["outcome"].as_str() {
-            Some("completed") => "SUCCEEDED",
-            Some("not_reached") => "PARTIAL",
-            Some("error") => "FAILED",
-            Some("blocked") => "BLOCKED",
-            _ => default_status,
-        })
+        json!(result["outcome"]
+            .as_str()
+            .and_then(status_from_outcome)
+            .unwrap_or(default_status))
     });
     let error = if result.get("error").is_none() && !successful(&status) {
         result
@@ -129,7 +121,7 @@ fn result_metadata(result: &Value, default_status: &str) -> Value {
     let mut reason = result["reason_code"].clone();
     if result.get("reason_code").is_none() {
         reason = result["memory"]["symbol_decision_reason_code"].clone();
-        if matches!(reason.as_str(), Some("CLOSED" | "CTP.SESSION.CLOSED"))
+        if reason.as_str().map(session_code) == Some("COMMON.SESSION.CLOSED")
             || (status == "BLOCKED"
                 && matches!(
                     error.as_str(),
@@ -572,6 +564,26 @@ pub(crate) fn execution_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_keeps_notification_defaults_explicit_nulls_and_historical_reasons() {
+        for (input, status, outcome, error, reason) in [
+            (json!({}), json!("FAILED"), json!("error"), Value::Null, Value::Null),
+            (json!({"status":null,"outcome":null,"error":null}), Value::Null, json!("unknown"), Value::Null, Value::Null),
+            (json!({"outcome":"completed"}), json!("SUCCEEDED"), json!("completed"), Value::Null, Value::Null),
+            (json!({"status":"NOOP","outcome":null}), json!("NOOP"), json!("completed"), Value::Null, Value::Null),
+            (json!({"outcome":"terminated"}), json!("FAILED"), json!("terminated"), Value::Null, Value::Null),
+            (json!({"status":"BLOCKED","memory":{"message":"原始错误","symbol_decision_reason_code":"CTP.SESSION.CLOSED"}}), json!("BLOCKED"), json!("blocked"), json!("原始错误"), json!("COMMON.SESSION.CLOSED")),
+            (json!({"status":"BLOCKED","error":"非交易时段","reason_code":null}), json!("BLOCKED"), json!("blocked"), json!("非交易时段"), Value::Null),
+            (json!({"status":"BLOCKED","error":"非交易时段"}), json!("BLOCKED"), json!("blocked"), json!("非交易时段"), json!("COMMON.SESSION.CLOSED")),
+        ] {
+            let actual = result_metadata(&input, "FAILED");
+            assert_eq!(actual["status"], status, "{input}");
+            assert_eq!(actual["outcome"], outcome, "{input}");
+            assert_eq!(actual["error"], error, "{input}");
+            assert_eq!(actual["reason_code"], reason, "{input}");
+        }
+    }
 
     #[test]
     fn historical_preview_keeps_explicit_errors_and_order_times() {

@@ -24,9 +24,10 @@ pub(crate) struct Trade {
 }
 
 fn timestamp(value: &str) -> Option<(f64, String)> {
+    let time = crate::calendar::local_time(value).ok()?;
     Some((
-        crate::calendar::timestamp_ms(value).ok()?,
-        crate::calendar::local_time(value).ok()?.format("%Y-%m-%d").to_string(),
+        crate::calendar::timestamp_micros(time) as f64 / 1_000_000.0 * 1000.0,
+        time.format("%Y-%m-%d").to_string(),
     ))
 }
 
@@ -151,6 +152,15 @@ impl<'a> TradeReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trade_timestamp_keeps_local_day_and_floating_microsecond_boundaries() {
+        for value in ["2026-01-01T00:00:00.000003", "2025-12-31T16:00:00.000003Z"] {
+            assert_eq!(timestamp(value), Some((crate::calendar::timestamp_ms(value).unwrap(), "2026-01-01".into())));
+        }
+        assert!(timestamp("invalid").is_none());
+    }
+
 
     #[test]
     fn direct_trade_facts_preserve_unknown_zero_rebates_and_estimated_time() {

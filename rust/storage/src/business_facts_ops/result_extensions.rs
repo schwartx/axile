@@ -4,7 +4,6 @@ use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
 use super::encode::{audit_value, store_columns};
-use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const FIELDS: &[(&str, &str)] = &[
@@ -119,29 +118,20 @@ pub(crate) fn insert_extension(
     connection: &Connection,
     row: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
-    let mut statement = connection
-        .prepare_cached(
-            r#"INSERT INTO execution_extension (
-                "record_id", "memory", "extra", "reconciliation", "root_kind", "root_value",
-                "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7
-            )"#,
-        )
-        .map_err(sql)?;
-    statement
-        .execute(rusqlite::params![
-            row.get("record_id").and_then(Value::as_i64),
-            encode::json_text(row.get("memory"))?,
-            encode::json_text(row.get("extra"))?,
-            encode::json_text(row.get("reconciliation"))?,
-            row.get("root_kind").and_then(Value::as_str),
-            encode::json_text(row.get("root_value"))?,
-            encode::json_text(row.get("audit_evidence"))?,
-        ])
-        .map_err(sql)?;
-    Ok(())
+    super::insert_rows(
+        connection,
+        "execution_extension",
+        std::slice::from_ref(row),
+        &[
+            ("record_id", "integer"),
+            ("memory", "json"),
+            ("extra", "json"),
+            ("reconciliation", "json"),
+            ("root_kind", "text"),
+            ("root_value", "json"),
+            ("audit_evidence", "json"),
+        ],
+    )
 }
 
 #[cfg(test)]

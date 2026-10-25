@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::AnalysisError;
@@ -340,14 +340,11 @@ fn observe_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
         .flatten()
         .or_else(|| (kind == "access" && status == "ok").then_some(observed_at));
     let failure = matches!(status, "error" | "cooldown").then(|| {
-        let mut value = Map::new();
-        for key in ["observed_at", "message", "label", "error", "presentation"] {
-            value.insert(
-                key.into(),
-                observation.get(key).cloned().unwrap_or(Value::Null),
-            );
-        }
-        Value::Object(value).to_string()
+        json!({
+            "observed_at": observed_at, "message": message, "label": label,
+            "error": observation["error"], "presentation": observation["presentation"],
+        })
+        .to_string()
     });
     let failure = history
         .map(|value| optional_object(value, "last_failure"))
@@ -450,11 +447,8 @@ pub fn connection_accounts(database: &str, request: &Value) -> Result<Value, Ana
             None => crate::accounts::list_on(connection)?,
             Some(ids) => ids
                 .into_iter()
-                .map(|id| crate::accounts::load_on(connection, id))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect(),
+                .filter_map(|id| crate::accounts::load_on(connection, id).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
         };
         Ok(Value::Array(accounts))
     })
@@ -745,6 +739,62 @@ mod tests {
                 .unwrap();
             assert!(error.is_none());
             assert!(history(connection).3.unwrap().contains("evidence"));
+        });
+    }
+
+    #[test]
+    fn failure_capture_keeps_nulls_json_evidence_and_history_priority() {
+        database(|connection, path, key| {
+            let binding = begin(path, key, "worker");
+            assert_eq!(
+                observe(
+                    path,
+                    &binding,
+                    1,
+                    json!({"status":"error","observed_at":"first"})
+                )["applied"],
+                true
+            );
+            assert_eq!(
+                history(connection).3.as_deref(),
+                Some(
+                    r#"{"observed_at":"first","message":null,"label":null,"error":null,"presentation":null}"#
+                )
+            );
+            let evidence = json!({"code":9007199254740993_u64,"detail":{"native":true}});
+            let presentation = json!({"summary":"原始说明","sections":[]});
+            observe(
+                path,
+                &binding,
+                2,
+                json!({"status":"cooldown","observed_at":"second",
+                "message":"重试","label":"连接","error":evidence,"presentation":presentation,"extra":true}),
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&history(connection).3.unwrap()).unwrap(),
+                json!({"observed_at":"second","message":"重试","label":"连接",
+                    "error":evidence,"presentation":presentation})
+            );
+            let historical = json!({"observed_at":"prior","message":"历史故障","error":evidence});
+            connection_observe(
+                path,
+                &json!({"binding":binding,"sequence":3,
+                "observation":{"status":"error","observed_at":"current"},
+                "history":{"last_failure":historical}}),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&history(connection).3.unwrap()).unwrap(),
+                historical
+            );
+            let error = connection_observe(
+                path,
+                &json!({"binding":binding,"sequence":4,
+                "observation":{"status":"error","observed_at":"invalid","error":"not an object"}}),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "INVALID_REQUEST");
+            assert_eq!(history(connection).1, 3);
         });
     }
 

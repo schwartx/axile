@@ -99,18 +99,6 @@ pub(crate) fn enqueue_on(
         .map_err(database)
 }
 
-pub(crate) fn delete_on(connection: &Connection, account_id: i64) -> Result<(), AnalysisError> {
-    for table in ["accountruntimesyncattempt", "accountruntimesync"] {
-        connection
-            .execute(
-                &format!("DELETE FROM {table} WHERE account_id=?1"),
-                [account_id],
-            )
-            .map_err(database)?;
-    }
-    Ok(())
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Begin {

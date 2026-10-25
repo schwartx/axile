@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{Duration, NaiveDateTime, Timelike};
+use chrono::{Duration, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension};
 #[cfg(test)]
 use rusqlite::params;
@@ -31,12 +31,7 @@ fn canonical_time(value: NaiveDateTime) -> String {
 }
 
 fn display_time(value: &str) -> Result<String, String> {
-    let parsed = parse_time(value)?;
-    Ok(if parsed.nanosecond() == 0 {
-        parsed.format("%Y-%m-%dT%H:%M:%S").to_string()
-    } else {
-        canonical_time(parsed)
-    })
+    Ok(crate::calendar::display_time(parse_time(value)?))
 }
 
 #[derive(Clone)]
@@ -368,8 +363,7 @@ fn scan(
     start: &str,
     mut consume: impl FnMut(&Observation) -> Result<(), String>,
 ) -> Result<(), String> {
-    crate::fact_observation::scan(connection, account_id, start, |item| {
-        let mut item = item.clone();
+    crate::fact_observation::scan(connection, account_id, start, |mut item| {
         item.time = display_time(&item.time)?;
         consume(&item)
     })
@@ -489,7 +483,7 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
         baselines.push(RangeBaseline {key,cutoff,candidate:None,fallback_equity:None});
     }
     crate::fact_observation::scan(connection, account_id, "", |item| {
-        for baseline in &mut baselines { baseline.push(item); }
+        for baseline in &mut baselines { baseline.push(&item); }
         Ok(())
     })?;
     let mut states = Vec::new();

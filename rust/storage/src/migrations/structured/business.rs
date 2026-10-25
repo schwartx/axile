@@ -779,7 +779,7 @@ fn target_weights(connection: &Connection, row: &Object) -> Result<Value> {
     .into_iter()
     .map(Value::Object)
     .collect::<Vec<_>>();
-    crate::target_ops::decode_snapshot_weights(&Value::Object(parent), &children)
+    crate::target_ops::decode_snapshot_weights(&Value::Object(parent), &children).map(Value::Object)
 }
 fn verify_conversion(connection: &Connection) -> Result<()> {
     each_parent(connection, "executerecord", |record| {
@@ -842,7 +842,7 @@ fn verify_conversion(connection: &Connection) -> Result<()> {
             crate::target_ops::encode_snapshot_weights(id, &original)?;
         let expected = crate::target_ops::decode_snapshot_weights(&expected_head, &expected_rows)?;
         let actual = target_weights(connection, &row)?;
-        if !encode::py_eq(&expected, &actual) {
+        if !encode::py_eq(&Value::Object(expected), &actual) {
             return Err(error(format!(
                 "Conversion mismatch target_weight_snapshot id={id} path=/weights"
             )));

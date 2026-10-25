@@ -19,7 +19,7 @@ from axile.server.db.models.account_connection import AccountConnectionDetail, A
 from axile.server.error_details import exception_details
 from axile.server.execution.worker_backend.worker_responses import _build_error_payload
 from axile.server.portfolio_function import _error_from_exception
-from tests.conftest import native_store_call
+from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 
@@ -51,6 +51,32 @@ def database(native_database, monkeypatch):
     with closing(oracle_connect(native_database)) as connection, connection:
         insert_account(connection, build_account(portfolio_id=None))
     return native_database, _account(native_database)
+
+
+def test_native_account_scan_preserves_filter_order_and_read_errors(database):
+    path, _ = database
+    core = require_native_store("connection_accounts")
+    with closing(oracle_connect(path)) as connection, connection:
+        insert_account(connection, build_account(id=3, portfolio_id=None))
+    for request, expected in [
+        ({}, [1, 3]),
+        ({"account_ids": None}, [1, 3]),
+        ({"account_ids": []}, []),
+        ({"account_ids": [3, 2, 1, 3]}, [1, 3]),
+        ({"account_ids": [2]}, []),
+    ]:
+        rows = native_store_call(path, "connection_accounts", request)
+        assert [row["id"] for row in rows] == expected
+    for invalid in [[0], [-1], ["1"], [None]]:
+        with pytest.raises(core.NativeError) as failure:
+            native_store_call(path, "connection_accounts", {"account_ids": invalid})
+        assert failure.value.args[0] == "INVALID_REQUEST"
+    with closing(oracle_connect(path)) as connection, connection:
+        connection.execute("UPDATE account_settings SET connection='[]' WHERE account_id=3")
+    assert [row["id"] for row in native_store_call(path, "connection_accounts", {"account_ids": [1]})] == [1]
+    with pytest.raises(core.NativeError) as failure:
+        native_store_call(path, "connection_accounts", {"account_ids": [3, 2, 1]})
+    assert failure.value.args[0] == "ACCOUNT_DATA"
 
 
 def test_single_row_overwrite_recovery_and_restart(database):

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
@@ -63,11 +63,15 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(event)
 }
 
-fn event(connection: &Connection, sequence: i64) -> Result<Option<Value>, AnalysisError> {
+fn event(
+    connection: &Connection,
+    column: &'static str,
+    key: impl ToSql,
+) -> Result<Option<Value>, AnalysisError> {
     connection
         .query_row(
-            &format!("SELECT {EVENT_COLUMNS} FROM notification_event WHERE sequence=?1"),
-            [sequence],
+            &format!("SELECT {EVENT_COLUMNS} FROM notification_event WHERE {column}=?1"),
+            [key],
             event_row,
         )
         .optional()
@@ -86,14 +90,7 @@ pub(crate) fn enqueue_in_connection(
     if !request["context"].is_object() {
         return Err(invalid("context must be an object"));
     }
-    let existing = connection
-        .query_row(
-            &format!("SELECT {EVENT_COLUMNS} FROM notification_event WHERE id=?1"),
-            [event_id],
-            event_row,
-        )
-        .optional()
-        .map_err(database)?;
+    let existing = event(connection, "id", event_id)?;
     if let Some(existing) = existing {
         if existing["account_id"] != account_id || existing["event_type"] != event_type {
             return Err(invalid(
@@ -115,13 +112,8 @@ pub(crate) fn enqueue_in_connection(
             ],
         )
         .map_err(database)?;
-    let existing = connection
-        .query_row(
-            &format!("SELECT {EVENT_COLUMNS} FROM notification_event WHERE id=?1"),
-            [event_id],
-            event_row,
-        )
-        .map_err(database)?;
+    let existing = event(connection, "id", event_id)?
+        .ok_or_else(|| database(rusqlite::Error::QueryReturnedNoRows))?;
     if existing["account_id"] != account_id || existing["event_type"] != event_type {
         return Err(invalid(
             "notification identity conflicts with the existing event",
@@ -164,7 +156,7 @@ pub fn claim(path: &str, request: &Value) -> Result<Value, AnalysisError> {
             return Err(invalid("notification settings must be an object"));
         }
         let mut current =
-            event(&connection, sequence)?.ok_or_else(|| invalid("notification disappeared"))?;
+            event(&connection, "sequence", sequence)?.ok_or_else(|| invalid("notification disappeared"))?;
         let context = current["context"]
             .as_object_mut()
             .ok_or_else(|| invalid("notification context must be an object"))?;
@@ -465,6 +457,27 @@ pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_keys_keep_numeric_ids_distinct_and_preserve_missing_and_decode_errors() {
+        let db = Database::new();
+        let first = db.add("first", "execution.finished");
+        let numeric = db.add("1", "execution.finished");
+        let connection = open_writer(Path::new(&db.0)).unwrap();
+        assert_eq!(event(&connection, "id", "1").unwrap(), Some(numeric.clone()));
+        assert_eq!(event(&connection, "sequence", first["sequence"].as_i64().unwrap()).unwrap(), Some(first));
+        assert_eq!(event(&connection, "id", "missing").unwrap(), None);
+        assert_eq!(event(&connection, "sequence", 0).unwrap(), None);
+        connection.execute("UPDATE notification_event SET context='invalid JSON' WHERE id='1'", []).unwrap();
+        let by_id = event(&connection, "id", "1").unwrap_err();
+        let by_sequence = event(&connection, "sequence", numeric["sequence"].as_i64().unwrap()).unwrap_err();
+        assert_eq!(by_id.code, "NOTIFICATION_STORE");
+        assert_eq!((by_id.code, by_id.error), (by_sequence.code, by_sequence.error));
+        connection.execute_batch("CREATE TRIGGER vanished AFTER INSERT ON notification_event WHEN NEW.id='vanishing' BEGIN DELETE FROM notification_event WHERE id=NEW.id; END;").unwrap();
+        let missing = enqueue_in_connection(&connection, &json!({"id":"vanishing","account_id":1,"created_at":"now","event_type":"execution.finished","context":{}})).unwrap_err();
+        assert_eq!((missing.code.as_str(), missing.error.as_str()), ("NOTIFICATION_STORE", "Query returned no rows"));
+    }
+
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct Database(String);
@@ -570,6 +583,7 @@ mod tests {
         assert_eq!(
             event(
                 &Connection::open(&db.0).unwrap(),
+                "sequence",
                 first["sequence"].as_i64().unwrap()
             )
             .unwrap()
@@ -667,7 +681,7 @@ mod tests {
             .unwrap()
             .contains("summary unavailable"));
         assert_eq!(
-            event(&connection, queued["sequence"].as_i64().unwrap())
+            event(&connection, "sequence", queued["sequence"].as_i64().unwrap())
                 .unwrap()
                 .unwrap()["status"],
             "succeeded"
@@ -712,7 +726,7 @@ mod tests {
         let result = recover(&db.0, &json!({"finished_at":"2026-10-23T13:00:00"})).unwrap();
         assert_eq!(result["summary_errors"].as_array().unwrap().len(), 1);
         assert_eq!(
-            event(&connection, warning["sequence"].as_i64().unwrap())
+            event(&connection, "sequence", warning["sequence"].as_i64().unwrap())
                 .unwrap()
                 .unwrap()["status"],
             "unknown"

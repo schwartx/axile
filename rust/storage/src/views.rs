@@ -3,7 +3,7 @@
 //! Every read is pinned to one snapshot id and never touches the historical
 //! JSON columns (settings/ranges/payload) or source trade rows.
 
-use rusqlite::{Connection, Row};
+use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::{json, Map, Value};
 
 pub const SCHEMA_VERSION: i64 = 1;
@@ -116,19 +116,16 @@ fn scalar_row(
 ) -> Result<Option<Vec<Value>>, String> {
     let read_error = |error: rusqlite::Error| format!("ANALYSIS_READ_ERROR: {error}");
     let mut statement = connection.prepare(sql).map_err(read_error)?;
-    let column_count = statement.column_count();
-    let mut rows = statement.query(params).map_err(read_error)?;
-    match rows.next().map_err(read_error)? {
-        None => Ok(None),
-        Some(row) => {
-            let mut cells = Vec::with_capacity(column_count);
-            for index in 0..column_count {
-                cells.push(cell(row, index).map_err(read_error)?);
-            }
-            Ok(Some(cells))
-        }
-    }
+    statement
+        .query_row(params, |row| {
+            (0..row.as_ref().column_count())
+                .map(|index| cell(row, index))
+                .collect()
+        })
+        .optional()
+        .map_err(read_error)
 }
+
 
 struct Guard {
     source_version: i64,
@@ -672,6 +669,15 @@ pub fn execution_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_reads_keep_missing_first_row_cells_and_error_codes() {
+        let connection = Connection::open_in_memory().unwrap();
+        assert_eq!(scalar_row(&connection, "SELECT 1 WHERE 0", &[]).unwrap(), None);
+        assert_eq!(scalar_row(&connection, "SELECT NULL,0,1.5,'中文',x'00' UNION ALL SELECT 1,2,3,'later',x'01'", &[]).unwrap(), Some(vec![Value::Null,json!(0),json!(1.5),json!("中文"),Value::Null]));
+        assert!(scalar_row(&connection, "SELECT * FROM missing", &[]).unwrap_err().starts_with("ANALYSIS_READ_ERROR:"));
+    }
+
     use rusqlite::Connection;
 
     fn database() -> Connection {

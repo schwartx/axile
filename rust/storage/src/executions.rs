@@ -41,7 +41,7 @@ const TEXT_FIELDS: &[&str] = &[
     "termination_acked_at",
     "termination_finished_at",
 ];
-pub(crate) const SYMBOL_FIELDS: &[&str] = &[
+pub(crate) const SYMBOL_FIELDS: [&str; 5] = [
     "status",
     "error",
     "outcome",
@@ -67,35 +67,26 @@ fn account_exists(connection: &Connection, account_id: i64) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn public_symbol(
-    fields: Map<String, Value>,
-    node_kind: &str,
-) -> Result<Value, AnalysisError> {
-    if node_kind != "object" {
-        return Ok(json!({"outcome":null}));
-    }
-    let mut normalized =
-        crate::business_facts_ops::result_head::normalize_legacy_result(&Value::Object(fields))?;
-    normalized
-        .as_object_mut()
-        .expect("normalized symbol object")
-        .retain(|key, _| SYMBOL_FIELDS.contains(&key.as_str()));
-    Ok(normalized)
-}
-
-pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Value, AnalysisError> {
+pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Map<String, Value>, AnalysisError> {
     let read_error = |error: rusqlite::Error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string());
     let mut fields = Map::new();
     for name in SYMBOL_FIELDS {
-        if let Some(value) = row.get::<_, Option<String>>(*name).map_err(read_error)? {
-            fields.insert((*name).into(), json!(value));
+        if let Some(value) = row.get::<_, Option<String>>(name).map_err(read_error)? {
+            fields.insert(name.into(), json!(value));
         }
     }
     if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(read_error)? {
         fields.insert("memory".into(), serde_json::from_str(&memory)
             .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?);
     }
-    public_symbol(fields, &row.get::<_, String>("node_kind").map_err(read_error)?)
+    let mut normalized = if row.get::<_, String>("node_kind").map_err(read_error)? == "object" {
+        crate::business_facts_ops::result_head::normalized_result(&fields)
+            .map_err(crate::business_facts_ops::facts_error)?
+    } else {
+        Map::from_iter([("outcome".into(), Value::Null)])
+    };
+    normalized.retain(|key, _| SYMBOL_FIELDS.contains(&key.as_str()));
+    Ok(normalized)
 }
 
 fn records(
@@ -117,7 +108,7 @@ fn records(
         symbols
             .entry(row.get("record_id").map_err(database)?)
             .or_default()
-            .insert(row.get("symbol").map_err(database)?, fields);
+            .insert(row.get("symbol").map_err(database)?, Value::Object(fields));
     }
     let headers = TEXT_FIELDS
         .iter()

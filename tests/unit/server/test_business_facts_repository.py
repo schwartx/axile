@@ -79,6 +79,7 @@ def test_final_result_reuses_durable_normalized_input_and_after_asset(
         canonical_input = await repository.read_execution_input(record["input_id"])
         assert business_evidence(canonical_input) == business_evidence(frozen)
         detail = await repository.read_execution_detail(record)
+        assert list(detail) == ["id", "account_id", "execution_id", "created_at", "is_success", "input", "result"]
         assert business_evidence(detail["input"]) == business_evidence(frozen)
         assert business_evidence(detail["result"]) == business_evidence(output)
         identity = {"record_id": record["id"], "account_id": 2}

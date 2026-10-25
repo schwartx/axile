@@ -271,7 +271,7 @@ fn execution_detail(connection: &Connection, request: &Value) -> Result<Value, A
     let record_id = integer(request, "record_id")?;
     let account_id = integer(request, "account_id")?;
     let head = record_row(connection, record_id)?;
-    let payload =
+    let mut payload =
         crate::business_detail::read(connection, account_id, record_id).map_err(facts_error)?;
     let mut detail = Map::new();
     for name in [
@@ -283,8 +283,8 @@ fn execution_detail(connection: &Connection, request: &Value) -> Result<Value, A
     ] {
         detail.insert(name.into(), head.get(name).cloned().unwrap_or(Value::Null));
     }
-    detail.insert("input".into(), payload["input"].clone());
-    detail.insert("result".into(), payload["result"].clone());
+    detail.insert("input".into(), payload["input"].take());
+    detail.insert("result".into(), payload["result"].take());
     Ok(Value::Object(detail))
 }
 

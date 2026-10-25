@@ -250,7 +250,7 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
 }
 
 pub(crate) fn timestamp(value: &str) -> Option<i64> {
-    crate::calendar::timestamp_micros(value).ok()
+    crate::calendar::local_time(value).ok().map(crate::calendar::timestamp_micros)
 }
 
 pub(crate) fn summaries_for_accounts(

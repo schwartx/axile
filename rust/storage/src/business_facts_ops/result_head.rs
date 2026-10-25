@@ -1,9 +1,8 @@
 //! 终态主列、展示摘要及有序撤单失败证据;实时写入与 0037 迁移共用。
 
-use rusqlite::Connection;
+use rusqlite::{params_from_iter, Connection};
 use serde_json::{json, Map, Value};
 
-use super::encode;
 use super::encode::{audit_value, is_truthy, store_columns, Rows};
 use super::{facts_error, sql};
 use crate::error::AnalysisError;
@@ -115,7 +114,7 @@ fn technical_text(value: &str) -> bool {
         })
 }
 
-fn status_from_outcome(outcome: &str) -> Option<&'static str> {
+pub(crate) fn status_from_outcome(outcome: &str) -> Option<&'static str> {
     match outcome {
         "completed" => Some("SUCCEEDED"),
         "not_reached" => Some("PARTIAL"),
@@ -125,7 +124,7 @@ fn status_from_outcome(outcome: &str) -> Option<&'static str> {
     }
 }
 
-fn outcome_from_status(status: &str) -> Option<&'static str> {
+pub(crate) fn outcome_from_status(status: &str) -> Option<&'static str> {
     match status {
         "SUCCEEDED" | "NOOP" => Some("completed"),
         "PARTIAL" => Some("not_reached"),
@@ -174,7 +173,7 @@ fn legacy_message(raw: &Map<String, Value>) -> Option<&str> {
         .or_else(|| candidates.into_iter().flatten().next())
 }
 
-fn normalized_result(raw: &Map<String, Value>) -> Result<Map<String, Value>, String> {
+pub(crate) fn normalized_result(raw: &Map<String, Value>) -> Result<Map<String, Value>, String> {
     let mut result = raw.clone();
     if text(result.get("status")).is_none() {
         if let Some(outcome) = raw.get("outcome").and_then(Value::as_str) {
@@ -258,7 +257,7 @@ fn normalize_error(
     Ok(())
 }
 
-fn session_code(code: &str) -> &str {
+pub(crate) fn session_code(code: &str) -> &str {
     match code {
         "CLOSED" | "CTP.SESSION.CLOSED" => COMMON_SESSION_CLOSED,
         _ => code,
@@ -515,19 +514,54 @@ pub(crate) fn write_result_cancellations(
     result: &Value,
 ) -> Result<(), AnalysisError> {
     let rows = cancellation_rows(record_id, result)?;
-    let mut statement = connection.prepare_cached("INSERT INTO execution_termination_cancel_failure (\"record_id\",\"ordinal\",\"order_id\",\"audit_evidence\") VALUES (?1,?2,?3,?4)").map_err(sql)?;
-    for row in &rows {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("ordinal").and_then(Value::as_i64),
-                encode::json_text(row.get("order_id"))?,
-                encode::json_text(row.get("audit_evidence"))?
-            ])
-            .map_err(sql)?;
-    }
-    Ok(())
+    super::insert_rows(
+        connection,
+        "execution_termination_cancel_failure",
+        &rows,
+        &[
+            ("record_id", "integer"),
+            ("ordinal", "integer"),
+            ("order_id", "json"),
+            ("audit_evidence", "json"),
+        ],
+    )
 }
+
+const EXECUTION_HEAD_COLUMNS: &[(&str, &str)] = &[
+    ("status", "text"),
+    ("symbol", "text"),
+    ("technical_detail", "text"),
+    ("task_status", "text"),
+    ("error", "text"),
+    ("outcome", "text"),
+    ("outcome_reason", "text"),
+    ("reason_code", "text"),
+    ("msg", "text"),
+    ("execution_kind", "text"),
+    ("channel_type", "text"),
+    ("execution_time", "number"),
+    ("success", "boolean"),
+    ("display_status", "text"),
+    ("display_error", "text"),
+    ("display_outcome", "text"),
+    ("display_outcome_reason", "text"),
+    ("termination_reason", "text"),
+    ("termination_mode", "text"),
+    ("termination_trigger", "text"),
+    ("termination_requested_at", "text"),
+    ("termination_acked_at", "text"),
+    ("termination_finished_at", "text"),
+    ("termination_cancel_attempted", "boolean"),
+    ("termination_forced", "boolean"),
+    ("termination_cancel_unconfirmed", "boolean"),
+    ("result_input_kind", "text"),
+    ("result_input_value", "json"),
+    ("audit_evidence", "json"),
+    ("termination_evidence", "json"),
+    ("termination_kind", "text"),
+    ("termination_cancel_ids_kind", "text"),
+    ("termination_cancel_count", "integer"),
+];
 
 /// 使用调用方事务;输入关联和 facts_complete 由终态事务负责人统一写入。
 pub(crate) fn write_result_head(
@@ -537,42 +571,19 @@ pub(crate) fn write_result_head(
     is_success: Option<i64>,
 ) -> Result<(), AnalysisError> {
     let head = execution_head_values(result, is_success)?;
-    let affected = connection.execute("UPDATE executerecord SET \"status\"=?1,\"symbol\"=?2,\"technical_detail\"=?3,\"task_status\"=?4,\"error\"=?5,\"outcome\"=?6,\"outcome_reason\"=?7,\"reason_code\"=?8,\"msg\"=?9,\"execution_kind\"=?10,\"channel_type\"=?11,\"execution_time\"=?12,\"success\"=?13,\"display_status\"=?14,\"display_error\"=?15,\"display_outcome\"=?16,\"display_outcome_reason\"=?17,\"termination_reason\"=?18,\"termination_mode\"=?19,\"termination_trigger\"=?20,\"termination_requested_at\"=?21,\"termination_acked_at\"=?22,\"termination_finished_at\"=?23,\"termination_cancel_attempted\"=?24,\"termination_forced\"=?25,\"termination_cancel_unconfirmed\"=?26,\"result_input_kind\"=?27,\"result_input_value\"=?28,\"audit_evidence\"=?29,\"termination_evidence\"=?30,\"termination_kind\"=?31,\"termination_cancel_ids_kind\"=?32,\"termination_cancel_count\"=?33 WHERE id=?34", rusqlite::params![
-head.get("status").and_then(Value::as_str),
-head.get("symbol").and_then(Value::as_str),
-head.get("technical_detail").and_then(Value::as_str),
-head.get("task_status").and_then(Value::as_str),
-head.get("error").and_then(Value::as_str),
-head.get("outcome").and_then(Value::as_str),
-head.get("outcome_reason").and_then(Value::as_str),
-head.get("reason_code").and_then(Value::as_str),
-head.get("msg").and_then(Value::as_str),
-head.get("execution_kind").and_then(Value::as_str),
-head.get("channel_type").and_then(Value::as_str),
-head.get("execution_time").and_then(Value::as_f64),
-head.get("success").and_then(Value::as_bool),
-head.get("display_status").and_then(Value::as_str),
-head.get("display_error").and_then(Value::as_str),
-head.get("display_outcome").and_then(Value::as_str),
-head.get("display_outcome_reason").and_then(Value::as_str),
-head.get("termination_reason").and_then(Value::as_str),
-head.get("termination_mode").and_then(Value::as_str),
-head.get("termination_trigger").and_then(Value::as_str),
-head.get("termination_requested_at").and_then(Value::as_str),
-head.get("termination_acked_at").and_then(Value::as_str),
-head.get("termination_finished_at").and_then(Value::as_str),
-head.get("termination_cancel_attempted").and_then(Value::as_bool),
-head.get("termination_forced").and_then(Value::as_bool),
-head.get("termination_cancel_unconfirmed").and_then(Value::as_bool),
-head.get("result_input_kind").and_then(Value::as_str),
-encode::json_text(head.get("result_input_value"))?,
-encode::json_text(head.get("audit_evidence"))?,
-encode::json_text(head.get("termination_evidence"))?,
-head.get("termination_kind").and_then(Value::as_str),
-head.get("termination_cancel_ids_kind").and_then(Value::as_str),
-head.get("termination_cancel_count").and_then(Value::as_i64),
-record_id,
-]).map_err(sql)?;
+    let assignments = EXECUTION_HEAD_COLUMNS
+        .iter()
+        .map(|(name, _)| format!("\"{name}\"=?"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut values = super::bind_columns(&head, EXECUTION_HEAD_COLUMNS)?;
+    values.push(record_id.into());
+    let affected = connection
+        .execute(
+            &format!("UPDATE executerecord SET {assignments} WHERE id=?"),
+            params_from_iter(values),
+        )
+        .map_err(sql)?;
     if affected != 1 {
         return Err(facts_error("执行主记录不存在"));
     }
@@ -583,69 +594,23 @@ pub(crate) fn insert_execution(
     connection: &Connection,
     row: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
-    let mut statement = connection.prepare_cached(r#"INSERT INTO executerecord (
-                "execution_id", "is_success", "account_id", "created_at", "status", "symbol",
-                "technical_detail", "task_status", "error", "outcome", "outcome_reason", "reason_code",
-                "msg", "execution_kind", "channel_type", "execution_time", "success", "display_status",
-                "display_error", "display_outcome", "display_outcome_reason", "termination_reason", "termination_mode", "termination_trigger",
-                "termination_requested_at", "termination_acked_at", "termination_finished_at", "termination_cancel_attempted", "termination_forced", "termination_cancel_unconfirmed",
-                "result_input_kind", "result_input_value", "audit_evidence", "termination_evidence", "termination_kind", "termination_cancel_ids_kind",
-                "termination_cancel_count", "facts_complete"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30,
-                ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38
-            )"#).map_err(sql)?;
-    statement
-        .execute(rusqlite::params![
-            row.get("execution_id").and_then(Value::as_str),
-            row.get("is_success").and_then(Value::as_i64),
-            row.get("account_id").and_then(Value::as_i64),
-            row.get("created_at").and_then(Value::as_str),
-            row.get("status").and_then(Value::as_str),
-            row.get("symbol").and_then(Value::as_str),
-            row.get("technical_detail").and_then(Value::as_str),
-            row.get("task_status").and_then(Value::as_str),
-            row.get("error").and_then(Value::as_str),
-            row.get("outcome").and_then(Value::as_str),
-            row.get("outcome_reason").and_then(Value::as_str),
-            row.get("reason_code").and_then(Value::as_str),
-            row.get("msg").and_then(Value::as_str),
-            row.get("execution_kind").and_then(Value::as_str),
-            row.get("channel_type").and_then(Value::as_str),
-            row.get("execution_time").and_then(Value::as_f64),
-            row.get("success").and_then(Value::as_bool),
-            row.get("display_status").and_then(Value::as_str),
-            row.get("display_error").and_then(Value::as_str),
-            row.get("display_outcome").and_then(Value::as_str),
-            row.get("display_outcome_reason").and_then(Value::as_str),
-            row.get("termination_reason").and_then(Value::as_str),
-            row.get("termination_mode").and_then(Value::as_str),
-            row.get("termination_trigger").and_then(Value::as_str),
-            row.get("termination_requested_at").and_then(Value::as_str),
-            row.get("termination_acked_at").and_then(Value::as_str),
-            row.get("termination_finished_at").and_then(Value::as_str),
-            row.get("termination_cancel_attempted")
-                .and_then(Value::as_bool),
-            row.get("termination_forced").and_then(Value::as_bool),
-            row.get("termination_cancel_unconfirmed")
-                .and_then(Value::as_bool),
-            row.get("result_input_kind").and_then(Value::as_str),
-            encode::json_text(row.get("result_input_value"))?,
-            encode::json_text(row.get("audit_evidence"))?,
-            encode::json_text(row.get("termination_evidence"))?,
-            row.get("termination_kind").and_then(Value::as_str),
-            row.get("termination_cancel_ids_kind")
-                .and_then(Value::as_str),
-            row.get("termination_cancel_count").and_then(Value::as_i64),
-            row.get("facts_complete").and_then(Value::as_bool),
-        ])
-        .map_err(sql)?;
-    Ok(())
+    let columns = [
+        &[
+            ("execution_id", "text"),
+            ("is_success", "integer"),
+            ("account_id", "integer"),
+            ("created_at", "text"),
+        ][..],
+        EXECUTION_HEAD_COLUMNS,
+        &[("facts_complete", "boolean")],
+    ]
+    .concat();
+    super::insert_rows(
+        connection,
+        "executerecord",
+        std::slice::from_ref(row),
+        &columns,
+    )
 }
 
 #[cfg(test)]
@@ -697,6 +662,36 @@ mod tests {
                 assert_eq!(normalized.unwrap(), case["expected"], "{}", case["name"]);
             }
         }
+    }
+
+    #[test]
+    fn insert_and_update_advance_once_and_missing_heads_leave_no_cancellations() {
+        let connection = Connection::open_in_memory().unwrap();
+        let columns = execution_head_values(&json!({}), None).unwrap().keys()
+            .map(|key| format!("\"{key}\"")).collect::<Vec<_>>().join(",");
+        connection.execute_batch(&format!("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,execution_id TEXT,is_success INTEGER,account_id INTEGER,created_at TEXT,facts_complete INTEGER,{columns});
+            CREATE TABLE execution_termination_cancel_failure(record_id INTEGER,ordinal INTEGER,order_id JSON,audit_evidence JSON);
+            CREATE TABLE account_analysis(source_version INTEGER); INSERT INTO account_analysis VALUES(0);
+            CREATE TRIGGER record_insert AFTER INSERT ON executerecord BEGIN UPDATE account_analysis SET source_version=source_version+1; END;
+            CREATE TRIGGER record_update AFTER UPDATE ON executerecord BEGIN UPDATE account_analysis SET source_version=source_version+1; END; BEGIN;")).unwrap();
+        let mut row = execution_head_values(&json!({"status":"FAILED"}), Some(0)).unwrap();
+        row.extend(json!({"execution_id":"e1","is_success":0,"account_id":1,"created_at":"t","facts_complete":true}).as_object().unwrap().clone());
+        insert_execution(&connection, &row).unwrap();
+        let id = connection.last_insert_rowid();
+        write_result_cancellations(&connection, id, &json!({"status":"FAILED"})).unwrap();
+        let version = || connection.query_row("SELECT source_version FROM account_analysis", [], |row| row.get::<_,i64>(0)).unwrap();
+        assert_eq!(version(), 1);
+        let result = json!({"status":"FAILED","termination":{"cancel_failed_order_ids":["same","same",null]}});
+        write_result_head(&connection, id, &result, Some(0)).unwrap();
+        assert_eq!(version(), 2);
+        assert_eq!(connection.query_row("SELECT facts_complete FROM executerecord WHERE id=?1", [id], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        let error = write_result_head(&connection, id+1, &result, Some(0)).unwrap_err();
+        assert_eq!((error.code.as_str(), error.error.as_str()), ("BUSINESS_FACTS", "执行主记录不存在"));
+        assert_eq!(version(), 2);
+        assert_eq!(connection.query_row("SELECT count(*) FROM execution_termination_cancel_failure", [], |row| row.get::<_,i64>(0)).unwrap(), 3);
+        connection.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(version(), 0);
+        assert_eq!(connection.query_row("SELECT count(*) FROM executerecord", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
     }
 
     #[test]

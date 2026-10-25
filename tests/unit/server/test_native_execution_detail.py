@@ -344,7 +344,7 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     other = persist_result(
         path, source_result, raw_input=source_input, execution_id="foreign-frozen-owner", account_id=2, is_success=0
     )
-    notification = _event()[1]
+    _, notification = _event()
     event_context = notification["context"]
     _sql(
         path,

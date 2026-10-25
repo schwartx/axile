@@ -258,7 +258,7 @@ pub fn query_costs(conn: &Connection, request: &Value) -> Result<Value, String> 
         "summary" => (0, Vec::new()),
         "execution" => (
             execution_counts.0,
-            execution_page(conn, &scope, sort, limit, offset, false)?,
+            execution_page(conn, &scope, sort, limit, offset, false)?.0,
         ),
         "symbol" => {
             let count = conn
@@ -447,7 +447,7 @@ fn execution_page(
     limit: i64,
     offset: i64,
     historical_summary: bool,
-) -> Result<Vec<Value>, String> {
+) -> Result<(Vec<Value>, Option<(f64, i64)>), String> {
     let ordering = if sort == "cost" {
         "a.total_cost DESC NULLS LAST,e.time DESC,e.record_id DESC"
     } else {
@@ -461,13 +461,18 @@ fn execution_page(
     } else {
         EXECUTION_AGGREGATES.to_owned()
     };
-    let sql = format!("{}, per_record AS ({aggregate_sql}) SELECT e.record_id,e.key,e.execution_id,e.created_at,e.is_success,e.noop,e.duration_sec,e.trade_count,e.position_count,e.positions_present,e.reason,e.raw_present,e.has_symbol_results,e.raw_status,e.raw_task_status,e.raw_error,e.raw_outcome,e.raw_outcome_reason,e.raw_reason_code,e.raw_msg,e.raw_execution_kind,COALESCE(a.trade_rows,0),COALESCE(a.valued,0),a.total_value,a.total_cost,COALESCE(a.covered,0),a.covered_value,a.weighted_loss,a.estimated_count,COALESCE(a.symbols,0) FROM filtered_executions e LEFT JOIN per_record a USING(record_id) ORDER BY {ordering} LIMIT {limit} OFFSET {offset}", scope.cte.trim_end());
+    let sql = format!("{}, per_record AS ({aggregate_sql}) SELECT e.record_id,e.key,e.execution_id,e.created_at,e.is_success,e.noop,e.duration_sec,e.trade_count,e.position_count,e.positions_present,e.reason,e.raw_present,e.has_symbol_results,e.raw_status,e.raw_task_status,e.raw_error,e.raw_outcome,e.raw_outcome_reason,e.raw_reason_code,e.raw_msg,e.raw_execution_kind,COALESCE(a.trade_rows,0),COALESCE(a.valued,0),a.total_value,a.total_cost,COALESCE(a.covered,0),a.covered_value,a.weighted_loss,a.estimated_count,COALESCE(a.symbols,0),e.time FROM filtered_executions e LEFT JOIN per_record a USING(record_id) ORDER BY {ordering} LIMIT {limit} OFFSET {offset}", scope.cte.trim_end());
     let mut stmt = conn.prepare(&sql).map_err(sql_error)?;
     let mut rows = stmt
         .query(params_from_iter(scope.args.iter()))
         .map_err(sql_error)?;
     let mut output = Vec::new();
+    let mut last = None;
     while let Some(row) = rows.next().map_err(sql_error)? {
+        last = Some((
+            row.get(30).map_err(sql_error)?,
+            row.get(0).map_err(sql_error)?,
+        ));
         let mut raw = Map::new();
         let mask: i64 = row.get(11).map_err(sql_error)?;
         for (index, key) in RAW_KEYS.iter().enumerate() {
@@ -499,7 +504,7 @@ fn execution_page(
     drop(stmt);
     attach_page_fees(conn, scope, &mut output, "record_id", "record_id")?;
     attach_execution_children(conn, &scope.args[0], &mut output)?;
-    Ok(output)
+    Ok((output, last))
 }
 
 fn attach_execution_children(
@@ -523,7 +528,7 @@ fn attach_execution_children(
         .collect::<Vec<_>>()
         .join(",");
     let predicate = format!("snapshot_id=?1 AND record_id IN ({ids})");
-    let mut stmt = conn.prepare(&format!("SELECT record_id,symbol,present,status,error,outcome,outcome_reason,reason_code,memory_message,memory_reason_code FROM performance_cost_execution_symbol WHERE {predicate} ORDER BY record_id,symbol")).map_err(sql_error)?;
+    let mut stmt = conn.prepare(&format!("SELECT record_id,symbol,present,status,error,outcome,outcome_reason,reason_code FROM performance_cost_execution_symbol WHERE {predicate} ORDER BY record_id,symbol")).map_err(sql_error)?;
     let mut rows = stmt
         .query(params_from_iter(args.iter()))
         .map_err(sql_error)?;
@@ -539,15 +544,6 @@ fn attach_execution_children(
                     json!(row.get::<_, Option<String>>(index + 3).map_err(sql_error)?),
                 );
             }
-        }
-        let mut memory = Map::new();
-        for (column, key) in [(8, "message"), (9, "symbol_decision_reason_code")] {
-            if let Some(value) = row.get::<_, Option<String>>(column).map_err(sql_error)? {
-                memory.insert(key.into(), json!(value));
-            }
-        }
-        if !memory.is_empty() {
-            status.insert("memory".into(), Value::Object(memory));
         }
         if let Some(index) = lookup.get(&record) {
             output[*index]["record"]["raw_result"]["symbol_results"][symbol] =
@@ -663,15 +659,9 @@ pub(crate) fn snapshot_executions(
              filtered_executions AS (SELECT * FROM base_executions) "
         );
         let scope = Scope { cte, args };
-        let mut batch = execution_page(conn, &scope, "time", 100, 0, true)?;
+        let (mut batch, last) = execution_page(conn, &scope, "time", 100, 0, true)?;
         let size = batch.len();
-        if let Some(last) = batch.last() {
-            let record_id = last["record"]["id"]
-                .as_i64()
-                .expect("typed record identity");
-            let time = conn.query_row("SELECT time FROM performance_cost_execution WHERE snapshot_id=?1 AND record_id=?2", (snapshot_id,record_id), |row| row.get::<_,f64>(0)).map_err(sql_error)?;
-            before = Some((time, record_id));
-        }
+        before = last;
         output.append(&mut batch);
         if size < 100 {
             break;
@@ -742,7 +732,7 @@ mod tests {
             "CREATE TABLE performance_cost_execution(snapshot_id TEXT,record_id INTEGER,time REAL,success INTEGER,noop INTEGER,key TEXT,execution_id TEXT,created_at TEXT,is_success INTEGER,duration_sec REAL,trade_count INTEGER,symbol_count INTEGER,position_count INTEGER,positions_present INTEGER,reason TEXT,raw_present INTEGER,has_symbol_results INTEGER,raw_status TEXT,raw_task_status TEXT,raw_error TEXT,raw_outcome TEXT,raw_outcome_reason TEXT,raw_reason_code TEXT,raw_msg TEXT,raw_execution_kind TEXT,payload TEXT,PRIMARY KEY(snapshot_id,record_id));
              CREATE INDEX execution_time ON performance_cost_execution(snapshot_id,time);
              CREATE TABLE performance_cost_trade(snapshot_id TEXT,id INTEGER,record_id INTEGER,symbol TEXT,time REAL,day TEXT,value REAL,cost REAL,loss_bp REAL,fee REAL,fee_currency TEXT,estimated INTEGER,side TEXT,quantity REAL,price REAL,reference REAL,reference_source TEXT,payload TEXT);
-             CREATE TABLE performance_cost_execution_symbol(snapshot_id TEXT,record_id INTEGER,symbol TEXT,present INTEGER,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory_message TEXT,memory_reason_code TEXT);
+             CREATE TABLE performance_cost_execution_symbol(snapshot_id TEXT,record_id INTEGER,symbol TEXT,present INTEGER,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT);
              CREATE TABLE performance_cost_position(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,quantity REAL,direction TEXT);
              CREATE TABLE performance_cost_attempt(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,planned REAL,filled REAL,reason TEXT);
              CREATE TABLE performance_cost_transaction(snapshot_id TEXT,record_id INTEGER,idx INTEGER,symbol TEXT,side TEXT,quantity REAL,price REAL,reference REAL,reference_source TEXT,time REAL,end_time REAL,time_estimated INTEGER,\"before\" REAL,target REAL,value REAL,cost REAL,loss_bp REAL,coverage REAL,covered INTEGER,count INTEGER,amount_complete INTEGER,fee_covered INTEGER);
@@ -751,6 +741,7 @@ mod tests {
         for record in 1..=201 {
             conn.execute("INSERT INTO performance_cost_execution(snapshot_id,record_id,time,success,noop,key,execution_id,created_at,is_success,trade_count,symbol_count,positions_present,reason,raw_present,has_symbol_results,payload) VALUES('v1',?1,?2,1,1,?3,?3,'2026-01-01T00:00:00',1,0,0,0,'',0,0,'not-json')",rusqlite::params![record, f64::from(record / 2), record.to_string()]).unwrap();
         }
+        conn.execute("INSERT INTO performance_cost_execution_symbol VALUES('v1',100,'A',5,'BLOCKED',NULL,NULL,NULL,NULL)", []).unwrap();
         let executions = snapshot_executions(&conn, "v1", 0.0, 1000.0).unwrap();
         assert_eq!(executions.len(), 201);
         for (index, execution) in executions.iter().enumerate() {
@@ -760,10 +751,16 @@ mod tests {
             assert_eq!(execution["positions"], Value::Null);
             assert_eq!(execution["summary"]["cost"], Value::Null);
         }
+        assert_eq!(executions[99]["record"]["raw_result"]["symbol_results"]["A"], json!({"status":"BLOCKED","outcome":null}));
         let selected = snapshot_executions(&conn, "v1", 50.0, 60.0).unwrap();
         assert_eq!(selected.len(), 22);
         assert_eq!(selected.first().unwrap()["record"]["id"], json!(100));
         assert_eq!(selected.last().unwrap()["record"]["id"], json!(121));
+        let exact = snapshot_executions(&conn, "v1", 1.0, 50.0).unwrap();
+        assert_eq!(exact.len(), 100);
+        assert_eq!(exact.first().unwrap()["record"]["id"], json!(2));
+        assert_eq!(exact.last().unwrap()["record"]["id"], json!(101));
+        assert!(snapshot_executions(&conn, "v1", 1001.0, 1002.0).unwrap().is_empty());
     }
     #[test]
     fn summary_preserves_empty_and_uncovered_amounts() {

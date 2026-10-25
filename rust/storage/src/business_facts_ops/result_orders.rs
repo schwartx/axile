@@ -5,7 +5,6 @@ use serde_json::{json, Map, Value};
 
 use super::encode::{audit_value, join_pointer, store_columns, Rows};
 use super::facts_error;
-use super::{encode, sql};
 use crate::error::AnalysisError;
 
 const ORDER_FIELDS: &[(&str, &str)] = &[
@@ -167,80 +166,58 @@ pub(crate) fn insert_orders(
     payload: &Map<String, Value>,
 ) -> Result<(), AnalysisError> {
     let (collections, orders) = encode_orders(record_id, payload).map_err(facts_error)?;
-    let mut statement = connection
-        .prepare_cached(
-            r#"INSERT INTO execution_order_collection (
-                "record_id", "path", "ordinal", "map_key", "kind", "invalid_value",
-                "item_count", "audit_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8
-            )"#,
-        )
-        .map_err(sql)?;
-    for row in &collections {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("path").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("map_key").and_then(Value::as_str),
-                row.get("kind").and_then(Value::as_str),
-                encode::json_text(row.get("invalid_value"))?,
-                row.get("item_count").and_then(Value::as_i64),
-                encode::json_text(row.get("audit_evidence"))?,
-            ])
-            .map_err(sql)?;
-    }
-    let mut statement = connection.prepare_cached(r#"INSERT INTO execution_order (
-                "record_id", "path", "ordinal", "map_key", "kind", "invalid_value",
-                "order_id", "symbol", "direction", "order_type", "volume", "price",
-                "status", "filled_volume", "avg_price", "create_time", "update_time", "update_timestamp",
-                "remaining_volume", "filled_ratio", "extra", "audit_evidence", "order_id_state", "conversion_kind",
-                "conversion_invalid_value", "conversion_price_currency", "conversion_value_currency", "conversion_rate", "conversion_reference", "conversion_evidence"
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6,
-                ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18,
-                ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30
-            )"#).map_err(sql)?;
-    for row in &orders {
-        statement
-            .execute(rusqlite::params![
-                row.get("record_id").and_then(Value::as_i64),
-                row.get("path").and_then(Value::as_str),
-                row.get("ordinal").and_then(Value::as_i64),
-                row.get("map_key").and_then(Value::as_str),
-                row.get("kind").and_then(Value::as_str),
-                encode::json_text(row.get("invalid_value"))?,
-                encode::json_text(row.get("order_id"))?,
-                row.get("symbol").and_then(Value::as_str),
-                row.get("direction").and_then(Value::as_str),
-                row.get("order_type").and_then(Value::as_str),
-                row.get("volume").and_then(Value::as_f64),
-                row.get("price").and_then(Value::as_f64),
-                row.get("status").and_then(Value::as_str),
-                row.get("filled_volume").and_then(Value::as_f64),
-                row.get("avg_price").and_then(Value::as_f64),
-                row.get("create_time").and_then(Value::as_str),
-                row.get("update_time").and_then(Value::as_str),
-                row.get("update_timestamp").and_then(Value::as_f64),
-                row.get("remaining_volume").and_then(Value::as_f64),
-                row.get("filled_ratio").and_then(Value::as_f64),
-                encode::json_text(row.get("extra"))?,
-                encode::json_text(row.get("audit_evidence"))?,
-                row.get("order_id_state").and_then(Value::as_str),
-                row.get("conversion_kind").and_then(Value::as_str),
-                encode::json_text(row.get("conversion_invalid_value"))?,
-                row.get("conversion_price_currency").and_then(Value::as_str),
-                row.get("conversion_value_currency").and_then(Value::as_str),
-                row.get("conversion_rate").and_then(Value::as_f64),
-                encode::json_text(row.get("conversion_reference"))?,
-                encode::json_text(row.get("conversion_evidence"))?,
-            ])
-            .map_err(sql)?;
-    }
+    super::insert_rows(
+        connection,
+        "execution_order_collection",
+        &collections,
+        &[
+            ("record_id", "integer"),
+            ("path", "text"),
+            ("ordinal", "integer"),
+            ("map_key", "text"),
+            ("kind", "text"),
+            ("invalid_value", "json"),
+            ("item_count", "integer"),
+            ("audit_evidence", "json"),
+        ],
+    )?;
+    super::insert_rows(
+        connection,
+        "execution_order",
+        &orders,
+        &[
+            ("record_id", "integer"),
+            ("path", "text"),
+            ("ordinal", "integer"),
+            ("map_key", "text"),
+            ("kind", "text"),
+            ("invalid_value", "json"),
+            ("order_id", "json"),
+            ("symbol", "text"),
+            ("direction", "text"),
+            ("order_type", "text"),
+            ("volume", "number"),
+            ("price", "number"),
+            ("status", "text"),
+            ("filled_volume", "number"),
+            ("avg_price", "number"),
+            ("create_time", "text"),
+            ("update_time", "text"),
+            ("update_timestamp", "number"),
+            ("remaining_volume", "number"),
+            ("filled_ratio", "number"),
+            ("extra", "json"),
+            ("audit_evidence", "json"),
+            ("order_id_state", "text"),
+            ("conversion_kind", "text"),
+            ("conversion_invalid_value", "json"),
+            ("conversion_price_currency", "text"),
+            ("conversion_value_currency", "text"),
+            ("conversion_rate", "number"),
+            ("conversion_reference", "json"),
+            ("conversion_evidence", "json"),
+        ],
+    )?;
     Ok(())
 }
 

@@ -102,7 +102,11 @@ fn number_wire(n: &serde_json::Number) -> Result<String, String> {
 
 /// Read one authorized record inside the caller's Store snapshot.
 pub fn read(conn: &Connection, account_id: i64, record_id: i64) -> Result<Value, String> {
-    read_detail(conn, account_id, record_id, true, true)
+    let (input, result) = read_detail(conn, account_id, record_id, true, true)?;
+    let mut detail = Object::new();
+    detail.insert("input".into(), input);
+    detail.insert("result".into(), result);
+    Ok(Value::Object(detail))
 }
 
 /// 只组装结果，主输入仅校验归属，避免通知和摘要读取物化无关输入。
@@ -111,12 +115,8 @@ pub(crate) fn read_result(
     account_id: i64,
     record_id: i64,
 ) -> Result<Value, String> {
-    let mut detail = read_detail(conn, account_id, record_id, false, true)?;
-    Ok(detail
-        .as_object_mut()
-        .expect("detail object")
-        .shift_remove("result")
-        .expect("result field"))
+    let (_, result) = read_detail(conn, account_id, record_id, false, true)?;
+    Ok(result)
 }
 
 /// 仅供冻结的 0037 迁移解码；旧迁移未施加运行时输入及资产归属约束。
@@ -125,12 +125,8 @@ pub(crate) fn read_result_for_migration(
     account_id: i64,
     record_id: i64,
 ) -> Result<Value, String> {
-    let mut detail = read_detail(conn, account_id, record_id, false, false)?;
-    Ok(detail
-        .as_object_mut()
-        .expect("detail object")
-        .shift_remove("result")
-        .expect("result field"))
+    let (_, result) = read_detail(conn, account_id, record_id, false, false)?;
+    Ok(result)
 }
 
 fn read_detail(
@@ -139,7 +135,7 @@ fn read_detail(
     record_id: i64,
     include_input: bool,
     validate_owners: bool,
-) -> Result<Value, String> {
+) -> Result<(Value, Value), String> {
     let id = json!(record_id);
     let heads = load(conn, "executerecord", "id", &id)?;
     if heads.is_empty() {
@@ -289,10 +285,7 @@ fn read_detail(
         }
         Value::Object(result)
     };
-    let mut detail = Object::new();
-    detail.insert("input".into(), primary);
-    detail.insert("result".into(), result);
-    Ok(Value::Object(detail))
+    Ok((primary, result))
 }
 
 type Object = Map<String, Value>;
@@ -532,15 +525,6 @@ fn put(result: &mut Object, path: &str, value: Value) -> Result<(), String> {
     };
     merge(result, fragment)
 }
-pub(crate) fn assets(
-    conn: &Connection,
-    id: &Value,
-    record: &Object,
-    result: &mut Object,
-) -> Result<(), String> {
-    assets_with_ownership(conn, id, record, result, true)
-}
-
 fn assets_with_ownership(
     conn: &Connection,
     id: &Value,
@@ -686,6 +670,14 @@ fn decode_input_value(conn: &Connection, id: &Value, head: &Object) -> Result<Va
     if text(head, "root_kind")? != "object" {
         return Ok(get(head, "root_value")?.clone());
     }
+    load_input_children(conn, id, head)
+}
+
+pub(crate) fn load_input_children(
+    conn: &Connection,
+    id: &Value,
+    head: &Object,
+) -> Result<Value, String> {
     let targets = load(conn, "execution_input_target", "input_id", id)?;
     let symbols = load(conn, "execution_input_symbol", "input_id", id)?;
     let plans = load(conn, "execution_input_plan", "input_id", id)?;
@@ -1256,7 +1248,7 @@ mod tests {
             .unwrap()
             .clone();
         let mut result = Object::new();
-        assert!(assets(&conn, &json!(1), &record, &mut result).is_err());
+        assert!(assets_with_ownership(&conn, &json!(1), &record, &mut result, true).is_err());
         assets_with_ownership(&conn, &json!(1), &record, &mut result, false).unwrap();
         assert_eq!(result["account_assets"], Value::Null);
         conn.execute(

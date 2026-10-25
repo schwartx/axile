@@ -64,8 +64,8 @@ impl<'a> AttemptReader<'a> {
                             .map(|(target, before)| target - before)
                     ),
                     finite(filled),
-                    display["error"]
-                        .as_str()
+                    display.get("error")
+                        .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .chars()
                         .take(200)

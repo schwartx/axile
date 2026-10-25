@@ -38,13 +38,13 @@ pub(crate) fn canonical_boundary(value: &str) -> Result<String, String> {
     }
 }
 
-pub(crate) fn timestamp_micros(value: &str) -> Result<i64, String> {
-    Ok(local_time(value)?.and_utc().timestamp_micros() - 28_800_000_000)
+pub(crate) fn timestamp_micros(value: NaiveDateTime) -> i64 {
+    value.and_utc().timestamp_micros() - 28_800_000_000
 }
 
 pub(crate) fn timestamp_ms(value: &str) -> Result<f64, String> {
     // Preserve Python's floating seconds before multiplying, including at SQL boundaries.
-    Ok(timestamp_micros(value)? as f64 / 1_000_000.0 * 1000.0)
+    Ok(timestamp_micros(local_time(value)?) as f64 / 1_000_000.0 * 1000.0)
 }
 
 pub(crate) fn register_time_function(connection: &Connection) -> rusqlite::Result<()> {
@@ -63,7 +63,7 @@ pub(crate) fn register_time_function(connection: &Connection) -> rusqlite::Resul
     )
 }
 
-fn display_time(value: NaiveDateTime) -> String {
+pub(crate) fn display_time(value: NaiveDateTime) -> String {
     if value.nanosecond() == 0 {
         value.format("%Y-%m-%dT%H:%M:%S").to_string()
     } else {
