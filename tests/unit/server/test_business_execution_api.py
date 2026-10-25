@@ -17,7 +17,6 @@ from axile.server.business_facts.artifacts import make_artifact_reference, resol
 from axile.server.business_facts.repository import read_execution_input
 from axile.server.core import db
 from axile.server.db.models.execution import ExecuteRecord
-from axile.server.target_weight_snapshots import TargetWeightSnapshotData
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import (
@@ -181,7 +180,7 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
         is_success=1,
         raw_input=terminal_input,
     )
-    snapshot = TargetWeightSnapshotData(
+    snapshot = dict(
         id=1,
         portfolio_id=1,
         account_id=1,

@@ -11,6 +11,7 @@ from axile.server.target_weight_snapshots import (
     append_target_weight_snapshot,
     get_latest_account_target_snapshot,
     get_latest_portfolio_target_snapshot,
+    get_previous_account_target_snapshots,
     read_target_snapshot_weights,
 )
 from scripts.business_facts_contract import business_evidence
@@ -262,20 +263,25 @@ def test_target_snapshot_services_explicitly_load_typed_maps(native_database, mo
             normalized_weights={"CF2701": 0.0, "CF701": -0.15},
             source="manual",
         )
-        assert snapshot.raw_weights == {"CF2701": 0, "CF701": -0.05}
-        assert snapshot.normalized_weights == {"CF2701": 0.0, "CF701": -0.15}
+        assert snapshot["raw_weights"] == {"CF2701": 0, "CF701": -0.05}
+        assert snapshot["normalized_weights"] == {"CF2701": 0.0, "CF701": -0.15}
         assert await get_latest_account_target_snapshot(1, 2) == snapshot
         assert await get_latest_portfolio_target_snapshot(2) == snapshot
         assert await read_target_snapshot_weights(account_id=1, execution_id=None) is None
         sql(
             native_database,
             "UPDATE target_weight_snapshot SET execution_id='snapshot-execution' WHERE id=?",
-            (snapshot.id,),
+            (snapshot["id"],),
         )
         assert await read_target_snapshot_weights(account_id=1, execution_id="snapshot-execution") == {
             "CF2701": 0.0,
             "CF701": -0.15,
         }
+        previous = await get_previous_account_target_snapshots(1, 2, before_id=snapshot["id"] + 1, limit=1)
+        assert len(previous) == 1 and previous[0]["id"] == snapshot["id"]
+        assert previous[0]["normalized_weights"] == snapshot["normalized_weights"]
+        assert await get_previous_account_target_snapshots(1, 2, before_id=snapshot["id"]) == []
+        assert await get_previous_account_target_snapshots(2, 2, before_id=snapshot["id"] + 1) == []
         assert {"raw_weights", "normalized_weights"}.isdisjoint(rows(native_database, "target_weight_snapshot")[0])
 
     asyncio.run(check())

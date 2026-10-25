@@ -34,7 +34,7 @@ def test_append_preserves_nonfinite_evidence_and_native_symbol_key(monkeypatch):
         )
     )
 
-    assert saved.raw_weights == {" SHFE.rb2610 ": None, "literal_marker": None}
+    assert saved["raw_weights"] == {" SHFE.rb2610 ": None, "literal_marker": None}
     native.assert_awaited_once_with(
         "target_operation",
         {
@@ -85,5 +85,5 @@ def test_latest_snapshot_preserves_absent_normalized_weights(monkeypatch):
     monkeypatch.setattr(snapshots, "native_operation", native)
 
     value = asyncio.run(snapshots.get_latest_portfolio_target_snapshot(7))
-    assert value is not None and value.raw_weights == {} and value.normalized_weights is None
+    assert value is not None and value["raw_weights"] == {} and value.get("normalized_weights") is None
     assert snapshots.target_snapshot_public(value, weight_kind="raw").weights == {}

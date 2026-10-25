@@ -12,7 +12,6 @@ from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_execution as account_execution_routes
 from axile.server.db.models import Account, ExecutionArtifact, Portfolio
 from axile.server.execution.intents import SubmitResult
-from axile.server.target_weight_snapshots import TargetWeightSnapshotData
 
 
 class _RouteData:
@@ -113,7 +112,7 @@ def _patch_resolution(
     *,
     portfolio_id: int | None,
     raw_target: dict[str, float],
-) -> list[TargetWeightSnapshotData]:
+) -> list[dict[str, object]]:
     """桩掉绑定组合解析与裸目标合成，把测试聚焦在杠杆缩放这一层。"""
 
     async def fake_get_latest_portfolio_id_by_account_id(_account_id: int) -> int | None:
@@ -122,10 +121,10 @@ def _patch_resolution(
     async def fake_resolve_portfolio_target(_portfolio: Portfolio, _account: object) -> dict[str, float]:
         return dict(raw_target)
 
-    saved: list[TargetWeightSnapshotData] = []
+    saved: list[dict[str, object]] = []
 
-    async def fake_append_target_weight_snapshot(**kwargs: object) -> TargetWeightSnapshotData:
-        snapshot = TargetWeightSnapshotData(id=1, execution_id=None, calculated_at="2026-08-25T10:30:00", **kwargs)
+    async def fake_append_target_weight_snapshot(**kwargs: object) -> dict[str, object]:
+        snapshot = dict(id=1, execution_id=None, calculated_at="2026-08-25T10:30:00", **kwargs)
         saved.append(snapshot)
         return snapshot
 
@@ -141,7 +140,7 @@ def _patch_resolution(
         fake_append_target_weight_snapshot,
     )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return []
 
     monkeypatch.setattr(account_execution_routes, "get_previous_account_target_snapshots", fake_previous)
@@ -160,7 +159,7 @@ def test_account_target_weights_applies_long_leverage(monkeypatch) -> None:
     assert response.json()["weights"] == {"rb2610": 1.5, "ag2612": 1.5}
     assert response.json()["quantities"] is None
     assert response.json()["sizing"]["status"] == "pending_execution"
-    assert saved[0].source == "manual"
+    assert saved[0]["source"] == "manual"
 
 
 def test_account_target_weights_applies_short_leverage(monkeypatch) -> None:
@@ -190,8 +189,8 @@ def test_account_target_snapshot_get_only_reads_snapshot(monkeypatch) -> None:
     session = _RouteData(_build_account(), _build_portfolio())
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"should_not_run": 1.0})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=2,
             portfolio_id=7,
             account_id=1,
@@ -249,8 +248,8 @@ def test_account_target_snapshot_does_not_recalculate_legacy_quantity_from_curre
     session = _RouteData(_build_account(), _build_portfolio())
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"TA2701": -0.08})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=3,
             portfolio_id=7,
             account_id=1,
@@ -311,8 +310,8 @@ def test_account_target_snapshot_returns_complete_execution_sizing(monkeypatch) 
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=4,
             portfolio_id=7,
             account_id=1,
@@ -390,8 +389,8 @@ def test_account_target_snapshot_reports_sizing_evidence_state(
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=5,
             portfolio_id=7,
             account_id=1,
@@ -500,8 +499,8 @@ def test_account_target_snapshot_falls_back_to_same_weight_complete_sizing(monke
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=20,
             portfolio_id=7,
             account_id=1,
@@ -512,9 +511,9 @@ def test_account_target_snapshot_falls_back_to_same_weight_complete_sizing(monke
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return [
-            TargetWeightSnapshotData(
+            dict(
                 id=19,
                 portfolio_id=7,
                 account_id=1,
@@ -544,8 +543,8 @@ def test_account_target_snapshot_does_not_reuse_lots_when_weights_changed(monkey
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=20,
             portfolio_id=7,
             account_id=1,
@@ -556,9 +555,9 @@ def test_account_target_snapshot_does_not_reuse_lots_when_weights_changed(monkey
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return [
-            TargetWeightSnapshotData(
+            dict(
                 id=19,
                 portfolio_id=7,
                 account_id=1,
@@ -584,8 +583,8 @@ def test_account_target_snapshot_falls_back_when_current_quantities_are_null(mon
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=20,
             portfolio_id=7,
             account_id=1,
@@ -596,9 +595,9 @@ def test_account_target_snapshot_falls_back_when_current_quantities_are_null(mon
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return [
-            TargetWeightSnapshotData(
+            dict(
                 id=19,
                 portfolio_id=7,
                 account_id=1,
@@ -623,8 +622,8 @@ def test_account_target_snapshot_keeps_unavailable_without_complete_history(monk
     session = _RouteData(_build_account(), _build_portfolio(), _unavailable_sizing_artifacts("exec-now"))
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=20,
             portfolio_id=7,
             account_id=1,
@@ -651,8 +650,8 @@ def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
-    async def fake_latest(_account_id: int, _portfolio_id: int) -> TargetWeightSnapshotData:
-        return TargetWeightSnapshotData(
+    async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
+        return dict(
             id=30,
             portfolio_id=7,
             account_id=1,
@@ -663,9 +662,9 @@ def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -
             calculated_at="2026-09-17T11:34:00",
         )
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return [
-            TargetWeightSnapshotData(
+            dict(
                 id=29,
                 portfolio_id=7,
                 account_id=1,
@@ -675,7 +674,7 @@ def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -
                 execution_id="exec-a",
                 calculated_at="2026-09-17T11:19:00",
             ),
-            TargetWeightSnapshotData(
+            dict(
                 id=28,
                 portfolio_id=7,
                 account_id=1,
@@ -700,9 +699,9 @@ def test_account_target_refresh_reuses_same_weight_lots(monkeypatch) -> None:
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"TA2701": -0.1067})
 
-    async def fake_previous(*_args: object, **_kwargs: object) -> list[TargetWeightSnapshotData]:
+    async def fake_previous(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         return [
-            TargetWeightSnapshotData(
+            dict(
                 id=19,
                 portfolio_id=7,
                 account_id=1,

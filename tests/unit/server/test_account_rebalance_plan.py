@@ -1,6 +1,5 @@
 """调仓预览保留未知持仓与明确空仓的区别。"""
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,7 +27,7 @@ def test_rebalance_plan_distinguishes_unknown_positions_from_flat(monkeypatch, t
     monkeypatch.setattr(
         account_execution,
         "get_latest_account_target_snapshot",
-        AsyncMock(return_value=SimpleNamespace(normalized_weights=target, calculated_at="2026-08-26T21:35:10")),
+        AsyncMock(return_value={"normalized_weights": target, "calculated_at": "2026-08-26T21:35:10"}),
     )
     monkeypatch.setattr(
         account_execution,

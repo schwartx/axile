@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, ClassVar, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from gm.api import (  # type: ignore  # pyright: ignore[reportUnknownVariableType]
     current,
@@ -32,8 +31,6 @@ GMBridgeOperation: TypeAlias = GMSdkOperation | Literal["subscribe_symbols"]
 
 class GMApiBridge:
     """统一封装 GM SDK 查询/交易调用."""
-
-    _SDK_OPERATION_METHODS: ClassVar[dict[GMSdkOperation, Callable[..., Any]]]
 
     @staticmethod
     def get_account_ids() -> list[str]:
@@ -70,77 +67,26 @@ class GMApiBridge:
                 return dict(protobuf_to_dict(account.status, including_default_value_fields=True))
         return None
 
-    @classmethod
-    def execute_request(cls, operation: GMSdkOperation, **kwargs: Any) -> Any:
+    @staticmethod
+    def execute_request(operation: GMSdkOperation, **kwargs: Any) -> Any:
         """按白名单执行 GM SDK 请求，省略未指定的账户参数。"""
         try:
-            method = cls._SDK_OPERATION_METHODS[operation]
+            method = {
+                "get_cash": get_cash,
+                "get_position": get_position,
+                "current": current,
+                "get_orders": get_orders,
+                "get_unfinished_orders": get_unfinished_orders,
+                "get_execution_reports": get_execution_reports,
+                "order_cancel": order_cancel,
+                "order_volume": order_volume,
+            }[operation]
         except KeyError as exc:
             raise ValueError(f"未知的 GM bridge 操作: {operation}") from exc
         if kwargs.get("account_id") is None:
             kwargs.pop("account_id", None)
+        if operation in {"get_orders", "get_unfinished_orders", "get_execution_reports"}:
+            rows = method()
+            account_id = kwargs.get("account_id")
+            return rows if account_id is None else [row for row in rows if row.get("account_id") == account_id]
         return method(**kwargs)
-
-    @classmethod
-    def get_cash(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``get_cash`` 调用."""
-        return get_cash(**kwargs)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-
-    @classmethod
-    def get_position(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``get_position`` 调用."""
-        return get_position(**kwargs)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-
-    @classmethod
-    def current(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``current`` 调用."""
-        return current(**kwargs)
-
-    @classmethod
-    def get_orders(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``get_orders`` 调用."""
-        account_id = kwargs.get("account_id")
-        orders = get_orders()
-        if account_id is None:
-            return orders
-        return [order for order in orders if order.get("account_id") == account_id]
-
-    @classmethod
-    def get_unfinished_orders(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``get_unfinished_orders`` 调用."""
-        account_id = kwargs.get("account_id")
-        orders = get_unfinished_orders()
-        if account_id is None:
-            return orders
-        return [order for order in orders if order.get("account_id") == account_id]
-
-    @classmethod
-    def get_execution_reports(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``get_execution_reports`` 调用."""
-        account_id = kwargs.get("account_id")
-        reports = get_execution_reports()
-        if account_id is None:
-            return reports
-        return [report for report in reports if report.get("account_id") == account_id]
-
-    @classmethod
-    def order_cancel(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``order_cancel`` 调用."""
-        return order_cancel(**kwargs)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-
-    @classmethod
-    def order_volume(cls, **kwargs: Any) -> Any:
-        """转发执行 GM SDK ``order_volume`` 调用."""
-        return order_volume(**kwargs)
-
-
-GMApiBridge._SDK_OPERATION_METHODS = {
-    "get_cash": GMApiBridge.get_cash,
-    "get_position": GMApiBridge.get_position,
-    "current": GMApiBridge.current,
-    "get_orders": GMApiBridge.get_orders,
-    "get_unfinished_orders": GMApiBridge.get_unfinished_orders,
-    "get_execution_reports": GMApiBridge.get_execution_reports,
-    "order_cancel": GMApiBridge.order_cancel,
-    "order_volume": GMApiBridge.order_volume,
-}
