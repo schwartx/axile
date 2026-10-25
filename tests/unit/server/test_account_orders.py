@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from axile.executor.account_orders import AccountOrderBook
 from axile.executor.models.unified_order import UnifiedOrder
 from axile.server import account_orders as service
 from axile.server.account_orders_runtime import public_order, run_order_command
@@ -27,6 +28,22 @@ def order(**changes):
     )
     values.update(changes)
     return UnifiedOrder(**values)
+
+
+def _executor(**attributes):
+    """按正式 facade 语义把渠道查询同步至真实订单簿。"""
+    book = attributes.setdefault("account_orders", AccountOrderBook())
+    read = attributes.get("get_pending_orders")
+    if read is not None:
+
+        def query(symbol):
+            watermark = book.begin_sync()
+            orders = read(symbol)
+            book.replace(orders, watermark)
+            return orders
+
+        attributes["get_pending_orders"] = query
+    return SimpleNamespace(**attributes)
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +115,7 @@ def test_missing_cancellation_does_not_overwrite_same_id_live_order_on_another_s
 
 def test_query_is_account_wide_and_cancel_requires_exact_symbol_and_identity():
     calls = []
-    executor = SimpleNamespace(
+    executor = _executor(
         get_pending_orders=lambda symbol: (
             calls.append(symbol) or [order(), order(order_id="external", symbol="ag2612")]
         ),
@@ -114,7 +131,7 @@ def test_query_is_account_wide_and_cancel_requires_exact_symbol_and_identity():
 
 
 def test_fill_before_cancel_is_terminal_and_never_sends_cancel():
-    executor = SimpleNamespace(
+    executor = _executor(
         get_pending_orders=lambda _: [],
         get_account_control_guard=lambda: None,
         reconcile_terminal_order=lambda *_: order(status="已成交", filled_volume=3),
@@ -126,7 +143,7 @@ def test_fill_before_cancel_is_terminal_and_never_sends_cancel():
 
 
 def test_unknown_order_is_visible_and_cannot_be_canceled():
-    executor = SimpleNamespace(
+    executor = _executor(
         get_pending_orders=lambda _: [order(status="状态未知")],
         cancel_order=lambda *_: pytest.fail("未知状态不能提交撤单"),
     )
@@ -137,7 +154,7 @@ def test_unknown_order_is_visible_and_cannot_be_canceled():
 
 
 def test_cancel_accepted_does_not_mean_canceled():
-    executor = SimpleNamespace(get_pending_orders=lambda _: [order()], cancel_order=lambda *_: True)
+    executor = _executor(get_pending_orders=lambda _: [order()], cancel_order=lambda *_: True)
     result = run_order_command(executor, {"command": "cancel", "symbol": "rb2610", "order_id": "20261018:1:2:1"})
     assert result["state"] == "submitted"
     assert result["order"]["status"] == "部分成交"
@@ -155,7 +172,7 @@ def test_async_cancel_rejection_uses_original_guard_and_preserves_live_order(mon
         "metadata": {"order_id": "20261018:1:2:1"},
     }
     guard = SimpleNamespace(monitor_snapshot=lambda: {"records": [event]})
-    executor = SimpleNamespace(
+    executor = _executor(
         get_pending_orders=lambda _: [order()], get_account_control_guard=lambda: guard, cancel_order=lambda *_: True
     )
     assert (
@@ -364,7 +381,7 @@ def test_terminal_verification_reads_only_tracked_order_even_when_book_is_incomp
     book = AccountOrderBook()
     book.apply(order())
     calls = []
-    executor = SimpleNamespace(
+    executor = _executor(
         account_orders=book,
         get_pending_orders=lambda *_: pytest.fail("单笔核实不能查询全账户"),
         get_account_control_guard=lambda: None,
@@ -386,7 +403,7 @@ def test_fill_callback_during_cancel_validation_prevents_native_cancel():
         book.apply(order(status="已成交", filled_volume=3))
         return [order()]
 
-    executor = SimpleNamespace(
+    executor = _executor(
         account_orders=book,
         get_pending_orders=query,
         get_account_control_guard=lambda: None,
@@ -404,7 +421,7 @@ def test_requested_terminal_is_returned_even_after_recent_terminal_window_moves_
     book.replace([], 0)
     for index in range(513):
         book.apply(order(order_id=str(index), status="已撤销"))
-    executor = SimpleNamespace(
+    executor = _executor(
         account_orders=book,
         get_account_control_guard=lambda: None,
         reconcile_terminal_order=lambda *_: order(order_id="0", status="已撤销"),

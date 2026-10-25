@@ -245,22 +245,15 @@ fn range_rows(
             ])
             .map_err(stage_error)?;
     }
-    let mut insert = target.prepare_cached(
-        "INSERT INTO native_stage.performance_result_binding(range_key,idx,time,portfolio_id) VALUES(?1,?2,?3,?4)"
+    target.execute(
+        "INSERT INTO native_stage.performance_result_binding(range_key,idx,time,portfolio_id)
+         SELECT ?1,key,
+           CASE json_type(item,'$.time') WHEN 'text' THEN json_extract(item,'$.time') END,
+           CASE WHEN json_type(item,'$.portfolio_id')='integer'
+             AND typeof(json_extract(item,'$.portfolio_id'))='integer' THEN json_extract(item,'$.portfolio_id') END
+         FROM (SELECT key,CASE type WHEN 'object' THEN value ELSE '{}' END AS item FROM json_each(?2))",
+        params![key, Value::Array(take_array(performance, "bindings")?).to_string()],
     ).map_err(stage_error)?;
-    for (index, value) in take_array(performance, "bindings")?
-        .into_iter()
-        .enumerate()
-    {
-        insert
-            .execute(params![
-                key,
-                index,
-                value["time"].as_str(),
-                value["portfolio_id"].as_i64()
-            ])
-            .map_err(stage_error)?;
-    }
     let mut insert = target
         .prepare_cached(
             r#"INSERT INTO native_stage.performance_result_skip (
@@ -279,24 +272,18 @@ fn range_rows(
         }
     }
     let mut calendar = performance["calendar"].take();
-    let mut insert = target.prepare_cached(
-        "INSERT INTO native_stage.performance_result_calendar_range(range_key,kind,idx,start,end) VALUES(?1,?2,?3,?4,?5)"
-    ).map_err(stage_error)?;
     for (field, kind) in [
         ("closed_ranges", "closed"),
         ("unavailable_ranges", "unavailable"),
     ] {
-        for (index, value) in take_array(&mut calendar, field)?.into_iter().enumerate() {
-            insert
-                .execute(params![
-                    key,
-                    kind,
-                    index,
-                    value["start"].as_str(),
-                    value["end"].as_str()
-                ])
-                .map_err(stage_error)?;
-        }
+        target.execute(
+            "INSERT INTO native_stage.performance_result_calendar_range(range_key,kind,idx,start,end)
+             SELECT ?1,?2,key,
+               CASE json_type(item,'$.start') WHEN 'text' THEN json_extract(item,'$.start') END,
+               CASE json_type(item,'$.end') WHEN 'text' THEN json_extract(item,'$.end') END
+             FROM (SELECT key,CASE type WHEN 'object' THEN value ELSE '{}' END AS item FROM json_each(?3))",
+            params![key, kind, Value::Array(take_array(&mut calendar, field)?).to_string()],
+        ).map_err(stage_error)?;
     }
     target.execute(
         r#"INSERT INTO native_stage.performance_result_range (
@@ -378,6 +365,165 @@ pub(crate) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata_fixture() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "ATTACH DATABASE '' AS native_stage;
+             CREATE TABLE native_stage.performance_result_point(range_key,idx,date,observed_at,record_id,execution_id,account_return,account_equity,portfolio_return,portfolio_daily_return,account_daily_return,target_portfolio_return,target_portfolio_daily_return,difference,sizing_fallback);
+             CREATE TABLE native_stage.performance_result_fallback(range_key,idx,start,end,count);
+             CREATE TABLE native_stage.performance_result_binding(range_key,idx,time,portfolio_id);
+             CREATE TABLE native_stage.performance_result_skip(range_key,kind,count,missing_target,missing_ticks,first_time,last_time);
+             CREATE TABLE native_stage.performance_result_calendar_range(range_key,kind,idx,start,end);
+             CREATE TABLE native_stage.performance_result_range(range_key,backtest_included,engine_version,baseline,end,record_count,observation_count,used_record_count,target_used_record_count,invalid_asset_count,sizing_fallback_count,calendar_status,calendar_id,calendar_label,event_count);"
+        ).unwrap();
+        connection
+    }
+
+    fn metadata_range(bindings: Value, calendar: Value) -> crate::performance::Range {
+        crate::performance::Range {
+            header: serde_json::json!({"bindings": bindings, "calendar": calendar}),
+            points: Vec::new(),
+            sizing_fallback_ranges: Vec::new(),
+            skips: None,
+            target_skips: None,
+        }
+    }
+
+    #[test]
+    fn metadata_rows_preserve_scalar_types_and_ordinals() {
+        let connection = metadata_fixture();
+        let range = metadata_range(
+            serde_json::json!([
+                {"time":"中文","portfolio_id":7},
+                {"time":3,"portfolio_id":true},
+                null, "not JSON", [],
+                {"time":false,"portfolio_id":1.0},
+                {"time":"overflow","portfolio_id":9223372036854775808_u64},
+                {"time":"maximum","portfolio_id":i64::MAX},
+                {"time":"minimum","portfolio_id":i64::MIN}
+            ]),
+            serde_json::json!({
+                "closed_ranges":[{"start":"a","end":"b"},false,[],{"start":2,"end":true}],
+                "unavailable_ranges":[{"start":"未知","end":null}]
+            }),
+        );
+        range_rows(&connection, "all", range, 0).unwrap();
+        let bindings = connection.prepare(
+            "SELECT idx,time,portfolio_id FROM native_stage.performance_result_binding ORDER BY idx"
+        ).unwrap().query_map([], |row| Ok((
+            row.get::<_,i64>(0)?, row.get::<_,Option<String>>(1)?, row.get::<_,Option<i64>>(2)?
+        ))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(
+            bindings,
+            vec![
+                (0, Some("中文".into()), Some(7)),
+                (1, None, None),
+                (2, None, None),
+                (3, None, None),
+                (4, None, None),
+                (5, None, None),
+                (6, Some("overflow".into()), None),
+                (7, Some("maximum".into()), Some(i64::MAX)),
+                (8, Some("minimum".into()), Some(i64::MIN)),
+            ]
+        );
+        let ranges = connection.prepare(
+            "SELECT kind,idx,start,end FROM native_stage.performance_result_calendar_range ORDER BY kind,idx"
+        ).unwrap().query_map([], |row| Ok((
+            row.get::<_,String>(0)?, row.get::<_,i64>(1)?, row.get::<_,Option<String>>(2)?, row.get::<_,Option<String>>(3)?
+        ))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(
+            ranges,
+            vec![
+                ("closed".into(), 0, Some("a".into()), Some("b".into())),
+                ("closed".into(), 1, None, None),
+                ("closed".into(), 2, None, None),
+                ("closed".into(), 3, None, None),
+                ("unavailable".into(), 0, Some("未知".into()), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_arrays_keep_null_empty_and_invalid_contracts() {
+        for value in [Value::Null, serde_json::json!([])] {
+            let connection = metadata_fixture();
+            range_rows(
+                &connection,
+                "all",
+                metadata_range(value.clone(), serde_json::json!({"closed_ranges":value})),
+                0,
+            )
+            .unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM native_stage.performance_result_binding",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT count(*) FROM native_stage.performance_result_calendar_range",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+        for (bindings, calendar, field) in [
+            (serde_json::json!({}), Value::Null, "bindings"),
+            (
+                serde_json::json!([]),
+                serde_json::json!({"closed_ranges":false}),
+                "closed_ranges",
+            ),
+            (
+                serde_json::json!([]),
+                serde_json::json!({"unavailable_ranges":"invalid"}),
+                "unavailable_ranges",
+            ),
+        ] {
+            let connection = metadata_fixture();
+            let error =
+                range_rows(&connection, "all", metadata_range(bindings, calendar), 0).unwrap_err();
+            assert_eq!(error.code, "INVALID_RESULT_ROW");
+            assert_eq!(error.error, format!("{field} must be an array"));
+        }
+    }
+
+    #[test]
+    fn metadata_insert_failure_remains_visible_and_rolls_back() {
+        let connection = metadata_fixture();
+        connection.execute_batch(
+            "CREATE TRIGGER native_stage.reject_calendar BEFORE INSERT ON performance_result_calendar_range
+             BEGIN SELECT RAISE(ABORT,'calendar rejected'); END; BEGIN;"
+        ).unwrap();
+        let range = metadata_range(
+            serde_json::json!([{"time":"a","portfolio_id":7}]),
+            serde_json::json!({"closed_ranges":[{"start":"a","end":"b"}]}),
+        );
+        let error = range_rows(&connection, "all", range, 0).unwrap_err();
+        assert_eq!(error.code, "PUBLICATION_STAGE");
+        assert!(error.error.contains("calendar rejected"));
+        connection.execute_batch("ROLLBACK;").unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM native_stage.performance_result_binding",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+    }
     #[test]
     fn direct_float_binding_keeps_unknown_and_nonfinite_values_null() {
         let connection = Connection::open_in_memory().unwrap();

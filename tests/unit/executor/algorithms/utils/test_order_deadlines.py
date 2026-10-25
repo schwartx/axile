@@ -105,7 +105,7 @@ def test_fallback_batch_checks_deadline_before_each_child(monkeypatch) -> None:
     monkeypatch.setattr(executor, "place_order", slow_place)
     monkeypatch.setattr(executor, "emit_audit_event", MagicMock())
 
-    tracker._submit_market_fallback_batch(order, info)
+    tracker._submit_market_fallback_order(order, info)
 
     assert submitted_at == pytest.approx([0, 0.6])
     assert executor._placed == 2

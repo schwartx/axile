@@ -398,15 +398,6 @@ fn check_observation_facts(connection: &Connection, account_id: i64) -> Result<(
     crate::fact_integrity::validate(connection, account_id)
 }
 
-/// Reuse native metadata assembly when emitting normalized publication rows.
-pub fn enrich_metadata(
-    connection: &Connection,
-    account_id: i64,
-    performance: &mut Value,
-) -> Result<(), String> {
-    crate::calendar::enrich(connection, account_id, performance)
-}
-
 /// 读路径性能计算的领域入参:账户、可选区间与回测语义。
 pub struct PerformanceRequest {
     pub account_id: i64,
@@ -538,7 +529,7 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
     states.into_iter().map(|state| {
         let mut range = state.finish(&settings, record_count, include_backtest);
         if include_metadata {
-            enrich_metadata(connection, account_id, &mut range.header)?;
+            crate::calendar::enrich(connection, account_id, &mut range.header)?;
         }
         Ok(range)
     }).collect()
