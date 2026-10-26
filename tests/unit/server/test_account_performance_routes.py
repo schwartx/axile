@@ -71,7 +71,8 @@ def test_wait_status_uses_native_rules_in_committed_database(
     assert asyncio.run(read_snapshot_status(path, 1)) == expected
 
 
-def test_performance_route_computes_synchronously_without_backtest(client, monkeypatch):
+@pytest.mark.parametrize("snapshot_status", ["empty", "pending", "stale", "failed"])
+def test_performance_route_computes_synchronously_without_backtest(client, monkeypatch, snapshot_status):
     payload = {
         "settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0},
         "engine_version": ENGINE_VERSION,
@@ -80,7 +81,7 @@ def test_performance_route_computes_synchronously_without_backtest(client, monke
         "record_count": 2,
         "calendar": {"status": "not_required"},
     }
-    status = AsyncMock(return_value="empty")
+    status = AsyncMock(return_value=snapshot_status)
     monkeypatch.setattr(routes, "read_snapshot_status", status)
     monkeypatch.setattr(routes._core, "account_performance", lambda *args: json.dumps(payload).encode())
     response = client.get("/performance/1", params={"include_backtest": False})
@@ -88,6 +89,24 @@ def test_performance_route_computes_synchronously_without_backtest(client, monke
     assert response.json()["record_count"] == 2
     assert response.json()["backtest_included"] is False
     status.assert_awaited_once_with("/isolated/analysis.sqlite", 1)
+
+
+def test_account_only_route_reuses_ready_snapshot(client, monkeypatch):
+    content = b'{"record_count":2,"backtest_included":false}'
+    read = Mock(return_value=content)
+    account_returns = Mock()
+    store = object()
+    monkeypatch.setattr(routes, "analysis_store", lambda: store)
+    monkeypatch.setattr(routes, "read_snapshot_status", AsyncMock(return_value="ready"))
+    monkeypatch.setattr(routes._core, "performance_result", read)
+    monkeypatch.setattr(routes._core, "account_performance", account_returns)
+
+    response = client.get("/performance/1", params={"include_backtest": False})
+
+    assert response.status_code == 200, response.text
+    assert response.content == content
+    read.assert_called_once_with(store, 1, "all", False, LOGIC_VERSION, ENGINE_VERSION)
+    account_returns.assert_not_called()
 
 
 @pytest.mark.parametrize("include_backtest", [True, False])

@@ -46,7 +46,7 @@ async def _op(call, *args):
 
 
 async def _account_performance(store: "_core.Store", account_id: int, range_key: RangeKey) -> Response:
-    """同步计算账户收益;观测事实由发布管线物化,此处不重算投影."""
+    """从业务事实同步计算账户收益，不依赖回测发布。"""
     result = await _op(_core.account_performance, store, account_id, range_key, False)
     return _json_response(result)
 
@@ -102,10 +102,10 @@ async def get_performance(
                         raise _native_http_error(error) from error
             except TimeoutError as error:
                 raise _NOT_READY from error
-        if status == "failed":
-            raise _NOT_READY
         if not include_backtest:
             return await _account_performance(store, account_id, range)
+        if status == "failed":
+            raise _NOT_READY
         if clock_monotonic() >= deadline:
             raise _NOT_READY
         if not enqueued and status != "ready":

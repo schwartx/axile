@@ -614,6 +614,39 @@ def test_migration_roundtrip_defaults(tmp_path):
         )
 
 
+@pytest.mark.parametrize("range_key", ["30", "90", "all"])
+def test_account_returns_survive_failed_analysis(tmp_path, schema_template, monkeypatch, range_key):
+    path = tmp_path / "analysis.db"
+
+    async def setup():
+        async with database(tmp_path, schema_template):
+            pass
+
+    asyncio.run(setup())
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("UPDATE account_analysis SET error='analysis failed' WHERE account_id=2")
+    assert asyncio.run(account_performance.read_snapshot_status(str(path), 2)) == "failed"
+    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
+    monkeypatch.setattr(account_performance, "database_path", lambda: str(path))
+    monkeypatch.setattr(account_performance, "analysis_store", lambda: _core.Store(str(path)))
+    app = FastAPI()
+    app.include_router(router, prefix="/account")
+
+    with TestClient(app) as client:
+        response = client.get("/account/performance/2", params={"include_backtest": False, "range": range_key})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["range"] == range_key
+        assert result["backtest_included"] is False
+        assert result["record_count"] == result["observation_count"] == 3
+        assert result["points"][-1]["account_equity"] == 103
+        assert result["points"][-1]["account_return"] == pytest.approx(103 / 101 - 1)
+        assert all(point["portfolio_return"] is None for point in result["points"])
+        assert client.get("/account/performance/2", params={"include_backtest": True}).status_code == 503
+
+    assert asyncio.run(account_performance.read_snapshot_status(str(path), 2)) == "failed"
+
+
 def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, schema_template, monkeypatch):
     path = tmp_path / "analysis.db"
 
