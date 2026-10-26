@@ -19,6 +19,7 @@ from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.algorithms.core.loader import load_algorithm_modules
 from axile.server.api.main import api_router
 from axile.server.compression import CompressionMiddleware
+from axile.server.core.log_config import setup_logging
 from axile.server.core.scheduler import scheduler
 from axile.server.core.single_worker import ensure_single_worker
 from axile.server.error_details import json_error_value
@@ -216,6 +217,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 多 worker 会让账户执行互斥锁、调度器与实盘进度镜像（均为进程内内存态）失效，
     # 可能重复调度与重复下单，因此在做任何事之前先拒绝启动，而不是带病运行。
     ensure_single_worker()
+    setup_logging()
 
     # 把执行实时态广播中枢绑到主事件循环：事件可能经独立线程产生，需 call_soon_threadsafe
     # 回投到这里才能安全投递给 SSE 订阅者（见 axile.server.execution.live）。向导模式下也绑，

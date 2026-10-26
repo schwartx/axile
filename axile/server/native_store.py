@@ -6,6 +6,7 @@ from collections.abc import Callable
 from threading import Event
 from typing import Any
 
+from axile.common.logging import native_log_scope
 from axile.server._native import _core
 
 
@@ -16,7 +17,8 @@ def native_operation_sync(name: str, request: object, *, database: str | None = 
 
         database = database_path()
     evidence_input = name in getattr(_core, "EVIDENCE_INPUT_STAGES", ())
-    return getattr(_core, name)(database, json.dumps(request, ensure_ascii=False, allow_nan=evidence_input))
+    with native_log_scope(request):
+        return getattr(_core, name)(database, json.dumps(request, ensure_ascii=False, allow_nan=evidence_input))
 
 
 async def native_operation(name: str, request: object, *, database: str | None = None) -> Any:

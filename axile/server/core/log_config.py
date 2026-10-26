@@ -5,9 +5,8 @@
 - https://github.com/MatthewScholefield/uvicorn-loguru-integration/blob/main/uvicorn_loguru_integration.py.
 """
 
-import json
+import atexit
 import logging
-import sys
 import traceback
 from types import FrameType
 from typing import Any, cast
@@ -17,6 +16,9 @@ from loguru import logger
 from axile.common.config import settings
 from axile.common.logging import LogComponent
 from axile.common.trade_channel import TradeChannel
+from axile.server.core.logging_sink import NativeLogSink
+
+_sink: NativeLogSink | None = None
 
 
 class InterceptHandler(logging.Handler):
@@ -25,25 +27,19 @@ class InterceptHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         """把标准库日志记录转发到 Loguru."""
         try:
-            level = logger.level(record.levelname).name
-        except ValueError:
-            level = str(record.levelno)
-
-        frame, depth = logging.currentframe(), 1
-        while frame.f_code.co_filename in (logging.__file__, __file__):  # noqa: WPS609
-            frame = cast("FrameType", frame.f_back)
-            depth += 1
-
-        logger_with_opts = logger.opt(depth=depth, exception=record.exc_info)
-        try:
+            try:
+                level = logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelno
+            frame, depth = logging.currentframe(), 1
+            while frame is not None and frame.f_code.co_filename in (logging.__file__, __file__):
+                frame = cast("FrameType", frame.f_back)
+                depth += 1
+            logger_with_opts = logger.opt(depth=depth, exception=record.exc_info)
             logger_with_opts.log(level, "{}", record.getMessage())
-        except Exception as e:
-            safe_msg = getattr(record, "msg", None) or str(record)
-            logger_with_opts.warning(
-                "Exception logging the following native logger message: {}, {!r}",
-                safe_msg,
-                e,
-            )
+        except Exception:
+            if _sink is not None:
+                _sink.invalid()
 
 
 LOGGING_MODULES = (
@@ -82,18 +78,6 @@ def setup_loguru_logging_intercept(level: int = logging.DEBUG) -> None:
     for logger_name, logger_level in MODULE_LOG_LEVELS.items():
         logging.getLogger(logger_name).setLevel(logger_level)
 
-
-_CONTEXT_FIELDS = (
-    "account_id",
-    "account_name",
-    "channel",
-    "execution_id",
-    "symbol",
-    "algorithm",
-    "trigger_source",
-    "calendar_id",
-    "calendar_day",
-)
 
 # 规则按具体到宽泛排列。显式 ``component`` 始终优先于这里的源码归类。
 _COMPONENT_PREFIXES: tuple[tuple[str, LogComponent], ...] = (
@@ -161,10 +145,6 @@ def execution_log_context(
     }
 
 
-def _level_label(level_name: str) -> str:
-    return "WARN" if level_name == "WARNING" else level_name
-
-
 def _component_label(name: str | None, extra: dict[str, Any]) -> str:
     """根据显式绑定或源码命名空间解析稳定业务组件."""
     explicit = extra.get("component")
@@ -180,48 +160,6 @@ def _component_label(name: str | None, extra: dict[str, Any]) -> str:
     return LogComponent.EXTERNAL.value
 
 
-def _context_label(extra: dict[str, Any]) -> str:
-    """把结构化上下文渲染成紧凑的人类可读前缀."""
-    parts: list[str] = []
-    account_id = extra.get("account_id")
-    account_name = extra.get("account_name")
-    if account_name:
-        account_label = str(account_name)
-        if account_id is not None:
-            account_label = f"{account_label}#{account_id}"
-        parts.append(account_label)
-    elif account_id is not None:
-        parts.append(f"账户#{account_id}")
-    channel = extra.get("channel")
-    if channel:
-        parts.append(str(channel))
-    symbol = extra.get("symbol")
-    if symbol:
-        parts.append(str(symbol))
-    execution_id = extra.get("execution_id")
-    if execution_id:
-        parts.append(str(execution_id)[:8])
-    if not parts:
-        return ""
-    return f"[{' '.join(parts)}] "
-
-
-def _format_record(record: dict[str, Any]) -> str:
-    """生成面向人工阅读的控制台日志模板."""
-    extra = record["extra"]
-    extra["_lvl"] = f"{_level_label(record['level'].name):<5}"
-    name = record.get("name") or record.get("module")
-    extra["_component"] = _component_label(name, extra)
-    extra["_ctx"] = _context_label(extra)
-    return (
-        "<green>{time:YYMMDD HH:mm:ss.SSS}</green> "
-        "<level>{extra[_lvl]}</level> "
-        "<cyan>[{extra[_component]}]</cyan> "
-        "{extra[_ctx]}"
-        "<level>{message}</level>\n{exception}"
-    )
-
-
 def _exception_payload(exception: Any) -> dict[str, str] | None:
     """把 Loguru 异常记录转换为 JSON 可序列化结构."""
     if exception is None:
@@ -231,33 +169,6 @@ def _exception_payload(exception: Any) -> dict[str, str] | None:
         "message": str(exception.value),
         "traceback": "".join(traceback.format_exception(exception.type, exception.value, exception.traceback)),
     }
-
-
-def _json_format_record(record: dict[str, Any]) -> str:
-    """生成一行稳定、无冗余包裹的 JSONL 日志."""
-    extra = record["extra"]
-    name = record.get("name") or record.get("module")
-    component = _component_label(name, extra)
-    context = {field: extra[field] for field in _CONTEXT_FIELDS if extra.get(field) is not None}
-    payload = {
-        "schema_version": 1,
-        "timestamp": record["time"].isoformat(timespec="milliseconds"),
-        "level": record["level"].name,
-        "component": component,
-        "message": record["message"],
-        "context": context,
-        "source": {
-            "name": record.get("name"),
-            "file": record["file"].path,
-            "function": record["function"],
-            "line": record["line"],
-        },
-        "process": {"id": record["process"].id, "name": record["process"].name},
-        "thread": {"id": record["thread"].id, "name": record["thread"].name},
-        "exception": _exception_payload(record["exception"]),
-    }
-    extra["_json"] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
-    return "{extra[_json]}\n"
 
 
 def _sink_filter(record: dict[str, Any]) -> bool:
@@ -270,41 +181,41 @@ def _sink_filter(record: dict[str, Any]) -> bool:
 
 
 def setup_logging() -> None:
-    """为当前运行环境配置控制台和文件日志."""
-    if settings.environment == "local":
-        console_level = logging.INFO
-    else:
-        # 生产用WARNING
-        console_level = logging.WARNING
-
-    # 添加控制台日志
-    logger.configure(
-        handlers=cast(
-            "Any",
-            [
-                {
-                    "sink": sys.stdout,
-                    "format": _format_record,
-                    "level": console_level,
-                    "filter": _sink_filter,
-                },
-            ],
-        ),
-        extra={},
-    )
-
-    # 将标准logger转给loguru
+    """安装进程内共享 sink；重复调用不创建重复写线程。"""
+    global _sink
+    level = "INFO" if settings.environment == "local" else "WARNING"
+    config = (settings.app_log_dir, level, settings.axile_log_rotation)
+    if (
+        _sink is not None
+        and not _sink.closed
+        and not _sink.error
+        and _sink.config == config
+        and not _sink.stats()["stopped"]
+    ):
+        return
+    shutdown_logging()
+    _sink = NativeLogSink(*config)
+    handler: Any = {
+        "sink": _sink,
+        "format": lambda record: "{message}",
+        "level": level,
+        "filter": _sink_filter,
+        "backtrace": False,
+        "diagnose": False,
+    }
+    logger.configure(handlers=[handler], extra={})
     setup_loguru_logging_intercept()
 
-    settings.app_log_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"目录已存在或创建完成：{settings.app_log_dir}")
 
-    # 文件日志使用 JSON Lines，保留完整源码位置供诊断工具读取。
-    logger.add(
-        settings.app_log_dir / "axile.jsonl",
-        format=cast("Any", _json_format_record),
-        rotation=settings.axile_log_rotation,
-        level=console_level,
-        filter=cast("Any", _sink_filter),
-        encoding="utf-8",
-    )
+def logging_stats() -> dict[str, Any]:
+    """返回本进程日志计数，不依赖队列或磁盘可用。"""
+    return _sink.stats() if _sink is not None else {"dropped_total": 0, "stopped": True}
+
+
+def shutdown_logging() -> None:
+    """正常关闭时限时排空日志，失败不覆盖业务的退出原因。"""
+    if _sink is not None:
+        _sink.stop()
+
+
+atexit.register(shutdown_logging)

@@ -578,7 +578,7 @@ def run_worker_backend_loop(
         该 worker 绑定的账户标识。
     """
     from axile.server.connection_state import ConnectionBinding
-    from axile.server.core.log_config import setup_logging
+    from axile.server.core.log_config import setup_logging, shutdown_logging
 
     setup_logging()
     state = _WorkerBackendState(account_id=account_id)
@@ -706,3 +706,4 @@ def run_worker_backend_loop(
         except OSError:
             pass
         logger.info("worker 退出 | account_id={}", account_id)
+        shutdown_logging()

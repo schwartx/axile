@@ -18,7 +18,7 @@ from axile.server.app import (  # pyright: ignore[reportPrivateUsage]
     set_algorithm_directories,
 )
 from axile.server.core.db import initialize_database
-from axile.server.core.log_config import setup_logging
+from axile.server.core.log_config import setup_logging, shutdown_logging
 from axile.server.core.single_worker import MultiWorkerNotSupportedError, validate_workers_option
 
 __all__ = ["build_arg_parser", "run_server", "main", "uvicorn"]
@@ -244,6 +244,7 @@ def run_server(
     except KeyboardInterrupt:
         pass  # pragma: full coverage
     finally:
+        shutdown_logging()
         if uvicorn_config.uds and os.path.exists(uvicorn_config.uds):
             os.remove(uvicorn_config.uds)  # pragma: py-win32
 

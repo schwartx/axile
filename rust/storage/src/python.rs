@@ -213,7 +213,7 @@ fn business_operation(
     let result = py
         .detach(|| {
             let request = business_request(stage, request_json)?;
-            operation(path, &request)
+            crate::logging::operation(stage, &request, || operation(path, &request))
         })
         .map_err(raise)?;
     json_to_py(py, &result)
@@ -241,7 +241,7 @@ fn business_bytes_operation(
     let result = py
         .detach(|| {
             let request = business_request(stage, request_json)?;
-            operation(path, &request)
+            crate::logging::operation(stage, &request, || operation(path, &request))
         })
         .map_err(raise)?;
     Ok(PyBytes::new(py, &result).unbind())
@@ -731,6 +731,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Store>()?;
     m.add_class::<EvidenceCancellation>()?;
     crate::control_policy_python::register(m)?;
+    crate::logging_python::register(m)?;
     m.add_function(wrap_pyfunction!(close_database, m)?)?;
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;

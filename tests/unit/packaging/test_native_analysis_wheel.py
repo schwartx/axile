@@ -126,6 +126,10 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "EffectiveAccountControlPolicy",
         "control_registry",
         "resolve_control_policy",
+        "logging_start",
+        "logging_emit",
+        "logging_stats",
+        "logging_close",
     } <= set(required)
     assert not {
         "dashboard_inputs",
@@ -156,6 +160,7 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         ("0034", 40, "account_runtime_sync_json", "missing required entrypoints"),
         ("0034", 40, "notifications_get_system_json", "missing required entrypoints"),
         ("0034", 40, "resolve_control_policy", "missing required entrypoints"),
+        ("0034", 40, "logging_emit", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(

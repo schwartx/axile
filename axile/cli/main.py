@@ -56,6 +56,29 @@ def create_app(migration_runner: Callable[[], None] | None = None) -> typer.Type
                 kwargs["migration_runner"] = migration_runner
             run_server(**kwargs)
 
+    @app.command("logs")
+    def logs(
+        paths: Annotated[list[Path], typer.Argument(help="日志文件或 .gz 分片，可传入多个")],
+        tree: Annotated[bool, typer.Option("--tree", help="按过程树查看")] = False,
+        stats: Annotated[bool, typer.Option("--stats", help="显示各运行最后保存的累计丢弃计数")] = False,
+    ) -> None:
+        """读取日志时间线、过程树或计数；无需启动服务或加载原生扩展。"""
+        import json
+
+        from axile.common.log_files import LogDecodeError, log_statistics, read_logs, render_record, render_tree
+
+        try:
+            records = read_logs(paths)
+            if stats:
+                typer.echo(json.dumps(log_statistics(records), ensure_ascii=False, indent=2))
+            elif tree:
+                typer.echo(render_tree(records))
+            else:
+                for record in records:
+                    typer.echo(render_record(record))
+        except (OSError, LogDecodeError) as error:
+            raise typer.BadParameter(str(error)) from error
+
     return app
 
 
