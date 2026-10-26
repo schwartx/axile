@@ -254,7 +254,9 @@ async def account_activity_symbols(
 ) -> Response:
     """从原生读快照返回品种汇总及所选品种成交。"""
     try:
-        content = await run_in_threadpool(_core.activity_symbols, analysis_store(), account_id, since, until, symbol)
+        content = await run_in_threadpool(
+            _core.activity_symbols, analysis_store(), account_id, since, until, symbol or None
+        )
         return Response(content=content, media_type="application/json")
     except _core.NativeError as error:
         if error.args[0] == "ACCOUNT_NOT_FOUND":

@@ -55,7 +55,15 @@ def test_native_preserves_all_fills_summary_bounds_and_account_scope(tmp_path, s
                 assert overview["data"][0]["summary"] == row["summary"]
                 assert overview["data"][0]["trades"] == []
                 assert overview["data"][0]["last_time"] == int(max(trade["time"] for trade in expected))
-                for since, until, symbol in [("2020", "2030", "missing"), ("2090", "2091", None), ("", "", "")]:
+                app = FastAPI()
+                app.include_router(account_schedule.router)
+                with TestClient(app) as client:
+                    params = {"since": "", "until": ""}
+                    for query in (params, {**params, "symbol": ""}):
+                        response = client.get("/2/activity/symbols", params=query)
+                        assert response.status_code == 200
+                        assert response.json() == overview
+                for since, until, symbol in [("2020", "2030", "missing"), ("2090", "2091", None)]:
                     assert json.loads(
                         (await account_schedule.account_activity_symbols(2, since, until, symbol=symbol)).body
                     ) == {
