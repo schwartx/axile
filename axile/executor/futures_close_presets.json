@@ -619,5 +619,5 @@
       "today_fee": "免收"
     }
   ],
-  "source": "docs/data/futures_close_fees_2026-10-15.csv"
+  "source": "axile/executor/futures_close_fees_2026-10-15.csv"
 }

@@ -4,7 +4,7 @@
 
 ## 准备环境
 
-需要 Python **3.12 或以上**、[uv](https://docs.astral.sh/uv/) 和 [Bun](https://bun.sh/)。Bun 用于构建管理界面，Python 环境用于运行服务和渠道 SDK。
+需要 Python **3.12 或以上**、[uv](https://docs.astral.sh/uv/)、[Bun](https://bun.sh/)、Rust 和 C 编译环境。Rust 版本由仓库的 `rust-toolchain.toml` 固定，Bun 用于构建管理界面。
 
 克隆公共仓库：
 
@@ -13,7 +13,15 @@ git clone https://github.com/zengbin93/axile.git
 cd axile
 ```
 
-安装所用渠道的依赖。本指南使用天勤：
+先构建并校验原生存储扩展，构建目录放在工作树之外：
+
+```bash
+export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/axile-native-target"
+uv run --no-project --with hatchling --with packaging python \
+  scripts/build_native_analysis.py --target-dir "$CARGO_TARGET_DIR"
+```
+
+然后安装所用渠道的依赖。本指南使用天勤：
 
 ```bash
 uv sync --extra tqsdk
@@ -79,3 +87,7 @@ uv run axile --host 127.0.0.1 --port 8000
 ![首次初始化后的空控制台](../assets/screenshots/02-install/04-empty-console.png)
 
 下一步[创建第一个组合](/guide/first-portfolio)。
+
+## 升级已有安装
+
+升级前停止旧服务并备份数据库。启动新版时，Rust 存储扩展会执行数据库迁移；公共核心、渠道插件和界面应使用匹配版本。迁移失败时先保留错误及备份，不能通过手改版本号跳过迁移。降级可能因新数据无法无损转换而被拒绝，需要回退时使用升级前备份。

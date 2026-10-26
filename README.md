@@ -40,21 +40,6 @@ CTP 和掘金分别安装 `axile[ctp]`、`axile[gm]`，平台限制与账户模�
 
 ### 从源码运行
 
-源码构建还需要 [Bun](https://bun.sh/)。发布包已包含 Web 界面，无需自行构建。
-
-```bash
-git clone https://github.com/zengbin93/axile.git
-cd axile
-uv sync --extra tqsdk
-
-cd ui
-bun install --frozen-lockfile
-bun run build
-cd ..
-
-uv run axile
-```
-
-初始化与配置见[安装与启动](https://schwartx.github.io/axile/guide/install.html)，算法行为见[执行算法](https://schwartx.github.io/axile/reference/algorithms.html)，结果核对见[查看执行结果](https://schwartx.github.io/axile/guide/results.html)。
+源码构建需要 Rust、C 编译环境和 [Bun](https://bun.sh/)，步骤见[安装与启动](https://schwartx.github.io/axile/guide/install.html)。发布包已包含原生扩展与 Web 界面，无需自行构建。算法行为见[执行算法](https://schwartx.github.io/axile/reference/algorithms.html)，结果核对见[查看执行结果](https://schwartx.github.io/axile/guide/results.html)。
 
 本项目采用 Apache-2.0 许可证。
