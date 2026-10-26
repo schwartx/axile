@@ -10,19 +10,14 @@ Notes
 from typing import TYPE_CHECKING, Any
 
 from axile.executor.account_control.decorators import controlled_operation
-from axile.executor.account_control.exceptions import AccountControlBlockedError
+from axile.executor.account_control.exceptions import AccountControlBlockedError, AccountControlConfigError
 from axile.executor.account_control.models import (
     AccountControlBucketType,
     AccountControlCounterDeltaWrite,
     AccountControlDecision,
     AccountControlEventWrite,
-    AccountControlOverride,
-    AccountControlPolicy,
     AccountControlPresetDefinition,
-    AccountControlScopeOverride,
-    AccountControlScopePolicy,
     AccountControlScopeType,
-    EffectiveAccountControlPolicy,
 )
 from axile.executor.account_control.registry import (
     AccountControlRegistry,
@@ -39,6 +34,13 @@ from axile.executor.account_control.snapshot import (
 )
 
 if TYPE_CHECKING:
+    from axile.executor.account_control.models import (
+        AccountControlOverride,
+        AccountControlPolicy,
+        AccountControlScopeOverride,
+        AccountControlScopePolicy,
+        EffectiveAccountControlPolicy,
+    )
     from axile.executor.account_control.presets import (
         ACCOUNT_CONTROL_PRESETS,
         ensure_account_control_preset_compatible,
@@ -53,6 +55,7 @@ __all__ = [
     "AccountControlCounterDeltaWrite",
     "AccountControlCounterSnapshot",
     "AccountControlBlockedError",
+    "AccountControlConfigError",
     "AccountControlDecision",
     "AccountControlEventWrite",
     "AccountControlRecentAllowedSnapshot",
@@ -84,8 +87,22 @@ _LAZY_PRESET_EXPORTS = frozenset(
     }
 )
 
+_LAZY_MODEL_EXPORTS = frozenset(
+    {
+        "AccountControlOverride",
+        "AccountControlPolicy",
+        "AccountControlScopeOverride",
+        "AccountControlScopePolicy",
+        "EffectiveAccountControlPolicy",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
+    if name in _LAZY_MODEL_EXPORTS:
+        from axile.executor.account_control import models
+
+        return getattr(models, name)
     if name in _LAZY_PRESET_EXPORTS:
         from axile.executor.account_control import presets as _presets
 

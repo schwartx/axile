@@ -27,7 +27,19 @@ const EVIDENCE_INPUT_STAGES: [&str; 6] = [
 ];
 
 fn raise(error: AnalysisError) -> PyErr {
-    NativeError::new_err((error.code, error.error))
+    use std::error::Error;
+    Python::attach(|py| {
+        let exception = NativeError::new_err((error.code.clone(), error.error.clone()));
+        if let Some(config) = error
+            .source()
+            .and_then(|source| source.downcast_ref::<crate::control_policy::ConfigError>())
+        {
+            let details = json_to_py(py, &serde_json::to_value(config).unwrap())?;
+            exception.value(py).setattr("details", details)?;
+        }
+        Ok::<_, PyErr>(exception)
+    })
+    .unwrap_or_else(|error| error)
 }
 
 /// 只读 SQLite 访问点;每次查询一个 DEFERRED 快照,结束即释放。
@@ -112,7 +124,7 @@ fn encode_json(value: Value) -> Result<Vec<u8>, AnalysisError> {
         .map_err(|error| AnalysisError::new("ANALYSIS_ERROR", error.to_string()))
 }
 
-fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
+pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
     Ok(match value {
         Value::Null => py.None().into_any(),
         Value::Bool(inner) => inner
@@ -718,6 +730,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add_class::<Store>()?;
     m.add_class::<EvidenceCancellation>()?;
+    crate::control_policy_python::register(m)?;
     m.add_function(wrap_pyfunction!(close_database, m)?)?;
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
     m.add_function(wrap_pyfunction!(publish_store, m)?)?;

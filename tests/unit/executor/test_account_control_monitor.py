@@ -13,7 +13,7 @@ from axile.executor.account_control.guard import AccountControlGuard, resolve_co
 from axile.executor.account_control.models import (
     AccountControlBucketType,
     AccountControlOverride,
-    AccountControlTriggerBehavior,
+    EffectiveAccountControlPolicy,
 )
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
@@ -35,8 +35,10 @@ def make_guard(*, baseline_count=120, limit=500, clock=None, sleep=None):
             {"operations": {"place_order": {"account": {"per_day": {"limit": limit, "on_trigger": "block"}}}}}
         ),
     )
-    policy.operations["place_order"].account.min_interval_ms = None
-    policy.operations["place_order"].symbol.min_interval_ms = None
+    data = policy.model_dump(mode="json")
+    data["operations"]["place_order"]["account"]["min_interval_ms"] = None
+    data["operations"]["place_order"]["symbol"]["min_interval_ms"] = None
+    policy = EffectiveAccountControlPolicy.model_validate(data)
     return AccountControlGuard(
         account_id=1,
         execution_id="exec-monitor",
@@ -138,8 +140,9 @@ def test_waiting_snapshot_has_identity_and_cleans_up_on_termination():
         raise RuntimeError("terminated")
 
     guard = make_guard(sleep=sleep)
-    guard.policy.operations["place_order"].account.per_day.on_trigger = AccountControlTriggerBehavior.WAIT
-    guard.policy.operations["place_order"].account.per_day.limit = 120
+    data = guard.policy.model_dump(mode="json")
+    data["operations"]["place_order"]["account"]["per_day"] = {"limit": 120, "on_trigger": "wait"}
+    guard.policy = EffectiveAccountControlPolicy.model_validate(data)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(guard.begin_operation, "place_order", symbol="rb2610")
         try:

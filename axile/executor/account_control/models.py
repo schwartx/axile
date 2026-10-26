@@ -8,15 +8,72 @@ Notes
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 
 from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
+
+if TYPE_CHECKING:
+    from axile.server._native._core import (
+        AccountControlOperationOverride as AccountControlOperationOverride,
+    )
+    from axile.server._native._core import (
+        AccountControlOperationPolicy as AccountControlOperationPolicy,
+    )
+    from axile.server._native._core import (
+        AccountControlOverride as AccountControlOverride,
+    )
+    from axile.server._native._core import (
+        AccountControlPolicy as AccountControlPolicy,
+    )
+    from axile.server._native._core import (
+        AccountControlRule as AccountControlRule,
+    )
+    from axile.server._native._core import (
+        AccountControlRuleOverride as AccountControlRuleOverride,
+    )
+    from axile.server._native._core import (
+        AccountControlScopeOverride as AccountControlScopeOverride,
+    )
+    from axile.server._native._core import (
+        AccountControlScopePolicy as AccountControlScopePolicy,
+    )
+    from axile.server._native._core import (
+        AccountControlTriggerBehavior as AccountControlTriggerBehavior,
+    )
+    from axile.server._native._core import (
+        EffectiveAccountControlPolicy as EffectiveAccountControlPolicy,
+    )
+
+_NATIVE_MODELS = frozenset(
+    {
+        "AccountControlOperationOverride",
+        "AccountControlOperationPolicy",
+        "AccountControlOverride",
+        "AccountControlPolicy",
+        "AccountControlRule",
+        "AccountControlRuleOverride",
+        "AccountControlScopeOverride",
+        "AccountControlScopePolicy",
+        "AccountControlTriggerBehavior",
+        "EffectiveAccountControlPolicy",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """使用配置时才加载原生模块，CLI 帮助和装饰器声明无需二进制。"""
+    if name not in _NATIVE_MODELS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
+    from axile.server._native import _core
+
+    ensure_default_account_control_registry_bootstrapped()._sync_native()
+    return getattr(_core, name)
 
 
 class _AccountControlBaseModel(BaseModel):
@@ -100,22 +157,6 @@ class AccountControlDecision(str, Enum):
     BLOCKED = "blocked"
 
 
-class AccountControlTriggerBehavior(str, Enum):
-    """
-    定义配额命中时的处理行为.
-
-    Attributes
-    ----------
-    WAIT : str
-        等待到配额恢复后再继续。
-    BLOCK : str
-        直接阻断本次调用。
-    """
-
-    WAIT = "wait"
-    BLOCK = "block"
-
-
 def _now_str() -> str:
     from axile.executor.algorithms.utils.clock import get_default_clock
 
@@ -128,332 +169,14 @@ def _now_ms() -> int:
     return int(get_default_clock().time() * 1_000)
 
 
-def _ensure_timezone(value: str | None) -> str | None:
-    if value is None:
-        return value
-    try:
-        ZoneInfo(value)
-    except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"无效的 timezone: {value}") from exc
-    return value
+@dataclass(frozen=True)
+class AccountControlPresetDefinition:
+    """保存 Python 渠道声明的预设数据；策略语义由原生模块校验。"""
 
-
-def _validate_registered_operation_key(operation_key: str) -> None:
-    registry = ensure_default_account_control_registry_bootstrapped()
-    registry.require_operation(operation_key)
-
-
-def _validate_registered_group_key(group_key: str) -> None:
-    registry = ensure_default_account_control_registry_bootstrapped()
-    registry.require_group(group_key)
-
-
-def _validate_operation_metadata(
-    operations: Mapping[str, "AccountControlOperationOverride | AccountControlOperationPolicy"],
-) -> None:
-    for operation_key, operation_policy in operations.items():
-        _validate_registered_operation_key(operation_key)
-        if operation_policy.daily_warning_percent is not None and operation_key not in {"place_order", "cancel_order"}:
-            raise ValueError("每日额度预警仅支持账户报单和撤单")
-
-
-class AccountControlRuleOverride(_AccountControlBaseModel):
-    """
-    定义局部覆盖场景使用的规则模型.
-
-    Attributes
-    ----------
-    limit : StrictInt | None
-        覆盖后的限制值；为空时沿用基线配置。
-    on_trigger : AccountControlTriggerBehavior | None
-        覆盖后的触发行为；为空时沿用基线配置。
-    unlimited : StrictBool
-        为真时显式解除该规则（解析为无限制），与 ``limit`` / ``on_trigger`` 互斥。
-        仅额度类规则（per_minute / per_day）允许；``min_interval_ms`` 是渠道硬保护，不可解除。
-    """
-
-    limit: StrictInt | None = Field(default=None, ge=0)
-    on_trigger: AccountControlTriggerBehavior | None = None
-    unlimited: StrictBool = False
-
-    @model_validator(mode="after")
-    def validate_unlimited_exclusive(self) -> AccountControlRuleOverride:
-        """校验 Unlimited 与 limit/on_trigger 互斥."""
-        if self.unlimited and (self.limit is not None or self.on_trigger is not None):
-            raise ValueError("unlimited 与 limit/on_trigger 互斥，不能同时设置")
-        return self
-
-
-class AccountControlRule(_AccountControlBaseModel):
-    """
-    定义归一化后的完整规则模型.
-
-    Attributes
-    ----------
-    limit : StrictInt
-        当前规则允许的最大次数或最小间隔值。
-    on_trigger : AccountControlTriggerBehavior
-        命中规则时采用的处理行为。
-    """
-
-    limit: StrictInt = Field(ge=0)
-    on_trigger: AccountControlTriggerBehavior
-
-
-class AccountControlScopeOverride(_AccountControlBaseModel):
-    """
-    定义单个作用域上的局部覆盖配置.
-
-    Attributes
-    ----------
-    per_minute : AccountControlRuleOverride | None
-        分钟级额度覆盖。
-    per_day : AccountControlRuleOverride | None
-        日级额度覆盖。
-    min_interval_ms : AccountControlRuleOverride | None
-        最小调用间隔覆盖。
-    """
-
-    per_minute: AccountControlRuleOverride | None = None
-    per_day: AccountControlRuleOverride | None = None
-    min_interval_ms: AccountControlRuleOverride | None = None
-
-    @field_validator("min_interval_ms")
-    @classmethod
-    def validate_min_interval_ms(cls, value: AccountControlRuleOverride | None) -> AccountControlRuleOverride | None:
-        """校验最小调用间隔覆盖规则的阈值合法性."""
-        if value is not None and value.unlimited:
-            raise ValueError("min_interval_ms 不允许设置为不限制（渠道硬保护不可解除）")
-        if value is not None and value.limit is not None and value.limit <= 0:
-            raise ValueError("min_interval_ms.limit 必须大于 0")
-        return value
-
-
-class AccountControlScopePolicy(_AccountControlBaseModel):
-    """
-    定义单个作用域上的完整策略配置.
-
-    Attributes
-    ----------
-    per_minute : AccountControlRule | None
-        分钟级额度规则。
-    per_day : AccountControlRule | None
-        日级额度规则。
-    min_interval_ms : AccountControlRule | None
-        最小调用间隔规则。
-    """
-
-    per_minute: AccountControlRule | None = None
-    per_day: AccountControlRule | None = None
-    min_interval_ms: AccountControlRule | None = None
-
-    @field_validator("min_interval_ms")
-    @classmethod
-    def validate_min_interval_ms(cls, value: AccountControlRule | None) -> AccountControlRule | None:
-        """校验最小调用间隔规则的阈值合法性."""
-        if value is not None and value.limit <= 0:
-            raise ValueError("min_interval_ms.limit 必须大于 0")
-        return value
-
-
-class AccountControlOperationOverride(_AccountControlBaseModel):
-    """
-    定义单个操作的局部覆盖配置.
-
-    Attributes
-    ----------
-    daily_warning_percent : int | None
-        账户报单或撤单的每日额度预警比例，范围 1–99；为空时关闭。
-        暂停日额度限制时保留该设置，恢复限额后继续使用。
-    account : AccountControlScopeOverride | None
-        账户级覆盖配置。
-    symbol : AccountControlScopeOverride | None
-        标的级覆盖配置。
-    """
-
-    priority: StrictInt | None = None
-    daily_warning_percent: StrictInt | None = Field(default=None, ge=1, le=99)
-    account: AccountControlScopeOverride | None = None
-    symbol: AccountControlScopeOverride | None = None
-
-
-class AccountControlOperationPolicy(_AccountControlBaseModel):
-    """
-    定义单个操作的完整策略配置.
-
-    Attributes
-    ----------
-    daily_warning_percent : int | None
-        账户级每日额度预警比例，独立于排队和阻断行为。
-        无限额或限额为 0 时预警不生效。
-    account : AccountControlScopePolicy
-        账户级规则。
-    symbol : AccountControlScopePolicy | None
-        标的级规则；为空时表示不启用标的级限制。
-    """
-
-    priority: StrictInt = 100
-    daily_warning_percent: StrictInt | None = Field(default=None, ge=1, le=99)
-    account: AccountControlScopePolicy = Field(default_factory=AccountControlScopePolicy)
-    symbol: AccountControlScopePolicy | None = None
-
-
-class AccountControlOverride(_AccountControlBaseModel):
-    """
-    定义账户绑定的局部覆盖配置.
-
-    Attributes
-    ----------
-    timezone : StrictStr | None
-        覆盖后的时区标识。
-    operations : dict[StrictStr, AccountControlOperationOverride]
-        按操作键索引的局部覆盖配置。
-    groups : dict[StrictStr, AccountControlScopeOverride]
-        按共享节流组键索引的局部覆盖配置。
-    """
-
-    timezone: StrictStr | None = None
-    operations: dict[StrictStr, AccountControlOperationOverride] = Field(default_factory=dict)
-    groups: dict[StrictStr, AccountControlScopeOverride] = Field(default_factory=dict)
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str | None) -> str | None:
-        """校验并规范化覆盖配置中的时区字段."""
-        return _ensure_timezone(value)
-
-    @field_validator("operations")
-    @classmethod
-    def validate_operations(
-        cls,
-        value: dict[str, AccountControlOperationOverride],
-    ) -> dict[str, AccountControlOperationOverride]:
-        """校验覆盖配置中的操作元数据键."""
-        _validate_operation_metadata(value)
-        return value
-
-    @field_validator("groups")
-    @classmethod
-    def validate_groups(
-        cls,
-        value: dict[str, AccountControlScopeOverride],
-    ) -> dict[str, AccountControlScopeOverride]:
-        """校验覆盖配置中的共享节流组键."""
-        for group_key in value:
-            _validate_registered_group_key(group_key)
-        return value
-
-
-class AccountControlPolicy(_AccountControlBaseModel):
-    """
-    定义执行开始时冻结的完整账户控制策略.
-
-    Attributes
-    ----------
-    timezone : StrictStr
-        计算控制窗口时使用的时区。
-    operations : dict[StrictStr, AccountControlOperationPolicy]
-        按操作键索引的完整策略。
-    groups : dict[StrictStr, AccountControlScopePolicy]
-        按共享节流组键索引的完整策略。
-    """
-
-    timezone: StrictStr
-    operations: dict[StrictStr, AccountControlOperationPolicy] = Field(default_factory=dict)
-    groups: dict[StrictStr, AccountControlScopePolicy] = Field(default_factory=dict)
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        """校验并规范化完整策略中的时区字段."""
-        return _ensure_timezone(value) or value
-
-    @field_validator("operations")
-    @classmethod
-    def validate_operations(
-        cls,
-        value: dict[str, AccountControlOperationPolicy],
-    ) -> dict[str, AccountControlOperationPolicy]:
-        """校验完整策略中的操作元数据键."""
-        _validate_operation_metadata(value)
-        return value
-
-    @field_validator("groups")
-    @classmethod
-    def validate_groups(
-        cls,
-        value: dict[str, AccountControlScopePolicy],
-    ) -> dict[str, AccountControlScopePolicy]:
-        """校验完整策略中的共享节流组键."""
-        for group_key in value:
-            _validate_registered_group_key(group_key)
-        return value
-
-
-class EffectiveAccountControlPolicy(AccountControlPolicy):
-    """
-    定义叠加 preset 与 override 后的有效策略.
-
-    Attributes
-    ----------
-    preset_key : StrictStr
-        当前生效 preset 的键。
-    operation_groups : dict[StrictStr, frozenset[StrictStr]]
-        当前 preset 为 operation 追加的共享节流组；该映射不接受账户覆盖。
-    """
-
-    preset_key: StrictStr
-    operation_groups: dict[StrictStr, frozenset[StrictStr]] = Field(default_factory=dict)
-
-    @field_validator("operation_groups")
-    @classmethod
-    def validate_operation_groups(
-        cls,
-        value: dict[str, frozenset[str]],
-    ) -> dict[str, frozenset[str]]:
-        """校验 preset 专属 operation 与共享节流组键。"""
-        for operation_key, group_keys in value.items():
-            _validate_registered_operation_key(operation_key)
-            for group_key in group_keys:
-                _validate_registered_group_key(group_key)
-        return value
-
-
-class AccountControlPresetDefinition(_AccountControlBaseModel):
-    """
-    定义系统内置 preset 的元信息.
-
-    Attributes
-    ----------
-    preset_key : StrictStr
-        preset 唯一键。
-    compatible_trade_channels : frozenset[TradeChannel] | None
-        该 preset 兼容的交易渠道集合；``None`` 表示兼容所有已注册及未来渠道。
-    policy : AccountControlOverride
-        该 preset 自带的局部覆盖策略。
-    operation_groups : dict[StrictStr, frozenset[StrictStr]]
-        仅由 preset 声明的 operation 与共享节流组关系。
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    preset_key: StrictStr
+    preset_key: str
     compatible_trade_channels: frozenset[TradeChannel] | None
     policy: AccountControlOverride
-    operation_groups: dict[StrictStr, frozenset[StrictStr]] = Field(default_factory=dict)
-
-    @field_validator("operation_groups")
-    @classmethod
-    def validate_operation_groups(
-        cls,
-        value: dict[str, frozenset[str]],
-    ) -> dict[str, frozenset[str]]:
-        """校验 preset 专属 operation 与共享节流组键。"""
-        for operation_key, group_keys in value.items():
-            _validate_registered_operation_key(operation_key)
-            for group_key in group_keys:
-                _validate_registered_group_key(group_key)
-        return value
+    operation_groups: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 class AccountControlCounterDeltaWrite(_AccountControlBaseModel):

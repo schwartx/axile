@@ -16,24 +16,14 @@ from axile.executor.account_control.ctp_operations import (
     CTP_TRADER_API_OPERATIONS,
     CTP_TRADER_API_THROTTLE_GROUP,
 )
+from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.models import (
-    AccountControlOperationOverride,
-    AccountControlOperationPolicy,
     AccountControlOverride,
-    AccountControlPolicy,
     AccountControlPresetDefinition,
-    AccountControlRule,
-    AccountControlRuleOverride,
-    AccountControlScopeOverride,
-    AccountControlScopePolicy,
-    AccountControlTriggerBehavior,
     EffectiveAccountControlPolicy,
 )
-from axile.executor.account_control.registry import (
-    RegisteredAccountControlOperation,
-    RegisteredThrottleGroup,
-    ensure_default_account_control_registry_bootstrapped,
-)
+from axile.executor.account_control.registry import ensure_default_account_control_registry_bootstrapped
+from axile.server._native import _core
 
 
 def _rule(limit: int, on_trigger: str) -> dict[str, object]:
@@ -292,12 +282,14 @@ def get_account_control_preset(preset_key: str) -> AccountControlPresetDefinitio
 
     Raises
     ------
-    ValueError
+    AccountControlConfigError
         当 preset_key 未命中时抛出。
     """
     preset = ACCOUNT_CONTROL_PRESETS.get(preset_key)
     if preset is None:
-        raise ValueError(f"未知的账户控制 preset: {preset_key}")
+        raise AccountControlConfigError(
+            "CONTROL_CONFIG_UNKNOWN_PRESET", ["account_control_preset"], f"未知的账户控制 preset: {preset_key}"
+        )
     return preset
 
 
@@ -314,144 +306,21 @@ def ensure_account_control_preset_compatible(preset_key: str, trade_channel: Tra
 
     Raises
     ------
-    ValueError
+    AccountControlConfigError
         当 preset 不存在或与渠道不兼容时抛出。
     """
     preset = get_account_control_preset(preset_key)
     if preset.compatible_trade_channels is not None and trade_channel not in preset.compatible_trade_channels:
-        raise ValueError(f"账户控制 preset `{preset_key}` 与 trade_channel `{trade_channel}` 不兼容")
-
-
-def _copy_rule(rule: AccountControlRule | None) -> AccountControlRule | None:
-    if rule is None:
-        return None
-    return AccountControlRule.model_validate(rule.model_dump(mode="json"))
-
-
-def _copy_scope_policy(scope_policy: AccountControlScopePolicy) -> AccountControlScopePolicy:
-    return AccountControlScopePolicy.model_validate(scope_policy.model_dump(mode="json"))
-
-
-def _copy_operation_policy(operation_policy: AccountControlOperationPolicy) -> AccountControlOperationPolicy:
-    return AccountControlOperationPolicy.model_validate(operation_policy.model_dump(mode="json"))
-
-
-def _operation_policy_from_registered(
-    operation: RegisteredAccountControlOperation,
-) -> AccountControlOperationPolicy:
-    _ = operation
-    return AccountControlOperationPolicy(
-        account=AccountControlScopePolicy(),
-    )
-
-
-def _group_policy_from_registered(group: RegisteredThrottleGroup) -> AccountControlScopePolicy:
-    _ = group
-    return AccountControlScopePolicy()
-
-
-def _merge_rule(
-    base_rule: AccountControlRule | None,
-    override_rule: AccountControlRuleOverride | None,
-) -> AccountControlRule | None:
-    if override_rule is None:
-        return _copy_rule(base_rule)
-    if override_rule.unlimited:
-        # 显式解除该规则：无论基线为何都解析为无限制
-        return None
-    if base_rule is None:
-        if override_rule.limit is None:
-            return None
-        return AccountControlRule(
-            limit=override_rule.limit,
-            on_trigger=override_rule.on_trigger or AccountControlTriggerBehavior.WAIT,
+        raise AccountControlConfigError(
+            "CONTROL_CONFIG_INCOMPATIBLE_PRESET",
+            ["account_control_preset"],
+            f"账户控制 preset `{preset_key}` 与 trade_channel `{trade_channel}` 不兼容",
         )
-    return AccountControlRule(
-        limit=base_rule.limit if override_rule.limit is None else override_rule.limit,
-        on_trigger=base_rule.on_trigger if override_rule.on_trigger is None else override_rule.on_trigger,
-    )
-
-
-def _merge_scope_policy(
-    base_scope: AccountControlScopePolicy,
-    override_scope: AccountControlScopeOverride | None,
-) -> AccountControlScopePolicy:
-    if override_scope is None:
-        return _copy_scope_policy(base_scope)
-    return AccountControlScopePolicy(
-        per_minute=_merge_rule(base_scope.per_minute, override_scope.per_minute),
-        per_day=_merge_rule(base_scope.per_day, override_scope.per_day),
-        min_interval_ms=_merge_rule(base_scope.min_interval_ms, override_scope.min_interval_ms),
-    )
-
-
-def _merge_operation_policy(
-    base_operation: AccountControlOperationPolicy,
-    override_operation: AccountControlOperationOverride | None,
-) -> AccountControlOperationPolicy:
-    if override_operation is None:
-        return _copy_operation_policy(base_operation)
-    return AccountControlOperationPolicy(
-        priority=base_operation.priority if override_operation.priority is None else override_operation.priority,
-        daily_warning_percent=override_operation.daily_warning_percent,
-        account=_merge_scope_policy(base_operation.account, override_operation.account),
-        symbol=(
-            None
-            if base_operation.symbol is None and override_operation.symbol is None
-            else _merge_scope_policy(
-                AccountControlScopePolicy() if base_operation.symbol is None else base_operation.symbol,
-                override_operation.symbol,
-            )
-        ),
-    )
-
-
-def _build_registry_default_policy() -> AccountControlPolicy:
-    registry = ensure_default_account_control_registry_bootstrapped()
-    return AccountControlPolicy(
-        timezone="Asia/Shanghai",
-        operations={
-            operation_key: _operation_policy_from_registered(operation)
-            for operation_key, operation in registry.operations.items()
-        },
-        groups={group_key: _group_policy_from_registered(group) for group_key, group in registry.groups.items()},
-    )
-
-
-def _overlay_policy(
-    base_policy: AccountControlPolicy,
-    overlay: AccountControlOverride | None,
-) -> AccountControlPolicy:
-    if overlay is None:
-        return AccountControlPolicy.model_validate(base_policy.model_dump(mode="json"))
-
-    operations = {
-        operation_key: _copy_operation_policy(operation_policy)
-        for operation_key, operation_policy in base_policy.operations.items()
-    }
-    for operation_key, operation_override in overlay.operations.items():
-        operations[operation_key] = _merge_operation_policy(
-            operations.get(operation_key, AccountControlOperationPolicy()),
-            operation_override,
-        )
-
-    groups = {group_key: _copy_scope_policy(scope_policy) for group_key, scope_policy in base_policy.groups.items()}
-    for group_key, group_override in overlay.groups.items():
-        groups[group_key] = _merge_scope_policy(
-            groups.get(group_key, AccountControlScopePolicy()),
-            group_override,
-        )
-
-    return AccountControlPolicy(
-        timezone=base_policy.timezone if overlay.timezone is None else overlay.timezone,
-        operations=operations,
-        groups=groups,
-    )
 
 
 def resolve_account_control_policy(
     preset_key: str,
-    override: AccountControlOverride | None = None,
+    override: dict | AccountControlOverride | None = None,
 ) -> EffectiveAccountControlPolicy:
     """
     解析 preset 与 override 后的执行期有效策略.
@@ -460,22 +329,18 @@ def resolve_account_control_policy(
     ----------
     preset_key : str
         preset 唯一键。
-    override : AccountControlOverride | None, optional
+    override : dict | AccountControlOverride | None, optional
         账户级运行时覆盖配置。
 
     Returns
     -------
     EffectiveAccountControlPolicy
         完成默认策略、preset 与 override 叠加后的有效策略。
+
+    Notes
+    -----
+    每次调用创建独立快照，不与 preset 或 override 共享可变规则；执行期间仅读取。
     """
     preset = get_account_control_preset(preset_key)
-    base_policy = _build_registry_default_policy()
-    with_preset = _overlay_policy(base_policy, preset.policy)
-    effective_policy = _overlay_policy(with_preset, override)
-    return EffectiveAccountControlPolicy(
-        preset_key=preset_key,
-        timezone=effective_policy.timezone,
-        operations=effective_policy.operations,
-        groups=effective_policy.groups,
-        operation_groups=preset.operation_groups,
-    )
+    ensure_default_account_control_registry_bootstrapped()
+    return _core.resolve_control_policy(preset_key, preset.policy, override, preset.operation_groups)

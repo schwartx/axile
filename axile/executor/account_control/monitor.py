@@ -94,7 +94,7 @@ def render_guard_snapshot(guard: AccountControlGuard) -> dict[str, Any]:
             symbols |= {key[1] for key in guard._quota_state.symbol_counts}
         symbols |= {q.symbol for q in guard._wait_queue if q.symbol is not None}
         for operation in sorted(operations):
-            op = guard.policy.operations.get(operation)
+            op = guard.policy.operation(operation)
             rows.extend(
                 _scope_rows(
                     guard, operation, AccountControlScopePolicy() if op is None else op.account, context=context

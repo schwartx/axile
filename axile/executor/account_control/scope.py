@@ -1,12 +1,17 @@
 """在单个调用线程内借用 guard，不重绑正在执行的运行时。"""
 
+from __future__ import annotations
+
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
 
 from axile.executor.account_control.context import control_source_scope
-from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import AccountControlSource
+
+if TYPE_CHECKING:
+    from axile.executor.account_control.guard import AccountControlGuard
 
 _scope: ContextVar[tuple[object, AccountControlGuard] | None] = ContextVar("account_control_scope", default=None)
 

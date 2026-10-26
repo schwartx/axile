@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import closing
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.exceptions import AccountControlConfigError
+from axile.executor.account_control.models import AccountControlOverride
+from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.registry import (
     ensure_default_account_control_registry_bootstrapped,
     reset_default_account_control_registry_for_tests,
@@ -86,7 +90,10 @@ def _account_payload() -> dict[str, object]:
 
 
 def _build_app() -> FastAPI:
+    from axile.server.app import control_config_exception_handler
+
     app = FastAPI()
+    app.add_exception_handler(AccountControlConfigError, control_config_exception_handler)
     app.include_router(account_routes.router)
     app.dependency_overrides[get_scheduler] = _Scheduler
     return app
@@ -183,6 +190,154 @@ def test_native_public_queries_match_existing_public_contract(account_client) ->
 
 
 @pytest.mark.parametrize(
+    "override",
+    [
+        pytest.param(None, id="null"),
+        pytest.param({}, id="empty"),
+        pytest.param(
+            {
+                "timezone": "UTC",
+                "operations": {
+                    "place_order": {
+                        "daily_warning_percent": 80,
+                        "account": {"per_day": {"limit": 7, "on_trigger": "block"}},
+                    }
+                },
+            },
+            id="issue-72",
+        ),
+        pytest.param(
+            {
+                "timezone": None,
+                "operations": {
+                    "place_order": {
+                        "priority": 0,
+                        "daily_warning_percent": None,
+                        "account": {"per_minute": {"limit": 0}, "per_day": {"unlimited": True}},
+                        "symbol": {"per_day": {"limit": 0, "on_trigger": "block"}},
+                    },
+                    "cancel_order": {},
+                    "query_account": {"account": {"per_minute": {"on_trigger": "block"}}},
+                },
+                "groups": {"ctp_td_global": {"min_interval_ms": {"limit": 1000}}},
+            },
+            id="partial-zero-unlimited",
+        ),
+    ],
+)
+def test_override_has_one_public_shape_across_account_routes(account_client, override) -> None:
+    client, database = account_client
+    model = None if override is None else AccountControlOverride.model_validate(override)
+    expected = None if model is None else model.model_dump(mode="json")
+    created = client.post(
+        "/account/",
+        json=_account_payload()
+        | {"is_started": False, "account_control_preset": "ctp", "account_control_override": override},
+    )
+    assert created.status_code == 201, created.text
+    account_id = created.json()["id"]
+    assert created.json()["account_control_override"] == expected
+
+    updated = client.patch(f"/account/{account_id}", json={"account_control_override": override})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["account_control_override"] == expected
+    saved = native_store_call(database, "account_get", {"account_id": account_id})
+    assert saved["account_control_override"] == override
+
+    detail = client.get(f"/account/{account_id}")
+    listing = client.get("/account/")
+    policy = client.get(f"/account/{account_id}/control/policy")
+    for response in (detail, listing, policy):
+        assert response.status_code == 200, response.text
+    assert detail.json()["account_control_override"] == expected
+    assert listing.json()["data"][0]["account_control_override"] == expected
+    assert policy.json()["override"] == expected
+    assert policy.json()["effective_policy"] == resolve_account_control_policy("ctp", model).model_dump(
+        mode="json", exclude={"preset_key", "operation_groups"}
+    )
+    assert native_store_call(database, "account_get", {"account_id": account_id}) == saved
+
+    copied = client.post(f"/account/{account_id}/copy", json={"name": "copy"})
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["account_control_override"] == expected
+    assert client.get(f"/account/{copied.json()['id']}").json()["account_control_override"] == expected
+
+
+@pytest.mark.parametrize("path,operation", [("/account/1", "account_info_json"), ("/account/", "account_list_json")])
+def test_account_native_bytes_reach_http_unchanged(account_client, monkeypatch, path, operation) -> None:
+    client, _ = account_client
+    content = b'{ "native": [false, 0, null] }\n'
+    query = Mock(return_value=content)
+    monkeypatch.setattr(_core, operation, query)
+    response = client.get(path)
+    assert response.status_code == 200, response.text
+    assert response.content == content
+    assert query.call_count == 1
+
+
+@pytest.mark.parametrize("target", ["account", "symbol", "group"])
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {},
+        {"per_day": None},
+        {"per_day": {}},
+        {"per_day": {"on_trigger": "block"}},
+        {"per_day": {"limit": 0, "unlimited": False}},
+        {"per_day": {"unlimited": True}},
+        {"per_minute": {"limit": 5, "on_trigger": "wait"}},
+        {"min_interval_ms": {"limit": 1}},
+    ],
+)
+def test_native_override_shape_matches_model_defaults_and_plugin_keys(target, scope) -> None:
+    registry = reset_default_account_control_registry_for_tests()
+    ensure_default_account_control_registry_bootstrapped()
+    registry.register_group("plugin_group")
+    registry.register_operation("plugin_operation", groups={"plugin_group"})
+    registry.freeze()
+    override = (
+        {"groups": {"plugin_group": scope}}
+        if target == "group"
+        else {"operations": {"plugin_operation": {target: scope}}}
+    )
+    account = _build_account().model_dump(mode="json") | {"account_control_override": override}
+    result = native_store_call(
+        "", "account_public", {"account": account, **account_crud_routes._account_read_request()}
+    )
+    assert result["account_control_override"] == AccountControlOverride.model_validate(override).model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        [],
+        {"operations": None},
+        {"operations": []},
+        {"operations": {"place_order": None}},
+        {"operations": {"place_order": {"account": []}}},
+        {"operations": {"place_order": {"symbol": {"per_day": 7}}}},
+        {"groups": None},
+        {"groups": []},
+        {"groups": {"ctp_td_global": None}},
+    ],
+)
+def test_corrupt_override_structure_is_a_server_error(account_client, override) -> None:
+    client, database = account_client
+    _seed_account(database)
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE account_settings SET execution=json_set(execution, '$.account_control_override', json(?)) WHERE account_id=1",
+            (json.dumps(override),),
+        )
+    with pytest.raises(AccountControlConfigError) as caught:
+        AccountControlOverride.model_validate(override)
+    for path in ("/account/1", "/account/", "/account/1/control/policy"):
+        response = client.get(path)
+        assert response.status_code == 500, response.text
+        assert response.json()["detail"] == caught.value.details
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         *[
@@ -242,7 +397,8 @@ def test_create_rejects_invalid_configuration_before_write(account_client, patch
         payload |= patch
     response = client.post("/account/", json=payload)
     assert response.status_code == 422
-    assert message in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert message in (detail["message"] if "account_control_preset" in patch else detail)
     assert client.get("/account/").json() == {"data": []}
 
 
@@ -262,7 +418,7 @@ def test_create_rejects_incompatible_preset(account_client) -> None:
     }
     response = client.post("/account/", json=payload)
     assert response.status_code == 422
-    assert "不兼容" in response.json()["detail"]
+    assert response.json()["detail"]["code"] == "CONTROL_CONFIG_INCOMPATIBLE_PRESET"
 
 
 @pytest.mark.parametrize("creating", [True, False])
@@ -308,7 +464,10 @@ def test_update_preset_override_replacement_and_null(account_client) -> None:
     override = response.json()["account_control_override"]
     assert override["timezone"] is None
     assert set(override["operations"]) == {"cancel_order"}
-    assert _load_account(database).account_control_override.operations["cancel_order"].account.per_day.limit == 8
+    assert (
+        _load_account(database).account_control_override["operations"]["cancel_order"]["account"]["per_day"]["limit"]
+        == 8
+    )
     cleared = client.patch("/account/1", json={"account_control_override": None})
     assert cleared.status_code == 200
     assert _load_account(database).account_control_override is None
@@ -327,6 +486,90 @@ def test_update_rejects_removed_insert_order_override(account_client) -> None:
     )
     assert response.status_code == 422
     assert "未注册的 operation key" in str(response.json()["detail"])
+
+
+@pytest.mark.parametrize("replacement", [None, {"timezone": "UTC"}])
+def test_update_rejects_corrupt_saved_override_before_write_and_allows_repair(account_client, replacement) -> None:
+    client, database = account_client
+    _seed_account(database)
+    corrupt_override = {"operations": []}
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE account_settings SET execution=json_set(execution, '$.account_control_override', json(?)) WHERE account_id=1",
+            (json.dumps(corrupt_override),),
+        )
+    before = native_store_call(database, "account_get", {"account_id": 1})
+    with pytest.raises(AccountControlConfigError) as caught:
+        AccountControlOverride.model_validate(corrupt_override)
+
+    rejected = client.patch("/account/1", json={"name": "changed"})
+    assert rejected.status_code == 500, rejected.text
+    assert rejected.json()["detail"] == caught.value.details
+    assert native_store_call(database, "account_get", {"account_id": 1}) == before
+
+    repaired = client.patch("/account/1", json={"name": "repaired", "account_control_override": replacement})
+    assert repaired.status_code == 200, repaired.text
+    saved = native_store_call(database, "account_get", {"account_id": 1})
+    assert saved["name"] == "repaired"
+    assert saved["account_control_override"] == replacement
+    assert saved["runtime_sync"]["revision"] == before["runtime_sync"]["revision"] + 1
+
+
+@pytest.mark.parametrize("creating", [True, False])
+@pytest.mark.parametrize(
+    "override",
+    [
+        [],
+        {"operations": {"place_order": {"account": {"per_day": {"limit": -1}}}}},
+        {"timezone": "\ud800"},
+        {"operations": {"\udfff": {}}},
+    ],
+)
+def test_invalid_override_keeps_structured_error_and_database(account_client, creating, override) -> None:
+    client, database = account_client
+    if not creating:
+        _seed_account(database)
+    before = client.get("/account/").json()
+    with pytest.raises(AccountControlConfigError) as caught:
+        AccountControlOverride.model_validate(override)
+    patch = {"account_control_override": override}
+    response = client.request(
+        "POST" if creating else "PATCH",
+        "/account/" if creating else "/account/1",
+        content=json.dumps(_account_payload() | patch if creating else patch),
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == caught.value.details
+    assert client.get("/account/").json() == before
+
+
+def test_policy_distinguishes_invalid_preview_and_corrupt_saved_preset(account_client) -> None:
+    client, database = account_client
+    _seed_account(database)
+    preview = client.get("/account/1/control/policy", params={"preset_key": "unknown"})
+    assert preview.status_code == 422
+    assert preview.json()["detail"]["code"] == "CONTROL_CONFIG_UNKNOWN_PRESET"
+    with closing(oracle_connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE account_settings SET execution=json_set(execution, '$.account_control_preset', 'unknown') WHERE account_id=1"
+        )
+    saved = client.get("/account/1/control/policy")
+    assert saved.status_code == 500
+    assert saved.json()["detail"] == preview.json()["detail"]
+
+
+def test_unhandled_config_error_preserves_details_in_http() -> None:
+    app = _build_app()
+
+    @app.get("/")
+    async def saved_policy():
+        return resolve_account_control_policy("unknown")
+
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "CONTROL_CONFIG_UNKNOWN_PRESET"
 
 
 def test_update_risk_symbols_persists_and_clears(account_client) -> None:

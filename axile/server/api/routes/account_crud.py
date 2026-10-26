@@ -15,6 +15,7 @@ from axile.channels import get_channel, list_channels
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.notification_function import validate_notification_function
 from axile.common.trade_channel import TradeChannel
+from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.account_control.presets import ensure_account_control_preset_compatible
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server._native import _core
@@ -182,7 +183,19 @@ async def _account_operation(name: str, request: dict[str, object]) -> Any:
             "ACCOUNT_SYNC_PENDING": 202,
             "ACCOUNT_INPUT": 422,
         }.get(code, 500)
-        raise HTTPException(status_code, detail=str(message)) from exc
+        raise HTTPException(status_code, detail=getattr(exc, "details", str(message))) from exc
+
+
+def _account_input_error_detail(
+    error: AccountControlConfigError | ValueError, override: object
+) -> dict[str, object] | str:
+    """仅在编码失败时复用原生校验定位配置错误，正常请求不重复解析。"""
+    if isinstance(error, UnicodeEncodeError) and override is not None:
+        try:
+            _core.AccountControlOverride.model_validate(override)
+        except AccountControlConfigError as config_error:
+            return config_error.details
+    return error.details if isinstance(error, AccountControlConfigError) else str(error)
 
 
 def _resolve_next_account_control_binding(
@@ -282,9 +295,11 @@ async def create_account(
         from axile.server.connection_events import connection_hub
 
         connection_hub.changed(db_account["id"])
-    except ValueError as exc:
+    except (AccountControlConfigError, ValueError) as exc:
         logger.exception(f"创建账户失败: {exc}")
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422, detail=_account_input_error_detail(exc, account.account_control_override)
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -349,6 +364,8 @@ async def copy_account(
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(copied["id"])
+        except AccountControlConfigError as exc:
+            raise HTTPException(status_code=422, detail=exc.details) from exc
         except (ValueError, ValidationError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -708,8 +725,10 @@ async def _update_account(
             from axile.server.connection_events import connection_hub
 
             connection_hub.changed(account_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except (AccountControlConfigError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail=_account_input_error_detail(exc, account.account_control_override)
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:

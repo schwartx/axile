@@ -5,12 +5,15 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from pydantic import ValidationError
 
 from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.exceptions import AccountControlBlockedError
+from axile.executor.account_control.exceptions import AccountControlBlockedError, AccountControlConfigError
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
-from axile.executor.account_control.models import AccountControlBucketType, AccountControlOverride
+from axile.executor.account_control.models import (
+    AccountControlBucketType,
+    AccountControlOverride,
+    EffectiveAccountControlPolicy,
+)
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
 
@@ -31,10 +34,12 @@ def guard(*, limit=5, percent=80, baseline=None, now=None, operation="place_orde
         }
     )
     policy = resolve_account_control_policy("default", override)
-    for item in policy.operations.values():
-        item.account.min_interval_ms = None
-        item.account.per_minute = None
-        item.symbol = None
+    data = policy.model_dump(mode="json")
+    for item in data["operations"].values():
+        item["account"]["min_interval_ms"] = None
+        item["account"]["per_minute"] = None
+        item["symbol"] = None
+    policy = EffectiveAccountControlPolicy.model_validate(data)
     return AccountControlGuard(
         account_id=1,
         execution_id="warning-test",
@@ -47,7 +52,7 @@ def guard(*, limit=5, percent=80, baseline=None, now=None, operation="place_orde
 
 @pytest.mark.parametrize("percent", [0, 100, 80.5, True, "80"])
 def test_invalid_warning_percent_is_rejected(percent):
-    with pytest.raises(ValidationError):
+    with pytest.raises(AccountControlConfigError):
         guard(percent=percent)
 
 
@@ -124,5 +129,5 @@ def test_caller_cannot_inject_warning_metadata_or_enable_native_cancel_warning()
     current = guard()
     current.begin_operation("place_order", metadata={"quota_warning": {"used": 999}})
     assert "quota_warning" not in current.flush_records()[1][0].metadata
-    with pytest.raises(ValidationError, match="仅支持"):
+    with pytest.raises(AccountControlConfigError, match="仅支持"):
         guard(operation="cancel_order_ctp")

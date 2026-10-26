@@ -64,7 +64,8 @@ def test_policy_route_previews_ctp_without_mutating_account(monkeypatch: pytest.
 
 def test_policy_route_roundtrips_daily_warning_without_losing_existing_quota(monkeypatch):
     account = _account()
-    account.account_control_override.operations["place_order"].daily_warning_percent = 80
+    account.account_control_override = account.account_control_override.model_dump(mode="json")
+    account.account_control_override["operations"]["place_order"]["daily_warning_percent"] = 80
 
     async def get_account(_account_id):
         return account

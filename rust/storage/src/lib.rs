@@ -12,6 +12,9 @@ pub mod calendar;
 pub(crate) mod connection_state;
 pub(crate) mod control_audit;
 pub(crate) mod control_monitor;
+pub(crate) mod control_policy;
+#[cfg(feature = "python")]
+mod control_policy_python;
 pub(crate) mod control_store;
 pub(crate) mod cost_summary;
 pub mod costs;

@@ -6,6 +6,21 @@ from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.diagnostics import AccountControlHit
 
 
+class AccountControlConfigError(Exception):
+    """配置错误；保留原生校验给出的错误码、配置字段路径与可读消息。"""
+
+    def __init__(self, code: str, path: list[str], message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.path = path
+        self.message = message
+
+    @property
+    def details(self) -> dict[str, object]:
+        """返回 SDK 与 HTTP 共用的配置错误载荷。"""
+        return {"code": self.code, "path": self.path, "message": self.message}
+
+
 class AccountControlBlockedError(RuntimeError):
     """
     表示账户控制拒绝本次对外交互的异常.

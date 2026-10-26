@@ -9,6 +9,7 @@ Notes
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from threading import RLock
@@ -148,6 +149,7 @@ class AccountControlRegistry:
             existing = self._operations.get(normalized_key)
             if existing is None:
                 self._operations[normalized_key] = operation
+                self._sync_native()
                 return operation
             if existing != operation:
                 raise ValueError(f"operation key `{normalized_key}` definition conflict")
@@ -184,6 +186,7 @@ class AccountControlRegistry:
             existing = self._groups.get(normalized_key)
             if existing is None:
                 self._groups[normalized_key] = group
+                self._sync_native()
                 return group
             if existing != group:
                 raise ValueError(f"group key `{normalized_key}` definition conflict")
@@ -269,6 +272,12 @@ class AccountControlRegistry:
             raise ValueError(f"未注册的 group key: {key}")
         return group
 
+    def _sync_native(self) -> None:
+        """仅发布默认注册表的声明，独立测试注册表不影响运行时。"""
+        native = sys.modules.get("axile.server._native._core")
+        if self is _DEFAULT_REGISTRY and native is not None:
+            native.control_registry(list(self._operations), list(self._groups))
+
     def _assert_mutable(self) -> None:
         if self._frozen:
             raise RuntimeError("account control registry is frozen")
@@ -341,5 +350,6 @@ def reset_default_account_control_registry_for_tests() -> AccountControlRegistry
 
     with _DEFAULT_BOOTSTRAP_LOCK:
         _DEFAULT_REGISTRY = AccountControlRegistry()
+        _DEFAULT_REGISTRY._sync_native()
         _DEFAULT_BOOTSTRAPPED = False
     return _DEFAULT_REGISTRY

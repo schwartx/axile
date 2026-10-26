@@ -295,6 +295,8 @@ fn settings(data: &Value, fields: &[&str]) -> Value {
 }
 
 fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, AnalysisError> {
+    crate::control_policy::parse_override(data["account_control_override"].clone())
+        .map_err(|error| AnalysisError::caused_by("ACCOUNT_INPUT", error))?;
     ensure_portfolio_on(connection, data["portfolio_id"].as_i64())?;
     let identity = [
         "name",
@@ -336,6 +338,9 @@ pub fn account_get(path: &str, request: &Value) -> Result<Value, AnalysisError> 
 }
 
 fn public_account(mut account: Value, request: &Value) -> Result<Value, AnalysisError> {
+    account["account_control_override"] =
+        crate::control_policy::public_override(&account["account_control_override"])
+            .map_err(|error| AnalysisError::caused_by("ACCOUNT_DATA", error))?;
     let channel = account["trade_channel"]
         .as_str()
         .ok_or_else(|| invalid("交易渠道不能为空"))?;
@@ -620,6 +625,12 @@ pub fn account_update(path: &str, request: &Value) -> Result<Value, AnalysisErro
     writer_scope::immediate(&connection, || {
         let previous = require_on(&connection, account_id)?;
         check_revision(&previous, request)?;
+        let (override_, code) = match data.get("account_control_override") {
+            Some(value) => (value, "ACCOUNT_INPUT"),
+            None => (&previous["account_control_override"], "ACCOUNT_DATA"),
+        };
+        crate::control_policy::parse_override(override_.clone())
+            .map_err(|error| AnalysisError::caused_by(code, error))?;
         let runtime_changed = ["account_config", "trade_channel"].iter().any(|name| {
             data.get(*name)
                 .is_some_and(|value| value != &previous[*name])

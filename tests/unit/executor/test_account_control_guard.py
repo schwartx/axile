@@ -116,6 +116,46 @@ def test_guard_uses_loaded_baseline_plus_in_memory_deltas() -> None:
     }
 
 
+def test_guard_keeps_its_policy_when_configuration_changes() -> None:
+    """新配置只影响后续 guard；放行、阻断及计数不修改现有规则。"""
+    override = AccountControlOverride.model_validate(
+        {"operations": {"query_account": {"symbol": {"per_day": {"limit": 1, "on_trigger": "block"}}}}}
+    )
+    policy = resolve_account_control_policy("default", override)
+    before = policy.model_dump(mode="json")
+    guard = AccountControlGuard(
+        account_id=1,
+        execution_id="old-config",
+        channel=TradeChannel("external"),
+        policy=policy,
+        baseline=AccountControlCounterSnapshot(),
+        clock=_clock,
+    )
+    guard.begin_operation("query_account", symbol="rb2610")
+
+    override = override.model_dump(mode="json")
+    override["operations"]["query_account"]["symbol"]["per_day"]["limit"] = 2
+    next_policy = resolve_account_control_policy("default", override)
+    next_before = next_policy.model_dump(mode="json")
+    next_guard = AccountControlGuard(
+        account_id=1,
+        execution_id="new-config",
+        channel=TradeChannel("external"),
+        policy=next_policy,
+        baseline=AccountControlCounterSnapshot(),
+        clock=_clock,
+    )
+    with pytest.raises(AccountControlBlockedError):
+        guard.begin_operation("query_account", symbol="rb2610")
+    next_guard.begin_operation("query_account", symbol="rb2610")
+    next_guard.begin_operation("query_account", symbol="rb2610")
+    with pytest.raises(AccountControlBlockedError):
+        next_guard.begin_operation("query_account", symbol="rb2610")
+
+    assert policy.model_dump(mode="json") == before
+    assert next_policy.model_dump(mode="json") == next_before
+
+
 def test_guard_atomically_checks_and_reserves_concurrent_account_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

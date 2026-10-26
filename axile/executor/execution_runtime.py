@@ -45,7 +45,6 @@ from axile.domain.execution import (
 )
 from axile.executor.abstract_executor.support import _coerce_int
 from axile.executor.account_control.decorators import run_controlled_call
-from axile.executor.account_control.guard import AccountControlGuard
 from axile.executor.account_control.models import (
     AccountControlCounterDeltaWrite,
     AccountControlEventWrite,
@@ -64,6 +63,7 @@ from axile.executor.termination import (
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor, AuditContext, OrderAuditMetadata
+    from axile.executor.account_control.guard import AccountControlGuard
     from axile.executor.models.unified_order import TradeRecord, UnifiedOrder
 
 

@@ -260,12 +260,6 @@ def resolve_control_window(
     )
 
 
-def _copy_scope_policy(scope_policy: AccountControlScopePolicy | None) -> AccountControlScopePolicy | None:
-    if scope_policy is None:
-        return None
-    return AccountControlScopePolicy.model_validate(scope_policy.model_dump(mode="json"))
-
-
 class AccountControlAttempt:
     """
     表示一次已经放行的账户控制尝试.
@@ -308,7 +302,7 @@ class AccountControlGuard:
     channel : TradeChannel
         当前交易渠道。
     policy : AccountControlPolicy | None
-        当前生效的账户控制策略；为空时表示不启用控制。
+        本次控制上下文只读的策略快照；为空时表示不启用控制。
     baseline : AccountControlCounterSnapshot
         从持久化层读取的基线计数快照。
 
@@ -474,7 +468,7 @@ class AccountControlGuard:
         assert self.policy is not None
         with self._locked_state():
             queue_seq = self._next_queue_seq()
-            operation_policy = self.policy.operations.get(operation, AccountControlOperationPolicy())
+            operation_policy = self.policy.operation(operation) or AccountControlOperationPolicy()
             queued = _QueuedRequest(
                 seq=queue_seq,
                 priority=operation_policy.priority,
@@ -772,7 +766,7 @@ class AccountControlGuard:
         """在计数提交后冻结预警；不依赖轮询时刻或异步柜台结果。"""
         if self.policy is None or operation not in {"place_order", "cancel_order"}:
             return metadata
-        policy = self.policy.operations.get(operation)
+        policy = self.policy.operation(operation)
         if policy is None or policy.daily_warning_percent is None:
             return metadata
         rule = policy.account.per_day
@@ -964,7 +958,7 @@ class AccountControlGuard:
         context: AccountControlEvaluationContext,
     ) -> AccountControlEnforcementDecision:
         assert self.policy is not None
-        operation_policy = self.policy.operations.get(operation, AccountControlOperationPolicy())
+        operation_policy = self.policy.operation(operation) or AccountControlOperationPolicy()
         decisions = [
             self._check_scope_limits(
                 operation=operation,
@@ -992,7 +986,7 @@ class AccountControlGuard:
             )
 
         for group_key in self._get_operation_group_keys(operation):
-            group_policy = self.policy.groups.get(group_key)
+            group_policy = self.policy.group(group_key)
             if group_policy is None:
                 continue
             decisions.append(
@@ -1032,8 +1026,8 @@ class AccountControlGuard:
     ) -> AccountControlScopePolicy | None:
         if symbol is None or self.policy is None:
             return None
-        operation_policy = self.policy.operations.get(operation)
-        return None if operation_policy is None else _copy_scope_policy(operation_policy.symbol)
+        operation_policy = self.policy.operation(operation)
+        return None if operation_policy is None else operation_policy.symbol
 
     def _check_scope_limits(
         self,
@@ -1383,16 +1377,12 @@ class AccountControlGuard:
             if group_key in operation.groups
         }
         if self.policy is not None:
-            operation_groups = getattr(self.policy, "operation_groups", {})
-            operation_keys.update(
-                operation_key for operation_key, group_keys in operation_groups.items() if group_key in group_keys
-            )
+            operation_keys.update(self.policy.operations_in(group_key))
         return sorted(operation_keys)
 
     def _get_operation_group_keys(self, operation: str) -> tuple[str, ...]:
         registered_operation = self._registry.get_operation(operation)
         group_keys = set() if registered_operation is None else set(registered_operation.groups)
         if self.policy is not None:
-            operation_groups = getattr(self.policy, "operation_groups", {})
-            group_keys.update(operation_groups.get(operation, ()))
+            group_keys.update(self.policy.groups_for(operation))
         return tuple(sorted(group_keys))

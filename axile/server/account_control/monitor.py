@@ -13,7 +13,10 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
-from axile.executor.account_control.models import AccountControlContextKind, AccountControlOverride
+from axile.executor.account_control.models import (
+    AccountControlContextKind,
+    EffectiveAccountControlPolicy,
+)
 from axile.executor.account_control.monitor import policy_fingerprint
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.warnings import AccountControlQuotaWarning
@@ -125,7 +128,8 @@ class AccountControlMonitor:
         accounts = inputs["accounts"]
         sessions = [AccountControlSession.model_validate(raw) for raw in inputs["sessions"]]
         await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
-        requests = [self._persistence_request(account, sessions) for account in accounts]
+        policies = {account["id"]: self._policy(account) for account in accounts}
+        requests = [self._persistence_request(account, policies[account["id"]], sessions) for account in accounts]
         receipt = await native_operation(
             "control_monitor_refresh", {"accounts": requests, "created_at": clock_now_iso()}
         )
@@ -150,12 +154,13 @@ class AccountControlMonitor:
         changed = []
         frames = {}
         for account in accounts:
+            policy = policies[account["id"]]
             state = states[account["id"]]
             related = [AccountControlSession.model_validate(raw) for raw in state["sessions"]]
             if state["history"] is not None:
-                self._historical(account, self._policy(account), related, state)
+                self._historical(account, policy, related, state)
                 state["history"] = None
-            frame = public_frame(await self._account_frame(account, related, state))
+            frame = public_frame(await self._account_frame(account, policy, related, state))
             if self._content(self.frames.get(account["id"])) != self._content(frame):
                 changed.append(frame)
             frames[account["id"]] = frame
@@ -168,10 +173,8 @@ class AccountControlMonitor:
         self._publish(changed, removed)
 
     @staticmethod
-    def _policy(account: dict[str, Any]) -> Any:
-        raw = account["account_control_override"]
-        override = None if raw is None else AccountControlOverride.model_validate(raw)
-        return resolve_account_control_policy(account["account_control_preset"], override)
+    def _policy(account: dict[str, Any]) -> EffectiveAccountControlPolicy:
+        return resolve_account_control_policy(account["account_control_preset"], account["account_control_override"])
 
     def _live_source(self, account_id: int, sessions: list[AccountControlSession]) -> tuple[Any, Any, bool]:
         execution_sessions = [
@@ -198,10 +201,11 @@ class AccountControlMonitor:
             tuple((session.instance_id, session.status) for session in sessions),
         )
 
-    def _persistence_request(self, account: dict[str, Any], sessions: list[AccountControlSession]) -> dict[str, Any]:
+    def _persistence_request(
+        self, account: dict[str, Any], policy: EffectiveAccountControlPolicy, sessions: list[AccountControlSession]
+    ) -> dict[str, Any]:
         account_id = account["id"]
         sessions = [session for session in sessions if session.account_id == account_id]
-        policy = self._policy(account)
         window = resolve_control_window(policy.timezone)
         start, end = submission_window(window.control_date, policy.timezone)
         live, _, failed = self._live_source(account_id, sessions)
@@ -287,10 +291,13 @@ class AccountControlMonitor:
         self._sources[account_id] = sources
 
     async def _account_frame(
-        self, account: dict[str, Any], sessions: list[AccountControlSession], persisted: dict[str, Any]
+        self,
+        account: dict[str, Any],
+        policy: EffectiveAccountControlPolicy,
+        sessions: list[AccountControlSession],
+        persisted: dict[str, Any],
     ) -> dict[str, Any]:
         account_id = account["id"]
-        policy = self._policy(account)
         window = resolve_control_window(policy.timezone)
         execution_sessions = [
             session

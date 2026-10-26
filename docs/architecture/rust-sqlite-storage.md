@@ -8,6 +8,30 @@ Python 通过 `native_operation()` 或 `native_operation_sync()` 调用一个完
 
 PyO3 入口在持有 GIL 时取得请求和路径，等待数据库、查询、计算和编码时释放 GIL。异步入口在线程中执行，避免 SQLite 等待阻塞事件循环。Python 只保留少量按领域命名的读取和模型辅助函数，例如 `repositories.py`；不要增加 Session 兼容层、通用 SQL 代理或 Python 存储回退。
 
+## 账户控制配置
+
+`control_policy.rs` 是 override、完整策略、默认值、严格校验和 preset 合并规则的唯一实现。
+Python 渠道声明 operation、group 和 preset，默认注册表在注册时将合法键发布给 Rust；私有插件仍通过原有注册入口扩展。
+配置的 OpenAPI schema 由同一组 Rust 类型生成，HTTP 外层账户模型只承接 JSON 对象。
+
+- 保存：Python 校验账户其他字段，Rust 在写入前校验 override，数据库保留原始稀疏 JSON。
+- 读取：Rust 用配置类型补齐公开字段，并直接生成账户详情、列表的最终 JSON 字节；Python 直接返回响应。
+- 执行：Python 将 preset 和 override 交给 Rust 一次解析，取得独立、只读的有效策略快照；guard 继续负责 Clock、排队、计数、等待与阻断。
+- 监控：每轮刷新为每个账户解析一次快照，持久化请求、历史展示和当前展示复用该快照。
+
+创建、更新、复制、详情、列表及 policy 的 override 使用相同的公开形状。
+`null` 仍表示清除，PATCH 省略字段仍表示保留；规则中的 `unlimited`、优先级 0、操作覆盖存在时关闭缺省预警，以及 `symbol: null` 与 `symbol: {}` 的区别保持不变。
+持久化配置损坏时读取返回 `ACCOUNT_DATA` / 500，不以默认策略掩盖；非法写入返回 `ACCOUNT_INPUT` / 422。
+
+Python SDK 的配置类仍从 `axile.executor.account_control.models` 导入，实际类型为 PyO3 快照，
+不再继承 Pydantic。构造、`model_validate()`、`model_dump()` 和 `model_copy()` 保留；
+配置校验抛出 `AccountControlConfigError`，提供 `code`、`path` 和 `message`；HTTP 写入错误返回 422，持久化配置损坏返回 500，并保留同一结构。导出结果使用 JSON 兼容的字符串和列表。
+账户快照的 `account_control_override` 为普通字典。修改策略时应修改导出的字典后重新解析，
+或使用会重新校验的 `model_copy(update=...)`；嵌套属性不可赋值，修改 getter 返回的字典也不会改变快照。
+Python 与原生扩展必须一起更新，wheel 构建会检查新增原生能力。此调整不迁移数据库。
+
+## 其他存储约定
+
 Rust 业务入口拥有连接和事务，内部辅助函数接收同一个 `&Connection`，不另开连接或自行提交。需要一起成功的写入包括：
 
 - 账户变更及其绑定、运行状态、连接重置和补发取消；组合保存及目标快照。

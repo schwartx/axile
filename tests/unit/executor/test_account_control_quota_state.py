@@ -10,7 +10,7 @@ import pytest
 from axile.common.trade_channel import TradeChannel
 from axile.executor.account_control.exceptions import AccountControlBlockedError
 from axile.executor.account_control.guard import AccountControlGuard, resolve_control_window
-from axile.executor.account_control.models import AccountControlBucketType, AccountControlRule
+from axile.executor.account_control.models import AccountControlBucketType, EffectiveAccountControlPolicy
 from axile.executor.account_control.presets import resolve_account_control_policy
 from axile.executor.account_control.quota_state import AccountControlQuotaState
 from axile.executor.account_control.snapshot import AccountControlCounterSnapshot
@@ -19,21 +19,23 @@ BASE = datetime(2026, 10, 15, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def guard(state, name, *, baseline=None, now=None, group_rule=None, account_limit=None, symbol_limit=None, sleep=None):
-    policy = resolve_account_control_policy("ctp")
-    for operation in policy.operations.values():
-        operation.account.min_interval_ms = None
-        operation.symbol = None
-    scope = policy.groups["ctp_td_global"]
-    scope.min_interval_ms = None
+    policy = resolve_account_control_policy("ctp").model_dump(mode="json")
+    for operation in policy["operations"].values():
+        operation["account"]["min_interval_ms"] = None
+        operation["symbol"] = None
+    scope = policy["groups"]["ctp_td_global"]
+    scope["min_interval_ms"] = None
     if group_rule is not None:
-        setattr(scope, group_rule[0], AccountControlRule(limit=group_rule[1], on_trigger="block"))
+        scope[group_rule[0]] = {"limit": group_rule[1], "on_trigger": "block"}
     if account_limit is not None:
-        policy.operations["query_instruments"].account.per_day = AccountControlRule(
-            limit=account_limit, on_trigger="block"
-        )
+        policy["operations"]["query_instruments"]["account"]["per_day"] = {
+            "limit": account_limit,
+            "on_trigger": "block",
+        }
     if symbol_limit is not None:
-        policy.operations["place_order"].symbol = policy.operations["place_order"].account.model_copy(deep=True)
-        policy.operations["place_order"].symbol.per_day = AccountControlRule(limit=symbol_limit, on_trigger="block")
+        policy["operations"]["place_order"]["symbol"] = dict(policy["operations"]["place_order"]["account"])
+        policy["operations"]["place_order"]["symbol"]["per_day"] = {"limit": symbol_limit, "on_trigger": "block"}
+    policy = EffectiveAccountControlPolicy.model_validate(policy)
     current = AccountControlGuard(
         account_id=1,
         execution_id=name,
@@ -150,7 +152,9 @@ def test_higher_priority_cancel_precedes_catalog_waiter_across_guards():
     catalog = guard(state, "catalog", now=now, sleep=waiter_sleep(query_waiting, release))
     manual = guard(state, "manual", now=now, sleep=waiter_sleep(cancel_waiting, release))
     for current in (catalog, manual):
-        current.policy.groups["ctp_td_global"].min_interval_ms = AccountControlRule(limit=1000, on_trigger="wait")
+        data = current.policy.model_dump(mode="json")
+        data["groups"]["ctp_td_global"]["min_interval_ms"] = {"limit": 1000, "on_trigger": "wait"}
+        current.policy = EffectiveAccountControlPolicy.model_validate(data)
     sent = []
 
     def send(current, operation):
@@ -185,7 +189,9 @@ def test_canceling_one_context_removes_only_its_own_waiter():
         state, "surviving", now=now, group_rule=("per_minute", 1), sleep=waiter_sleep(second_waiting, release)
     )
     for current in (first, second):
-        current.policy.groups["ctp_td_global"].per_minute.on_trigger = "wait"
+        data = current.policy.model_dump(mode="json")
+        data["groups"]["ctp_td_global"]["per_minute"]["on_trigger"] = "wait"
+        current.policy = EffectiveAccountControlPolicy.model_validate(data)
     first.begin_operation("query_orders")
 
     def cancel(_symbol):

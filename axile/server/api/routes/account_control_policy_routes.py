@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, status
 
+from axile.executor.account_control.exceptions import AccountControlConfigError
+from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.account_control.presets import (
     ACCOUNT_CONTROL_PRESETS,
     ensure_account_control_preset_compatible,
@@ -57,7 +59,7 @@ def _compatible_presets(trade_channel: object) -> list[dict]:
     for key in ACCOUNT_CONTROL_PRESETS:
         try:
             ensure_account_control_preset_compatible(key, trade_channel)  # type: ignore[arg-type]
-        except ValueError:
+        except AccountControlConfigError:
             continue
         name, description = _PRESET_META.get(key, ("扩展方案", "渠道提供的流控预设方案"))
         result.append(dict(key=key, display_name=name, description=description))
@@ -75,9 +77,15 @@ async def get_account_control_policy(
     try:
         ensure_account_control_preset_compatible(selected_key, account.trade_channel)
         preset_policy = resolve_account_control_policy(selected_key)
-        effective_policy = resolve_account_control_policy(selected_key, account.account_control_override)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except AccountControlConfigError as exc:
+        code = (
+            status.HTTP_422_UNPROCESSABLE_CONTENT if preset_key is not None else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        raise HTTPException(status_code=code, detail=exc.details) from exc
+
+    raw_override = account.account_control_override
+    override = None if raw_override is None else AccountControlOverride.model_validate(raw_override)
+    effective_policy = resolve_account_control_policy(selected_key, override)
 
     registry = ensure_default_account_control_registry_bootstrapped()
     operations: list[dict] = []
@@ -92,7 +100,7 @@ async def get_account_control_policy(
                 display_name=name,
                 description=description,
                 category=category,
-                groups=sorted(set(operation.groups) | set(effective_policy.operation_groups.get(operation.key, ()))),
+                groups=sorted(set(operation.groups) | set(effective_policy.groups_for(operation.key))),
             )
         )
 
@@ -112,7 +120,7 @@ async def get_account_control_policy(
         timezone_display_name=(
             "中国标准时间（UTC+8）" if effective_policy.timezone == "Asia/Shanghai" else "账户配置时区"
         ),
-        override=account.account_control_override.model_dump(mode="json") if account.account_control_override else None,
+        override=None if override is None else override.model_dump(mode="json"),
         preset_policy=preset_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
         effective_policy=effective_policy.model_dump(mode="json", exclude={"preset_key", "operation_groups"}),
         operations=operations,

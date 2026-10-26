@@ -8,6 +8,7 @@ import tempfile
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -132,11 +133,11 @@ def test_snapshot_cannot_observe_half_completed_sampling_round(monkeypatch):
             release = asyncio.Event()
             original = monitor._account_frame
 
-            async def delayed_frame(account, sessions, persisted):
+            async def delayed_frame(account, policy, sessions, persisted):
                 if account["id"] == 2:
                     entered.set()
                     await release.wait()
-                frame = await original(account, sessions, persisted)
+                frame = await original(account, policy, sessions, persisted)
                 frame["waiting_total"] = 99
                 return frame
 
@@ -205,7 +206,11 @@ def test_handoff_rebinding_and_late_results_never_double_count(monkeypatch):
     async def scenario():
         async with database(monkeypatch) as (path, account, monitor):
             first = await persistence.build_account_control_guard(account, "same-execution")
-            first.policy.operations["place_order"].account.min_interval_ms = None
+            from axile.executor.account_control.models import EffectiveAccountControlPolicy
+
+            data = first.policy.model_dump(mode="json")
+            data["operations"]["place_order"]["account"]["min_interval_ms"] = None
+            first.policy = EffectiveAccountControlPolicy.model_validate(data)
             for _ in range(3):
                 first.begin_operation("place_order").record_outcome("submitted")
             # 采样有 200ms 预算，CI 的首个线程任务可能尚未调度完成。
@@ -355,10 +360,14 @@ def test_crash_preserves_last_known_value_and_restart_marks_confirmed_history_in
 
 
 def test_saved_policy_does_not_replace_active_policy(monkeypatch):
+    resolver = Mock(wraps=monitor_module.resolve_account_control_policy)
+    monkeypatch.setattr(monitor_module, "resolve_account_control_policy", resolver)
+
     async def scenario():
         async with database(monkeypatch) as (path, account, monitor):
             await persistence.build_account_control_guard(account, "old-policy")
             await monitor.refresh()
+            assert resolver.call_count == 1
             old = monitor.frames[1]["actual_fingerprint"]
             changed = account.model_copy(deep=True)
             from axile.executor.account_control.models import AccountControlOverride
@@ -368,6 +377,7 @@ def test_saved_policy_does_not_replace_active_policy(monkeypatch):
             )
             save_account(path, changed)
             await monitor.refresh()
+            assert resolver.call_count == 2
             assert monitor.frames[1]["actual_fingerprint"] == old
             assert monitor.frames[1]["pending_policy"]
             assert monitor.frames[1]["saved_fingerprint"] != old

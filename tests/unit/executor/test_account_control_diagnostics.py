@@ -70,9 +70,11 @@ def test_wait_then_block_uses_final_snapshot():
 
     def exhaust_daily_quota(seconds):
         original_sleep(seconds)
-        from axile.executor.account_control.models import AccountControlRule
+        from axile.executor.account_control.models import AccountControlPolicy
 
-        guard.policy.operations["place_order"].account.per_day = AccountControlRule(limit=1, on_trigger="block")
+        data = guard.policy.model_dump(mode="json")
+        data["operations"]["place_order"]["account"]["per_day"] = {"limit": 1, "on_trigger": "block"}
+        guard.policy = AccountControlPolicy.model_validate(data)
 
     guard._sleep = exhaust_daily_quota
     with pytest.raises(AccountControlBlockedError) as caught:

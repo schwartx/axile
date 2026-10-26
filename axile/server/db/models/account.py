@@ -1,14 +1,14 @@
 """账户与组合绑定数据库模型."""
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, computed_field, field_validator
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
-from axile.executor.account_control.models import AccountControlOverride
 from axile.executor.futures_close_policy import FuturesClosePolicy
 from axile.executor.models.unified_input import DEFAULT_EXECUTION_TIMEOUT_SECONDS
+from axile.server._native import _core
 from axile.server.db.models.account_connection import AccountConnectionPublic, AccountConnectionState
 from axile.server.db.models.account_notification import AccountNotificationState, AccountNotificationStatePublic
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
@@ -23,6 +23,15 @@ from axile.server.db.models.account_validation import (
 from axile.server.db.models.base import Model, now_str
 from axile.server.db.models.performance import FeeRate, WeightType
 
+# HTTP 外层保留 JSON；嵌套约束和公开形状均来自 Rust。
+AccountControlOverrideData = Annotated[
+    Any,
+    BeforeValidator(
+        lambda value: value.model_dump(mode="json") if isinstance(value, _core.AccountControlOverride) else value
+    ),
+    WithJsonSchema(_core.control_override_schema()),
+]
+
 
 class AccountBase(BaseModel):
     """账户模型共用字段."""
@@ -33,7 +42,7 @@ class AccountBase(BaseModel):
     market: str = Field(description="交易市场标识, 例如: A股、期货等, 必填")
     trade_channel: TradeChannel = Field(description="实盘渠道, 必填")
     account_control_preset: str = Field(description="账户控制 preset 标识, 必填")
-    account_control_override: AccountControlOverride | None = Field(
+    account_control_override: AccountControlOverrideData | None = Field(
         default=None,
         description="账户控制的局部 override, 可选；支持 account/group 级规则与 operations.<op>.symbol 级规则",
     )
@@ -157,7 +166,7 @@ class AccountPublic(Model):
     market: str
     trade_channel: TradeChannel
     account_control_preset: str
-    account_control_override: AccountControlOverride | None = None
+    account_control_override: AccountControlOverrideData | None = None
     account_configured: bool = False
     connection_values: dict[str, Any] = Field(default_factory=dict)
     is_started: bool
@@ -358,7 +367,7 @@ class AccountUpdate(Model):
     market: Optional[str] = None
     trade_channel: Optional[TradeChannel] = None
     account_control_preset: Optional[str] = None
-    account_control_override: AccountControlOverride | None = None
+    account_control_override: AccountControlOverrideData | None = None
     account_config: Optional[Dict[str, Any]] = None
     is_started: Optional[bool] = None
     cron_expr: Optional[str] = None

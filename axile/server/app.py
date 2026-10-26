@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from axile.common.config import API_V1_STR, PROJECT_NAME, is_configured, settings
+from axile.executor.account_control.exceptions import AccountControlConfigError
 from axile.executor.algorithms.core.loader import load_algorithm_modules
 from axile.server.api.main import api_router
 from axile.server.compression import CompressionMiddleware
@@ -336,6 +337,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         status_code=422,
         content=jsonable_encoder({"detail": errors}),
     )
+
+
+@_app.exception_handler(AccountControlConfigError)
+async def control_config_exception_handler(_request: Request, exc: AccountControlConfigError) -> JSONResponse:
+    """未在请求边界处理的配置错误来自已保存配置，返回结构化服务端错误。"""
+    return JSONResponse(status_code=500, content={"detail": exc.details})
 
 
 # 内嵌前端静态资源目录（由 ./ui 构建产物拷贝至此）。

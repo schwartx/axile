@@ -162,8 +162,8 @@ def test_saved_policy_change_does_not_rewrite_a_running_warning(monkeypatch):
         async with database(monkeypatch) as (path, account, _, _, _):
             current = await persistence.build_account_control_guard(account, "frozen-policy")
             changed = account.model_copy(deep=True)
-            override = changed.account_control_override.model_copy(deep=True)
-            override.operations["place_order"].daily_warning_percent = 99
+            override = changed.account_control_override
+            override["operations"]["place_order"]["daily_warning_percent"] = 99
             changed.account_control_override = override
             save_account(path, changed)
             for _ in range(4):
