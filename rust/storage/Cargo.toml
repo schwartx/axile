@@ -20,7 +20,6 @@ rusqlite = { version = "0.31", features = ["bundled", "functions", "backup", "ho
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "arbitrary_precision"] }
 serde_path_to_error = "0.1"
-schemars = "1"
 sha2 = "0.10"
 regex = "1"
 uuid = { version = "=1.11.0", default-features = false, features = ["std", "v5"] }

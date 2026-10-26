@@ -801,12 +801,6 @@ def test_redaction_preserves_token_contracts_and_removes_complete_quoted_secrets
     ]
 
 
-def test_openapi_describes_binary_download(database):
-    schema = _client(database).app.openapi()
-    operation = schema["paths"]["/account/executions/{execution_id}/evidence"]["get"]
-    assert operation["responses"]["200"]["content"]["application/zip"]["schema"]["format"] == "binary"
-
-
 @pytest.mark.parametrize(("table", "column"), [("executerecord", "audit_evidence"), ("execution_extension", "extra")])
 def test_oversized_json_is_rejected_before_orm_decoding(database, table, column):
     _seed(database, _intent(), _record())

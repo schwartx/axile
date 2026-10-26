@@ -126,7 +126,6 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "EffectiveAccountControlPolicy",
         "control_registry",
         "resolve_control_policy",
-        "control_override_schema",
     } <= set(required)
     assert not {
         "dashboard_inputs",

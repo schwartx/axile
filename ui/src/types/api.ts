@@ -2,7 +2,7 @@ import type { ConnectionRun } from '@/lib/api/connectionProgress'
 /**
  * 手写 API DTO —— 对齐后端 `axile/server/db/models` 的 *Public 模型。
  *
- * 这是前端的类型真源（后端未生成 openapi.d.ts）。字段命名保持 snake_case
+ * 这是前端的类型真源。字段命名保持 snake_case
  * 与后端一致，避免映射层。
  */
 

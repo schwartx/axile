@@ -2,7 +2,7 @@
 
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, computed_field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, computed_field, field_validator
 
 from axile.common.default_account_notification import DEFAULT_ACCOUNT_NOTIFICATION_CODE
 from axile.common.trade_channel import TradeChannel
@@ -29,7 +29,6 @@ AccountControlOverrideData = Annotated[
     BeforeValidator(
         lambda value: value.model_dump(mode="json") if isinstance(value, _core.AccountControlOverride) else value
     ),
-    WithJsonSchema(_core.control_override_schema()),
 ]
 
 

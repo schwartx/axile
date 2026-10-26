@@ -41,7 +41,7 @@ required = (
     'account_public', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
     'account_runtime_sync_json', 'notifications_get_system_json',
     'AccountControlOverride', 'EffectiveAccountControlPolicy',
-    'control_registry', 'resolve_control_policy', 'control_override_schema',
+    'control_registry', 'resolve_control_policy',
 )
 missing = [name for name in required if not callable(getattr(module, name, None))]
 if missing:

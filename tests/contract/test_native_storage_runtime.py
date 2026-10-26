@@ -10,8 +10,6 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-import pytest
-
 
 def _guard_first_party_imports() -> None:
     import builtins
@@ -324,33 +322,3 @@ def _assert_api_contract() -> None:
 def test_native_api_fields_errors_credentials_and_minimal_queries(tmp_path: Path) -> None:
     """真实存储保留账户与组合的公开读写契约。"""
     _run_isolated(tmp_path, _assert_api_contract)
-
-
-def _assert_api_schema(baseline_path: str) -> None:
-    import json
-    from pathlib import Path
-
-    from axile.server.app import _app
-
-    def contract(value, *, property_map=False):
-        if isinstance(value, dict):
-            documentation = {"title", "description", "summary", "operationId", "tags", "example", "examples"}
-            return {
-                key: contract(item, property_map=key in {"properties", "schemas", "$defs"})
-                for key, item in value.items()
-                if property_map or key not in documentation
-            }
-        if isinstance(value, list):
-            return [contract(item) for item in value]
-        return value
-
-    baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-    assert contract(_app.openapi()) == contract(baseline)
-
-
-def test_public_api_schema_matches_frozen_baseline(tmp_path: Path) -> None:
-    """比较冻结的 API 类型、字段、约束与错误响应。"""
-    baseline = os.environ.get("AXILE_ACCEPTANCE_OPENAPI_BASELINE")
-    if baseline is None:
-        pytest.skip("set AXILE_ACCEPTANCE_OPENAPI_BASELINE to the frozen pre-migration OpenAPI JSON")
-    _run_isolated(tmp_path, _assert_api_schema, str(Path(baseline).resolve()))

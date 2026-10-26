@@ -264,10 +264,7 @@ def test_only_unified_stream_is_registered():
 
     app = FastAPI()
     app.include_router(api_router, prefix="/api/v1")
-    paths = app.openapi()["paths"]
-    assert "/api/v1/events/stream" in paths
-    assert "/api/v1/account/executions/stream" not in paths
-    assert "/api/v1/account/control/stream" not in paths
+    assert app.url_path_for("events_stream") == "/api/v1/events/stream"
     assert [route.path for route in router.routes] == ["/events/stream"]
 
 

@@ -272,36 +272,3 @@ def test_archive_identity_requires_no_git_checkout(tmp_path):
     (tmp_path / "BASELINE_SOURCE.json").write_text(json.dumps(identity))
     assert source_identity(tmp_path) == identity
     assert not (tmp_path / ".git").exists()
-
-
-def test_adapter_decorators_satisfy_actual_application_unique_id_generator():
-    from fastapi import FastAPI
-
-    from axile.server.app import custom_generate_unique_id
-
-    application = FastAPI(generate_unique_id_function=custom_generate_unique_id)
-    tree = ast.parse(Path(service.__file__).read_text())
-    server = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve")
-    adapters = []
-    for function in server.body:
-        if not isinstance(function, ast.AsyncFunctionDef):
-            continue
-        for decorator in function.decorator_list:
-            if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
-                continue
-            path = ast.literal_eval(decorator.args[0])
-            if path.startswith("/__business_fact_benchmark/"):
-                options = {keyword.arg: ast.literal_eval(keyword.value) for keyword in decorator.keywords}
-                # Use the actual app generator on options extracted from the real
-                # adapters, so removing their tags reproduces its IndexError.
-                application.add_api_route(
-                    path, lambda: {}, name=function.name, methods=[decorator.func.attr.upper()], **options
-                )
-                adapters.append(path)
-    assert len(adapters) == 2
-    operations = application.openapi()["paths"]
-    assert all(
-        operation["operationId"].startswith("benchmark-")
-        for path in adapters
-        for operation in operations[path].values()
-    )

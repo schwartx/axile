@@ -12,7 +12,7 @@ PyO3 入口在持有 GIL 时取得请求和路径，等待数据库、查询、�
 
 `control_policy.rs` 是 override、完整策略、默认值、严格校验和 preset 合并规则的唯一实现。
 Python 渠道声明 operation、group 和 preset，默认注册表在注册时将合法键发布给 Rust；私有插件仍通过原有注册入口扩展。
-配置的 OpenAPI schema 由同一组 Rust 类型生成，HTTP 外层账户模型只承接 JSON 对象。
+HTTP 外层账户模型只承接 JSON 对象，配置校验由 Rust 执行。服务不再提供 OpenAPI、Swagger UI 或 ReDoc；接口行为通过 HTTP 测试验证。
 
 - 保存：Python 校验账户其他字段，Rust 在写入前校验 override，数据库保留原始稀疏 JSON。
 - 读取：Rust 用配置类型补齐公开字段，并直接生成账户详情、列表的最终 JSON 字节；Python 直接返回响应。

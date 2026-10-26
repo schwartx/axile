@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{LazyLock, RwLock};
 
-use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -37,7 +36,7 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "python", pyo3::pyclass(eq, eq_int, frozen, from_py_object))]
 pub enum AccountControlTriggerBehavior {
@@ -46,12 +45,11 @@ pub enum AccountControlTriggerBehavior {
     BLOCK,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlRuleOverride {
     #[serde(default)]
-    #[schemars(range(min = 0))]
     pub limit: Option<i64>,
     #[serde(default)]
     pub on_trigger: Option<AccountControlTriggerBehavior>,
@@ -59,16 +57,15 @@ pub struct AccountControlRuleOverride {
     pub unlimited: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlRule {
-    #[schemars(range(min = 0))]
     pub limit: i64,
     pub on_trigger: AccountControlTriggerBehavior,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlScopeOverride {
@@ -80,7 +77,7 @@ pub struct AccountControlScopeOverride {
     pub min_interval_ms: Option<AccountControlRuleOverride>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlScopePolicy {
@@ -92,14 +89,13 @@ pub struct AccountControlScopePolicy {
     pub min_interval_ms: Option<AccountControlRule>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlOperationOverride {
     #[serde(default)]
     pub priority: Option<i64>,
     #[serde(default)]
-    #[schemars(range(min = 1, max = 99))]
     pub daily_warning_percent: Option<i64>,
     #[serde(default)]
     pub account: Option<AccountControlScopeOverride>,
@@ -111,14 +107,13 @@ fn default_priority() -> i64 {
     100
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlOperationPolicy {
     #[serde(default = "default_priority")]
     pub priority: i64,
     #[serde(default)]
-    #[schemars(range(min = 1, max = 99))]
     pub daily_warning_percent: Option<i64>,
     #[serde(default)]
     pub account: AccountControlScopePolicy,
@@ -126,7 +121,7 @@ pub struct AccountControlOperationPolicy {
     pub symbol: Option<AccountControlScopePolicy>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlOverride {
@@ -138,7 +133,7 @@ pub struct AccountControlOverride {
     pub groups: BTreeMap<String, AccountControlScopeOverride>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct AccountControlPolicy {
@@ -149,7 +144,7 @@ pub struct AccountControlPolicy {
     pub groups: BTreeMap<String, AccountControlScopePolicy>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, frozen, from_py_object))]
 pub struct EffectiveAccountControlPolicy {

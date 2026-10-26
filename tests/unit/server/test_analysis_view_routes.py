@@ -309,9 +309,6 @@ def test_views_pass_json_bytes_through_without_encoding(dataset, monkeypatch, en
             assert response.content == content
             assert response.json() == payload
             assert response.headers["content-type"] == "application/json"
-            schema = (await client.get("/openapi.json")).json()
-            operation = schema["paths"]["/api/v1/account/performance/{account_id}/" + endpoint]["get"]
-            assert "application/json" in operation["responses"]["200"]["content"]
 
     asyncio.run(check())
 

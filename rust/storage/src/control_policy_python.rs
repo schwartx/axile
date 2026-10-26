@@ -275,36 +275,6 @@ fn resolve_control_policy(
     .map_err(PyErr::from)
 }
 
-#[pyfunction]
-fn control_override_schema(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    let schema = serde_json::to_value(schemars::schema_for!(AccountControlOverride)).unwrap();
-    // 内联本地引用，FastAPI 无须再声明另一套嵌套策略类型。
-    fn inline(value: &Value, root: &Value) -> Value {
-        match value {
-            Value::Object(fields) => {
-                if let Some(reference) = fields.get("$ref").and_then(Value::as_str) {
-                    return inline(
-                        root.pointer(reference.strip_prefix('#').unwrap()).unwrap(),
-                        root,
-                    );
-                }
-                Value::Object(
-                    fields
-                        .iter()
-                        .filter(|(key, _)| !matches!(key.as_str(), "$defs" | "$schema"))
-                        .map(|(key, value)| (key.clone(), inline(value, root)))
-                        .collect(),
-                )
-            }
-            Value::Array(items) => {
-                Value::Array(items.iter().map(|item| inline(item, root)).collect())
-            }
-            _ => value.clone(),
-        }
-    }
-    json_to_py(py, &inline(&schema, &schema))
-}
-
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<AccountControlTriggerBehavior>()?;
     module.add_class::<AccountControlRuleOverride>()?;
@@ -318,6 +288,5 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EffectiveAccountControlPolicy>()?;
     module.add_function(wrap_pyfunction!(control_registry, module)?)?;
     module.add_function(wrap_pyfunction!(resolve_control_policy, module)?)?;
-    module.add_function(wrap_pyfunction!(control_override_schema, module)?)?;
     Ok(())
 }

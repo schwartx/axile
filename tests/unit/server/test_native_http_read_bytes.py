@@ -60,8 +60,6 @@ def test_native_bytes_reach_http_unchanged(client, native_database, monkeypatch,
     assert query.call_count == 1
     assert query.call_args.args[0] == str(native_database)
     assert json.loads(query.call_args.args[1]) == payload
-    schema = client.app.openapi()["paths"][path.replace("e1", "{execution_id}").replace("/1/", "/{account_id}/")]
-    assert "$ref" in schema["get"]["responses"]["200"]["content"]["application/json"]["schema"]
 
 
 def _event(path, details, **overrides):

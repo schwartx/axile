@@ -11,7 +11,6 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -284,32 +283,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.warning("axile已经关闭!")
 
 
-def custom_generate_unique_id(route: APIRoute) -> str:
-    """
-    生成稳定的 OpenAPI operation id。
-
-    Parameters
-    ----------
-    route : APIRoute
-        当前注册到 FastAPI 的路由对象。
-
-    Returns
-    -------
-    str
-        由首个 tag 与路由名拼接出的 operation id。
-
-    Notes
-    -----
-    这里显式使用 tag 前缀，避免不同路由模块里重复的处理函数名在 OpenAPI
-    文档中发生冲突。
-    """
-    return f"{route.tags[0]}-{route.name}"
-
-
 _app = FastAPI(
     title=PROJECT_NAME,
-    openapi_url=f"{API_V1_STR}/openapi.json",
-    generate_unique_id_function=custom_generate_unique_id,
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
     lifespan=lifespan,
 )
 
