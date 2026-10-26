@@ -743,3 +743,37 @@ def test_symbol_page_batches_queries_and_matches_individual_summaries(tmp_path, 
                 assert empty["data"] == []
 
     asyncio.run(check())
+
+
+def test_account_only_performance_releases_raw_history_batches(tmp_path, monkeypatch, schema_template):
+    """回退路径保持完整收益结果，但不同时持有全部原始执行对象。"""
+    import weakref
+
+    from axile.server.api.routes import account_performance
+    from axile.server.db.models.performance import PerformanceSettings
+    from axile.server.performance import calculate_performance, observation
+
+    async def check():
+        async with database(tmp_path, schema_template, count=97) as (_, sessions, _manager):
+            references = []
+            peak_live = 0
+
+            def observe(row, fallback):
+                nonlocal peak_live
+                references.append(weakref.ref(row))
+                peak_live = max(peak_live, sum(ref() is not None for ref in references))
+                return observation(row, fallback)
+
+            monkeypatch.setattr(account_performance, "observation", observe)
+            async with sessions() as session:
+                account = await session.get(Account, 2)
+                settings = PerformanceSettings.model_validate(account, from_attributes=True)
+                expected = calculate_performance(
+                    [observation(record(i + 1)) for i in range(97)], settings, "all", False, str(account.trade_channel)
+                )
+                actual = await account_performance._account_performance(session, 2, "all")
+            assert actual.model_dump() == expected.model_dump()
+            assert len(references) == 97
+            assert peak_live <= 64
+
+    asyncio.run(check())

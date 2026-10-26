@@ -3,6 +3,7 @@
 from typing import Dict, List, Optional, cast
 
 from fastapi import HTTPException
+from sqlalchemy import union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import and_, col, desc, func, select
 
@@ -18,23 +19,30 @@ async def get_recent_account_asset_snapshots_for_accounts(
     """批量获取多个账户各自最近的资产快照（最新在前）."""
     if not account_ids:
         return {}
-    row_number = (
-        func.row_number().over(
-            partition_by=col(AccountAssetSnapshot.account_id),
-            order_by=desc(col(AccountAssetSnapshot.id)),
-        )
-    ).label("rn")
-    ranked = (
-        select(AccountAssetSnapshot, row_number)
-        .where(col(AccountAssetSnapshot.account_id).in_(account_ids), valid_asset_snapshot_condition())
-        .subquery()
-    )
-    stmt = select(AccountAssetSnapshot).from_statement(
-        select(ranked).where(ranked.c.rn <= limit).order_by(ranked.c.account_id, desc(ranked.c.id))
-    )
+    # 从索引倒序取足有效观测，避免检查全部历史 JSON 后才应用 LIMIT。
+    # 限制每组账户数量，防止超过 SQLite 复合 SELECT 数量上限。
     grouped: Dict[int, List[AccountAssetSnapshot]] = {}
-    for snapshot in (await session.execute(stmt)).scalars().all():
-        grouped.setdefault(snapshot.account_id, []).append(snapshot)
+    ids = sorted(set(account_ids))
+    if limit <= 0:
+        return grouped
+    for start in range(0, len(ids), 100):
+        candidates = [
+            select(AccountAssetSnapshot.id)
+            .where(AccountAssetSnapshot.account_id == account_id, valid_asset_snapshot_condition())
+            .order_by(desc(AccountAssetSnapshot.id))
+            .limit(limit)
+            .subquery()
+            for account_id in ids[start : start + 100]
+        ]
+        selected = union_all(*(select(candidate.c.id) for candidate in candidates))
+        stmt = (
+            select(AccountAssetSnapshot)
+            .where(col(AccountAssetSnapshot.id).in_(selected))
+            .order_by(AccountAssetSnapshot.account_id, desc(AccountAssetSnapshot.id))
+        )
+        for snapshot in (await session.execute(stmt)).scalars().all():
+            grouped.setdefault(snapshot.account_id, []).append(snapshot)
+
     return grouped
 
 
@@ -182,9 +190,17 @@ async def get_recent_execute_records_for_accounts(
         func.row_number().over(partition_by=col(ExecuteRecord.account_id), order_by=desc(col(ExecuteRecord.id)))
     ).label("rn")
 
-    ranked = select(ExecuteRecord, row_number).where(col(ExecuteRecord.account_id).in_(account_ids)).subquery()
-    stmt = select(ExecuteRecord).from_statement(
-        select(ranked).where(ranked.c.rn <= limit).order_by(ranked.c.account_id, desc(ranked.c.id))
+    # 先对索引键排名，避免 SQLite 排序时携带整份执行 JSON。
+    ranked = (
+        select(ExecuteRecord.id, ExecuteRecord.account_id, row_number)
+        .where(col(ExecuteRecord.account_id).in_(account_ids))
+        .subquery()
+    )
+    stmt = (
+        select(ExecuteRecord)
+        .join(ranked, col(ExecuteRecord.id) == ranked.c.id)
+        .where(ranked.c.rn <= limit)
+        .order_by(ranked.c.account_id, desc(ranked.c.id))
     )
 
     grouped: Dict[int, List[ExecuteRecord]] = {}

@@ -32,23 +32,31 @@ async def _account_performance(session, account_id: int, range_key: RangeKey) ->
     account = await _get_account_or_404(session, account_id)
     trade_channel = str(account.trade_channel)
     settings = PerformanceSettings.model_validate(account, from_attributes=True)
-    records = (
-        (await session.execute(select(ExecuteRecord).where(col(ExecuteRecord.account_id) == account_id)))
-        .scalars()
-        .all()
-    )
     targets = (
-        (await session.execute(select(TargetWeightSnapshot).where(col(TargetWeightSnapshot.account_id) == account_id)))
-        .scalars()
-        .all()
-    )
+        await session.execute(
+            select(TargetWeightSnapshot.execution_id, TargetWeightSnapshot.normalized_weights).where(
+                col(TargetWeightSnapshot.account_id) == account_id
+            )
+        )
+    ).all()
+    fallback = {execution_id: weights for execution_id, weights in targets if execution_id}
     bindings = (
         (await session.execute(select(PortfolioAccount).where(col(PortfolioAccount.account_id) == account_id)))
         .scalars()
         .all()
     )
-    fallback = {item.execution_id: item.normalized_weights for item in targets if item.execution_id}
-    items = [observation(record, fallback.get(record.execution_id or "")) for record in records]
+    items = []
+    stream = await session.stream_scalars(
+        select(ExecuteRecord)
+        .where(col(ExecuteRecord.account_id) == account_id)
+        .order_by(col(ExecuteRecord.id))
+        .execution_options(yield_per=32)
+    )
+    try:
+        async for record in stream:
+            items.append(observation(record, fallback.get(record.execution_id or "")))
+    finally:
+        await stream.close()
     binding_values = [(local_time(binding.created_at), binding.portfolio_id) for binding in bindings]
     await session.rollback()
     result = await run_in_threadpool(calculate_performance, items, settings, range_key, False, trade_channel)
