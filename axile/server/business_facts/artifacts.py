@@ -12,7 +12,19 @@ from axile.server.business_facts.summary_refs import (
 
 ArtifactView = Literal["input", "targets", "rules", "assets_before", "assets_after"]
 _VIEWS = {"input", "targets", "rules", "assets_before", "assets_after"}
-_TARGET_FIELDS = ("curr_target", "last_target", "strategy_target", "sizing_context", "plan", "audit_evidence")
+_TARGET_FIELDS = (
+    "curr_target",
+    "last_target",
+    "strategy_target",
+    "account_target",
+    "account_weights",
+    "normalized_weights",
+    "strategy_weights",
+    "raw_weights",
+    "sizing_context",
+    "plan",
+    "audit_evidence",
+)
 _RULE_FIELDS = ("trade_rules", "futures_close_policy")
 
 

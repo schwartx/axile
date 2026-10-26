@@ -131,20 +131,17 @@ fn columns(
     read: &impl Fn(&str) -> Result<Value, String>,
     fields: &[&str],
 ) -> Result<Map<String, Value>, String> {
-    let mut view = Map::new();
+    let mut row = Map::new();
     for &name in fields {
-        let value = read(name)?;
-        if !value.is_null() {
-            view.insert(name.into(), value);
-        }
+        row.insert(name.into(), read(name)?);
     }
     let evidence = read("audit_evidence")?;
-    if let Some(evidence) = evidence.as_object() {
-        if !evidence.is_empty() {
-            view.insert("audit_evidence".into(), Value::Object(evidence.clone()));
-        }
-    }
-    Ok(view)
+    let evidence = if evidence.is_object() {
+        evidence
+    } else {
+        json!({})
+    };
+    crate::business_detail::columns(&row, fields, &evidence)
 }
 
 fn availability(

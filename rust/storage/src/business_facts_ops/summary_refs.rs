@@ -3,7 +3,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::encode::py_eq;
+use super::encode::{py_eq, target_field};
 use crate::{business_detail, error::AnalysisError};
 
 pub(crate) const REFERENCE_KEY: &str = "business_facts_ref";
@@ -11,6 +11,11 @@ const TARGET_FIELDS: &[&str] = &[
     "curr_target",
     "last_target",
     "strategy_target",
+    "account_target",
+    "account_weights",
+    "normalized_weights",
+    "strategy_weights",
+    "raw_weights",
     "sizing_context",
     "plan",
     "audit_evidence",
@@ -213,8 +218,7 @@ fn resolve_content(
                     let key = key.as_str().expect("validated field");
                     fields.insert(
                         key.into(),
-                        payload
-                            .get(key)
+                        target_field(payload, key)
                             .ok_or_else(|| invalid("审计业务事实引用的选定字段缺失"))?
                             .clone(),
                     );

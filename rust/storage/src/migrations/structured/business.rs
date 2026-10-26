@@ -13,6 +13,10 @@ const TARGET_FIELDS: &[&str] = &[
     "last_target",
     "strategy_target",
     "account_target",
+    "account_weights",
+    "normalized_weights",
+    "strategy_weights",
+    "raw_weights",
     "sizing_context",
 ];
 const REMOVED: &[(&str, &[&str])] = &[
@@ -433,7 +437,7 @@ fn backfill_artifact_views(connection: &Connection) -> Result<()> {
             } else {
                 &["trade_rules", "futures_close_policy"]
             };
-            let selected = encode::normalize_targets(&Value::Object(select(content, fields)));
+            let selected = select(content, fields);
             if selected.is_empty() {
                 return Ok(());
             }
@@ -460,8 +464,7 @@ fn backfill_artifact_views(connection: &Connection) -> Result<()> {
             let decoded = load_input(connection, &input_id)?;
             let valid = decoded.as_object().is_some_and(|map| {
                 selected.iter().all(|(key, item)| {
-                    map.get(key)
-                        .is_some_and(|stored| encode::py_eq(stored, item))
+                    encode::target_field(map, key).is_some_and(|stored| encode::py_eq(stored, item))
                 })
             });
             if !valid {
@@ -471,18 +474,20 @@ fn backfill_artifact_views(connection: &Connection) -> Result<()> {
                 )));
             }
             updated = except(content, fields);
-            updated.insert(
-                "business_facts_ref".into(),
-                Value::Object(marker(
-                    if kind == "target_snapshot" {
-                        "targets"
-                    } else {
-                        "rules"
-                    },
-                    Some(&input_id),
-                    None,
-                )),
+            let mut reference = marker(
+                if kind == "target_snapshot" {
+                    "targets"
+                } else {
+                    "rules"
+                },
+                Some(&input_id),
+                None,
             );
+            reference.insert(
+                "select_fields".into(),
+                serde_json::json!(selected.keys().collect::<Vec<_>>()),
+            );
+            updated.insert("business_facts_ref".into(), Value::Object(reference));
         } else {
             let Some(assets) = content.get("account_assets") else {
                 return Ok(());
@@ -558,7 +563,7 @@ fn backfill_decisions(connection: &Connection) -> Result<()> {
         else {
             return Ok(());
         };
-        let selected = encode::normalize_targets(&Value::Object(select(decision, TARGET_FIELDS)));
+        let selected = select(decision, TARGET_FIELDS);
         if selected.is_empty() {
             return Ok(());
         }
@@ -575,9 +580,9 @@ fn backfill_decisions(connection: &Connection) -> Result<()> {
             .as_ref()
             .and_then(Value::as_object)
             .is_some_and(|map| {
-                selected
-                    .iter()
-                    .all(|(key, item)| encode::py_eq(value(map, key), item))
+                selected.iter().all(|(key, item)| {
+                    encode::target_field(map, key).is_some_and(|stored| encode::py_eq(stored, item))
+                })
             });
         if !same {
             let mut owner = row.clone();
@@ -596,9 +601,9 @@ fn backfill_decisions(connection: &Connection) -> Result<()> {
             .ok_or_else(|| error("Frozen input identity is missing"))?;
         let decoded = load_input(connection, input)?;
         if !decoded.as_object().is_some_and(|map| {
-            selected
-                .iter()
-                .all(|(key, item)| encode::py_eq(value(map, key), item))
+            selected.iter().all(|(key, item)| {
+                encode::target_field(map, key).is_some_and(|stored| encode::py_eq(stored, item))
+            })
         }) {
             return Err(error(format!(
                 "Conversion mismatch execution_event id={} path=/details/decision",
@@ -924,11 +929,14 @@ fn restore_records(connection: &Connection) -> Result<()> {
 }
 fn restore_artifacts(connection: &Connection) -> Result<()> {
     each_parent(connection, "execution_artifact", |row| {
-        let content = parse(&row, "content", "execution_artifact", "/content")?;
-        let Some(content) = content.as_object() else {
+        let original = parse(&row, "content", "execution_artifact", "/content")?;
+        let Some(content) = original.as_object() else {
             return Ok(());
         };
-        let Some(reference) = content.get("business_facts_ref").and_then(Value::as_object) else {
+        let Some(reference) =
+            crate::business_facts_ops::summary_refs::parse_artifact_reference(&original)
+                .map_err(write_error)?
+        else {
             return Ok(());
         };
         let view = text(reference, "view")?;
@@ -945,14 +953,27 @@ fn restore_artifacts(connection: &Connection) -> Result<()> {
                 let payload = input
                     .as_object()
                     .ok_or_else(|| error("Frozen input view is unavailable"))?;
-                select(
-                    payload,
-                    if view == "targets" {
-                        TARGET_FIELDS
-                    } else {
-                        &["trade_rules", "futures_close_policy"]
-                    },
-                )
+                if let Some(selected) = reference.get("select_fields").and_then(Value::as_array) {
+                    let mut fields = Object::new();
+                    for key in selected {
+                        let key = key
+                            .as_str()
+                            .ok_or_else(|| error("Invalid artifact selector"))?;
+                        let item = encode::target_field(payload, key)
+                            .ok_or_else(|| error("Frozen artifact field is missing"))?;
+                        fields.insert(key.into(), item.clone());
+                    }
+                    fields
+                } else {
+                    select(
+                        payload,
+                        if view == "targets" {
+                            TARGET_FIELDS
+                        } else {
+                            &["trade_rules", "futures_close_policy"]
+                        },
+                    )
+                }
             }
         };
         let mut restored = except(content, &["business_facts_ref"]);
@@ -1005,9 +1026,10 @@ fn restore_decisions(connection: &Connection) -> Result<()> {
         for item in selector {
             let key = item
                 .as_str()
-                .filter(|key| TARGET_FIELDS.contains(key) && payload.contains_key(*key))
+                .filter(|key| TARGET_FIELDS.contains(key))
                 .ok_or_else(failure)?;
-            restored.insert(key.into(), payload[key].clone());
+            let item = encode::target_field(payload, key).ok_or_else(failure)?;
+            restored.insert(key.into(), item.clone());
         }
         let mut updated = details.clone();
         updated.insert("decision".into(), Value::Object(restored));

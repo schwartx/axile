@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 
 from axile.server._native import _core
+from axile.server.business_facts.artifacts import parse_artifact_reference
 from tests.conftest import native_store_call
-from tests.unit.server._native_read_views import read_view
+from tests.unit.server._native_read_views import artifact_view, read_view
 
 
 @pytest.fixture
@@ -59,6 +60,148 @@ def test_main_conversion_failure_rolls_back_schema_rows_and_revision(main_databa
     with pytest.raises(_core.NativeError):
         native_store_call(main_database, "migration_upgrade", {})
     assert _dump(main_database) == before
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        {"curr_target": {"A": 0.5}, "account_target": {"A": 0.5}},
+        {"account_target": {}},
+        {"curr_target": {"A": 0.5}, "account_target": {"B": 0.25}},
+        {"curr_target": None, "account_target": None},
+        {
+            "curr_target": {"A": 0.5},
+            "account_target": {"B": 0.25},
+            "account_weights": {},
+            "normalized_weights": None,
+            "strategy_target": {"A": 0.75},
+            "strategy_weights": {"B": 0.5},
+            "raw_weights": {},
+        },
+    ],
+)
+def test_0034_preserves_target_aliases_and_selected_fields_on_repeated_migration(main_database, targets):
+    content = {**targets, "sizing_context": {"weight_precision": None}, "label": "legacy-target"}
+    rules = {"trade_rules": None, "label": "legacy-rules"}
+    with closing(sqlite3.connect(main_database)) as connection, connection:
+        for row_id, kind, payload in ((4, "TARGET_SNAPSHOT", content), (5, "TRADE_RULES_SNAPSHOT", rules)):
+            connection.execute(
+                "INSERT INTO execution_artifact VALUES('main-1',?,1,?,'2026-10-01',?)",
+                (kind, json.dumps(payload), row_id),
+            )
+        connection.execute(
+            "INSERT INTO execution_event(execution_id,account_id,channel,algorithm,schema_version,event_uid,"
+            "event_type,status,reason_family,reason_code,ts_local_created,ts_persisted,seq,details,id) "
+            "VALUES('main-1',1,'tq','synthetic',1,'legacy-target','TARGET_COMPUTED','INFO','INPUT',"
+            "'COMMON.TARGET_COMPUTED','2026-10-01','2026-10-01',1,?,1)",
+            (json.dumps({"decision": content}),),
+        )
+    for _ in range(2):
+        native_store_call(main_database, "migration_upgrade", {})
+        _core.close_database(str(main_database))
+        with closing(sqlite3.connect(main_database)) as connection:
+            rows = connection.execute(
+                "SELECT artifact_type,content FROM execution_artifact WHERE id IN (4,5) ORDER BY id"
+            ).fetchall()
+        for (kind, body), original in zip(rows, (content, rules), strict=True):
+            compacted = json.loads(body)
+            reference = compacted["business_facts_ref"]
+            assert parse_artifact_reference(compacted) == reference
+            assert set(reference["select_fields"]) == set(original) - {"label"}
+            assert set(compacted) == {"label", "business_facts_ref"}
+            hydrated = artifact_view(
+                main_database, {"execution_id": "main-1", "artifact_type": kind, "content": compacted}
+            )
+            hydrated.pop("business_facts_ref")
+            assert hydrated == original
+        events = json.loads(
+            _core.list_execution_events_json(str(main_database), json.dumps({"execution_id": "main-1"}))
+        )
+        decision = events["data"][0]["details"]["decision"]
+        decision.pop("business_facts_ref")
+        assert decision == content
+        native_store_call(main_database, "migration_downgrade", {"public": "0033"})
+        _core.close_database(str(main_database))
+        with closing(sqlite3.connect(main_database)) as connection:
+            restored = connection.execute(
+                "SELECT content,schema_version FROM execution_artifact WHERE id IN (4,5) ORDER BY id"
+            ).fetchall()
+            assert [(json.loads(body), version) for body, version in restored] == [(content, 1), (rules, 1)]
+            assert json.loads(connection.execute("SELECT details FROM execution_event WHERE id=1").fetchone()[0]) == {
+                "decision": content
+            }
+
+
+def test_0034_invalid_artifact_selector_blocks_downgrade_without_mutation(main_database):
+    with closing(sqlite3.connect(main_database)) as connection, connection:
+        connection.execute(
+            "INSERT INTO execution_artifact VALUES('main-1','TARGET_SNAPSHOT',1,?,'2026-10-01',4)",
+            (json.dumps({"account_target": {"A": 0.5}}),),
+        )
+    native_store_call(main_database, "migration_upgrade", {})
+    _core.close_database(str(main_database))
+    with closing(sqlite3.connect(main_database)) as connection, connection:
+        content = json.loads(connection.execute("SELECT content FROM execution_artifact WHERE id=4").fetchone()[0])
+        content["business_facts_ref"]["select_fields"] = ["channel_type"]
+        connection.execute("UPDATE execution_artifact SET content=? WHERE id=4", (json.dumps(content),))
+    before = _dump(main_database)
+    with pytest.raises(_core.NativeError):
+        native_store_call(main_database, "migration_downgrade", {"public": "0033"})
+    assert _dump(main_database) == before
+
+
+def test_0034_preserves_explicit_nulls_without_inventing_missing_fields(main_database):
+    sizing = {"reason_code": None, "reference_price": None, "min_quantity": None}
+    with closing(sqlite3.connect(main_database)) as connection, connection:
+        raw_input, raw_result = connection.execute(
+            "SELECT raw_input,raw_result FROM executerecord WHERE id=1"
+        ).fetchone()
+        payload, result = json.loads(raw_input), json.loads(raw_result)
+        payload.update(trade_rules=None, sizing_context={"weight_precision": None})
+        result.update(
+            inputs=payload,
+            error=None,
+            reason_code=None,
+            outcome_reason=None,
+            termination={"reason": None},
+            symbol_results={"A": {"error": None, "reason_code": None, "sizing": sizing}},
+            orders=[{"order_id": "o-1", "price": None}],
+            trades=[{"trade_id": "t-1", "trade_price": None}],
+        )
+        result["account_assets"].update(available_cash=None, positions=[{"symbol": "A", "volume": None}])
+        connection.execute(
+            "UPDATE executerecord SET raw_input=?,raw_result=? WHERE id=1",
+            (json.dumps(payload), json.dumps(result)),
+        )
+
+    def check(actual):
+        assert actual["error"] is None
+        assert actual["reason_code"] is None
+        assert actual["outcome_reason"] is None
+        assert actual["termination"]["reason"] is None
+        assert "trigger" not in actual["termination"]
+        symbol = actual["symbol_results"]["A"]
+        assert symbol["error"] is None and symbol["reason_code"] is None
+        assert symbol["sizing"] == sizing
+        assert "outcome_reason" not in symbol
+        assert actual["orders"][0]["price"] is None
+        assert "avg_price" not in actual["orders"][0]
+        assert actual["trades"][0]["trade_price"] is None
+        assert actual["account_assets"]["available_cash"] is None
+        assert actual["account_assets"]["positions"][0]["volume"] is None
+        assert actual["inputs"]["trade_rules"] is None
+        assert actual["inputs"]["sizing_context"] == {"weight_precision": None}
+
+    for _ in range(2):
+        native_store_call(main_database, "migration_upgrade", {})
+        detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
+        check(detail["result"])
+        assert detail["input"]["sizing_context"] == {"weight_precision": None}
+        native_store_call(main_database, "migration_downgrade", {"public": "0033"})
+        _core.close_database(str(main_database))
+        with closing(sqlite3.connect(main_database)) as connection:
+            restored = json.loads(connection.execute("SELECT raw_result FROM executerecord WHERE id=1").fetchone()[0])
+            check(restored)
 
 
 def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database):

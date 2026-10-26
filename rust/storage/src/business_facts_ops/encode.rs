@@ -235,6 +235,15 @@ pub(crate) fn store_columns(
     }
     let base = payload.get("audit_evidence").and_then(Value::as_object);
     let mut evidence = base.cloned().unwrap_or_default();
+    let null_fields: Vec<_> = specs
+        .iter()
+        .filter(|(name, _)| payload.get(*name).is_some_and(Value::is_null))
+        .map(|(name, _)| Value::from(*name))
+        .collect();
+    evidence.remove("explicit_null_fields");
+    if !null_fields.is_empty() {
+        evidence.insert("explicit_null_fields".into(), Value::Array(null_fields));
+    }
     if !invalid_fields.is_empty() {
         let mut previous = match evidence.get("invalid_fields") {
             None => Map::new(),
@@ -322,6 +331,19 @@ pub(crate) fn normalize_targets(payload: &Value) -> Map<String, Value> {
     }
     normalize_plan_input(&mut result);
     result
+}
+
+/// 历史附件按原字段名投影，别名值仍来自规范事实或已有冲突证据。
+pub(crate) fn target_field<'a>(payload: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    payload.get(key).or_else(|| {
+        let (_, role) = TARGET_ALIASES.iter().find(|(alias, _)| *alias == key)?;
+        payload
+            .get("audit_evidence")
+            .and_then(|evidence| evidence.get("unrecognized_fields"))
+            .and_then(|fields| fields.get("target_conflicts"))
+            .and_then(|conflicts| conflicts.get(key))
+            .or_else(|| payload.get(*role))
+    })
 }
 
 fn normalize_plan_input(result: &mut Map<String, Value>) {

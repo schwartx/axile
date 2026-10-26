@@ -450,17 +450,27 @@ pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
     }
     Ok(item)
 }
-fn columns(row: &Object, fields: &[&str], evidence: &Value) -> Result<Object, String> {
-    let evidence = object(evidence)?;
+pub(crate) fn columns(row: &Object, fields: &[&str], evidence: &Value) -> Result<Object, String> {
+    let mut evidence = object(evidence)?.clone();
+    let null_fields = evidence.remove("explicit_null_fields").unwrap_or(json!([]));
+    let null_fields = null_fields
+        .as_array()
+        .filter(|fields| fields.iter().all(Value::is_string))
+        .ok_or_else(|| invalid("invalid explicit null fields"))?;
     let mut result = Object::new();
     for &key in fields {
         let value = get(row, key)?;
-        if !value.is_null() || fields.len() == 1 {
+        if !value.is_null() || fields.len() == 1 || null_fields.iter().any(|field| field == key) {
             result.insert(key.into(), value.clone());
         }
     }
+    if let Some(sizing) = evidence.get_mut("sizing").and_then(Value::as_object_mut) {
+        if sizing.remove("explicit_null_fields").is_some() && sizing.is_empty() {
+            evidence.remove("sizing");
+        }
+    }
     if !evidence.is_empty() {
-        result.insert("audit_evidence".into(), Value::Object(evidence.clone()));
+        result.insert("audit_evidence".into(), Value::Object(evidence));
     }
     Ok(result)
 }
