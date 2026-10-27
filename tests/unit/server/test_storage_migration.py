@@ -1,4 +1,4 @@
-"""已发布 0033 直接迁到最终 0034，失败不破坏业务事实或旧缓存。"""
+"""已发布 0033 直接迁到当前 0035，失败不破坏业务事实或旧缓存。"""
 
 import json
 from contextlib import closing
@@ -60,7 +60,7 @@ def _state(path):
 
 def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(old_database):
     receipt = initialize_native_database(old_database)
-    assert receipt["public"] == "0034"
+    assert receipt["public"] == "0035"
     backup = Path(receipt["backup"])
     assert backup.is_file()
     with closing(oracle_connect(backup)) as connection:
@@ -102,7 +102,7 @@ def test_downgrade_restores_business_documents_and_can_upgrade_again(old_databas
         assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone() == (0,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert initialize_native_database(old_database)["public"] == "0034"
+    assert initialize_native_database(old_database)["public"] == "0035"
 
 
 @pytest.mark.parametrize("failure", ["invalid_document", "stamp"])
@@ -138,10 +138,10 @@ def test_pending_facts_block_lossy_downgrade_before_any_change(old_database):
     with pytest.raises(_core.NativeError, match="unrepresented pending execution input"):
         native_store_call(old_database, "migration_downgrade", {"public": "0033"})
     assert _state(old_database) == before
-    assert native_store_call(old_database, "migration_current", {})["public"] == "0034"
+    assert native_store_call(old_database, "migration_current", {})["public"] == "0035"
 
 
-@pytest.mark.parametrize("revision", ["0035", "0036", "0037", "0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0036", "0037", "0038", "0039", "0040", "0041"])
 def test_unreleased_intermediate_targets_are_rejected(old_database, revision):
     before = _state(old_database)
     with pytest.raises(_core.NativeError, match="supported targets"):

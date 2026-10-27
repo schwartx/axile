@@ -135,7 +135,7 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
         connection.execute("PRAGMA foreign_keys=ON")
         insert_account(connection, build_account(id=2, portfolio_id=None))
         connection.execute(
-            "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at) VALUES (1,2,'move',0,'now')"
+            "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at) VALUES (1,2,'move',0,'2026-10-01')"
         )
         connection.execute(
             "INSERT INTO execution_order_collection(record_id,path,ordinal,kind,item_count,audit_evidence) "
@@ -176,7 +176,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
     for operation in ("migration_current", "migration_check"):
         result = native_store_call(path, operation, {})
         assert result["public"] is None
-        assert result["public_target"] == "0034"
+        assert result["public_target"] == "0035"
         assert not path.exists()
         assert list(tmp_path.iterdir()) == []
 
@@ -193,14 +193,14 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
             backup,
         )
     result = initialize_native_database(path)
-    assert result["public"] == "0034"
-    assert native_store_call(path, "migration_current", {})["public"] == "0034"
+    assert result["public"] == "0035"
+    assert native_store_call(path, "migration_current", {})["public"] == "0035"
     with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
             "FROM axile_0013_error_backup"
         ).fetchall() == [backup]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0035",)]
 
 
 def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> None:
@@ -224,7 +224,7 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
     initialize_native_database(path, revision=data["from_revision"])
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
-    assert initialize_native_database(path)["public"] == "0034"
+    assert initialize_native_database(path, revision="0034")["public"] == "0034"
     expected = data["expected"]
     raw_results = {row["id"]: json.loads(row["raw_result"]) for row in data["seed"]["executerecord"]}
     for row in expected["execution_extension"]:

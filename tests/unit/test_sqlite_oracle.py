@@ -9,7 +9,7 @@ from datetime import datetime
 import pytest
 
 from tests import sqlite_oracle as oracle_transport
-from tests.sqlite_oracle import connect, sqlite_oracle
+from tests.sqlite_oracle import connect, register_time_function, sqlite_oracle
 
 
 @sqlite_oracle
@@ -106,3 +106,50 @@ def test_sqlalchemy_types_survive_transport_and_child_is_terminated(tmp_path):
     oracle_transport._close_worker()
     assert process.poll() is not None
     assert oracle_transport._worker is None
+
+
+@pytest.mark.parametrize("in_memory", [False, True])
+def test_connections_keep_time_expression_indexes_and_mixed_formats(tmp_path, in_memory):
+    with closing(connect(":memory:" if in_memory else tmp_path / "times.db")) as connection, connection:
+        connection.executescript(
+            "CREATE TABLE facts(id INTEGER PRIMARY KEY,created_at TEXT);"
+            "CREATE INDEX fact_time ON facts(axile_time(created_at));"
+        )
+        connection.executemany(
+            "INSERT INTO facts(created_at) VALUES(?)",
+            [
+                (value,)
+                for value in (
+                    "2026-01-01T09:00:00.000006+08:00",
+                    "2026-01-01T01:00:00.000006Z",
+                    "2026-01-01 09:00:00.000006",
+                )
+            ],
+        )
+        assert connection.execute("SELECT DISTINCT axile_time(created_at) FROM facts").fetchall() == [
+            ("2026-01-01T09:00:00.000006",)
+        ]
+        assert connection.execute("SELECT axile_time('1988-06-01T00:00:00Z')").fetchone() == (
+            "1988-06-01T08:00:00.000000",
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_sqlalchemy_async_connections_support_time_indexes(tmp_path):
+    import sqlalchemy as sa
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    async def check():
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'async.db'}", poolclass=sa.pool.NullPool)
+        sa.event.listen(engine.sync_engine, "connect", register_time_function)
+        try:
+            async with engine.begin() as connection:
+                await connection.exec_driver_sql("CREATE TABLE facts(created_at TEXT)")
+                await connection.exec_driver_sql("CREATE INDEX fact_time ON facts(axile_time(created_at))")
+            async with engine.begin() as connection:
+                await connection.exec_driver_sql("INSERT INTO facts VALUES('2026-01-01')")
+                assert (await connection.exec_driver_sql("PRAGMA integrity_check")).scalar_one() == "ok"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())

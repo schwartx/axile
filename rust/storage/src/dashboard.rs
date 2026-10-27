@@ -120,19 +120,17 @@ pub fn dashboard_inputs(
     }
     let ids = json!(account_ids).to_string();
     let cte = "WITH ids AS (SELECT DISTINCT value AS id FROM json_each(?1)),
-        bindings AS (SELECT b.* FROM portfolioaccount b JOIN
-            (SELECT account_id,max(id) AS id FROM portfolioaccount
-             WHERE account_id IN (SELECT id FROM ids) GROUP BY account_id) latest ON b.id=latest.id),
-        observations AS (SELECT s.* FROM account_asset_snapshot s JOIN
-            (SELECT s.account_id,max(s.id) AS id FROM account_asset_snapshot s
-             JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id
-             WHERE s.account_id IN (SELECT id FROM ids) AND a.observation_valid IS TRUE
-             GROUP BY s.account_id) latest ON s.id=latest.id),
-        targets AS (SELECT t.* FROM target_weight_snapshot t JOIN
-            (SELECT t.account_id,max(t.id) AS id FROM target_weight_snapshot t
-             JOIN bindings b ON b.account_id=t.account_id AND b.portfolio_id=t.portfolio_id
-             WHERE t.normalized_weights_kind NOT IN ('missing','null')
-             GROUP BY t.account_id) latest ON t.id=latest.id)";
+        bindings AS (SELECT b.* FROM ids JOIN portfolioaccount b ON b.id=(
+            SELECT id FROM portfolioaccount WHERE account_id=ids.id ORDER BY id DESC LIMIT 1)),
+        observations AS (SELECT s.* FROM ids JOIN account_asset_snapshot s ON s.id=(
+            SELECT s.id FROM account_asset_snapshot s
+            WHERE s.account_id=ids.id AND EXISTS (SELECT 1 FROM business_asset_snapshot a
+                WHERE a.asset_id=s.asset_fact_id AND a.observation_valid IS TRUE)
+            ORDER BY s.id DESC LIMIT 1)),
+        targets AS (SELECT t.* FROM bindings b JOIN target_weight_snapshot t ON t.id=(
+            SELECT id FROM target_weight_snapshot WHERE account_id=b.account_id
+                AND portfolio_id=b.portfolio_id AND normalized_weights_kind NOT IN ('missing','null')
+            ORDER BY id DESC LIMIT 1))";
     let mut observations = observations(connection, cte, &ids)?;
     let mut targets = targets(connection, cte, &ids)?;
     let performance =
@@ -140,9 +138,8 @@ pub fn dashboard_inputs(
     let mut statement = connection
         .prepare(&format!(
             "{cte},
-        recent AS (SELECT r.* FROM executerecord r JOIN
-            (SELECT account_id,max(id) AS id FROM executerecord
-             WHERE account_id IN (SELECT id FROM ids) GROUP BY account_id) latest ON r.id=latest.id)
+        recent AS (SELECT r.* FROM ids JOIN executerecord r ON r.id=(
+            SELECT id FROM executerecord WHERE account_id=ids.id ORDER BY id DESC LIMIT 1))
         SELECT ids.id,b.portfolio_id,r.id,r.created_at,r.is_success,r.display_status
         FROM ids LEFT JOIN bindings b ON b.account_id=ids.id
         LEFT JOIN recent r ON r.account_id=ids.id"
@@ -178,7 +175,92 @@ pub fn dashboard_inputs(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use super::*;
+
+    #[test]
+    fn latest_queries_do_not_scan_valid_history() {
+        let path = std::env::temp_dir().join(format!(
+            "axile-latest-query-work-{}.sqlite",
+            std::process::id()
+        ));
+        crate::migrations::migration_upgrade(path.to_str().unwrap(), &json!({"public":"head"}))
+            .unwrap();
+        let connection = Connection::open(&path).unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
+        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at)
+                VALUES(1,'latest','futures','ctp','','2026-10-27','2026-10-27');
+            INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at)
+                VALUES(7,'latest','futures','','2026-10-27','2026-10-27');
+            CREATE TEMP TABLE history(id INTEGER PRIMARY KEY);
+            WITH RECURSIVE ids(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM ids WHERE id<10000)
+                INSERT INTO history SELECT id FROM ids;
+            INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,facts_complete)
+                VALUES(0,1,'e0',1,'2026-10-27T09:00:00',1);
+            INSERT INTO business_asset_snapshot(asset_id,record_id,path,scope,ordinal,payload_kind,
+                audit_evidence,cash_state,equity_state,market_state,positions_kind,positions_count,observation_valid,total_asset)
+                VALUES('execution:0',0,'/account_assets','after',0,'object','{}','absent','value','absent','array',0,1,100);
+            INSERT INTO business_asset_binding(record_id,path,asset_id,scope,ordinal)
+                VALUES(0,'/account_assets','execution:0','after',0);
+            INSERT INTO account_asset_snapshot(id,account_id,asset_fact_id,source,execution_id,created_at)
+                VALUES(0,1,'execution:0','execution','e0','2026-10-27T09:00:00');").unwrap();
+        let mut previous = 0;
+        let mut work = Vec::new();
+        for count in [100, 10000] {
+            connection.execute_batch(&format!("BEGIN;
+                INSERT INTO account_asset_snapshot(id,account_id,source,created_at)
+                    SELECT id,1,'manual','2026-10-27T09:00:00' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO business_asset_snapshot(asset_id,account_snapshot_id,path,scope,ordinal,payload_kind,
+                    audit_evidence,cash_state,equity_state,market_state,positions_kind,positions_count,observation_valid,total_asset)
+                    SELECT 'snapshot:'||id,id,'/account_assets','manual',0,'object','{{}}','absent','value','absent','array',0,1,id
+                    FROM history WHERE id>{previous} AND id<={count};
+                UPDATE account_asset_snapshot SET asset_fact_id='snapshot:'||id WHERE id>{previous} AND id<={count};
+                INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at)
+                    SELECT id,1,7,'2026-10-27T09:00:00' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at,normalized_weights_kind,weights_metadata)
+                    SELECT id,1,7,'manual','2026-10-27T09:00:00','mapping','{{}}' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,facts_complete)
+                    SELECT id,1,'e'||id,1,'2026-10-27T09:00:00',1 FROM history WHERE id>{previous} AND id<={count};
+                COMMIT;")).unwrap();
+            let steps = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&steps);
+            connection.progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            );
+            let dashboard = dashboard_inputs(&connection, &[1], "l", "e").unwrap();
+            assert_eq!(
+                dashboard["1"]["observation"]["assets"]["total_asset"],
+                json!(count as f64)
+            );
+            assert_eq!(dashboard["1"]["portfolio_id"], 7);
+            assert_eq!(dashboard["1"]["target_weights"], json!({}));
+            let dashboard_steps = steps.swap(0, Ordering::Relaxed);
+            let latest = crate::assets::latest(&connection, 1).unwrap();
+            assert_eq!(latest["id"], count);
+            let latest_steps = steps.swap(0, Ordering::Relaxed);
+            crate::asset_ops::ensure_execution_asset_snapshot(&connection, 0).unwrap();
+            let ensure_steps = steps.load(Ordering::Relaxed);
+            connection.progress_handler(0, None::<fn() -> bool>);
+            work.push([dashboard_steps, latest_steps, ensure_steps]);
+            previous = count;
+        }
+        for (index, query) in ["dashboard", "latest", "execution snapshot"]
+            .iter()
+            .enumerate()
+        {
+            assert!(work[1][index] <= work[0][index] * 2, "{query}: {work:?}");
+        }
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn one_snapshot_keeps_binding_and_target_together_during_publication() {

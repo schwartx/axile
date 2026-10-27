@@ -39,7 +39,8 @@ def test_native_session_classification_preserves_raw_audit_fields(native_databas
         "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
         ("catalog-" + "a" * 32,),
     )
-    (session,) = native_store_call(native_database, "control_monitor_inputs", {})["sessions"]
+    request = {"accounts": [{"account_id": 1, "control_date": "2026-10-27"}]}
+    (session,) = native_store_call(native_database, "control_monitor_inputs", request)["sessions"]
     assert session["context_kind"] == session["source"] == "unknown"
     assert session["effective_context_kind"] == "account_operation"
     assert "effective_context_kind" not in AccountControlSession.model_validate(session).model_dump()
@@ -47,6 +48,45 @@ def test_native_session_classification_preserves_raw_audit_fields(native_databas
         "unknown",
         "unknown",
     )
+
+
+@pytest.mark.parametrize(
+    "timezone,start,end,day",
+    [
+        ("Pacific/Kiritimati", "2026-10-22T10:30:00+00:00", "2026-10-22T10:45:00+00:00", "2026-10-23"),
+        ("America/New_York", "2026-11-01T03:30:00+00:00", "2026-11-01T06:30:00+00:00", "2026-11-01"),
+    ],
+)
+def test_session_context_retains_gaps_in_the_sessions_timezone(native_database, timezone, start, end, day):
+    from datetime import datetime
+
+    from axile.server.db.models.account_control_session import AccountControlSession
+    from tests.conftest import native_store_call
+    from tests.unit.server._business_facts_test_support import seed_account
+    from tests.unit.server._runtime_db_support import runtime_rows
+
+    seed_account(native_database)
+    runtime_rows(
+        native_database,
+        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
+        "timezone,started_at_ms,finished_at_ms,status) VALUES('gap',1,'old','execution','algorithm',?,?,?,'incomplete')",
+        (
+            timezone,
+            int(datetime.fromisoformat(start).timestamp() * 1000),
+            int(datetime.fromisoformat(end).timestamp() * 1000),
+        ),
+    )
+    runtime_rows(
+        native_database,
+        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
+        "timezone,started_at_ms,finished_at_ms,status) VALUES('newer',1,'new','execution','algorithm','Asia/Shanghai',1,2,'closed')",
+    )
+    result = native_store_call(
+        native_database, "control_monitor_inputs", {"accounts": [{"account_id": 1, "control_date": day}]}
+    )
+    sessions = {row["instance_id"]: AccountControlSession.model_validate(row) for row in result["sessions"]}
+    assert "gap" in sessions
+    assert monitor_module._affected(sessions["gap"], day)
 
 
 @sqlite_oracle
@@ -294,6 +334,103 @@ def test_account_operation_final_frame_preserves_late_outcomes(monkeypatch, stal
                 assert frame["status"] == "idle" and frame["instance_id"] is None
                 assert frame["execution_id"] is None
                 assert any(row["outcome"] == "broker_rejected" for row in frame["records"])
+
+    asyncio.run(scenario())
+
+
+def test_late_outcome_updates_an_old_owner_outside_the_monitor_context(monkeypatch):
+    from axile.server.native_store import native_operation
+    from tests.unit.server._runtime_db_support import runtime_rows
+
+    async def scenario():
+        async with database(monkeypatch) as (path, account, monitor):
+
+            async def source(account_id):
+                monitor._sources[account_id] = [(providers.snapshot(account_id), clock_now_ms(), False)]
+
+            monkeypatch.setattr(monitor, "_read_source", source)
+            old = await persistence.build_account_control_guard(account, "old:execution")
+            old.begin_operation("place_order").record_outcome("submitted")
+            await persistence.flush_account_control_records(executor(old))
+            runtime_rows(
+                path,
+                "UPDATE account_control_session SET started_at_ms=1,finished_at_ms=2 WHERE instance_id=?",
+                (old.instance_id,),
+            )
+            newer = await persistence.build_account_control_guard(account, "newer")
+            newer.begin_operation("query_order").record_outcome("fetched")
+            await persistence.flush_account_control_records(executor(newer))
+            operation = await persistence.build_account_control_guard(
+                account,
+                "asset-refresh",
+                context_kind=AccountControlContextKind.ACCOUNT_OPERATION,
+                source=AccountControlSource.ACCOUNT_ASSETS,
+            )
+            operation.begin_operation("query_account").record_outcome("fetched")
+            await persistence.flush_account_control_records(executor(operation))
+            result = await native_operation(
+                "control_monitor_inputs",
+                {
+                    "accounts": [
+                        {"account_id": account.id, "control_date": resolve_control_window("Asia/Shanghai").control_date}
+                    ]
+                },
+            )
+            assert old.instance_id not in {row["instance_id"] for row in result["sessions"]}
+            old.update_event_outcome(0, outcome="broker_rejected", metadata={"error_id": 31})
+            for _ in range(2):
+                await monitor.refresh()
+                assert tuple(
+                    runtime_rows(path, "SELECT outcome FROM account_control_event WHERE execution_id='old:execution'")[
+                        0
+                    ]
+                ) == ("broker_rejected",)
+                assert tuple(runtime_rows(path, "SELECT COUNT(*) FROM account_control_event")[0]) == (3,)
+                assert used(monitor.frames[account.id]) == 121
+
+    asyncio.run(scenario())
+
+
+def test_warning_from_unknown_source_is_retried_after_its_session_is_visible(monkeypatch):
+    from axile.executor.account_control.warnings import AccountControlQuotaWarning
+    from tests.unit.server._runtime_db_support import runtime_rows
+
+    async def scenario():
+        async with database(monkeypatch) as (path, account, monitor):
+            guard = await persistence.build_account_control_guard(account, "warning-source")
+            warning = AccountControlQuotaWarning(
+                account_id=account.id,
+                execution_id=guard.execution_id,
+                operation="place_order",
+                control_date=resolve_control_window("Asia/Shanghai").control_date,
+                timezone="Asia/Shanghai",
+                occurred_at_ms=clock_now_ms(),
+                used=4,
+                limit=5,
+                warning_percent=80,
+                threshold_count=4,
+                remaining=1,
+            )
+            frame = guard.monitor_snapshot()
+            frame.update(instance_id="delayed-source", quota_warnings=[warning.model_dump(mode="json")])
+
+            async def source(account_id):
+                monitor._sources[account_id] = [(frame, clock_now_ms(), False)]
+
+            monkeypatch.setattr(monitor, "_read_source", source)
+            await monitor.refresh()
+            assert monitor._queued_warnings == {}
+            assert tuple(runtime_rows(path, "SELECT count(*) FROM notification_event")[0]) == (0,)
+            runtime_rows(
+                path,
+                "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
+                "timezone,started_at_ms,status) VALUES('delayed-source',1,?,'execution','algorithm','Asia/Shanghai',?,'active')",
+                (guard.execution_id, clock_now_ms()),
+            )
+            for _ in range(2):
+                await monitor.refresh()
+                assert (warning.event_id, "delayed-source") in monitor._queued_warnings
+                assert tuple(runtime_rows(path, "SELECT count(*) FROM notification_event")[0]) == (1,)
 
     asyncio.run(scenario())
 

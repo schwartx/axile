@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 use crate::cost_summary::Summary;
-use crate::journal::historical_summary;
+use crate::journal::{historical_summary, time_predicate};
 
 fn database(error: rusqlite::Error) -> String {
     format!("SYMBOLS_READ_ERROR: {error}")
@@ -30,21 +30,27 @@ pub fn query(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let since = (!since.is_empty()).then(|| crate::calendar::canonical_boundary(since)).transpose()?;
-    let until = (!until.is_empty()).then(|| crate::calendar::canonical_boundary(until)).transpose()?;
+    let since = (!since.is_empty())
+        .then(|| crate::calendar::canonical_boundary(since))
+        .transpose()?;
+    let until = (!until.is_empty())
+        .then(|| crate::calendar::canonical_boundary(until))
+        .transpose()?;
     let mut groups: Vec<(String, f64, Summary, Vec<Value>)> = Vec::new();
     let mut indices = HashMap::new();
     let mut ticks = crate::fact_ticks::TickReader::new(conn).map_err(database)?;
     let mut trades = crate::fact_trades::TradeReader::new(conn).map_err(database)?;
     let mut statement = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id,created_at,execution_id,facts_complete FROM executerecord
-        WHERE account_id=?1 AND (?2 IS NULL OR axile_time(created_at)>=?2) AND (?3 IS NULL OR axile_time(created_at)<?3)
-        ORDER BY axile_time(created_at) DESC,id DESC",
-        )
+             WHERE account_id=?1{}
+             ORDER BY axile_time(created_at) DESC,id DESC",
+            time_predicate("created_at", since.is_some(), until.is_some())
+        ))
         .map_err(database)?;
+    let args = params![account_id, since, until];
     let mut rows = statement
-        .query(params![account_id, since, until])
+        .query(&args[..statement.parameter_count()])
         .map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
         let id: i64 = row.get(0).map_err(database)?;
@@ -97,12 +103,22 @@ mod tests {
     #[test]
     fn activity_window_includes_utc_executions_on_the_shanghai_day() {
         let conn = crate::execution_summary::tests::fixture();
-        conn.execute_batch("CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
+        conn.execute_batch(
+            "CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
             ALTER TABLE executerecord ADD COLUMN execution_id TEXT;
             ALTER TABLE executerecord ADD COLUMN facts_complete INTEGER DEFAULT 1;
             UPDATE executerecord SET created_at='2026-01-31T16:30:00Z' WHERE id=1;
-            UPDATE business_trade SET trade_time=NULL;").unwrap();
-        let result = query(&conn, 2, "2026-02-01T00:00:00+08:00", "2026-02-02T00:00:00+08:00", Some("A")).unwrap();
+            UPDATE business_trade SET trade_time=NULL;",
+        )
+        .unwrap();
+        let result = query(
+            &conn,
+            2,
+            "2026-02-01T00:00:00+08:00",
+            "2026-02-02T00:00:00+08:00",
+            Some("A"),
+        )
+        .unwrap();
         assert_eq!(result["count"], 1);
         assert_eq!(result["data"][0]["n_trades"], 2);
         assert_eq!(result["data"][0]["trades"][0]["day"], "2026-02-01");

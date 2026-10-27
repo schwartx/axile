@@ -254,6 +254,30 @@ pub fn page(
     skip: i64,
     limit: i64,
 ) -> Result<Value, String> {
+    let data = read_page(connection, account_id, skip, limit)?;
+    let count: i64 = connection
+        .query_row(
+            &format!("SELECT count(*) FROM account_asset_snapshot s WHERE {FILTER}"),
+            [account_id],
+            |row| row.get(0),
+        )
+        .map_err(database)?;
+    Ok(json!({"data":data,"count":count}))
+}
+
+pub(crate) fn latest(connection: &Connection, account_id: i64) -> Result<Value, String> {
+    Ok(read_page(connection, account_id, 0, 1)?
+        .into_iter()
+        .next()
+        .unwrap_or(Value::Null))
+}
+
+fn read_page(
+    connection: &Connection,
+    account_id: i64,
+    skip: i64,
+    limit: i64,
+) -> Result<Vec<Value>, String> {
     if skip < 0 || !(1..=500).contains(&limit) {
         return Err(
             "INVALID_REQUEST: skip must be nonnegative and limit must be 1 through 500".into(),
@@ -269,13 +293,6 @@ pub fn page(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let count: i64 = connection
-        .query_row(
-            &format!("SELECT count(*) FROM account_asset_snapshot s WHERE {FILTER}"),
-            [account_id],
-            |row| row.get(0),
-        )
-        .map_err(database)?;
     let page_sql = format!(
         "SELECT s.* FROM account_asset_snapshot s WHERE {FILTER}
         ORDER BY s.id DESC LIMIT ?3 OFFSET ?2"
@@ -328,7 +345,7 @@ pub fn page(
             "created_at":row.get::<_, String>("created_at").map_err(database)?}),
         );
     }
-    Ok(json!({"data":data,"count":count}))
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -366,17 +383,30 @@ mod tests {
             "bad"
         );
         assert_eq!(result["positions"], json!([]));
-        assert_eq!(result, observation_value(row.as_object().unwrap(), &[]).unwrap());
+        assert_eq!(
+            result,
+            observation_value(row.as_object().unwrap(), &[]).unwrap()
+        );
         let mut broken = row.clone();
         broken["positions_count"] = json!(1);
-        assert_eq!(read(&broken).unwrap_err(), observation_value(broken.as_object().unwrap(), &[]).unwrap_err());
+        assert_eq!(
+            read(&broken).unwrap_err(),
+            observation_value(broken.as_object().unwrap(), &[]).unwrap_err()
+        );
         broken = row.clone();
         broken["cash_state"] = Value::Null;
         assert!(read(&broken).unwrap_err().starts_with("ASSET_READ_ERROR:"));
-        assert!(observation_value(broken.as_object().unwrap(), &[]).unwrap_err().contains("invalid availability"));
+        assert!(observation_value(broken.as_object().unwrap(), &[])
+            .unwrap_err()
+            .contains("invalid availability"));
         broken = row;
         broken["audit_evidence"] = json!([]);
-        assert!(read(&broken).unwrap_err().contains("invalid audit evidence"));
-        assert!(observation_value(broken.as_object().unwrap(), &[]).unwrap().get("audit_evidence").is_none());
+        assert!(read(&broken)
+            .unwrap_err()
+            .contains("invalid audit evidence"));
+        assert!(observation_value(broken.as_object().unwrap(), &[])
+            .unwrap()
+            .get("audit_evidence")
+            .is_none());
     }
 }

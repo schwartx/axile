@@ -1,18 +1,18 @@
 """用保留的产品读取入口验证事实；附件夹具只写任务副本，不改源库。"""
 
 import json
-import sqlite3
 import tempfile
 from contextlib import closing
 from pathlib import Path
 
 from axile.server._native import _core
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle
 
 
 @sqlite_oracle
 def _artifact_fixture(source, destination, artifact, account_id):
-    with closing(sqlite3.connect(source)) as original, closing(sqlite3.connect(destination)) as copy:
+    with closing(oracle_connect(source)) as original, closing(oracle_connect(destination)) as copy:
         original.backup(copy)
         identity = artifact["execution_id"] or "fixture-input-owner"
         if artifact["execution_id"] is None:
@@ -51,7 +51,7 @@ def _artifact_fixture(source, destination, artifact, account_id):
 
 @sqlite_oracle
 def _input_owner(path, input_id):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         row = connection.execute(
             "SELECT account_id,coalesce(owner_execution_id,execution_id) FROM execution_input WHERE id=?", (input_id,)
         ).fetchone()
@@ -153,7 +153,7 @@ def _connection_fixture(path, account, state):
     from axile.server.db.models import Account
     from tests.unit.server._execution_test_support import insert_account
 
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, Account.model_validate(account))
         if state is not None:
             names = {row[1] for row in connection.execute("PRAGMA table_info(account_connection_state)")}
@@ -193,7 +193,7 @@ def connection_view(account, *, detail=False):
 
 @sqlite_oracle
 def _status_fixture(path, values, symbols, intent):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         names = {row[1] for row in connection.execute("PRAGMA table_info(executerecord)")}
         values = {key: value for key, value in values.items() if key in names}
         for key, value in values.items():

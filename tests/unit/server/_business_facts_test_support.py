@@ -1,6 +1,5 @@
 """真实原生业务阶段与测试侧 SQL 事实检查；每次调用前关闭 SQLite 连接。"""
 
-import sqlite3
 from contextlib import closing
 from uuid import uuid4
 
@@ -9,19 +8,21 @@ import sqlalchemy as sa
 from axile.server.business_facts.artifacts import make_artifact_reference
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
-from tests.sqlite_oracle import sqlite_oracle
+from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import register_time_function, sqlite_oracle
 from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 
 @sqlite_oracle
 def sql(path, statement, parameters=()):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute(statement, parameters)
 
 
 @sqlite_oracle
 def rows(path, name):
     engine = sa.create_engine(f"sqlite:///{path}")
+    sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.connect() as connection:
             return [dict(row) for row in connection.execute(sa.select(table(name))).mappings()]
@@ -60,6 +61,7 @@ def seed_historical_input(path, input_id, owner_execution_id, **columns):
         **columns,
     }
     engine = sa.create_engine(f"sqlite:///{path}")
+    sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.begin() as connection:
             connection.execute(table("execution_input").insert(), values)

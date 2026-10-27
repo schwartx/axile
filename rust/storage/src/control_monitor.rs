@@ -1,9 +1,9 @@
 //! 监控的持久化输入、迟到结果、异常会话及额度预警。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use chrono::{DateTime, Datelike, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -34,36 +34,96 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, AnalysisError> {
         .ok_or_else(|| invalid(format!("{key} 必须是字符串")))
 }
 
-fn sessions_on(
-    connection: &Connection,
-    account_id: Option<i64>,
-) -> Result<Vec<Value>, AnalysisError> {
-    let mut statement = connection.prepare(
-        "SELECT id,instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,finished_at_ms,status
-         FROM account_control_session WHERE (?1 IS NULL OR account_id=?1) ORDER BY id"
-    ).map_err(database)?;
-    let rows = statement
-        .query_map([account_id], |row| {
-            let execution_id: String = row.get(3)?;
-            let kind: String = row.get(4)?;
-            Ok(json!({
-                "id":row.get::<_,i64>(0)?,"instance_id":row.get::<_,String>(1)?,
-                "account_id":row.get::<_,i64>(2)?,"execution_id":execution_id,
-                "context_kind":kind,"source":row.get::<_,String>(5)?,
-                "effective_context_kind":crate::control_audit::context_kind(&kind,&execution_id),
-                "timezone":row.get::<_,String>(6)?,"started_at_ms":row.get::<_,i64>(7)?,
-                "finished_at_ms":row.get::<_,Option<i64>>(8)?,"status":row.get::<_,String>(9)?
-            }))
-        })
-        .map_err(database)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(database)
+const SESSION_COLUMNS: &str = "id,instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,finished_at_ms,status";
+
+fn session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let execution_id: String = row.get(3)?;
+    let kind: String = row.get(4)?;
+    Ok(json!({
+        "id":row.get::<_,i64>(0)?,"instance_id":row.get::<_,String>(1)?,
+        "account_id":row.get::<_,i64>(2)?,"execution_id":execution_id,
+        "context_kind":kind,"source":row.get::<_,String>(5)?,
+        "effective_context_kind":crate::control_audit::context_kind(&kind,&execution_id),
+        "timezone":row.get::<_,String>(6)?,"started_at_ms":row.get::<_,i64>(7)?,
+        "finished_at_ms":row.get::<_,Option<i64>>(8)?,"status":row.get::<_,String>(9)?
+    }))
 }
 
-pub fn control_monitor_inputs(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
+fn sessions_on(connection: &Connection, request: &Value) -> Result<Vec<Value>, AnalysisError> {
+    let account_id = integer(request, "account_id")?;
+    let day = NaiveDate::parse_from_str(text(request, "control_date")?, "%Y-%m-%d")
+        .map_err(|error| invalid(error.to_string()))?
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc()
+        .timestamp_millis();
+    // 会话使用自己的时区；先覆盖所有合法 UTC 偏移，再由 Python 精筛缺口。
+    let lower = day - 86_400_000;
+    let upper = day + 172_800_000;
+    let mut selected = BTreeMap::new();
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM account_control_session
+         WHERE account_id=?1 AND status='active'
+         UNION ALL SELECT {SESSION_COLUMNS} FROM account_control_session
+         WHERE account_id=?1 AND status IN ('closed','incomplete')
+           AND finished_at_ms>=?2 AND started_at_ms<?3
+         UNION ALL SELECT {SESSION_COLUMNS} FROM account_control_session
+         WHERE account_id=?1 AND status IN ('closed','incomplete')
+           AND finished_at_ms IS NULL AND started_at_ms<?3"
+        ))
+        .map_err(database)?;
+    let mut rows = statement
+        .query(params![account_id, lower, upper])
+        .map_err(database)?;
+    while let Some(row) = rows.next().map_err(database)? {
+        selected.insert(
+            row.get::<_, i64>(0).map_err(database)?,
+            session(row).map_err(database)?,
+        );
+    }
+    // shortcut: 按旧分类倒序找最新执行，账户操作尾部过长时再增加规范分类索引。
+    let mut statement = connection
+        .prepare(&format!(
+        "SELECT {SESSION_COLUMNS} FROM account_control_session WHERE account_id=?1 ORDER BY id DESC"
+    ))
+        .map_err(database)?;
+    let mut rows = statement.query([account_id]).map_err(database)?;
+    let mut newest = true;
+    while let Some(row) = rows.next().map_err(database)? {
+        let execution: String = row.get(3).map_err(database)?;
+        let kind: String = row.get(4).map_err(database)?;
+        let execution =
+            crate::control_audit::context_kind(&kind, &execution) != "account_operation";
+        if newest || execution {
+            selected.insert(
+                row.get::<_, i64>(0).map_err(database)?,
+                session(row).map_err(database)?,
+            );
+        }
+        if execution {
+            break;
+        }
+        newest = false;
+    }
+    Ok(selected.into_values().collect())
+}
+
+pub fn control_monitor_inputs(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let connection = crate::storage_connection::open_reader(Path::new(path))?;
     connection
         .execute_batch("BEGIN DEFERRED")
         .map_err(database)?;
+    if let Some(scopes) = request.get("accounts") {
+        let mut sessions = Vec::new();
+        for scope in scopes
+            .as_array()
+            .ok_or_else(|| invalid("accounts 必须是数组"))?
+        {
+            sessions.extend(sessions_on(&connection, scope)?);
+        }
+        return Ok(json!({"sessions":sessions}));
+    }
     let mut statement = connection
         .prepare(
             "SELECT a.id,a.trade_channel,
@@ -88,7 +148,7 @@ pub fn control_monitor_inputs(path: &str, _request: &Value) -> Result<Value, Ana
             "account_control_override":override_value
         }));
     }
-    Ok(json!({"accounts":accounts,"sessions":sessions_on(&connection,None)?}))
+    Ok(json!({"accounts":accounts}))
 }
 
 pub fn control_monitor_recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
@@ -258,10 +318,54 @@ fn history_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
     Ok(history)
 }
 
+fn closed_outcomes(
+    connection: &Connection,
+    account_id: i64,
+    request: &Value,
+) -> Result<Vec<Value>, AnalysisError> {
+    let mut event = connection
+        .prepare(
+            "SELECT execution_id FROM account_control_event WHERE event_uid=?1 AND account_id=?2",
+        )
+        .map_err(database)?;
+    let mut owner = connection.prepare(
+        "SELECT status FROM account_control_session WHERE instance_id=?1 AND account_id=?2 AND execution_id=?3"
+    ).map_err(database)?;
+    let mut updates = Vec::new();
+    for update in request["outcomes"]
+        .as_array()
+        .ok_or_else(|| invalid("outcomes 必须是数组"))?
+    {
+        let uid = text(update, "event_uid")?;
+        let execution: Option<String> = event
+            .query_row(params![uid, account_id], |row| row.get(0))
+            .optional()
+            .map_err(database)?;
+        let Some(execution) = execution else { continue };
+        let Some((instance, _)) = uid
+            .strip_prefix(&format!("{execution}:"))
+            .and_then(|suffix| suffix.split_once(':'))
+        else {
+            continue;
+        };
+        let status: Option<String> = owner
+            .query_row(params![instance, account_id, execution], |row| row.get(0))
+            .optional()
+            .map_err(database)?;
+        if status.is_some_and(|status| status != "active") {
+            let mut update = update.clone();
+            update["account_id"] = json!(account_id);
+            updates.push(update);
+        }
+    }
+    Ok(updates)
+}
+
 fn refresh_on(connection: &Connection, requests: &[Value]) -> Result<Value, AnalysisError> {
     let mut data = Vec::new();
     let mut updated_uids = Vec::new();
     let mut warnings = Vec::new();
+    let mut accepted_warning_sources = Vec::new();
     let mut warning_error: Option<&str> = None;
     for request in requests {
         let account_id = integer(request, "account_id")?;
@@ -275,28 +379,8 @@ fn refresh_on(connection: &Connection, requests: &[Value]) -> Result<Value, Anal
                 )
                 .map_err(database)?;
         }
-        let sessions = sessions_on(connection, Some(account_id))?;
-        let outcomes: Vec<Value> = request["outcomes"]
-            .as_array()
-            .ok_or_else(|| invalid("outcomes 必须是数组"))?
-            .iter()
-            .filter(|event| {
-                event["event_uid"].as_str().is_some_and(|uid| {
-                    sessions.iter().any(|session| {
-                        session["status"] != "active"
-                            && uid.contains(&format!(
-                                ":{}:",
-                                session["instance_id"].as_str().unwrap()
-                            ))
-                    })
-                })
-            })
-            .map(|event| {
-                let mut event = event.clone();
-                event["account_id"] = json!(account_id);
-                event
-            })
-            .collect();
+        let sessions = sessions_on(connection, request)?;
+        let outcomes = closed_outcomes(connection, account_id, request)?;
         let updated = if outcomes.is_empty() {
             json!({"updated":0,"updated_uids":[]})
         } else {
@@ -332,12 +416,17 @@ fn refresh_on(connection: &Connection, requests: &[Value]) -> Result<Value, Anal
                     .map_err(AnalysisError::from)?;
         }
         for source in request["warning_sources"].as_array().into_iter().flatten() {
-            if !sessions
-                .iter()
-                .any(|session| session["instance_id"] == source["instance_id"])
-            {
+            let Some(instance) = source["instance_id"].as_str() else {
+                continue;
+            };
+            let known: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM account_control_session WHERE instance_id=?1 AND account_id=?2)",
+                params![instance, account_id], |row| row.get(0),
+            ).map_err(database)?;
+            if !known {
                 continue;
             }
+            accepted_warning_sources.push(json!([account_id, instance]));
             for warning in source["warnings"].as_array().into_iter().flatten() {
                 if warning["account_id"].as_i64() != Some(account_id) {
                     warning_error = Some("额度预警与账户不匹配");
@@ -348,7 +437,8 @@ fn refresh_on(connection: &Connection, requests: &[Value]) -> Result<Value, Anal
         data.push(state);
     }
     Ok(
-        json!({"data":data,"updated_uids":updated_uids,"warnings":warnings,"warning_error":warning_error}),
+        json!({"data":data,"updated_uids":updated_uids,"warnings":warnings,
+            "accepted_warning_sources":accepted_warning_sources,"warning_error":warning_error}),
     )
 }
 
@@ -400,6 +490,102 @@ pub fn control_monitor_refresh(path: &str, request: &Value) -> Result<Value, Ana
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn session_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE account_control_session(
+                id INTEGER PRIMARY KEY,instance_id TEXT UNIQUE,account_id INTEGER,execution_id TEXT,
+                context_kind TEXT,source TEXT,timezone TEXT,started_at_ms INTEGER,finished_at_ms INTEGER,status TEXT);
+             CREATE INDEX ix_account_control_session_account_id ON account_control_session(account_id);
+             CREATE INDEX ix_control_session_account_status_finished ON account_control_session(account_id,status,finished_at_ms);
+             CREATE TABLE account_control_event(event_uid TEXT UNIQUE,account_id INTEGER,execution_id TEXT);"
+        ).unwrap();
+        connection
+    }
+
+    #[test]
+    fn session_context_keeps_current_active_and_latest_without_old_history_growth() {
+        let connection = session_database();
+        let day = 1_792_713_600_000_i64;
+        connection.execute_batch(&format!(
+            "INSERT INTO account_control_session VALUES
+                (10000,'latest-execution',1,'execution','execution','algorithm','Asia/Shanghai',1,2,'closed'),
+                (10001,'today-closed',1,'refresh','account_operation','account_assets','Asia/Shanghai',{day},{day},'closed'),
+                (10002,'today-gap',1,'catalog','account_operation','instrument_catalog','Pacific/Kiritimati',{day},{day},'incomplete'),
+                (10003,'long-active',1,'query','account_operation','current_orders','Asia/Shanghai',1,NULL,'active'),
+                (10004,'latest-any',1,'query2','account_operation','current_orders','Asia/Shanghai',1,2,'closed');"
+        )).unwrap();
+        let request = json!({"account_id":1,"control_date":"2026-10-23"});
+        let read = || {
+            let steps = Arc::new(AtomicUsize::new(0));
+            let visits = steps.clone();
+            connection.progress_handler(
+                1,
+                Some(move || {
+                    visits.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            );
+            let sessions = sessions_on(&connection, &request).unwrap();
+            connection.progress_handler(0, None::<fn() -> bool>);
+            (sessions, steps.load(Ordering::Relaxed))
+        };
+        let (expected, before) = read();
+        assert_eq!(
+            expected
+                .iter()
+                .map(|row| row["instance_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "latest-execution",
+                "today-closed",
+                "today-gap",
+                "long-active",
+                "latest-any"
+            ]
+        );
+        connection
+            .execute_batch(
+                "WITH RECURSIVE ids(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM ids WHERE id<5000)
+             INSERT INTO account_control_session SELECT id,'old-' || id,1,'old-' || id,
+                'account_operation','account_assets','Asia/Shanghai',1,2,'closed' FROM ids;",
+            )
+            .unwrap();
+        let (actual, after) = read();
+        assert_eq!(actual, expected);
+        assert!(
+            after < before * 2,
+            "unrelated history changed query work: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn late_outcomes_use_the_events_owner_and_reject_other_accounts_or_active_owners() {
+        let connection = session_database();
+        connection.execute_batch(
+            "INSERT INTO account_control_session VALUES
+                (1,'old',1,'execution:with:colons','execution','algorithm','Asia/Shanghai',1,2,'closed'),
+                (2,'active',1,'running','execution','algorithm','Asia/Shanghai',1,NULL,'active'),
+                (3,'foreign',2,'other','execution','algorithm','Asia/Shanghai',1,2,'closed');
+             INSERT INTO account_control_event VALUES
+                ('execution:with:colons:old:1:place_order:-:allowed',1,'execution:with:colons'),
+                ('running:active:1:place_order:-:allowed',1,'running'),
+                ('other:foreign:1:place_order:-:allowed',2,'other');"
+        ).unwrap();
+        let request = json!({"outcomes":[
+            {"event_uid":"execution:with:colons:old:1:place_order:-:allowed","outcome":"broker_rejected","metadata":{}},
+            {"event_uid":"running:active:1:place_order:-:allowed","outcome":"broker_rejected","metadata":{}},
+            {"event_uid":"other:foreign:1:place_order:-:allowed","outcome":"broker_rejected","metadata":{}},
+            {"event_uid":"missing:old:1:place_order:-:allowed","outcome":"broker_rejected","metadata":{}}
+        ]});
+        let updates = closed_outcomes(&connection, 1, &request).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["event_uid"], request["outcomes"][0]["event_uid"]);
+        assert_eq!(updates[0]["account_id"], 1);
+    }
 
     fn warning() -> Value {
         json!({"account_id":1,"execution_id":"exec","operation":"place_order",

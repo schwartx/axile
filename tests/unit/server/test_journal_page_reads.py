@@ -88,6 +88,9 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
             before = path.read_bytes()
             for window, filters in (
                 (order, {}),
+                (order, dict(since="", until="")),
+                (order[:3], dict(since=record(5).created_at)),
+                (order[3:], dict(until=record(5).created_at)),
                 (order[3:8], dict(since=record(2).created_at, until=record(5).created_at)),
                 ([], dict(since="2099")),
             ):

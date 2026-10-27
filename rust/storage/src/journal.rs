@@ -9,10 +9,10 @@ use crate::cost_summary::Summary;
 #[cfg(test)]
 use crate::cost_summary::AGGREGATES;
 
-const HEADERS: &str = "SELECT id,axile_time(created_at) AS occurred_at,0 AS kind FROM executerecord
-    WHERE account_id=?1 AND (?2 IS NULL OR axile_time(created_at)>=?2) AND (?3 IS NULL OR axile_time(created_at)<?3)
-    UNION ALL SELECT id,axile_time(triggered_at),1 FROM schedule_skip
-    WHERE account_id=?1 AND (?2 IS NULL OR axile_time(triggered_at)>=?2) AND (?3 IS NULL OR axile_time(triggered_at)<?3)";
+const PAGE: &str = "WITH page AS (
+    SELECT json_extract(value,'$[0]') AS id,json_extract(value,'$[1]') AS occurred_at,
+           json_extract(value,'$[2]') AS kind FROM json_each(?1)),
+    selected AS (SELECT id FROM page WHERE kind=0)";
 const OWNER_VALID: &str = "((a.record_id=r.id AND a.path=b.path AND a.scope=b.scope
     AND a.ordinal=b.ordinal AND a.map_key IS b.map_key) OR
     (a.input_id IN (r.input_id,r.result_input_id) AND i.account_id=r.account_id
@@ -22,6 +22,29 @@ const OWNER_VALID: &str = "((a.record_id=r.id AND a.path=b.path AND a.scope=b.sc
 
 fn database(error: rusqlite::Error) -> String {
     format!("JOURNAL_READ_ERROR: {error}")
+}
+
+/// Direct optional bounds let SQLite seek the canonical-time expression index.
+pub(crate) fn time_predicate(column: &str, since: bool, until: bool) -> String {
+    let mut predicate = String::new();
+    if since {
+        predicate.push_str(&format!(" AND axile_time({column})>=?2"));
+    }
+    if until {
+        predicate.push_str(&format!(" AND axile_time({column})<?3"));
+    }
+    predicate
+}
+
+fn headers(since: bool, until: bool) -> String {
+    format!(
+        "SELECT id,axile_time(created_at) AS occurred_at,0 AS kind FROM executerecord
+         WHERE account_id=?1{}
+         UNION ALL SELECT id,axile_time(triggered_at),1 FROM schedule_skip
+         WHERE account_id=?1{}",
+        time_predicate("created_at", since, until),
+        time_predicate("triggered_at", since, until)
+    )
 }
 
 /// Return the final HTTP journal shape without reading execution or input payloads.
@@ -48,33 +71,57 @@ pub fn page(
     if !exists {
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
-    let since = since.filter(|value| !value.is_empty())
-        .map(crate::calendar::canonical_boundary).transpose()?;
-    let until = until.filter(|value| !value.is_empty())
-        .map(crate::calendar::canonical_boundary).transpose()?;
-    let args = params![account_id, since, until, limit, skip];
-    let count: i64 = connection
-        .query_row(
-            &format!("SELECT count(*) FROM ({HEADERS})"),
-            params![account_id, since, until],
-            |row| row.get(0),
-        )
+    let since = since
+        .filter(|value| !value.is_empty())
+        .map(crate::calendar::canonical_boundary)
+        .transpose()?;
+    let until = until
+        .filter(|value| !value.is_empty())
+        .map(crate::calendar::canonical_boundary)
+        .transpose()?;
+    let headers = headers(since.is_some(), until.is_some());
+    let filter_args = params![account_id, since, until, limit, skip];
+    let mut statement = connection
+        .prepare(&format!("SELECT count(*) FROM ({headers})"))
         .map_err(database)?;
-    let cte = format!(
-        "WITH page AS (SELECT * FROM ({HEADERS})
-        ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5),
-        selected AS (SELECT id FROM page WHERE kind=0)"
-    );
+    let count: i64 = statement
+        .query_row(&filter_args[..statement.parameter_count()], |row| {
+            row.get(0)
+        })
+        .map_err(database)?;
+    let selected_page = {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT id,occurred_at,kind FROM ({headers})
+             ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5"
+            ))
+            .map_err(database)?;
+        let rows = statement
+            .query_map(filter_args, |row| {
+                Ok(json!([
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?
+                ]))
+            })
+            .map_err(database)?;
+        Value::Array(
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database)?,
+        )
+        .to_string()
+    };
+    let args = [selected_page.as_str()];
 
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
-    let mut statement = connection.prepare(&format!("{cte}
+    let mut statement = connection.prepare(&format!("{PAGE}
         SELECT s.record_id,s.map_key,s.node_kind,s.status,s.error,s.outcome,s.outcome_reason,s.reason_code,s.memory
         FROM execution_symbol_result s JOIN selected p ON p.id=s.record_id
         ORDER BY s.record_id,s.map_key")).map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
         let fields = crate::executions::symbol_from_row(row)
-        .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?;
+            .map_err(|error| format!("JOURNAL_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get(0).map_err(database)?)
             .or_default()
@@ -84,7 +131,7 @@ pub fn page(
     let mut summaries = HashMap::new();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(database)?;
     let mut trades = crate::fact_trades::TradeReader::new(connection).map_err(database)?;
-    let mut statement = connection.prepare(&format!("{cte}
+    let mut statement = connection.prepare(&format!("{PAGE}
         SELECT r.id,r.created_at,r.facts_complete FROM executerecord r JOIN selected p ON p.id=r.id"))
         .map_err(database)?;
     let mut rows = statement.query(args).map_err(database)?;
@@ -106,7 +153,7 @@ pub fn page(
     let mut totals = HashMap::new();
     let mut statement = connection
         .prepare(&format!(
-            "{cte}
+            "{PAGE}
         SELECT b.record_id,a.total_asset,a.observation_valid,{OWNER_VALID} AS owner_valid
         FROM selected p JOIN business_asset_binding b ON b.record_id=p.id
         JOIN business_asset_snapshot a ON a.asset_id=b.asset_id
@@ -134,7 +181,7 @@ pub fn page(
     let mut data = Vec::new();
     let mut statement = connection
         .prepare(&format!(
-            "{cte}
+            "{PAGE}
         SELECT r.id,r.execution_id,r.created_at,r.is_success,r.display_status,r.task_status,
         r.display_error,r.display_outcome,r.display_outcome_reason,r.reason_code,r.execution_kind,
         r.execution_time,
@@ -301,9 +348,18 @@ mod tests {
         let result = page(&conn, 2, 0, 1, since, until).unwrap();
         assert_eq!(result["count"], 3);
         assert_eq!(result["data"][0]["record"]["id"], 1);
-        assert_eq!(page(&conn, 2, 1, 1, since, until).unwrap()["data"][0]["id"], 20);
-        assert_eq!(page(&conn, 2, 2, 1, since, until).unwrap()["data"][0]["record"]["id"], 2);
-        assert_eq!(page(&conn, 2, 0, 10, since, Some("2026-02-01 00:30:00")).unwrap()["count"], 2);
+        assert_eq!(
+            page(&conn, 2, 1, 1, since, until).unwrap()["data"][0]["id"],
+            20
+        );
+        assert_eq!(
+            page(&conn, 2, 2, 1, since, until).unwrap()["data"][0]["record"]["id"],
+            2
+        );
+        assert_eq!(
+            page(&conn, 2, 0, 10, since, Some("2026-02-01 00:30:00")).unwrap()["count"],
+            2
+        );
     }
 
     #[test]
@@ -345,7 +401,10 @@ mod tests {
             INSERT INTO schedule_skip VALUES(2,1,'2026-01-02'),(3,1,'2026-01-03');",
         )
         .unwrap();
-        let sql = format!("SELECT kind,id FROM ({HEADERS}) ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5");
+        let sql = format!(
+            "SELECT kind,id FROM ({}) ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5",
+            headers(true, true)
+        );
         let mut stmt = conn.prepare(&sql).unwrap();
         let result = stmt
             .query_map(params![1, "2026-01-02", "2026-01-03", 10, 0], |row| {
@@ -355,6 +414,11 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(result, vec![(0, 2), (1, 2)]);
+        let sql = format!(
+            "SELECT kind,id FROM ({}) ORDER BY occurred_at DESC,id DESC,kind LIMIT ?4 OFFSET ?5",
+            headers(false, false)
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let result = stmt
             .query_map(
                 params![1, Option::<String>::None, Option::<String>::None, 1, 1],
@@ -364,6 +428,66 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn page_selects_history_once_and_old_rows_do_not_expand_window_query_work() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let conn = fixture();
+        let conversions = Arc::new(AtomicUsize::new(0));
+        let observed = conversions.clone();
+        conn.create_scalar_function(
+            "axile_time",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            move |context| {
+                observed.fetch_add(1, Ordering::Relaxed);
+                Ok(crate::calendar::canonical_time(&context.get::<String>(0)?).unwrap())
+            },
+        )
+        .unwrap();
+        assert_eq!(page(&conn, 2, 0, 1, None, None).unwrap()["count"], 2);
+        assert_eq!(conversions.load(Ordering::Relaxed), 2);
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX journal_record_id ON executerecord(id);
+             CREATE INDEX journal_record_time ON executerecord(account_id,axile_time(created_at) DESC,id DESC);
+             CREATE INDEX journal_skip_time ON schedule_skip(account_id,axile_time(triggered_at) DESC,id DESC);"
+        ).unwrap();
+        let measure = || {
+            let work = Arc::new(AtomicUsize::new(0));
+            let observed = work.clone();
+            conn.progress_handler(
+                100,
+                Some(move || {
+                    observed.fetch_add(100, Ordering::Relaxed);
+                    false
+                }),
+            );
+            let journal = page(&conn, 2, 0, 1, Some("2026-01-01"), Some("2026-01-03")).unwrap();
+            let symbols =
+                crate::symbols::query(&conn, 2, "2026-01-01", "2026-01-03", None).unwrap();
+            conn.progress_handler(0, None::<fn() -> bool>);
+            assert_eq!(journal["count"], 2);
+            assert_eq!(journal["data"][0]["record"]["id"], 2);
+            assert_eq!(symbols["count"], 1);
+            work.load(Ordering::Relaxed)
+        };
+        let small = measure();
+        conn.execute_batch(
+            "WITH RECURSIVE n(id) AS (SELECT 100 UNION ALL SELECT id+1 FROM n WHERE id<10100)
+             INSERT INTO executerecord(id,account_id,created_at) SELECT id,2,'2025-01-01' FROM n;",
+        )
+        .unwrap();
+        let large = measure();
+        assert!(
+            large < small + 1000,
+            "window work grew from {small} to {large} VM steps"
+        );
     }
 
     #[test]

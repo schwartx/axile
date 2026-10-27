@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 _CHILD = """
@@ -40,6 +41,18 @@ while True:
 _worker = None
 _worker_pid = None
 _worker_lock = threading.Lock()
+
+
+def _canonical_time(value):
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    return parsed.isoformat(timespec="microseconds")
+
+
+def register_time_function(connection, _connection_record=None):
+    """测试写连接沿用原生索引的固定东八区时间及确定性声明。"""
+    connection.create_function("axile_time", 1, _canonical_time, deterministic=True)
 
 
 def _restore_row(names, values):
@@ -119,6 +132,7 @@ _cursors = {}
 def _database_operation(kind, identity=None, name=None, arguments=(), keywords=None):
     if kind == "open":
         connection = sqlite3.connect(*arguments, **(keywords or {}))
+        register_time_function(connection)
         identity = id(connection)
         _connections[identity] = connection
         return identity
@@ -214,5 +228,7 @@ class _Connection:
 def connect(database, *arguments, **keywords):
     """保留显式连接和游标生命周期，让原有 SQL 事务留在子进程。"""
     if database == ":memory:" or os.environ.get("AXILE_TEST_SQLITE_ORACLE") == "1":
-        return sqlite3.connect(database, *arguments, **keywords)
+        connection = sqlite3.connect(database, *arguments, **keywords)
+        register_time_function(connection)
+        return connection
     return _Connection(_database_operation("open", arguments=(database, *arguments), keywords=keywords))

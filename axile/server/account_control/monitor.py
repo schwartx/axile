@@ -126,9 +126,21 @@ class AccountControlMonitor:
     async def _refresh(self) -> None:
         inputs = await native_operation("control_monitor_inputs", {})
         accounts = inputs["accounts"]
-        sessions = [AccountControlSession.model_validate(raw) for raw in inputs["sessions"]]
-        await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
         policies = {account["id"]: self._policy(account) for account in accounts}
+        contexts = await native_operation(
+            "control_monitor_inputs",
+            {
+                "accounts": [
+                    {
+                        "account_id": account["id"],
+                        "control_date": resolve_control_window(policies[account["id"]].timezone).control_date,
+                    }
+                    for account in accounts
+                ]
+            },
+        )
+        sessions = [AccountControlSession.model_validate(raw) for raw in contexts["sessions"]]
+        await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
         requests = [self._persistence_request(account, policies[account["id"]], sessions) for account in accounts]
         receipt = await native_operation(
             "control_monitor_refresh", {"accounts": requests, "created_at": clock_now_iso()}
@@ -136,8 +148,11 @@ class AccountControlMonitor:
         if receipt.get("warning_error"):
             logger.error("运行中额度预警入队失败，等待下次采样: {}", receipt["warning_error"])
         if receipt["warnings_committed"]:
+            accepted = {tuple(source) for source in receipt["accepted_warning_sources"]}
             for request in requests:
                 for source in request["warning_sources"]:
+                    if (request["account_id"], source["instance_id"]) not in accepted:
+                        continue
                     for raw in source["warnings"]:
                         key = AccountControlQuotaWarning.model_validate(raw).event_id, source["instance_id"]
                         self._queued_warnings[key] = None
@@ -224,9 +239,8 @@ class AccountControlMonitor:
         )
         cached = self._history.get(account_id)
         warning_sources = []
-        known = {session.instance_id for session in sessions}
         for source, _, _ in self._sources.get(account_id, []):
-            if source is None or source.get("instance_id") not in known:
+            if source is None or not isinstance(source.get("instance_id"), str):
                 continue
             warnings = [
                 raw

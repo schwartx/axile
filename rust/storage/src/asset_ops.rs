@@ -330,15 +330,16 @@ pub(crate) fn ensure_execution_asset_snapshot(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(sql)?;
+    let (lookup, identity) = match execution_id.as_deref() {
+        Some(execution) => ("execution_id", execution),
+        None => ("asset_fact_id", reference.as_str()),
+    };
     let mut statement = connection
-        .prepare(
-            "SELECT * FROM account_asset_snapshot WHERE CASE WHEN ?1 IS NOT NULL
-         THEN execution_id=?1 ELSE asset_fact_id=?2 END",
-        )
+        .prepare(&format!(
+            "SELECT * FROM account_asset_snapshot WHERE {lookup}=?1"
+        ))
         .map_err(sql)?;
-    let mut cursor = statement
-        .query(params![execution_id, reference])
-        .map_err(sql)?;
+    let mut cursor = statement.query([identity]).map_err(sql)?;
     if let Some(row) = cursor.next().map_err(sql)? {
         let existing =
             crate::business_detail::decode(row, "account_asset_snapshot").map_err(invalid)?;
@@ -408,13 +409,7 @@ pub(crate) fn read_input_asset_observations(
 pub fn asset_snapshot_latest(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = integer(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
-        let page =
-            crate::assets::page(connection, account_id, 0, 1).map_err(AnalysisError::from)?;
-        Ok(page["data"]
-            .as_array()
-            .and_then(|rows| rows.first())
-            .cloned()
-            .unwrap_or(Value::Null))
+        crate::assets::latest(connection, account_id).map_err(AnalysisError::from)
     })
 }
 

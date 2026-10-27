@@ -10,9 +10,10 @@ use crate::error::AnalysisError;
 
 mod legacy;
 mod private;
+mod query_indexes;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0034";
+pub const PUBLIC_HEAD: &str = "0035";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -20,7 +21,7 @@ const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const LEGACY_HEAD: u32 = 33;
-const PUBLIC_HEAD_NUMBER: u32 = 34;
+const PUBLIC_HEAD_NUMBER: u32 = 35;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -112,9 +113,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0034, private base/axon_0001")
+            invalid("supported targets: public 0012 through 0035, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0034")
+            invalid("supported targets: public base/0001 through 0035")
         }
     }
 }
@@ -211,6 +212,7 @@ fn write_scope<T>(
     let mut connection = Connection::open_with_flags(database, flags)
         .map_err(|error| AnalysisError::new("DATABASE_OPEN", error.to_string()))?;
     configure(&connection)?;
+    crate::calendar::register_time_function(&connection).map_err(sql)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sql)?;
@@ -318,11 +320,14 @@ fn move_public(
         } else {
             current.public
         };
-        match (upgrade, revision <= 33) {
-            (true, true) => legacy::upgrade(connection, revision)?,
-            (true, false) => structured::upgrade(connection)?,
-            (false, true) => legacy::downgrade(connection, revision)?,
-            (false, false) => structured::downgrade(connection)?,
+        match (upgrade, revision) {
+            (true, 1..=33) => legacy::upgrade(connection, revision)?,
+            (true, 34) => structured::upgrade(connection)?,
+            (true, 35) => query_indexes::upgrade(connection)?,
+            (false, 1..=33) => legacy::downgrade(connection, revision)?,
+            (false, 34) => structured::downgrade(connection)?,
+            (false, 35) => query_indexes::downgrade(connection)?,
+            _ => return Err(invalid(format!("unsupported public revision {revision}"))),
         }
         current.public = if upgrade { revision } else { revision - 1 };
         let revision = (current.public != 0).then(|| format!("{:04}", current.public));
@@ -500,7 +505,7 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         let minimum = if policy.codes.is_some() { 12 } else { 1 };
         if current.public < minimum {
             return Err(invalid(if policy.codes.is_some() {
-                "downgrade requires public revision 0012 through 0034"
+                "downgrade requires public revision 0012 through 0035"
             } else {
                 "downgrade requires an existing public revision"
             }));
@@ -574,7 +579,7 @@ mod tests {
         let request = dual_request("head", "head");
         let current = migration_current(path.as_str(), &request).unwrap();
         assert_eq!(current["public"], Value::Null);
-        assert_eq!(current["public_target"], "0034");
+        assert_eq!(current["public_target"], PUBLIC_HEAD);
         let checked = migration_check(path.as_str(), &request).unwrap();
         assert_eq!(checked["private_fields"], 0);
         assert!(!path.0.exists());

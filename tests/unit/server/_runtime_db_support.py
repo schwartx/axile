@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import patch
 
 from axile.server.native_store import native_operation
+from tests.sqlite_oracle import connect as oracle_connect
 from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
@@ -17,7 +18,7 @@ from tests.unit.server._execution_test_support import account_settings_values, b
 @sqlite_oracle
 def runtime_rows(path: Path, statement: str, parameters: Sequence[Any] = ()) -> list[sqlite3.Row]:
     """每次重新连接并提交，短超时使生产事务泄漏直接暴露为测试失败。"""
-    with closing(sqlite3.connect(path, timeout=0.5)) as connection, connection:
+    with closing(oracle_connect(path, timeout=0.5)) as connection, connection:
         connection.row_factory = sqlite3.Row
         return connection.execute(statement, parameters).fetchall()
 
@@ -34,7 +35,7 @@ async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Pa
     """提供两个账户与隔离文件库；生产入口自行持有原生连接和事务。"""
     with patch("axile.server.core.db.database_path", return_value=str(path)):
         await native_operation("migration_upgrade", {})
-        with closing(sqlite3.connect(path)) as connection, connection:
+        with closing(oracle_connect(path)) as connection, connection:
             # 只固定初始模式；生产 writer 会按服务约定切换到 WAL。
             connection.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
             for account_id in (1, 2):

@@ -1,6 +1,5 @@
 """真实原生迁移和业务阶段驱动的分析测试夹具。"""
 
-import sqlite3
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta
 from graphlib import TopologicalSorter
@@ -10,11 +9,13 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool
 
 from tests.conftest import initialize_native_database, native_store_call
-from tests.sqlite_oracle import sqlite_oracle
+from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import register_time_function, sqlite_oracle
 from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 
@@ -38,7 +39,7 @@ async def _release_oracle_connections(session) -> Path:
 def install_analysis_triggers(connection):
     """验证真实迁移已安装触发器；不再从生产 Python 迁移模块补建。"""
     revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-    assert revision == "0034", "请在打开测试事务前调用 initialize_native_database"
+    assert revision in {"0034", "0035"}, "请在打开测试事务前调用 initialize_native_database"
     names = set(connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars())
     assert {
         "analysis_snapshot_delete",
@@ -102,7 +103,7 @@ def _reset_records(connection, record_ids):
 
 @sqlite_oracle
 def _prepare_records(path, record_ids):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         tables = _record_tables(connection)
         _reset_records(connection, record_ids)
@@ -111,7 +112,7 @@ def _prepare_records(path, record_ids):
 
 @sqlite_oracle
 def _rewrite_record_id(path, source, target, execution_id, tables):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         _move_record_id(connection, source, target, execution_id, tables)
 
@@ -145,7 +146,7 @@ async def persist_records(session, records):
 
 @sqlite_oracle
 def _record_account(path, record_id):
-    with closing(sqlite3.connect(path)) as connection:
+    with closing(oracle_connect(path)) as connection:
         return connection.execute("SELECT account_id FROM executerecord WHERE id=?", (record_id,)).fetchone()
 
 
@@ -168,14 +169,14 @@ async def load_record(session, record_id):
 
 @sqlite_oracle
 def _reset_target(path, snapshot_id):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("DELETE FROM target_weight_snapshot WHERE id=?", (snapshot_id,))
 
 
 @sqlite_oracle
 def _rewrite_target_id(path, source, target, execution_id):
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("PRAGMA defer_foreign_keys=ON")
@@ -280,6 +281,7 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
         copyfile(schema_template, path)
     _insert_account(path, build_account(id=2, portfolio_id=None, account_control_preset="default"))
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}", poolclass=NullPool)
+    event.listen(engine.sync_engine, "connect", register_time_function)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session:
@@ -293,7 +295,7 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
 def _insert_account(path, account):
     from tests.unit.server._execution_test_support import insert_account
 
-    with closing(sqlite3.connect(path)) as connection, connection:
+    with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, account)
 
 

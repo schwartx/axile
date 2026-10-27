@@ -7,12 +7,14 @@ import pytest
 import sqlalchemy as sa
 
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import register_time_function
 
 
 @contextmanager
 def _connect(database):
     """原生调用前关闭测试侧连接，避免两套 SQLite 内核共享文件锁。"""
     engine = sa.create_engine(f"sqlite:///{database}", poolclass=sa.pool.NullPool)
+    sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.begin() as connection:
             assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 0
