@@ -235,13 +235,24 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
     if value.get("include_backtest").and_then(Value::as_bool) == Some(false) {
         result["backtest_included"] = json!(false);
         result["skips"] = Value::Null;
+        result["target_skips"] = Value::Null;
         result["used_record_count"] = json!(0);
+        result["target_used_record_count"] = json!(0);
+        result["sizing_fallback_count"] = Value::Null;
+        result["sizing_fallback_ranges"] = json!([]);
         if let Some(points) = result.get_mut("points").and_then(Value::as_array_mut) {
             for point in points {
                 if let Some(point) = point.as_object_mut() {
-                    for field in ["portfolio_return", "portfolio_daily_return", "difference"] {
+                    for field in [
+                        "portfolio_return",
+                        "portfolio_daily_return",
+                        "target_portfolio_return",
+                        "target_portfolio_daily_return",
+                        "difference",
+                    ] {
                         point.insert(field.into(), Value::Null);
                     }
+                    point.insert("sizing_fallback".into(), json!(false));
                 }
             }
         }
@@ -250,7 +261,9 @@ pub fn performance_result(connection: &Connection, value: &Value) -> Result<Valu
 }
 
 pub(crate) fn timestamp(value: &str) -> Option<i64> {
-    crate::calendar::local_time(value).ok().map(crate::calendar::timestamp_micros)
+    crate::calendar::local_time(value)
+        .ok()
+        .map(crate::calendar::timestamp_micros)
 }
 
 pub(crate) fn summaries_for_accounts(
@@ -595,15 +608,69 @@ mod tests {
     fn ready_result_can_omit_backtest_without_changing_account_returns() {
         let connection = database();
         publish(&connection);
+        connection.execute_batch(
+            "UPDATE performance_result_range SET target_used_record_count=7,sizing_fallback_count=2;
+             UPDATE performance_result_point SET target_portfolio_return=0.04,target_portfolio_daily_return=0.03,sizing_fallback=1;
+             INSERT INTO performance_result_skip VALUES('s1','30','portfolio',1,0,1,'start','end'),
+                ('s1','30','target',2,1,1,'start','end');
+             INSERT INTO performance_result_fallback VALUES('s1','30',0,'start','end',2);"
+        ).unwrap();
         let mut input = request("30");
-        input["include_backtest"] = json!(false);
-        let result = performance_result(&connection, &input).unwrap();
-        assert_eq!(result["backtest_included"], false);
-        assert_eq!(result["used_record_count"], 0);
-        assert!(result["skips"].is_null());
-        assert!(result["points"][0]["portfolio_return"].is_null());
-        assert_eq!(result["points"][0]["account_return"], 0.03);
-        assert_eq!(result["executions"].as_array().unwrap().len(), 2);
+        for range in ["30", "90", "all"] {
+            input["range"] = json!(range);
+            input["include_backtest"] = json!(true);
+            let full = performance_result(&connection, &input).unwrap();
+            let snapshot = query(&connection, &input).unwrap();
+            assert_eq!(full["target_used_record_count"], 7);
+            assert_eq!(full["sizing_fallback_count"], 2);
+            assert_eq!(full["points"][0]["target_portfolio_return"], 0.04);
+            assert_eq!(full["points"][0]["target_portfolio_daily_return"], 0.03);
+            assert_eq!(full["points"][0]["sizing_fallback"], true);
+            if range == "30" {
+                assert_eq!(full["skips"]["count"], 1);
+                assert_eq!(full["target_skips"]["count"], 2);
+                assert_eq!(full["sizing_fallback_ranges"].as_array().unwrap().len(), 1);
+            }
+            input["include_backtest"] = json!(false);
+            let result = performance_result(&connection, &input).unwrap();
+            assert_eq!(result["backtest_included"], false);
+            assert_eq!(result["used_record_count"], 0);
+            assert_eq!(result["target_used_record_count"], 0);
+            assert!(result["skips"].is_null());
+            assert!(result["target_skips"].is_null());
+            assert!(result["sizing_fallback_count"].is_null());
+            assert_eq!(result["sizing_fallback_ranges"], json!([]));
+            for field in [
+                "portfolio_return",
+                "portfolio_daily_return",
+                "target_portfolio_return",
+                "target_portfolio_daily_return",
+                "difference",
+            ] {
+                assert!(result["points"][0][field].is_null(), "{field}");
+            }
+            assert_eq!(result["points"][0]["sizing_fallback"], false);
+            assert_eq!(result["points"][0]["account_return"], 0.03);
+            for field in [
+                "settings",
+                "engine_version",
+                "range",
+                "baseline",
+                "end",
+                "record_count",
+                "observation_count",
+                "invalid_asset_count",
+                "calendar",
+                "bindings",
+                "executions",
+            ] {
+                assert_eq!(result[field], full[field], "{field}");
+            }
+            assert_eq!(result["executions"].as_array().unwrap().len(), 2);
+            assert_eq!(query(&connection, &input).unwrap(), snapshot);
+            input["include_backtest"] = json!(true);
+            assert_eq!(performance_result(&connection, &input).unwrap(), full);
+        }
         connection
             .execute("UPDATE account_analysis SET requested = 1", [])
             .unwrap();
