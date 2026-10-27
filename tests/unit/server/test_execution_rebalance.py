@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -495,13 +496,29 @@ def test_trade_persists_failed_gm_worker_output(
     }
 
 
+@pytest.mark.parametrize("retry_before_claim", [False, True])
 def test_account_rebalance_persists_same_normalized_target_used_by_trade(
     monkeypatch: pytest.MonkeyPatch,
+    retry_before_claim: bool,
 ) -> None:
     """真实调仓在下单前保存快照，且复用执行器收到的归一化目标对象。"""
     account = build_account(long_leverage=2.0, short_leverage=3.0)
     raw_target = {"rb2610": 0.5, "ag2612": -0.5}
     captured: dict[str, object] = {}
+    order: list[str] = []
+    original_trade = rebalance_execution.trade
+    blocked = execution_intents.IntentNotRunnable("账户渠道锁占用中", retry=True)
+
+    async def promote(_execution_id: str, _account_id: int) -> None:
+        order.append("claim")
+        if retry_before_claim and order.count("claim") == 1:
+            raise blocked
+
+    async def dispatch(**_kwargs: object):
+        order.append("dispatch")
+        return object(), None
+
+    manager = SimpleNamespace(execute_trade=AsyncMock(side_effect=dispatch))
 
     async def fake_load(_account_id: int, _logger: object) -> Account:
         return account
@@ -513,20 +530,38 @@ def test_account_rebalance_persists_same_normalized_target_used_by_trade(
         return rebalance_execution._ResolvedRebalanceRequest(portfolio_id=7, curr_target=raw_target)
 
     async def fake_append(**kwargs: object) -> SimpleNamespace:
+        order.append("snapshot")
         captured.update(kwargs)
         return SimpleNamespace(id=1)
 
     async def fake_trade(_account: Account, _target: dict[str, float], **kwargs: object) -> dict[str, object]:
         captured["trade_normalized_target"] = kwargs["normalized_target"]
-        return {"record_id": 10, "is_success": 1}
+        return await original_trade(_account, _target, **kwargs)
 
+    monkeypatch.setattr(execution_intents, "promote_intent_to_running", promote)
+    monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
+    monkeypatch.setattr(rebalance_execution, "load_notification_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        rebalance_execution,
+        "append_execute_record_from_output",
+        AsyncMock(return_value={"record_id": 10, "is_success": 1}),
+    )
     monkeypatch.setattr(rebalance_execution, "_load_rebalance_account", fake_load)
     monkeypatch.setattr(rebalance_execution, "trade_channel_check", fake_check)
     monkeypatch.setattr(rebalance_execution, "_resolve_rebalance_request", fake_resolve)
     monkeypatch.setattr(rebalance_execution, "append_target_weight_snapshot", fake_append)
     monkeypatch.setattr(rebalance_execution, "trade", fake_trade)
 
+    if retry_before_claim:
+        with pytest.raises(execution_intents.IntentNotRunnable) as raised:
+            asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="exec-target-1"))
+        assert raised.value is blocked
+        assert order == ["claim"]
+        manager.execute_trade.assert_not_awaited()
+
     result = asyncio.run(rebalance_execution._run_account_rebalance(1, execution_id="exec-target-1"))
+    assert order == (["claim"] if retry_before_claim else []) + ["claim", "snapshot", "dispatch"]
+    manager.execute_trade.assert_awaited_once()
 
     assert result["is_success"] == 1
     assert captured["raw_weights"] == raw_target

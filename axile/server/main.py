@@ -36,7 +36,7 @@ if sys.platform == "win32":
 
 
 def _force_exit(_signum: int, _frame: object) -> None:
-    """收到终止信号后立即退出，不等待清理流程完成."""
+    """终止信号回到 CLI 后退出，不再等待残留线程。"""
     os._exit(0)
 
 
@@ -206,9 +206,8 @@ def run_server(
         sys.exit(1)
 
     if not reload:
-        # CLI 入口收到终止信号时直接退出，避免在本地开发或受 supervisor 管理时
-        # 长时间等待后台线程、WebSocket 或 worker 清理流程。reload 模式交给
-        # Uvicorn supervisor 处理信号，避免 worker 子进程残留。
+        # Uvicorn 先接管信号并清理，结束后重放信号再由 CLI 退出。
+        # reload 模式由 Uvicorn supervisor 处理，避免 worker 子进程残留。
         signal.signal(signal.SIGINT, _force_exit)
         signal.signal(signal.SIGTERM, _force_exit)
 
@@ -223,6 +222,8 @@ def run_server(
         port=port,
         workers=None if reload else workers,
         reload=reload,
+        # SSE 不会自行结束；限时排空连接后进入 lifespan 清理。
+        timeout_graceful_shutdown=5,
         reload_dirs=[str(path) for path in _get_reload_dirs(algorithm_dir, reload_dirs)] if reload else None,
     )
 

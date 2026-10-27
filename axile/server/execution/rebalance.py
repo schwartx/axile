@@ -326,15 +326,6 @@ async def _run_account_rebalance(
         request = await _resolve_rebalance_request(account, execution_id, logger)
 
         normalized_target = _normalize_rebalance_target(account, request.curr_target)
-        await append_target_weight_snapshot(
-            portfolio_id=request.portfolio_id,
-            account_id=cast("int", account.id),
-            raw_weights=request.curr_target,
-            normalized_weights=normalized_target,
-            source="execution",
-            execution_id=execution_id,
-        )
-
         return await trade(
             account,
             request.curr_target,
@@ -342,6 +333,7 @@ async def _run_account_rebalance(
             trigger_source=trigger_source,
             logger=logger,
             normalized_target=normalized_target,
+            portfolio_id=request.portfolio_id,
         )
 
 
@@ -353,6 +345,7 @@ async def trade(
     logger: "loguru.Logger | None" = None,
     cleanup: bool = True,
     normalized_target: dict[str, float] | None = None,
+    portfolio_id: int | None = None,
 ) -> dict[str, Any]:
     """
     为账户执行一次调仓任务，并持久化结果.
@@ -371,6 +364,9 @@ async def trade(
         用于输出日志的 logger；未提供时使用全局 logger。
     cleanup : bool, optional
         兼容保留；常驻 worker 统一完成每次执行的收尾。
+
+    portfolio_id : int | None, optional
+        调仓绑定的组合；认领成功后、派发 worker 前保存目标快照。
 
     Returns
     -------
@@ -411,6 +407,15 @@ async def trade(
 
         await promote_intent_to_running(execution_id, cast("int", account.id))
     try:
+        if portfolio_id is not None:
+            await append_target_weight_snapshot(
+                portfolio_id=portfolio_id,
+                account_id=cast("int", account.id),
+                raw_weights=curr_target,
+                normalized_weights=normalized_target,
+                source="execution",
+                execution_id=execution_id,
+            )
         output, normalized_symbol_fields = await get_worker_backend_manager().execute_trade(
             account=account,
             standard_input_dict=standard_input_dict,
