@@ -147,9 +147,13 @@ def test_malformed_stable_fields_and_conversion_preserve_original_representation
             {"value_conversion": {}},
         ]
     }
-    restored, _ = _roundtrip(native_database, payload, is_success=is_success)
+    restored, loaded = _roundtrip(native_database, payload, is_success=is_success)
     assert business_evidence(restored) == business_evidence(payload)
-    assert business_evidence(restored) == business_evidence(payload)
+    assert loaded["business_trade"][0]["audit_evidence"]["explicit_null_fields"] == ["extra"]
+    assert loaded["business_trade_conversion"][0]["audit_evidence"]["explicit_null_fields"] == ["price_currency"]
+    assert restored["trades"][0]["extra"] is None
+    assert restored["trades"][0]["value_conversion"]["price_currency"] is None
+    assert "symbol" not in restored["trades"][0]
 
 
 def test_all_child_tables_cascade_from_terminal_record_without_native_id_uniqueness(native_database) -> None:

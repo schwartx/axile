@@ -217,6 +217,44 @@ def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> N
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+@pytest.mark.parametrize(
+    ("table", "fields", "count"),
+    [
+        ("executerecord", ("status", "error", "execution_time", "success"), 12),
+        ("execution_input", ("execution_timeout",), 1),
+        ("execution_input_symbol", ("value",), 1),
+        ("execution_order", ("avg_price",), 46),
+        ("business_trade", ("trade_value",), 11),
+        ("business_asset_snapshot", ("total_asset", "market_value"), 12),
+        ("business_asset_position", ("available_volume",), 11),
+    ],
+)
+def test_frozen_null_evidence_is_derived_from_original_json(table, fields, count) -> None:
+    """399389c9 的侧录仅补原始字段的显式 null，不将缺失或非法值当成 null。"""
+    source = (_FIXTURES / "public-0033-data.json").read_bytes()
+    data = json.loads(source)
+    corrections = json.loads((_FIXTURES / "public-0034-explicit-nulls.json").read_text(encoding="utf-8"))
+    assert corrections["source_sha256"] == hashlib.sha256(source).hexdigest()
+    entries = corrections["tables"][table]
+    assert len(entries) == count
+    assert len({json.dumps(item["identity"], sort_keys=True) for item in entries}) == count
+    for item in entries:
+        source_table, source_id, column, pointer = item["source"]
+        original = next(row for row in data["seed"][source_table] if row["id"] == source_id)
+        payload = json.loads(original[column])
+        for key in pointer.split("/")[1:]:
+            key = key.replace("~1", "/").replace("~0", "~")
+            payload = payload[int(key)] if isinstance(payload, list) else payload[key]
+        if table == "execution_input_symbol":
+            payload = {"value": payload}
+        assert item["fields"] == [name for name in fields if name in payload and payload[name] is None]
+        matches = [
+            row for row in data["expected"][table] if all(row[key] == value for key, value in item["identity"].items())
+        ]
+        assert len(matches) == 1
+        assert all(matches[0][name] is None for name in item["fields"])
+
+
 def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> None:
     """真实输入、成交、资产、目标、摘要、通知 outbox 和分析结果同时迁移。"""
     data = json.loads((_FIXTURES / "public-0033-data.json").read_text(encoding="utf-8"))
@@ -226,6 +264,21 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
         seed_database(connection, data["seed"])
     assert initialize_native_database(path, revision="0034")["public"] == "0034"
     expected = data["expected"]
+    # 只补 399389c9 保留显式 null 的静态侧录；原始 seed 和冻结行均保留。
+    corrections = json.loads((_FIXTURES / "public-0034-explicit-nulls.json").read_text(encoding="utf-8"))
+    for table, entries in corrections["tables"].items():
+        for item in entries:
+            (row,) = [
+                row for row in expected[table] if all(row[key] == value for key, value in item["identity"].items())
+            ]
+            evidence = json.loads(row["audit_evidence"][1])
+            assert "explicit_null_fields" not in evidence
+            evidence["explicit_null_fields"] = item["fields"]
+            row["audit_evidence"] = [
+                "json",
+                json.dumps(evidence, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            ]
+        expected[table].sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
     raw_results = {row["id"]: json.loads(row["raw_result"]) for row in data["seed"]["executerecord"]}
     for row in expected["execution_extension"]:
         extra = json.loads(row["extra"][1])

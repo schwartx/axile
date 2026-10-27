@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 _FROZEN_CODEC_PATH = "tests/fixtures/rust_store/result_orders_trades.json"
-_FROZEN_CODEC_SHA256 = "79b04e1053dacd992d34237d0283c96013cebac3b16551e711eae707594c47a0"
+_FROZEN_CODEC_SHA256 = "271778de3820e53516c9acca3d3ccebc51ca4f7ef31ac7928e10d55e4b980e55"
 _FROZEN_CODEC_SOURCE = "Python order and trade codec oracle at Axile 509b3627ca5fc6ee5f5a72e91b5ebebed3cf9879"
 
 

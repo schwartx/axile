@@ -124,6 +124,11 @@ def test_orders_keep_explicit_missing_null_zero_empty_and_invalid_known_fields(n
     assert row["volume"] is None
     assert row["avg_price"] is None
     assert row["conversion_rate"] is None
+    assert row["audit_evidence"]["explicit_null_fields"] == ["symbol", "filled_volume"]
+    assert row["conversion_evidence"]["explicit_null_fields"] == ["reference"]
+    assert result["orders"][0]["symbol"] is None
+    assert result["orders"][0]["filled_volume"] is None
+    assert result["orders"][0]["value_conversion"]["reference"] is None
     assert "direction" not in result["orders"][0]
 
 

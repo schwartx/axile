@@ -105,6 +105,28 @@ def test_symbol_roundtrip_preserves_sparse_and_malformed_evidence(native_databas
                 assert actual["target_volume"][key] is None
 
 
+def test_explicit_null_symbol_fields_keep_presence_without_inventing_missing_fields(native_database):
+    payload = {
+        "symbol_results": {
+            "null": {"error": None, "sizing": {"reason_code": None}, "first_tick": {"bid_price": None}},
+            "missing": {"sizing": {}, "first_tick": {}},
+        }
+    }
+    actual = _roundtrip(native_database, payload)["symbol_results"]
+    for table, nested, field in (
+        ("execution_symbol_result", None, "error"),
+        ("execution_symbol_sizing", "sizing", "reason_code"),
+        ("execution_symbol_tick", "first_tick", "bid_price"),
+    ):
+        null = actual["null"] if nested is None else actual["null"][nested]
+        missing = actual["missing"] if nested is None else actual["missing"][nested]
+        assert null[field] is None
+        assert field not in missing
+        stored = {row["map_key"]: row["audit_evidence"] for row in rows(native_database, table)}
+        assert stored["null"]["explicit_null_fields"] == [field]
+        assert "explicit_null_fields" not in stored["missing"]
+
+
 def test_symbol_encoder_excludes_delegated_arrays_and_keeps_native_identity(native_database):
     payload = {
         "symbol_results": {
@@ -183,9 +205,9 @@ def test_sql_roundtrip_and_narrow_readers_preserve_order_and_do_not_load_arrays(
     }
     record = persist_result(native_database, payload, execution_id="narrow-read")
     assert business_evidence(read_result(native_database, record)) == business_evidence(payload)
-    assert native_store_call(
-        native_database, "execution_read", {"op": "outcome_symbols", "record_id": record["id"]}
-    ) == ["Z", "alias/A"]
+    status = native_store_call(native_database, "execution_read", {"op": "status", "execution_id": "narrow-read"})
+    assert status["outcome_symbols"] == ["Z", "alias/A"]
+    assert status["record_id"] == record["id"]
     sizing = native_store_call(
         native_database, "execution_read", {"op": "target_sizing", "account_id": 1, "execution_id": "narrow-read"}
     )
@@ -202,6 +224,6 @@ def test_sql_roundtrip_and_narrow_readers_preserve_order_and_do_not_load_arrays(
         ("completed", None, "absent"),
         ("explicit", None, "absent"),
     ]
-    assert native_store_call(native_database, "execution_read", {"op": "outcome_symbols", "record_id": -1}) == []
+    assert native_store_call(native_database, "execution_read", {"op": "status", "execution_id": "missing"}) is None
     with pytest.raises(_core.NativeError, match="未知执行读取阶段"):
         native_store_call(native_database, "execution_read", {"op": "orders", "record_id": record["id"]})
