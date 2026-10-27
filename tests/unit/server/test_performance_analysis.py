@@ -254,6 +254,69 @@ def test_account_only_performance_ignores_unavailable_backtest(tmp_path, monkeyp
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("range_key", ["30", "90", "all"])
+def test_ready_account_only_hides_target_backtest_and_fallback(tmp_path, schema_template, range_key):
+    """缓存与失败时的纯账户路径均隐藏目标回测，保留完整结果及持久快照。"""
+
+    async def check():
+        async with database(tmp_path, schema_template) as (_, sessions, manager):
+            async with sessions() as session:
+                session.add(PortfolioAccount(account_id=2, portfolio_id=None, created_at="2026-01-02T09:00:00"))
+                await session.commit()
+            await queue(sessions)
+            await manager.run_once()
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(analysis_manager=manager)))
+            async with sessions() as session:
+                full = await get_performance(session, request, 2, range=range_key)
+                assert full.points[-1].target_portfolio_return == pytest.approx(103 / 101 - 1)
+                assert full.target_used_record_count == full.used_record_count == 3
+                assert full.skips is not None and full.target_skips is not None
+                assert full.sizing_fallback_count == 3 and full.sizing_fallback_ranges
+                assert any(point.sizing_fallback for point in full.points)
+                published = await read_snapshot(session, 2, range_key)
+                quick = await get_performance(session, request, 2, range=range_key, include_backtest=False)
+                metadata = {
+                    "backtest_included": False,
+                    "used_record_count": 0,
+                    "target_used_record_count": 0,
+                    "skips": None,
+                    "target_skips": None,
+                    "sizing_fallback_count": None,
+                    "sizing_fallback_ranges": [],
+                }
+                assert quick.model_dump(include=set(metadata)) == metadata
+                hidden = {
+                    "portfolio_return",
+                    "portfolio_daily_return",
+                    "difference",
+                    "target_portfolio_return",
+                    "target_portfolio_daily_return",
+                    "sizing_fallback",
+                }
+                for actual, original in zip(quick.points, full.points, strict=True):
+                    assert actual.model_dump(exclude=hidden) == original.model_dump(exclude=hidden)
+                    assert actual.model_dump(include=hidden) == {
+                        "portfolio_return": None,
+                        "portfolio_daily_return": None,
+                        "difference": None,
+                        "target_portfolio_return": None,
+                        "target_portfolio_daily_return": None,
+                        "sizing_fallback": False,
+                    }
+                for name in ("baseline", "end", "settings", "bindings", "calendar", "executions"):
+                    assert getattr(quick, name) == getattr(full, name)
+                assert await get_performance(session, request, 2, range=range_key) == full
+                assert await read_snapshot(session, 2, range_key) == published
+                await session.execute(states.update().where(states.c.account_id == 2).values(error="failed replay"))
+                await session.commit()
+                assert (await read_snapshot(session, 2, range_key))["status"] == "failed"
+                failed = await get_performance(session, request, 2, range=range_key, include_backtest=False)
+                assert failed.model_dump(include=set(metadata)) == metadata
+                assert failed.points == quick.points
+
+    asyncio.run(check())
+
+
 def test_snapshot_hits_never_read_history_or_call_wbt_and_survive_restart(tmp_path, monkeypatch, schema_template):
     async def check():
         async with database(tmp_path, schema_template) as (engine, sessions, manager):

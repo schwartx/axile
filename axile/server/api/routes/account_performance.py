@@ -111,10 +111,14 @@ async def get_performance(
     result = AccountPerformance.model_validate(snapshot["result"])
     if not include_backtest:
         result.backtest_included = False
-        result.skips = None
-        result.used_record_count = 0
+        result.skips = result.target_skips = None
+        result.used_record_count = result.target_used_record_count = 0
+        result.sizing_fallback_count = None
+        result.sizing_fallback_ranges = []
         for point in result.points:
             point.portfolio_return = point.portfolio_daily_return = point.difference = None
+            point.target_portfolio_return = point.target_portfolio_daily_return = None
+            point.sizing_fallback = False
     return result
 
 
