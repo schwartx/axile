@@ -27,6 +27,9 @@ def isolated_logging(tmp_path, monkeypatch):
     yield
     log_config.shutdown_logging()
     logger.remove()
+    # 故障注入留下的待恢复计数也要写出，避免流入后续测试。
+    _core.logging_start(str(tmp_path / ".fixture-recovery"))
+    _core.logging_close(1000)
 
 
 def test_context_label_preserves_current_business_labels():

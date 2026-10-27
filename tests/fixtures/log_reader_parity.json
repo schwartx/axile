@@ -1,0 +1,671 @@
+{
+  "provenance": {
+    "source_sha256": "75e0f72c9e8cfcc1419c140c272eff67474ba5067dc61cfa5564806b53a8bac1",
+    "generator": "Pure Python baseline loaded independently with importlib; TZ=UTC; no native reader used",
+    "normalization": "Expected records preserve Python numeric types; input JSONL deliberately keeps exponent lexemes"
+  },
+  "files": [
+    {
+      "name": "legacy.jsonl",
+      "jsonl": "{\"context\":{},\"message\":\"时间未知的旧记录\"}\n{\"timestamp\":\"2026-10-27T07:59:59.999999+08:00\",\"level\":\"WARNING\",\"component\":\"历史\",\"context\":{\"account_id\":7,\"execution_id\":\"legacy-E\"},\"message\":\"旧格式\\n第二行\",\"exception\":null}\n"
+    },
+    {
+      "name": "first.jsonl",
+      "jsonl": "[\"H\",1,{\"run_id\":\"golden-A\",\"time_base\":\"2026-10-27T08:00:00+08:00\",\"time_unit\":\"us\"}]\n[\"T\",1,\"INFO\",\"转义 {{括号}} {name:} {{}}\",[\"name\",\"unused\",\"numbers\"],{\"component\":\"执行\",\"kind\":\"event\"}]\n[\"T\",2,\"INFO\",\"{name}开始\",[\"name\"],{\"kind\":\"span_start\"}]\n[\"T\",3,\"INFO\",\"{name}结束\",[\"name\",\"outcome\"],{\"kind\":\"span_end\"}]\n[\"T\",4,\"ERROR\",\"{message}\",[\"message\",\"exception\"],{\"component\":\"数据库\",\"kind\":\"event\"}]\n[\"T\",5,\"INFO\",\"统计 {stats}\",[\"stats\"],{\"kind\":\"event\",\"log_stats\":true}]\n[\"C\",1,{\"account_id\":7,\"account_name\":\"黄金账户\",\"channel\":\"ctp\",\"symbol\":\"CZCE.CF701\",\"execution_id\":\"golden-execution-1\"}]\n[\"C\",2,{\"account_id\":8,\"channel\":\"gm\",\"execution_id\":\"golden-other\"}]\n[\"C\",3,{\"execution_id\":\"golden-unfinished\"}]\n[\"S\",1,null,\"根过程\",1,0]\n[\"S\",2,1,\"子过程\",1,1]\n[\"S\",3,999,\"孤儿过程\",2,2]\n[\"S\",4,null,\"未结束过程\",3,3]\n[\"S\",5,null,\"缺开始过程\",1,4]\n[\"E\",1,0,2,1,1,[\"根过程\"]]\n[\"E\",2,1,2,1,2,[\"子过程\"]]\n[\"E\",3,2,1,1,2,[\"中文\",{\"flags\":[true,null,false],\"quote\":\"引号\\\"\"},[1e1,1e-5,1e16,-0.0,18446744073709551617]]]\n[\"E\",4,3,4,1,2,[\"失败\\n第二行\",{\"type\":\"ValueError\",\"message\":\"错误消息\",\"traceback\":\"Traceback (most recent call last):\\n  line 7\\nValueError: 合成错误\\n\"}]]\n[\"E\",5,4,3,1,2,[\"子过程\",\"error\"]]\n[\"E\",6,5,1,2,3,[\"孤儿\",{\"nested\":[null,{\"ok\":false}]},[]]]\n[\"E\",7,6,2,3,4,[\"未结束过程\"]]\n[\"E\",8,7,3,1,5,[\"缺开始过程\",\"cancelled\"]]\n[\"E\",9,8,3,1,1,[\"根过程\",\"ok\"]]\n[\"E\",10,9,5,0,null,[{\"dropped_total\":3,\"accepted_total\":9}]]\n"
+    },
+    {
+      "name": "second.jsonl",
+      "jsonl": "[\"H\",1,{\"run_id\":\"golden-A\",\"time_base\":\"2026-10-27T08:00:00+08:00\",\"time_unit\":\"us\"}]\n[\"T\",1,\"INFO\",\"转义 {{括号}} {name:} {{}}\",[\"name\",\"unused\",\"numbers\"],{\"component\":\"执行\",\"kind\":\"event\"}]\n[\"T\",2,\"INFO\",\"{name}开始\",[\"name\"],{\"kind\":\"span_start\"}]\n[\"T\",3,\"INFO\",\"{name}结束\",[\"name\",\"outcome\"],{\"kind\":\"span_end\"}]\n[\"T\",4,\"ERROR\",\"{message}\",[\"message\",\"exception\"],{\"component\":\"数据库\",\"kind\":\"event\"}]\n[\"T\",5,\"INFO\",\"统计 {stats}\",[\"stats\"],{\"kind\":\"event\",\"log_stats\":true}]\n[\"C\",1,{\"account_id\":7,\"account_name\":\"黄金账户\",\"channel\":\"ctp\",\"symbol\":\"CZCE.CF701\",\"execution_id\":\"golden-execution-1\"}]\n[\"C\",2,{\"account_id\":8,\"channel\":\"gm\",\"execution_id\":\"golden-other\"}]\n[\"C\",3,{\"execution_id\":\"golden-unfinished\"}]\n[\"S\",1,null,\"根过程\",1,0]\n[\"S\",2,1,\"子过程\",1,1]\n[\"S\",3,999,\"孤儿过程\",2,2]\n[\"S\",4,null,\"未结束过程\",3,3]\n[\"S\",5,null,\"缺开始过程\",1,4]\n[\"E\",11,10,1,1,null,[\"独立事件\",true,[0.0,1.0]]]\n[\"E\",12,11,5,0,null,[{\"dropped_total\":5,\"accepted_total\":11}]]\n"
+    },
+    {
+      "name": "other-run.jsonl",
+      "jsonl": "[\"H\",1,{\"run_id\":\"golden-B\",\"time_base\":\"2026-10-27T00:00:00.000005+00:00\",\"time_unit\":\"us\"}]\n[\"T\",1,\"INFO\",\"运行二 {value}\",[\"value\"],{}]\n[\"E\",1,0,1,0,null,[{\"active\":true,\"empty\":null}]]\n"
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "context": {},
+        "message": "时间未知的旧记录"
+      },
+      {
+        "timestamp": "2026-10-27T07:59:59.999999+08:00",
+        "level": "WARNING",
+        "component": "历史",
+        "context": {
+          "account_id": 7,
+          "execution_id": "legacy-E"
+        },
+        "message": "旧格式\n第二行",
+        "exception": null
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 1,
+        "timestamp": "2026-10-27T00:00:00.000000+00:00",
+        "level": "INFO",
+        "template": "{name}开始",
+        "fields": [
+          "name"
+        ],
+        "args": [
+          "根过程"
+        ],
+        "metadata": {
+          "kind": "span_start"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 1,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          }
+        ],
+        "message": "根过程开始",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 2,
+        "timestamp": "2026-10-27T00:00:00.000001+00:00",
+        "level": "INFO",
+        "template": "{name}开始",
+        "fields": [
+          "name"
+        ],
+        "args": [
+          "子过程"
+        ],
+        "metadata": {
+          "kind": "span_start"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 2,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          },
+          {
+            "id": 2,
+            "parent": 1,
+            "name": "子过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 1,
+            "start_time": "2026-10-27T00:00:00.000001+00:00"
+          }
+        ],
+        "message": "子过程开始",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 3,
+        "timestamp": "2026-10-27T00:00:00.000002+00:00",
+        "level": "INFO",
+        "template": "转义 {{括号}} {name:} {{}}",
+        "fields": [
+          "name",
+          "unused",
+          "numbers"
+        ],
+        "args": [
+          "中文",
+          {
+            "flags": [
+              true,
+              null,
+              false
+            ],
+            "quote": "引号\""
+          },
+          [
+            10.0,
+            1e-05,
+            1e+16,
+            -0.0,
+            18446744073709551617
+          ]
+        ],
+        "metadata": {
+          "component": "执行",
+          "kind": "event"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 2,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          },
+          {
+            "id": 2,
+            "parent": 1,
+            "name": "子过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 1,
+            "start_time": "2026-10-27T00:00:00.000001+00:00"
+          }
+        ],
+        "message": "转义 {括号} 中文 {} unused={\"flags\":[true,null,false],\"quote\":\"引号\\\"\"} numbers=[10.0,1e-05,1e+16,-0.0,18446744073709551617]",
+        "exception": null,
+        "component": "执行",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 4,
+        "timestamp": "2026-10-27T00:00:00.000003+00:00",
+        "level": "ERROR",
+        "template": "{message}",
+        "fields": [
+          "message",
+          "exception"
+        ],
+        "args": [
+          "失败\n第二行",
+          {
+            "type": "ValueError",
+            "message": "错误消息",
+            "traceback": "Traceback (most recent call last):\n  line 7\nValueError: 合成错误\n"
+          }
+        ],
+        "metadata": {
+          "component": "数据库",
+          "kind": "event"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 2,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          },
+          {
+            "id": 2,
+            "parent": 1,
+            "name": "子过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 1,
+            "start_time": "2026-10-27T00:00:00.000001+00:00"
+          }
+        ],
+        "message": "失败\n第二行",
+        "exception": {
+          "type": "ValueError",
+          "message": "错误消息",
+          "traceback": "Traceback (most recent call last):\n  line 7\nValueError: 合成错误\n"
+        },
+        "component": "数据库",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 5,
+        "timestamp": "2026-10-27T00:00:00.000004+00:00",
+        "level": "INFO",
+        "template": "{name}结束",
+        "fields": [
+          "name",
+          "outcome"
+        ],
+        "args": [
+          "子过程",
+          "error"
+        ],
+        "metadata": {
+          "kind": "span_end"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 2,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          },
+          {
+            "id": 2,
+            "parent": 1,
+            "name": "子过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 1,
+            "start_time": "2026-10-27T00:00:00.000001+00:00"
+          }
+        ],
+        "message": "子过程结束 outcome=error",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 6,
+        "timestamp": "2026-10-27T00:00:00.000005+00:00",
+        "level": "INFO",
+        "template": "转义 {{括号}} {name:} {{}}",
+        "fields": [
+          "name",
+          "unused",
+          "numbers"
+        ],
+        "args": [
+          "孤儿",
+          {
+            "nested": [
+              null,
+              {
+                "ok": false
+              }
+            ]
+          },
+          []
+        ],
+        "metadata": {
+          "component": "执行",
+          "kind": "event"
+        },
+        "context": {
+          "account_id": 8,
+          "channel": "gm",
+          "execution_id": "golden-other"
+        },
+        "span_id": 3,
+        "spans": [
+          {
+            "id": 3,
+            "parent": 999,
+            "name": "孤儿过程",
+            "context": {
+              "account_id": 8,
+              "channel": "gm",
+              "execution_id": "golden-other"
+            },
+            "context_id": 2,
+            "start_us": 2,
+            "start_time": "2026-10-27T00:00:00.000002+00:00"
+          }
+        ],
+        "message": "转义 {括号} 孤儿 {} unused={\"nested\":[null,{\"ok\":false}]} numbers=[]",
+        "exception": null,
+        "component": "执行",
+        "source": {}
+      },
+      {
+        "run_id": "golden-B",
+        "seq": 1,
+        "timestamp": "2026-10-27T00:00:00.000005+00:00",
+        "level": "INFO",
+        "template": "运行二 {value}",
+        "fields": [
+          "value"
+        ],
+        "args": [
+          {
+            "active": true,
+            "empty": null
+          }
+        ],
+        "metadata": {},
+        "context": {},
+        "span_id": null,
+        "spans": [],
+        "message": "运行二 {\"active\":true,\"empty\":null}",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 7,
+        "timestamp": "2026-10-27T00:00:00.000006+00:00",
+        "level": "INFO",
+        "template": "{name}开始",
+        "fields": [
+          "name"
+        ],
+        "args": [
+          "未结束过程"
+        ],
+        "metadata": {
+          "kind": "span_start"
+        },
+        "context": {
+          "execution_id": "golden-unfinished"
+        },
+        "span_id": 4,
+        "spans": [
+          {
+            "id": 4,
+            "parent": null,
+            "name": "未结束过程",
+            "context": {
+              "execution_id": "golden-unfinished"
+            },
+            "context_id": 3,
+            "start_us": 3,
+            "start_time": "2026-10-27T00:00:00.000003+00:00"
+          }
+        ],
+        "message": "未结束过程开始",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 8,
+        "timestamp": "2026-10-27T00:00:00.000007+00:00",
+        "level": "INFO",
+        "template": "{name}结束",
+        "fields": [
+          "name",
+          "outcome"
+        ],
+        "args": [
+          "缺开始过程",
+          "cancelled"
+        ],
+        "metadata": {
+          "kind": "span_end"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 5,
+        "spans": [
+          {
+            "id": 5,
+            "parent": null,
+            "name": "缺开始过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 4,
+            "start_time": "2026-10-27T00:00:00.000004+00:00"
+          }
+        ],
+        "message": "缺开始过程结束 outcome=cancelled",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 9,
+        "timestamp": "2026-10-27T00:00:00.000008+00:00",
+        "level": "INFO",
+        "template": "{name}结束",
+        "fields": [
+          "name",
+          "outcome"
+        ],
+        "args": [
+          "根过程",
+          "ok"
+        ],
+        "metadata": {
+          "kind": "span_end"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": 1,
+        "spans": [
+          {
+            "id": 1,
+            "parent": null,
+            "name": "根过程",
+            "context": {
+              "account_id": 7,
+              "account_name": "黄金账户",
+              "channel": "ctp",
+              "symbol": "CZCE.CF701",
+              "execution_id": "golden-execution-1"
+            },
+            "context_id": 1,
+            "start_us": 0,
+            "start_time": "2026-10-27T00:00:00.000000+00:00"
+          }
+        ],
+        "message": "根过程结束 outcome=ok",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 10,
+        "timestamp": "2026-10-27T00:00:00.000009+00:00",
+        "level": "INFO",
+        "template": "统计 {stats}",
+        "fields": [
+          "stats"
+        ],
+        "args": [
+          {
+            "dropped_total": 3,
+            "accepted_total": 9
+          }
+        ],
+        "metadata": {
+          "kind": "event",
+          "log_stats": true
+        },
+        "context": {},
+        "span_id": null,
+        "spans": [],
+        "message": "统计 {\"dropped_total\":3,\"accepted_total\":9}",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 11,
+        "timestamp": "2026-10-27T00:00:00.000010+00:00",
+        "level": "INFO",
+        "template": "转义 {{括号}} {name:} {{}}",
+        "fields": [
+          "name",
+          "unused",
+          "numbers"
+        ],
+        "args": [
+          "独立事件",
+          true,
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "metadata": {
+          "component": "执行",
+          "kind": "event"
+        },
+        "context": {
+          "account_id": 7,
+          "account_name": "黄金账户",
+          "channel": "ctp",
+          "symbol": "CZCE.CF701",
+          "execution_id": "golden-execution-1"
+        },
+        "span_id": null,
+        "spans": [],
+        "message": "转义 {括号} 独立事件 {} unused=true numbers=[0.0,1.0]",
+        "exception": null,
+        "component": "执行",
+        "source": {}
+      },
+      {
+        "run_id": "golden-A",
+        "seq": 12,
+        "timestamp": "2026-10-27T00:00:00.000011+00:00",
+        "level": "INFO",
+        "template": "统计 {stats}",
+        "fields": [
+          "stats"
+        ],
+        "args": [
+          {
+            "dropped_total": 5,
+            "accepted_total": 11
+          }
+        ],
+        "metadata": {
+          "kind": "event",
+          "log_stats": true
+        },
+        "context": {},
+        "span_id": null,
+        "spans": [],
+        "message": "统计 {\"dropped_total\":5,\"accepted_total\":11}",
+        "exception": null,
+        "component": "系统",
+        "source": {}
+      }
+    ],
+    "timeline_utc": "时间未知 INFO  [系统] 时间未知的旧记录\n261026 23:59:59.999 WARN  [历史] [账户#7 legacy-E] 旧格式\n  | 第二行\n261027 00:00:00.000 INFO  [系统] [黄金账户#7 ctp CZCE.CF701 golden-e] 根过程开始\n261027 00:00:00.000 INFO  [系统] [黄金账户#7 ctp CZCE.CF701 golden-e] 子过程开始\n261027 00:00:00.000 INFO  [执行] [黄金账户#7 ctp CZCE.CF701 golden-e] 转义 {括号} 中文 {} unused={\"flags\":[true,null,false],\"quote\":\"引号\\\"\"} numbers=[10.0,1e-05,1e+16,-0.0,18446744073709551617]\n261027 00:00:00.000 ERROR [数据库] [黄金账户#7 ctp CZCE.CF701 golden-e] [golden-A#4] 失败\n  | [golden-A#4] 第二行\n  | [golden-A#4] Traceback (most recent call last):\n  | [golden-A#4]   line 7\n  | [golden-A#4] ValueError: 合成错误\n261027 00:00:00.000 INFO  [系统] [黄金账户#7 ctp CZCE.CF701 golden-e] 子过程结束 outcome=error\n261027 00:00:00.000 INFO  [执行] [账户#8 gm golden-o] 转义 {括号} 孤儿 {} unused={\"nested\":[null,{\"ok\":false}]} numbers=[]\n261027 00:00:00.000 INFO  [系统] 运行二 {\"active\":true,\"empty\":null}\n261027 00:00:00.000 INFO  [系统] [golden-u] 未结束过程开始\n261027 00:00:00.000 INFO  [系统] [黄金账户#7 ctp CZCE.CF701 golden-e] 缺开始过程结束 outcome=cancelled\n261027 00:00:00.000 INFO  [系统] [黄金账户#7 ctp CZCE.CF701 golden-e] 根过程结束 outcome=ok\n261027 00:00:00.000 INFO  [系统] 统计 {\"dropped_total\":3,\"accepted_total\":9}\n261027 00:00:00.000 INFO  [执行] [黄金账户#7 ctp CZCE.CF701 golden-e] 转义 {括号} 独立事件 {} unused=true numbers=[0.0,1.0]\n261027 00:00:00.000 INFO  [系统] 统计 {\"dropped_total\":5,\"accepted_total\":11}",
+    "tree_utc": "时间未知 INFO  [系统] 时间未知的旧记录\n261026 23:59:59.999 WARN  [历史] [账户#7 legacy-E] 旧格式\n  | 第二行\n根过程 #1 · ok · 0.008ms [2026-10-27T00:00:00.000000+00:00 → 2026-10-27T00:00:00.000008+00:00]\n  子过程 #2 · error · 0.003ms [2026-10-27T00:00:00.000001+00:00 → 2026-10-27T00:00:00.000004+00:00]\n    261027 00:00:00.000 INFO  [执行] [黄金账户#7 ctp CZCE.CF701 golden-e] 转义 {括号} 中文 {} unused={\"flags\":[true,null,false],\"quote\":\"引号\\\"\"} numbers=[10.0,1e-05,1e+16,-0.0,18446744073709551617]\n    261027 00:00:00.000 ERROR [数据库] [黄金账户#7 ctp CZCE.CF701 golden-e] [golden-A#4] 失败\n  | [golden-A#4] 第二行\n  | [golden-A#4] Traceback (most recent call last):\n  | [golden-A#4]   line 7\n  | [golden-A#4] ValueError: 合成错误\n孤儿过程 #3 · 未观察到结束 · 未观察到开始 · 父过程缺失 [开始未观察 → 结束未观察]\n  261027 00:00:00.000 INFO  [执行] [账户#8 gm golden-o] 转义 {括号} 孤儿 {} unused={\"nested\":[null,{\"ok\":false}]} numbers=[]\n未结束过程 #4 · 未观察到结束 [2026-10-27T00:00:00.000006+00:00 → 结束未观察]\n缺开始过程 #5 · cancelled · 未观察到开始 [开始未观察 → 2026-10-27T00:00:00.000007+00:00]\n261027 00:00:00.000 INFO  [系统] 运行二 {\"active\":true,\"empty\":null}\n261027 00:00:00.000 INFO  [系统] 统计 {\"dropped_total\":3,\"accepted_total\":9}\n261027 00:00:00.000 INFO  [执行] [黄金账户#7 ctp CZCE.CF701 golden-e] 转义 {括号} 独立事件 {} unused=true numbers=[0.0,1.0]\n261027 00:00:00.000 INFO  [系统] 统计 {\"dropped_total\":5,\"accepted_total\":11}",
+    "statistics": {
+      "runs": {
+        "golden-A": {
+          "dropped_total": 5,
+          "accepted_total": 11
+        }
+      },
+      "dropped_total": 5,
+      "coverage": "last_saved_checkpoint"
+    }
+  }
+}

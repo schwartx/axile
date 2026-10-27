@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import zlib
 from contextlib import nullcontext
@@ -12,7 +13,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from axile.common.log_files import LogDecoder, decode_json, statistics_record
+from axile.common.log_files import LogDecoder, decode_json, message_text, statistics_record
 from axile.executor.algorithms.utils.clock import clock_now
 from axile.server.evidence.models import EvidenceSnapshot, ExportBudget
 
@@ -118,7 +119,7 @@ class _LogCollector:
                 self.report["issues"].append("log_invalid_json")
                 continue
             try:
-                row = decoder.feed(value)
+                row = decoder.feed(value, render=False)
                 stats = statistics_record(row) if row is not None else None
             except (ValueError, TypeError):
                 self.report["issues"].append("log_invalid_protocol")
@@ -130,22 +131,46 @@ class _LogCollector:
                 self.counters[run] = max(self.counters.get(run, 0), stats["dropped_total"])
                 if stats["dropped_total"]:
                     self.report["issues"].append("log_dropped_events")
-            self._append(row, len(line))
+            before = self.budget.rows, self.budget.bytes
+            try:
+                self._append(row, render=isinstance(value, list))
+            except (ValueError, TypeError):
+                self.budget.rows, self.budget.bytes = before
+                self.report["issues"].append("log_invalid_protocol")
 
-    def _append(self, row: dict, size: int) -> None:
-        """只收集归属明确的事件，压缩前后重复材料不重复计入。"""
+    def _append(self, row: dict, *, render: bool) -> None:
+        """按定义展开后的字节检查预算，重复材料不重复计入。"""
         context = row["context"]
         if context.get("execution_id") not in self.ids:
             return
         if context.get("account_id") not in (None, self.account_id):
             self.report["issues"].append("log_owner_conflict")
             return
-        if "run_id" in row and "seq" in row:
-            identity = (row["run_id"], row["seq"])
-            if identity in self.seen:
-                if self.seen[identity] != row:
-                    self.report["issues"].append("log_event_conflict")
-                return
+        identity = (row["run_id"], row["seq"]) if "run_id" in row and "seq" in row else None
+        if identity is not None and identity in self.seen:
+            previous = self.seen[identity]
+            if render:
+                previous = {key: value for key, value in previous.items() if key not in ("message", "exception")}
+            if previous != row:
+                self.report["issues"].append("log_event_conflict")
+            return
+        # 字典引用可放大单条事件，逐块计量而不先分配完整展开文本。
+        self.budget.check(rows=1, size=1)
+        if render:
+            remaining = self.budget.limits.bytes - self.budget.bytes
+            try:
+                row["message"], row["exception"] = message_text(row, max_bytes=remaining)
+            except OverflowError:
+                self.budget.check(size=remaining + 1)
+        pending = 0
+        threshold = min(64 * 1024, self.budget.limits.bytes - self.budget.bytes)
+        for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(row):
+            pending += len(chunk.encode("utf-8"))
+            if pending >= threshold:
+                self.budget.check(size=pending)
+                pending = 0
+                threshold = min(64 * 1024, self.budget.limits.bytes - self.budget.bytes)
+        self.budget.check(size=pending)
+        if identity is not None:
             self.seen[identity] = row
-        self.budget.check(rows=1, size=size)
         self.records.append(row)

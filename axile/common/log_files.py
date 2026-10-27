@@ -51,19 +51,40 @@ def template_fields(template: str, fields: list[str]) -> set[str]:
         raise LogDecodeError(str(error)) from error
 
 
-def message_text(record: dict[str, Any]) -> tuple[str, object]:
+def _check_message_size(template: str, values: dict[str, str], extras: list[str], maximum: int) -> None:
+    """在 format_map 拼接重复参数前检查实际 UTF-8 长度。"""
+    parts = chain.from_iterable(
+        (literal, values[name]) if name is not None else (literal,)
+        for literal, name, _, _ in Formatter().parse(template)
+    )
+    size = 0
+    for part in chain(parts, (" " + extra for extra in extras)):
+        size += len(part.encode("utf-8"))
+        if size > maximum:
+            raise OverflowError("log message exceeds byte limit")
+
+
+def message_text(record: dict[str, Any], *, max_bytes: int | None = None) -> tuple[str, object]:
     """展开参数，同时保留没有出现在文案中的字段。"""
     if "template" not in record:
         return str(record.get("message", "")), record.get("exception")
+    return _message_text(record, template_fields(record["template"], record["fields"]), max_bytes)
+
+
+def _message_text(record: dict[str, Any], used: set[str], maximum: int | None = None) -> tuple[str, object]:
+    """展开已经校验过的模板；定义的校验结果只在当前解码器内复用。"""
     fields, args = record["fields"], record["args"]
-    used = template_fields(record["template"], fields)
     values = dict(zip(fields, args, strict=True))
+    _require(used <= values.keys(), "template references undeclared fields")
 
     def text(value: object) -> str:
         return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
-    message = record["template"].format_map({key: text(value) for key, value in values.items()})
-    extras = [f"{key}={text(value)}" for key, value in values.items() if key not in used and key != "exception"]
+    formatted = {key: text(value) for key, value in values.items()}
+    extras = [f"{key}={formatted[key]}" for key in values if key not in used and key != "exception"]
+    if maximum is not None:
+        _check_message_size(record["template"], formatted, extras, maximum)
+    message = record["template"].format_map(formatted)
     if extras:
         message += " " + " ".join(extras)
     return message, values.get("exception")
@@ -85,17 +106,51 @@ def context_text(context: dict[str, Any]) -> str:
     return f"[{' '.join(parts)}] " if parts else ""
 
 
+def _display_time(stamp: str, cache: dict[datetime, str] | None = None) -> str:
+    """批量显示只缓存当前绝对秒，跨夏令时重复小时仍分别换算。"""
+    if not stamp:
+        return "时间未知"
+    instant = datetime.fromisoformat(stamp)
+    if cache is None:
+        local = instant.astimezone()
+        prefix = _time_prefix(local)
+        micros = local.microsecond
+    else:
+        instant = instant.astimezone(UTC)
+        second = instant.replace(microsecond=0)
+        prefix = cache.get(second)
+        if prefix is None:
+            prefix = _time_prefix(instant.astimezone())
+            cache.clear()
+            cache[second] = prefix
+        micros = instant.microsecond
+    return f"{prefix}.{micros // 1000:03d}"
+
+
+def _time_prefix(value: datetime) -> str:
+    """固定数字格式无需反复经过系统 strftime。"""
+    return (
+        f"{value.year % 100:02d}{value.month:02d}{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d}"
+    )
+
+
 def render_record(record: dict[str, Any], *, color: bool = False) -> str:
-    """实时和历史时间线使用相同的可读文本。"""
-    stamp = record.get("timestamp", "")
-    timestamp = datetime.fromisoformat(stamp).astimezone().strftime("%y%m%d %H:%M:%S.%f")[:-3] if stamp else "时间未知"
+    """实时和外部字典始终按当前字段展开正文。"""
+    return _render_record(record, color=color)
+
+
+def _render_record(
+    record: dict[str, Any], *, color: bool = False, prepared: bool = False, times: dict[datetime, str] | None = None
+) -> str:
+    """批量读取产生的记录可复用正文，旧版字典仍按原规则解释。"""
+    timestamp = _display_time(record.get("timestamp", ""), times)
     level = "WARN" if record.get("level") == "WARNING" else str(record.get("level", "INFO"))
     component = record.get("metadata", {}).get("component", record.get("component", "系统"))
     label = f"{level:<5}"
     if color:
         timestamp = f"\x1b[32m{timestamp}\x1b[0m"
         label = f"\x1b[{31 if level in ('ERROR', 'CRITICAL') else 33 if level == 'WARN' else 36}m{label}\x1b[0m"
-    message, exception = message_text(record)
+    message, exception = (record["message"], record["exception"]) if prepared else message_text(record)
     if exception:
         detail = (
             exception.get("traceback") or exception.get("message", "")
@@ -117,6 +172,7 @@ class LogDecoder:
         self.run_id: str | None = None
         self.base: datetime | None = None
         self.templates: dict[int, list[Any]] = {}
+        self._template_fields: dict[int, set[str]] = {}
         self.contexts: dict[int, dict[str, Any]] = {0: {}}
         self.spans: dict[int, dict[str, Any]] = {}
         self.sequence = 0
@@ -142,8 +198,8 @@ class LogDecoder:
         except OverflowError as error:
             raise LogDecodeError("timestamp outside supported range") from error
 
-    def feed(self, row: Any) -> dict[str, Any] | None:
-        """接收一条 JSON 值；定义返回 None，事件返回展开记录。"""
+    def feed(self, row: Any, *, render: bool = True) -> dict[str, Any] | None:
+        """接收定义或事件；证据收集可延迟正文展开至归属和预算检查后。"""
         if isinstance(row, dict):
             _require(self.run_id is None and isinstance(row.get("context"), dict), "invalid legacy log record")
             return row
@@ -163,7 +219,8 @@ class LogDecoder:
             try:
                 base = datetime.fromisoformat(row[2]["time_base"])
                 _require(base.tzinfo is not None, "time_base must include timezone")
-            except (KeyError, TypeError, ValueError) as error:
+                base = base.astimezone(UTC)
+            except (KeyError, TypeError, ValueError, OverflowError, OSError) as error:
                 raise LogDecodeError("invalid time_base") from error
             identity = (row[2]["run_id"], "H")
             _require(
@@ -172,7 +229,7 @@ class LogDecoder:
             )
             self.definitions[identity] = base
             self.run_id = row[2]["run_id"]
-            self.base = base.astimezone(UTC)
+            self.base = base
             return None
         _require(self.run_id is not None, "missing log header")
         if kind == "T":
@@ -187,8 +244,9 @@ class LogDecoder:
             _require(all(isinstance(field, str) and bool(field) for field in row[4]), "invalid field names")
             _require(len(set(row[4])) == len(row[4]), "duplicate field names")
             _require(row[5].get("kind", "event") in ("event", "span_start", "span_end"), "invalid event kind")
-            template_fields(row[3], row[4])
+            used = template_fields(row[3], row[4])
             self._definition(self.templates, row[1], row[2:], "T")
+            self._template_fields[row[1]] = used
             return None
         if kind == "C":
             _require(len(row) == 3 and isinstance(row[2], dict), "invalid context")
@@ -225,10 +283,10 @@ class LogDecoder:
             )
             return None
         if kind == "E":
-            return self._event(row)
+            return self._event(row, render=render)
         raise LogDecodeError("unknown record type")
 
-    def _event(self, row: list[Any]) -> dict[str, Any]:
+    def _event(self, row: list[Any], *, render: bool) -> dict[str, Any]:
         assert self.run_id is not None
         _require(len(row) == 7 and _integer(row[1], minimum=1) and _integer(row[2]), "invalid event")
         _require(row[1] > self.sequence and row[2] >= self.time_us, "event order is not monotonic")
@@ -262,7 +320,8 @@ class LogDecoder:
             "span_id": row[5],
             "spans": [dict(span) for span in reversed(spans)],
         }
-        record["message"], record["exception"] = message_text(record)
+        if render:
+            record["message"], record["exception"] = _message_text(record, self._template_fields[row[3]])
         record["component"] = metadata.get("component", "系统")
         record["source"] = metadata.get("source", {})
         return record
@@ -270,6 +329,12 @@ class LogDecoder:
 
 def iter_file(path: Path, definitions: dict[tuple, object] | None = None) -> Iterable[dict[str, Any]]:
     """读取普通文件或 gzip；损坏记录带文件与行号报告，不静默跳过。"""
+    for record, _ in _iter_file(path, definitions):
+        yield record
+
+
+def _iter_file(path: Path, definitions: dict[tuple, object] | None) -> Iterable[tuple[dict[str, Any], bool]]:
+    """正文复用标识仅随内部结果传递，不混入日志字段。"""
     decoder = LogDecoder(definitions)
     opener = gzip.open if path.suffix == ".gz" else open
     try:
@@ -279,7 +344,7 @@ def iter_file(path: Path, definitions: dict[tuple, object] | None = None) -> Ite
                     _require(line.endswith(b"\n"), "incomplete log line")
                     record = decoder.feed(decode_json(line))
                     if record is not None:
-                        yield record
+                        yield record, decoder.run_id is not None
                 except (ValueError, TypeError, UnicodeDecodeError) as error:
                     raise LogDecodeError(f"{path.name}:{number}: {error}") from error
     except (OSError, EOFError, zlib.error) as error:
@@ -288,14 +353,38 @@ def iter_file(path: Path, definitions: dict[tuple, object] | None = None) -> Ite
 
 def read_logs(paths: Iterable[Path]) -> list[dict[str, Any]]:
     """合并进程及轮转分片；同一事件重复输入不重复展示。"""
-    events: dict[tuple, dict[str, Any]] = {}
+    return [record for record, _ in _read_logs(paths)]
+
+
+def _read_logs(paths: Iterable[Path]) -> list[tuple[dict[str, Any], bool]]:
+    """保留记录来源，避免把旧版字典中的 message 当作可信展开结果。"""
+    events: dict[tuple, tuple[dict[str, Any], bool]] = {}
     definitions: dict[tuple, object] = {}
     for path in paths:
-        for index, record in enumerate(iter_file(path, definitions)):
+        for index, (record, prepared) in enumerate(_iter_file(path, definitions)):
             key = (record.get("run_id", str(path)), record.get("seq", index))
-            _require(key not in events or events[key] == record, "conflicting event across files")
-            events[key] = record
-    return sorted(events.values(), key=lambda row: (row.get("timestamp", ""), row.get("run_id", ""), row.get("seq", 0)))
+            _require(key not in events or events[key][0] == record, "conflicting event across files")
+            events[key] = record, prepared
+    records = list(events.values())
+    del events
+    records.sort(key=lambda item: _log_order(item[0]))
+    return records
+
+
+def format_logs(paths: Iterable[Path], mode: str = "timeline", *, color: bool = False) -> str:
+    """批量输出时间线、过程树或计数，复用解码时已展开的正文。"""
+    records = _read_logs(paths)
+    if mode == "stats":
+        return json.dumps(log_statistics(record for record, _ in records), ensure_ascii=False, indent=2)
+    times: dict[datetime, str] = {}
+    if mode == "tree":
+        unprepared = {id(record) for record, expanded in records if not expanded}
+        return _render_tree((record for record, _ in records), unprepared, times)
+    if mode != "timeline":
+        raise ValueError("unknown log display mode")
+    return "\n".join(
+        _render_record(record, color=color, prepared=expanded, times=times) for record, expanded in records
+    )
 
 
 def statistics_record(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -350,9 +439,14 @@ def _tree(records: Iterable[dict[str, Any]]) -> tuple[list[dict], dict[tuple, di
     return roots + loose, nodes
 
 
-def _tree_order(item: dict) -> tuple:
+def _log_order(item: dict) -> tuple:
+    stamp = item["span"]["start_time"] if "span" in item else item.get("timestamp", "")
+    try:
+        instant = datetime.fromisoformat(stamp).astimezone(UTC) if stamp else datetime.min.replace(tzinfo=UTC)
+    except (ValueError, TypeError, OverflowError, OSError) as error:
+        raise LogDecodeError("invalid timestamp") from error
     return (
-        item["span"]["start_time"] if "span" in item else item.get("timestamp", ""),
+        instant,
         item.get("run_id", ""),
         item.get("span", {}).get("id", item.get("seq", 0)),
     )
@@ -381,13 +475,19 @@ def _span_text(node: dict, nodes: dict[tuple, dict]) -> str:
 
 def render_tree(records: Iterable[dict[str, Any]]) -> str:
     """按运行及过程标识迭代输出，避免递归复制子树文本。"""
+    return _render_tree(records, None, {})
+
+
+def _render_tree(records: Iterable[dict[str, Any]], unprepared: set[int] | None, times: dict[datetime, str]) -> str:
+    """树结构和排序保持一致，只在受控批量调用中复用正文。"""
     roots, nodes = _tree(records)
-    pending = [(item, 0) for item in reversed(sorted(roots, key=_tree_order))]
+    pending = [(item, 0) for item in reversed(sorted(roots, key=_log_order))]
     output = []
     while pending:
         item, depth = pending.pop()
         if "span" not in item:
-            output.append("  " * depth + render_record(item))
+            expanded = unprepared is not None and id(item) not in unprepared
+            output.append("  " * depth + _render_record(item, prepared=expanded, times=times))
             continue
         output.append("  " * depth + _span_text(item, nodes))
         children = chain(
@@ -399,5 +499,5 @@ def render_tree(records: Iterable[dict[str, Any]]) -> str:
                 or any(field not in ("name", "outcome") for field in event.get("fields", []))
             ),
         )
-        pending.extend((child, depth + 1) for child in reversed(sorted(children, key=_tree_order)))
+        pending.extend((child, depth + 1) for child in reversed(sorted(children, key=_log_order)))
     return "\n".join(output)

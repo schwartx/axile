@@ -307,7 +307,11 @@ def _build(
             rows=len(controls),
         )
         if log_report and log_report["requested"]:
-            writer.jsonl("logs.jsonl", redactor.clean(logs, "$logs"), source="application_log; independent_capture")
+            writer.jsonl(
+                "logs.jsonl",
+                (redactor.clean(row, f"$logs[{index}]") for index, row in enumerate(logs)),
+                source="application_log; independent_capture",
+            )
         manifest = {
             "schema_version": 3,
             "export_id": uuid4().hex,

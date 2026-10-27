@@ -63,19 +63,13 @@ def create_app(migration_runner: Callable[[], None] | None = None) -> typer.Type
         stats: Annotated[bool, typer.Option("--stats", help="显示各运行最后保存的累计丢弃计数")] = False,
     ) -> None:
         """读取日志时间线、过程树或计数；无需启动服务或加载原生扩展。"""
-        import json
-
-        from axile.common.log_files import LogDecodeError, log_statistics, read_logs, render_record, render_tree
+        from axile.common.log_files import LogDecodeError, format_logs
 
         try:
-            records = read_logs(paths)
-            if stats:
-                typer.echo(json.dumps(log_statistics(records), ensure_ascii=False, indent=2))
-            elif tree:
-                typer.echo(render_tree(records))
-            else:
-                for record in records:
-                    typer.echo(render_record(record))
+            mode = "stats" if stats else "tree" if tree else "timeline"
+            output = format_logs(paths, mode)
+            if output or mode != "timeline":
+                typer.echo(output)
         except (OSError, LogDecodeError) as error:
             raise typer.BadParameter(str(error)) from error
 

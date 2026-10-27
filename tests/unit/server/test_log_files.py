@@ -5,12 +5,23 @@ import json
 import os
 import stat
 import sys
+import time
+from datetime import datetime
 
 import pytest
 from typer.testing import CliRunner
 
 from axile.cli.main import app
-from axile.common.log_files import LogDecodeError, LogDecoder, iter_file, read_logs, render_record, render_tree
+from axile.common.log_files import (
+    LogDecodeError,
+    LogDecoder,
+    format_logs,
+    iter_file,
+    message_text,
+    read_logs,
+    render_record,
+    render_tree,
+)
 from axile.server.core.logging_sink import compress_log
 
 
@@ -129,6 +140,80 @@ def test_cli_timeline_tree_and_damage_error(tmp_path):
     assert damaged.exit_code != 0 and "a.jsonl:1" in damaged.output
 
 
+def test_empty_cli_timeline_stays_empty(tmp_path):
+    result = CliRunner().invoke(app, ["logs", str(write(tmp_path / "empty.jsonl", []))])
+    assert result.exit_code == 0 and result.output == ""
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires process timezone switching")
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Asia/Kathmandu"])
+def test_batch_times_match_local_time_across_seconds_and_dst(tmp_path, monkeypatch, zone):
+    stamps = [
+        "2026-03-08T06:59:59.999999Z",
+        "2026-03-08T07:00:00.000001Z",
+        "2026-11-01T05:59:59.999999Z",
+        "2026-11-01T06:00:00.000001Z",
+        "2026-11-01T01:30:00.123456",
+        "2026-03-08T02:30:00.999999",
+        "2026-10-27T00:00:00.123456+00:00:00.5",
+    ]
+    path = write(tmp_path / "times.jsonl", [{"timestamp": stamp, "message": stamp, "context": {}} for stamp in stamps])
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", zone)
+            time.tzset()
+            rows = read_logs([path])
+            expected = [
+                datetime.fromisoformat(row["timestamp"]).astimezone().strftime("%y%m%d %H:%M:%S.%f")[:-3]
+                + f" INFO  [系统] {row['message']}"
+                for row in rows
+            ]
+            assert format_logs([path]) == "\n".join(expected)
+            assert format_logs([path], "tree") == "\n".join(expected)
+            assert [render_record(row) for row in rows] == expected
+    finally:
+        time.tzset()
+
+
+def test_batch_preserves_legacy_template_and_public_mutable_record_semantics(tmp_path):
+    legacy = {
+        "timestamp": "2026-10-27T00:00:00Z",
+        "context": {},
+        "template": "值 {value}",
+        "fields": ["value"],
+        "args": ["current"],
+        "message": "stale",
+        "exception": "stale exception",
+    }
+    path = write(tmp_path / "legacy.jsonl", [legacy])
+    assert format_logs([path]).endswith("值 current")
+    assert format_logs([path], "tree").endswith("值 current")
+    row = read_logs([write(tmp_path / "native.jsonl", lines())])[1]
+    row["args"][0] = "edited"
+    assert "订单 edited" in render_record(row)
+    assert "订单 edited" in render_tree([row])
+
+
+def test_batch_keeps_conflicts_from_differently_rendered_equal_numbers(tmp_path):
+    paths = []
+    for name, value in [("a", 1), ("b", 1.0)]:
+        rows = lines()[:-3] + [["E", 1, 1, 1, 1, None, [value, None]]]
+        paths.append(write(tmp_path / f"{name}.jsonl", rows))
+    for mode in ("timeline", "tree", "stats"):
+        with pytest.raises(LogDecodeError, match="conflicting event"):
+            format_logs(paths, mode)
+
+
+def test_shared_field_mutation_keeps_template_reference_validation():
+    decoder = LogDecoder()
+    for row in lines()[:-3]:
+        decoder.feed(row)
+    first = decoder.feed(["E", 1, 1, 1, 1, None, [1, None]])
+    first["fields"].remove("id")
+    with pytest.raises(LogDecodeError, match="undeclared fields"):
+        decoder.feed(["E", 2, 2, 1, 1, None, [None]])
+
+
 def test_header_and_monotonic_order_required():
     with pytest.raises(LogDecodeError, match="header"):
         LogDecoder().feed(lines()[1])
@@ -164,6 +249,83 @@ def test_offset_header_preserves_cached_span_times_and_record_independence(tmp_p
     assert records[0]["spans"][0]["start_time"] == records[0]["timestamp"]
     records[0]["spans"][0]["name"] = "edited copy"
     assert records[1]["spans"][0]["name"] == "检查"
+
+
+def test_legacy_and_native_logs_sort_by_absolute_time_in_timeline_and_tree(tmp_path):
+    legacy = write(
+        tmp_path / "legacy.jsonl",
+        [
+            {"timestamp": "2026-10-26T08:00:00.000+08:00", "message": "较早的旧日志", "context": {}},
+            {"message": "时间未知的旧日志", "context": {}},
+        ],
+    )
+    rows = lines()
+    rows[0][2]["time_base"] = "2026-10-26T00:00:01Z"
+    native = write(tmp_path / "native.jsonl", rows)
+    records = read_logs([native, legacy])
+    assert records[0]["message"] == "时间未知的旧日志"
+    assert records[1]["message"] == "较早的旧日志"
+    assert records[2]["message"] == "过程开始"
+    tree = render_tree(records)
+    assert tree.index("时间未知的旧日志") < tree.index("较早的旧日志") < tree.index("检查 #1")
+
+
+def test_invalid_legacy_timestamp_is_a_log_decode_error(tmp_path):
+    path = write(tmp_path / "legacy.jsonl", [{"timestamp": "invalid", "context": {}}])
+    with pytest.raises(LogDecodeError, match="timestamp"):
+        read_logs([path])
+
+
+def test_header_utc_overflow_is_a_named_decode_error(tmp_path):
+    rows = lines()
+    rows[0][2]["time_base"] = "0001-01-01T00:00:00+01:00"
+    path = write(tmp_path / "overflow.jsonl", rows)
+    with pytest.raises(LogDecodeError, match="overflow.jsonl:1"):
+        read_logs([path])
+
+
+def test_header_utc_overflow_does_not_commit_decoder_state():
+    decoder = LogDecoder()
+    invalid = lines()[0]
+    invalid[2]["time_base"] = "0001-01-01T00:00:00+01:00"
+    with pytest.raises(LogDecodeError):
+        decoder.feed(invalid)
+    assert decoder.feed(lines()[0]) is None
+    for row in lines()[1:]:
+        result = decoder.feed(row)
+    assert result["message"] == "过程结束 outcome=ok"
+
+
+def test_message_budget_is_checked_before_format_map_expands_repeated_values():
+    class Unexpanded(str):
+        def format_map(self, values):
+            raise AssertionError("message expanded before checking its budget")
+
+    record = {"template": Unexpanded("{value}" * 5000), "fields": ["value"], "args": ["x" * 1024]}
+    with pytest.raises(OverflowError, match="byte limit"):
+        message_text(record, max_bytes=1000)
+
+
+def test_message_budget_counts_utf8_escaped_braces_and_unused_arguments():
+    record = {
+        "template": "{{字}} {value} {value:}",
+        "fields": ["value", "unused", "exception"],
+        "args": ["汉🙂", [1, None], {"message": "错误"}],
+    }
+    expected = message_text(record)
+    size = len(expected[0].encode("utf-8"))
+    assert message_text(record, max_bytes=size) == expected
+    with pytest.raises(OverflowError):
+        message_text(record, max_bytes=size - 1)
+
+
+def test_external_definition_dictionary_still_detects_cross_file_conflicts(tmp_path):
+    shared = {}
+    list(iter_file(write(tmp_path / "first.jsonl", lines()), shared))
+    changed = lines()
+    changed[4][2]["account_id"] = 99
+    with pytest.raises(LogDecodeError, match="conflicting definition"):
+        list(iter_file(write(tmp_path / "second.jsonl", changed), shared))
 
 
 def test_tree_handles_deep_nesting_without_recursive_text_copies():
