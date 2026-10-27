@@ -3,18 +3,18 @@ import { expect, test } from '@playwright/test'
 test.beforeEach(async ({ request }) => { await request.post('/api/v1/test/orders/reset') })
 
 const snapshot = (channel: string) => ({ id: 1, account_id: 1, source: 'manual', execution_id: null,
-  created_at: '2026-10-19T10:30:00+08:00', assets: { source: 'real', currency: channel === 'binance' ? 'USDT' : 'CNY',
-    positions: [{ symbol: channel === 'binance' ? 'BTCUSDT' : 'rb2610', direction: '多头', volume: 3, available_volume: 2, market_value: 105000, avg_price: 99999,
-      extra: { long_yd: 2, quote_asset: 'USDT', position_attributes: {
+  created_at: '2026-10-19T10:30:00+08:00', assets: { source: 'real', currency: 'CNY',
+    positions: [{ symbol: 'rb2610', direction: '多头', volume: 3, available_volume: 2, market_value: 105000, avg_price: 99999,
+      extra: { long_yd: 2, quote_asset: 'CNY', position_attributes: {
         volume: 3, available_now: 0, market_value: 105000, today_volume: 1, yesterday_volume: 2,
-        ...(channel === 'ctp' ? { position_profit: -12, margin: 1000, long_frozen: 0 } : channel === 'binance' ? { unrealized_pnl: 0, native_notional: 105000, initial_margin: 50, margin_asset: 'USDT' }
+        ...(channel === 'ctp' ? { position_profit: -12, margin: 1000, long_frozen: 0 }
           : { [channel === 'gm' ? 'position_price' : 'open_price']: 3500, float_profit: -12, margin: 1000,
               ...(channel === 'tq' ? { position_price: 2183, position_profit: 0, open_cost: 1585210.85, position_cost: 1571760, frozen: 0 }
                 : { position_cost: 1000, amount: 10500, last_price: 3501, today_volume: 1, frozen: 0 }), }),
       } } }],
   } })
 
-for (const channel of ['ctp', 'tq', 'gm', 'binance']) test(`position table uses native ${channel} fields and keeps missing prices unknown`, async ({ page }) => {
+for (const channel of ['ctp', 'tq', 'gm']) test(`position table uses native ${channel} fields and keeps missing prices unknown`, async ({ page }) => {
   const data = snapshot(channel)
   let reconciles = 0
   await page.route('**/api/v1/account/1/asset_snapshots*', route => route.fulfill({ json: { data: [data], count: 1 } }))
@@ -27,7 +27,7 @@ for (const channel of ['ctp', 'tq', 'gm', 'binance']) test(`position table uses 
   await expect(table.locator('[data-activity-row]')).toHaveCount(1)
   await expect(table).not.toContainText('99,999')
   const headers = await table.locator('th').allTextContents()
-  expect(headers.slice(0, 5)).toEqual(['品种', '方向', '持仓', '可用', channel === 'binance' ? '名义价值' : channel === 'gm' ? '市值' : '货值'])
+  expect(headers.slice(0, 5)).toEqual(['品种', '方向', '持仓', '可用', channel === 'gm' ? '市值' : '货值'])
   const cells = table.locator('[data-activity-row] td')
   const columnValue = (label: string) => cells.nth(headers.indexOf(label)).locator('.overflow-text-static')
   if (channel === 'tq') {
@@ -44,44 +44,14 @@ for (const channel of ['ctp', 'tq', 'gm', 'binance']) test(`position table uses 
     await expect(columnValue('持仓额')).toHaveText('10,500.00')
   }
   if (channel === 'ctp') await expect(cells.nth(6).locator('.overflow-text-static')).toHaveText('—')
-  if (channel === 'binance') {
-    await expect(cells.nth(3).locator('.overflow-text-static')).toHaveText('—')
-    await expect(cells.nth(5).locator('.overflow-text-static')).toHaveText('—')
-    await expect(cells.nth(6).locator('.overflow-text-static')).toHaveText('0.00 泰达币')
-    await expect(cells.nth(7).locator('.overflow-text-static')).toHaveText('—')
-  }
   if (channel === 'gm') await expect(cells.nth(3).locator('.overflow-text-static')).toHaveText('0 手')
-  await expect(cells.nth(4).locator('.overflow-text-static')).toHaveText(channel === 'binance' ? '105,000.00 泰达币' : '105,000.00 元')
+  await expect(cells.nth(4).locator('.overflow-text-static')).toHaveText('105,000.00 元')
   expect(reconciles).toBe(0)
   await table.getByRole('button', { name: /^展开持仓/ }).click()
-  await expect(table.getByRole('columnheader', { name: channel === 'binance' ? '初始保证金' : channel === 'gm' ? '持仓成本' : '占用保证金', exact: true })).toBeVisible()
+  await expect(table.getByRole('columnheader', { name: channel === 'gm' ? '持仓成本' : '占用保证金', exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '核对持仓', exact: true }).click()
   await expect.poll(() => reconciles).toBe(1)
   await page.setViewportSize({ width: 375, height: 812 })
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-})
-
-test('Binance native risk fields display directly in the wide main table', async ({ page }) => {
-  const data = snapshot('binance')
-  Object.assign(data.assets.positions[0].extra.position_attributes, {
-    open_price: 64000.123, mark_price: 65000.456, break_even_price: 64001.789, liquidation_price: 0,
-    maintenance_margin: 12.345, isolated_margin: 100.567, isolated_wallet: 90.123, adl: 3,
-  })
-  await page.route('**/api/v1/account/1/asset_snapshots*', route => route.fulfill({ json: { data: [data], count: 1 } }))
-  await page.goto('/e2e/orders.html?channel=binance')
-  await page.getByRole('button', { name: '持仓、委托与成交 · 在途 1', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: '持仓、委托与成交', exact: true })
-  await dialog.getByRole('button', { name: '持仓', exact: true }).click()
-  const table = dialog.locator('[data-swap-current] [data-position-table]')
-  await expect(table.locator('[data-activity-row]')).toHaveCount(1)
-  const headers = await table.locator('th').allTextContents()
-  for (const [label, value] of Object.entries({
-    开仓均价: '64,000.12', 标记价: '65,000.46', 保本价: '64,001.79', 强平价: '0.00',
-    初始保证金: '50.00 泰达币', 维持保证金: '12.35 泰达币', 逐仓保证金: '100.57 泰达币', 逐仓钱包余额: '90.12 泰达币', 自动减仓排名: '3',
-  })) await expect(table.locator('[data-activity-row] td').nth(headers.indexOf(label)).locator('.overflow-text-static')).toHaveText(value)
-  await page.setViewportSize({ width: 375, height: 812 })
-  await table.locator('..').evaluate(node => { node.scrollLeft = node.scrollWidth })
-  await expect(table.getByRole('button', { name: /^展开持仓/ })).toBeInViewport()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
@@ -102,7 +72,8 @@ test('position tab remembers its own filter and scroll and preserves data after 
   await dialog.getByRole('button', { name: '最近成交', exact: true }).click()
   await dialog.getByRole('button', { name: '持仓', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '品种', exact: true })).toContainText('rb2610')
-  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(500)
+  // 状态提示改变行高时，浏览器滚动锚定可能产生 1px 舍入差。
+  await expect.poll(() => scroll.evaluate(node => Math.abs(node.scrollTop - 500))).toBeLessThanOrEqual(1)
   await page.route('**/api/v1/account/1/assets/refresh', route => route.fulfill({ status: 502, json: { detail: 'snapshot failed' } }))
   await dialog.getByRole('button', { name: '核对持仓', exact: true }).click()
   const notice = dialog.getByRole('img', { name: '本次核对未完成', exact: true })
@@ -115,12 +86,12 @@ test('position tab remembers its own filter and scroll and preserves data after 
   await dialog.getByRole('button', { name: '核对持仓', exact: true }).click()
   await expect(notice).toHaveCount(0)
   await expect(dialog.locator('[data-swap-current] [data-activity-row]')).toHaveCount(30)
-  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(500)
+  await expect.poll(() => scroll.evaluate(node => Math.abs(node.scrollTop - 500))).toBeLessThanOrEqual(1)
   await dialog.getByRole('button', { name: '关闭', exact: true }).first().click()
   await page.getByRole('button', { name: '重新挂载弹窗', exact: true }).click()
   await page.getByRole('button', { name: '持仓、委托与成交 · 在途 1', exact: true }).click()
   await expect(dialog.getByRole('button', { name: '持仓', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect.poll(() => scroll.evaluate(node => node.scrollTop)).toBe(500)
+  await expect.poll(() => scroll.evaluate(node => Math.abs(node.scrollTop - 500))).toBeLessThanOrEqual(1)
 })
 
 test('snapshot failures show a delayed quiet dot and clear after recovery', async ({ page }) => {

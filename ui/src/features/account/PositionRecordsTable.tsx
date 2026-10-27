@@ -68,7 +68,7 @@ export function PositionRecordsTable(props: Props) {
     { key: 'direction', label: '方向', sample: '多头' },
     { key: 'volume', label: '持仓', grow: 1, numeric: true, sample: '99,999.99999999 手' },
     { key: 'available', label: '可用', grow: 1, numeric: true, sample: '99,999.99999999 手' },
-    { key: 'market_value', label: positionValueLabel(props.channel), grow: 1, numeric: true, sample: '999,999.99 泰达币' },
+    { key: 'market_value', label: positionValueLabel(props.channel), grow: 1, numeric: true, sample: '999,999.99 元' },
     ...positionColumns(props.channel).map(column => ({ key: column.key, label: column.label, grow: 1, numeric: true, sample: column.key === 'today_yesterday' ? '999 / 999' : '99,999.99',
       values: props.positions.map(position => positionColumnText(position, column, props.channel)) })),
     { key: 'details', label: '详情' },

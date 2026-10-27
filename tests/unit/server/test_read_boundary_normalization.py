@@ -1,6 +1,7 @@
 """读时归一的 API 边界回归：旧记录经记录列表 / 活动流 / 附件端点必须带契约字段。"""
 
 import asyncio
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +51,9 @@ class _FakeSession:
     def __init__(self, plan):
         self._plan = list(plan)
 
+    def begin_nested(self):
+        return nullcontext()
+
     async def execute(self, _stmt):
         return self._plan.pop(0)
 
@@ -71,6 +75,7 @@ def test_account_activity_normalizes_legacy():
         [
             _Result(None, 1),  # execution count
             _Result(None, 0),  # skip count
+            _Result([SimpleNamespace(id=7, kind=0)], None),  # page headers
             _Result([_legacy_record()], None),  # execution rows
             _Result([], None),  # skip rows
         ]

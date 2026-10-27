@@ -6,7 +6,6 @@ test('channel columns stay fixed and use precise price and profit labels', () =>
   expect(positionColumns('ctp').map(column => column.label)).toEqual(['今仓 / 昨仓', '持仓均价', '持仓盈亏', '占用保证金', '开仓成本', '持仓成本', '冻结数量', '平仓盈亏', '手续费'])
   expect(positionColumns('tq').map(column => column.label)).toEqual(['今仓 / 昨仓', '开仓均价', '浮动盈亏', '持仓均价', '持仓盈亏', '占用保证金', '开仓成本', '持仓成本', '冻结数量'])
   expect(positionColumns('gm').map(column => column.label)).toEqual(['持仓均价', '浮动盈亏', '当前价格', '持仓成本', '持仓额', '今仓', '冻结数量', '摊薄均价', '摊薄口径盈亏', '开仓均价', '开仓口径盈亏'])
-  expect(positionColumns('binance').map(column => column.label)).toEqual(['开仓均价', '未实现盈亏', '强平价', '标记价', '保本价', '初始保证金', '维持保证金', '逐仓保证金', '逐仓钱包余额', '自动减仓排名'])
   expect(positionColumns('plugin')).toEqual([])
 })
 
@@ -22,19 +21,27 @@ test('missing means dash, explicit zero survives and tiny values never round to 
 
 test('currency units are Chinese names without converting the actual amount', () => {
   expect(positionCurrencyUnit(' cny ')).toBe('元')
-  expect(positionCurrencyUnit('USDT')).toBe('泰达币')
-  expect(positionCurrencyUnit('USDC')).toBe('美元币')
   expect(positionCurrencyUnit('USD')).toBe('美元')
-  expect(positionCurrencyUnit('USDQ')).toBe('原币')
+  expect(positionCurrencyUnit(' usdq ')).toBe('USDQ')
   expect(positionCurrencyUnit(null)).toBe('')
-  expect(positionColumnText({ extra: { quote_asset: 'USDT', position_attributes: { unrealized_pnl: 0 } } }, positionColumns('binance')[1], 'binance')).toBe('0.00 泰达币')
 })
 
 test('legacy zero or reverse calculated averages do not appear as native prices', () => {
-  for (const channel of ['ctp', 'gm', 'binance']) {
+  for (const channel of ['ctp', 'gm', 'tq']) {
     const column = positionColumns(channel).find(column => column.key.endsWith('price'))!
     for (const avg_price of [0, 65000]) expect(positionColumnText({ avg_price }, column, channel)).toBe('—')
   }
+})
+
+test('unknown channels keep common values and native details without fixed columns', () => {
+  const position: Position = { volume: 2, available_volume: 0, market_value: 0, extra: { position_attributes: { open_price: 3200, unrealized_pnl: 0 } } }
+  expect(positionColumns('plugin')).toEqual([])
+  expect(positionCommonNumber(position, 'available_volume', 'plugin')).toBe(0)
+  expect(positionCommonNumber(position, 'market_value', 'plugin')).toBe(0)
+  expect(positionDetails(position, 'plugin')).toEqual([
+    { key: 'open_price', label: '开仓均价', text: '3,200.00' },
+    { key: 'unrealized_pnl', label: '未实现盈亏', text: '0.00' },
+  ])
 })
 
 test('actual fields remain distinct, zero pnl survives and main columns are omitted from details', () => {
@@ -44,8 +51,7 @@ test('actual fields remain distinct, zero pnl survives and main columns are omit
   expect(positionDetails(position, 'tq').map(field => field.label)).toEqual([])
 })
 
-test('Binance cloned available and GM default zero market value are not exposed', () => {
-  expect(positionCommonNumber({ volume: 2, available_volume: 2 }, 'available_volume', 'binance')).toBeNull()
+test('missing native availability and GM default zero market value are not exposed', () => {
   expect(positionCommonNumber({ market_value: 0 }, 'market_value', 'gm')).toBeNull()
   expect(positionCommonNumber({ extra: { position_attributes: { available_now: 0, available: 12 } } }, 'available_volume', 'gm')).toBe(0)
   expect(positionCommonNumber({ extra: { position_attributes: { available: 12 } } }, 'available_volume', 'gm')).toBeNull()
@@ -63,9 +69,4 @@ test('promoted quantities retain precision and missing native values never borro
   expect(positionColumnText({ direction: '空头', extra: { frozen: 99 } }, frozen, 'ctp')).toBe('—')
   const gmFrozen = positionColumns('gm').find(column => column.key === 'frozen')!
   expect(positionColumnText({ extra: { position_attributes: { frozen: 0.123456 } } }, gmFrozen, 'gm')).toBe('0.123456')
-  expect(positionCommonNumber({ market_value: 0 }, 'market_value', 'binance')).toBeNull()
-  expect(positionCommonNumber({ market_value: 0, extra: { position_attributes: { native_notional: 0 } } }, 'market_value', 'binance')).toBe(0)
-  const margin = positionColumns('binance').find(column => column.key === 'initial_margin')!
-  expect(positionColumnText({ extra: { quote_asset: 'USDT', position_attributes: { initial_margin: 12 } } }, margin, 'binance')).toBe('12.00')
-  expect(positionColumnText({ extra: { position_attributes: { initial_margin: 12, margin_asset: 'USDC' } } }, margin, 'binance')).toBe('12.00 美元币')
 })
