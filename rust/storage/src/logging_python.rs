@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use crate::logging;
 
 #[pyfunction]
-#[pyo3(signature = (directory, capacity=4096, max_bytes=134217728, rotation_seconds=86400, minimum="INFO"))]
+#[pyo3(signature = (directory, capacity=4096, max_bytes=134217728, rotation_seconds=86400, minimum="INFO", rotation_json=None))]
 fn logging_start(
     py: Python<'_>,
     directory: &str,
@@ -14,9 +14,19 @@ fn logging_start(
     max_bytes: u64,
     rotation_seconds: u64,
     minimum: &str,
+    rotation_json: Option<&str>,
 ) -> PyResult<()> {
-    py.detach(|| logging::start(directory, capacity, max_bytes, rotation_seconds, minimum))
-        .map_err(PyValueError::new_err)
+    py.detach(|| {
+        logging::start(
+            directory,
+            capacity,
+            max_bytes,
+            rotation_seconds,
+            minimum,
+            rotation_json,
+        )
+    })
+    .map_err(PyValueError::new_err)
 }
 
 #[pyfunction]

@@ -14,9 +14,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::logging_rotation::Rotation;
+
 static CURRENT: Mutex<Option<Arc<Logger>>> = Mutex::new(None);
 static NEXT_SPAN: AtomicU64 = AtomicU64::new(1);
-static UNCONFIGURED: AtomicU64 = AtomicU64::new(0);
+static PENDING_DROPS: Mutex<DropCounts> = Mutex::new(DropCounts {
+    full: 0,
+    unavailable: 0,
+    invalid: 0,
+});
 thread_local! { static CONTEXT: RefCell<Value> = RefCell::new(json!({"context":{},"spans":[]})); }
 
 pub fn scope(value: Value) -> Value {
@@ -200,6 +206,61 @@ fn level(value: &str) -> Option<u8> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum DropReason {
+    Full,
+    Unavailable,
+    Invalid,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DropCounts {
+    full: u64,
+    unavailable: u64,
+    invalid: u64,
+}
+
+impl DropCounts {
+    fn from_stats(stats: &Value) -> Self {
+        let reasons = &stats["dropped_by_reason"];
+        Self {
+            full: reasons["queue_full"].as_u64().unwrap_or(0),
+            unavailable: reasons["unavailable"].as_u64().unwrap_or(0),
+            invalid: reasons["invalid"].as_u64().unwrap_or(0),
+        }
+    }
+
+    fn add_to(self, counters: &Counters) {
+        counters.full.fetch_add(self.full, Ordering::Relaxed);
+        counters
+            .unavailable
+            .fetch_add(self.unavailable, Ordering::Relaxed);
+        counters.invalid.fetch_add(self.invalid, Ordering::Relaxed);
+    }
+
+    fn add(&mut self, counts: Self) {
+        self.full += counts.full;
+        self.unavailable += counts.unavailable;
+        self.invalid += counts.invalid;
+    }
+
+    fn increment(&mut self, reason: DropReason) {
+        match reason {
+            DropReason::Full => self.full += 1,
+            DropReason::Unavailable => self.unavailable += 1,
+            DropReason::Invalid => self.invalid += 1,
+        }
+    }
+
+    fn unsaved(self, saved: Self) -> Self {
+        Self {
+            full: self.full - saved.full,
+            unavailable: self.unavailable - saved.unavailable,
+            invalid: self.invalid - saved.invalid,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Counters {
     accepted: AtomicU64,
@@ -234,6 +295,7 @@ pub struct Logger {
     stopped: AtomicBool,
     finished: Mutex<Receiver<()>>,
     counters: Counters,
+    recovered: Mutex<bool>,
     run_id: String,
     base_us: u64,
     minimum_level: u8,
@@ -247,6 +309,7 @@ impl Logger {
         max_bytes: u64,
         rotation_seconds: u64,
         minimum: &str,
+        rotation_json: Option<&str>,
     ) -> Result<Arc<Self>, String> {
         let minimum_level = level(minimum).ok_or("unknown logging level")?;
         if capacity == 0
@@ -263,7 +326,8 @@ impl Logger {
             std::process::id(),
             NEXT_SPAN.fetch_add(1, Ordering::Relaxed)
         );
-        let writer = Writer::open(directory, &run_id, base_us, max_bytes, rotation_seconds)
+        let rotation = Rotation::new(rotation_json, rotation_seconds, base_us)?;
+        let writer = Writer::open(directory, &run_id, base_us, max_bytes, rotation)
             .map_err(|error| error.to_string())?;
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let (console_sender, console) = mpsc::sync_channel(capacity);
@@ -276,6 +340,7 @@ impl Logger {
             stopped: AtomicBool::new(false),
             finished: Mutex::new(finished),
             counters: Counters::default(),
+            recovered: Mutex::new(false),
             run_id,
             base_us,
             minimum_level,
@@ -285,7 +350,7 @@ impl Logger {
         thread::Builder::new()
             .name("axile-log-writer".into())
             .spawn(move || {
-                run(
+                let saved_drops = run(
                     writer,
                     receiver,
                     console_sender,
@@ -293,6 +358,7 @@ impl Logger {
                     &worker_logger,
                 );
                 worker_logger.stopped.store(true, Ordering::Release);
+                worker_logger.recover_drops(saved_drops);
                 let _ = finished_sender.try_send(());
             })
             .map_err(|error| error.to_string())?;
@@ -304,16 +370,16 @@ impl Logger {
             return true;
         }
         if !event.validate() {
-            self.counters.invalid.fetch_add(1, Ordering::Relaxed);
+            self.record_drop(DropReason::Invalid);
             return false;
         }
         if self.stopped.load(Ordering::Acquire) {
-            self.counters.unavailable.fetch_add(1, Ordering::Relaxed);
+            self.record_drop(DropReason::Unavailable);
             return false;
         }
         let sender = lock(&self.sender);
         let Some(sender) = sender.as_ref() else {
-            self.counters.unavailable.fetch_add(1, Ordering::Relaxed);
+            self.record_drop(DropReason::Unavailable);
             return false;
         };
         match sender.try_send(event) {
@@ -322,31 +388,56 @@ impl Logger {
                 true
             }
             Err(TrySendError::Full(_)) => {
-                self.counters.full.fetch_add(1, Ordering::Relaxed);
+                self.record_drop(DropReason::Full);
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
-                self.counters.unavailable.fetch_add(1, Ordering::Relaxed);
+                self.record_drop(DropReason::Unavailable);
                 false
             }
         }
     }
 
     fn stats(&self) -> Value {
-        self.counters
-            .unavailable
-            .fetch_add(UNCONFIGURED.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+        let recovered = lock(&self.recovered);
+        if !*recovered {
+            std::mem::take(&mut *lock(&PENDING_DROPS)).add_to(&self.counters);
+        }
         let mut stats = self.counters.snapshot();
         stats["run_id"] = json!(self.run_id);
         stats["time_base"] = json!(iso_time(self.base_us));
         stats["stopped"] = json!(self.stopped.load(Ordering::Acquire));
         stats
     }
+
+    fn record_drop(&self, reason: DropReason) {
+        let recovered = lock(&self.recovered);
+        let counter = match reason {
+            DropReason::Full => &self.counters.full,
+            DropReason::Unavailable => &self.counters.unavailable,
+            DropReason::Invalid => &self.counters.invalid,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        if *recovered {
+            lock(&PENDING_DROPS).increment(reason);
+        }
+    }
+
+    fn recover_drops(&self, saved: DropCounts) {
+        let mut recovered = lock(&self.recovered);
+        if !*recovered {
+            let outstanding = DropCounts::from_stats(&self.counters.snapshot()).unsaved(saved);
+            lock(&PENDING_DROPS).add(outstanding);
+            *recovered = true;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static TEST_STATE: Mutex<()> = Mutex::new(());
 
     fn event() -> Event {
         Event {
@@ -373,6 +464,7 @@ mod tests {
                 stopped: AtomicBool::new(false),
                 finished: Mutex::new(finished),
                 counters: Counters::default(),
+                recovered: Mutex::new(false),
                 run_id: "test".into(),
                 base_us: 0,
                 minimum_level: 20,
@@ -384,6 +476,7 @@ mod tests {
 
     #[test]
     fn full_queue_counts_each_rejected_event_once_without_waiting() {
+        let _state = lock(&TEST_STATE);
         let (logger, receiver) = held_queue(1);
         assert!(logger.emit(event()));
         let threads: Vec<_> = (0..4)
@@ -407,6 +500,7 @@ mod tests {
 
     #[test]
     fn filtering_invalid_input_and_unavailable_writer_have_separate_counts() {
+        let _state = lock(&TEST_STATE);
         let (logger, receiver) = held_queue(1);
         let mut filtered = event();
         filtered.level = "DEBUG".into();
@@ -427,6 +521,7 @@ mod tests {
 
     #[test]
     fn stale_consumers_do_not_read_or_count_against_new_run() {
+        let _state = lock(&TEST_STATE);
         let (mut logger, _events) = held_queue(1);
         let (console_sender, console_receiver) = mpsc::sync_channel(1);
         let (archive_sender, archive_receiver) = mpsc::sync_channel(1);
@@ -458,9 +553,10 @@ mod tests {
 
     #[test]
     fn close_drains_accepted_records_and_rotation_repeats_definitions() {
+        let _state = lock(&TEST_STATE);
         let directory =
             std::env::temp_dir().join(format!("axile-logging-{}-{}", std::process::id(), now_us()));
-        let logger = Logger::open(&directory, 128, 1, 86400, "INFO").unwrap();
+        let logger = Logger::open(&directory, 128, 1, 86400, "INFO", None).unwrap();
         for _ in 0..20 {
             assert!(logger.emit(event()));
         }
@@ -493,6 +589,66 @@ mod tests {
         assert!(count >= 20);
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn late_writer_and_late_rejections_transfer_only_unsaved_drops_once() {
+        let _state = lock(&TEST_STATE);
+        let (old, _old_events) = held_queue(1);
+        old.record_drop(DropReason::Invalid);
+        let saved = DropCounts::from_stats(&old.stats());
+        old.record_drop(DropReason::Invalid);
+        old.stopped.store(true, Ordering::Release);
+        let (replacement, _new_events) = held_queue(1);
+        assert_eq!(replacement.stats()["dropped_total"], 0);
+
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let old = Arc::clone(&old);
+                thread::spawn(move || {
+                    for _ in 0..1000 {
+                        old.record_drop(DropReason::Unavailable);
+                    }
+                })
+            })
+            .collect();
+        old.recover_drops(saved);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(old.stats()["dropped_total"], 4002);
+        assert_eq!(replacement.stats()["dropped_total"], 4001);
+        old.recover_drops(saved);
+        assert_eq!(replacement.stats()["dropped_total"], 4001);
+        assert_eq!(replacement.stats()["dropped_by_reason"]["invalid"], 1);
+        assert_eq!(
+            replacement.stats()["dropped_by_reason"]["unavailable"],
+            4000
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn flushed_checkpoint_is_not_recovered_again_when_sync_fails() {
+        let _state = lock(&TEST_STATE);
+        let directory = std::env::temp_dir().join(format!(
+            "axile-logging-sync-{}-{}",
+            std::process::id(),
+            now_us()
+        ));
+        let (old, _events) = held_queue(1);
+        old.record_drop(DropReason::Invalid);
+        let base = now_us();
+        let rotation = Rotation::new(None, 86400, base).unwrap();
+        let mut writer = Writer::open(&directory, "sync-failure", base, 1024, rotation).unwrap();
+        writer.file = BufWriter::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
+        let mut saved = DropCounts::default();
+        assert!(writer.checkpoint(&old.stats(), &mut saved).is_err());
+        assert_eq!(saved.invalid, 1);
+        old.recover_drops(saved);
+        let (replacement, _events) = held_queue(1);
+        assert_eq!(replacement.stats()["dropped_total"], 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn current() -> Option<Arc<Logger>> {
@@ -509,6 +665,7 @@ pub fn start(
     max_bytes: u64,
     rotation_seconds: u64,
     minimum: &str,
+    rotation_json: Option<&str>,
 ) -> Result<(), String> {
     if capacity == 0
         || max_bytes == 0
@@ -530,6 +687,7 @@ pub fn start(
         max_bytes,
         rotation_seconds,
         minimum,
+        rotation_json,
     )?;
     *lock(&CURRENT) = Some(logger);
     Ok(())
@@ -537,13 +695,13 @@ pub fn start(
 
 pub fn emit_json(payload: &str) -> bool {
     let Some(logger) = current() else {
-        UNCONFIGURED.fetch_add(1, Ordering::Relaxed);
+        lock(&PENDING_DROPS).increment(DropReason::Unavailable);
         return false;
     };
     match serde_json::from_str::<Event>(payload) {
         Ok(event) => logger.emit(event),
         Err(_) => {
-            logger.counters.invalid.fetch_add(1, Ordering::Relaxed);
+            logger.record_drop(DropReason::Invalid);
             false
         }
     }
@@ -551,9 +709,9 @@ pub fn emit_json(payload: &str) -> bool {
 
 pub fn invalid() {
     if let Some(logger) = current() {
-        logger.counters.invalid.fetch_add(1, Ordering::Relaxed);
+        logger.record_drop(DropReason::Invalid);
     } else {
-        UNCONFIGURED.fetch_add(1, Ordering::Relaxed);
+        lock(&PENDING_DROPS).increment(DropReason::Unavailable);
     }
 }
 pub fn console_failed(run_id: Option<&str>) {
@@ -574,7 +732,10 @@ pub fn archive_failed(run_id: Option<&str>) {
 }
 pub fn stats() -> Value {
     current().map(|logger| logger.stats()).unwrap_or_else(
-        || json!({"dropped_total": UNCONFIGURED.load(Ordering::Relaxed), "stopped": true}),
+        || {
+            let pending = lock(&PENDING_DROPS);
+            json!({"dropped_total": pending.full + pending.unavailable + pending.invalid, "stopped": true})
+        },
     )
 }
 pub fn console(run_id: Option<&str>) -> Option<String> {
@@ -642,8 +803,9 @@ fn run(
     console: SyncSender<String>,
     archives: SyncSender<PathBuf>,
     logger: &Logger,
-) {
+) -> DropCounts {
     let mut last_stats = Value::Null;
+    let mut saved_drops = DropCounts::default();
     loop {
         let event = match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => Some(event),
@@ -661,7 +823,7 @@ fn run(
                         logger,
                         writer.pending_records + writer.unsynced_records + 1,
                     );
-                    return;
+                    return saved_drops;
                 }
             }
             if writer.flush_events(&logger.counters).is_err() {
@@ -670,7 +832,7 @@ fn run(
                     logger,
                     writer.pending_records + writer.unsynced_records,
                 );
-                return;
+                return saved_drops;
             }
         }
         let snapshot = logger.stats();
@@ -678,9 +840,9 @@ fn run(
             && (writer.last_sync.elapsed() >= Duration::from_secs(1)
                 || logger.stopped.load(Ordering::Acquire))
         {
-            if writer.checkpoint(&snapshot).is_err() {
+            if writer.checkpoint(&snapshot, &mut saved_drops).is_err() {
                 fail_writer(&receiver, logger, writer.unsynced_records);
-                return;
+                return saved_drops;
             }
             let dropped = snapshot["dropped_total"].as_u64().unwrap_or(0);
             let previous = last_stats
@@ -699,9 +861,11 @@ fn run(
             last_stats = snapshot;
         }
     }
-    if writer.checkpoint(&logger.stats()).is_err() {
+    let snapshot = logger.stats();
+    if writer.checkpoint(&snapshot, &mut saved_drops).is_err() {
         fail_writer(&receiver, logger, writer.unsynced_records);
     }
+    saved_drops
 }
 
 fn fail_writer(receiver: &Receiver<Event>, logger: &Logger, unconfirmed: u64) {
@@ -713,7 +877,7 @@ fn fail_writer(receiver: &Receiver<Event>, logger: &Logger, unconfirmed: u64) {
     logger.stopped.store(true, Ordering::Release);
     lock(&logger.sender).take();
     while receiver.try_recv().is_ok() {
-        logger.counters.unavailable.fetch_add(1, Ordering::Relaxed);
+        logger.record_drop(DropReason::Unavailable);
     }
 }
 
@@ -726,8 +890,7 @@ struct Writer {
     index: u64,
     bytes: u64,
     max_bytes: u64,
-    rotation_seconds: u64,
-    opened_us: u64,
+    rotation: Rotation,
     last_time: u64,
     sequence: u64,
     // shortcut: dictionaries live for one run; bound interning if long-lived context cardinality grows.
@@ -746,7 +909,7 @@ impl Writer {
         run_id: &str,
         base_us: u64,
         max_bytes: u64,
-        rotation_seconds: u64,
+        rotation: Rotation,
     ) -> io::Result<Self> {
         std::fs::create_dir_all(directory)?;
         let path = Self::path(directory, run_id, base_us, 0);
@@ -760,8 +923,7 @@ impl Writer {
             index: 0,
             bytes: 0,
             max_bytes,
-            rotation_seconds,
-            opened_us: base_us,
+            rotation,
             last_time: 0,
             sequence: 0,
             templates: HashMap::new(),
@@ -856,10 +1018,7 @@ impl Writer {
         counters: &Counters,
     ) -> io::Result<()> {
         let now = now_us();
-        if self.bytes >= self.max_bytes
-            || now / (self.rotation_seconds * 1_000_000)
-                != self.opened_us / (self.rotation_seconds * 1_000_000)
-        {
+        if self.rotation.due(now) || self.bytes >= self.max_bytes {
             self.flush_events(counters)?;
             self.file.get_ref().sync_data()?;
             self.unsynced_records = 0;
@@ -867,7 +1026,6 @@ impl Writer {
             self.index += 1;
             self.path = Self::path(&self.directory, &self.run_id, now, self.index);
             self.file = Self::create_file(&self.path)?;
-            self.opened_us = now;
             self.bytes = 0;
             self.seen.clear();
             self.header()?;
@@ -919,7 +1077,7 @@ impl Writer {
         Ok(())
     }
 
-    fn checkpoint(&mut self, stats: &Value) -> io::Result<()> {
+    fn checkpoint(&mut self, stats: &Value, saved_drops: &mut DropCounts) -> io::Result<()> {
         let event = Event {
             level: "INFO".into(),
             template: "日志统计 {stats}".into(),
@@ -945,6 +1103,8 @@ impl Writer {
             event.args
         ]))?;
         self.file.flush()?;
+        // A readable checkpoint must not be counted again if its later sync fails.
+        *saved_drops = DropCounts::from_stats(stats);
         self.file.get_ref().sync_data()?;
         self.unsynced_records = 0;
         self.last_sync = std::time::Instant::now();

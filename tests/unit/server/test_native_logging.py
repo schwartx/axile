@@ -150,3 +150,88 @@ assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==1
 """
     result = subprocess.run([sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+def test_failed_restart_keeps_saved_drops_once_and_recovers_rejected_gap(tmp_path):
+    program = """
+import json,sys
+from pathlib import Path
+from axile.server._native import _core
+from axile.common.log_files import read_logs,log_statistics
+root=Path(sys.argv[1])
+_core.logging_start(str(root/"first"))
+_core.logging_invalid()
+_core.logging_invalid()
+_core.logging_close(1000)
+assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==2
+blocked=root/"blocked"
+blocked.write_text("not a directory")
+try:
+    _core.logging_start(str(blocked/"logs"))
+except ValueError:
+    pass
+else:
+    raise AssertionError("restart must fail")
+payload=json.dumps({"level":"INFO","template":"gap","fields":[],"args":[]})
+for _ in range(3):
+    assert _core.logging_emit(payload) is False
+_core.logging_invalid()
+assert json.loads(_core.logging_stats())["dropped_total"]==6
+_core.logging_start(str(root/"recovered"))
+stats=json.loads(_core.logging_stats())
+assert stats["dropped_total"]==4,stats
+assert stats["dropped_by_reason"]=={"queue_full":0,"unavailable":3,"invalid":1},stats
+_core.logging_close(1000)
+assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==6
+_core.logging_start(str(root/"third"))
+assert json.loads(_core.logging_stats())["dropped_total"]==0
+_core.logging_close(1000)
+assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==6
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fault injection renames a directory containing open files")
+def test_failed_writer_recovers_only_unsaved_drops(tmp_path):
+    program = """
+import json,sys,threading
+from pathlib import Path
+from axile.server._native import _core
+from axile.common.log_files import read_logs,log_statistics
+root=Path(sys.argv[1])
+active=root/"active"
+_core.logging_start(str(active),capacity=32,max_bytes=1)
+_core.logging_invalid()
+_core.logging_invalid()
+payload=json.dumps({"level":"INFO","template":"event","fields":[],"args":[]})
+assert _core.logging_emit(payload) is True
+for _ in range(200):
+    if json.loads(_core.logging_stats())["written_total"]==1: break
+    threading.Event().wait(0.01)
+assert json.loads(_core.logging_stats())["written_total"]==1
+active.rename(root/"closed")
+active.write_text("rotation cannot create a file here")
+for _ in range(3): _core.logging_invalid()
+assert _core.logging_emit(payload) is True
+for _ in range(200):
+    if json.loads(_core.logging_stats())["stopped"]: break
+    threading.Event().wait(0.01)
+assert json.loads(_core.logging_stats())["write_errors_total"]==1
+for _ in range(2): assert _core.logging_emit(payload) is False
+_core.logging_invalid()
+_core.logging_close(1000)
+assert json.loads(_core.logging_stats())["dropped_total"]==8
+saved=log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]
+_core.logging_start(str(root/"recovered"))
+stats=json.loads(_core.logging_stats())
+assert stats["dropped_total"]==8-saved,(stats,saved)
+_core.logging_close(1000)
+assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==8
+_core.logging_start(str(root/"third"))
+assert json.loads(_core.logging_stats())["dropped_total"]==0
+_core.logging_close(1000)
+assert log_statistics(read_logs(root.rglob("*.jsonl")))["dropped_total"]==8
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

@@ -44,6 +44,7 @@ pub(crate) mod json_codec;
 pub mod logging;
 #[cfg(feature = "python")]
 mod logging_python;
+mod logging_rotation;
 pub(crate) mod maintenance_ops;
 pub(crate) mod migrations;
 pub mod native_publication;

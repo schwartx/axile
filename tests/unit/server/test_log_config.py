@@ -13,7 +13,7 @@ from axile.common.log_files import context_text, read_logs, render_record, rende
 from axile.common.logging import current_log_context, log_span
 from axile.server._native import _core
 from axile.server.core import log_config
-from axile.server.core.logging_sink import NativeLogSink
+from axile.server.core.logging_sink import NativeLogSink, _rotation_limits
 from axile.server.native_store import native_operation_sync
 
 
@@ -119,7 +119,10 @@ def test_closed_writer_counts_new_events():
     assert json.loads(_core.logging_stats())["dropped_by_reason"]["unavailable"] == 1
 
 
-@pytest.mark.parametrize("rotation", ["100 MB", "1 KiB", "0.25 day"])
+@pytest.mark.parametrize(
+    "rotation",
+    ["100 MB", "1 KiB", "0.25 day", "00:00", "daily", "1 h", "1 month", "Monday at 12:00", "500 us"],
+)
 def test_rotation_configuration_keeps_logging_available(tmp_path, monkeypatch, rotation):
     monkeypatch.setattr(log_config.settings, "axile_log_rotation", rotation)
     log_config.setup_logging()
@@ -128,6 +131,37 @@ def test_rotation_configuration_keeps_logging_available(tmp_path, monkeypatch, r
     assert "initialization_error" not in log_config.logging_stats()
     rows = read_logs(list(tmp_path.glob("*.jsonl")) + list(tmp_path.glob("*.jsonl.gz")))
     assert any(row["message"] == "轮转配置有效" for row in rows)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("100 MB", {"max_bytes": 100_000_000}),
+        ("100 Mb", {"max_bytes": 12_500_000}),
+        ("1e2 KiB", {"max_bytes": 102_400}),
+        ("100 bytes", {"max_bytes": 100}),
+        ("1 h", {"kind": "interval", "microseconds": 3_600_000_000}),
+        ("1 hour, 30 minutes", {"kind": "interval", "microseconds": 5_400_000_000}),
+        ("1 month", {"kind": "interval", "microseconds": 2_628_000_000_000}),
+        ("500 us", {"kind": "interval", "microseconds": 500}),
+        ("MONTHLY", {"kind": "frequency", "name": "monthly"}),
+        ("yearly", {"kind": "frequency", "name": "yearly"}),
+        ("00:00", {"kind": "daytime", "weekday": None, "time_us": 0}),
+        ("Monday at 12:00", {"kind": "daytime", "weekday": 0, "time_us": 43_200_000_000}),
+        ("w6 at 11:30:00.123456", {"kind": "daytime", "weekday": 6, "time_us": 41_400_123_456}),
+        ("saturday", {"kind": "daytime", "weekday": 5, "time_us": 0}),
+    ],
+)
+def test_rotation_uses_existing_loguru_grammar_and_preserves_units(value, expected):
+    limits = _rotation_limits(value)
+    actual = json.loads(limits["rotation_json"]) if "rotation_json" in limits else limits
+    assert actual == expected
+
+
+@pytest.mark.parametrize("value", ["0 s", "-1 h", "1e999 B", "w7", "not a rule"])
+def test_invalid_rotation_does_not_become_default_rule(value):
+    with pytest.raises(ValueError):
+        _rotation_limits(value)
 
 
 def test_failed_console_thread_does_not_stop_business_or_file_logging(tmp_path, monkeypatch):

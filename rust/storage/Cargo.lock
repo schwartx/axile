@@ -36,6 +36,7 @@ dependencies = [
  "base64",
  "chrono",
  "chrono-tz",
+ "libc",
  "pyo3",
  "regex",
  "rusqlite",

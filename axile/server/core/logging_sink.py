@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -15,23 +16,35 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from loguru import _string_parsers
+
 from axile.common.log_files import render_record, template_fields
 from axile.common.logging import LOG_CONTEXT_FIELDS, current_log_context
 
 
-def _rotation_limits(value: str) -> dict[str, int]:
-    duration = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?|days?|weeks?)\s*", value, re.IGNORECASE)
-    if duration:
-        seconds = (
-            float(duration[1])
-            * {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}[duration[2].lower().rstrip("s")]
-        )
-        return {"rotation_seconds": max(1, int(seconds))}
-    size = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([KMGTPE]?)(i?)(?:B|bytes?)\s*", value, re.IGNORECASE)
-    if size:
-        power = {"": 0, "K": 1, "M": 2, "G": 3, "T": 4, "P": 5, "E": 6}[size[2].upper()]
-        return {"max_bytes": max(1, int(float(size[1]) * (1024 if size[3] else 1000) ** power))}
-    raise ValueError("日志轮转需要使用时长或文件大小，例如 1 day、100 MB")
+def _rotation_limits(value: str) -> dict[str, Any]:
+    """沿用 Loguru 的配置语法，只向原生写线程传递归一化规则。"""
+    size = _string_parsers.parse_size(re.sub(r"bytes?\s*$", "B", value, flags=re.IGNORECASE))
+    if size is not None:
+        if not math.isfinite(size):
+            raise ValueError("日志轮转大小必须有限")
+        return {"max_bytes": max(1, int(size))}
+    interval = _string_parsers.parse_duration(value)
+    if interval is not None:
+        microseconds = (interval.days * 86400 + interval.seconds) * 1_000_000 + interval.microseconds
+        if microseconds <= 0:
+            raise ValueError("日志轮转时长必须大于零")
+        rule: dict[str, Any] = {"kind": "interval", "microseconds": microseconds}
+    elif _string_parsers.parse_frequency(value) is not None:
+        rule = {"kind": "frequency", "name": value.strip().lower()}
+    else:
+        daytime = _string_parsers.parse_daytime(value)
+        if daytime is None:
+            raise ValueError("无法解析日志轮转规则")
+        weekday, clock = daytime
+        time_us = ((clock.hour * 60 + clock.minute) * 60 + clock.second) * 1_000_000 + clock.microsecond if clock else 0
+        rule = {"kind": "daytime", "weekday": weekday, "time_us": time_us}
+    return {"rotation_json": json.dumps(rule, separators=(",", ":"))}
 
 
 def compress_log(path: Path) -> None:
