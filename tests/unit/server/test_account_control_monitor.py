@@ -6,6 +6,7 @@ import re
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, closing
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -19,7 +20,7 @@ from axile.executor.account_control.models import (
     AccountControlContextKind,
     AccountControlSource,
 )
-from axile.executor.algorithms.utils.clock import clock_now_ms
+from axile.executor.algorithms.utils.clock import clock_now, clock_now_ms
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
 from axile.server.execution import execution_account_control as persistence
@@ -86,7 +87,7 @@ def test_session_context_retains_gaps_in_the_sessions_timezone(native_database, 
     )
     sessions = {row["instance_id"]: AccountControlSession.model_validate(row) for row in result["sessions"]}
     assert "gap" in sessions
-    assert monitor_module._affected(sessions["gap"], day)
+    assert monitor_module._affected(sessions["gap"], day, clock_now(tz=UTC))
 
 
 @sqlite_oracle
@@ -173,11 +174,11 @@ def test_snapshot_cannot_observe_half_completed_sampling_round(monkeypatch):
             release = asyncio.Event()
             original = monitor._account_frame
 
-            async def delayed_frame(account, policy, sessions, persisted):
+            async def delayed_frame(account, policy, sessions, persisted, sampled_at):
                 if account["id"] == 2:
                     entered.set()
                     await release.wait()
-                frame = await original(account, policy, sessions, persisted)
+                frame = await original(account, policy, sessions, persisted, sampled_at)
                 frame["waiting_total"] = 99
                 return frame
 
@@ -459,6 +460,117 @@ def test_idle_interval_is_recomputed_without_reloading_history(monkeypatch):
             assert interval()["value"] == 600
             assert interval()["estimated_wait_ms"] == 0
             assert len(monitor.frames[1]["records"]) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("boundary", ["2026-10-28T06:45:59.980+08:00", "2026-10-28T23:59:59.980+08:00"])
+@pytest.mark.parametrize("cross_during", ["sessions", "history", "frames"])
+@pytest.mark.parametrize("warm_cache", [False, True])
+def test_sampling_window_stays_consistent_across_time_boundaries(monkeypatch, boundary, cross_during, warm_cache):
+    from axile.executor.algorithms.utils import clock as clock_module
+
+    before = datetime.fromisoformat(boundary)
+    now = [before.timestamp()]
+    monkeypatch.setattr(clock_module, "_default_clock", SimpleNamespace(time=lambda: now[0], sleep=lambda _: None))
+
+    async def scenario():
+        async with database(monkeypatch) as (path, _, monitor):
+            save_account(
+                path, build_account(id=2, portfolio_id=None, account_control_override={"timezone": "America/New_York"})
+            )
+            zones = {1: "Asia/Shanghai", 2: "America/New_York"}
+            after = datetime.fromtimestamp(now[0] + 0.030, UTC)
+            old_windows = {key: resolve_control_window(zone, now=before) for key, zone in zones.items()}
+            new_windows = {key: resolve_control_window(zone, now=after) for key, zone in zones.items()}
+            with closing(sqlite3.connect(path)) as connection, connection:
+                for key in zones:
+                    old, new = old_windows[key], new_windows[key]
+                    rows = [(old.control_date, "MINUTE", old.minute_bucket_start, 7)]
+                    rows.append((new.control_date, "MINUTE", new.minute_bucket_start, 11))
+                    if key == 2:
+                        rows.append((old.control_date, "DAY", old.day_bucket_start, 220))
+                    if old.control_date != new.control_date:
+                        rows.append((new.control_date, "DAY", new.day_bucket_start, 37))
+                    connection.executemany(
+                        "INSERT INTO account_control_counter_delta(account_id,execution_id,control_date,bucket_type,"
+                        "bucket_start,scope_type,operation,delta_count,delta_uid) "
+                        "VALUES (?,'history',?,?,?,'ACCOUNT','place_order',?,?)",
+                        [
+                            (key, day, bucket, start, count, f"boundary-{key}-{i}")
+                            for i, (day, bucket, start, count) in enumerate(rows)
+                        ],
+                    )
+            if warm_cache:
+                await monitor.refresh()
+            version = monitor.version
+            calls, scopes, requests = [], [], []
+            crossed = False
+            native = monitor_module.native_operation
+            account_frame = monitor._account_frame
+
+            async def cross_after_native(operation, request):
+                nonlocal crossed
+                calls.append(operation)
+                result = await native(operation, request)
+                if operation == "control_monitor_inputs" and "accounts" in request:
+                    scopes.append(request["accounts"])
+                    point = "sessions"
+                elif operation == "control_monitor_refresh":
+                    requests.append(request["accounts"])
+                    point = "history"
+                else:
+                    point = None
+                if not crossed and cross_during == point:
+                    now[0] += 0.030
+                    crossed = True
+                return result
+
+            async def cross_between_accounts(*args, **kwargs):
+                nonlocal crossed
+                frame = await account_frame(*args, **kwargs)
+                if not crossed and cross_during == "frames":
+                    now[0] += 0.030
+                    crossed = True
+                return frame
+
+            monkeypatch.setattr(monitor_module, "native_operation", cross_after_native)
+            monkeypatch.setattr(monitor, "_account_frame", cross_between_accounts)
+
+            def check_frames(windows, sampled_at, minute_count):
+                frames = monitor.snapshot()["data"]
+                assert len(frames) == 2
+                for frame in frames:
+                    key = frame["account_id"]
+                    window = windows[key]
+                    assert frame["control_date"] == window.control_date
+                    assert frame["minute_start"] == window.minute_bucket_start
+                    assert frame["sampled_at_ms"] == int(sampled_at.timestamp() * 1000)
+                    expected_day = 120 if key == 1 else 220
+                    if window.control_date != old_windows[key].control_date:
+                        expected_day = 37
+                    assert used(frame) == expected_day
+                    rule = next(row for row in frame["rules"] if row["id"] == "account:place_order:per_minute")
+                    assert rule["value"] == minute_count
+
+            async with monitor.subscribe() as queue:
+                await monitor.refresh()
+                assert crossed
+                assert monitor.version == version + 1
+                assert len(queue.get_nowait()["freshness"]) == 2
+                assert queue.empty()
+                check_frames(old_windows, before, 7)
+                await monitor.refresh()
+                check_frames(new_windows, after, 11)
+            assert calls == ["control_monitor_inputs", "control_monitor_inputs", "control_monitor_refresh"] * 2
+            for index, windows in enumerate((old_windows, new_windows)):
+                assert {scope["account_id"]: scope["control_date"] for scope in scopes[index]} == {
+                    key: window.control_date for key, window in windows.items()
+                }
+                for request in requests[index]:
+                    assert request["control_date"] == windows[request["account_id"]].control_date
+                    assert request["read_history"] is (not warm_cache or bool(index))
+                    assert request["now_ms"] == int((before if index == 0 else after).timestamp() * 1000)
 
     asyncio.run(scenario())
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -19,8 +19,9 @@ from axile.executor.account_control.models import (
 )
 from axile.executor.account_control.monitor import policy_fingerprint
 from axile.executor.account_control.presets import resolve_account_control_policy
+from axile.executor.account_control.snapshot import AccountControlCounterSnapshot, AccountControlRecentAllowedSnapshot
 from axile.executor.account_control.warnings import AccountControlQuotaWarning
-from axile.executor.algorithms.utils.clock import clock_now_iso, clock_now_ms
+from axile.executor.algorithms.utils.clock import clock_now, clock_now_iso, clock_now_ms
 from axile.server.account_control import providers
 from axile.server.account_control.ipc import sample
 from axile.server.account_control.schema import public_frame
@@ -31,10 +32,14 @@ from axile.server.native_store import native_operation
 from axile.server.order_submissions import submission_window
 
 
-def _affected(session: AccountControlSession, control_date: str) -> bool:
+def _affected(session: AccountControlSession, control_date: str, sampled_at: datetime) -> bool:
     tz = ZoneInfo(session.timezone)
     start = datetime.fromtimestamp(session.started_at_ms / 1000, tz).date().isoformat()
-    end = datetime.fromtimestamp((session.finished_at_ms or clock_now_ms()) / 1000, tz).date().isoformat()
+    end = (
+        datetime.fromtimestamp((session.finished_at_ms or int(sampled_at.timestamp() * 1000)) / 1000, tz)
+        .date()
+        .isoformat()
+    )
     return start <= control_date <= end
 
 
@@ -56,7 +61,14 @@ class AccountControlMonitor:
         self._local_tasks: dict[int, asyncio.Task[Any]] = {}
         self._sources: dict[int, list[tuple[Any, Any, bool]]] = {}
         self._outcomes: dict[str, str] = {}
-        self._history: dict[int, tuple[tuple, AccountControlGuard, list[dict[str, Any]]]] = {}
+        self._history: dict[
+            int,
+            tuple[
+                tuple,
+                tuple[AccountControlCounterSnapshot, AccountControlRecentAllowedSnapshot],
+                list[dict[str, Any]],
+            ],
+        ] = {}
         self._refresh_lock = asyncio.Lock()
         self._queued_warnings: dict[tuple[str, str], None] = {}
 
@@ -127,13 +139,17 @@ class AccountControlMonitor:
         inputs = await native_operation("control_monitor_inputs", {})
         accounts = inputs["accounts"]
         policies = {account["id"]: self._policy(account) for account in accounts}
+        # 查询、缓存和历史展示共用采样时刻，避免跨分钟或跨日混用窗口。
+        sampled_at = clock_now(tz=UTC)
         contexts = await native_operation(
             "control_monitor_inputs",
             {
                 "accounts": [
                     {
                         "account_id": account["id"],
-                        "control_date": resolve_control_window(policies[account["id"]].timezone).control_date,
+                        "control_date": resolve_control_window(
+                            policies[account["id"]].timezone, now=sampled_at
+                        ).control_date,
                     }
                     for account in accounts
                 ]
@@ -141,7 +157,9 @@ class AccountControlMonitor:
         )
         sessions = [AccountControlSession.model_validate(raw) for raw in contexts["sessions"]]
         await asyncio.gather(*(self._read_source(account["id"]) for account in accounts))
-        requests = [self._persistence_request(account, policies[account["id"]], sessions) for account in accounts]
+        requests = [
+            self._persistence_request(account, policies[account["id"]], sessions, sampled_at) for account in accounts
+        ]
         receipt = await native_operation(
             "control_monitor_refresh", {"accounts": requests, "created_at": clock_now_iso()}
         )
@@ -172,10 +190,7 @@ class AccountControlMonitor:
             policy = policies[account["id"]]
             state = states[account["id"]]
             related = [AccountControlSession.model_validate(raw) for raw in state["sessions"]]
-            if state["history"] is not None:
-                self._historical(account, policy, related, state)
-                state["history"] = None
-            frame = public_frame(await self._account_frame(account, policy, related, state))
+            frame = public_frame(await self._account_frame(account, policy, related, state, sampled_at))
             if self._content(self.frames.get(account["id"])) != self._content(frame):
                 changed.append(frame)
             frames[account["id"]] = frame
@@ -208,8 +223,8 @@ class AccountControlMonitor:
         return valid[0] if valid else (None, None, any(source[2] for source in sources))
 
     @staticmethod
-    def _history_signature(policy: Any, sessions: list[AccountControlSession]) -> tuple:
-        window = resolve_control_window(policy.timezone)
+    def _history_signature(policy: Any, sessions: list[AccountControlSession], sampled_at: datetime) -> tuple:
+        window = resolve_control_window(policy.timezone, now=sampled_at)
         return (
             policy_fingerprint(policy.model_dump(mode="json")),
             window.minute_bucket_start,
@@ -217,11 +232,15 @@ class AccountControlMonitor:
         )
 
     def _persistence_request(
-        self, account: dict[str, Any], policy: EffectiveAccountControlPolicy, sessions: list[AccountControlSession]
+        self,
+        account: dict[str, Any],
+        policy: EffectiveAccountControlPolicy,
+        sessions: list[AccountControlSession],
+        sampled_at: datetime,
     ) -> dict[str, Any]:
         account_id = account["id"]
         sessions = [session for session in sessions if session.account_id == account_id]
-        window = resolve_control_window(policy.timezone)
+        window = resolve_control_window(policy.timezone, now=sampled_at)
         start, end = submission_window(window.control_date, policy.timezone)
         live, _, failed = self._live_source(account_id, sessions)
         executions = [
@@ -269,12 +288,12 @@ class AccountControlMonitor:
             "timezone": policy.timezone,
             "start_ms": start,
             "end_ms": end,
-            "now_ms": clock_now_ms(),
+            "now_ms": int(sampled_at.timestamp() * 1000),
             "active_instance_id": None if live is None else live.get("instance_id"),
             "mark_incomplete": mark,
             "outcomes": outcomes,
             "warning_sources": warning_sources,
-            "read_history": cached is None or cached[0] != self._history_signature(policy, sessions),
+            "read_history": cached is None or cached[0] != self._history_signature(policy, sessions, sampled_at),
             "history_sessions": [] if cached is None else cached[0][2],
         }
 
@@ -310,9 +329,17 @@ class AccountControlMonitor:
         policy: EffectiveAccountControlPolicy,
         sessions: list[AccountControlSession],
         persisted: dict[str, Any],
+        sampled_at: datetime,
     ) -> dict[str, Any]:
         account_id = account["id"]
-        window = resolve_control_window(policy.timezone)
+        raw = persisted["history"]
+        if raw is not None:
+            self._history[account_id] = (
+                self._history_signature(policy, sessions, sampled_at),
+                snapshots_from_baseline(raw),
+                raw["records"],
+            )
+        window = resolve_control_window(policy.timezone, now=sampled_at)
         execution_sessions = [
             session
             for session in sessions
@@ -320,7 +347,7 @@ class AccountControlMonitor:
         ]
         latest = max(execution_sessions, key=lambda session: session.id or 0, default=None)
         live, sampled, failed = self._live_source(account_id, sessions)
-        incomplete = any(s.status == "incomplete" and _affected(s, window.control_date) for s in sessions)
+        incomplete = any(s.status == "incomplete" and _affected(s, window.control_date, sampled_at) for s in sessions)
         incomplete = incomplete or sum(s.status == "active" for s in execution_sessions) > 1
         active = (latest is not None and latest.status == "active") or (
             live is not None and live["status"] == "running" and live.get("incomplete", False)
@@ -329,10 +356,10 @@ class AccountControlMonitor:
             frame = dict(live)
             frame["sampled_at_ms"] = sampled
         elif active:
-            frame = dict(self.frames.get(account_id) or self._historical(account, policy, sessions, persisted))
+            frame = dict(self.frames.get(account_id) or self._historical(account, policy, sessions, sampled_at))
             frame.update(status="unknown", sampled_at_ms=frame.get("sampled_at_ms"))
         else:
-            frame = self._historical(account, policy, sessions, persisted)
+            frame = self._historical(account, policy, sessions, sampled_at)
             previous = live or self.frames.get(account_id)
             if (
                 incomplete
@@ -344,7 +371,7 @@ class AccountControlMonitor:
                 frame.update(status="incomplete", waiting=[], waiting_total=0)
         frame.pop("outcome_updates", None)
         now = clock_now_ms()
-        gaps = [s for s in sessions if s.status == "incomplete" and _affected(s, window.control_date)]
+        gaps = [s for s in sessions if s.status == "incomplete" and _affected(s, window.control_date, sampled_at)]
         risk_unknown = persisted["incomplete"]
         risk_unknown = risk_unknown or bool(live and live.get("incomplete", False))
         frame.update(
@@ -382,38 +409,32 @@ class AccountControlMonitor:
         return frame
 
     def _historical(
-        self, account: dict[str, Any], policy: Any, sessions: list[AccountControlSession], persisted: dict[str, Any]
+        self, account: dict[str, Any], policy: Any, sessions: list[AccountControlSession], sampled_at: datetime
     ) -> dict[str, Any]:
         account_id = account["id"]
-        signature = self._history_signature(policy, sessions)
+        signature = self._history_signature(policy, sessions, sampled_at)
         cached = self._history.get(account_id)
-        raw = persisted["history"]
-        if raw is None:
-            assert cached is not None and cached[0] == signature
-            guard, records = cached[1:]
-        else:
-            baseline, recent = snapshots_from_baseline(raw)
-            guard = AccountControlGuard(
-                account_id=account_id,
-                execution_id=None,
-                channel=account["trade_channel"],
-                policy=policy,
-                baseline=baseline,
-                recent_allowed_snapshot=recent,
-            )
-            records = raw["records"]
-            self._history[account_id] = signature, guard, records
-        # 仅缓存持久化输入；间隔用量和预计等待随每次采样的当前时间重算。
+        assert cached is not None and cached[0] == signature
+        baseline, recent = cached[1]
+        guard = AccountControlGuard(
+            account_id=account_id,
+            execution_id=None,
+            channel=account["trade_channel"],
+            policy=policy,
+            baseline=baseline,
+            recent_allowed_snapshot=recent,
+            clock=lambda: sampled_at,
+        )
         frame = guard.monitor_snapshot()
         frame.update(
             status="idle",
             instance_id=None,
             execution_id=None,
             seq=0,
-            sampled_at_ms=clock_now_ms(),
+            sampled_at_ms=int(sampled_at.timestamp() * 1000),
             actual_policy=None,
             actual_fingerprint=None,
-            records=records,
+            records=cached[2],
         )
         return frame
 
