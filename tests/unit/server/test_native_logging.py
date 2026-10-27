@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from axile.common.log_files import iter_file, log_statistics, read_logs
+from axile.common.log_files import format_logs, iter_file, log_statistics, read_logs, render_record
 from axile.server._native import _core
 from axile.server.core.logging_sink import compress_log
 
@@ -46,10 +46,30 @@ def test_small_queue_counts_all_rejections_and_survivors(tmp_path):
     assert stats["dropped_by_reason"]["queue_full"] == len(results) - sum(results)
     assert stats["written_total"] == stats["accepted_total"]
     rows = read_logs(tmp_path.glob("*.jsonl"))
-    assert sum(not row["metadata"].get("log_stats") for row in rows) == sum(results)
+    assert sum(row["template"] == "订单 {id}" for row in rows) == sum(results)
     assert log_statistics(rows)["dropped_total"] == stats["dropped_total"]
     # 重复传入同一份材料，累计计数和事件均不能翻倍。
     assert len(read_logs(list(tmp_path.glob("*.jsonl")) * 2)) == len(rows)
+
+
+def test_console_and_history_share_persisted_drop_warning_and_hide_checkpoints(tmp_path):
+    _core.logging_start(str(tmp_path))
+    _core.logging_invalid()
+    assert _core.logging_emit(payload(args=['中文\n"引号"']))
+    _core.logging_close(1000)
+    console = []
+    while item := _core.logging_console():
+        console.append(json.loads(item))
+    history = read_logs(tmp_path.glob("*.jsonl"))
+    warnings = [row for row in history if row["level"] == "WARNING"]
+    assert len(warnings) == 1 and warnings[0]["message"] == "日志丢弃 1 条，累计 1 条"
+    assert [(row["run_id"], row["seq"]) for row in console] == [
+        (row["run_id"], row["seq"]) for row in history if not row["metadata"].get("log_stats")
+    ]
+    assert "\n".join(render_record(row) for row in console) == format_logs(tmp_path.glob("*.jsonl"))
+    assert "日志统计" not in format_logs(tmp_path.glob("*.jsonl"), "tree")
+    stats = json.loads(_core.logging_stats())
+    assert stats["accepted_total"] == stats["written_total"] == 1
 
 
 def test_rotation_independent_decode_and_compression_keep_span_identity(tmp_path):

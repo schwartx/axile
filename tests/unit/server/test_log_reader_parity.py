@@ -85,7 +85,10 @@ def test_cli_and_record_rendering_match_frozen_python_text(tmp_path, monkeypatch
             timeline = runner.invoke(app, ["logs", *map(str, paths)])
             assert timeline.exit_code == 0, timeline.output
             assert timeline.stdout == fixture["expected"]["timeline_utc"] + "\n"
-            assert "\n".join(render_record(row) for row in records) == fixture["expected"]["timeline_utc"]
+            assert (
+                "\n".join(render_record(row) for row in records if not row.get("metadata", {}).get("log_stats"))
+                == fixture["expected"]["timeline_utc"]
+            )
             tree = runner.invoke(app, ["logs", *map(str, paths), "--tree"])
             assert tree.exit_code == 0, tree.output
             assert tree.stdout == fixture["expected"]["tree_utc"] + "\n"

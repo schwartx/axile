@@ -375,7 +375,10 @@ def format_logs(paths: Iterable[Path], mode: str = "timeline", *, color: bool = 
     """批量输出时间线、过程树或计数，复用解码时已展开的正文。"""
     records = _read_logs(paths)
     if mode == "stats":
-        return json.dumps(log_statistics(record for record, _ in records), ensure_ascii=False, indent=2)
+        stats = log_statistics(record for record, _ in records)
+        if issues := _sequence_gaps(record for record, _ in records):
+            stats["issues"] = issues
+        return json.dumps(stats, ensure_ascii=False, indent=2)
     times: dict[datetime, str] = {}
     if mode == "tree":
         unprepared = {id(record) for record, expanded in records if not expanded}
@@ -383,8 +386,32 @@ def format_logs(paths: Iterable[Path], mode: str = "timeline", *, color: bool = 
     if mode != "timeline":
         raise ValueError("unknown log display mode")
     return "\n".join(
-        _render_record(record, color=color, prepared=expanded, times=times) for record, expanded in records
+        chain(
+            _sequence_gaps(record for record, _ in records),
+            (
+                _render_record(record, color=color, prepared=expanded, times=times)
+                for record, expanded in records
+                if not record.get("metadata", {}).get("log_stats")
+            ),
+        )
     )
+
+
+def _sequence_gaps(records: Iterable[dict[str, Any]]) -> list[str]:
+    """报告同一运行的已输入事件之间缺少的序号。"""
+    sequences: dict[str, set[int]] = {}
+    for record in records:
+        run, seq = record.get("run_id"), record.get("seq")
+        if isinstance(run, str) and _integer(seq, minimum=1):
+            sequences.setdefault(run, set()).add(seq)
+    issues = []
+    # shortcut: 仅检测输入事件之间的缺口，确认运行首尾完整需要运行清单。
+    for run, values in sorted(sequences.items()):
+        ordered = sorted(values)
+        for previous, current in zip(ordered, ordered[1:]):
+            if current > previous + 1:
+                issues.append(f"日志材料不完整：运行 {run} 未提供序号 {previous + 1}..{current - 1}")
+    return issues
 
 
 def statistics_record(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -418,13 +445,16 @@ def _tree(records: Iterable[dict[str, Any]]) -> tuple[list[dict], dict[tuple, di
     nodes: dict[tuple, dict[str, Any]] = {}
     loose = []
     for record in records:
+        if record.get("metadata", {}).get("log_stats"):
+            continue
         run = record.get("run_id", "legacy")
         for span in record.get("spans", []):
             key = (run, span["id"])
             if key in nodes:
                 _require(nodes[key]["span"] == span, "conflicting span across files")
             else:
-                nodes[key] = {"span": span, "events": [], "children": [], "run_id": run}
+                nodes[key] = {"span": span, "events": [], "children": [], "run_id": run, "seq": record.get("seq", 0)}
+            nodes[key]["seq"] = min(nodes[key]["seq"], record.get("seq", 0))
         if record.get("span_id") is None:
             loose.append(record)
         else:
@@ -448,7 +478,7 @@ def _log_order(item: dict) -> tuple:
     return (
         instant,
         item.get("run_id", ""),
-        item.get("span", {}).get("id", item.get("seq", 0)),
+        item.get("seq", 0),
     )
 
 
@@ -480,9 +510,10 @@ def render_tree(records: Iterable[dict[str, Any]]) -> str:
 
 def _render_tree(records: Iterable[dict[str, Any]], unprepared: set[int] | None, times: dict[datetime, str]) -> str:
     """树结构和排序保持一致，只在受控批量调用中复用正文。"""
+    records = list(records)
     roots, nodes = _tree(records)
     pending = [(item, 0) for item in reversed(sorted(roots, key=_log_order))]
-    output = []
+    output = _sequence_gaps(records)
     while pending:
         item, depth = pending.pop()
         if "span" not in item:

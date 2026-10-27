@@ -642,7 +642,11 @@ mod tests {
         let mut writer = Writer::open(&directory, "sync-failure", base, 1024, rotation).unwrap();
         writer.file = BufWriter::new(OpenOptions::new().write(true).open("/dev/null").unwrap());
         let mut saved = DropCounts::default();
-        assert!(writer.checkpoint(&old.stats(), &mut saved).is_err());
+        let (console, _console) = mpsc::sync_channel(1);
+        let (archives, _archives) = mpsc::sync_channel(1);
+        assert!(writer
+            .checkpoint(&old.stats(), &mut saved, &console, &archives, &old.counters)
+            .is_err());
         assert_eq!(saved.invalid, 1);
         old.recover_drops(saved);
         let (replacement, _events) = held_queue(1);
@@ -825,6 +829,7 @@ fn run(
                     );
                     return saved_drops;
                 }
+                writer.pending_records += 1;
             }
             if writer.flush_events(&logger.counters).is_err() {
                 fail_writer(
@@ -840,29 +845,33 @@ fn run(
             && (writer.last_sync.elapsed() >= Duration::from_secs(1)
                 || logger.stopped.load(Ordering::Acquire))
         {
-            if writer.checkpoint(&snapshot, &mut saved_drops).is_err() {
+            if writer
+                .checkpoint(
+                    &snapshot,
+                    &mut saved_drops,
+                    &console,
+                    &archives,
+                    &logger.counters,
+                )
+                .is_err()
+            {
                 fail_writer(&receiver, logger, writer.unsynced_records);
                 return saved_drops;
-            }
-            let dropped = snapshot["dropped_total"].as_u64().unwrap_or(0);
-            let previous = last_stats
-                .get("dropped_total")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if dropped > previous {
-                let record = json!({"timestamp":iso_time(now_us()),"level":"WARNING","metadata":{"component":"系统"},"context":{},"message":format!("日志丢弃 {} 条，累计 {} 条",dropped-previous,dropped)});
-                if console.try_send(record.to_string()).is_err() {
-                    logger
-                        .counters
-                        .console_dropped
-                        .fetch_add(1, Ordering::Relaxed);
-                }
             }
             last_stats = snapshot;
         }
     }
     let snapshot = logger.stats();
-    if writer.checkpoint(&snapshot, &mut saved_drops).is_err() {
+    if writer
+        .checkpoint(
+            &snapshot,
+            &mut saved_drops,
+            &console,
+            &archives,
+            &logger.counters,
+        )
+        .is_err()
+    {
         fail_writer(&receiver, logger, writer.unsynced_records);
     }
     saved_drops
@@ -1069,7 +1078,6 @@ impl Writer {
             event.spans.last().map(|span| span.id),
             event.args
         ]))?;
-        self.pending_records += 1;
         let record = json!({"run_id":self.run_id,"seq":self.sequence,"timestamp":iso_time(self.base_us+self.last_time),"level":event.level,"template":event.template,"fields":event.fields,"args":event.args,"metadata":event.metadata,"context":event.context,"span_id":event.spans.last().map(|span|span.id)});
         if console.try_send(record.to_string()).is_err() {
             counters.console_dropped.fetch_add(1, Ordering::Relaxed);
@@ -1077,7 +1085,31 @@ impl Writer {
         Ok(())
     }
 
-    fn checkpoint(&mut self, stats: &Value, saved_drops: &mut DropCounts) -> io::Result<()> {
+    fn checkpoint(
+        &mut self,
+        stats: &Value,
+        saved_drops: &mut DropCounts,
+        console: &SyncSender<String>,
+        archives: &SyncSender<PathBuf>,
+        counters: &Counters,
+    ) -> io::Result<()> {
+        let dropped = stats["dropped_total"].as_u64().unwrap_or(0);
+        let previous = saved_drops.full + saved_drops.unavailable + saved_drops.invalid;
+        if dropped > previous {
+            let warning = Event {
+                level: "WARNING".into(),
+                template: "日志丢弃 {delta} 条，累计 {total} 条".into(),
+                fields: vec!["delta".into(), "total".into()],
+                args: vec![json!(dropped - previous), json!(dropped)],
+                metadata: json!({"component":"系统","kind":"event"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                context: Map::new(),
+                spans: vec![],
+            };
+            self.write(&warning, console, archives, counters)?;
+        }
         let event = Event {
             level: "INFO".into(),
             template: "日志统计 {stats}".into(),

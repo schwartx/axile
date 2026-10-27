@@ -368,11 +368,52 @@ def test_compression_does_not_widen_private_log_permissions(tmp_path):
     assert stat.S_IMODE(path.with_name(path.name + ".gz").stat().st_mode) & 0o077 == 0
 
 
-def test_tree_preserves_span_before_loose_event_on_equal_sort_keys():
+def test_tree_orders_span_and_loose_event_by_sequence_on_equal_times():
     stamp = "2026-10-26T00:00:00+00:00"
     loose = {"run_id": "R1", "seq": 1, "timestamp": stamp, "message": "独立事件"}
     span = {"id": 1, "parent": None, "name": "根过程", "start_time": stamp}
     owned = {"run_id": "R1", "seq": 2, "timestamp": stamp, "span_id": 1, "spans": [span], "message": "过程内事件"}
     tree = render_tree([loose, owned])
-    assert tree.startswith("根过程 #1")
-    assert tree.index("过程内事件") < tree.index("独立事件")
+    assert tree.index("独立事件") < tree.index("根过程 #1")
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_tree_orders_concurrent_spans_by_start_sequence_not_id(tmp_path, nested):
+    rows = lines()[:5]
+    parent = 3 if nested else None
+    if nested:
+        rows.append(["S", 3, None, "父过程", 1, 0])
+    rows += [
+        ["S", 1, parent, "后收到", 1, 0],
+        ["S", 2, parent, "先收到", 1, 0],
+        ["E", 1, 0, 2, 1, 2, []],
+        ["E", 2, 0, 2, 1, 1, []],
+    ]
+    tree = format_logs([write(tmp_path / "ordered.jsonl", rows)], "tree")
+    assert tree.index("先收到 #2") < tree.index("后收到 #1")
+
+
+@pytest.mark.parametrize("mode", ["timeline", "tree", "stats"])
+@pytest.mark.parametrize("compressed", [False, True])
+def test_viewer_reports_missing_middle_material_without_changing_outcome(tmp_path, mode, compressed):
+    first = write(tmp_path / "first.jsonl", lines()[:-2])
+    last = write(tmp_path / "last.jsonl", lines()[:6] + [lines()[-1]])
+    if compressed:
+        compress_log(last)
+        last = last.with_suffix(".jsonl.gz")
+    output = format_logs([last, first, first], mode)
+    assert "材料不完整" in output and "R1" in output and "2..2" in output
+    if mode == "tree":
+        assert "检查 #1 · ok" in output
+    # 单片可独立查看，不将未请求的较早分片当作中间缺口。
+    assert "材料不完整" not in format_logs([last], mode)
+
+
+def test_viewer_keeps_contiguous_material_and_separate_runs_free_of_gap_warnings(tmp_path):
+    first = write(tmp_path / "first.jsonl", lines()[:-1])
+    last = write(tmp_path / "last.jsonl", lines()[:6] + [lines()[-1]])
+    other_rows = lines()[:-2]
+    other_rows[0][2]["run_id"] = "R2"
+    other = write(tmp_path / "other.jsonl", other_rows)
+    for mode in ("timeline", "tree", "stats"):
+        assert "材料不完整" not in format_logs([last, other, first], mode)
