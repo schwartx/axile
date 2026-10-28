@@ -104,6 +104,7 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     path, expected = dashboard_database
     result = inputs(path)
     assert set(result) == {"1", "2", "3"}
+    assert result["1"]["performance"].pop("source_version") > 0
     assert result["1"]["performance"] == {
         "snapshot_id": None,
         "status": "empty",

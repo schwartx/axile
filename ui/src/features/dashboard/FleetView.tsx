@@ -1,3 +1,4 @@
+import { useBrowserPerformance } from '@/features/history/useBrowserPerformance'
 import { useState } from 'react'
 import { useViewTransitionState } from 'react-router'
 import { ArrowUpRight, Copy, Plus } from 'lucide-react'
@@ -37,10 +38,11 @@ function FleetCard({
   const live = useRunning(item.account_id)
   // 当前权益来自资产查询；有前收时日涨跌 = 当前权益 / 前收 - 1。
   const equity = currentEquity(item)
-  const { pct, dayLabel, statusLabel } = cardPerformance(item.performance, Date.now(), {
+  const { summary: performance, previousClose } = useBrowserPerformance(item.account_id, item.asset_observed_at)
+  const { pct, dayLabel, statusLabel } = cardPerformance(performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
-    previousClose: item.previous_close,
+    previousClose,
   })
   // 红涨绿跌：涨→up(红)、跌→down(绿)。
   const pctCls = pct == null ? 'text-ink-2' : pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : 'text-ink-2'
@@ -125,7 +127,7 @@ function FleetCard({
             </span>
           )}
         </div>
-        <PerformanceCurveLink accountId={item.account_id} summary={item.performance} source="fleet" width={120} height={34} />
+        <PerformanceCurveLink accountId={item.account_id} summary={performance} source="fleet" width={120} height={34} />
       </div>
 
       <div className="mt-1 text-xs text-ink-3">{item.asset_observed_at ? `资产查询于 ${item.asset_observed_at}` : '尚未查询账户资产'}</div>

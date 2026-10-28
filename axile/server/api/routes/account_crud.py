@@ -52,7 +52,6 @@ from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
-from axile.server.performance import close_before, local_time
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
 
@@ -408,9 +407,8 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
 
     Notes
     -----
-    当前金额、持仓与偏离来自有效资产观测；日收益与曲线来自已发布历史绩效。
-    ``previous_close`` 是该观测日之前的绩效日末，供卡片用当前权益算日涨跌。
-    执行记录、资产、目标与绩效均批量读取，避免逐账户查询。
+    当前金额、持仓与偏离来自有效资产观测；历史收益与前收由浏览器本地分析计算。
+    执行记录、资产与目标批量读取；事实版本用于通知浏览器更新。
     """
     context = await _account_operation(
         "account_dashboard_context",
@@ -480,11 +478,7 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
 
         last_output_status = None if latest is None else latest["display_status"]
         performance = persisted["performance"]
-        previous_close = (
-            close_before(performance["points"], local_time(latest_snapshot["created_at"]).date().isoformat())
-            if latest_snapshot is not None
-            else None
-        )
+        previous_close = None
         target_weights = persisted["target_weights"]
         off_symbol_count = None
         if latest_snapshot is not None and valuation_complete and isinstance(target_weights, dict):

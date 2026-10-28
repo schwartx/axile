@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import '@/features/history/analysisWorkerTestSupport'
 import { cardPerformance, currentEquity, openFullPerformance } from './performance'
 import { performanceViews, performanceViewports } from '@/features/history/viewState'
 import { performanceEntry } from '@/features/history/performanceCache'

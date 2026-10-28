@@ -10,8 +10,9 @@
     "@codemirror/view": "6.43.13"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "bun run typecheck && vite build",
+    "build:analysis": "uv run --no-project python ../scripts/build_browser_analysis.py",
+    "dev": "bun run build:analysis && vite",
+    "build": "bun run build:analysis && bun run typecheck && vite build",
     "typecheck": "tsrs -b --noEmit",
     "test": "bun test",
     "test:e2e": "playwright test",

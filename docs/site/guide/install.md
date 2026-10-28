@@ -31,6 +31,15 @@ uv sync --extra tqsdk
 
 ## 构建管理界面
 
+界面的分析引擎使用 Rust WASM，先安装对应的编译目标和绑定工具：
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.128 --locked
+```
+
+`bun run build` 会先构建 WASM，再构建界面；沿用上面的 `CARGO_TARGET_DIR` 即可复用构建目录。
+
 ```bash
 cd ui
 bun install --frozen-lockfile

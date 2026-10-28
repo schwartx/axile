@@ -375,6 +375,9 @@ fn collect_evidence(
 }
 
 business_operations! { register_json_operations, business_json_operation, PyBytes;
+    browser_analysis_state => crate::browser_facts::state,
+    browser_analysis_facts => crate::browser_facts::page,
+
     list_execution_events_json => crate::audit_ops::list_execution_events_json,
     list_execution_artifacts_json => crate::audit_ops::list_execution_artifacts_json,
     account_runtime_sync_json => crate::runtime_sync::public_state,

@@ -1,120 +1,73 @@
-"""Version-bound, small performance reads without query-time native processes."""
+"""账户事实同步；收益、回测和成本查询由浏览器执行。"""
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Query, Response
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-from starlette.concurrency import run_in_threadpool
+from fastapi import APIRouter, HTTPException, Path, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from axile.server._native import _core
-from axile.server.core.db import analysis_store
-from axile.server.db.models.performance import RangeKey
-from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
+from axile.server.analysis_calendar import ensure_calendar_facts
+from axile.server.native_store import native_operation
 
 router = APIRouter()
-SQLITE_MAX_INTEGER = 2**63 - 1
-AccountId = Annotated[int, Path(gt=0, le=SQLITE_MAX_INTEGER)]
+AccountId = Annotated[int, Path(gt=0, le=2**63 - 1)]
 
 
-def _native_http_error(error: _core.NativeError) -> HTTPException:
-    """将原生读取错误映射为 HTTP 契约，不回退旧读取。"""
-    if error.args[0] == "ACCOUNT_NOT_FOUND":
-        return HTTPException(404, detail="账户不存在")
-    status_code = {
-        "SNAPSHOT_EXPIRED": 410,
-        "SNAPSHOT_NOT_FOUND": 404,
-        "EXECUTION_NOT_FOUND": 404,
-        "ANALYSIS_READ_VIEW_UNAVAILABLE": 409,
-    }.get(error.args[0], 503)
-    return HTTPException(status_code, detail={"code": error.args[0], "message": error.args[1]})
-
-
-async def _op(call, *args):
-    """在线程池执行原生查询，保留结构化错误。"""
+async def _op(name: str, request: dict):
+    """账户不存在、事实版本变化分别返回明确的读取错误。"""
     try:
-        return await run_in_threadpool(call, *args)
+        return await native_operation(name, request)
     except _core.NativeError as error:
-        raise _native_http_error(error) from error
+        code, message = error.args[:2]
+        status = {"ACCOUNT_NOT_FOUND": 404, "SOURCE_CHANGED": 409, "INVALID_REQUEST": 422, "FACT_TOO_LARGE": 413}.get(
+            code, 503
+        )
+        raise HTTPException(status, detail={"code": code, "message": message}) from error
 
 
-class ChartQuery(BaseModel):
-    """Pin every chart read to an explicit retained snapshot."""
+@router.get("/performance/{account_id}/facts-state")
+async def get_state(account_id: AccountId) -> Response:
+    """只读取修订号、数据源身份及分析设置。"""
+    return Response(
+        await _op("browser_analysis_state", {"account_id": account_id}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/performance/{account_id}/facts-prepare")
+async def prepare_facts(account_id: AccountId) -> Response:
+    """在事务外补齐渠道日历，随后返回可用于分页的一致性修订号。"""
+    context = await _op("analysis_context", {"account_id": account_id})
+    if context is None:
+        raise HTTPException(404, detail="账户不存在")
+    await ensure_calendar_facts(context["trade_channel"], context["first_day"], context["last_day"])
+    return await get_state(account_id)
+
+
+class FactCursor(BaseModel):
+    """按修订号、表序号及行主键恢复分页。"""
 
     model_config = ConfigDict(extra="forbid")
-    snapshot_id: str = Field(min_length=1, max_length=256)
-    range: RangeKey = "all"
+    seq: str = Field(pattern=r"^[0-9]{1,19}$")
+    table: int = Field(ge=0, le=22, strict=True)
+    after: list[Annotated[str, Field(max_length=8192)]] | None = Field(default=None, max_length=3)
 
 
-class SummaryQuery(ChartQuery):
-    """Deterministic pagination, optionally restricted to a finite viewport."""
-
-    limit: int = Field(default=200, ge=1, le=500)
-    offset: int = Field(default=0, ge=0, le=SQLITE_MAX_INTEGER)
-    start: float | None = Field(default=None, allow_inf_nan=False)
-    end: float | None = Field(default=None, allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def validate_window(self):
-        """Require a complete nonempty viewport in epoch milliseconds."""
-        if (self.start is None) != (self.end is None):
-            raise ValueError("start and end must define a nonempty interval")
-        if self.start is not None and self.end is not None and self.start >= self.end:
-            raise ValueError("start and end must define a nonempty interval")
-        return self
-
-
-class DetailQuery(BaseModel):
-    """Select one execution and bounded evidence pages from its fixed snapshot."""
+class FactPageQuery(BaseModel):
+    """同步截至指定修订号；表名和列由原生白名单决定。"""
 
     model_config = ConfigDict(extra="forbid")
-    snapshot_id: str = Field(min_length=1, max_length=256)
-    record_id: int = Field(gt=0, le=SQLITE_MAX_INTEGER)
-    limit: int = Field(default=200, ge=1, le=500)
-    offset: int = Field(default=0, ge=0, le=SQLITE_MAX_INTEGER)
+    source_id: str = Field(min_length=1, max_length=128)
+    until: str = Field(pattern=r"^[0-9]{1,19}$")
+    cursor: FactCursor
 
 
-@router.get("/performance/{account_id}/status")
-async def get_status(account_id: AccountId) -> Response:
-    """Return small publication status independently of displayed page data."""
-    content = await _op(_core.status, analysis_store(), account_id, LOGIC_VERSION, ENGINE_VERSION)
-    return Response(content=content, media_type="application/json")
-
-
-@router.get("/performance/{account_id}/chart", response_class=JSONResponse)
-async def get_chart(account_id: AccountId, query: Annotated[ChartQuery, Query()]) -> Response:
-    """Read typed curves and flat indexes without historical execution details."""
-    content = await _op(_core.chart, analysis_store(), account_id, query.snapshot_id, query.range)
-    return Response(content=content, media_type="application/json")
-
-
-@router.get("/performance/{account_id}/execution-summary")
-async def get_execution_summary(account_id: AccountId, query: Annotated[SummaryQuery, Query()]) -> Response:
-    """Read frozen execution summary rows in a stable page."""
-    content = await _op(
-        _core.execution_summary,
-        analysis_store(),
-        account_id,
-        query.snapshot_id,
-        query.range,
-        query.limit,
-        query.offset,
-        query.start,
-        query.end,
+@router.post("/performance/{account_id}/facts")
+async def get_facts(account_id: AccountId, query: FactPageQuery) -> Response:
+    """在短只读事务中跨执行打包，最多 4096 行、2 MiB；游标支持中断续传。"""
+    return Response(
+        await _op("browser_analysis_facts", {"account_id": account_id, **query.model_dump()}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
     )
-    return Response(content=content, media_type="application/json")
-
-
-@router.get("/performance/{account_id}/execution-detail")
-async def get_execution_detail(account_id: AccountId, query: Annotated[DetailQuery, Query()]) -> Response:
-    """Read only the selected execution's positions, attempts and transactions."""
-    content = await _op(
-        _core.execution_detail,
-        analysis_store(),
-        account_id,
-        query.snapshot_id,
-        query.record_id,
-        query.limit,
-        query.offset,
-    )
-    return Response(content=content, media_type="application/json")

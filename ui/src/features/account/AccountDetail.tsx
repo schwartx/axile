@@ -1,3 +1,4 @@
+import { useBrowserPerformance } from '@/features/history/useBrowserPerformance'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
@@ -200,10 +201,11 @@ export function AccountDetail({
   const snapshotPositions = positionsOfAssets(latestAssets)
   const positions = snapshotPositions
   const equity = currentEquity(item)
-  const { pct, dayLabel, statusLabel } = cardPerformance(item.performance, Date.now(), {
+  const { summary: performance, previousClose } = useBrowserPerformance(accountId, item.asset_observed_at)
+  const { pct, dayLabel, statusLabel } = cardPerformance(performance, Date.now(), {
     equity,
     observedAt: item.asset_observed_at,
-    previousClose: item.previous_close,
+    previousClose,
   })
   const holdingsCount = positionsObserved ? snapshotPositions.length : null
   const comparisonLoading = comparison.data === null && comparison.loading
@@ -530,7 +532,7 @@ export function AccountDetail({
             </div>
             {/* 仅账户累计收益线展开；专用导航关闭此次金额/标题共享过渡。 */}
             <div className="flex min-w-0 items-center justify-end">
-              <PerformanceCurveLink accountId={accountId} summary={item.performance} source="detail" width={200} height={64} />
+              <PerformanceCurveLink accountId={accountId} summary={performance} source="detail" width={200} height={64} />
             </div>
           </div>
         </div>

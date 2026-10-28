@@ -24,17 +24,14 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
     raise RuntimeError('Native extension requires analysis fact schema 40')
-if getattr(module, 'PUBLIC_HEAD', None) != '0036':
-    raise RuntimeError('Native extension requires public migration head 0036')
+if getattr(module, 'PUBLIC_HEAD', None) != '0038':
+    raise RuntimeError('Native extension requires public migration head 0038')
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'asset_snapshots',
-    'account_performance', 'snapshot', 'query_costs', 'account_dashboard_context',
-    'performance_result', 'status', 'chart',
-    'execution_summary', 'execution_detail',
-    'order_submissions', 'submission_monitor_json', 'publish_store',
+    'account_dashboard_context', 'browser_analysis_state', 'browser_analysis_facts',
+    'order_submissions', 'submission_monitor_json',
     'persist_execution_state', 'freeze_execution_input', 'freeze_execution_after_assets',
-    'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
     'execution_notification_context', 'normalize_execution_result',
     'list_execution_events_json', 'list_execution_artifacts_json',
@@ -62,6 +59,21 @@ if missing:
         raise RuntimeError(f"Native extension is incompatible with this build host/API: {error.stderr}") from error
 
 
+def verify_browser_assets(static: Path) -> None:
+    """Reject wheels whose UI cannot load its local analysis engine."""
+    workers = list((static / "assets").glob("analysis.worker-*.js"))
+    modules = list((static / "assets").glob("axile_browser_bg-*.wasm"))
+    if not (static / "index.html").is_file() or len(workers) != 1 or len(modules) != 1:
+        raise RuntimeError("Required browser analysis assets missing; run bun run build in ui/")
+    worker, module = workers[0], modules[0]
+    with module.open("rb") as stream:
+        valid_wasm = stream.read(8) == b"\x00asm\x01\x00\x00\x00"
+    if not valid_wasm or module.name not in worker.read_text():
+        raise RuntimeError("Browser analysis worker/WASM assets are incompatible; rebuild ui/")
+    if not any(worker.name in script.read_text() for script in (static / "assets").glob("*.js") if script != worker):
+        raise RuntimeError("Browser analysis worker is not referenced by the UI; rebuild ui/")
+
+
 class NativeAnalysisBuildHook(BuildHookInterface):
     """Require the host-native PyO3 extension."""
 
@@ -70,6 +82,8 @@ class NativeAnalysisBuildHook(BuildHookInterface):
         native_dir = Path(self.root) / "axile" / "server" / "_native"
         extension = native_dir / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
         verify_native_extension(extension)
+        if version != "editable":
+            verify_browser_assets(Path(self.root) / "axile" / "server" / "_static")
         build_data.setdefault("force_include", {})[str(extension)] = extension.relative_to(self.root).as_posix()
         # A local build has not been audited for manylinux/musllinux compliance.
         platform = next(tag.platform for tag in sys_tags() if not tag.platform.startswith(("manylinux", "musllinux")))

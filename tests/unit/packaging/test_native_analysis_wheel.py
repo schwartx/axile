@@ -59,6 +59,12 @@ def wheel_project(tmp_path: Path) -> Path:
     extension = project / "axile/server/_native" / ("_core.pyd" if os.name == "nt" else "_core.abi3.so")
     extension.parent.mkdir(parents=True)
     extension.write_bytes(b"extension fixture")
+    static = project / "axile/server/_static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text('<script src="/assets/main.js"></script>')
+    (static / "assets/main.js").write_text('new Worker("/assets/analysis.worker-fixture.js")')
+    (static / "assets/analysis.worker-fixture.js").write_text('const wasm="/assets/axile_browser_bg-fixture.wasm"')
+    (static / "assets/axile_browser_bg-fixture.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
     return project
 
 
@@ -67,6 +73,15 @@ def build_wheel(project: Path) -> Path:
     output.mkdir()
     filename = next(WheelBuilder(str(project)).build(directory=str(output), versions=["standard"]))
     return output / filename
+
+
+def test_editable_install_can_precede_frontend_build(wheel_project: Path, native_process: dict[str, Any]) -> None:
+    shutil.rmtree(wheel_project / "axile/server/_static")
+    import runpy
+
+    hook_class = runpy.run_path(str(wheel_project / "hatch_build.py"))["NativeAnalysisBuildHook"]
+    hook = hook_class(str(wheel_project), {}, None, {}, str(wheel_project / "dist"), "wheel")
+    hook.initialize("editable", {})
 
 
 def test_missing_extension_rejects_wheel(wheel_project: Path) -> None:
@@ -106,12 +121,8 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
-        "queue_enqueue",
-        "queue_status",
-        "queue_recover",
-        "queue_claim",
-        "queue_fail",
-        "queue_release",
+        "browser_analysis_state",
+        "browser_analysis_facts",
         "migration_current",
         "migration_check",
         "migration_upgrade",
@@ -143,24 +154,24 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
 @pytest.mark.parametrize(
     ("head", "fact_schema", "missing", "error"),
     [
-        ("0036", 40, None, None),
-        ("0033", 40, None, "public migration head 0036"),
-        ("0036", 39, None, "analysis fact schema 40"),
-        ("0036", 40, "migration_upgrade", "missing required entrypoints"),
-        ("0036", 40, "account_public", "missing required entrypoints"),
-        ("0036", 40, "submission_monitor_json", "missing required entrypoints"),
-        ("0036", 40, "persist_execution_state", "missing required entrypoints"),
-        ("0036", 40, "connection_accounts", "missing required entrypoints"),
-        ("0036", 40, "execution_read", "missing required entrypoints"),
-        ("0036", 40, "supplement_has_execution_steps", "missing required entrypoints"),
-        ("0036", 40, "execution_notification_context", "missing required entrypoints"),
-        ("0036", 40, "normalize_execution_result", "missing required entrypoints"),
-        ("0036", 40, "list_execution_events_json", "missing required entrypoints"),
-        ("0036", 40, "list_execution_artifacts_json", "missing required entrypoints"),
-        ("0036", 40, "account_runtime_sync_json", "missing required entrypoints"),
-        ("0036", 40, "notifications_get_system_json", "missing required entrypoints"),
-        ("0036", 40, "resolve_control_policy", "missing required entrypoints"),
-        ("0036", 40, "logging_emit", "missing required entrypoints"),
+        ("0038", 40, None, None),
+        ("0033", 40, None, "public migration head 0038"),
+        ("0038", 39, None, "analysis fact schema 40"),
+        ("0038", 40, "migration_upgrade", "missing required entrypoints"),
+        ("0038", 40, "account_public", "missing required entrypoints"),
+        ("0038", 40, "submission_monitor_json", "missing required entrypoints"),
+        ("0038", 40, "persist_execution_state", "missing required entrypoints"),
+        ("0038", 40, "connection_accounts", "missing required entrypoints"),
+        ("0038", 40, "execution_read", "missing required entrypoints"),
+        ("0038", 40, "supplement_has_execution_steps", "missing required entrypoints"),
+        ("0038", 40, "execution_notification_context", "missing required entrypoints"),
+        ("0038", 40, "normalize_execution_result", "missing required entrypoints"),
+        ("0038", 40, "list_execution_events_json", "missing required entrypoints"),
+        ("0038", 40, "list_execution_artifacts_json", "missing required entrypoints"),
+        ("0038", 40, "account_runtime_sync_json", "missing required entrypoints"),
+        ("0038", 40, "notifications_get_system_json", "missing required entrypoints"),
+        ("0038", 40, "resolve_control_policy", "missing required entrypoints"),
+        ("0038", 40, "logging_emit", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(
@@ -216,10 +227,10 @@ def test_native_wheel_preserves_extension_and_excludes_retired_cli(wheel_project
 
 def test_built_frontend_resources_are_preserved_with_production_artifact_rules(wheel_project: Path) -> None:
     static = wheel_project / "axile" / "server" / "_static"
-    (static / "assets").mkdir(parents=True)
+    (static / "assets").mkdir(parents=True, exist_ok=True)
     resources = {
         "index.html": b'<script src="/assets/main.js"></script>',
-        "assets/main.js": b'console.log("built UI")',
+        "assets/main.js": b'new Worker("/assets/analysis.worker-fixture.js")',
         "assets/main.css": b"body { color: black; }",
         "icons.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>',
     }
@@ -316,4 +327,19 @@ def test_incompatible_staging_preserves_previous_extension(
 def test_real_loader_rejects_invalid_extension(wheel_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.undo()
     with pytest.raises(RuntimeError, match="Native extension is incompatible"):
+        build_wheel(wheel_project)
+
+
+@pytest.mark.parametrize(
+    "name", ["index.html", "assets/analysis.worker-fixture.js", "assets/axile_browser_bg-fixture.wasm"]
+)
+def test_missing_browser_asset_rejects_wheel(wheel_project, name):
+    (wheel_project / "axile/server/_static" / name).unlink()
+    with pytest.raises(RuntimeError, match="browser analysis assets missing"):
+        build_wheel(wheel_project)
+
+
+def test_mismatched_browser_engine_rejects_wheel(wheel_project):
+    (wheel_project / "axile/server/_static/assets/analysis.worker-fixture.js").write_text("old worker")
+    with pytest.raises(RuntimeError, match="assets are incompatible"):
         build_wheel(wheel_project)

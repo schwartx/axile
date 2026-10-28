@@ -148,11 +148,15 @@ impl<'a> HeaderReader<'a> {
             .map_err(stage_error)?;
         let mut rows = self.symbols.query([record]).map_err(sql_error)?;
         while let Some(row) = rows.next().map_err(sql_error)? {
-            let display = crate::executions::symbol_from_row(row)?;
-            let fields = crate::executions::SYMBOL_FIELDS.map(|name| display.get(name));
-            let present = fields.iter().enumerate().fold(0_i64, |mask, (index, value)| {
-                mask | (i64::from(value.is_some()) << index)
-            });
+            let display = crate::execution_symbol_display::symbol_from_row(row)?;
+            let fields =
+                crate::execution_symbol_display::SYMBOL_FIELDS.map(|name| display.get(name));
+            let present = fields
+                .iter()
+                .enumerate()
+                .fold(0_i64, |mask, (index, value)| {
+                    mask | (i64::from(value.is_some()) << index)
+                });
             let fields = fields.map(|value| value.and_then(serde_json::Value::as_str));
             target
                 .prepare_cached(

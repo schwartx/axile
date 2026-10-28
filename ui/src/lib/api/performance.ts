@@ -1,4 +1,5 @@
-import { apiGet, apiSend } from '@/lib/api/client'
+import { browserAnalysis } from '@/features/history/browserAnalysis'
+import { apiSend } from '@/lib/api/client'
 import type { AccountPerformance, PerformanceCalendar, PerformanceSettings } from '@/types/api'
 import type { CostSummary, CostTrade } from '@/features/history/costs'
 import type { ChartSelection } from '@/features/history/chartModel'
@@ -78,15 +79,9 @@ export interface CostQuery {
 export function selectionQuery(selection: ChartSelection) {
   return selection?.kind === 'execution' ? { record_id: selection.recordId } : selection?.kind === 'day' ? { day: selection.day } : selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : {}
 }
-export const getPerformanceSnapshot = (id: number, range: PerformanceRange) => apiGet<PerformanceSnapshot>(`/account/performance/${id}/snapshot?range=${range}`)
-export const refreshPerformance = (id: number) => apiSend('POST', `/account/performance/${id}/refresh`)
+export const refreshPerformance = (id: number) => browserAnalysis<AnalysisMetadata>(id, 'refresh').then(metadata => { if (metadata.status === 'failed') throw new Error(metadata.error ?? '浏览器分析失败'); return metadata })
 export function getPerformanceCosts<T = CostExecutionRow | CostSymbolRow | CostTrade>(id: number, query: CostQuery, signal?: AbortSignal) {
-  const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)]))
-  return apiGet<CostPage<T>>(`/account/performance/${id}/costs?${params}`, signal)
-}
-
-export function getPerformance(id: number, range: '30' | '90' | 'all', signal?: AbortSignal) {
-  return apiGet<AccountPerformance>(`/account/performance/${id}?range=${range}&include_backtest=true`, signal)
+  return browserAnalysis<CostPage<T>>(id, 'costs', query, signal)
 }
 
 export function savePerformanceSettings(id: number, settings: PerformanceSettings) {
@@ -193,14 +188,10 @@ export interface AnalysisExecutionDetail {
   next_offsets?: Partial<Record<'positions' | 'attempts' | 'transactions' | 'transaction_fees' | 'symbols', number | null>>
 }
 
-function analysisQuery(query: object): string {
-  return new URLSearchParams(Object.entries(query).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)])).toString()
-}
-
-export const getAnalysisStatus = (id: number, signal?: AbortSignal) => apiGet<AnalysisMetadata>(`/account/performance/${id}/status`, signal)
-export const getAnalysisChart = (id: number, snapshotId: string, range: PerformanceRange, signal?: AbortSignal) => apiGet<AnalysisChartResponse>(`/account/performance/${id}/chart?${analysisQuery({ snapshot_id: snapshotId, range })}`, signal)
-export const getAnalysisExecutionSummary = (id: number, query: AnalysisSummaryQuery, signal?: AbortSignal) => apiGet<AnalysisSummaryResponse>(`/account/performance/${id}/execution-summary?${analysisQuery(query)}`, signal)
-export const getAnalysisExecutionDetail = (id: number, query: AnalysisDetailQuery, signal?: AbortSignal) => apiGet<AnalysisExecutionDetail>(`/account/performance/${id}/execution-detail?${analysisQuery(query)}`, signal)
+export const getAnalysisStatus = (id: number, signal?: AbortSignal) => browserAnalysis<AnalysisMetadata>(id, 'status', {}, signal)
+export const getAnalysisChart = (id: number, snapshotId: string, range: PerformanceRange, signal?: AbortSignal) => browserAnalysis<AnalysisChartResponse>(id, 'chart', { snapshot_id: snapshotId, range }, signal)
+export const getAnalysisExecutionSummary = (id: number, query: AnalysisSummaryQuery, signal?: AbortSignal) => browserAnalysis<AnalysisSummaryResponse>(id, 'execution-summary', query, signal)
+export const getAnalysisExecutionDetail = (id: number, query: AnalysisDetailQuery, signal?: AbortSignal) => browserAnalysis<AnalysisExecutionDetail>(id, 'execution-detail', query, signal)
 
 export interface ContributionObservation {
   idx: number

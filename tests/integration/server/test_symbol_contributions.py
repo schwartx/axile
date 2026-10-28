@@ -12,7 +12,7 @@ from tests.unit.server._native_read_views import persist_record_fixture
 
 def seed_account(path, *, null_conversion=False, zero_target_close=False, missing_fill=False, missing_valuation=False):
     """生成禁止调度的合成期货账户，包含期初有仓、部分平仓和费用缺失。"""
-    initialize_native_database(path)
+    initialize_native_database(path, revision="0036")
     account = build_account(trade_channel="tq", portfolio_id=None, is_started=False, backtest_fee_rate=0.0)
     native_store_call(
         path, "account_create", {"account": account.model_dump(mode="json"), "now": "2026-01-01T09:00:00"}
@@ -159,9 +159,9 @@ def test_contribution_migration_upgrades_existing_0035_and_downgrades_cleanly(tm
     path = tmp_path / "previous.db"
     initialize_native_database(path, revision="0035")
     assert _inspect(path) == ("0035", [])
-    initialize_native_database(path)
+    initialize_native_database(path, revision="0036")
     assert _inspect(path) == ("0036", [("performance_contribution",)])
     native_store_call(path, "migration_downgrade", {"public": "0035"})
     assert _inspect(path) == ("0035", [])
-    initialize_native_database(path)
+    initialize_native_database(path, revision="0036")
     assert _inspect(path)[0] == "0036"

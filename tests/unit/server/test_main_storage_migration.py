@@ -36,7 +36,7 @@ def test_main_upgrade_downgrade_repeat_preserves_facts_and_complete_artifacts(ma
         register_time_function(connection)
         artifacts = connection.execute("SELECT content FROM execution_artifact ORDER BY id").fetchall()
     for _ in range(2):
-        assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0036"
+        assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0038"
         detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
         assert detail["input"]["extra"]["sentinel"] == 9007199254740993
         assert detail["result"]["account_assets"]["total_asset"] == 101.0
@@ -218,19 +218,17 @@ def test_0034_preserves_explicit_nulls_without_inventing_missing_fields(main_dat
             check(restored)
 
 
-def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database):
+def test_old_cache_is_removed_and_its_original_body_is_backed_up(main_database):
     with closing(sqlite3.connect(main_database)) as connection, connection:
         register_time_function(connection)
         connection.execute("UPDATE performance_snapshot SET ranges='invalid JSON'")
     receipt = native_store_call(main_database, "migration_upgrade", {})
-    result = json.loads(_core.snapshot(_core.Store(str(main_database)), 1, "all", "18", "equity-ledger-1"))
-    assert result["status"] == "pending"
-    assert result["result"] is None
-    with closing(sqlite3.connect(main_database)) as connection, connection:
-        register_time_function(connection)
-        assert connection.execute(
-            "SELECT requested,current_snapshot FROM account_analysis WHERE account_id=1"
-        ).fetchone() == (1, None)
+    with closing(sqlite3.connect(main_database)) as connection:
+        assert not connection.execute("SELECT name FROM sqlite_master WHERE name='performance_snapshot'").fetchall()
+        assert [row[1] for row in connection.execute("PRAGMA table_info(account_analysis)")] == [
+            "account_id",
+            "source_version",
+        ]
     native_store_call(main_database, "migration_downgrade", {"public": "0033"})
     with closing(sqlite3.connect(receipt["backup"])) as connection, connection:
         register_time_function(connection)
@@ -238,7 +236,7 @@ def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database)
 
 
 def test_new_publication_and_downgrade_preserve_main_business_facts(main_database):
-    native_store_call(main_database, "migration_upgrade", {})
+    native_store_call(main_database, "migration_upgrade", {"public": "0036"})
     claim = _core.queue_claim(str(main_database), 1792890000.0, "main-publish")
     assert claim is not None
     receipt = native_store_call(
@@ -269,7 +267,7 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
         assert result["account_assets"]["total_asset"] == 103.0
 
 
-@pytest.mark.parametrize("revision", ["0037", "0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0039", "0040", "0041"])
 def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path, revision):
     path = tmp_path / "missing.db"
     with pytest.raises(_core.NativeError):

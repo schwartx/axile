@@ -6,13 +6,13 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const ENGINE_VERSION: &str = "equity-ledger-1";
 
 /// One normalized execution observation. Absent and empty targets differ:
 /// upstream participation filtering skips absent targets and accepts clears.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Observation {
     pub id: i64,
     pub execution_id: Option<String>,
@@ -33,7 +33,7 @@ pub struct ReplayClose {
     pub daily_return: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct Holding {
     /// Price-to-account-currency sensitivity, which can include conversion.
     units: f64,
@@ -51,6 +51,7 @@ impl Holding {
 }
 
 /// Streaming state for one target mode and one independent equity baseline.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ReplayLedger {
     initial_equity: f64,
     equity: f64,

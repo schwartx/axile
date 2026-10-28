@@ -2,16 +2,17 @@
 use crate::error::AnalysisError;
 use crate::publication::{finite, sql_error, stage_error};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Default, Clone)]
-struct Position {
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub(crate) struct Position {
     quantity: f64,
     value: Option<f64>,
     product: String,
 }
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct Ledger {
     initial: Option<f64>,
     quantity: f64,
@@ -121,8 +122,8 @@ fn positions(
     Ok((currency, (count == Some(seen)).then_some(output)))
 }
 
-#[derive(Clone)]
-struct Fill {
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Fill {
     symbol: String,
     id: Option<String>,
     quantity: Option<f64>,
@@ -131,6 +132,10 @@ struct Fill {
     currency: Option<String>,
     product: String,
     converted_currency: Option<String>,
+    price: Option<f64>,
+    rate: Option<f64>,
+    multiplier: Option<f64>,
+    path: String,
 }
 
 fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<Fill> {
@@ -180,6 +185,10 @@ fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<Fill> {
     let currency: Option<String> = row.get(9)?;
     Ok(Fill {
         symbol: symbol.clone(),
+        price: finite(price),
+        rate,
+        multiplier,
+        path: String::new(),
         id: row.get(2)?,
         quantity,
         amount,
@@ -248,6 +257,10 @@ fn apply(
     } else {
         p.issues += 1;
     }
+    apply_amount(p, trade, currency);
+    Ok(())
+}
+fn apply_amount(p: &mut Ledger, trade: Fill, currency: Option<&str>) {
     p.trades += 1;
     if let Some(q) = trade.quantity {
         p.quantity += q;
@@ -274,7 +287,6 @@ fn apply(
     } else {
         p.fee_missing += 1;
     }
-    Ok(())
 }
 
 pub(crate) fn write(
@@ -671,5 +683,162 @@ mod tests {
         assert_eq!(rows[0].2, rows[1].2);
         let unknown: i64 = c.query_row("SELECT count(*) FROM native_stage.performance_contribution WHERE symbol='[unknown]' AND gross_pnl IS NOT NULL",[],|r|r.get(0)).unwrap();
         assert_eq!(unknown, 0);
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Input {
+    pub(crate) currency: Option<String>,
+    pub(crate) positions: Option<BTreeMap<String, Position>>,
+    pub(crate) fills: Vec<Fill>,
+    pub(crate) multipliers: BTreeMap<String, f64>,
+}
+/// Decode only this execution. Historical multiplier fallback is applied by the browser ledger.
+pub(crate) fn input(c: &Connection, record: i64, channel: &str) -> Result<Input, AnalysisError> {
+    let (currency, positions) = positions(c, record, channel)?;
+    let mut s=c.prepare("SELECT r.created_at,COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,z.unit_multiplier,t.extra,t.fee,t.fee_state,t.fee_currency,
+        CASE WHEN v.state='malformed' AND v.malformed_value='null' THEN 0 ELSE t.conversion_recorded END,v.rate,v.value_currency,
+        (SELECT o.direction FROM execution_order o WHERE o.record_id=t.record_id AND o.order_id=t.order_id ORDER BY o.ordinal DESC LIMIT 1),
+        substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
+        FROM business_trade t JOIN executerecord r ON r.id=t.record_id
+        LEFT JOIN execution_symbol_sizing z ON z.record_id=t.record_id AND z.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
+        LEFT JOIN business_trade_conversion v ON v.record_id=t.record_id AND v.trade_path=t.path WHERE t.record_id=?1 ORDER BY t.ordinal").map_err(sql_error)?;
+    let fills = s
+        .query_map([record], |row| {
+            let mut f = fill(row, channel)?;
+            f.path = row.get(14)?;
+            Ok(f)
+        })
+        .map_err(sql_error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(sql_error)?;
+    let multipliers=c.prepare("SELECT path,unit_multiplier FROM execution_symbol_sizing WHERE record_id=?1 AND unit_multiplier>0").map_err(sql_error)?
+        .query_map([record],|r| Ok((r.get(0)?,r.get(1)?))).map_err(sql_error)?.collect::<rusqlite::Result<_>>().map_err(sql_error)?;
+    Ok(Input {
+        currency,
+        positions,
+        fills,
+        multipliers,
+    })
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Incremental {
+    ledger: BTreeMap<String, Ledger>,
+    currency: Option<String>,
+    initial_known: bool,
+    multipliers: BTreeMap<String, f64>,
+}
+impl Incremental {
+    pub(crate) fn new(input: &Input) -> Self {
+        let mut ledger = BTreeMap::new();
+        if let Some(positions) = &input.positions {
+            for (s, p) in positions {
+                ledger.insert(
+                    s.clone(),
+                    Ledger {
+                        initial: p.value,
+                        quantity: p.quantity,
+                        product: p.product.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
+        } else {
+            ledger.insert(
+                "[unknown]".into(),
+                Ledger {
+                    initial: None,
+                    product: "未归因持仓".into(),
+                    issues: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        Self {
+            ledger,
+            currency: input.currency.clone(),
+            initial_known: input.positions.is_some(),
+            multipliers: input.multipliers.clone(),
+        }
+    }
+    pub(crate) fn fills(
+        &mut self,
+        input: &Input,
+        target: &Connection,
+    ) -> Result<(), AnalysisError> {
+        for mut f in input.fills.clone() {
+            let multiplier = f
+                .multiplier
+                .or_else(|| self.multipliers.get(&f.path).copied());
+            f.amount = f
+                .quantity
+                .zip(f.price)
+                .zip(multiplier.filter(|v| *v > 0.0))
+                .zip(f.rate)
+                .and_then(|(((q, p), m), fx)| finite(Some(-q * p * m * fx)));
+            apply(
+                &mut self.ledger,
+                target,
+                f,
+                self.currency.as_deref(),
+                self.initial_known,
+            )?;
+        }
+        self.multipliers.extend(input.multipliers.clone());
+        Ok(())
+    }
+    pub(crate) fn mark(
+        &mut self,
+        input: &Input,
+        target: &Connection,
+        range: &str,
+        idx: i64,
+    ) -> Result<(), AnalysisError> {
+        if self.currency.is_none() && input.positions.is_some() {
+            self.currency.clone_from(&input.currency);
+        }
+        if let Some(positions) = &input.positions {
+            for (s, p) in positions {
+                self.ledger.entry(s.clone()).or_insert_with(|| Ledger {
+                    initial: self.initial_known.then_some(0.0),
+                    product: p.product.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        for (symbol, p) in &mut self.ledger {
+            let value = if let Some(positions) = &input.positions {
+                let actual = positions.get(symbol);
+                let quantity = actual.map_or(0.0, |p| p.quantity);
+                if (quantity - p.quantity).abs() > 1e-8 {
+                    p.issues += 1;
+                }
+                p.quantity = quantity;
+                actual.map_or(Some(0.0), |p| p.value)
+            } else {
+                p.issues += 1;
+                None
+            };
+            let value = finite(value)
+                .filter(|_| input.currency == self.currency && self.currency.is_some());
+            if value.is_none() {
+                p.issues += 1;
+            }
+            if p.initial.is_none() && value.is_some() && symbol != "[unknown]" {
+                p.initial = value;
+                p.cash = 0.0;
+                p.issues += 1;
+            }
+            let gross = finite(value.zip(p.initial).map(|(v, b)| p.cash + v - b));
+            target.execute("INSERT INTO native_stage.performance_contribution VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![range,idx,symbol,p.product,self.currency,gross,p.fee,p.fee_missing,p.issues,p.trades]).map_err(stage_error)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn identifiers(input: &Input) -> Vec<(String, String)> {
+        input
+            .fills
+            .iter()
+            .filter_map(|f| f.id.as_ref().map(|id| (f.symbol.clone(), id.clone())))
+            .collect()
     }
 }

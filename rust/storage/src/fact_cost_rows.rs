@@ -13,6 +13,16 @@ pub(crate) fn trades(
     target: &Connection,
     ranges: &[(&str, f64, f64)],
 ) -> Result<(), AnalysisError> {
+    trades_from(connection, account, target, ranges, &mut 0)
+}
+
+pub(crate) fn trades_from(
+    connection: &Connection,
+    account: i64,
+    target: &Connection,
+    ranges: &[(&str, f64, f64)],
+    next_id: &mut i64,
+) -> Result<(), AnalysisError> {
     let mut summaries: Vec<BTreeMap<String, Summary>> =
         ranges.iter().map(|_| BTreeMap::new()).collect();
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
@@ -27,7 +37,6 @@ pub(crate) fn trades(
         crate::fact_transactions::TransactionReader::new(connection).map_err(sql_error)?;
     let mut attempts = crate::fact_attempts::AttemptReader::new(connection).map_err(sql_error)?;
     let mut headers = crate::fact_headers::HeaderReader::new(connection).map_err(sql_error)?;
-    let mut next_id = 0_i64;
     while let Some(row) = rows.next().map_err(sql_error)? {
         let record: i64 = row.get(0).map_err(sql_error)?;
         let created_at: String = row.get(1).map_err(sql_error)?;
@@ -71,7 +80,7 @@ pub(crate) fn trades(
             }
             insert
                 .execute(params![
-                    next_id,
+                    *next_id,
                     record,
                     trade.symbol,
                     trade.time,
@@ -89,7 +98,7 @@ pub(crate) fn trades(
                     trade.reference_source,
                 ])
                 .map_err(stage_error)?;
-            next_id += 1;
+            *next_id += 1;
         }
     }
     let mut cost = target.prepare_cached(

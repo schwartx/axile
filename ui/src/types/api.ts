@@ -442,6 +442,7 @@ export interface AccountDashboardItem {
 }
 
 export interface PerformanceSummary {
+  source_version?: number
   snapshot_id: string | null
   status: 'empty' | 'pending' | 'ready' | 'stale' | 'failed'
   computed_at: string | null

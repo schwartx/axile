@@ -31,6 +31,8 @@ jobs:
       run: uv run --no-project --with hatchling --with packaging python scripts/build_native_analysis.py --no-build --target-dir "$CARGO_TARGET_DIR"
     - name: Run Rust unit tests
       run: cargo test --manifest-path rust/storage/Cargo.toml --locked --lib
+    - name: Check browser database publication
+      run: cargo test --manifest-path rust/browser/Cargo.toml --locked --test browser_store
     - uses: actions/upload-artifact@v4
       with:
         name: axile-native-core
@@ -55,6 +57,13 @@ jobs:
       with:
         bun-version: '1.3.14'
     - run: uv sync --locked --group dev
+    - uses: dtolnay/rust-toolchain@1.99.1
+      with:
+        targets: wasm32-unknown-unknown
+    - name: Install matching WASM bindings tool
+      run: |
+        curl -fsSL --retry 2 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl.tar.gz | tar -xz -C "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
     - run: bun install --frozen-lockfile
       working-directory: ui
     - run: bun run lint && bun test && bun run build

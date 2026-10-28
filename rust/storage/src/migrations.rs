@@ -8,13 +8,15 @@ use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
 
+mod browser_analysis;
 mod contributions;
+mod incremental_analysis;
 mod legacy;
 mod private;
 mod query_indexes;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0036";
+pub const PUBLIC_HEAD: &str = "0038";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -22,7 +24,7 @@ const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const LEGACY_HEAD: u32 = 33;
-const PUBLIC_HEAD_NUMBER: u32 = 36;
+const PUBLIC_HEAD_NUMBER: u32 = 38;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -114,9 +116,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0036, private base/axon_0001")
+            invalid("supported targets: public 0012 through 0038, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0036")
+            invalid("supported targets: public base/0001 through 0038")
         }
     }
 }
@@ -326,10 +328,14 @@ fn move_public(
             (true, 34) => structured::upgrade(connection)?,
             (true, 35) => query_indexes::upgrade(connection)?,
             (true, 36) => contributions::upgrade(connection)?,
+            (true, 37) => browser_analysis::upgrade(connection)?,
+            (true, 38) => incremental_analysis::upgrade(connection)?,
             (false, 1..=33) => legacy::downgrade(connection, revision)?,
             (false, 34) => structured::downgrade(connection)?,
             (false, 35) => query_indexes::downgrade(connection)?,
             (false, 36) => contributions::downgrade(connection)?,
+            (false, 37) => browser_analysis::downgrade(connection)?,
+            (false, 38) => incremental_analysis::downgrade(connection)?,
             _ => return Err(invalid(format!("unsupported public revision {revision}"))),
         }
         current.public = if upgrade { revision } else { revision - 1 };
@@ -508,7 +514,7 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         let minimum = if policy.codes.is_some() { 12 } else { 1 };
         if current.public < minimum {
             return Err(invalid(if policy.codes.is_some() {
-                "downgrade requires public revision 0012 through 0036"
+                "downgrade requires public revision 0012 through 0038"
             } else {
                 "downgrade requires an existing public revision"
             }));

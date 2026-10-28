@@ -25,7 +25,13 @@ def rows(path, name):
     sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.connect() as connection:
-            return [dict(row) for row in connection.execute(sa.select(table(name))).mappings()]
+            source = table(name)
+            query = (
+                sa.select(source.c.account_id, source.c.source_version)
+                if name == "account_analysis"
+                else sa.select(source)
+            )
+            return [dict(row) for row in connection.execute(query).mappings()]
     finally:
         engine.dispose()
 

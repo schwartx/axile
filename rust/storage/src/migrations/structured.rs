@@ -13,6 +13,14 @@ mod schema;
 type Object = Map<String, Value>;
 type Result<T> = std::result::Result<T, AnalysisError>;
 
+pub(super) fn restore_analysis_triggers(connection: &Connection) -> Result<()> {
+    execute(
+        connection,
+        "DROP TRIGGER IF EXISTS analysis_account_channel;",
+    )?;
+    guards::install_analysis(connection)
+}
+
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     reset_analysis(connection)?;
     for table in [

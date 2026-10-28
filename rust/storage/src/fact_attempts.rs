@@ -44,7 +44,7 @@ impl<'a> AttemptReader<'a> {
             } else {
                 None
             };
-            let display = crate::executions::symbol_from_row(row)?;
+            let display = crate::execution_symbol_display::symbol_from_row(row)?;
             target
                 .prepare_cached(
                     r#"INSERT INTO native_stage.performance_cost_attempt (
@@ -64,7 +64,8 @@ impl<'a> AttemptReader<'a> {
                             .map(|(target, before)| target - before)
                     ),
                     finite(filled),
-                    display.get("error")
+                    display
+                        .get("error")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .chars()

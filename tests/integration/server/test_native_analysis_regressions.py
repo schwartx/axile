@@ -1,6 +1,5 @@
 """历史时间与展示规则经过真实原生发布后保持一致。"""
 
-import asyncio
 import copy
 import json
 from contextlib import closing
@@ -10,9 +9,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from axile.server import performance_analysis as analysis
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
-from tests.conftest import native_store_call, require_native_store
+from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
@@ -52,7 +50,9 @@ _RESULT = {
 
 
 @pytest.fixture
-def database(native_database: Path) -> Path:
+def database(tmp_path: Path) -> Path:
+    native_database = tmp_path / "legacy-native.db"
+    initialize_native_database(native_database, revision="0036")
     account = build_account(trade_channel="tq", portfolio_id=None, backtest_fee_rate=0.0)
     native_store_call(native_database, "account_create", {"account": account.model_dump(mode="json"), "now": _NOW})
     return native_database
@@ -98,47 +98,6 @@ def _publish(database: Path, row=None):
     )
     assert receipt["published"] is True
     return core, core.Store(str(database)), receipt["snapshot_id"]
-
-
-def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_work(database, monkeypatch):
-    core = require_native_store("queue_enqueue", "queue_claim", "queue_status")
-    _persist(database, _PRECISE, _RESULT)
-    monkeypatch.setattr(analysis, "database_path", lambda: str(database))
-    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(database))
-    manager = analysis.AnalysisManager()
-    claims = []
-
-    async def publish_then_lose_receipt(row):
-        _publish(database, row)
-        claims.append(row)
-        raise RuntimeError("receipt lost after commit")
-
-    monkeypatch.setattr(manager, "_run_native", publish_then_lose_receipt)
-    core.queue_enqueue(str(database), 1, False)
-
-    async def run():
-        assert await manager.run_once()
-        row = claims[0]
-        assert core.queue_status(str(database), 1, LOGIC_VERSION, ENGINE_VERSION) == "ready"
-        _publish(database, row)
-        await manager._fail(row)
-        await manager._release_claim(row)
-        with closing(oracle_connect(database)) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone()[0] == 1
-            assert connection.execute(
-                "SELECT failures,running_token FROM account_analysis WHERE account_id=1"
-            ).fetchone() == (0, None)
-        core.queue_enqueue(str(database), 1, True)
-        newer = core.queue_claim(str(database), 1.0, "newer-claim")
-        assert newer["running_token"] == "newer-claim"
-        await manager._fail(row)
-        await manager._release_claim(row)
-        with closing(oracle_connect(database)) as connection:
-            assert connection.execute(
-                "SELECT failures,running_token FROM account_analysis WHERE account_id=1"
-            ).fetchone() == (0, "newer-claim")
-
-    asyncio.run(run())
 
 
 def test_cost_interval_keeps_the_trade_at_its_inclusive_microsecond_end(database: Path) -> None:

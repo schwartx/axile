@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import { checkPerformance, performanceEntry, requestPerformanceRefresh, shouldPollPerformance } from '@/features/history/performanceCache'
+import { checkPerformance, releasePerformance, performanceEntry, requestPerformanceRefresh, shouldPollPerformance } from '@/features/history/performanceCache'
 import type { PerformanceRange } from '@/lib/api/performance'
 import { useReadRecovery } from '@/lib/hooks/useReadRecovery'
 
 export function usePerformanceSnapshot(id: number, range: PerformanceRange) {
   useReadRecovery(() => checkPerformance(id, range))
   const entry = performanceEntry(id, range)
-  const subscribe = useCallback((listener: () => void) => { entry.listeners.add(listener); return () => { entry.listeners.delete(listener) } }, [entry])
+  const subscribe = useCallback((listener: () => void) => { entry.released = false; entry.listeners.add(listener); return () => { entry.listeners.delete(listener); releasePerformance(entry) } }, [entry])
   const state = useSyncExternalStore(subscribe, () => entry.state)
   useEffect(() => {
     let disposed = false
@@ -27,7 +27,7 @@ export function usePerformanceSnapshot(id: number, range: PerformanceRange) {
     document.addEventListener('visibilitychange', visibility)
     entry.listeners.add(schedule)
     void check(true)
-    return () => { disposed = true; clearTimeout(timer); entry.listeners.delete(schedule); document.removeEventListener('visibilitychange', visibility) }
+    return () => { disposed = true; clearTimeout(timer); entry.listeners.delete(schedule); document.removeEventListener('visibilitychange', visibility); releasePerformance(entry) }
   }, [id, range, entry])
   return { ...state, refresh: useCallback(() => requestPerformanceRefresh(id), [id]), check: useCallback(() => checkPerformance(id, range), [id, range]) }
 }

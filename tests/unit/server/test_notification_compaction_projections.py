@@ -159,7 +159,7 @@ def test_full_context_preserves_projections_and_activity_without_requested_analy
     assert _extra(database)["server_notification_context"] == _result()["extra"]["server_notification_context"]
     assert not _finish(database)["changed"]
     state = rows(database, "account_analysis")[0]
-    assert state["current_snapshot"] is None and not state["requested"]
+    assert set(state) == {"account_id", "source_version"}
     after_activity = _activity(database)
     assert after_activity.trade_count == activity.trade_count
     assert after_activity.summary == activity.summary

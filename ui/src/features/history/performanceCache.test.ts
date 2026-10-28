@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
-import { checkPerformance, performanceEntry, reconcilePerformanceVersion, requestPerformanceRefresh, shouldPollPerformance, snapshotPending } from '@/features/history/performanceCache'
+import { checkPerformance, releasePerformance, performanceEntry, reconcilePerformanceVersion, requestPerformanceRefresh, shouldPollPerformance, snapshotPending } from '@/features/history/performanceCache'
 import { chartFixture, metadataFixture } from '@/features/history/analysisTestFixtures'
 import type { AnalysisMetadata, PerformanceRange } from '@/lib/api/performance'
 
+import './analysisWorkerTestSupport'
 const originalFetch = globalThis.fetch
 const mockFetch = (implementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) => { globalThis.fetch = Object.assign(implementation, { preconnect: originalFetch.preconnect }) }
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -28,6 +29,30 @@ function serve(id: number, metadata: () => AnalysisMetadata) {
     return Response.json(url.pathname.endsWith('/status') ? metadata() : chartFixture(id, url.searchParams.get('snapshot_id')!, url.searchParams.get('range') as PerformanceRange))
   })
 }
+
+test('unmounted charts are discarded after pending reads finish, while another subscriber keeps its chart', async () => {
+  const chart = deferred<Response>()
+  mockFetch(async input => urlOf(input).pathname.endsWith('/status') ? Response.json(metadataFixture()) : chart.promise)
+  const entry = performanceEntry(832, 'all')
+  await checkPerformance(832, 'all')
+  releasePerformance(entry)
+  await Promise.resolve()
+  expect(performanceEntry(832, 'all')).toBe(entry)
+  chart.resolve(Response.json(chartFixture(832)))
+  await entry.resultFlight
+  const reopened = performanceEntry(832, 'all')
+  expect(reopened).not.toBe(entry)
+  expect(reopened.state.displayed).toBeNull()
+  const listener = () => {}
+  reopened.listeners.add(listener)
+  releasePerformance(reopened)
+  await Promise.resolve()
+  expect(performanceEntry(832, 'all')).toBe(reopened)
+  reopened.listeners.delete(listener)
+  releasePerformance(reopened)
+  await Promise.resolve()
+  expect(performanceEntry(832, 'all')).not.toBe(reopened)
+})
 
 test('simultaneous ranges share status while chart reads remain range-bound', async () => {
   const status = deferred<Response>()
@@ -240,13 +265,13 @@ test('a dashboard publication during status loading is not lost to the old fligh
   const listener = () => {}
   entry.listeners.add(listener)
   const initial = checkPerformance(828, 'all')
-  reconcilePerformanceVersion(828, 'S3')
+  reconcilePerformanceVersion(828, 1)
   first.resolve(Response.json(metadataFixture('S2')))
   await initial; await settle(828)
   expect(statuses).toBe(2)
   expect(chartIds).toEqual(['S3'])
   expect(entry.state.displayed?.snapshot_id).toBe('S3')
-  reconcilePerformanceVersion(828, 'S3')
+  reconcilePerformanceVersion(828, 1)
   expect(statuses).toBe(2)
   entry.listeners.delete(listener)
 })

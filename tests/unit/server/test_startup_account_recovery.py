@@ -16,7 +16,6 @@ from axile.server.execution import notification_outbox, supplements
 
 NATIVE_OPERATIONS = (
     "close_database",
-    "publish_store",
     "account_public",
     "connection_accounts",
     "execution_read",
@@ -24,25 +23,21 @@ NATIVE_OPERATIONS = (
     "persist_execution_state",
     "freeze_execution_input",
     "freeze_execution_after_assets",
-    "queue_enqueue",
-    "queue_status",
-    "queue_recover",
-    "queue_claim",
-    "queue_fail",
-    "queue_release",
+    "browser_analysis_state",
+    "browser_analysis_facts",
     "analysis_context",
     "analysis_calendar_save",
-    "analysis_publication_committed",
 )
 
 
 @pytest.mark.parametrize("missing", NATIVE_OPERATIONS)
-@pytest.mark.parametrize("entrypoint", ["lifespan", "manager"])
-def test_obsolete_native_rejected_before_background_services(monkeypatch, missing, entrypoint):
+def test_obsolete_native_rejected_before_background_services(monkeypatch, missing):
     from axile.server import performance_analysis
 
     native = SimpleNamespace(
-        ANALYSIS_FACT_SCHEMA=40, **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing}
+        ANALYSIS_FACT_SCHEMA=40,
+        PUBLIC_HEAD="0038",
+        **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing},
     )
     monkeypatch.setattr(performance_analysis, "_core", native)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
@@ -55,11 +50,8 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
 
     async def scenario():
         with pytest.raises(RuntimeError, match=f"{missing}.*rebuild the wheel"):
-            if entrypoint == "lifespan":
-                async with server_app.lifespan(FastAPI()):
-                    pytest.fail("Obsolete extension accepted")
-            else:
-                await performance_analysis.AnalysisManager().start()
+            async with server_app.lifespan(FastAPI()):
+                pytest.fail("Obsolete extension accepted")
 
     asyncio.run(scenario())
     monitor.start.assert_not_called()
@@ -76,8 +68,6 @@ def isolated_lifespan(monkeypatch):
     from axile.server.execution import catalog_preheat
     from axile.server.time_check import service as time_check
 
-    manager = MagicMock(start=AsyncMock(), stop=AsyncMock())
-    monkeypatch.setattr(performance_analysis, "AnalysisManager", lambda: manager)
     monkeypatch.setattr(performance_analysis._core, "publish_store", MagicMock(), raising=False)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
@@ -102,7 +92,6 @@ def isolated_lifespan(monkeypatch):
 
     def close_database(path):
         assert path == "/isolated-lifespan.sqlite"
-        manager.stop.assert_awaited_once()
         validation_service.close.assert_awaited_once()
         time_check.service.close.assert_awaited_once()
         control_monitor.monitor.close.assert_awaited_once()
@@ -112,9 +101,7 @@ def isolated_lifespan(monkeypatch):
 
     close = MagicMock(side_effect=close_database)
     monkeypatch.setattr(performance_analysis._core, "close_database", close, raising=False)
-    yield manager
-    manager.start.assert_awaited_once()
-    manager.stop.assert_awaited_once()
+    yield
     close.assert_called_once_with("/isolated-lifespan.sqlite")
 
 

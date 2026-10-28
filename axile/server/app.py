@@ -231,11 +231,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     from axile.server._native import _core
     from axile.server.core.db import database_path, initialize_database
     from axile.server.native_store import native_call
-    from axile.server.performance_analysis import AnalysisManager, ensure_native_capabilities
+    from axile.server.performance_analysis import ensure_native_capabilities
 
     ensure_native_capabilities()
     await asyncio.to_thread(initialize_database)
-    analysis = AnalysisManager()
     from axile.server.account_control.monitor import monitor, recover_sessions
     from axile.server.connection_state import recover_connection_sessions
 
@@ -266,7 +265,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     arm_catalog_preheat()
     _.state.account_recovery = account_recovery
     try:
-        await analysis.start()
         logger.warning("axile已经成功运行!")
         yield
     finally:
@@ -274,7 +272,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
         account_recovery.cancel()
         await asyncio.gather(account_recovery, return_exceptions=True)
-        await analysis.stop()
         await validation_service.close()
         await time_check_service.close()
         await monitor.close()

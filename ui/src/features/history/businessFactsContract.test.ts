@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
+import './analysisWorkerTestSupport'
 import { ApiError } from '@/lib/api/client'
 import type { AnalysisExecutionDetail, AnalysisTable } from '@/lib/api/performance'
 import { executionDetailEntry, loadExecutionDetail } from '@/features/history/analysisExecutionDetail'

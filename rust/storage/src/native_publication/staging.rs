@@ -7,7 +7,7 @@ use crate::error::AnalysisError;
 const STAGE: &str = "native_stage";
 
 // Only migrated result tables participate in staging and publication.
-pub(super) const RESULT_TABLES: &[&str] = &[
+pub(crate) const RESULT_TABLES: &[&str] = &[
     "performance_contribution",
     "performance_result_daily_fee",
     "performance_result_daily_cost",
@@ -63,10 +63,15 @@ fn sql(error: rusqlite::Error) -> AnalysisError {
 
 impl<'a> Staging<'a> {
     pub(super) fn new(connection: &'a Connection) -> Result<Self, AnalysisError> {
-        // Empty filenames create private disk-backed databases which SQLite
-        // unlinks automatically, including when the process is killed.
+        Self::new_at(connection, "")
+    }
+
+    pub(crate) fn new_at(
+        connection: &'a Connection,
+        filename: &str,
+    ) -> Result<Self, AnalysisError> {
         connection
-            .execute_batch("ATTACH DATABASE '' AS native_stage;")
+            .execute("ATTACH DATABASE ?1 AS native_stage", [filename])
             .map_err(sql)?;
         let staged = Self { connection };
         connection
@@ -77,6 +82,9 @@ impl<'a> Staging<'a> {
             )
             .map_err(sql)?;
         for &name in RESULT_TABLES {
+            connection
+                .execute_batch(&format!("DROP TABLE IF EXISTS {STAGE}.\"{name}\";"))
+                .map_err(sql)?;
             let columns = table_columns(connection, name)?;
             create_table(connection, name, &columns)?;
         }

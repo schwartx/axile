@@ -145,7 +145,7 @@ def _range(range_key="all", *, empty=False):
 @contextmanager
 def _database(tmp_path, snapshots_by_id):
     database = tmp_path / "results.db"
-    initialize_native_database(database)
+    initialize_native_database(database, revision="0036")
     accounts = {snapshot_id: index for index, snapshot_id in enumerate(snapshots_by_id, 2)}
     with _connect(database) as connection:
         for snapshot_id, ranges in snapshots_by_id.items():

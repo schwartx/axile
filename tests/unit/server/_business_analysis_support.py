@@ -263,7 +263,7 @@ def record(index=1, **kwargs):
 def schema_template(tmp_path_factory):
     """模板包含真实迁移版本、索引和触发器，复制前关闭原生连接。"""
     path = tmp_path_factory.mktemp("analysis-schema") / "template.db"
-    initialize_native_database(path)
+    initialize_native_database(path, revision="0036")
     return path
 
 
@@ -276,7 +276,7 @@ async def database(tmp_path, schema_template, count=3, *, fresh_schema=False):
 
     path = tmp_path / "analysis.db"
     if fresh_schema:
-        initialize_native_database(path)
+        initialize_native_database(path, revision="0036")
     else:
         copyfile(schema_template, path)
     _insert_account(path, build_account(id=2, portfolio_id=None, account_control_preset="default"))

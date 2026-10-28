@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use crate::{assets, snapshots};
+use crate::assets;
 
 fn database(error: rusqlite::Error) -> String {
     format!("DASHBOARD_READ: {error}")
@@ -112,8 +112,8 @@ fn observations(
 pub fn dashboard_inputs(
     connection: &Connection,
     account_ids: &[i64],
-    logic_version: &str,
-    engine_version: &str,
+    _logic_version: &str,
+    _engine_version: &str,
 ) -> Result<Value, String> {
     if account_ids.is_empty() {
         return Ok(json!({}));
@@ -133,8 +133,6 @@ pub fn dashboard_inputs(
             ORDER BY id DESC LIMIT 1))";
     let mut observations = observations(connection, cte, &ids)?;
     let mut targets = targets(connection, cte, &ids)?;
-    let performance =
-        snapshots::summaries_for_accounts(connection, account_ids, logic_version, engine_version)?;
     let mut statement = connection
         .prepare(&format!(
             "{cte},
@@ -163,10 +161,10 @@ pub fn dashboard_inputs(
                 "portfolio_id":row.get::<_, Option<i64>>(1).map_err(database)?,
                 "latest":latest, "observation":observations.remove(&id),
                 "target_weights":targets.remove(&id),
-                "performance":performance.get(id.to_string()).cloned().unwrap_or_else(|| json!({
-                    "snapshot_id":null,"status":"empty","computed_at":null,"observed_at":null,
+                "performance":json!({
+                    "source_version":connection.query_row("SELECT COALESCE((SELECT source_version FROM account_analysis WHERE account_id=?1),1)",[id],|r|r.get::<_,i64>(0)).map_err(database)?,"snapshot_id":null,"status":"empty","computed_at":null,"observed_at":null,
                     "account_equity":null,"account_daily_return":null,"points":[]
-                }))
+                })
             }),
         );
     }

@@ -127,3 +127,10 @@ export async function apiUpload<T>(path: string, file: File): Promise<T> {
   const res = await fetch(BASE + path, { method: 'POST', body })
   return parse<T>(res)
 }
+
+/** 事实 JSON 直接交给 WASM 解析，保留超出 JS 安全范围的整数。 */
+export async function apiPostText(path: string, body: unknown, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(BASE + path, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal })
+  await checkResponse(res)
+  return res.text()
+}

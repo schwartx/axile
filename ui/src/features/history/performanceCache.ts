@@ -1,6 +1,7 @@
 import { ApiError } from '@/lib/api/client'
 import { getAnalysisChart, getAnalysisStatus, refreshPerformance, type AnalysisDisplay, type AnalysisMetadata, type PerformanceRange } from '@/lib/api/performance'
 import { decodeAnalysisChart } from '@/features/history/analysisClient'
+import { pauseBrowserAnalysis } from '@/features/history/browserAnalysis'
 
 export interface AnalysisState {
   metadata: AnalysisMetadata | null
@@ -19,6 +20,7 @@ interface Entry {
   failedResultId?: string
   epoch: number
   recheck: boolean
+  released?: boolean
 }
 const entries = new Map<string, Entry>()
 const statusFlights = new Map<number, Promise<AnalysisMetadata>>()
@@ -35,6 +37,19 @@ export function performanceEntry(id: number, range: PerformanceRange): Entry {
     entries.set(key, entry)
   }
   return entry
+}
+function discardReleased(entry: Entry) {
+  if (!entry.released || entry.listeners.size || entry.flight || entry.resultFlight) return
+  for (const [key, candidate] of entries) if (candidate === entry) {
+    entries.delete(key)
+    const accountId = Number(key.split(':')[0])
+    if (![...entries].some(([k, e]) => k.startsWith(`${accountId}:`) && e.listeners.size)) pauseBrowserAnalysis(accountId)
+  }
+}
+/** Unmounted charts are discarded; reopening reads the durable SQLite result. */
+export function releasePerformance(entry: Entry) {
+  entry.released = true
+  queueMicrotask(() => discardReleased(entry))
 }
 function publish(entry: Entry, patch: Partial<AnalysisState>) {
   entry.state = { ...entry.state, ...patch }
@@ -68,8 +83,9 @@ function checkMetadata(id: number, range: PerformanceRange, entry: Entry): Promi
       publish(entry, { checking: false })
       if (entry.recheck) {
         entry.recheck = false
-        void checkPerformance(id, range, false)
+        if (entry.listeners.size) void checkPerformance(id, range, false)
       }
+      discardReleased(entry)
     }
   })()
   return entry.flight
@@ -102,6 +118,7 @@ function requestResult(id: number, range: PerformanceRange, entry: Entry, retryR
       entry.resultFlight = undefined
       publish(entry, { loadingResult: false })
       if (!expired && readableId(entry.state.metadata) !== snapshotId) requestResult(id, range, entry, false)
+      discardReleased(entry)
     }
   })()
 }
@@ -144,9 +161,9 @@ export function shouldPollPerformance(entry: Entry): boolean {
   return snapshotPending(entry.state.metadata) || entry.state.loadingResult || !!(target && target !== entry.state.displayed?.snapshot_id)
 }
 /** Dashboard hints invalidate an in-flight status observation and schedule a fresh one. */
-export function reconcilePerformanceVersion(id: number, snapshotId: string | null) {
+export function reconcilePerformanceVersion(id: number, sourceVersion: number | null) {
   for (const [key, entry] of entries) {
-    if (!key.startsWith(`${id}:`) || !entry.listeners.size || entry.state.metadata?.snapshot_id === snapshotId) continue
+    if (!key.startsWith(`${id}:`) || !entry.listeners.size || entry.state.metadata?.source_version === sourceVersion) continue
     entry.epoch++
     if (entry.flight) entry.recheck = true
     else void checkPerformance(id, key.split(':')[1] as PerformanceRange, false)

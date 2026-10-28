@@ -43,6 +43,6 @@ cargo test --locked --manifest-path rust/storage/Cargo.toml --lib
 
 Python 的真实事务、连接复用和取消契约分别见 `tests/integration/server/test_native_storage_transactions.py`、`tests/integration/server/test_native_connection_reuse.py` 和 `tests/unit/test_native_store_bridge.py`。发行验收还需检查实际 wheel 的扩展、静态资源及隔离安装。
 
-当前原生发布和查询测量使用 `scripts/benchmark_structured_publication.py`、`scripts/benchmark_analysis_views.py`，具体参数见各脚本的 `--help`。历史[独立回放测量](native-replay-measurement.md)和[旧发布链测量](structured-publication-measurement.md)记录了此前 CLI 架构，不能作为当前进程内实现的性能结果。
+本页及 `scripts/benchmark_structured_publication.py`、`scripts/benchmark_analysis_views.py` 记录的是迁移 0036 及以前的服务端分析链路，需在对应历史 checkout 中运行。0037 起计算转移到浏览器 WASM，这些测量不能代表浏览器性能；当前的计算一致性、本地持久化和多标签页验证见 `ui/e2e/browser-analysis.e2e.ts`。历史[独立回放测量](native-replay-measurement.md)和[旧发布链测量](structured-publication-measurement.md)同样只描述当时的实现。
 
 记录身份排序和去重由 SQLite 的磁盘临时存储完成，基线选择只保留三个区间的候选。Rust 不再保存每条记录的时间索引和权益映射，内存主要随当前持仓、日期和必要返回结果增长。性能比较应覆盖完整 Python 进程的 RSS、并发发布时的接口延迟、WAL 增长及提交耗时，不能只用单次查询或扩展文件大小推断生产收益。

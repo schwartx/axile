@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
-use crate::error::AnalysisError;
-
 const FILTER: &str = "r.account_id=?1 AND (?2 IS NULL OR r.execution_id=?2)
     AND (?3 IS NULL OR r.id=?3)";
 const INTEGER_FIELDS: &[&str] = &["id", "account_id", "is_success"];
@@ -41,13 +39,7 @@ const TEXT_FIELDS: &[&str] = &[
     "termination_acked_at",
     "termination_finished_at",
 ];
-pub(crate) const SYMBOL_FIELDS: [&str; 5] = [
-    "status",
-    "error",
-    "outcome",
-    "outcome_reason",
-    "reason_code",
-];
+pub(crate) use crate::execution_symbol_display::symbol_from_row;
 
 fn database(error: rusqlite::Error) -> String {
     format!("EXECUTION_READ_ERROR: {error}")
@@ -67,28 +59,6 @@ fn account_exists(connection: &Connection, account_id: i64) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Map<String, Value>, AnalysisError> {
-    let read_error = |error: rusqlite::Error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string());
-    let mut fields = Map::new();
-    for name in SYMBOL_FIELDS {
-        if let Some(value) = row.get::<_, Option<String>>(name).map_err(read_error)? {
-            fields.insert(name.into(), json!(value));
-        }
-    }
-    if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(read_error)? {
-        fields.insert("memory".into(), serde_json::from_str(&memory)
-            .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?);
-    }
-    let mut normalized = if row.get::<_, String>("node_kind").map_err(read_error)? == "object" {
-        crate::business_facts_ops::result_head::normalized_result(&fields)
-            .map_err(crate::business_facts_ops::facts_error)?
-    } else {
-        Map::from_iter([("outcome".into(), Value::Null)])
-    };
-    normalized.retain(|key, _| SYMBOL_FIELDS.contains(&key.as_str()));
-    Ok(normalized)
-}
-
 fn records(
     connection: &Connection,
     page_ids: &str,
@@ -103,8 +73,8 @@ fn records(
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut symbol_rows = symbol_statement.query(arguments).map_err(database)?;
     while let Some(row) = symbol_rows.next().map_err(database)? {
-        let fields = symbol_from_row(row)
-        .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
+        let fields =
+            symbol_from_row(row).map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get("record_id").map_err(database)?)
             .or_default()

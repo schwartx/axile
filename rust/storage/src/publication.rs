@@ -49,7 +49,7 @@ struct Event {
 }
 
 /// Retain the newest hundred events while counting every matching event.
-fn events(
+pub(crate) fn events(
     connection: &Connection,
     account: i64,
     ranges: &[(&str, f64, f64)],
@@ -189,13 +189,19 @@ fn events(
     Ok(counts)
 }
 
-fn range_rows(
+pub(crate) fn range_rows(
     target: &Connection,
     key: &str,
     range: crate::performance::Range,
     event_count: usize,
 ) -> Result<(), AnalysisError> {
-    let crate::performance::Range { mut header, points, sizing_fallback_ranges, skips, target_skips } = range;
+    let crate::performance::Range {
+        mut header,
+        points,
+        sizing_fallback_ranges,
+        skips,
+        target_skips,
+    } = range;
     let performance = &mut header;
     let mut insert = target.prepare_cached(
         r#"INSERT INTO native_stage.performance_result_point (
@@ -208,8 +214,7 @@ fn range_rows(
                 ?13, ?14, ?15
             )"#
     ).map_err(stage_error)?;
-    for (index, value) in points.into_iter().enumerate()
-    {
+    for (index, value) in points.into_iter().enumerate() {
         insert
             .execute(params![
                 key,
@@ -233,16 +238,9 @@ fn range_rows(
     let mut insert = target.prepare_cached(
         "INSERT INTO native_stage.performance_result_fallback(range_key,idx,start,end,count) VALUES(?1,?2,?3,?4,?5)"
     ).map_err(stage_error)?;
-    for (index, value) in sizing_fallback_ranges.into_iter().enumerate()
-    {
+    for (index, value) in sizing_fallback_ranges.into_iter().enumerate() {
         insert
-            .execute(params![
-                key,
-                index,
-                value.start,
-                value.end,
-                value.count
-            ])
+            .execute(params![key, index, value.start, value.end, value.count])
             .map_err(stage_error)?;
     }
     target.execute(
@@ -267,8 +265,17 @@ fn range_rows(
         .map_err(stage_error)?;
     for (value, kind) in [(skips, "portfolio"), (target_skips, "target")] {
         if let Some(value) = value {
-            insert.execute(params![key, kind, value.count, value.missing_target,
-                value.missing_ticks, value.first_time, value.last_time]).map_err(stage_error)?;
+            insert
+                .execute(params![
+                    key,
+                    kind,
+                    value.count,
+                    value.missing_target,
+                    value.missing_ticks,
+                    value.first_time,
+                    value.last_time
+                ])
+                .map_err(stage_error)?;
         }
     }
     let mut calendar = performance["calendar"].take();
@@ -334,7 +341,9 @@ pub(crate) fn write(
     };
     let ranges = crate::performance::calculate(source, &calculation)?;
     let bounds = ["30", "90", "all"]
-        .into_iter().zip(&ranges).map(|(key, range)| {
+        .into_iter()
+        .zip(&ranges)
+        .map(|(key, range)| {
             Ok((
                 key,
                 range.header["baseline"]
