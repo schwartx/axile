@@ -3,7 +3,7 @@ import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
 import { lossClass } from '@/features/history/costs'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { CircleHelp, X } from 'lucide-react'
+import { CircleHelp } from 'lucide-react'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ChartTradingOverlay } from '@/features/history/ChartTradingOverlay'
 import { executionSelection } from '@/features/history/executionSelection'
@@ -15,7 +15,6 @@ import { cancelAccountCurveTransition, registerCurveEndpoint } from '@/features/
 import { performanceCoordinates } from '@/features/history/curveTransitionGeometry'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
 import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performance'
-import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
 import { amount, feeText, shanghaiLabel, shanghaiTime, type CostSummary } from '@/features/history/costs'
@@ -45,10 +44,6 @@ type DragKind = 'pan' | 'compare' | 'start' | 'end' | 'nav' | 'navStart' | 'navE
 interface Drag { kind: DragKind; x: number; y: number; viewport: Viewport; anchor: number; moved: boolean; pending: ChartSelection; bindingTime: number | null }
 
 const slippageCostAmount = (value: number | null) => value == null ? '—' : value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-function ClearSelectionButton({ onClick }: { onClick: () => void }) {
-  return <button type="button" onClick={onClick} className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded px-2 text-xs text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent"><X size={16} aria-hidden="true" />取消选择</button>
-}
 
 export function PerformanceChart(props: Props) {
   if (props.data.observation_count < 2 || props.data.points.length < 2) return <PerformanceChartPlaceholder accountId={props.accountId} controls={props.controls} loading={false} failed={false} message="有效观测不足两条" />
@@ -367,26 +362,9 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-2">
-      {shownSelection && !interval && <ClearSelectionButton onClick={clear} />}
       {snapshotId && <Link aria-disabled={!!draft} tabIndex={draft ? -1 : undefined} onClick={event => { if (draft) event.preventDefault() }} data-testid="journal-link" to={performanceJournalPath(accountId, snapshotId, data.range, selection)} className="inline-flex min-h-9 items-center text-xs text-accent hover:underline">{selection?.kind === 'interval' ? '查看区间执行' : selection?.kind === 'day' ? '查看当日执行' : selection?.kind === 'execution' ? '查看本次执行' : '查看执行记录'}</Link>}
       {controls}
     </div>
-    </div>
-    <div inert={!interval} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${interval ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden">
-      <div className="mt-1 flex min-h-9 flex-wrap items-center gap-2 border-b border-line pb-1 text-xs text-ink-2">
-      {shownSelection?.kind === 'interval' && <>
-        {(['start', 'end'] as const).map(edge => <label key={edge} className="flex min-w-0 items-center gap-2"><span>{edge === 'start' ? '起点' : '终点'}</span><Select
-          ariaLabel={edge === 'start' ? '比较起点' : '比较终点'}
-          className="h-9 w-[210px] max-w-full min-w-0 justify-between px-2 text-xs"
-          value={shownSelection[edge]}
-          options={data.points.map((p, i) => ({ value: times[i], label: pointLabel(p) })).filter(option => option.value !== shownSelection[edge === 'start' ? 'end' : 'start'])}
-          onChange={value => onSelect(intervalSelection(value, shownSelection[edge === 'start' ? 'end' : 'start']))}
-        /></label>)}
-        <ClearSelectionButton onClick={clear} />
-      </>}
-      </div>
-      </div>
     </div>
     <div ref={container} className="relative w-full min-w-0" style={{ height: CHART_HEIGHT }}>
       <canvas ref={baseCanvas} aria-hidden="true" className="absolute inset-0 h-full w-full" />

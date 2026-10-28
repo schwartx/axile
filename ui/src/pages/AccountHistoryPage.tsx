@@ -1,11 +1,12 @@
 import { ContributionPanel } from '@/features/history/ContributionPanel'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
-import { CircleHelp, RefreshCw, Save } from 'lucide-react'
+import { CircleHelp, Info, RefreshCw, Save, X } from 'lucide-react'
 import { useNavigate } from '@/components/ui/nav'
 import { SectionLabel } from '@/components/ui/Card'
 import { Segmented } from '@/components/ui/Segmented'
 import { Tooltip } from '@/components/ui/Tooltip'
+import { Select } from '@/components/ui/Select'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { PerformanceChart } from '@/components/viz/PerformanceChart'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
@@ -13,8 +14,8 @@ import { AccountPageTitle } from '@/features/account/pageHead'
 import { FeeControl } from '@/features/history/FeeControl'
 import { getAccount } from '@/lib/api/accounts'
 import { getPortfolios } from '@/lib/api/portfolios'
-import { shanghaiDay, shanghaiLabel } from '@/features/history/costs'
-import { reconcileSelection, type ChartSelection } from '@/features/history/chartModel'
+import { shanghaiLabel } from '@/features/history/costs'
+import { intervalSelection, pointTime, reconcileSelection, type ChartSelection } from '@/features/history/chartModel'
 import { loadPerformanceView, performanceViews, savePerformanceView, type BacktestMode } from '@/features/history/viewState'
 import { getPerformanceCosts, selectionQuery, savePerformanceSettings, type AnalysisMetadata } from '@/lib/api/performance'
 import { usePerformanceSnapshot } from '@/features/history/usePerformanceSnapshot'
@@ -163,6 +164,9 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const loadingMessage = historyLoadingMessage(metadata, !!data, performance.loadingResult, readViewUnavailable)
   const initialError = calculationError || performance.statusError || performance.resultError || performance.refreshError
   const pendingSettings = !!data && settings?.backtest_fee_rate !== data.settings.backtest_fee_rate
+  const intervalOptions = useMemo(() => data?.points.map(point => ({ value: pointTime(point), label: point.observed_at ? shanghaiLabel(point.observed_at) : point.date })) ?? [], [data?.points])
+  const intervalStart = selection?.kind === 'interval' ? selection.start : intervalOptions[0]?.value
+  const intervalEnd = selection?.kind === 'interval' ? selection.end : intervalOptions.at(-1)?.value
 
   const controls = <div data-testid="performance-controls" className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto sm:justify-end">
         <fieldset disabled={saving || !settings} className="flex min-w-0 flex-wrap items-center gap-2 disabled:opacity-60">
@@ -179,7 +183,6 @@ function AccountHistory({ accountId }: { accountId: number }) {
             <button type="button" aria-label="回测口径说明" className="flex h-9 w-8 items-center justify-center rounded text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /></button>
           </Tooltip>
         } /></fieldset>
-        <fieldset><legend className="sr-only">横轴尺度</legend><Segmented size="sm" value={scale} options={SCALES} onChange={setScale} /></fieldset>
         <fieldset><legend className="sr-only">成交点</legend><Segmented size="sm" value={markers ? 'on' : 'off'} options={MARKERS} onChange={value => setMarkers(value === 'on')} /></fieldset>
         </div>
 
@@ -193,15 +196,38 @@ function AccountHistory({ accountId }: { accountId: number }) {
           channel={account.data?.trade_channel ?? item?.trade_channel}
           market={account.data?.market ?? item?.market}
         />
-        {data ? <dl className="flex min-w-0 flex-wrap items-baseline text-xs text-ink-3">
-          <div className="whitespace-nowrap"><dt className="sr-only">基准</dt><dd className="inline">{data.baseline ? <time dateTime={data.baseline} title={shanghaiLabel(data.baseline)}>{shanghaiDay(data.baseline)}</time> : '—'}</dd><span aria-hidden="true">&nbsp;→&nbsp;</span><dt className="sr-only">截止</dt><dd className="inline">{data.end ? <time dateTime={data.end} title={shanghaiLabel(data.end)}>{shanghaiDay(data.end)}</time> : '—'}</dd><span aria-hidden="true">&nbsp;·</span></div>
-          <div className="whitespace-nowrap"><dt className="sr-only">有效回测记录</dt><dd className="inline">回测 {data.backtest_included ? `${backtestMode === 'target' ? data.target_used_record_count ?? 0 : data.used_record_count}/${data.observation_count}` : 0}</dd><span aria-hidden="true">&nbsp;·</span></div>
-          <div className="whitespace-nowrap"><dt className="sr-only">历史记录</dt><dd className="inline">历史 {data.record_count}</dd></div>
-        </dl> : <span className="shrink-0 text-xs text-ink-3">{metadata?.data_until ? `数据截止 ${shanghaiLabel(metadata.data_until)}` : '暂无绩效快照'}</span>}
+        <Tooltip content={data ? <dl className="space-y-1 text-xs">
+          <div><dt className="inline text-ink-3">数据覆盖：</dt><dd className="inline">{data.baseline ? shanghaiLabel(data.baseline) : '—'} → {data.end ? shanghaiLabel(data.end) : '—'}</dd></div>
+          <div><dt className="inline text-ink-3">有效回测记录：</dt><dd className="inline">{data.backtest_included ? `${backtestMode === 'target' ? data.target_used_record_count ?? 0 : data.used_record_count}/${data.observation_count}` : 0}</dd></div>
+          <div><dt className="inline text-ink-3">历史记录：</dt><dd className="inline">{data.record_count}</dd></div>
+        </dl> : <span>{metadata?.data_until ? `数据截止 ${shanghaiLabel(metadata.data_until)}` : '暂无绩效快照'}</span>} arrow>
+          <button type="button" aria-label="绩效数据说明" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"><Info size={15} aria-hidden="true" /></button>
+        </Tooltip>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Segmented size="sm" value={range} options={RANGES} onChange={value => withViewTransition(() => { setSelection(null); setRange(value) })} />
+    </div>
+    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-y border-line bg-bg py-1.5 text-xs text-ink-2">
+      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" value={range} options={RANGES} onChange={value => withViewTransition(() => { setSelectionNotice(false); setSelection(null); setRange(value) })} /></fieldset>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label="分析区间">
+        {(['start', 'end'] as const).map(edge => <label key={edge} className="flex min-w-0 items-center gap-1">
+          <span className="shrink-0 text-ink-3">{edge === 'start' ? '起点' : '终点'}</span>
+          <Select<number> ariaLabel={edge === 'start' ? '比较起点' : '比较终点'} appearance="inline" className="h-9 w-[166px] min-w-0 justify-between px-1.5 text-xs"
+            disabled={intervalOptions.length < 2} value={(edge === 'start' ? intervalStart : intervalEnd) ?? 0}
+            options={intervalOptions.filter(option => option.value !== (edge === 'start' ? intervalEnd : intervalStart))}
+            placeholder="暂无观测"
+            selectedValue={(() => {
+              const option = intervalOptions.find(option => option.value === (edge === 'start' ? intervalStart : intervalEnd))
+              return option ? <Tooltip content={option.label}><span>{option.label.slice(0, 16)}</span></Tooltip> : undefined
+            })()}
+            onChange={value => {
+              const other = edge === 'start' ? intervalEnd : intervalStart
+              if (other == null) return
+              setSelectionNotice(false)
+              setSelection(intervalSelection(value, other))
+            }} />
+        </label>)}
+        <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
       </div>
+      <fieldset className="sm:ml-auto"><legend className="sr-only">横轴尺度</legend><Segmented size="sm" value={scale} options={SCALES} onChange={setScale} /></fieldset>
     </div>
     <div className="border-t border-line pt-2">
       {difference != null && difference < 0 && <p className="mt-1 text-xs text-warn">账户收益高于回测，待核对差异</p>}
