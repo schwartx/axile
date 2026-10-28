@@ -10,7 +10,7 @@ from tests.unit.server._migration_support import _connect
 from tests.unit.server._native_read_views import persist_record_fixture
 
 
-def seed_account(path, *, null_conversion=False, zero_target_close=False):
+def seed_account(path, *, null_conversion=False, zero_target_close=False, missing_fill=False, missing_valuation=False):
     """生成禁止调度的合成期货账户，包含期初有仓、部分平仓和费用缺失。"""
     initialize_native_database(path)
     account = build_account(trade_channel="tq", portfolio_id=None, is_started=False, backtest_fee_rate=0.0)
@@ -23,12 +23,12 @@ def seed_account(path, *, null_conversion=False, zero_target_close=False):
             "symbol": "fu2701",
             "volume": quantity,
             "direction": "多头",
-            "market_value": value,
+            "market_value": None if missing_valuation and day == 2 else value,
             "extra": {"tq_symbol": "SHFE.fu2701"},
         }
         trades = (
             []
-            if day == 1
+            if day == 1 or missing_fill and day == 2
             else [
                 {
                     "symbol": "fu2701",
@@ -126,6 +126,23 @@ def test_published_contributions_use_account_observations_and_keep_closed_contra
     core = require_native_store("chart")
     with pytest.raises(core.NativeError, match="SNAPSHOT"):
         core.chart(core.Store(str(tmp_path / "contribution.db")), 1, "missing", "all")
+
+
+@pytest.mark.parametrize("gap", ["missing_fill", "missing_valuation"])
+def test_published_gap_keeps_later_observations_available_without_erasing_quality(tmp_path, gap):
+    result = seed_account(tmp_path / "gap.db", **{gap: True})
+    table = result["tables"]["contributions"]
+    rows = [dict(zip(table["columns"], row, strict=True)) for row in table["rows"]]
+    assert len(rows) == len(result["tables"]["points"]["rows"])
+    assert rows[0]["issues"] == 0
+    before, after = rows[-2:]
+    assert before["issues"] > 0
+    assert after["issues"] == before["issues"]
+    assert after["gross_pnl"] is not None
+    if gap == "missing_fill":
+        assert after["gross_pnl"] - before["gross_pnl"] == 50.0
+    else:
+        assert before["gross_pnl"] is None
 
 
 def _inspect(path):

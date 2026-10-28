@@ -31,6 +31,7 @@ test('首屏图表仅凭轻量曲线和执行摘要显示读数与键盘操作',
   expect(html).toContain('本次执行成交额 123.4')
   expect(html).toContain('数据不完整')
   expect(html).toContain('tabindex="0"')
+  expect(html).toContain('data-chart="time-series"')
   expect(html).toContain('Enter / 空格选择')
   expect(html).not.toContain('持仓状态未知')
 })

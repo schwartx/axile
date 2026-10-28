@@ -58,6 +58,12 @@
   --color-distribution: #2563eb;
   --color-equity-area: rgba(37, 99, 235, 0.07);
 
+  /* 多序列身份色：只辨认曲线，盈亏方向由零轴和带符号的读数表达。 */
+  --color-chart-1: #315fb0;
+  --color-chart-2: #7652a0;
+  --color-chart-3: #317588;
+  --color-chart-4: #755a42;
+
   --color-line: rgba(26, 36, 48, 0.1);
   --color-border-strong: #c2ccd6;
   --color-fill: #eef1f4;
@@ -94,6 +100,10 @@
 
 /* 深色：夜航蓝黑（驾驶舱主场）。重写同名角色变量。 */
 .dark {
+  --color-chart-1: #8fb8ff;
+  --color-chart-2: #c0a5e8;
+  --color-chart-3: #88c4d0;
+  --color-chart-4: #c9b29c;
   --color-market-red: #f06065;
   --color-market-green: #35bd75;
   --color-market-purple: #c5a3ff;

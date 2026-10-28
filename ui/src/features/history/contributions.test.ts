@@ -31,15 +31,50 @@ test('selection rebases each series and changes the ranking for that interval', 
   expect(result.accountChange).toBe(-100)
 })
 
-test('missing fees keep gross but unknown net; missing fills break the curve', () => {
+test('missing fees keep gross; a missing fill starts a new segment without making the total known', () => {
   const source = chart([{ idx: 0 }, { idx: 1, gross_pnl: 100 }, { idx: 2, gross_pnl: 80, issues: 1 }, { idx: 3, gross_pnl: 90, issues: 1, fee_missing: 1 }])
   const result = contributionView(source, null)!.groups[0]
   expect(result.gross).toBeNull()
-  expect(result.values).toEqual([0, 100, null, null])
+  expect(result.values).toEqual([0, 100, 0, 10])
+  expect(result.baselines).toEqual([0, 0, 2, 2])
   expect(result.net).toBeNull()
   const clean = chart([{ idx: 0 }, { idx: 3, gross_pnl: 100, fee_missing: 1 }])
   expect(contributionView(clean, null)!.groups[0].gross).toBe(100)
   expect(contributionView(clean, null)!.groups[0].net).toBeNull()
+})
+
+test('a valuation gap resumes only at the next valued snapshot', () => {
+  const result = contributionView(chart([
+    { idx: 0 }, { idx: 1, gross_pnl: 100 },
+    { idx: 2, gross_pnl: null, issues: 1 }, { idx: 3, gross_pnl: 90, issues: 1 },
+  ]), null)!.groups[0]
+  expect(result.values).toEqual([0, 100, null, 0])
+  expect(result.baselines).toEqual([0, 0, null, 3])
+  expect(result.gross).toBeNull()
+})
+
+test('each new error starts another segment', () => {
+  const result = contributionView(chart([
+    { idx: 0 }, { idx: 1, gross_pnl: 100, issues: 1 },
+    { idx: 2, gross_pnl: 120, issues: 1 }, { idx: 3, gross_pnl: 90, issues: 2 },
+  ]), null)!.groups[0]
+  expect(result.values).toEqual([0, 0, 20, 0])
+  expect(result.baselines).toEqual([0, 1, 1, 3])
+})
+
+test('a product rebases all its contracts together and leaves other products unaffected', () => {
+  const source = chart([
+    ...[0, 100, 80, 90].map((gross_pnl, idx) => ({ idx, gross_pnl, issues: idx >= 2 ? 1 : 0 })),
+    ...[0, 200, 300, 340].map((gross_pnl, idx) => ({ idx, gross_pnl, symbol: 'fu2705' })),
+    ...[0, -10, -20, -30].map((gross_pnl, idx) => ({ idx, gross_pnl, symbol: 'c2701', product: 'DCE.c' })),
+  ])
+  const result = contributionView(source, null)!
+  const fuel = result.groups.find(row => row.product === 'SHFE.fu')!
+  expect(fuel.values).toEqual([0, 300, 0, 50])
+  expect(fuel.baselines).toEqual([0, 0, 2, 2])
+  expect(fuel.gross).toBeNull()
+  expect(result.groups.find(row => row.product === 'DCE.c')!.values).toEqual([0, -10, -20, -30])
+  expect(result.knownGross).toBe(-30)
 })
 
 test('a later interval can be valid after an earlier missing fill', () => {

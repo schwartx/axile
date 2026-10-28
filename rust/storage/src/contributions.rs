@@ -202,11 +202,12 @@ fn apply(
     target: &Connection,
     trade: Fill,
     currency: Option<&str>,
+    initial_known: bool,
 ) -> Result<(), AnalysisError> {
     let p = ledger
         .entry(trade.symbol.clone())
         .or_insert_with(|| Ledger {
-            initial: Some(0.0),
+            initial: initial_known.then_some(0.0),
             product: trade.product.clone(),
             ..Default::default()
         });
@@ -317,7 +318,7 @@ fn write_range(
     let Some((_, first_time, Some(first_record))) = points.first() else {
         return Ok(());
     };
-    let (currency, initial) = positions(source, *first_record, channel)?;
+    let (mut currency, initial) = positions(source, *first_record, channel)?;
     let mut ledger = BTreeMap::<String, Ledger>::new();
     if initial.is_none() {
         ledger.insert(
@@ -385,7 +386,13 @@ fn write_range(
             .map_err(|e| AnalysisError::new("INVALID_RESULT_TIME", e))?;
         while pending.as_ref().is_some_and(|(t, _)| t <= &cutoff) {
             let (_, trade) = pending.take().unwrap();
-            apply(&mut ledger, target, trade, currency.as_deref())?;
+            apply(
+                &mut ledger,
+                target,
+                trade,
+                currency.as_deref(),
+                initial.is_some(),
+            )?;
             pending = fills
                 .next()
                 .map_err(sql_error)?
@@ -401,6 +408,9 @@ fn write_range(
             Some(id) => positions(source, id, channel)?,
             None => (None, None),
         };
+        if currency.is_none() && current.is_some() {
+            currency.clone_from(&current_currency);
+        }
         if let Some(positions) = current.as_ref() {
             for (symbol, p) in positions {
                 ledger.entry(symbol.clone()).or_insert_with(|| Ledger {
@@ -423,11 +433,16 @@ fn write_range(
                 p.issues += 1;
                 None
             };
-            if current_currency != currency || currency.is_none() {
+            let value =
+                finite(value).filter(|_| current_currency == currency && currency.is_some());
+            if value.is_none() {
                 p.issues += 1;
             }
-            if initial.is_none() {
-                p.initial = None;
+            // 期初估值未知时只建立后续分段基准；异常计数保留此前缺口。
+            if p.initial.is_none() && value.is_some() && symbol != "[unknown]" {
+                p.initial = value;
+                p.cash = 0.0;
+                p.issues += 1;
             }
             let gross = finite(value.zip(p.initial).map(|(v, b)| p.cash + v - b));
             insert
@@ -572,6 +587,37 @@ mod tests {
         write(&c, &c, 1).unwrap();
         assert!(values(&c)[1].3 > 0);
     }
+
+    #[test]
+    fn missing_fill_allows_later_pnl_differences_without_clearing_the_gap() {
+        let c = database();
+        c.execute_batch("DELETE FROM business_trade WHERE record_id=2;")
+            .unwrap();
+        write(&c, &c, 1).unwrap();
+        let rows = values(&c);
+        assert!(rows[1].3 > 0);
+        assert_eq!(rows[2].3, rows[1].3);
+        assert_eq!(rows[2].0 - rows[1].0, 50.0);
+    }
+
+    #[test]
+    fn missing_valuation_breaks_quality_but_the_next_snapshot_can_resume() {
+        let c = database();
+        c.execute_batch("UPDATE business_asset_position SET market_value=NULL,market_value_state='absent' WHERE asset_id='b';").unwrap();
+        write(&c, &c, 1).unwrap();
+        let rows: Vec<(Option<f64>, i64)> = c
+            .prepare(
+                "SELECT gross_pnl,issues FROM native_stage.performance_contribution ORDER BY idx",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows[0], (Some(0.0), 0));
+        assert_eq!(rows[1], (None, 1));
+        assert_eq!(rows[2], (Some(350.0), 1));
+    }
     #[test]
     fn futures_rolls_group_by_exchange_and_options_remain_separate() {
         assert_eq!(
@@ -609,12 +655,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_initial_holdings_never_become_a_flat_baseline() {
+    fn unknown_initial_holdings_resume_only_from_a_later_known_snapshot() {
         let c = database();
         c.execute_batch("DELETE FROM business_asset_snapshot WHERE asset_id='a';")
             .unwrap();
         write(&c, &c, 1).unwrap();
-        let known: i64 = c.query_row("SELECT count(*) FROM native_stage.performance_contribution WHERE gross_pnl IS NOT NULL",[],|r|r.get(0)).unwrap();
-        assert_eq!(known, 0);
+        let rows: Vec<(i64, f64, i64)> = c.prepare("SELECT idx,gross_pnl,issues FROM native_stage.performance_contribution WHERE symbol='fu2601' ORDER BY idx").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1, 0.0);
+        assert_eq!(rows[1].1, 50.0);
+        assert!(rows[0].2 > 0);
+        assert_eq!(rows[0].2, rows[1].2);
+        let unknown: i64 = c.query_row("SELECT count(*) FROM native_stage.performance_contribution WHERE symbol='[unknown]' AND gross_pnl IS NOT NULL",[],|r|r.get(0)).unwrap();
+        assert_eq!(unknown, 0);
     }
 }

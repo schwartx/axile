@@ -1,4 +1,5 @@
 import type { PerformancePoint, PerformanceSettings } from '@/types/api'
+export { niceValueAxis as niceReturnAxis } from '@/components/viz/chartAxis'
 import { shanghaiTime } from './costs'
 
 export const WEIGHT_MODES: Array<{ value: 'ts' | 'cs'; label: string }> = [
@@ -54,18 +55,6 @@ export function returnText(value: number | null | undefined, unit = '%'): string
 export function chartTime(date: string): number {
   // 日收益点放在上海日末，共同基准保留实际执行时间。
   return shanghaiTime(date.includes('T') || date.includes(' ') ? date : `${date}T23:59:59`)
-}
-
-export function niceReturnAxis(values: number[]) {
-  const low = Math.min(0, ...values), high = Math.max(0, ...values)
-  const span = high - low || 0.01
-  const rough = span * 1.2 / 5
-  const power = 10 ** Math.floor(Math.log10(rough))
-  const step = ([1, 2, 2.5, 5, 10].find(n => n * power >= rough) ?? 10) * power
-  const min = low === 0 ? 0 : Math.floor((low - span * 0.05) / step) * step
-  const max = Math.ceil((high + span * 0.12) / step) * step
-  const ticks = Array.from({ length: Math.round((max - min) / step) + 1 }, (_, i) => min + i * step)
-  return { min, max, step, ticks }
 }
 
 export function returnPaths(points: PerformancePoint[], key: keyof PerformancePoint, x: (i: number) => number, y: (v: number) => number): string {

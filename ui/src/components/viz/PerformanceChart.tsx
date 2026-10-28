@@ -1,3 +1,5 @@
+import { TimeSeriesChart, type CanvasFrame } from '@/components/viz/TimeSeriesChart'
+import { zoomTimeViewport } from '@/components/viz/chartCanvas'
 import { displayCurrencyUnit } from '@/lib/format'
 import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
@@ -20,7 +22,7 @@ import { chartAxis } from '@/components/viz/performanceCanvas'
 import { amount, feeText, shanghaiLabel, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { returnText } from '@/features/history/performance'
 import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
-import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
+import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotBounds, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
 import { closedDaysBetween, createTimeScale, type TimeScaleMode } from '@/features/history/timeScale'
 
 interface Props {
@@ -84,7 +86,6 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   const cursorRef = useRef(cursor)
   cursorRef.current = cursor
   const container = useRef<HTMLDivElement>(null)
-  const baseCanvas = useRef<HTMLCanvasElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
   const tip = useRef<HTMLDivElement>(null)
   const drag = useRef<Drag | null>(null)
@@ -144,19 +145,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
     })
   }, [paintOverlay, size.width])
 
-  useLayoutEffect(() => {
-    const element = container.current
-    if (!element) return
-    const measure = () => setSize(s => ({ width: Math.max(240, element.clientWidth), revision: s.revision + 1 }))
-    measure()
-    const resize = new ResizeObserver(measure); resize.observe(element)
-    const mutation = new MutationObserver(measure); mutation.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] })
-    window.addEventListener('resize', measure)
-    document.fonts.addEventListener('loadingdone', measure)
-    let disposed = false
-    void document.fonts.ready.then(() => { if (!disposed) measure() })
-    return () => { disposed = true; resize.disconnect(); mutation.disconnect(); window.removeEventListener('resize', measure); document.fonts.removeEventListener('loadingdone', measure); cancelAnimationFrame(frame.current); frame.current = 0 }
-  }, [])
+  useEffect(() => () => { cancelAnimationFrame(frame.current); frame.current = 0 }, [])
 
   useEffect(() => {
     setViewport(view => clampViewport(view, navigationTimes))
@@ -165,11 +154,10 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   }, [data.points, times, navigationTimes, executionIndex])
   useEffect(() => { setHover(null); hoverRef.current = null; setDraft(null); drag.current = null; setCursor(null); magnetRecordId.current = null; setMagnet(null) }, [scaleMode])
 
-  useLayoutEffect(() => {
-    if (!container.current || !baseCanvas.current) return
-    scene.current = { ...tradingScene, theme: readCanvasTheme(container.current) }
-    drawScene(baseCanvas.current, scene.current); paintOverlay()
-  }, [tradingScene, paintOverlay])
+  const paint = useCallback((canvas: HTMLCanvasElement, frame: CanvasFrame) => {
+    scene.current = { ...tradingScene, width: frame.width, theme: frame.theme }
+    drawScene(canvas, scene.current)
+  }, [tradingScene])
   useLayoutEffect(() => {
     const element = container.current
     const canReturn = !daily && scaleMode === 'observations' && viewKey === `${accountId}:all` && viewport.start === full.start && viewport.end === full.end && returnRange == null
@@ -185,33 +173,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   useLayoutEffect(() => { paintOverlay(); schedule() }, [shownSelection, hover, bindingTime, cursor, paintOverlay, schedule])
 
   const changeView = (view: Viewport) => setViewport(clampViewport(view, navigationTimes))
-  const zoom = (factor: number, anchor = timeScale.invert((timeScale.project(viewport.start) + timeScale.project(viewport.end)) / 2)) => setViewport(view => {
-    const center = timeScale.project(anchor)
-    return clampViewport({
-      start: timeScale.invert(center + (timeScale.project(view.start) - center) * factor),
-      end: timeScale.invert(center + (timeScale.project(view.end) - center) * factor),
-    }, navigationTimes)
-  })
-  useEffect(() => {
-    const element = overlay.current
-    if (!element) return
-    const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey || !scene.current) return
-      event.preventDefault()
-      const current = scene.current
-      const scale = current.scale ?? timeScale
-      const x = event.clientX - element.getBoundingClientRect().left
-      const delta = Math.max(-100, Math.min(100, event.deltaY))
-      const anchor = xTime(x, current.width, current.viewport, scale)
-      const factor = Math.exp(delta * 0.003), center = scale.project(anchor)
-      setViewport(view => clampViewport({
-        start: scale.invert(center + (scale.project(view.start) - center) * factor),
-        end: scale.invert(center + (scale.project(view.end) - center) * factor),
-      }, navigationTimes))
-    }
-    element.addEventListener('wheel', wheel, { passive: false })
-    return () => element.removeEventListener('wheel', wheel)
-  }, [navigationTimes, timeScale])
+  const zoom = (factor: number, anchor = timeScale.invert((timeScale.project(viewport.start) + timeScale.project(viewport.end)) / 2)) => setViewport(view => zoomTimeViewport(view, factor, anchor, navigationTimes, timeScale))
 
   const locate = (event: PointerEvent<HTMLElement>) => {
     const rect = container.current!.getBoundingClientRect()
@@ -366,21 +328,22 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
       {controls}
     </div>
     </div>
-    <div ref={container} className="relative w-full min-w-0" style={{ height: CHART_HEIGHT }}>
-      <canvas ref={baseCanvas} aria-hidden="true" className="absolute inset-0 h-full w-full" />
-      <canvas ref={overlay} data-testid="performance-chart" tabIndex={0} role="group" aria-label={daily ? '每日收益与执行成本' : '累计收益与执行成本'} aria-describedby="performance-keyboard-reading performance-interaction-hint" className="absolute inset-0 h-full w-full cursor-crosshair touch-pan-y outline-none"
-        onPointerDown={startDrag} onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { drag.current = null; setDraft(null); showHover(null) }} onLostPointerCapture={() => { drag.current = null; setDraft(null) }}
-        onPointerLeave={event => { if (!drag.current) { magnetRecordId.current = null; setMagnet(null); showHover(null); setCursor(null); if (event.pointerType !== 'touch') setBindingTime(null) } }} onBlur={() => { if (!drag.current) showHover(null) }} onDoubleClick={() => setViewport(full)}
-        onKeyDown={event => {
+    <TimeSeriesChart height={CHART_HEIGHT} label={daily ? '每日收益与执行成本' : '累计收益与执行成本'} surfaceRef={container} overlayRef={overlay} onResize={setSize} draw={paint} drawOverlay={paintOverlay}
+      navigation={{ times, current: hoverRef.current ?? pointIndex, viewport, scale: timeScale, plot: plotBounds, onFocus: focusPoint, onZoom: zoom, onReset: () => { setViewport(full); setReturnRange(null) } }}
+      interaction={{
+        'data-testid': 'performance-chart', 'aria-describedby': 'performance-keyboard-reading performance-interaction-hint',
+        onPointerDown: startDrag, onPointerMove: move, onPointerUp: finish,
+        onPointerCancel: () => { drag.current = null; setDraft(null); showHover(null) },
+        onLostPointerCapture: () => { drag.current = null; setDraft(null) },
+        onPointerLeave: event => { if (!drag.current) { magnetRecordId.current = null; setMagnet(null); showHover(null); setCursor(null); if (event.pointerType !== 'touch') setBindingTime(null) } },
+        onBlur: () => { if (!drag.current) showHover(null) },
+        onDoubleClick: event => { event.preventDefault(); setViewport(full) },
+        onKeyDown: event => {
           const index = hoverRef.current ?? pointIndex
-          if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); focusPoint(Math.max(0, Math.min(times.length - 1, index + (event.key === 'ArrowLeft' ? -1 : 1)))) }
-          else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); focusPoint(event.key === 'Home' ? 0 : times.length - 1) }
-          else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (exact && selection?.kind === 'day') onSelect(intervalSelection(selection.time, times[index]) ?? selection); else selectPoint(index) }
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (exact && selection?.kind === 'day') onSelect(intervalSelection(selection.time, times[index]) ?? selection); else selectPoint(index) }
           else if (event.key === 'Escape') { event.preventDefault(); clear() }
-          else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(0.7) }
-          else if (event.key === '-') { event.preventDefault(); zoom(1.4) }
-          else if (event.key === '0') { event.preventDefault(); setViewport(full); setReturnRange(null) }
-        }} />
+        },
+      }}>
       <div className="pointer-events-none absolute inset-0"
         onPointerDown={startDrag} onPointerMove={move} onPointerUp={finish}
         onPointerCancel={() => { drag.current = null; setDraft(null); showHover(null) }}
@@ -437,7 +400,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
         </>}
       </div>
       {snapshotId && <ChartTradingOverlay scene={tradingScene} rows={executionIndex} snapshotId={snapshotId} accountId={accountId} currency={accountInfo?.currency ?? ''} units={descriptor?.units} cursor={cursor} selection={selection} onSelect={onSelect} onInspect={setCursor} />}
-    </div>
+    </TimeSeriesChart>
 
     <p id="performance-keyboard-reading" className="sr-only" aria-live="polite">{pointLabel(point)}，账户 {returnText(point[keys[0]])}，回测 {returnText(point[keys[1]])}。方向键选点，回车确认，Escape 清除，加减号缩放，0 恢复范围。</p>
     {scaleMode === 'observations' && <p className="sr-only">观测序列已压缩 {closedGapDays.reduce((sum, days) => sum + days, 0)} 个完整休市日。</p>}
