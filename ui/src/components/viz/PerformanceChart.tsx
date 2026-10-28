@@ -1,3 +1,4 @@
+import { displayCurrencyUnit } from '@/lib/format'
 import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
 import { lossClass } from '@/features/history/costs'
@@ -347,7 +348,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
       <div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-ink-3 tabular-nums">
         <span>{costScope}成交额 {amount(costReady ? readingCost?.value ?? null : null)}</span>
         <span className={lossClass(costReady ? readingCost?.lossBp : null)}>滑点损耗 {amount(costReady ? readingCost?.lossBp ?? null : null)} BP</span>
-        <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {accountInfo?.currency ?? ''}</span>
+        <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {displayCurrencyUnit(accountInfo?.currency)}</span>
         <span className={coverageNeedsAttention ? 'text-warn' : undefined}>{coverage}</span>
         {interval && costReady && readingCost && <><span>手续费 {feeText(readingCost)}</span>{estimated > 0 && <span className="text-warn">{estimated} 笔使用执行时间</span>}</>}
       </div>

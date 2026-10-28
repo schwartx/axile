@@ -15,7 +15,7 @@ test('GM uses native amount and distinguishes a zero commission from absent cost
 })
 
 test('External channel distinguishes Taker from unknown and preserves small fees and true PnL coloring', () => {
-  expect(cells('external', { commission: 0.000000001, commission_asset: 'CNY', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' })).toEqual({ commission: '0.000000001', commission_asset: 'CNY', realized_pnl: '-2.5', is_maker: 'Taker', position_side: '空头' })
+  expect(cells('external', { commission: 0.000000001, commission_asset: 'CNY', realized_pnl: -2.5, is_maker: false, position_side: 'SHORT' })).toEqual({ commission: '0.000000001', commission_asset: '￥', realized_pnl: '-2.5', is_maker: 'Taker', position_side: '空头' })
   expect(cells('external', {}).is_maker).toBe('—')
   const pnl = tradeColumns('external').find(column => column.key === 'realized_pnl')!
   expect(pnl.color?.({ ...trade, realized_pnl: -2.5 })).toBe('text-down')

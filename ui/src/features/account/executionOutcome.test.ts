@@ -132,5 +132,5 @@ test('详情逐只状态使用原始结果，不把受阻且缺仓位的品种�
 })
 
 test.each(['USD', 'EUR', 'JPY', 'CNY', ''])('币种原样保留：%s', currency => {
-  expect(withCurrency('10', currency)).toBe(currency === 'CNY' ? '¥10' : currency ? `10 ${currency}` : '10')
+  expect(withCurrency('10', currency)).toBe(currency === 'CNY' ? '￥10' : currency ? `10 ${currency}` : '10')
 })

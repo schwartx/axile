@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { displayCurrencyUnit } from '@/lib/format'
 import type { AnalysisChart } from '@/lib/api/performance'
 import type { ChartSelection } from '@/features/history/chartModel'
 import { contributionView } from '@/features/history/contributions'
@@ -57,7 +58,7 @@ export function ContributionPanel({ chart, selection, onSelect, scaleMode }: {
         ['期初权益', points[0].account_equity], ['期末权益', points.at(-1)!.account_equity],
         ['权益变化', view.accountChange], ['已知品种毛盈亏', view.knownGross],
         ['已知手续费', view.knownFees], ['未归因差额', view.unexplained],
-      ].map(([label, value]) => <div key={String(label)}><dt className="text-ink-3">{label}</dt><dd className="mt-1">{amount(value as number | null)} {view.currency ?? ''}</dd></div>)}
+      ].map(([label, value]) => <div key={String(label)}><dt className="text-ink-3">{label}</dt><dd className="mt-1">{amount(value as number | null)} {displayCurrencyUnit(view.currency)}</dd></div>)}
     </dl>
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
       <span className="text-ink-3">区间最大回撤 {returnText(view.maxDrawdown)}（观测级）</span>
@@ -74,12 +75,12 @@ export function ContributionPanel({ chart, selection, onSelect, scaleMode }: {
           <tbody>{groups.map(row => <tr key={row.symbol} className="border-b border-line align-top"><td className="py-2 pr-2">
             <label className="flex min-h-9 items-center gap-2"><input type="checkbox" checked={selected.includes(row.symbol)} onChange={() => toggle(row.symbol)} aria-label={`查看 ${row.product} 贡献曲线`} /><OverflowText text={row.product} /></label>
             <button type="button" aria-expanded={expanded === row.symbol} className="min-h-9 text-ink-3 hover:text-ink-1" onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}>{row.contracts.length} 个合约{expanded === row.symbol ? ' · 收起' : ' · 展开'}</button>
-            <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden" inert={expanded !== row.symbol} aria-hidden={expanded !== row.symbol}>{row.contracts.map(c => <div key={c.symbol} className="py-1 text-ink-2">{c.symbol} {amount(c.gross)} {c.currency ?? ''}</div>)}</div></div>
+            <div className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}><div className="min-h-0 overflow-hidden" inert={expanded !== row.symbol} aria-hidden={expanded !== row.symbol}>{row.contracts.map(c => <div key={c.symbol} className="py-1 text-ink-2">{c.symbol} {amount(c.gross)} {displayCurrencyUnit(c.currency)}</div>)}</div></div>
           </td><td className={`py-3 text-right ${returnColor(row.gross)}`}>{amount(row.gross)}{row.gross == null && <div className="mt-1 text-warn">{row.issues > 0 ? '成交／持仓待核对' : '估值未获取'}</div>}</td><td className={`py-3 text-right ${returnColor(row.net)}`}>{amount(row.net)}<div className="mt-1 text-ink-3">{row.feeMissing ? `${row.feeMissing} 笔费用未知` : `费用 ${amount(row.fee)}`}</div></td></tr>)}</tbody>
         </table>
       </div>
       <div ref={plot} className="min-w-0">
-        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>累计盈亏贡献 · {view.currency ?? '按原币种'}</span><span className="text-ink-3">区间起点归零</span></div>
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2 text-xs"><span>累计盈亏贡献 · {displayCurrencyUnit(view.currency) || '按原币种'}</span><span className="text-ink-3">区间起点归零</span></div>
         <svg viewBox={`0 0 ${width} 225`} width="100%" role="group" tabIndex={0} aria-label="所选品种累计毛盈亏贡献曲线，方向键查看日期，缺失数据处断线" onKeyDown={event => {
           const next = event.key === 'ArrowLeft' ? Math.max(0, current - 1) : event.key === 'ArrowRight' ? Math.min(points.length - 1, current + 1) : event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : null
           if (next != null) { event.preventDefault(); setHover(next) }

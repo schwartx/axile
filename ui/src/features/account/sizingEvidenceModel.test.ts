@@ -48,7 +48,7 @@ describe('sizing evidence copy', () => {
   it('跨币种换算展示冻结汇率，缺输入不补造公式', () => {
     const formulas = sizingFormulas(row({ reference_price: 100, unit_multiplier: 10, unit_notional: 7500,
       value_conversion: { price_currency: 'USD', value_currency: 'CNY', rate: 7.5, reference: {} } }), '手', 'CNY')
-    expect(formulas.join('\n')).toContain('价格 100 USD × 合约乘数 10 × 汇率 7.5 = 每手名义 7,500 元')
+    expect(formulas.join('\n')).toContain('价格 100 USD × 合约乘数 10 × 汇率 7.5 = 每手名义 7,500 ￥')
     const missing = sizingFormulas(row({ reference_price: null, equity: null }), '手', 'CNY')
     expect(missing.join('\n')).not.toContain('价格')
     expect(missing.join('\n')).not.toContain('权益')

@@ -1,3 +1,4 @@
+import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams, useSearchParams } from 'react-router'
 import { RefreshCw, Search, ExternalLink } from 'lucide-react'
@@ -155,19 +156,19 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
       <div data-testid="journal-summary" className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 py-3 text-xs text-ink-3">
         <span>{view === 'executions' ? `${filtered.length} 条记录` : `${symbols.length} 个品种`}{summary ? ` · 成交 ${summary.count} 笔` : ' · 成交信息未获取'}</span>
         {summary && <>
-        <span>{summary.amountComplete ? '成交额' : '已知成交额'} {amount(summary.value)} {currency}</span>
+        <span>{summary.amountComplete ? '成交额' : '已知成交额'} {amount(summary.value)} {displayCurrencyUnit(currency)}</span>
         <span className={lossClass(summary.lossBp)}>滑点损耗 {amount(summary.lossBp)} BP</span>
-        <span className={lossClass(summary.cost)}>{summary.covered < summary.count ? '已知滑点成本' : '滑点成本'} {amount(summary.cost)} {currency}</span>
+        <span className={lossClass(summary.cost)}>{summary.covered < summary.count ? '已知滑点成本' : '滑点成本'} {amount(summary.cost)} {displayCurrencyUnit(currency)}</span>
         <span>{coverageText(summary)}</span>{!!summary.estimated && <span>{summary.estimated} 笔使用执行时间</span>}
         </>}
         <span title="按有效成交额加权；参考价优先到达中间价，其次到达最新价。">正值为损耗，负值为改善</span>
       </div>
       {view === 'executions' ? <>
-        <div className={`${EXEC_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>执行时间</span><span>执行摘要</span><span>状态</span><span className="text-right">成交额 {currency}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {currency}</span><span className="text-right">耗时</span></div>
+        <div className={`${EXEC_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>执行时间</span><span>执行摘要</span><span>状态</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">耗时</span></div>
         {filtered.slice(0, count).map(row => <ExecutionGroup key={`${row.key}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[row.key] ?? closedExpansion()} update={next => updateExpansion(row.key, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)}
         {filtered.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配记录</p>}
       </> : <>
-        <div className={`${SYMBOL_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>品种</span><span className="text-right">成交额 {currency}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {currency}</span><span className="text-right">成交笔数</span><span className="text-right">最近成交</span><span /></div>
+        <div className={`${SYMBOL_COLS} hidden border-y border-line px-3 py-2 text-xs text-ink-3 xl:grid`}><span>品种</span><span className="text-right">成交额 {displayCurrencyUnit(currency)}</span><span className="text-right">滑点损耗 BP</span><span className="text-right">滑点成本 {displayCurrencyUnit(currency)}</span><span className="text-right">成交笔数</span><span className="text-right">最近成交</span><span /></div>
         {symbols.slice(0, count).map(row => <SymbolGroup key={`${row.symbol}:${scopeKey}:${keyword}`} row={row} accountId={accountId} scope={scopedQuery} expansion={expanded[`symbol:${row.symbol}`] ?? closedExpansion()} update={next => updateExpansion(`symbol:${row.symbol}`, next)} detailLink={detailLink} currency={currency} units={descriptor?.units} liveWindow={liveWindow} />)}
         {symbols.length === 0 && <p className="py-16 text-center text-sm text-ink-3">所选范围内无匹配成交</p>}
       </>}

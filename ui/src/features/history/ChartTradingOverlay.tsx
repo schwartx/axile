@@ -1,3 +1,4 @@
+import { displayCurrencyUnit } from '@/lib/format'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ExternalLink, X } from 'lucide-react'
 import { Link } from '@/components/ui/nav'
@@ -69,7 +70,7 @@ function Transaction({ trade, detail, currency, units }: { trade: DetailTransact
   const reference = trade.referenceSource === 'last' ? '参考最新价' : trade.referenceSource === 'mid' ? '参考中间价' : '参考价来源未知'
   return <div className="border-t border-line py-2">
     <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 font-medium"><span>{trade.symbol ?? '品种未知'}</span><span>{side} {qty(trade.quantity)}</span></div>
-    <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-ink-2"><span>均价 {amount(trade.price)}</span><span className={loss == null || loss === 0 ? 'text-ink-3' : loss > 0 ? 'text-warn' : 'text-accent'}>{loss == null ? '滑点未知' : `${loss > 0 ? '不利' : loss < 0 ? '有利' : '持平'} ${amount(Math.abs(loss))} BP`} · {partial ? '已知成本 ' : '成本 '}{amount(trade.summary.cost)} {currency}</span></div>
+    <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-ink-2"><span>均价 {amount(trade.price)}</span><span className={loss == null || loss === 0 ? 'text-ink-3' : loss > 0 ? 'text-warn' : 'text-accent'}>{loss == null ? '滑点未知' : `${loss > 0 ? '不利' : loss < 0 ? '有利' : '持平'} ${amount(Math.abs(loss))} BP`} · {partial ? '已知成本 ' : '成本 '}{amount(trade.summary.cost)} {displayCurrencyUnit(currency)}</span></div>
     <div className="mt-1 space-y-1 text-ink-3"><p>原持仓 {qty(trade.before)} → 执行后 {afterPosition(trade, detail, qty)}</p><p>目标持仓 {qty(trade.target)} · {reference} {amount(trade.reference)}</p><p>{nullableTime(trade.time)}{trade.endTime != null && trade.endTime !== trade.time ? ` → ${nullableTime(trade.endTime)}` : ''}{trade.timeEstimated ? '（成交时间缺失，使用执行时间）' : ''}</p><p>手续费 {fee || '—'}</p>{partial && <p>滑点仅覆盖 {trade.summary.covered}/{trade.summary.count} 笔成交</p>}</div>
   </div>
 }
@@ -127,7 +128,7 @@ export function ChartTradingOverlay({ scene, rows, snapshotId, accountId, curren
       <div className="flex items-start justify-between gap-2"><div className="font-medium">{title}</div>
         {pinned && <button ref={closeRef} type="button" aria-label="关闭成交浮层" className={`-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center hover:bg-fill ${focusClass}`} onClick={close}><X size={15} /></button>}
       </div>
-      {row && <div className="mt-2 space-y-1 text-ink-2"><p>{row.summary.covered < row.summary.count ? '已知成本' : '成本'} {amount(row.summary.cost)} {currency} · {coverageText(row.summary)}</p><p>手续费 {feeText(row.summary)}</p>{row.reason && <p className="text-warn">{row.reason}</p>}</div>}
+      {row && <div className="mt-2 space-y-1 text-ink-2"><p>{row.summary.covered < row.summary.count ? '已知成本' : '成本'} {amount(row.summary.cost)} {displayCurrencyUnit(currency)} · {coverageText(row.summary)}</p><p>手续费 {feeText(row.summary)}</p>{row.reason && <p className="text-warn">{row.reason}</p>}</div>}
       {pinned && <>
         {(details.loading || !detail && !details.error) && <p role="status" className="mt-2 text-ink-3">{detail ? '正在读取更多明细…' : '正在读取本次执行详情…'}</p>}
         {details.error && <div className="mt-2 text-warn"><p role="alert">{detailError(details.error, details.expired)}</p>{details.expired && <button type="button" className={`mt-1 min-h-9 text-accent ${focusClass}`} onClick={() => void checkPerformance(accountId, scene.data.range)}>重新读取绩效</button>}{!details.expired && !(details.error instanceof ApiError && [404, 409].includes(details.error.status)) && <button type="button" className={`mt-1 min-h-9 text-accent ${focusClass}`} onClick={() => void details.retry()}>重试明细</button>}</div>}

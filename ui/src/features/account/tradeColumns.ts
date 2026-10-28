@@ -1,3 +1,4 @@
+import { displayCurrencyUnit } from '@/lib/format'
 import { orderOffset } from '@/features/account/currentOrdersModel'
 import type { AccountTrade } from '@/lib/api/orders'
 
@@ -31,7 +32,7 @@ const columns: Record<string, TradeColumn[]> = {
   ],
   external: [
     fee,
-    { key: 'commission_asset', label: '手续费币种', text: trade => trade.commission_asset || '—' },
+    { key: 'commission_asset', label: '手续费币种', text: trade => displayCurrencyUnit(trade.commission_asset) || '—' },
     { key: 'realized_pnl', label: '已实现盈亏', numeric: true, text: trade => number(trade.realized_pnl),
       color: trade => trade.realized_pnl == null || trade.realized_pnl === 0 ? '' : trade.realized_pnl > 0 ? 'text-up' : 'text-down' },
     { key: 'is_maker', label: 'Maker/Taker', text: trade => trade.is_maker == null ? '—' : trade.is_maker ? 'Maker' : 'Taker' },
