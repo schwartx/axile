@@ -59,24 +59,6 @@ def test_worker_facts_survive_parent_failure_and_repeated_response(native_databa
     assert result["id"] == staged["id"]
 
 
-def test_clear_history_keeps_explicit_audit_and_invalidates_analysis(native_database):
-    seed_account(native_database)
-    receipt = persist(native_database)
-    store = _core.Store(str(native_database))
-    assert json.loads(_core.account_performance(store, 1, "all"))["record_count"] == 1
-    assert json.loads(_core.journal(store, 1, 0, 10))["count"] == 1
-    seed_account(native_database, account_id=2)
-    persist(native_database, account_id=2, execution_id="other", input_id="other-input")
-    version = rows(native_database, "account_analysis")[0]["source_version"]
-    native_store_call(native_database, "delete_execution_history", {"account_id": 1})
-    assert rows(native_database, "account_analysis")[0]["source_version"] > version
-    assert json.loads(_core.execution_records(store, 1, 0, 10))["count"] == 0
-    assert json.loads(_core.account_performance(store, 1, "all"))["record_count"] == 0
-    assert json.loads(_core.journal(store, 1, 0, 10))["count"] == 0
-    assert json.loads(_core.execution_records(store, 2, 0, 10))["count"] == 1
-    assert json.loads(_core.execution_record_detail(store, 1, receipt["record_id"]))["result"]["status"] == "SUCCEEDED"
-
-
 def test_parent_attaches_input_and_termination_without_replacing_worker_facts(native_database):
     seed_account(native_database)
     worker = {"success": True, "status": "SUCCEEDED", "symbol_results": {"A": {"final_volume": 1}}}
@@ -205,7 +187,7 @@ def test_summary_backup_cleanup_preserves_fact_restore_and_conflict_checks(tmp_p
         sql(path, "UPDATE executerecord SET error='edited after migration' WHERE execution_id='derived'")
         with pytest.raises(_core.NativeError, match="restore conflict"):
             native_store_call(path, "migration_downgrade", downgrade)
-        assert native_store_call(path, "migration_current", {})["public"] == "0037"
+        assert native_store_call(path, "migration_current", {})["public"] == "0038"
         assert rows(path, backup_table) == backups
         return
 
@@ -230,15 +212,12 @@ def test_legacy_independent_reconciliation_is_rejected_before_dropping_json(tmp_
     assert rows(path, "executerecord")[0]["raw_result"] == result
 
 
-@pytest.mark.parametrize("stage_only", [False, True])
-def test_downgrade_rejects_history_and_pending_result_that_old_schema_cannot_represent(native_database, stage_only):
+def test_downgrade_rejects_pending_worker_result(native_database):
     seed_account(native_database)
-    persist(native_database, stage_only=stage_only)
-    if not stage_only:
-        native_store_call(native_database, "delete_execution_history", {"account_id": 1})
+    persist(native_database, stage_only=True)
     with pytest.raises(_core.NativeError, match="cannot be downgraded"):
         native_store_call(native_database, "migration_downgrade", {"public": "0036"})
-    assert native_store_call(native_database, "migration_current", {})["public"] == "0037"
+    assert native_store_call(native_database, "migration_current", {})["public"] == "0038"
 
 
 def test_read_view_uses_frozen_before_observation_and_keeps_unknowns():
@@ -277,6 +256,40 @@ def test_migration_removes_only_derivable_summary(tmp_path, conflict):
     else:
         receipt = native_store_call(path, "migration_upgrade", {})
         assert receipt["backup"]
-        assert native_store_call(path, "migration_current", {})["public"] == "0037"
+        assert native_store_call(path, "migration_current", {})["public"] == "0038"
         assert rows(path, "execution_artifact") == []
         assert "reconciliation" not in rows(path, "execution_extension")[0]
+
+
+def test_0038_restores_hidden_history_and_preserves_staging(native_database):
+    native_store_call(native_database, "migration_downgrade", {"public": "0037"})
+    seed_account(native_database)
+    receipt = persist(native_database)
+    persist(native_database, execution_id="pending", input_id="pending-input", stage_only=True)
+    sql(native_database, "UPDATE executerecord SET history_visible=0 WHERE id=?", (receipt["record_id"],))
+    before = rows(native_database, "executerecord")
+    version = rows(native_database, "account_analysis")[0]["source_version"]
+    initialize_native_database(native_database)
+    after = rows(native_database, "executerecord")
+    assert after == [{key: value for key, value in row.items() if key != "history_visible"} for row in before]
+    assert rows(native_database, "account_analysis")[0]["source_version"] > version
+    store = _core.Store(str(native_database))
+    assert json.loads(_core.execution_records(store, 1, 0, 10))["count"] == 1
+    assert json.loads(_core.account_performance(store, 1, "all"))["record_count"] == 1
+    assert json.loads(_core.journal(store, 1, 0, 10))["count"] == 1
+    persist(native_database, execution_id="pending", input_id="pending-input")
+    assert json.loads(_core.execution_records(store, 1, 0, 10))["count"] == 2
+    assert rows(native_database, "account_analysis")[0]["source_version"] > version + 1
+    native_store_call(native_database, "migration_downgrade", {"public": "0037"})
+    assert all(row["history_visible"] == 1 for row in rows(native_database, "executerecord"))
+    initialize_native_database(native_database)
+    assert json.loads(_core.execution_records(store, 1, 0, 10))["count"] == 2
+
+
+def test_history_deletion_is_not_exposed():
+    from axile.server.api.routes.account_crud import router
+
+    assert not hasattr(_core, "delete_execution_history")
+    assert not any(
+        route.path == "/execute_records/{account_id}" and "DELETE" in route.methods for route in router.routes
+    )

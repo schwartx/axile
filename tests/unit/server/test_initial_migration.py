@@ -94,7 +94,7 @@ def test_migration_history_has_one_root_and_head(tmp_path: Path) -> None:
         assert native_store_call(path, "migration_current", {})["public"] == revision
     assert len(visited) == len(set(visited))
     assert visited == revisions
-    assert visited[-1] == core.PUBLIC_HEAD == "0037"
+    assert visited[-1] == core.PUBLIC_HEAD == "0038"
 
 
 def test_feishu_card_config_migration_adds_nullable_account_column(tmp_path: Path) -> None:

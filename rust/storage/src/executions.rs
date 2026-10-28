@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 
 use crate::error::AnalysisError;
 
-const FILTER: &str = "r.account_id=?1 AND ((r.history_visible=1 AND r.result_staged=0) OR ?2 IS NOT NULL OR ?3 IS NOT NULL) AND (?2 IS NULL OR r.execution_id=?2)
+const FILTER: &str = "r.account_id=?1 AND (r.result_staged=0 OR ?2 IS NOT NULL OR ?3 IS NOT NULL) AND (?2 IS NULL OR r.execution_id=?2)
     AND (?3 IS NULL OR r.id=?3)";
 const INTEGER_FIELDS: &[&str] = &["id", "account_id", "is_success"];
 const BOOLEAN_FIELDS: &[&str] = &[
@@ -242,7 +242,7 @@ mod tests {
              INSERT INTO account VALUES(1);
              CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,is_success INTEGER,
              execution_time REAL,success INTEGER,termination_cancel_attempted INTEGER,
-             termination_forced INTEGER,termination_cancel_unconfirmed INTEGER,facts_complete INTEGER DEFAULT 1,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+             termination_forced INTEGER,termination_cancel_unconfirmed INTEGER,facts_complete INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory TEXT,node_kind TEXT DEFAULT 'object');
              CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);

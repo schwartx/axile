@@ -688,7 +688,7 @@ pub fn account_delete(path: &str, request: &Value) -> Result<Value, AnalysisErro
     writer_scope::immediate(&connection, || {
         require_on(&connection, account_id)?;
         // 先将独立摘要与执行记录解绑，再由外键级联清理账户拥有的全部状态。
-        crate::execution_ops::delete_execution_history_in(&connection, account_id)?;
+        crate::execution_ops::delete_account_executions(&connection, account_id)?;
         connection
             .execute("DELETE FROM account WHERE id=?1", [account_id])
             .map_err(sql)?;

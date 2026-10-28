@@ -122,7 +122,7 @@ pub(crate) fn scan(
     let mut statement = connection
         .prepare(
             "WITH times AS MATERIALIZED (
-                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0
+                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1 AND result_staged=0
              ) SELECT max(id) FROM times WHERE time>=?2 GROUP BY time ORDER BY time",
         )
         .map_err(|error| error.to_string())?;
@@ -168,7 +168,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);

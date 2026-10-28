@@ -442,13 +442,13 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
     let include_backtest = request.include_backtest;
     let record_count: i64 = connection
         .query_row(
-            "SELECT count(*) FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0",
+            "SELECT count(*) FROM executerecord WHERE account_id=?1 AND result_staged=0",
             [account_id],
             |row| row.get(0),
         )
         .map_err(database_error)?;
     let (first, last): (Option<String>, Option<String>) = connection.query_row(
-        "SELECT min(axile_time(created_at)),max(axile_time(created_at)) FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0",
+        "SELECT min(axile_time(created_at)),max(axile_time(created_at)) FROM executerecord WHERE account_id=?1 AND result_staged=0",
         [account_id], |row| Ok((row.get(0)?,row.get(1)?)),
     ).map_err(database_error)?;
     let range_keys: &[&str] = match request.range {
@@ -543,7 +543,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);

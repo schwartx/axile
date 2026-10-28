@@ -14,7 +14,6 @@ from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_execution, account_schedule
 from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.core import db
-from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.unit.server._business_facts_test_support import (
@@ -202,9 +201,8 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
     assert asyncio.run(read_execution_input(record["input_id"])) == terminal_input
 
 
-@pytest.mark.parametrize("delete_account", [False, True])
-def test_clear_history_keeps_facts_until_account_deletion(database, monkeypatch, delete_account):
-    """隐藏历史保留显式审计；删除账户才清理事实，且不影响其他账户。"""
+def test_account_deletion_clears_only_its_execution_facts(database, monkeypatch):
+    """删除账户清理其执行事实，且不影响其他账户。"""
 
     async def drop_worker(_account_id):
         return None
@@ -227,19 +225,9 @@ def test_clear_history_keeps_facts_until_account_deletion(database, monkeypatch,
     )
     other = persist_result(database, {}, account_id=2, execution_id="keep-other", is_success=1)
 
-    if delete_account:
-        message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))
-        assert message.message == "成功删除账户"
-    else:
-        message = asyncio.run(account_crud.delete_execute_records(account_id=1))
-        assert message.message == "成功删除"
+    message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))
+    assert message.message == "成功删除账户"
     remaining = {row["id"] for row in rows(database, "executerecord")}
     assert other["id"] in remaining
-    if delete_account:
-        assert record["id"] not in remaining
-        assert not [row for row in rows(database, "execution_extension") if row["record_id"] == record["id"]]
-    else:
-        assert record["id"] in remaining
-        assert json.loads(_summary_page().body)["count"] == 0
-        detail = json.loads(_core.execution_record_detail(_core.Store(str(database)), 1, record["id"]))
-        assert business_evidence(detail["result"]) == business_evidence(result)
+    assert record["id"] not in remaining
+    assert not [row for row in rows(database, "execution_extension") if row["record_id"] == record["id"]]

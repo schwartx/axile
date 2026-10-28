@@ -18,7 +18,7 @@ pub(crate) fn trades(
     let mut ticks = crate::fact_ticks::TickReader::new(connection).map_err(sql_error)?;
     let mut reader = crate::fact_trades::TradeReader::new(connection).map_err(sql_error)?;
     let mut statement = connection
-        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0 ORDER BY id")
+        .prepare("SELECT id,created_at FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id")
         .map_err(sql_error)?;
     let mut rows = statement.query([account]).map_err(sql_error)?;
     let mut positions =

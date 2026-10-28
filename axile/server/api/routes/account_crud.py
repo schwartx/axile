@@ -830,10 +830,3 @@ async def list_portfolio_records(
         ),
         media_type="application/json",
     )
-
-
-@router.delete("/execute_records/{account_id}", response_model=Message)
-async def delete_execute_records(account_id: int) -> Message:
-    """删除账户的执行记录."""
-    await _account_operation("delete_execution_history", {"account_id": account_id})
-    return Message(message="成功删除")

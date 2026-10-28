@@ -310,25 +310,8 @@ fn attach_inputs(
     Ok(input_id)
 }
 
-/// 隐藏历史但保留审计所需的唯一事实。
-pub fn delete_execution_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let account_id = integer(request, "account_id")?;
-    let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
-    crate::writer_scope::immediate(&connection, || {
-        require_account(&connection, account_id)?;
-        connection
-            .execute(
-                "DELETE FROM account_asset_snapshot WHERE account_id=?1 AND source='execution'",
-                [account_id],
-            )
-            .map_err(sql)?;
-        let count = connection.execute("UPDATE executerecord SET history_visible=0 WHERE account_id=?1 AND history_visible=1", [account_id]).map_err(sql)?;
-        Ok(json!({"deleted": count}))
-    })
-}
-
 /// 账户删除的物理清理由外层事务统一提交。
-pub(crate) fn delete_execution_history_in(
+pub(crate) fn delete_account_executions(
     connection: &Connection,
     account_id: i64,
 ) -> Result<usize, AnalysisError> {
