@@ -1,8 +1,12 @@
+import { TimeSeriesChart, type CanvasFrame } from '@/components/viz/TimeSeriesChart'
+import { zoomTimeViewport } from '@/components/viz/chartCanvas'
+import { displayCurrencyUnit } from '@/lib/format'
 import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
 import { lossClass } from '@/features/history/costs'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { CircleHelp } from 'lucide-react'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { ChartTradingOverlay } from '@/features/history/ChartTradingOverlay'
 import { executionSelection } from '@/features/history/executionSelection'
 import { executionAt } from '@/features/history/tradeAnnotations'
@@ -13,13 +17,12 @@ import { cancelAccountCurveTransition, registerCurveEndpoint } from '@/features/
 import { performanceCoordinates } from '@/features/history/curveTransitionGeometry'
 import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChartPlaceholder'
 import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performance'
-import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
-import { amount, feeText, shanghaiTime, type CostSummary } from '@/features/history/costs'
+import { amount, feeText, shanghaiLabel, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { returnText } from '@/features/history/performance'
 import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
-import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
+import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotBounds, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
 import { closedDaysBetween, createTimeScale, type TimeScaleMode } from '@/features/history/timeScale'
 
 interface Props {
@@ -43,10 +46,6 @@ type DragKind = 'pan' | 'compare' | 'start' | 'end' | 'nav' | 'navStart' | 'navE
 interface Drag { kind: DragKind; x: number; y: number; viewport: Viewport; anchor: number; moved: boolean; pending: ChartSelection; bindingTime: number | null }
 
 const slippageCostAmount = (value: number | null) => value == null ? '—' : value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-function ClearSelectionButton({ onClick }: { onClick: () => void }) {
-  return <button type="button" onClick={onClick} className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded px-2 text-xs text-ink-2 hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent"><X size={16} aria-hidden="true" />取消选择</button>
-}
 
 export function PerformanceChart(props: Props) {
   if (props.data.observation_count < 2 || props.data.points.length < 2) return <PerformanceChartPlaceholder accountId={props.accountId} controls={props.controls} loading={false} failed={false} message="有效观测不足两条" />
@@ -87,7 +86,6 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   const cursorRef = useRef(cursor)
   cursorRef.current = cursor
   const container = useRef<HTMLDivElement>(null)
-  const baseCanvas = useRef<HTMLCanvasElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
   const tip = useRef<HTMLDivElement>(null)
   const drag = useRef<Drag | null>(null)
@@ -147,19 +145,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
     })
   }, [paintOverlay, size.width])
 
-  useLayoutEffect(() => {
-    const element = container.current
-    if (!element) return
-    const measure = () => setSize(s => ({ width: Math.max(240, element.clientWidth), revision: s.revision + 1 }))
-    measure()
-    const resize = new ResizeObserver(measure); resize.observe(element)
-    const mutation = new MutationObserver(measure); mutation.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] })
-    window.addEventListener('resize', measure)
-    document.fonts.addEventListener('loadingdone', measure)
-    let disposed = false
-    void document.fonts.ready.then(() => { if (!disposed) measure() })
-    return () => { disposed = true; resize.disconnect(); mutation.disconnect(); window.removeEventListener('resize', measure); document.fonts.removeEventListener('loadingdone', measure); cancelAnimationFrame(frame.current); frame.current = 0 }
-  }, [])
+  useEffect(() => () => { cancelAnimationFrame(frame.current); frame.current = 0 }, [])
 
   useEffect(() => {
     setViewport(view => clampViewport(view, navigationTimes))
@@ -168,11 +154,10 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   }, [data.points, times, navigationTimes, executionIndex])
   useEffect(() => { setHover(null); hoverRef.current = null; setDraft(null); drag.current = null; setCursor(null); magnetRecordId.current = null; setMagnet(null) }, [scaleMode])
 
-  useLayoutEffect(() => {
-    if (!container.current || !baseCanvas.current) return
-    scene.current = { ...tradingScene, theme: readCanvasTheme(container.current) }
-    drawScene(baseCanvas.current, scene.current); paintOverlay()
-  }, [tradingScene, paintOverlay])
+  const paint = useCallback((canvas: HTMLCanvasElement, frame: CanvasFrame) => {
+    scene.current = { ...tradingScene, width: frame.width, theme: frame.theme }
+    drawScene(canvas, scene.current)
+  }, [tradingScene])
   useLayoutEffect(() => {
     const element = container.current
     const canReturn = !daily && scaleMode === 'observations' && viewKey === `${accountId}:all` && viewport.start === full.start && viewport.end === full.end && returnRange == null
@@ -188,33 +173,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
   useLayoutEffect(() => { paintOverlay(); schedule() }, [shownSelection, hover, bindingTime, cursor, paintOverlay, schedule])
 
   const changeView = (view: Viewport) => setViewport(clampViewport(view, navigationTimes))
-  const zoom = (factor: number, anchor = timeScale.invert((timeScale.project(viewport.start) + timeScale.project(viewport.end)) / 2)) => setViewport(view => {
-    const center = timeScale.project(anchor)
-    return clampViewport({
-      start: timeScale.invert(center + (timeScale.project(view.start) - center) * factor),
-      end: timeScale.invert(center + (timeScale.project(view.end) - center) * factor),
-    }, navigationTimes)
-  })
-  useEffect(() => {
-    const element = overlay.current
-    if (!element) return
-    const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey || !scene.current) return
-      event.preventDefault()
-      const current = scene.current
-      const scale = current.scale ?? timeScale
-      const x = event.clientX - element.getBoundingClientRect().left
-      const delta = Math.max(-100, Math.min(100, event.deltaY))
-      const anchor = xTime(x, current.width, current.viewport, scale)
-      const factor = Math.exp(delta * 0.003), center = scale.project(anchor)
-      setViewport(view => clampViewport({
-        start: scale.invert(center + (scale.project(view.start) - center) * factor),
-        end: scale.invert(center + (scale.project(view.end) - center) * factor),
-      }, navigationTimes))
-    }
-    element.addEventListener('wheel', wheel, { passive: false })
-    return () => element.removeEventListener('wheel', wheel)
-  }, [navigationTimes, timeScale])
+  const zoom = (factor: number, anchor = timeScale.invert((timeScale.project(viewport.start) + timeScale.project(viewport.end)) / 2)) => setViewport(view => zoomTimeViewport(view, factor, anchor, navigationTimes, timeScale))
 
   const locate = (event: PointerEvent<HTMLElement>) => {
     const rect = container.current!.getBoundingClientRect()
@@ -347,48 +306,44 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
       <div className="flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-ink-3 tabular-nums">
         <span>{costScope}成交额 {amount(costReady ? readingCost?.value ?? null : null)}</span>
         <span className={lossClass(costReady ? readingCost?.lossBp : null)}>滑点损耗 {amount(costReady ? readingCost?.lossBp ?? null : null)} BP</span>
-        <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {accountInfo?.currency ?? ''}</span>
+        <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {displayCurrencyUnit(accountInfo?.currency)}</span>
         <span className={coverageNeedsAttention ? 'text-warn' : undefined}>{coverage}</span>
         {interval && costReady && readingCost && <><span>手续费 {feeText(readingCost)}</span>{estimated > 0 && <span className="text-warn">{estimated} 笔使用执行时间</span>}</>}
+    <Tooltip content={<p>账户收益未调整出入金 · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
+      <button type="button" aria-label="收益计算口径说明" className="inline-flex min-h-5 items-center gap-1.5 rounded text-xs text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /><span>计算口径</span></button>
+    </Tooltip>
+      {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-xs text-warn">
+        <Tooltip content={<div className="space-y-2">
+      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算：{data.sizing_fallback_ranges?.map(range => `${shanghaiLabel(range.start)} → ${shanghaiLabel(range.end)}（${range.count} 条）`).join('、')}</p>}
+      {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p className="text-ink-2">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
+      {data.invalid_asset_count > 0 && <p className="text-ink-2">{data.invalid_asset_count} 条账户资产快照不可用</p>}
+        </div>} arrow>
+          <button type="button" aria-label="查看回测与账户数据缺失详情" className="inline-flex min-h-5 items-center gap-1.5 rounded text-left focus-visible:outline-accent"><span>回测与账户数据存在缺失</span><CircleHelp size={15} aria-hidden="true" /></button>
+        </Tooltip>
+      </div> : null}
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-2">
-      {shownSelection && !interval && <ClearSelectionButton onClick={clear} />}
       {snapshotId && <Link aria-disabled={!!draft} tabIndex={draft ? -1 : undefined} onClick={event => { if (draft) event.preventDefault() }} data-testid="journal-link" to={performanceJournalPath(accountId, snapshotId, data.range, selection)} className="inline-flex min-h-9 items-center text-xs text-accent hover:underline">{selection?.kind === 'interval' ? '查看区间执行' : selection?.kind === 'day' ? '查看当日执行' : selection?.kind === 'execution' ? '查看本次执行' : '查看执行记录'}</Link>}
       {controls}
     </div>
     </div>
-    <div inert={!interval} className={`grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ${interval ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-      <div className="min-h-0 overflow-hidden">
-      <div className="mt-1 flex min-h-9 flex-wrap items-center gap-2 border-b border-line pb-1 text-xs text-ink-2">
-      {shownSelection?.kind === 'interval' && <>
-        {(['start', 'end'] as const).map(edge => <label key={edge} className="flex min-w-0 items-center gap-2"><span>{edge === 'start' ? '起点' : '终点'}</span><Select
-          ariaLabel={edge === 'start' ? '比较起点' : '比较终点'}
-          className="h-9 w-[210px] max-w-full min-w-0 justify-between px-2 text-xs"
-          value={shownSelection[edge]}
-          options={data.points.map((p, i) => ({ value: times[i], label: pointLabel(p) })).filter(option => option.value !== shownSelection[edge === 'start' ? 'end' : 'start'])}
-          onChange={value => onSelect(intervalSelection(value, shownSelection[edge === 'start' ? 'end' : 'start']))}
-        /></label>)}
-        <ClearSelectionButton onClick={clear} />
-      </>}
-      </div>
-      </div>
-    </div>
-    <div ref={container} className="relative w-full min-w-0" style={{ height: CHART_HEIGHT }}>
-      <canvas ref={baseCanvas} aria-hidden="true" className="absolute inset-0 h-full w-full" />
-      <canvas ref={overlay} data-testid="performance-chart" tabIndex={0} role="group" aria-label={daily ? '每日收益与执行成本' : '累计收益与执行成本'} aria-describedby="performance-keyboard-reading performance-interaction-hint" className="absolute inset-0 h-full w-full cursor-crosshair touch-pan-y outline-none"
-        onPointerDown={startDrag} onPointerMove={move} onPointerUp={finish} onPointerCancel={() => { drag.current = null; setDraft(null); showHover(null) }} onLostPointerCapture={() => { drag.current = null; setDraft(null) }}
-        onPointerLeave={event => { if (!drag.current) { magnetRecordId.current = null; setMagnet(null); showHover(null); setCursor(null); if (event.pointerType !== 'touch') setBindingTime(null) } }} onBlur={() => { if (!drag.current) showHover(null) }} onDoubleClick={() => setViewport(full)}
-        onKeyDown={event => {
+    <TimeSeriesChart height={CHART_HEIGHT} label={daily ? '每日收益与执行成本' : '累计收益与执行成本'} surfaceRef={container} overlayRef={overlay} onResize={setSize} draw={paint} drawOverlay={paintOverlay}
+      navigation={{ times, current: hoverRef.current ?? pointIndex, viewport, scale: timeScale, plot: plotBounds, onFocus: focusPoint, onZoom: zoom, onReset: () => { setViewport(full); setReturnRange(null) } }}
+      interaction={{
+        'data-testid': 'performance-chart', 'aria-describedby': 'performance-keyboard-reading performance-interaction-hint',
+        onPointerDown: startDrag, onPointerMove: move, onPointerUp: finish,
+        onPointerCancel: () => { drag.current = null; setDraft(null); showHover(null) },
+        onLostPointerCapture: () => { drag.current = null; setDraft(null) },
+        onPointerLeave: event => { if (!drag.current) { magnetRecordId.current = null; setMagnet(null); showHover(null); setCursor(null); if (event.pointerType !== 'touch') setBindingTime(null) } },
+        onBlur: () => { if (!drag.current) showHover(null) },
+        onDoubleClick: event => { event.preventDefault(); setViewport(full) },
+        onKeyDown: event => {
           const index = hoverRef.current ?? pointIndex
-          if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); focusPoint(Math.max(0, Math.min(times.length - 1, index + (event.key === 'ArrowLeft' ? -1 : 1)))) }
-          else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); focusPoint(event.key === 'Home' ? 0 : times.length - 1) }
-          else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (exact && selection?.kind === 'day') onSelect(intervalSelection(selection.time, times[index]) ?? selection); else selectPoint(index) }
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (exact && selection?.kind === 'day') onSelect(intervalSelection(selection.time, times[index]) ?? selection); else selectPoint(index) }
           else if (event.key === 'Escape') { event.preventDefault(); clear() }
-          else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(0.7) }
-          else if (event.key === '-') { event.preventDefault(); zoom(1.4) }
-          else if (event.key === '0') { event.preventDefault(); setViewport(full); setReturnRange(null) }
-        }} />
+        },
+      }}>
       <div className="pointer-events-none absolute inset-0"
         onPointerDown={startDrag} onPointerMove={move} onPointerUp={finish}
         onPointerCancel={() => { drag.current = null; setDraft(null); showHover(null) }}
@@ -445,12 +400,12 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
         </>}
       </div>
       {snapshotId && <ChartTradingOverlay scene={tradingScene} rows={executionIndex} snapshotId={snapshotId} accountId={accountId} currency={accountInfo?.currency ?? ''} units={descriptor?.units} cursor={cursor} selection={selection} onSelect={onSelect} onInspect={setCursor} />}
-    </div>
+    </TimeSeriesChart>
 
     <p id="performance-keyboard-reading" className="sr-only" aria-live="polite">{pointLabel(point)}，账户 {returnText(point[keys[0]])}，回测 {returnText(point[keys[1]])}。方向键选点，回车确认，Escape 清除，加减号缩放，0 恢复范围。</p>
     {scaleMode === 'observations' && <p className="sr-only">观测序列已压缩 {closedGapDays.reduce((sum, days) => sum + days, 0)} 个完整休市日。</p>}
     <div className="flex min-h-7 flex-wrap justify-between gap-2 text-[11px] text-ink-3"><span data-testid="chart-viewport">{timeLabel(viewport.start)} → {timeLabel(viewport.end)}</span><span>上海时间 · 收益差 = 回测 − 账户</span></div>
-    <p className="text-[11px] leading-5 text-ink-3">账户收益未调整出入金 · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>
+
     <div id="performance-interaction-hint" className="sr-only">
       <span>Ctrl + 滚轮缩放</span><span>拖动框选区间 · 底部导航条平移 · 双击恢复时间范围</span><span>聚焦图表后：← → 查看 · Home / End 首末点 · Enter / 空格选择 · Esc 清除 · + / - 缩放 · 0 重置</span>
     </div>

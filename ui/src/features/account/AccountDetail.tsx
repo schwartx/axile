@@ -958,7 +958,7 @@ export function AccountDetail({
 }
 
 /**
- * 近期活动右侧权益：数字与页头同一口径，单位走渠道声明的简短名（CNY→元）。
+ * 近期活动右侧权益：数字与页头同一口径，单位走渠道声明的简短名（CNY→￥）。
  * 无金额（部分执行未带回权益）不占位，避免空列把其它行挤歪。
  */
 function RecentAmount({ amount, currency }: { amount: string; currency: string }) {

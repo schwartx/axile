@@ -1,3 +1,4 @@
+import { displayCurrencyUnit } from '@/lib/format'
 import { useCallback, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Select } from '@/components/ui/Select'
@@ -55,7 +56,7 @@ function readEvidence(row: JournalExecution, signal: AbortSignal): Promise<{ mod
 }
 
 export function TradeTable({ trades, currency, units, detailLink }: { trades: CostTrade[]; currency: string; units?: Units; detailLink?: DetailLink }) {
-  return <div className="relative overflow-x-auto"><table className={tableClass}><thead className="text-ink-3"><tr><th>成交时间</th><th>品种</th><th>方向 / 数量</th><th>参考价</th><th>成交价</th><th>成交额 {currency}</th><th>滑点损耗 BP</th><th>滑点成本 {currency}</th>{detailLink && <th>详情</th>}</tr></thead><tbody>
+  return <div className="relative overflow-x-auto"><table className={tableClass}><thead className="text-ink-3"><tr><th>成交时间</th><th>品种</th><th>方向 / 数量</th><th>参考价</th><th>成交价</th><th>成交额 {displayCurrencyUnit(currency)}</th><th>滑点损耗 BP</th><th>滑点成本 {displayCurrencyUnit(currency)}</th>{detailLink && <th>详情</th>}</tr></thead><tbody>
     {trades.map((trade, i) => <tr key={trade.trade_id ?? `${trade.record_id}:${trade.symbol}:${i}`} className="border-t border-line"><td>{shanghaiLabel(new Date(trade.time).toISOString())}{trade.timeEstimated && <small className="block text-warn">使用执行时间</small>}</td><td>{trade.symbol}</td><td>{trade.side === 'buy' ? '买' : trade.side === 'sell' ? '卖' : '方向未知'} / {quantityText(trade.quantity)} {quantityUnit(units, trade.symbol, currency)}</td><td>{amount(trade.reference)}{trade.referenceSource === 'last' && <small className="block text-ink-3">到达最新价</small>}</td><td>{amount(trade.price)}</td><td>{amount(trade.value)}</td><td className={lossClass(trade.lossBp)}>{amount(trade.lossBp)}</td><td className={lossClass(trade.cost)}>{amount(trade.cost)}</td>{detailLink && <td>{detailLink(trade.execution_id ?? null)}</td>}</tr>)}
   </tbody></table></div>
 }

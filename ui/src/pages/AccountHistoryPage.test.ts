@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 
 // Module stubs stay in a child process so this page test cannot replace the API
 // or hooks used by the cache/chart tests in the main Bun test process.
-function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[] } = {}) {
+function renderPage(options: { displayed?: boolean; marker?: number; status?: string; loadingResult?: boolean; errors?: boolean; retries?: string[]; selected?: boolean } = {}) {
   const script = `
     import { mock } from 'bun:test'
     import { createElement } from 'react'
@@ -35,7 +35,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     } }))
     mock.module('@/features/history/usePerformanceSnapshot', () => ({ usePerformanceSnapshot: () => ({ metadata, displayed, statusError: options.errors ? new Error('status failed') : null, resultError: options.errors ? new Error('result failed') : null, refreshError: options.errors ? new Error('refresh failed') : null, checking: false, loadingResult: options.loadingResult ?? false, check: async () => { checks++ }, refresh: async () => { refreshes++; return true } }) }))
     const { performanceViews } = await import('@/features/history/viewState')
-    performanceViews.set(7, { range: '90', view: 'daily', scale: 'natural', markers: false, backtestMode: 'target', selection: { kind: 'interval', start: 0, end: 1000 } })
+    performanceViews.set(7, { range: '90', view: 'daily', scale: 'natural', markers: false, backtestMode: 'target', selection: options.selected === false ? null : { kind: 'interval', start: 0, end: 1000 } })
     const { AccountHistoryPage } = await import('@/pages/AccountHistoryPage')
     const html = renderToStaticMarkup(createElement(AccountHistoryPage))
     for (const title of options.retries ?? []) await retryHandlers.get(title)?.()
@@ -88,4 +88,28 @@ test('刷新请求错误的重试只发起一次计算请求', () => {
   const page = renderPage({ errors: true, retries: ['刷新请求失败'] })
   expect(page.checks).toBe(0)
   expect(page.refreshes).toBe(1)
+})
+
+test('共用筛选集中在吸顶栏，空选区也可从起止观测建立区间', () => {
+  const page = renderPage({ selected: false })
+  const toolbar = page.html.slice(page.html.indexOf('aria-label="绩效与品种贡献共用筛选"'), page.html.indexOf('data-chart-snapshot'))
+  expect(page.html).toMatch(/data-testid="performance-sticky-header" class="sticky top-0/)
+  expect(toolbar).toContain('data-segment="90"')
+  expect(toolbar).toContain('data-segment="natural"')
+  for (const label of ['比较起点', '比较终点']) {
+    const button = toolbar.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0]
+    expect(button).toBeDefined()
+    expect(button).not.toContain('disabled=""')
+  }
+  expect(toolbar).toMatch(/aria-label="取消选择" disabled=""/)
+  expect((page.html.match(/data-segment="natural"/g) ?? []).length).toBe(1)
+})
+
+test('未加载观测时保留公共时间范围，禁用区间选择', () => {
+  const page = renderPage({ displayed: false, selected: false })
+  expect(page.html).toContain('data-testid="performance-shared-controls"')
+  for (const label of ['比较起点', '比较终点']) {
+    const button = page.html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0]
+    expect(button).toContain('disabled=""')
+  }
 })

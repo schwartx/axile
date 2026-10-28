@@ -1,3 +1,5 @@
+import { canvasLine as line, drawCrosshair, drawSeries, drawTimeAxis as drawSharedTimeAxis, drawValueAxis, prepareCanvas, timeAtX, timeX, valueY, type CanvasTheme } from '@/components/viz/chartCanvas'
+export { readCanvasTheme, type CanvasTheme } from '@/components/viz/chartCanvas'
 import type { PerformancePoint } from '@/types/api'
 import type { AnalysisChart, AnalysisExecutionSummary, CostExecutionRow } from '@/lib/api/performance'
 import { axisPercent, niceReturnAxis } from '@/features/history/performance'
@@ -12,7 +14,6 @@ export const PLOT = { left: 12, right: 78, top: 16, bottom: 379, binding: 408, b
 const CALENDAR_MARK_Y = PLOT.costBottom + 12
 const TIME_AXIS_Y = PLOT.costBottom + 31
 export type SeriesKey = 'account_return' | 'portfolio_return' | 'target_portfolio_return' | 'account_daily_return' | 'portfolio_daily_return' | 'target_portfolio_daily_return'
-export interface CanvasTheme { bg: string; surface: string; ink: string; muted: string; line: string; accent: string; warn: string; fill: string; font: string }
 export interface ChartScene {
   domain?: Viewport
   data: AnalysisChart['result']
@@ -75,36 +76,13 @@ export function executionMarkerPoint(scene: ChartScene, row: CostExecutionRow | 
   return { x: xPosition(time, width, viewport, scene.scale), y: returnY(value, chartAxis(scene)) }
 }
 
-export function readCanvasTheme(element: HTMLElement): CanvasTheme {
-  const css = getComputedStyle(element)
-  const color = (name: string) => css.getPropertyValue(`--color-${name}`).trim()
-  return { bg: color('bg'), surface: color('surface'), ink: color('ink-2'), muted: color('ink-3'), line: color('line'), accent: color('accent'), warn: color('warn'), fill: color('fill'), font: css.fontFamily }
-}
-
-export function prepareCanvas(canvas: HTMLCanvasElement, width: number): CanvasRenderingContext2D | null {
-  const ratio = window.devicePixelRatio || 1
-  const w = Math.round(width * ratio), h = Math.round(CHART_HEIGHT * ratio)
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return null
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-  ctx.clearRect(0, 0, width, CHART_HEIGHT)
-  return ctx
-}
-
 export const seriesKeys = (daily: boolean, mode: BacktestMode = 'sized'): [SeriesKey, SeriesKey] => daily
   ? ['account_daily_return', mode === 'target' ? 'target_portfolio_daily_return' : 'portfolio_daily_return']
   : ['account_return', mode === 'target' ? 'target_portfolio_return' : 'portfolio_return']
 export const plotRight = (width: number) => width - PLOT.right
-export const xPosition = (time: number, width: number, view: Viewport, scale?: TimeScale) => {
-  const project = scale?.project ?? ((value: number) => value)
-  return PLOT.left + (project(time) - project(view.start)) / (project(view.end) - project(view.start) || 1) * (plotRight(width) - PLOT.left)
-}
-export const xTime = (x: number, width: number, view: Viewport, scale?: TimeScale) => {
-  const project = scale?.project ?? ((value: number) => value)
-  const invert = scale?.invert ?? ((value: number) => value)
-  return invert(project(view.start) + (x - PLOT.left) / (plotRight(width) - PLOT.left) * (project(view.end) - project(view.start)))
-}
+export const plotBounds = (width: number) => ({ left: PLOT.left, right: plotRight(width), top: PLOT.top, bottom: PLOT.bottom })
+export const xPosition = (time: number, width: number, view: Viewport, scale?: TimeScale) => timeX(time, plotBounds(width), view, scale)
+export const xTime = (x: number, width: number, view: Viewport, scale?: TimeScale) => timeAtX(x, plotBounds(width), view, scale)
 
 export function chartAxis(scene: ChartScene) {
   if (scene.returnRange) {
@@ -123,11 +101,7 @@ export function chartAxis(scene: ChartScene) {
 }
 
 export function returnY(value: number, axis: ReturnType<typeof niceReturnAxis>) {
-  return PLOT.top + (axis.max - value) / (axis.max - axis.min) * (PLOT.bottom - PLOT.top)
-}
-
-function line(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string) {
-  ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke()
+  return valueY(value, axis, PLOT)
 }
 
 function textFit(ctx: CanvasRenderingContext2D, text: string, width: number): string {
@@ -166,36 +140,12 @@ export function bindingObservationSpan(data: AnalysisChart['result'], times: num
 
 function drawReturns(ctx: CanvasRenderingContext2D, scene: ChartScene) {
   const { data, width, viewport, theme, times } = scene
-  const axis = chartAxis(scene)
-  axis.ticks.forEach(value => {
-    const y = returnY(value, axis)
-    line(ctx, PLOT.left, y, plotRight(width), y, theme.line)
-    ctx.fillStyle = theme.muted; ctx.fillText(textFit(ctx, axisPercent(value, axis.step), PLOT.right - 12), plotRight(width) + 9, y + 4)
-  })
-  ctx.save(); ctx.beginPath(); ctx.rect(PLOT.left, PLOT.top, plotRight(width) - PLOT.left, PLOT.bottom - PLOT.top); ctx.clip()
-  const count = times.filter(t => t >= viewport.start && t <= viewport.end).length
-  const barWidth = Math.max(1, Math.min(9, (plotRight(width) - PLOT.left) / Math.max(2, count) / 3))
-  seriesKeys(scene.daily, scene.backtestMode).forEach((key, series) => {
-    ctx.strokeStyle = ctx.fillStyle = series === 0 ? theme.accent : theme.ink
-    ctx.lineWidth = series === 0 ? 1.8 : 1.5
-    ctx.setLineDash(series === 1 ? [5, 3] : [])
-    ctx.beginPath(); let connected = false
-    data.points.forEach((point, i) => {
-      const value = point[key]
-      if (value == null || !Number.isFinite(value)) { connected = false; return }
-      const x = xPosition(times[i], width, viewport, scene.scale), y = returnY(value, axis)
-      if (scene.daily) {
-        const zero = returnY(0, axis)
-        ctx.fillRect(x + (series - 1) * barWidth, Math.min(zero, y), barWidth, Math.max(1, Math.abs(y - zero)))
-      } else {
-        if (connected) ctx.lineTo(x, y)
-        else ctx.moveTo(x, y)
-        connected = true
-      }
-    })
-    if (!scene.daily) ctx.stroke()
-  })
-  ctx.restore(); ctx.lineWidth = 1
+  const axis = chartAxis(scene), plot = plotBounds(width)
+  drawValueAxis(ctx, plot, axis, theme, value => textFit(ctx, axisPercent(value, axis.step), PLOT.right - 12))
+  drawSeries(ctx, plot, times, seriesKeys(scene.daily, scene.backtestMode).map((key, index) => ({
+    values: data.points.map(point => point[key]), color: index === 0 ? theme.accent : theme.ink,
+    width: index === 0 ? 1.8 : 1.5, dash: index === 1 ? [5, 3] : [],
+  })), viewport, axis, scene.scale, scene.daily)
 }
 
 function drawExecutionMarkers(ctx: CanvasRenderingContext2D, scene: ChartScene) {
@@ -245,23 +195,8 @@ function drawCosts(ctx: CanvasRenderingContext2D, scene: ChartScene) {
 }
 
 function drawTimeAxis(ctx: CanvasRenderingContext2D, scene: ChartScene, exclude?: { left: number; right: number }) {
-  const { width, viewport, theme } = scene
-  const available = plotRight(width) - PLOT.left
-  const count = Math.max(1, Math.floor(available / 145))
-  // 粒度判定必须在投影空间做：观测序列尺度下原始毫秒差不代表标签密度。
-  const project = scene.scale?.project ?? ((value: number) => value)
-  const intraday = project(viewport.end) - project(viewport.start) < 864e5
-  ctx.fillStyle = theme.muted
-  for (let i = 0; i <= count; i++) {
-    const x = PLOT.left + available * i / count
-    const time = xTime(x, width, viewport, scene.scale)
-    const label = timeLabel(time).slice(intraday ? 11 : 0, intraday ? 16 : 10)
-    ctx.textAlign = i === 0 ? 'left' : i === count ? 'right' : 'center'
-    const textWidth = ctx.measureText(label).width
-    const left = x - (i === 0 ? 0 : i === count ? textWidth : textWidth / 2)
-    if (!exclude || left + textWidth < exclude.left || left > exclude.right) ctx.fillText(label, x, TIME_AXIS_Y)
-  }
-  ctx.textAlign = 'left'
+  drawSharedTimeAxis(ctx, plotBounds(scene.width), scene.viewport, scene.theme, TIME_AXIS_Y,
+    (time, intraday) => timeLabel(time).slice(intraday ? 11 : 0, intraday ? 16 : 10), scene.scale, exclude)
 }
 
 function drawNavigator(ctx: CanvasRenderingContext2D, scene: ChartScene) {
@@ -297,7 +232,7 @@ function drawNavigator(ctx: CanvasRenderingContext2D, scene: ChartScene) {
 }
 
 export function drawScene(canvas: HTMLCanvasElement, scene: ChartScene) {
-  const ctx = prepareCanvas(canvas, scene.width)
+  const ctx = prepareCanvas(canvas, scene.width, CHART_HEIGHT)
   if (!ctx) return
   ctx.font = `11px ${scene.theme.font}`
   drawCalendar(ctx, scene); drawReturns(ctx, scene); if (scene.showExecutions !== false) drawExecutionMarkers(ctx, scene); drawBindings(ctx, scene); drawCosts(ctx, scene); drawTimeAxis(ctx, scene); drawNavigator(ctx, scene); drawCalendarMarks(ctx, scene)
@@ -351,7 +286,7 @@ function drawCalendarMarks(ctx: CanvasRenderingContext2D, scene: ChartScene) {
 }
 
 export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover: number | null, selection: ChartSelection, bindingTime: number | null = null, cursor: { time: number; x: number; y: number } | null = null, magnetRecordId: number | null = null) {
-  const ctx = prepareCanvas(canvas, scene.width)
+  const ctx = prepareCanvas(canvas, scene.width, CHART_HEIGHT)
   if (!ctx) return
   const { width, viewport, theme, times, data } = scene
   const right = plotRight(width)
@@ -405,8 +340,7 @@ export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover:
   }
   if (cursor && selection?.kind !== 'execution') {
     const x = xPosition(cursor.time, width, viewport, scene.scale)
-    ctx.setLineDash([3, 3]); line(ctx, x, PLOT.top, x, PLOT.costBottom, theme.muted)
-    line(ctx, PLOT.left, cursor.y, right, cursor.y, theme.muted); ctx.setLineDash([])
+    drawCrosshair(ctx, { ...plotBounds(width), bottom: PLOT.costBottom }, x, theme.muted, cursor.y)
     const axis = chartAxis(scene)
     const value = axis.max - (cursor.y - PLOT.top) / (PLOT.bottom - PLOT.top) * (axis.max - axis.min)
     ctx.fillStyle = theme.bg; ctx.fillRect(right + 2, cursor.y - 10, PLOT.right - 2, 20)
@@ -420,7 +354,7 @@ export function drawOverlay(canvas: HTMLCanvasElement, scene: ChartScene, hover:
   if (hover == null || !data.points[hover] || selection?.kind === 'execution') return
   const x = xPosition(times[hover], width, viewport, scene.scale)
   if (x < PLOT.left || x > right) return
-  ctx.setLineDash([3, 3]); line(ctx, x, PLOT.top, x, PLOT.costBottom, theme.muted); ctx.setLineDash([])
+  drawCrosshair(ctx, { ...plotBounds(width), bottom: PLOT.costBottom }, x, theme.muted)
   const axis = chartAxis(scene)
   const marks = seriesKeys(scene.daily, scene.backtestMode).flatMap((key, series) => {
     const value = data.points[hover][key]

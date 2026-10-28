@@ -21,18 +21,18 @@ export function fmtMoney(v: number): string {
 /** 将后端币种代码转换为面向用户的简短金额单位。 */
 export function displayCurrencyUnit(currency: string | null | undefined): string {
   const normalized = currency?.trim() ?? ''
-  return normalized.toUpperCase() === 'CNY' ? '元' : normalized
+  return normalized.toUpperCase() === 'CNY' ? '￥' : normalized
 }
 
 /**
- * 给金额数字缀简短货币记号：人民币用前缀「¥」，其它币种用代码空格后缀。
+ * 给金额数字缀简短货币记号：人民币用前缀「￥」，其它币种用代码空格后缀。
  *
  * 只用于行内钱数的「就地确认」；头部权益另用渠道声明的全称当权威锚。
  * 不把插件计价币缩成「U」，以免公开核心误把渠道代码显示成私有记号。
  */
 export function withCurrency(numStr: string, currency: string): string {
   const normalized = currency.trim()
-  if (normalized.toUpperCase() === 'CNY') return `¥${numStr}`
+  if (normalized.toUpperCase() === 'CNY') return `￥${numStr}`
   return normalized ? `${numStr} ${normalized}` : numStr
 }
 

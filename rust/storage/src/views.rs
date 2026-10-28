@@ -377,6 +377,12 @@ fn result_tables(
             &[],
         )?,
     );
+    tables.insert("contributions".into(), table(
+        connection,
+        "SELECT idx,symbol,product,currency,gross_pnl,fee,fee_missing,issues,trades FROM performance_contribution WHERE snapshot_id=?1 AND range_key=?2 ORDER BY idx,symbol",
+        scope,
+        &["idx","symbol","product","currency","gross_pnl","fee","fee_missing","issues","trades"], &[],
+    )?);
     Ok(tables)
 }
 
@@ -682,6 +688,7 @@ mod tests {
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(include_str!("migrations/contributions.sql")).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE account (id INTEGER PRIMARY KEY);

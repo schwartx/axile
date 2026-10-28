@@ -41,7 +41,7 @@ test('missing means dash, explicit zero survives and tiny values never round to 
 })
 
 test('fiat units keep Chinese names and unknown currency codes remain explicit without conversion', () => {
-  expect(positionCurrencyUnit(' cny ')).toBe('元')
+  expect(positionCurrencyUnit(' cny ')).toBe('￥')
   expect(positionCurrencyUnit('CHF')).toBe('瑞郎')
   expect(positionCurrencyUnit('EUR')).toBe('欧元')
   expect(positionCurrencyUnit('USD')).toBe('美元')
