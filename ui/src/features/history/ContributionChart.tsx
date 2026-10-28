@@ -82,7 +82,7 @@ export function ContributionChart({ rows, points, scaleMode, currency }: {
       const base = row.baselines[current], value = row.values[current]
       return <span key={row.symbol}><SeriesSwatch symbol={row.symbol} /> {row.product} {base != null && base > 0 && '本段盈亏 '}<span className={returnColor(value)}>{value != null && value > 0 ? '+' : ''}{amount(value)}</span>{base != null && base > 0 && <span className="text-ink-3"> · 起点 {timeLabel(times[base]).slice(0, 16)}</span>}</span>
     })}</div>
-    {rows.length === 0 ? <p role="status" className="mt-2 text-xs text-ink-3">选择品种查看曲线</p> : segmented ? <p className="mt-2 text-xs text-ink-3">圆点表示缺口后的新基准，后续显示本段盈亏；缺失区间未补齐。</p> : null}
+    {rows.length === 0 && <p role="status" className="mt-2 text-xs text-ink-3">选择品种查看曲线</p>}
     <p id="contribution-chart-hint" className="sr-only">方向键查看，Home / End 首末点，Ctrl + 滚轮或加减号缩放，双击或 0 恢复范围。{rows.flatMap(row => row.baselines.flatMap((base, i) => base === i && i > 0 ? [`${row.product} · ${timeLabel(times[i])} 数据缺口后重新归零。`] : [])).join('')}</p>
   </div>
 }

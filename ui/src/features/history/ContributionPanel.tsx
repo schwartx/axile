@@ -1,12 +1,13 @@
 import { Fragment, useMemo, useState } from 'react'
-import { ChevronRight, Info } from 'lucide-react'
+import { Check, ChevronRight, Info } from 'lucide-react'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { displayCurrencyUnit } from '@/lib/format'
 import type { AnalysisChart } from '@/lib/api/performance'
 import type { ChartSelection } from '@/features/history/chartModel'
 import { contributionView } from '@/features/history/contributions'
 import type { TimeScaleMode } from '@/features/history/timeScale'
-import { ContributionChart, SeriesSwatch } from '@/features/history/ContributionChart'
+import { ContributionChart } from '@/features/history/ContributionChart'
+import { seriesStyle } from '@/components/viz/seriesStyle'
 import { amount } from '@/features/history/costs'
 import { returnColor } from '@/features/history/performance'
 import { OverflowText } from '@/components/ui/OverflowText'
@@ -33,6 +34,7 @@ export function ContributionPanel({ chart, selection, scaleMode }: {
         <p>毛盈亏含已平仓与持仓浮盈亏，净盈亏仅在费用完整时显示。</p>
         <p>差额包含未获取费用、出入金及缺失数据；不重复扣除滑点。</p>
         <p>异常处断开，从可靠持仓快照重新归零计算本段盈亏；各段不拼接为完整区间盈亏。</p>
+        <p>圆点表示缺口后的新基准，后续显示本段盈亏；缺失区间未补齐。</p>
       </div>} arrow>
         <button type="button" aria-label="品种贡献计算说明" className="inline-flex w-[30px] items-center justify-center rounded text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"><Info size={14} aria-hidden="true" /></button>
       </Tooltip>
@@ -46,15 +48,23 @@ export function ContributionPanel({ chart, selection, scaleMode }: {
       {groups.some(row => row.feeMissing > 0) && <div className="text-ink-3"><dt className="sr-only">费用状态</dt><dd>手续费未完整</dd></div>}
     </dl>
     {chart.contributions == null ? <p className="text-sm text-ink-3">当前快照尚无品种贡献，请刷新绩效。</p> : groups.length === 0 ? <p className="text-sm text-ink-3">本区间无可归因品种。</p> : <div className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(22rem,1.2fr)_minmax(0,1.8fr)]">
-      <div className="min-w-0 overflow-x-auto">
+      <div role="region" aria-label="品种贡献列表" tabIndex={0} className="h-[290px] min-w-0 overflow-auto overscroll-contain pr-2 focus-visible:outline-2 focus-visible:outline-accent">
         <table className="w-full text-left text-xs tabular-nums"><caption className="sr-only">品种贡献排名，按毛盈亏从高到低；包含已清仓合约</caption>
-          <thead className="text-ink-3"><tr className="border-b border-line"><th className="py-2 font-normal">品种</th><th className="py-2 pr-3 text-right font-normal">毛盈亏</th><th className="py-2 pr-3 text-right font-normal">净盈亏</th><th className="py-2 font-normal">状态</th></tr></thead>
+          <thead className="sticky top-0 z-10 bg-bg text-ink-3 [&_th]:whitespace-nowrap"><tr className="border-b border-line"><th className="py-2 font-normal">品种</th><th className="py-2 pr-3 text-right font-normal">毛盈亏</th><th className="py-2 pr-3 text-right font-normal">净盈亏</th><th className="py-2 font-normal">状态</th></tr></thead>
           <tbody>{groups.map(row => <Fragment key={row.symbol}>
-            <tr className="border-b border-line">
+            <tr className="border-b border-line hover:bg-bg-subtle focus-within:bg-bg-subtle">
               <td className="py-1 pr-3"><div className="flex items-center gap-1">
-                <label className="flex min-h-[30px] min-w-0 items-center gap-2"><input type="checkbox" checked={selected.includes(row.symbol)} onChange={() => toggle(row.symbol)} aria-label={`查看 ${row.product} 贡献曲线`} /><SeriesSwatch symbol={row.symbol} /><OverflowText text={row.product} /></label>
+                <label className="flex min-h-[30px] min-w-0 cursor-pointer items-center gap-2">
+                  <span className="relative inline-flex shrink-0 items-center justify-center">
+                    <input type="checkbox" checked={selected.includes(row.symbol)} onChange={() => toggle(row.symbol)} aria-label={`查看 ${row.product} 贡献曲线`}
+                      style={{ color: seriesStyle(row.symbol).color }}
+                      className="peer size-4 cursor-pointer appearance-none rounded-[3px] border border-ink-3 bg-transparent checked:border-current checked:bg-current hover:border-current focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent forced-colors:appearance-auto" />
+                    <Check size={12} strokeWidth={2.5} aria-hidden="true" className="pointer-events-none absolute text-bg opacity-0 peer-checked:opacity-100 forced-colors:hidden" />
+                  </span>
+                  <OverflowText text={row.product} />
+                </label>
                 <button type="button" aria-label={`${expanded === row.symbol ? '收起' : '展开'} ${row.product} 合约与数据状态`} aria-expanded={expanded === row.symbol} className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent" onClick={() => setExpanded(expanded === row.symbol ? null : row.symbol)}>
-                  <span>{row.contracts.length}合约</span><ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'rotate-90' : ''}`} />
+                  <span className="whitespace-nowrap">{row.contracts.length}合约</span><ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-200 motion-reduce:transition-none ${expanded === row.symbol ? 'rotate-90' : ''}`} />
                 </button>
               </div></td>
               <td className={`whitespace-nowrap py-1 pr-3 text-right ${returnColor(row.gross)}`}>{amount(row.gross)}</td>
