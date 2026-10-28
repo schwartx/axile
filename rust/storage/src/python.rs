@@ -6,14 +6,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyFloat, PyInt, PyTuple};
 use pyo3::Py;
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::AnalysisError;
 use crate::performance::{self, PerformanceRequest, SourceVersionCheck};
-use crate::snapshots;
 
 create_exception!(_core, NativeError, PyException, "原生数据库操作错误");
 
@@ -343,7 +342,9 @@ business_operations! { register_business_operations, business_operation, PyAny;
     append_execution_audit_batch => crate::audit_ops::append_execution_audit_batch,
     analysis_context => crate::analysis_ops::context,
     analysis_calendar_save => crate::analysis_ops::save_calendar,
-    analysis_publication_committed => crate::analysis_ops::publication_committed,
+    analysis_commit_confirmed => crate::analysis_ops::commit_confirmed,
+    analysis_query => crate::analysis::query,
+    analysis_update => crate::analysis::update,
     execution_read => crate::execution_reads::execution_read,
     control_monitor_inputs => crate::control_monitor::control_monitor_inputs,
     control_monitor_refresh => crate::control_monitor::control_monitor_refresh,
@@ -356,7 +357,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     save_order_submission => crate::submissions::save_order_submission,
     save_submission_monitor => crate::submissions::save_submission_monitor,
     order_execution_links => crate::submissions::order_execution_links,
-    maintenance_performance_dedupe => crate::maintenance_ops::performance_dedupe,
     maintenance_replay_report => crate::maintenance_ops::replay_report,
     maintenance_replay_observe => crate::maintenance_ops::replay_observe,
 }
@@ -483,42 +483,6 @@ store_operations! { register_store_bytes, json_bytes, PyBytes;
         )
     };
 
-    /// 读取已发布绩效结果;未就绪或版本过期时抛 NativeError。
-    #[pyo3(signature = (store, account_id, range, include_backtest, logic_version, engine_version))]
-    performance_result(
-        account_id: i64,
-        range: &str,
-        include_backtest: bool,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| {
-        let request = json!({
-            "account_id": account_id,
-            "range": range,
-            "include_backtest": include_backtest,
-            "logic_version": logic_version,
-            "engine_version": engine_version,
-        });
-        snapshots::performance_result(connection, &request)
-    };
-
-    /// 读取快照状态信封与已发布结果(含 daily_costs/events)。
-    #[pyo3(signature = ( store, account_id, range, logic_version, engine_version))]
-    snapshot(
-        account_id: i64,
-        range: &str,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| {
-        let request = json!({
-            "account_id": account_id,
-            "range": range,
-            "logic_version": logic_version,
-            "engine_version": engine_version,
-        });
-        snapshots::query(connection, &request)
-    };
-
     #[allow(clippy::too_many_arguments)]
     order_submissions(
         account_id: i64,
@@ -580,100 +544,7 @@ store_operations! { register_store_bytes, json_bytes, PyBytes;
         symbol: Option<&str>,
     ) => |connection| crate::symbols::query(connection, account_id, since, until, symbol);
 
-    /// 分页读取成本投影;快照版本失效时抛 SNAPSHOT_EXPIRED。
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = ( store, account_id, snapshot_id, range, dimension, sort, day, start, end, record_id, symbol, symbol_search, side, limit, cursor_scope, cursor, logic_version, engine_version))]
-    query_costs(
-        account_id: i64,
-        snapshot_id: &str,
-        range: &str,
-        dimension: &str,
-        sort: &str,
-        day: Option<&str>,
-        start: Option<f64>,
-        end: Option<f64>,
-        record_id: Option<i64>,
-        symbol: Option<&str>,
-        symbol_search: Option<&str>,
-        side: Option<&str>,
-        limit: i64,
-        cursor_scope: &str,
-        cursor: Option<&str>,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| crate::costs::query_costs(
-        connection,
-        &json!({
-            "account_id": account_id,
-            "snapshot_id": snapshot_id,
-            "range": range,
-            "dimension": dimension,
-            "sort": sort,
-            "day": day,
-            "start": start,
-            "end": end,
-            "record_id": record_id,
-            "symbol": symbol,
-            "symbol_search": symbol_search,
-            "side": side,
-            "limit": limit,
-            "cursor_scope": cursor_scope,
-            "cursor": cursor,
-            "logic_version": logic_version,
-            "engine_version": engine_version,
-        }),
-    );
 
-    #[pyo3(signature = (store, account_id, logic_version, engine_version))]
-    status(
-        account_id: i64,
-        logic_version: &str,
-        engine_version: &str,
-    ) => |connection| crate::views::status(connection, account_id, logic_version, engine_version);
-
-    #[pyo3(signature = (store, account_id, snapshot_id, range))]
-    chart(
-        account_id: i64,
-        snapshot_id: &str,
-        range: &str,
-    ) => |connection| crate::views::chart(connection, account_id, snapshot_id, range);
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (store, account_id, snapshot_id, range, limit, offset, start, end))]
-    execution_summary(
-        account_id: i64,
-        snapshot_id: &str,
-        range: &str,
-        limit: i64,
-        offset: i64,
-        start: Option<f64>,
-        end: Option<f64>,
-    ) => |connection| crate::views::execution_summary(
-        connection,
-        account_id,
-        snapshot_id,
-        range,
-        limit,
-        offset,
-        start,
-        end,
-    );
-
-    #[pyo3(signature = (store, account_id, snapshot_id, record_id, limit, offset))]
-    execution_detail(
-        account_id: i64,
-        snapshot_id: &str,
-        record_id: i64,
-        limit: i64,
-        offset: i64,
-    ) => |connection| crate::views::execution_detail(
-        connection,
-        account_id,
-        snapshot_id,
-        record_id,
-        limit,
-        offset,
-    );
 }
 
 detached_operations! { register_queue_operations;
@@ -682,13 +553,6 @@ detached_operations! { register_queue_operations;
         account_id: i64,
         force: bool,
     ) -> () => crate::analysis_queue::enqueue;
-
-    queue_status(
-        path: &str,
-        account_id: i64,
-        logic: &str,
-        engine: &str,
-    ) -> String => crate::analysis_queue::status;
 
     queue_recover(
         path: &str,
@@ -710,14 +574,6 @@ detached_operations! { register_queue_operations;
         token: &str,
         now: f64,
     ) -> () => crate::analysis_queue::fail;
-}
-
-/// Calculate and atomically publish using a separate writer connection.
-#[pyfunction]
-fn publish_store(py: Python<'_>, path: &str, request_json: &str) -> PyResult<Py<PyAny>> {
-    business_operation(py, path, "publish_store", request_json, |path, request| {
-        crate::native_publication::publish(std::path::Path::new(path), request)
-    })
 }
 
 #[pyfunction]
@@ -748,7 +604,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::logging_python::register(m)?;
     m.add_function(wrap_pyfunction!(close_database, m)?)?;
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
-    m.add_function(wrap_pyfunction!(publish_store, m)?)?;
     register_queue_operations(m)?;
     register_store_bytes(m)?;
     register_business_operations(m)?;

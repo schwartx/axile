@@ -1,4 +1,4 @@
-"""已发布 0033 直接迁到当前 0038，失败不破坏业务事实或旧缓存。"""
+"""已发布 0033 直接迁到当前 0039，失败不破坏业务事实或旧缓存。"""
 
 import json
 from contextlib import closing
@@ -54,13 +54,17 @@ def _state(path):
             connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall(),
             connection.execute("SELECT * FROM executerecord").fetchall(),
             connection.execute("SELECT * FROM account_analysis").fetchall(),
-            connection.execute("SELECT * FROM performance_snapshot").fetchall(),
+            connection.execute(
+                "SELECT * FROM performance_snapshot"
+                if connection.execute("SELECT 1 FROM sqlite_schema WHERE name='performance_snapshot'").fetchone()
+                else "SELECT * FROM analysis_state"
+            ).fetchall(),
         )
 
 
 def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(old_database):
     receipt = initialize_native_database(old_database)
-    assert receipt["public"] == "0038"
+    assert receipt["public"] == "0039"
     backup = Path(receipt["backup"])
     assert backup.is_file()
     with closing(oracle_connect(backup)) as connection:
@@ -80,10 +84,10 @@ def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(
             "SELECT execution_id,account_id,is_success FROM executerecord WHERE id=7"
         ).fetchone() == ("original", 1, 1)
         assert connection.execute("SELECT COUNT(*) FROM execution_artifact").fetchone() == (0,)
-        assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone() == (0,)
+        assert connection.execute("SELECT name FROM sqlite_schema WHERE name='performance_snapshot'").fetchall() == []
         assert connection.execute(
-            "SELECT current_snapshot,previous_snapshot,running_version,running_token,requested,failures,error FROM account_analysis"
-        ).fetchone() == (None, None, None, None, 1, 0, None)
+            "SELECT running_version,running_token,requested,failures,error FROM account_analysis"
+        ).fetchone() == (None, None, 1, 0, None)
         assert not connection.execute(
             "SELECT name FROM sqlite_master WHERE name LIKE 'analysis_source_%' OR name LIKE 'replay_observation%'"
         ).fetchall()
@@ -102,7 +106,7 @@ def test_downgrade_restores_business_documents_and_can_upgrade_again(old_databas
         assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone() == (0,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert initialize_native_database(old_database)["public"] == "0038"
+    assert initialize_native_database(old_database)["public"] == "0039"
 
 
 @pytest.mark.parametrize("failure", ["invalid_document", "stamp"])
@@ -138,10 +142,10 @@ def test_pending_facts_block_lossy_downgrade_before_any_change(old_database):
     with pytest.raises(_core.NativeError, match="unrepresented pending execution input"):
         native_store_call(old_database, "migration_downgrade", {"public": "0033"})
     assert _state(old_database) == before
-    assert native_store_call(old_database, "migration_current", {})["public"] == "0038"
+    assert native_store_call(old_database, "migration_current", {})["public"] == "0039"
 
 
-@pytest.mark.parametrize("revision", ["0039", "0040", "0041", "0042"])
+@pytest.mark.parametrize("revision", ["0040", "0041", "0042"])
 def test_unreleased_intermediate_targets_are_rejected(old_database, revision):
     before = _state(old_database)
     with pytest.raises(_core.NativeError, match="supported targets"):

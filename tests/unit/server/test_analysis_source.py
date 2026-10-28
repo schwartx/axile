@@ -8,5 +8,5 @@ def test_runtime_metadata_contains_only_business_inputs_and_frozen_outputs(nativ
         tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not any(name.startswith(("analysis_source_", "replay_observation")) for name in tables)
     assert "executerecord" in tables
-    assert "performance_cost_execution" in tables
-    assert "performance_cost_trade" in tables
+    assert "analysis_state" in tables
+    assert not any(name.startswith("performance_") for name in tables)

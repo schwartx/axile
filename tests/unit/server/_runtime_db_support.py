@@ -37,7 +37,7 @@ async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Pa
         await native_operation("migration_upgrade", {})
         with closing(oracle_connect(path)) as connection, connection:
             # 只固定初始模式；生产 writer 会按服务约定切换到 WAL。
-            connection.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}")
+            connection.execute(f"PRAGMA journal_mode={'WAL' if wal else 'DELETE'}").fetchone()
             for account_id in (1, 2):
                 account = build_account(id=account_id, portfolio_id=None)
                 connection.execute(

@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn activity_window_includes_utc_executions_on_the_shanghai_day() {
-        let conn = crate::execution_summary::tests::fixture();
+        let conn = crate::trade_fixture();
         conn.execute_batch(
             "CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
             ALTER TABLE executerecord ADD COLUMN execution_id TEXT;
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn canonical_symbols_preserve_unknown_fees_order_and_bounds() {
-        let conn = crate::execution_summary::tests::fixture();
+        let conn = crate::trade_fixture();
         conn.execute_batch(
             "CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2),(9);
             ALTER TABLE executerecord ADD COLUMN execution_id TEXT;

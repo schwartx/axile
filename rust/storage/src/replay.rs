@@ -34,12 +34,12 @@ pub struct ReplayClose {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Holding {
+pub(crate) struct Holding {
     /// Price-to-account-currency sensitivity, which can include conversion.
-    units: f64,
+    pub(crate) units: f64,
     /// Original quantity prevents conversion changes from creating turnover.
-    quantity: Option<f64>,
-    mark: f64,
+    pub(crate) quantity: Option<f64>,
+    pub(crate) mark: f64,
 }
 
 impl Holding {
@@ -51,14 +51,16 @@ impl Holding {
 }
 
 /// Streaming state for one target mode and one independent equity baseline.
+#[derive(Clone)]
 pub struct ReplayLedger {
-    initial_equity: f64,
-    equity: f64,
-    fee_rate: f64,
-    target_weight: bool,
-    initialized: bool,
-    positions: BTreeMap<String, Holding>,
-    closes: BTreeMap<String, f64>,
+    pub(crate) initial_equity: f64,
+    pub(crate) equity: f64,
+    pub(crate) fee_rate: f64,
+    pub(crate) target_weight: bool,
+    pub(crate) initialized: bool,
+    pub(crate) previous_close: f64,
+    pub(crate) positions: BTreeMap<String, Holding>,
+    pub(crate) closes: BTreeMap<String, f64>,
 }
 
 impl ReplayLedger {
@@ -75,6 +77,7 @@ impl ReplayLedger {
             fee_rate,
             target_weight,
             initialized: false,
+            previous_close: initial_equity,
             positions: BTreeMap::new(),
             closes: BTreeMap::new(),
         })
@@ -126,7 +129,7 @@ impl ReplayLedger {
 
     /// Consume the ledger without retaining a second map of closing equities.
     pub fn finish(self) -> BTreeMap<String, ReplayClose> {
-        let mut previous_close = self.initial_equity;
+        let mut previous_close = self.previous_close;
         self.closes
             .into_iter()
             .map(|(day, close)| {

@@ -128,7 +128,7 @@ function mergeTable(previous: AnalysisTable, page: AnalysisTable, resource: Reso
 
 export function mergeExecutionDetail(previous: AnalysisExecutionDetail | null, page: AnalysisExecutionDetail): AnalysisExecutionDetail {
   if (!previous) return page
-  if (previous.snapshot_id !== page.snapshot_id || previous.record_id !== page.record_id) throw new Error('执行详情版本不匹配')
+  if (previous.version !== page.version || previous.record_id !== page.record_id) throw new Error('执行详情版本不匹配')
   const tables = Object.fromEntries((Object.keys(keys) as Resource[]).map(resource => [resource, mergeTable(previous.tables[resource], page.tables[resource], resource)])) as AnalysisExecutionDetail['tables']
   return { ...page, tables }
 }
@@ -165,16 +165,16 @@ export function loadExecutionDetail(entry: DetailEntry, more = false, retry = fa
   notify(entry, { ...entry.state, loading: true, error: null, expired: false })
   entry.flight = (async () => {
     try {
-      const page = await getAnalysisExecutionDetail(entry.accountId, { snapshot_id: entry.snapshotId, record_id: entry.recordId, limit: 200, offset }, controller.signal)
+      const page = await getAnalysisExecutionDetail(entry.accountId, { version: entry.snapshotId, record_id: entry.recordId, limit: 200, offset }, controller.signal)
       if (controller.signal.aborted) return
-      if (page.snapshot_id !== entry.snapshotId || page.record_id !== entry.recordId) throw new Error('执行详情版本不匹配')
+      if (page.version !== entry.snapshotId || page.record_id !== entry.recordId) throw new Error('执行详情版本不匹配')
       detailNextOffset(page, offset)
       const payload = mergeExecutionDetail(more ? entry.payload : null, page)
       const data = decodeExecutionDetail(payload)
       entry.payload = payload
       notify(entry, { data, loading: false, error: null, expired: false })
     } catch (error) {
-      if (!controller.signal.aborted) notify(entry, { ...entry.state, loading: false, error: error instanceof Error ? error : new Error(String(error)), expired: error instanceof ApiError && error.status === 410 })
+      if (!controller.signal.aborted) notify(entry, { ...entry.state, loading: false, error: error instanceof Error ? error : new Error(String(error)), expired: error instanceof ApiError && error.status === 409 })
     } finally {
       entry.flight = null; entry.controller = null
       if (entry.state.loading) notify(entry, { ...entry.state, loading: false })

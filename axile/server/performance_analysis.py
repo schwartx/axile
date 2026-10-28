@@ -1,4 +1,4 @@
-"""Single-worker, durable performance queue and atomic snapshot publication."""
+"""后端增量分析队列；状态与日结果原子更新。"""
 
 import asyncio
 from uuid import uuid4
@@ -9,11 +9,10 @@ from loguru import logger
 from axile.executor.algorithms.utils.clock import clock_now_iso, get_default_clock
 from axile.server._native import _core
 from axile.server.core.db import database_path
-from axile.server.db.models.account_settings import BacktestSettings
 from axile.server.native_store import native_call, native_operation
 
-# 标记贡献估值缺口并允许后续分段恢复；重建旧快照。
-LOGIC_VERSION = "23"
+# 标记贡献估值缺口并允许后续分段恢复；重建旧分析。
+LOGIC_VERSION = "25"
 ENGINE_VERSION = "equity-ledger-1"
 
 
@@ -25,22 +24,24 @@ def ensure_native_capabilities() -> None:
         "connection_accounts",
         "execution_read",
         "supplement_has_execution_steps",
-        "publish_store",
+        "analysis_update",
+        "analysis_query",
         "persist_execution_state",
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
-        "queue_status",
         "queue_recover",
         "queue_claim",
         "queue_fail",
         "queue_release",
         "analysis_context",
         "analysis_calendar_save",
-        "analysis_publication_committed",
+        "analysis_commit_confirmed",
     )
     if getattr(_core, "ANALYSIS_FACT_SCHEMA", None) != 40:
         raise RuntimeError("Native analysis extension requires direct business facts schema 0034; rebuild the wheel")
+    if getattr(_core, "PUBLIC_HEAD", None) != "0039":
+        raise RuntimeError("Native analysis extension requires migration head 0039; rebuild the wheel")
     missing = [name for name in required if not callable(getattr(_core, name, None))]
     if missing:
         raise RuntimeError(f"Native analysis extension must export {', '.join(missing)}; rebuild the wheel")
@@ -49,11 +50,6 @@ def ensure_native_capabilities() -> None:
 async def enqueue(path: str, account_id: int, force: bool = False) -> None:
     """Coalesce requests after the caller has closed its database transaction."""
     await native_call(_core.queue_enqueue, path, account_id, force)
-
-
-async def read_snapshot_status(path: str, account_id: int) -> str:
-    """Read committed publication state on an independent native connection."""
-    return await native_call(_core.queue_status, path, account_id, LOGIC_VERSION, ENGINE_VERSION)
 
 
 class AnalysisManager:
@@ -109,35 +105,31 @@ class AnalysisManager:
         metadata = await native_operation("analysis_context", {"account_id": row["account_id"]})
         if metadata is None:
             return
-        settings = BacktestSettings.model_validate(metadata["settings"] or {}).model_dump(mode="json")
         channel = metadata["trade_channel"]
         await ensure_calendar_facts(channel, metadata["first_day"], metadata["last_day"])
-        request = {
-            "command": "publish_store",
-            "protocol": 1,
-            "account_id": row["account_id"],
-            "expected_source_version": row["source_version"],
-            "snapshot_id": row["running_token"],
-            "claim_token": row["running_token"],
-            "logic_version": LOGIC_VERSION,
-            "engine_version": ENGINE_VERSION,
-            "computed_at": clock_now_iso(tz=ZoneInfo("Asia/Shanghai")),
-            "settings": settings,
-            "trade_channel": channel,
-        }
-        await native_operation("publish_store", request, database=self._database_path())
+        receipt = await native_operation(
+            "analysis_update",
+            {
+                "account_id": row["account_id"],
+                "expected_source_version": row["source_version"],
+                "claim_token": row["running_token"],
+                "computed_at": clock_now_iso(tz=ZoneInfo("Asia/Shanghai")),
+            },
+            database=self._database_path(),
+        )
+        if not receipt["updated"]:
+            await self._release_claim(row)
 
-    async def _native_publication_committed(self, row) -> bool:
+    async def _native_update_committed(self, row) -> bool:
         """回执、进程退出或取消不决定提交结果，按本次 token 核对持久化快照。"""
         token = row.get("running_token")
         if token is None:
             return False
         return await native_operation(
-            "analysis_publication_committed",
+            "analysis_commit_confirmed",
             {
                 "account_id": row["account_id"],
                 "source_version": row["source_version"],
-                "running_token": token,
                 "logic_version": LOGIC_VERSION,
                 "engine_version": ENGINE_VERSION,
             },
@@ -155,9 +147,9 @@ class AnalysisManager:
                 await self._release_claim(row)
                 raise
             except Exception:
-                if await self._native_publication_committed(row):
+                if await self._native_update_committed(row):
                     logger.info(
-                        "Native performance publication committed before receipt loss for account {}", row["account_id"]
+                        "Native analysis update committed before receipt loss for account {}", row["account_id"]
                     )
                 else:
                     logger.exception("Performance calculation failed for account {}", row["account_id"])

@@ -1,6 +1,7 @@
 //! Axile SQLite business operations and consistent analysis queries.
 
 pub(crate) mod accounts;
+pub(crate) mod analysis;
 pub(crate) mod analysis_ops;
 pub mod analysis_queue;
 pub(crate) mod asset_ops;
@@ -18,20 +19,16 @@ pub(crate) mod control_policy;
 mod control_policy_python;
 pub(crate) mod control_store;
 pub(crate) mod cost_summary;
-pub mod costs;
 pub mod dashboard;
 pub(crate) mod database_probe;
 pub mod error;
 pub(crate) mod evidence_ops;
 pub(crate) mod execution_ops;
 pub(crate) mod execution_reads;
-pub(crate) mod execution_summary;
 pub(crate) mod execution_view;
 pub mod executions;
 pub(crate) mod fact_attempts;
-pub(crate) mod fact_cost_rows;
 pub(crate) mod fact_events;
-pub(crate) mod fact_headers;
 pub(crate) mod fact_integrity;
 pub(crate) mod fact_observation;
 pub(crate) mod fact_positions;
@@ -49,26 +46,21 @@ mod logging_python;
 mod logging_rotation;
 pub(crate) mod maintenance_ops;
 pub(crate) mod migrations;
-pub mod native_publication;
 pub(crate) mod notification_context;
 pub(crate) mod notifications;
 pub mod performance;
-pub(crate) mod performance_ranges;
 pub(crate) mod portfolio_ops;
-pub mod publication;
 #[cfg(feature = "python")]
 pub mod python;
 pub mod replay;
 pub(crate) mod result_reader;
 pub(crate) mod runtime_sync;
-pub mod snapshots;
 pub(crate) mod storage_connection;
 pub mod submissions;
 pub(crate) mod supplements;
 pub mod symbols;
 pub(crate) mod target_ops;
 pub(crate) mod time_check;
-pub mod views;
 pub(crate) mod writer_scope;
 
 use rusqlite::Connection;
@@ -171,4 +163,28 @@ mod tests {
         drop(super::storage_connection::migration_guard(&database).unwrap());
         std::fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[cfg(test)]
+pub(crate) fn trade_fixture() -> Connection {
+    let connection = Connection::open_in_memory().unwrap();
+    crate::calendar::register_time_function(&connection).unwrap();
+    connection.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,result_staged INTEGER DEFAULT 0);
+             CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
+             CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
+             CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
+             CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
+             CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
+             INSERT INTO executerecord(id,account_id,created_at) VALUES(1,2,'2026-01-01T09:00:00'),(2,2,'2026-01-02T09:00:00'),(3,9,'2026-01-03T09:00:00');
+             INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0);
+             INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,100,100,100,1);
+             INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1);
+             INSERT INTO business_trade_collection VALUES(1,'/symbol_results/A/trades','/symbol_results/A','array');
+             INSERT INTO business_trade VALUES
+               (1,'/symbol_results/A/trades',0,'invalid',102,1,'1','{\"direction\":\"buy\",\"commission\":0}','CNY'),
+               (1,'/symbol_results/A/trades',1,'2026-01-01T09:00:00',NULL,1,'2','{\"commission\":-0.2}','USD');"
+        ).unwrap();
+    connection
 }

@@ -52,7 +52,7 @@ export const useDomainStore = create<DomainState>((set) => ({
       const res = await getDashboard(ctrl.signal)
       if (ctrl.signal.aborted) return
       set({ accounts: res.data, accountsUpdatedAt: Date.now(), accountsError: null })
-      for (const item of res.data) reconcilePerformanceVersion(item.account_id, item.performance?.snapshot_id ?? null)
+      for (const item of res.data) reconcilePerformanceVersion(item.account_id, item.performance?.version ?? null)
     } catch (e) {
       if (ctrl.signal.aborted) return
       // 保留上次的 accounts（SWR 降级），只标记错误。

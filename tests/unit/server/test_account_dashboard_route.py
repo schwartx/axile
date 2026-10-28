@@ -92,8 +92,6 @@ def test_dashboard_counts_off_symbols_zero_when_lots_already_match(monkeypatch):
     operation.assert_awaited_once_with(
         "account_dashboard_context",
         {
-            "logic_version": account_crud.LOGIC_VERSION,
-            "engine_version": account_crud.ENGINE_VERSION,
             "live_sessions": account_crud.public_session_views(),
         },
     )

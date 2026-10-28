@@ -5,7 +5,7 @@ use rusqlite::{Connection, Statement};
 use crate::fact_prices::positive;
 use crate::fact_ticks::Prices;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Trade {
     pub symbol: String,
     pub time: f64,
@@ -156,11 +156,16 @@ mod tests {
     #[test]
     fn trade_timestamp_keeps_local_day_and_floating_microsecond_boundaries() {
         for value in ["2026-01-01T00:00:00.000003", "2025-12-31T16:00:00.000003Z"] {
-            assert_eq!(timestamp(value), Some((crate::calendar::timestamp_ms(value).unwrap(), "2026-01-01".into())));
+            assert_eq!(
+                timestamp(value),
+                Some((
+                    crate::calendar::timestamp_ms(value).unwrap(),
+                    "2026-01-01".into()
+                ))
+            );
         }
         assert!(timestamp("invalid").is_none());
     }
-
 
     #[test]
     fn direct_trade_facts_preserve_unknown_zero_rebates_and_estimated_time() {

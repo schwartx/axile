@@ -1,6 +1,6 @@
 //! Shared writer-transaction scope for operation-level SQLite ownership.
 //!
-//! Operation entry points (publish_store, business facts ops) open one writer
+//! Operation entry points (analysis update, business facts ops) open one writer
 //! connection and run their whole operation inside a single BEGIN IMMEDIATE,
 //! so no partial state crosses the language boundary.
 

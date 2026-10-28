@@ -25,7 +25,7 @@ const statusFlights = new Map<number, Promise<AnalysisMetadata>>()
 const refreshes = new Map<number, Promise<boolean>>()
 const keyOf = (id: number, range: PerformanceRange) => `${id}:${range}`
 const errorOf = (error: unknown) => error instanceof Error ? error : new Error(String(error))
-const readableId = (metadata: AnalysisMetadata | null) => metadata && metadata.read_view_schema_version >= 1 ? metadata.snapshot_id : null
+const readableId = (metadata: AnalysisMetadata | null) => metadata?.version ?? null
 
 export function performanceEntry(id: number, range: PerformanceRange): Entry {
   const key = keyOf(id, range)
@@ -76,12 +76,12 @@ function checkMetadata(id: number, range: PerformanceRange, entry: Entry): Promi
 }
 async function readChart(id: number, snapshotId: string, range: PerformanceRange): Promise<AnalysisDisplay> {
   const response = await getAnalysisChart(id, snapshotId, range)
-  if (response.snapshot_id !== snapshotId || response.account_id !== id || response.range !== range) throw new Error('绩效图表版本或账户不匹配')
+  if (response.version !== snapshotId || response.account_id !== id || response.range !== range) throw new Error('绩效图表版本或账户不匹配')
   return decodeAnalysisChart(response)
 }
 function requestResult(id: number, range: PerformanceRange, entry: Entry, retryResult: boolean) {
   const snapshotId = readableId(entry.state.metadata)
-  if (!snapshotId || entry.state.displayed?.snapshot_id === snapshotId || entry.resultFlight) return
+  if (!snapshotId || entry.state.displayed?.version === snapshotId || entry.resultFlight) return
   if (!retryResult && entry.failedResultId === snapshotId) return
   publish(entry, { loadingResult: true, resultError: null })
   let expired = false
@@ -95,7 +95,7 @@ function requestResult(id: number, range: PerformanceRange, entry: Entry, retryR
       if (readableId(entry.state.metadata) !== snapshotId) return
       entry.failedResultId = snapshotId
       publish(entry, { resultError: errorOf(error) })
-      expired = error instanceof ApiError && error.status === 410
+      expired = error instanceof ApiError && error.status === 409
       // One immediate status read. A replacement chart waits for the next check.
       if (expired) await checkMetadata(id, range, entry)
     } finally {
@@ -141,12 +141,12 @@ export function requestPerformanceRefresh(id: number): Promise<boolean> {
 export const snapshotPending = (metadata: Pick<AnalysisMetadata, 'status' | 'retry_at'> | null) => metadata?.status === 'pending' || metadata?.status === 'stale' || (metadata?.status === 'failed' && metadata.retry_at != null)
 export function shouldPollPerformance(entry: Entry): boolean {
   const target = readableId(entry.state.metadata)
-  return snapshotPending(entry.state.metadata) || entry.state.loadingResult || !!(target && target !== entry.state.displayed?.snapshot_id)
+  return snapshotPending(entry.state.metadata) || entry.state.loadingResult || !!(target && target !== entry.state.displayed?.version)
 }
 /** Dashboard hints invalidate an in-flight status observation and schedule a fresh one. */
 export function reconcilePerformanceVersion(id: number, snapshotId: string | null) {
   for (const [key, entry] of entries) {
-    if (!key.startsWith(`${id}:`) || !entry.listeners.size || entry.state.metadata?.snapshot_id === snapshotId) continue
+    if (!key.startsWith(`${id}:`) || !entry.listeners.size || entry.state.metadata?.version === snapshotId) continue
     entry.epoch++
     if (entry.flight) entry.recheck = true
     else void checkPerformance(id, key.split(':')[1] as PerformanceRange, false)

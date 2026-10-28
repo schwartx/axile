@@ -6,8 +6,6 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
 
 use crate::cost_summary::Summary;
-#[cfg(test)]
-use crate::cost_summary::AGGREGATES;
 
 const PAGE: &str = "WITH page AS (
     SELECT json_extract(value,'$[0]') AS id,json_extract(value,'$[1]') AS occurred_at,
@@ -273,7 +271,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> Connection {
-        let conn = crate::execution_summary::tests::fixture();
+        let conn = crate::trade_fixture();
         conn.execute_batch("CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
             CREATE TABLE schedule_skip(id INTEGER,account_id INTEGER,triggered_at TEXT,channel TEXT,calendar_id TEXT,calendar_day TEXT,calendar_label TEXT,reason_code TEXT);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
@@ -522,15 +520,29 @@ mod tests {
 
     #[test]
     fn unvalued_costs_do_not_contaminate_shared_summary() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE trade(value REAL,cost REAL,loss_bp REAL,estimated INTEGER);
-            INSERT INTO trade VALUES(100,2,200,0),(NULL,999,999,0),(50,NULL,NULL,0);",
-        )
-        .unwrap();
-        let mut summary = conn.query_row(&format!("WITH trades AS
-            (SELECT value,CASE WHEN value IS NOT NULL THEN cost END AS cost,loss_bp,estimated FROM trade)
-            SELECT {AGGREGATES} FROM trades"), [], |row| Summary::read(row,0)).unwrap();
+        let mut summary = Summary::empty();
+        for (value, cost, loss_bp) in [
+            (Some(100.0), Some(2.0), Some(200.0)),
+            (None, Some(999.0), Some(999.0)),
+            (Some(50.0), None, None),
+        ] {
+            summary.push(&crate::fact_trades::Trade {
+                symbol: "A".into(),
+                time: 0.0,
+                day: "2026-01-01".into(),
+                estimated: false,
+                side: "buy".into(),
+                quantity: Some(1.0),
+                price: None,
+                reference: None,
+                reference_source: None,
+                value,
+                cost,
+                loss_bp,
+                fee: None,
+                fee_currency: None,
+            });
+        }
         summary.fees.insert("USD".into(), (3.0, 1));
         summary.fee_count = 1;
         let result = historical_summary(summary.output());

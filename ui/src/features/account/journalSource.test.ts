@@ -16,13 +16,13 @@ test('chart interval link round-trips exact milliseconds without expanding to a 
   const url = performanceJournalPath(2, 'snapshot-1', '90', selection)
   const { scope, error } = parseJournalScope(new URL(url, 'http://localhost').searchParams)
   expect(error).toBeNull()
-  expect(scope).toEqual({ snapshot_id: 'snapshot-1', range: '90', start: selection.start, end: selection.end })
+  expect(scope).toEqual({ version: 'snapshot-1', range: '90', start: selection.start, end: selection.end })
   expect(parseJournalScope(new URL(performanceJournalPath(2, 's', 'all', { kind: 'execution', recordId: 5, time: 100 }), 'http://localhost').searchParams).scope?.record_id).toBe(5)
 })
 
 test('invalid or mixed snapshot filters never fall back to live activity', () => {
   for (const suffix of ['start=1', 'start=2&end=1', 'start=NaN&end=3', 'start=1&end=2&day=2026-09-07', 'day=2026-02-30', 'record_id=0', 'record_id=1&day=2026-09-07', 'start=&end=2']) {
-    expect(parseJournalScope(new URLSearchParams(`snapshot_id=s&performance_range=all&${suffix}`)).error).not.toBeNull()
+    expect(parseJournalScope(new URLSearchParams(`version=s&performance_range=all&${suffix}`)).error).not.toBeNull()
   }
   expect(parseJournalScope(new URLSearchParams('start=1&end=2')).error).not.toBeNull()
   expect(parseJournalScope(new URLSearchParams('range=30')).scope).toBeNull()
@@ -64,14 +64,14 @@ test('未知活动汇总保留 null，不当作无成交加入总计', () => {
 })
 
 test('lightweight pagination completes beyond one page and fails closed on broken cursors', async () => {
-  const base: CostPage<number> = { snapshot_id: 's', count: 3, summary: { ...summarizeCosts([]), estimated: 0 }, successful: 0, noop: 0, data: [], next_cursor: null }
-  const query = { snapshot_id: 's', range: 'all' as const, dimension: 'execution' as const }
+  const base: CostPage<number> = { version: 's', count: 3, summary: { ...summarizeCosts([]), estimated: 0 }, successful: 0, noop: 0, data: [], next_cursor: null }
+  const query = { version: 's', range: 'all' as const, dimension: 'execution' as const }
   const signal = new AbortController().signal
   const page = await loadCostGroups(2, query, signal, async q => q.cursor ? { ...base, data: [3] } : { ...base, data: [1, 2], next_cursor: 'next' })
   expect(page.data).toEqual([1, 2, 3])
   await expect(loadCostGroups(2, query, signal, async () => ({ ...base, data: [1], next_cursor: 'repeat' }))).rejects.toThrow('分页发生重叠')
   await expect(loadCostGroups(2, query, signal, async () => ({ ...base, data: [1] }))).rejects.toThrow('分页不完整')
-  await expect(loadCostGroups(2, query, signal, async () => ({ ...base, snapshot_id: 'new' }))).rejects.toThrow('范围发生变化')
+  await expect(loadCostGroups(2, query, signal, async () => ({ ...base, version: 'new' }))).rejects.toThrow('范围发生变化')
   await expect(loadCostGroups(2, query, signal, async q => { if (q.cursor) throw new Error('offline'); return { ...base, data: [1], next_cursor: 'next' } })).rejects.toThrow('offline')
 })
 

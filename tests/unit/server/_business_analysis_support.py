@@ -357,3 +357,53 @@ def _events(records, bindings, skips) -> list[dict]:
             }
         )
     return sorted(events, key=lambda event: timestamp(event["time"]), reverse=True)
+
+
+def sized_record(index: int, symbols: int) -> SimpleNamespace:
+    """Create complete deterministic quantity, price and actual trade evidence."""
+    when = (datetime(2025, 1, 1, 9) + timedelta(hours=index)).isoformat()
+    asset = 100_000.0 + index * 0.5
+    results = {}
+    targets = {}
+    for number in range(symbols):
+        symbol = f"S{number:02d}"
+        price = 100.0 + number * 10 + (index % 97) * 0.125
+        quantity = 1.0 + ((index // 12 + number) % 3)
+        targets[symbol] = 0.5 / symbols
+        results[symbol] = {
+            "status": "SUCCEEDED",
+            "first_tick": {"last_price": price, "bid_price": price, "ask_price": price},
+            "sizing": {
+                "sizing_mode": "weight",
+                "status": "SIZED",
+                "target_quantity": quantity,
+                "equity": asset,
+                "reference_price": price,
+                "unit_notional": price,
+                "unit_multiplier": 1.0,
+            },
+            "orders": [{"order_id": f"buy-{number}", "direction": "BUY", "filled_volume": quantity}],
+            "trades": [
+                {
+                    "order_id": f"buy-{number}",
+                    "trade_price": price + 0.01,
+                    "trade_volume": quantity,
+                    "trade_time": when,
+                    "extra": {"commission": 0.01, "commission_asset": "CNY"},
+                }
+            ],
+        }
+    return SimpleNamespace(
+        id=index + 1,
+        account_id=1,
+        execution_id=f"synthetic-{index + 1}",
+        created_at=when,
+        is_success=1,
+        raw_input={"curr_target": targets},
+        raw_result={
+            "status": "SUCCEEDED",
+            "execution_time": 0.01,
+            "account_assets": {"total_asset": asset, "positions": []},
+            "symbol_results": results,
+        },
+    )

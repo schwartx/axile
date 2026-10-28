@@ -20,7 +20,7 @@ export function PerformanceCurveLink({ accountId, summary, source, width, height
     const svg = ref.current?.querySelector('svg')
     if (!svg) return
     return registerCurveEndpoint({
-      accountId, identity, kind: 'sparkline', element: svg, points: summary?.points ?? [], snapshotId: summary?.snapshot_id ?? null,
+      accountId, identity, kind: 'sparkline', element: svg, points: summary?.points ?? [], snapshotId: summary?.version ?? null,
       coordinates: points => sparklineCoordinates(points, width, height),
     })
   }, [accountId, identity, summary, width, height])

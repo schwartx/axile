@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
-use crate::{assets, snapshots};
+use crate::assets;
 
 fn database(error: rusqlite::Error) -> String {
     format!("DASHBOARD_READ: {error}")
@@ -109,12 +109,7 @@ fn observations(
     Ok(result)
 }
 
-pub fn dashboard_inputs(
-    connection: &Connection,
-    account_ids: &[i64],
-    logic_version: &str,
-    engine_version: &str,
-) -> Result<Value, String> {
+pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<Value, String> {
     if account_ids.is_empty() {
         return Ok(json!({}));
     }
@@ -134,7 +129,7 @@ pub fn dashboard_inputs(
     let mut observations = observations(connection, cte, &ids)?;
     let mut targets = targets(connection, cte, &ids)?;
     let performance =
-        snapshots::summaries_for_accounts(connection, account_ids, logic_version, engine_version)?;
+        crate::analysis::summaries(connection, account_ids).map_err(|e| e.to_string())?;
     let mut statement = connection
         .prepare(&format!(
             "{cte},
@@ -164,7 +159,7 @@ pub fn dashboard_inputs(
                 "latest":latest, "observation":observations.remove(&id),
                 "target_weights":targets.remove(&id),
                 "performance":performance.get(id.to_string()).cloned().unwrap_or_else(|| json!({
-                    "snapshot_id":null,"status":"empty","computed_at":null,"observed_at":null,
+                    "version":null,"status":"empty","computed_at":null,"observed_at":null,
                     "account_equity":null,"account_daily_return":null,"points":[]
                 }))
             }),
@@ -235,7 +230,7 @@ mod tests {
                     false
                 }),
             );
-            let dashboard = dashboard_inputs(&connection, &[1], "l", "e").unwrap();
+            let dashboard = dashboard_inputs(&connection, &[1]).unwrap();
             assert_eq!(
                 dashboard["1"]["observation"]["assets"]["total_asset"],
                 json!(count as f64)
@@ -279,28 +274,30 @@ mod tests {
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
             CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
-            CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,published_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,current_snapshot TEXT);
-            CREATE TABLE performance_snapshot(id TEXT,computed_at TEXT,logic_version TEXT,engine_version TEXT,result_schema_version INTEGER,ranges TEXT);
-            CREATE TABLE performance_result_point(snapshot_id TEXT,range_key TEXT,idx INTEGER,date TEXT,observed_at TEXT,record_id INTEGER,execution_id TEXT,account_return REAL,account_equity REAL,portfolio_return REAL,account_daily_return REAL,portfolio_daily_return REAL,target_portfolio_return REAL,target_portfolio_daily_return REAL,difference REAL,sizing_fallback INTEGER);
+            CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(1),(2); CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,retry_at REAL);
             INSERT INTO portfolioaccount VALUES(1,1,7);
             INSERT INTO target_weight_snapshot VALUES(1,1,7,'mapping','{}');
-            BEGIN;").unwrap();
+            ").unwrap();
+        reader
+            .execute_batch(include_str!("analysis/schema.sql"))
+            .unwrap();
+        reader.execute_batch("BEGIN").unwrap();
         assert_eq!(
-            dashboard_inputs(&reader, &[1], "l", "e").unwrap()["1"]["target_weights"],
+            dashboard_inputs(&reader, &[1]).unwrap()["1"]["target_weights"],
             json!({})
         );
         let writer = Connection::open(&path).unwrap();
         writer
             .execute_batch("BEGIN; INSERT INTO portfolioaccount VALUES(2,1,NULL),(3,2,8); COMMIT;")
             .unwrap();
-        let old = dashboard_inputs(&reader, &[1], "l", "e").unwrap();
+        let old = dashboard_inputs(&reader, &[1]).unwrap();
         assert_eq!(old["1"]["portfolio_id"], 7);
         assert_eq!(old["1"]["target_weights"], json!({}));
         reader.execute_batch("COMMIT").unwrap();
-        let new = dashboard_inputs(&reader, &[1], "l", "e").unwrap();
+        let new = dashboard_inputs(&reader, &[1]).unwrap();
         assert_eq!(new["1"]["portfolio_id"], Value::Null);
         assert_eq!(new["1"]["target_weights"], Value::Null);
-        let subset = dashboard_inputs(&reader, &[2], "l", "e").unwrap();
+        let subset = dashboard_inputs(&reader, &[2]).unwrap();
         assert_eq!(subset.as_object().unwrap().len(), 1);
         assert_eq!(subset["2"]["portfolio_id"], 8);
         assert!(subset.get("1").is_none());
@@ -312,7 +309,7 @@ mod tests {
     #[test]
     fn empty_accounts_need_no_schema() {
         assert_eq!(
-            dashboard_inputs(&Connection::open_in_memory().unwrap(), &[], "l", "e").unwrap(),
+            dashboard_inputs(&Connection::open_in_memory().unwrap(), &[]).unwrap(),
             json!({})
         );
     }

@@ -697,14 +697,6 @@ pub fn account_delete(path: &str, request: &Value) -> Result<Value, AnalysisErro
 }
 
 pub fn account_dashboard_context(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let logic = request
-        .get("logic_version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("缺少分析逻辑版本"))?;
-    let engine = request
-        .get("engine_version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("缺少分析引擎版本"))?;
     crate::with_read_snapshot(Path::new(path), |connection| {
         let mut accounts = list_on(connection)?;
         for account in &mut accounts {
@@ -718,8 +710,8 @@ pub fn account_dashboard_context(path: &str, request: &Value) -> Result<Value, A
             .iter()
             .filter_map(|account| account["id"].as_i64())
             .collect::<Vec<_>>();
-        let inputs = crate::dashboard::dashboard_inputs(connection, &ids, logic, engine)
-            .map_err(AnalysisError::from)?;
+        let inputs =
+            crate::dashboard::dashboard_inputs(connection, &ids).map_err(AnalysisError::from)?;
         Ok(json!({"accounts": accounts, "inputs": inputs}))
     })
 }

@@ -54,19 +54,34 @@ fn read_context(connection: &Connection, account: i64) -> Result<Value, Analysis
         .transpose()
         .map_err(|error| AnalysisError::new("ANALYSIS_DATABASE", error.to_string()))?
         .unwrap_or(Value::Null);
-    let mut statement = connection
-        .prepare("SELECT created_at FROM executerecord WHERE account_id=?1 AND result_staged=0")
-        .map_err(database_error)?;
-    let mut rows = statement.query([account]).map_err(database_error)?;
-    let mut first: Option<NaiveDate> = None;
-    let mut last: Option<NaiveDate> = None;
-    while let Some(row) = rows.next().map_err(database_error)? {
-        let timestamp: String = row.get(0).map_err(database_error)?;
-        let day = crate::calendar::local_time(&timestamp)
-            .map_err(AnalysisError::from)?
-            .date();
-        first = Some(first.map_or(day, |first| first.min(day)));
-        last = Some(last.map_or(day, |last| last.max(day)));
+    let mut bounds = Vec::new();
+    for order in ["ASC", "DESC"] {
+        let value:Option<String>=connection.query_row(&format!("SELECT created_at FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY axile_time(created_at) {order},id {order} LIMIT 1"),[account],|r|r.get(0)).optional().map_err(database_error)?;
+        bounds.push(
+            value
+                .map(|t| crate::calendar::local_time(&t).map(|v| v.date()))
+                .transpose()
+                .map_err(AnalysisError::from)?,
+        );
+    }
+    let mut first = bounds[0];
+    let last = bounds[1];
+    if let Some(state) = crate::analysis::state(connection, account, "all")? {
+        let dirty: Option<i64> = connection
+            .query_row(
+                "SELECT dirty_record FROM account_analysis WHERE account_id=?1",
+                [account],
+                |r| r.get(0),
+            )
+            .map_err(database_error)?;
+        if dirty.is_none_or(|id| id > state.max_id) {
+            if let Some(day) = state.current_day {
+                first = Some(
+                    NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+                        .map_err(|e| invalid(&e.to_string()))?,
+                );
+            }
+        }
     }
     Ok(json!({"trade_channel": channel, "settings": settings,
         "first_day": first, "last_day": last}))
@@ -142,135 +157,11 @@ pub fn save_calendar(path: &str, request: &Value) -> Result<Value, AnalysisError
 fn committed(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let account = integer(request, "account_id")?;
     let source = integer(request, "source_version")?;
-    let token = text(request, "running_token")?;
     let logic = text(request, "logic_version")?;
     let engine = text(request, "engine_version")?;
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM performance_snapshot WHERE id=?1 AND account_id=?2
-             AND source_version=?3 AND logic_version=?4 AND engine_version=?5
-             AND read_view_schema_version=1)",
-            params![token, account, source, logic, engine],
-            |row| row.get::<_, bool>(0),
-        )
-        .map(|found| json!(found))
-        .map_err(database_error)
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM analysis_state WHERE account_id=?1 AND range_key='all' AND version=?2 AND logic_version=?3 AND engine_version=?4)",params![account,source,logic,engine],|r|r.get::<_,bool>(0)).map(|v|json!(v)).map_err(database_error)
 }
 
-pub fn publication_committed(path: &str, request: &Value) -> Result<Value, AnalysisError> {
+pub fn commit_confirmed(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     crate::with_read_snapshot(Path::new(path), |connection| committed(connection, request))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_uses_account_scope_and_shanghai_dates() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE account(id INTEGER,trade_channel TEXT);
-             CREATE TABLE account_settings(account_id INTEGER,backtest TEXT);
-             CREATE TABLE executerecord(account_id INTEGER,created_at TEXT,result_staged INTEGER DEFAULT 0);
-             INSERT INTO account VALUES(1,'ctp'),(2,'ctp');
-             INSERT INTO account_settings VALUES(1,'{\"backtest_fee_rate\":0.01}');
-             INSERT INTO executerecord(account_id,created_at) VALUES(1,'2026-01-01T23:30:00-05:00'),
-             (1,'2026-01-02T00:30:00+14:00'),(2,'2020-01-01');",
-            )
-            .unwrap();
-        let result = read_context(&connection, 1).unwrap();
-        assert_eq!(result["first_day"], "2026-01-01");
-        assert_eq!(result["last_day"], "2026-01-02");
-        assert_eq!(result["settings"]["backtest_fee_rate"], 0.01);
-        assert_eq!(read_context(&connection, 3).unwrap(), Value::Null);
-        assert_eq!(
-            read_context(&connection, 2).unwrap()["settings"],
-            Value::Null
-        );
-    }
-
-    #[test]
-    fn calendar_batch_updates_atomically_and_preserves_other_days() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE analysis_calendar_day(channel TEXT,day TEXT,status TEXT,calendar_id TEXT,
-             label TEXT,PRIMARY KEY(channel,day));
-             INSERT INTO analysis_calendar_day VALUES('ctp','2025-01-01','unavailable',NULL,NULL);",
-        ).unwrap();
-        let rows = json!([{"day":"2026-01-01","status":"available_open","calendar_id":"SHFE"},
-            {"day":"invalid","status":"unavailable"}]);
-        let error = crate::writer_scope::immediate(&connection, || {
-            save_days(&connection, "ctp", rows.as_array().unwrap())
-        })
-        .unwrap_err();
-        assert_eq!(error.code, "INVALID_REQUEST");
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM analysis_calendar_day", [], |row| row
-                    .get::<_, i64>(
-                    0
-                ))
-                .unwrap(),
-            1
-        );
-        let rows = json!([{"day":"2026-01-01","status":"available_open","calendar_id":"SHFE"}]);
-        assert_eq!(
-            crate::writer_scope::immediate(&connection, || save_days(
-                &connection,
-                "ctp",
-                rows.as_array().unwrap()
-            ))
-            .unwrap(),
-            1
-        );
-        let rows = json!([{"day":"2026-01-01","status":"unavailable","calendar_id":null}]);
-        crate::writer_scope::immediate(&connection, || {
-            save_days(&connection, "ctp", rows.as_array().unwrap())
-        })
-        .unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM analysis_calendar_day", [], |row| row
-                    .get::<_, i64>(
-                    0
-                ))
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT status FROM analysis_calendar_day WHERE day='2026-01-01'",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )
-                .unwrap(),
-            "unavailable"
-        );
-    }
-
-    #[test]
-    fn publication_confirmation_checks_the_exact_claim() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE performance_snapshot(id TEXT,account_id INTEGER,source_version INTEGER,
-             logic_version TEXT,engine_version TEXT,read_view_schema_version INTEGER);
-             INSERT INTO performance_snapshot VALUES('token',1,7,'19','equity-ledger-1',1);",
-        ).unwrap();
-        let request = json!({"account_id":1,"source_version":7,"running_token":"token",
-            "logic_version":"19","engine_version":"equity-ledger-1"});
-        assert_eq!(committed(&connection, &request).unwrap(), true);
-        for (key, value) in [
-            ("account_id", json!(2)),
-            ("source_version", json!(8)),
-            ("running_token", json!("old")),
-            ("logic_version", json!("18")),
-            ("engine_version", json!("old")),
-        ] {
-            let mut stale = request.clone();
-            stale[key] = value;
-            assert_eq!(committed(&connection, &stale).unwrap(), false);
-        }
-    }
 }

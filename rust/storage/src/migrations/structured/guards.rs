@@ -363,3 +363,29 @@ pub(super) fn install_analysis(connection: &Connection) -> Result<()> {
         .join(" ");
     execute(connection, &format!("CREATE TRIGGER analysis_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN {deletes} END"))
 }
+
+pub(super) fn install_incremental(c: &Connection) -> Result<()> {
+    let tables = registry(c)?;
+    for table in &tables {
+        for (action, reference, timing) in [
+            ("INSERT", "NEW", "AFTER"),
+            ("UPDATE", "OLD", "BEFORE"),
+            ("UPDATE_NEW", "NEW", "AFTER"),
+            ("DELETE", "OLD", "BEFORE"),
+        ] {
+            let event = if action == "UPDATE_NEW" {
+                "UPDATE"
+            } else {
+                action
+            };
+            let (records, _) = scopes(table, reference, &tables);
+            let selection = if table.name == "executerecord" {
+                format!("SELECT {reference}.account_id AS account_id,{reference}.id AS id")
+            } else {
+                format!("SELECT account_id,id FROM executerecord WHERE id IN ({records})")
+            };
+            execute(c,&format!("CREATE TRIGGER incremental_{}_{} {timing} {event} ON {} BEGIN INSERT INTO account_analysis(account_id,source_version,dirty_record) SELECT account_id,0,min(id) FROM ({selection}) WHERE account_id IS NOT NULL GROUP BY account_id ON CONFLICT(account_id) DO UPDATE SET dirty_record=CASE WHEN dirty_record IS NULL THEN excluded.dirty_record ELSE min(dirty_record,excluded.dirty_record) END; END",table.name,action.to_lowercase(),quote(&table.name)))?;
+        }
+    }
+    Ok(())
+}

@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from axile.server import performance_analysis as analysis
-from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
@@ -75,33 +74,31 @@ def _persist(database: Path, created_at: str, result: dict, execution_id: str = 
 
 
 def _publish(database: Path, row=None):
-    core = require_native_store("publish_store", "query_costs", "execution_detail")
+    core = require_native_store("analysis_update", "analysis_query")
     if row is None:
         core.queue_enqueue(str(database), 1, False)
-        row = core.queue_claim(str(database), 1.0, "regression-snapshot")
-    receipt = native_store_call(
+        row = core.queue_claim(str(database), 1.0, "regression-job")
+    native_store_call(
         database,
-        "publish_store",
+        "analysis_update",
         {
-            "command": "publish_store",
-            "protocol": 1,
             "account_id": 1,
             "expected_source_version": row["source_version"],
-            "snapshot_id": row["running_token"],
             "claim_token": row["running_token"],
-            "logic_version": LOGIC_VERSION,
-            "engine_version": ENGINE_VERSION,
             "computed_at": _NOW,
-            "settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0},
-            "trade_channel": "tq",
         },
     )
-    assert receipt["published"] is True
-    return core, core.Store(str(database)), receipt["snapshot_id"]
+    return core, core.Store(str(database)), str(row["source_version"])
+
+
+def _read(database, version, command, **query):
+    return native_store_call(
+        database, "analysis_query", {"account_id": 1, "version": version, "command": command, **query}
+    )
 
 
 def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_work(database, monkeypatch):
-    core = require_native_store("queue_enqueue", "queue_claim", "queue_status")
+    core = require_native_store("queue_enqueue", "queue_claim", "analysis_query")
     _persist(database, _PRECISE, _RESULT)
     monkeypatch.setattr(analysis, "database_path", lambda: str(database))
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(database))
@@ -119,12 +116,12 @@ def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_w
     async def run():
         assert await manager.run_once()
         row = claims[0]
-        assert core.queue_status(str(database), 1, LOGIC_VERSION, ENGINE_VERSION) == "ready"
+        assert _read(database, str(row["source_version"]), "status")["status"] == "ready"
         _publish(database, row)
         await manager._fail(row)
         await manager._release_claim(row)
         with closing(oracle_connect(database)) as connection:
-            assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM analysis_state WHERE range_key='all'").fetchone()[0] == 1
             assert connection.execute(
                 "SELECT failures,running_token FROM account_analysis WHERE account_id=1"
             ).fetchone() == (0, None)
@@ -145,28 +142,7 @@ def test_cost_interval_keeps_the_trade_at_its_inclusive_microsecond_end(database
     _persist(database, _PRECISE, _RESULT)
     core, store, snapshot = _publish(database)
     end = datetime.fromisoformat(_PRECISE).timestamp() * 1000
-    page = json.loads(
-        core.query_costs(
-            store,
-            1,
-            snapshot,
-            "all",
-            "trade",
-            "time",
-            None,
-            end - 1000,
-            end,
-            None,
-            None,
-            None,
-            None,
-            20,
-            "precision",
-            None,
-            LOGIC_VERSION,
-            ENGINE_VERSION,
-        )
-    )
+    page = _read(database, snapshot, "costs", dimension="trade", start=end - 1000, end=end)
     assert page["count"] == 1
     assert page["data"][0]["time"] == end
     assert page["summary"]["fees"] == {"CNY": 0.0}
@@ -194,7 +170,7 @@ def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(
     symbol.update(outcome="not_reached", error="RuntimeError: private SDK detail")
     record = _persist(database, _PRECISE, result)
     core, store, snapshot = _publish(database)
-    detail = json.loads(core.execution_detail(store, 1, snapshot, record["id"], 20, 0))
+    detail = _read(database, snapshot, "detail", record_id=record["id"], limit=20, offset=0)
     tables = detail["tables"]
     symbols = [dict(zip(tables["symbols"]["columns"], row, strict=True)) for row in tables["symbols"]["rows"]]
     attempts = [dict(zip(tables["attempts"]["columns"], row, strict=True)) for row in tables["attempts"]["rows"]]
@@ -238,29 +214,19 @@ def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts
         current["symbol_results"]["A"]["trades"][0]["trade_time"] = when
         _persist(database, when, current, identity)
     _, _, snapshot = _publish(database)
-    with closing(oracle_connect(database)) as connection:
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM performance_cost_trade WHERE snapshot_id=?", (snapshot,)
-            ).fetchone()[0]
-            == 5
-        )
-        for range_key in ("all", "90"):
-            costs = connection.execute(
-                "SELECT day,value,cost,loss_bp,coverage,covered,count,fee_covered,amount_complete "
-                "FROM performance_result_daily_cost WHERE snapshot_id=? AND range_key=? AND day<'2026-01-10' ORDER BY day",
-                (snapshot, range_key),
-            ).fetchall()
-            assert costs == [
-                ("2026-01-01", 100.0, 2.0, 2.0 / 98.0 * 10000.0, 1.0, 1, 1, 1, 1),
-                ("2026-01-02", None, None, None, None, 0, 2, 2, 0),
-            ]
-            assert connection.execute(
-                "SELECT day,currency,value FROM performance_result_daily_fee "
-                "WHERE snapshot_id=? AND range_key=? AND day<'2026-01-10' ORDER BY day,currency",
-                (snapshot, range_key),
-            ).fetchall() == [("2026-01-01", "CNY", 0.0), ("2026-01-02", "USD", -0.2)]
-        assert connection.execute(
-            "SELECT day,count FROM performance_result_daily_cost WHERE snapshot_id=? AND range_key='30' ORDER BY day",
-            (snapshot,),
-        ).fetchall() == [("2026-01-10", 1), ("2026-02-15", 1)]
+    assert _read(database, snapshot, "costs", dimension="trade")["count"] == 5
+    for range_key in ["all", "90"]:
+        daily = _read(database, snapshot, "chart", range=range_key)["daily_costs"]
+        assert daily["2026-01-01"]["value"] == 100
+        assert daily["2026-01-01"]["cost"] == 2
+        assert daily["2026-01-01"]["lossBp"] == pytest.approx(2 / 98 * 10000)
+        assert daily["2026-01-01"]["fees"] == {"CNY": 0}
+        assert daily["2026-01-02"]["value"] is None
+        assert daily["2026-01-02"]["cost"] is None
+        assert daily["2026-01-02"]["count"] == 2
+        assert daily["2026-01-02"]["amountComplete"] is False
+        assert daily["2026-01-02"]["fees"] == {"USD": -0.2}
+    assert {day: v["count"] for day, v in _read(database, snapshot, "chart", range="30")["daily_costs"].items()} == {
+        "2026-01-10": 1,
+        "2026-02-15": 1,
+    }
