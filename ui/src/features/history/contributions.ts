@@ -62,22 +62,6 @@ function groupSeries(contracts: ContributionSeries[], length: number) {
   return groups
 }
 
-function accountDrawdown(points: AnalysisChart['result']['points'], start: number, end: number) {
-  let valid = 0
-  let peak: number | null = null, peakIndex = start, worstStart = start, worstEnd = start, worst = 0
-  const drawdowns = points.slice(start, end + 1).map((p, i) => {
-    const equity = p.account_equity
-    if (equity == null || equity <= 0) return null
-    valid++
-    if (peak == null || equity >= peak) { peak = equity; peakIndex = i + start }
-    const value = equity / peak - 1
-    if (value < worst) { worst = value; worstStart = peakIndex; worstEnd = i + start }
-    return value
-  })
-  return { drawdowns, maxDrawdown: valid >= 2 ? worst : null,
-    drawdownSelection: valid >= 2 && worstEnd > worstStart ? { kind: 'interval' as const, start: pointTime(points[worstStart]), end: pointTime(points[worstEnd]) } : null }
-}
-
 /** Selection rebases frozen backend P&L, preserving its currency and quality counters. */
 export function contributionView(chart: AnalysisChart, selection: ChartSelection) {
   const points = chart.result.points
@@ -93,6 +77,6 @@ export function contributionView(chart: AnalysisChart, selection: ChartSelection
   return { start, end, points: points.slice(start, end + 1), groups, accountChange,
     knownGross: comparable ? knownGross : null, knownFees: comparable ? knownFees : null,
     unexplained: comparable && accountChange != null ? accountChange - knownGross + knownFees : null,
-    currency: currencies.size === 1 ? groups[0]?.currency : null, ...accountDrawdown(points, start, end),
+    currency: currencies.size === 1 ? groups[0]?.currency : null,
   }
 }

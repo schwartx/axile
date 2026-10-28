@@ -257,7 +257,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
       <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.snapshot_id} viewKey={`${accountId}:${displayedRange}`} data={data} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
 
     </div>}
-    {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} onSelect={setSelection} scaleMode={scale} />}
+    {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
       <SectionLabel>账户时间线</SectionLabel>
       {events.length === 0 ? <p className="text-sm text-ink-3">{snapshot ? '本区间无异常事件' : '绩效结果就绪后显示账户事件'}</p> : events.slice(0, showEvents ? undefined : 8).map((event, i) => <div key={i} className="flex flex-wrap items-baseline gap-3 border-b border-line py-2 text-xs">

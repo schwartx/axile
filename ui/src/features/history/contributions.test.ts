@@ -48,13 +48,6 @@ test('a later interval can be valid after an earlier missing fill', () => {
   expect(contributionView(source, { kind: 'interval', start: pointTime(points[1]), end: pointTime(points[3]) })!.groups[0].gross).toBe(-10)
 })
 
-test('drawdown picks the account peak to trough', () => {
-  const source = chart()
-  const result = contributionView(source, null)!
-  expect(result.maxDrawdown).toBe(-0.25)
-  expect(result.drawdownSelection).toEqual({ kind: 'interval', start: pointTime(source.result.points[1]), end: pointTime(source.result.points[2]) })
-})
-
 test('different currencies never combine into an account amount', () => {
   const source = chart([{ idx: 0 }, { idx: 3, gross_pnl: 100 }, { idx: 0, symbol: 'OTHER', currency: 'USD' }, { idx: 3, symbol: 'OTHER', currency: 'USD', gross_pnl: 50 }])
   expect(contributionView(source, null)!.knownGross).toBeNull()
