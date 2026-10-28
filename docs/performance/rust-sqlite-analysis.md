@@ -1,3 +1,7 @@
+# 历史架构记录
+
+本文记录 0034–0038 的旧快照架构，0039 已替换为[后端增量五表模型](../design/native-incremental-analysis.md)。旧表和入口不再存在，文中的测量仅作为历史记录。
+
 # Rust SQLite 分析
 
 Rust 通过进程内 PyO3 扩展 `axile.server._native._core` 执行 SQLite 业务读写、迁移和分析发布。Python 保留 HTTP、策略、渠道 SDK、Clock 和调度。调用、事务、连接复用与取消契约见 [Rust SQLite 存储边界](../architecture/rust-sqlite-storage.md)。

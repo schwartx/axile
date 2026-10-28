@@ -6,7 +6,7 @@ import { decodeExecutionDetail, detailNextOffset, executionDetailEntry, loadExec
 const table = (rows: Record<string, unknown>[], columns = Object.keys(rows[0] ?? {})): AnalysisTable => ({ columns, rows: rows.map(row => columns.map(column => row[column])) })
 const frozenSummary = { value: null, cost: null, loss_bp: null, coverage: null, covered: 0, count: 0, amount_complete: true, fee_covered: 0, fees: {} }
 function detail(snapshot = 's1', record = 7): AnalysisExecutionDetail {
-  return { schema_version: 1, snapshot_id: snapshot, record_id: record,
+  return { schema_version: 1, version: snapshot, record_id: record,
     header: { execution_id: 'exec7', created_at: '2026-10-20T10:00:00', is_success: 1, noop: false, reason: null, raw_present: 1, raw_status: 'SUCCEEDED', has_symbol_results: true, positions_present: true },
     summary: frozenSummary, tables: {
       positions: table([], ['idx', 'symbol', 'quantity', 'direction']), attempts: table([], ['idx', 'symbol', 'planned', 'filled', 'reason']),
@@ -126,12 +126,12 @@ test('expired snapshots remain explicit and never issue refresh or newest-snapsh
   fetchWith(async (input, init) => {
     paths.push(String(input))
     expect(init?.method).toBeUndefined()
-    return Response.json({ detail: 'gone' }, { status: 410 })
+    return Response.json({ detail: 'gone' }, { status: 409 })
   })
   const entry = executionDetailEntry(48, 'expired', 104)
   await loadExecutionDetail(entry)
   expect(paths).toHaveLength(1)
-  expect(paths[0]).toContain('snapshot_id=expired')
+  expect(paths[0]).toContain('version=expired')
   expect(entry.state.expired).toBe(true)
   expect(entry.state.error).toBeInstanceOf(ApiError)
   expect(entry.state.data).toBeNull()

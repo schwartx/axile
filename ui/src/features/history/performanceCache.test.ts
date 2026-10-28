@@ -25,7 +25,7 @@ async function settle(id: number, range: PerformanceRange = 'all') {
 function serve(id: number, metadata: () => AnalysisMetadata) {
   mockFetch(async input => {
     const url = urlOf(input)
-    return Response.json(url.pathname.endsWith('/status') ? metadata() : chartFixture(id, url.searchParams.get('snapshot_id')!, url.searchParams.get('range') as PerformanceRange))
+    return Response.json(url.pathname.endsWith('/status') ? metadata() : chartFixture(id, url.searchParams.get('version')!, url.searchParams.get('range') as PerformanceRange))
   })
 }
 
@@ -74,25 +74,25 @@ test('late S2 cannot replace S1 after metadata targets S3 or erase newer status'
   mockFetch(async input => {
     const url = urlOf(input)
     if (url.pathname.endsWith('/status')) return Response.json(metadata)
-    const id = url.searchParams.get('snapshot_id')!
+    const id = url.searchParams.get('version')!
     return id === 'S2' ? second.promise : Response.json(chartFixture(822, id))
   })
   await checkPerformance(822, 'all'); await settle(822)
   const entry = performanceEntry(822, 'all')
   const seen: (string | undefined)[] = []
-  const observe = () => seen.push(entry.state.displayed?.snapshot_id)
+  const observe = () => seen.push(entry.state.displayed?.version)
   entry.listeners.add(observe)
   metadata = metadataFixture('S2')
   await checkPerformance(822, 'all')
-  expect(entry.state.metadata?.snapshot_id).toBe('S2')
-  expect(entry.state.displayed?.snapshot_id).toBe('S1')
+  expect(entry.state.metadata?.version).toBe('S2')
+  expect(entry.state.displayed?.version).toBe('S1')
   expect(entry.state.loadingResult).toBe(true)
   metadata = metadataFixture('S3', { status: 'stale', error: '新版排队', source_version: 4 })
   await checkPerformance(822, 'all')
   second.resolve(Response.json(chartFixture(822, 'S2')))
   await settle(822)
   expect(seen).not.toContain('S2')
-  expect(entry.state.displayed?.snapshot_id).toBe('S3')
+  expect(entry.state.displayed?.version).toBe('S3')
   expect(entry.state.metadata).toMatchObject({ status: 'stale', error: '新版排队', source_version: 4 })
   entry.listeners.delete(observe)
 })
@@ -124,7 +124,7 @@ test('ready-state result failure keeps status recovery, separates errors and pre
   expect(entry.state.displayed).toBe(old)
   serve(823, () => metadata)
   await checkPerformance(823, 'all'); await settle(823)
-  expect(entry.state.displayed?.snapshot_id).toBe('S2')
+  expect(entry.state.displayed?.version).toBe('S2')
   expect(entry.state.resultError).toBeNull()
   expect(entry.state.statusError).toBeNull()
 })
@@ -140,65 +140,32 @@ test('410 makes one immediate status recovery and waits for another check to rea
     const url = urlOf(input)
     if (url.pathname.endsWith('/status')) { statuses++; return Response.json(statuses === 1 ? metadata : metadataFixture('S3')) }
     charts++
-    return url.searchParams.get('snapshot_id') === 'S2' ? Response.json({ detail: { code: 'SNAPSHOT_EXPIRED', message: '过期' } }, { status: 410 }) : Response.json(chartFixture(824, 'S3'))
+    return url.searchParams.get('version') === 'S2' ? Response.json({ detail: { code: 'SNAPSHOT_EXPIRED', message: '过期' } }, { status: 409 }) : Response.json(chartFixture(824, 'S3'))
   })
   await checkPerformance(824, 'all'); await settle(824)
   const entry = performanceEntry(824, 'all')
   expect(statuses).toBe(2)
   expect(charts).toBe(1)
   expect(posts).toBe(0)
-  expect(entry.state.metadata?.snapshot_id).toBe('S3')
-  expect(entry.state.displayed?.snapshot_id).toBe('S1')
+  expect(entry.state.metadata?.version).toBe('S3')
+  expect(entry.state.displayed?.version).toBe('S1')
   expect(shouldPollPerformance(entry)).toBe(true)
   await checkPerformance(824, 'all', false); await settle(824)
   expect(charts).toBe(2)
-  expect(entry.state.displayed?.snapshot_id).toBe('S3')
+  expect(entry.state.displayed?.version).toBe('S3')
 })
 
 test('an expired ID keeps checking small status without repeatedly downloading that ID', async () => {
   let charts = 0, statuses = 0
   mockFetch(async input => {
     if (urlOf(input).pathname.endsWith('/status')) { statuses++; return Response.json(metadataFixture('expired')) }
-    charts++; return new Response('', { status: 410 })
+    charts++; return new Response('', { status: 409 })
   })
   await checkPerformance(825, 'all'); await settle(825)
   await checkPerformance(825, 'all', false); await settle(825)
   expect(statuses).toBe(3)
   expect(charts).toBe(1)
   expect(shouldPollPerformance(performanceEntry(825, 'all'))).toBe(true)
-})
-
-test('marker0 is explicit and does not start a ready-state chart retry loop', async () => {
-  let charts = 0
-  mockFetch(async input => {
-    if (urlOf(input).pathname.endsWith('/status')) return Response.json(metadataFixture('legacy', { read_view_schema_version: 0 }))
-    charts++; throw new Error('must not read legacy chart')
-  })
-  await checkPerformance(826, 'all')
-  const entry = performanceEntry(826, 'all')
-  expect(entry.state.metadata?.read_view_schema_version).toBe(0)
-  expect(entry.state.displayed).toBeNull()
-  expect(charts).toBe(0)
-  expect(shouldPollPerformance(entry)).toBe(false)
-})
-
-test('chart 409 clears loading and marker0 stops automatic reads while offering explicit rebuild', async () => {
-  let metadata = metadataFixture('unsupported')
-  let charts = 0
-  mockFetch(async input => {
-    if (urlOf(input).pathname.endsWith('/status')) return Response.json(metadata)
-    charts++; return Response.json({ detail: { code: 'ANALYSIS_READ_VIEW_UNAVAILABLE', message: '请重新计算' } }, { status: 409 })
-  })
-  await checkPerformance(831, 'all'); await settle(831)
-  const entry = performanceEntry(831, 'all')
-  expect(entry.state.loadingResult).toBe(false)
-  expect(entry.state.resultError).toMatchObject({ status: 409, code: 'ANALYSIS_READ_VIEW_UNAVAILABLE' })
-  expect(shouldPollPerformance(entry)).toBe(true)
-  metadata = metadataFixture('unsupported', { read_view_schema_version: 0 })
-  await checkPerformance(831, 'all', false)
-  expect(charts).toBe(1)
-  expect(entry.state.loadingResult).toBe(false)
-  expect(shouldPollPerformance(entry)).toBe(false)
 })
 
 test('refresh coalesces the mutation and checks active ranges without loading inactive cached charts', async () => {
@@ -221,8 +188,8 @@ test('refresh coalesces the mutation and checks active ranges without loading in
   await settle(827)
   expect(posts).toBe(1)
   expect(ranges).toEqual(['all'])
-  expect(entry.state.displayed?.snapshot_id).toBe('S2')
-  expect(performanceEntry(827, '90').state.displayed?.snapshot_id).toBe('S1')
+  expect(entry.state.displayed?.version).toBe('S2')
+  expect(performanceEntry(827, '90').state.displayed?.version).toBe('S1')
   entry.listeners.delete(listener)
 })
 
@@ -233,7 +200,7 @@ test('a dashboard publication during status loading is not lost to the old fligh
   mockFetch(async input => {
     const url = urlOf(input)
     if (url.pathname.endsWith('/status')) { statuses++; return statuses === 1 ? first.promise : Response.json(metadataFixture('S3')) }
-    chartIds.push(url.searchParams.get('snapshot_id')!)
+    chartIds.push(url.searchParams.get('version')!)
     return Response.json(chartFixture(828, 'S3'))
   })
   const entry = performanceEntry(828, 'all')
@@ -245,7 +212,7 @@ test('a dashboard publication during status loading is not lost to the old fligh
   await initial; await settle(828)
   expect(statuses).toBe(2)
   expect(chartIds).toEqual(['S3'])
-  expect(entry.state.displayed?.snapshot_id).toBe('S3')
+  expect(entry.state.displayed?.version).toBe('S3')
   reconcilePerformanceVersion(828, 'S3')
   expect(statuses).toBe(2)
   entry.listeners.delete(listener)
@@ -260,7 +227,7 @@ test('a range mounted during POST gets fresh status after the mutation', async (
     const url = urlOf(input)
     if (init?.method === 'POST') { const response = await mutation.promise; mutationDone = true; return response }
     if (url.pathname.endsWith('/status')) return mutationDone ? Response.json(metadataFixture('S2')) : oldStatus.promise
-    return Response.json(chartFixture(830, url.searchParams.get('snapshot_id')!, url.searchParams.get('range') as PerformanceRange))
+    return Response.json(chartFixture(830, url.searchParams.get('version')!, url.searchParams.get('range') as PerformanceRange))
   })
   const refresh = requestPerformanceRefresh(830)
   const range = performanceEntry(830, '30')
@@ -271,7 +238,7 @@ test('a range mounted during POST gets fresh status after the mutation', async (
   await Promise.resolve(); await Promise.resolve()
   oldStatus.resolve(Response.json(metadataFixture('S1')))
   await Promise.all([refresh, oldCheck]); await settle(830, '30')
-  expect(range.state.displayed?.snapshot_id).toBe('S2')
+  expect(range.state.displayed?.version).toBe('S2')
   expect(range.state.displayed?.range).toBe('30')
   range.listeners.delete(listener)
 })

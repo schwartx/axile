@@ -7,7 +7,7 @@ import { sparklinePath } from '@/components/viz/sparklineGeometry'
 import type { PerformanceSummary, PerformancePoint } from '@/types/api'
 
 const summary: PerformanceSummary = {
-  snapshot_id: 'one', status: 'ready', computed_at: null, observed_at: '2026-09-07T17:00:00+08:00',
+  version: 'one', status: 'ready', computed_at: null, observed_at: '2026-09-07T17:00:00+08:00',
   account_equity: 117128.71, account_daily_return: -0.012, points: [],
 }
 
@@ -36,7 +36,7 @@ test('小图入口清除旧区间和缩放，先取状态再按固定版本预�
     urls.push(String(input))
     const url = new URL(String(input), 'http://fixture')
     if (url.pathname.endsWith('/status')) return Response.json(metadataFixture('prefetched'))
-    if (url.pathname.endsWith('/chart')) return Response.json(chartFixture(991, 'prefetched'))
+    if (url.searchParams.has('version')) return Response.json(chartFixture(991, 'prefetched'))
     throw new Error(`unexpected prefetch ${url.pathname}`)
   }, { preconnect: original.preconnect })
   try {
@@ -49,12 +49,12 @@ test('小图入口清除旧区间和缩放，先取状态再按固定版本预�
     expect(performanceViews.get(991)).toEqual({ range: 'all', view: 'cumulative', scale: 'observations', selection: null })
     expect(performanceViewports.has('991:all')).toBe(false)
     expect(urls).toHaveLength(2)
-    expect(urls[0]).toBe('/api/v1/account/performance/991/status')
+    expect(urls[0]).toBe('/api/v1/account/analysis/991/status')
     const chart = new URL(urls[1], 'http://fixture')
-    expect(chart.pathname).toBe('/api/v1/account/performance/991/chart')
-    expect(chart.searchParams.get('snapshot_id')).toBe('prefetched')
+    expect(chart.pathname).toBe('/api/v1/account/analysis/991')
+    expect(chart.searchParams.get('version')).toBe('prefetched')
     expect(chart.searchParams.get('range')).toBe('all')
-    expect(entry.state.displayed?.snapshot_id).toBe('prefetched')
+    expect(entry.state.displayed?.version).toBe('prefetched')
     expect(entry.state.displayed?.result.points).toHaveLength(2)
     expect(entry.state.resultError).toBeNull()
   } finally { globalThis.fetch = original }
@@ -65,13 +65,13 @@ test('小图预取遇到空快照只读状态，不触发计算或执行详情�
   const requests: { url: string; method: string }[] = []
   globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
     requests.push({ url: String(input), method: init?.method ?? 'GET' })
-    return Response.json(metadataFixture(null, { status: 'empty', snapshot_version: null, read_view_schema_version: 0 }))
+    return Response.json(metadataFixture(null, { status: 'empty' }))
   }, { preconnect: original.preconnect })
   try {
     openFullPerformance(992)
     const entry = performanceEntry(992, 'all')
     await entry.flight
-    expect(requests).toEqual([{ url: '/api/v1/account/performance/992/status', method: 'GET' }])
+    expect(requests).toEqual([{ url: '/api/v1/account/analysis/992/status', method: 'GET' }])
     expect(entry.state.metadata?.status).toBe('empty')
     expect(entry.state.displayed).toBeNull()
     expect(entry.state.statusError).toBeNull()

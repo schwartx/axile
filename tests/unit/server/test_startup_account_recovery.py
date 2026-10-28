@@ -16,7 +16,7 @@ from axile.server.execution import notification_outbox, supplements
 
 NATIVE_OPERATIONS = (
     "close_database",
-    "publish_store",
+    "analysis_update",
     "account_public",
     "connection_accounts",
     "execution_read",
@@ -25,14 +25,14 @@ NATIVE_OPERATIONS = (
     "freeze_execution_input",
     "freeze_execution_after_assets",
     "queue_enqueue",
-    "queue_status",
+    "analysis_query",
     "queue_recover",
     "queue_claim",
     "queue_fail",
     "queue_release",
     "analysis_context",
     "analysis_calendar_save",
-    "analysis_publication_committed",
+    "analysis_commit_confirmed",
 )
 
 
@@ -42,7 +42,9 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
     from axile.server import performance_analysis
 
     native = SimpleNamespace(
-        ANALYSIS_FACT_SCHEMA=40, **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing}
+        ANALYSIS_FACT_SCHEMA=40,
+        PUBLIC_HEAD="0039",
+        **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing},
     )
     monkeypatch.setattr(performance_analysis, "_core", native)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
@@ -78,7 +80,7 @@ def isolated_lifespan(monkeypatch):
 
     manager = MagicMock(start=AsyncMock(), stop=AsyncMock())
     monkeypatch.setattr(performance_analysis, "AnalysisManager", lambda: manager)
-    monkeypatch.setattr(performance_analysis._core, "publish_store", MagicMock(), raising=False)
+    monkeypatch.setattr(performance_analysis._core, "analysis_update", MagicMock(), raising=False)
     monkeypatch.setattr(server_app, "ensure_single_worker", lambda: None)
     monkeypatch.setattr(server_app, "is_configured", lambda: True)
     monkeypatch.setattr(server_app.live_hub, "bind_loop", lambda _loop: None)

@@ -124,7 +124,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
   const detailLink = (executionId: string | null) => executionId ? <Link to={`/accounts/${accountId}/executions/${executionId}`} state={{ journalReturn: `${location.pathname}${location.search}` }}
     onClick={() => visits.set(visitKey, { ...snapshot.current, scroll: document.querySelector('main.app-workspace')?.scrollTop ?? 0 })}
     className="inline-flex min-h-9 items-center gap-1 text-accent hover:underline">完整执行详情 <ExternalLink size={13} aria-hidden /></Link> : <span className="text-ink-3">无执行详情</span>
-  const expired = poll.error instanceof ApiError && poll.error.status === 410
+  const expired = poll.error instanceof ApiError && poll.error.status === 409
   const scopedQuery = scope ? { ...scope, symbol_search: keyword.trim() || undefined } : undefined
   return <section className="min-w-0 [&_button]:min-h-9 [&_button]:min-w-9">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"><AccountPageTitle accountId={accountId} page="执行记录" name={item?.name} channel={item?.trade_channel} market={item?.market} /></div>
@@ -134,7 +134,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
       </div></div>
     {(scope || parsed.error) && <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-3" data-testid="journal-source">
       <Link to={`/accounts/${accountId}/history`} className="inline-flex min-h-9 items-center text-accent">返回实盘绩效</Link>
-      {scope && <><span>来自实盘绩效 · {scopeLabel(scope)}</span>{poll.data?.dataUntil && <span>快照数据截止 {shanghaiLabel(poll.data.dataUntil)}</span>}</>}
+      {scope && <><span>来自实盘绩效 · {scopeLabel(scope)}</span>{poll.data?.dataUntil && <span>分析数据截止 {shanghaiLabel(poll.data.dataUntil)}</span>}</>}
       <button className="min-h-9 text-accent" onClick={() => update('range', '30')}>查看最新记录</button>
     </div>}
     <div className="flex flex-wrap items-center gap-3 border-b border-line pb-4">
@@ -150,7 +150,7 @@ function ExecutionJournal({ accountId }: { accountId: number }) {
     </div></div></div>
     {parsed.error && <p role="alert" className="py-4 text-sm text-warn">{parsed.error.message}</p>}
     {!scope && !window && <p role="alert" className="py-4 text-sm text-warn">请选择有效的起止日期，结束日期不能早于开始日期。</p>}
-    {expired ? <p role="alert" className="py-4 text-sm text-warn">绩效快照已失效，请返回实盘绩效刷新后重新选择区间。</p> : <ErrorNotice hasData={poll.data != null} intent="read" title="执行记录加载失败" error={poll.error} variant={poll.data ? 'stale' : 'section'} updatedAt={poll.updatedAt} onRetry={poll.refresh} />}
+    {expired ? <p role="alert" className="py-4 text-sm text-warn">绩效版本已变化，请返回实盘绩效刷新后重新选择区间。</p> : <ErrorNotice hasData={poll.data != null} intent="read" title="执行记录加载失败" error={poll.error} variant={poll.data ? 'stale' : 'section'} updatedAt={poll.updatedAt} onRetry={poll.refresh} />}
     {poll.loading && <div aria-busy="true" aria-label="正在加载执行记录">{Array.from({ length: 7 }, (_, i) => <div key={i} className="flex min-h-20 items-center gap-6 border-b border-line"><Skeleton className="h-3 w-28" /><Skeleton className="h-3 w-1/3" /></div>)}</div>}
     {poll.data && !expired && <div key={view} className={fade ? 'panel-fade-in' : ''}>
       <div data-testid="journal-summary" className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 py-3 text-xs text-ink-3">

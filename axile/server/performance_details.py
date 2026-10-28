@@ -1,7 +1,5 @@
-"""Version-bound cost pagination over compact indexed projections."""
+"""按事实修订号查询成本；明细从规范事实按需计算。"""
 
-import hashlib
-import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -10,17 +8,17 @@ from axile.server.db.models.performance import RangeKey
 
 
 class CostQuery(BaseModel):
-    """An immutable snapshot plus exact filter and ordering scope."""
+    """事实修订号与成本筛选条件。"""
 
     model_config = ConfigDict(extra="forbid")
-    snapshot_id: str
+    version: str = Field(pattern=r"^[0-9]{1,19}$")
     range: RangeKey = "all"
     dimension: Literal["execution", "symbol", "trade", "summary"] = "execution"
     sort: Literal["time", "cost"] = "time"
     day: str | None = None
     start: float | None = Field(default=None, allow_inf_nan=False)
     end: float | None = Field(default=None, allow_inf_nan=False)
-    record_id: int | None = None
+    record_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     symbol: str | None = None
     symbol_search: str | None = None
     side: Literal["buy", "sell", "none"] | None = None
@@ -42,9 +40,3 @@ class CostQuery(BaseModel):
             if date.fromisoformat(self.day).isoformat() != self.day:
                 raise ValueError("day must be YYYY-MM-DD")
         return self
-
-
-def cost_query_scope(query: CostQuery, account_id: int) -> str:
-    """生成查询摘要，游标的解码与校验由原生读取负责。"""
-    scope = query.model_dump(exclude={"cursor"}) | {"account_id": account_id}
-    return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()

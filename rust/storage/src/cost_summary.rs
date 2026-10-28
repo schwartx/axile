@@ -1,27 +1,7 @@
 //! 成交成本与费用聚合，计算和读取共用相同规则。
 
-use rusqlite::Row;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-
-pub(crate) const AGGREGATES: &str = "COUNT(*), COUNT(value), SUM(value), SUM(cost), \
-    COUNT(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN 1 END), \
-    SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN value ELSE 0 END), \
-    SUM(CASE WHEN cost IS NOT NULL AND value IS NOT NULL THEN loss_bp * value ELSE 0 END), \
-    SUM(CAST(estimated AS INTEGER))";
-pub(crate) fn sql_number(row: &Row<'_>, index: usize) -> rusqlite::Result<Value> {
-    use rusqlite::types::ValueRef;
-    match row.get_ref(index)? {
-        ValueRef::Null => Ok(Value::Null),
-        ValueRef::Integer(value) => Ok(json!(value)),
-        ValueRef::Real(value) => Ok(json!(value)),
-        _ => Err(rusqlite::Error::InvalidColumnType(
-            index,
-            index.to_string(),
-            row.get_ref(index)?.data_type(),
-        )),
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct Summary {
@@ -96,21 +76,6 @@ impl Summary {
             .and_then(|value| self.covered_value.map(|covered| covered / value))
     }
 
-    pub(crate) fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
-        Ok(Self {
-            count: row.get(start)?,
-            valued: row.get(start + 1)?,
-            value: row.get(start + 2)?,
-            cost: row.get(start + 3)?,
-            covered: row.get(start + 4)?,
-            covered_value: row.get(start + 5)?,
-            covered_value_json: sql_number(row, start + 5)?,
-            weighted_loss: row.get(start + 6)?,
-            estimated: row.get::<_, Option<i64>>(start + 7)?.unwrap_or(0),
-            fees: BTreeMap::new(),
-            fee_count: 0,
-        })
-    }
     pub(crate) fn output(&self) -> Value {
         let fees: Map<_, _> = self
             .fees
@@ -122,18 +87,5 @@ impl Summary {
             "covered": self.covered, "coveredValue": self.covered_value_json, "count": self.count,
             "amountComplete": self.amount_complete(), "fees": fees, "feeCovered": self.fee_count, "estimated": self.estimated,
         })
-    }
-    pub(crate) fn historical_output(&self) -> Value {
-        let mut output = self.output();
-        let object = output.as_object_mut().expect("summary object");
-        object.remove("coveredValue");
-        object.remove("estimated");
-        if self.covered_value.unwrap_or(0.0) <= 0.0 {
-            object.insert("lossBp".to_owned(), Value::Null);
-        }
-        if self.value.unwrap_or(0.0) <= 0.0 {
-            object.insert("coverage".to_owned(), Value::Null);
-        }
-        output
     }
 }

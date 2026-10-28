@@ -19,7 +19,7 @@ import { PerformanceChartPlaceholder } from '@/features/history/PerformanceChart
 import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performance'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
-import { amount, feeText, shanghaiLabel, shanghaiTime, type CostSummary } from '@/features/history/costs'
+import { amount, feeText, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { returnText } from '@/features/history/performance'
 import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
 import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotBounds, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
@@ -314,7 +314,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
     </Tooltip>
       {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-xs text-warn">
         <Tooltip content={<div className="space-y-2">
-      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算：{data.sizing_fallback_ranges?.map(range => `${shanghaiLabel(range.start)} → ${shanghaiLabel(range.end)}（${range.count} 条）`).join('、')}</p>}
+      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算，对应日期在曲线上标记</p>}
       {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p className="text-ink-2">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
       {data.invalid_asset_count > 0 && <p className="text-ink-2">{data.invalid_asset_count} 条账户资产快照不可用</p>}
         </div>} arrow>

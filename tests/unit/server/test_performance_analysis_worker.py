@@ -26,7 +26,7 @@ def manager(monkeypatch):
 def test_native_capabilities_require_preparation_and_commit_confirmation(monkeypatch):
     monkeypatch.setattr(analysis._core, "ANALYSIS_FACT_SCHEMA", 40)
     for name in (
-        "publish_store",
+        "analysis_update",
         "account_public",
         "connection_accounts",
         "execution_read",
@@ -35,14 +35,13 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
         "freeze_execution_input",
         "freeze_execution_after_assets",
         "queue_enqueue",
-        "queue_status",
         "queue_recover",
         "queue_claim",
         "queue_fail",
         "queue_release",
         "analysis_context",
         "analysis_calendar_save",
-        "analysis_publication_committed",
+        "analysis_commit_confirmed",
     ):
         monkeypatch.setattr(analysis._core, name, lambda *args: None, raising=False)
     analysis.ensure_native_capabilities()
@@ -51,16 +50,16 @@ def test_native_capabilities_require_preparation_and_commit_confirmation(monkeyp
             scoped.delattr(analysis._core, name)
             with pytest.raises(RuntimeError, match=name):
                 analysis.ensure_native_capabilities()
-    monkeypatch.delattr(analysis._core, "analysis_publication_committed")
-    with pytest.raises(RuntimeError, match="analysis_publication_committed"):
+    monkeypatch.delattr(analysis._core, "analysis_commit_confirmed")
+    with pytest.raises(RuntimeError, match="analysis_commit_confirmed"):
         analysis.ensure_native_capabilities()
     monkeypatch.delattr(analysis._core, "ANALYSIS_FACT_SCHEMA")
     with pytest.raises(RuntimeError, match="schema 0034"):
         analysis.ensure_native_capabilities()
 
 
-@pytest.mark.parametrize("published", [False, True])
-def test_native_dispatch_prepares_calendar_before_publication(manager, claim, monkeypatch, published):
+@pytest.mark.parametrize("updated", [False, True])
+def test_native_dispatch_prepares_calendar_before_publication(manager, claim, monkeypatch, updated):
     prepared = {
         "trade_channel": "ctp",
         "settings": {"backtest_fee_rate": 0.01},
@@ -77,32 +76,33 @@ def test_native_dispatch_prepares_calendar_before_publication(manager, claim, mo
     native = AsyncMock(side_effect=dispatch)
     calendar = AsyncMock(return_value=3)
     requests = []
+    monkeypatch.setattr(manager, "_release_claim", AsyncMock())
 
     def publish(path, payload):
         calendar.assert_awaited_once_with("ctp", "2026-01-01", "2026-01-03")
         requests.append((path, json.loads(payload)))
-        return {"published": published}
+        return {"updated": updated}
 
     monkeypatch.setattr(analysis, "native_operation", native)
     monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", calendar)
-    monkeypatch.setattr(analysis._core, "publish_store", publish)
+    monkeypatch.setattr(analysis._core, "analysis_update", publish)
     asyncio.run(manager._run_native(claim))
     assert native.await_args_list[0].args == ("analysis_context", {"account_id": 7})
-    assert native.await_args_list[1].args[0] == "publish_store"
+    assert native.await_args_list[1].args[0] == "analysis_update"
     assert native.await_count == 2
     path, request = requests[0]
     assert path == "/isolated/analysis.sqlite"
-    assert request["snapshot_id"] == request["claim_token"] == "claim-token"
+    assert request["claim_token"] == "claim-token"
+    assert "snapshot_id" not in request
     assert request["expected_source_version"] == 11
-    assert request["settings"] == {"backtest_weight_type": "ts", "backtest_fee_rate": 0.01}
 
 
-def test_deleted_account_is_not_published(manager, claim, monkeypatch):
+def test_deleted_account_is_not_updated(manager, claim, monkeypatch):
     native = AsyncMock(return_value=None)
     calendar = AsyncMock()
     monkeypatch.setattr(analysis, "native_operation", native)
     monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", calendar)
-    monkeypatch.setattr(analysis._core, "publish_store", lambda *args: pytest.fail("account was deleted"))
+    monkeypatch.setattr(analysis._core, "analysis_update", lambda *args: pytest.fail("account was deleted"))
     asyncio.run(manager._run_native(claim))
     calendar.assert_not_awaited()
 
@@ -110,13 +110,18 @@ def test_deleted_account_is_not_published(manager, claim, monkeypatch):
 def test_confirmation_uses_exact_claim_and_versions(manager, claim, monkeypatch):
     native = AsyncMock(return_value=True)
     monkeypatch.setattr(analysis, "native_operation", native)
-    assert asyncio.run(manager._native_publication_committed(claim))
+    assert asyncio.run(manager._native_update_committed(claim))
     native.assert_awaited_once_with(
-        "analysis_publication_committed",
-        {**claim, "logic_version": analysis.LOGIC_VERSION, "engine_version": analysis.ENGINE_VERSION},
+        "analysis_commit_confirmed",
+        {
+            "account_id": 7,
+            "source_version": 11,
+            "logic_version": analysis.LOGIC_VERSION,
+            "engine_version": analysis.ENGINE_VERSION,
+        },
     )
     native.reset_mock()
-    assert not asyncio.run(manager._native_publication_committed({**claim, "running_token": None}))
+    assert not asyncio.run(manager._native_update_committed({**claim, "running_token": None}))
     native.assert_not_awaited()
 
 
@@ -124,7 +129,7 @@ def test_confirmation_uses_exact_claim_and_versions(manager, claim, monkeypatch)
 def test_receipt_loss_only_fails_an_uncommitted_claim(manager, claim, monkeypatch, committed):
     monkeypatch.setattr(manager, "_claim", AsyncMock(return_value=claim))
     monkeypatch.setattr(manager, "_run_native", AsyncMock(side_effect=RuntimeError("receipt lost")))
-    monkeypatch.setattr(manager, "_native_publication_committed", AsyncMock(return_value=committed))
+    monkeypatch.setattr(manager, "_native_update_committed", AsyncMock(return_value=committed))
     fail = AsyncMock()
     monkeypatch.setattr(manager, "_fail", fail)
     assert asyncio.run(manager.run_once())
@@ -155,7 +160,7 @@ def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes
     async def dispatch(name, request, **kwargs):
         if name == "analysis_context":
             return {"settings": {}, "trade_channel": "ctp", "first_day": "2026-01-01", "last_day": "2026-01-02"}
-        if name == "analysis_publication_committed":
+        if name == "analysis_commit_confirmed":
             assert finished.is_set()
             return committed
         return await operation(name, request, **kwargs)
@@ -164,7 +169,7 @@ def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes
         entered.set()
         assert release.wait(2)
         finished.set()
-        return {"published": committed}
+        return {"updated": committed}
 
     def release_claim(*args):
         assert finished.is_set()
@@ -173,7 +178,7 @@ def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes
     monkeypatch.setattr(manager, "_claim", AsyncMock(return_value=claim))
     monkeypatch.setattr(analysis, "native_operation", dispatch)
     monkeypatch.setattr(analysis_calendar, "ensure_calendar_facts", AsyncMock())
-    monkeypatch.setattr(analysis._core, "publish_store", publish)
+    monkeypatch.setattr(analysis._core, "analysis_update", publish)
     monkeypatch.setattr(analysis._core, "queue_release", release_claim)
 
     async def run():
@@ -200,7 +205,7 @@ def test_cancelled_publication_holds_lock_and_claim_until_native_thread_finishes
 
 def test_release_and_fail_delegate_once_without_commit_preread(manager, claim, monkeypatch):
     confirmation = AsyncMock()
-    monkeypatch.setattr(manager, "_native_publication_committed", confirmation)
+    monkeypatch.setattr(manager, "_native_update_committed", confirmation)
     calls = []
     monkeypatch.setattr(analysis._core, "queue_release", lambda *args: calls.append(("release", args)))
     monkeypatch.setattr(analysis._core, "queue_fail", lambda *args: calls.append(("fail", args)))

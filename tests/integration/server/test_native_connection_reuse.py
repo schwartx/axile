@@ -11,8 +11,8 @@ from threading import Barrier
 
 import pytest
 
-from scripts.benchmark_structured_publication import record
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
+from tests.unit.server._business_analysis_support import sized_record as record
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
 
@@ -207,12 +207,12 @@ def test_migration_roundtrip_reopens_warmed_readers_and_writers(database: Path) 
     store = core.Store(str(database))
     assert json.loads(core.asset_snapshots(store, 1, 0, 10))["count"] == 0
     for operation in ("migration_current", "migration_check"):
-        assert native_store_call(database, operation, {})["public"] == "0036"
+        assert native_store_call(database, operation, {})["public"] == "0039"
 
     assert native_store_call(database, "migration_downgrade", {"public": "0034"})["public"] == "0034"
     assert native_store_call(database, "migration_current", {})["public"] == "0034"
-    assert native_store_call(database, "migration_upgrade", {})["public"] == "0036"
-    assert native_store_call(database, "migration_check", {})["public"] == "0036"
+    assert native_store_call(database, "migration_upgrade", {})["public"] == "0039"
+    assert native_store_call(database, "migration_check", {})["public"] == "0039"
     assert json.loads(core.asset_snapshots(store, 1, 0, 10))["count"] == 0
     receipt = native_store_call(
         database, "account_update", {"account_id": 1, "patch": {"name": "after-migration"}, "now": _NOW}
@@ -221,70 +221,44 @@ def test_migration_roundtrip_reopens_warmed_readers_and_writers(database: Path) 
     assert _sql(database, "PRAGMA foreign_key_check") == []
 
 
-def test_publication_can_repeat_after_stale_source_and_failed_commit(database: Path) -> None:
-    core = require_native_store("publish_store", "queue_claim", "queue_enqueue")
+def test_analysis_can_repeat_after_stale_source_and_failed_commit(database: Path) -> None:
+    core = require_native_store("analysis_update", "queue_claim", "queue_enqueue")
     item = record(0, 1)
-    persist_record_fixture(
-        database, {**vars(item), "input_id": "publication-input", "result_input_id": "publication-result"}
-    )
+    persist_record_fixture(database, {**vars(item), "input_id": "analysis-input", "result_input_id": "analysis-result"})
 
-    def request(token: str) -> dict:
+    def request(token):
         core.queue_enqueue(str(database), 1, True)
+        core.queue_recover(str(database), "24", "equity-ledger-1")
         claim = core.queue_claim(str(database), 1_800_000_000.0, token)
-        assert claim is not None
+        assert claim
         return {
-            "command": "publish_store",
-            "protocol": 1,
             "account_id": 1,
             "expected_source_version": claim["source_version"],
-            "snapshot_id": token,
             "claim_token": token,
-            "logic_version": "reuse-test",
-            "engine_version": "reuse-test",
             "computed_at": _NOW,
-            "settings": {"backtest_weight_type": "ts", "backtest_fee_rate": 0.0},
-            "trade_channel": "ctp",
         }
 
-    first = native_store_call(database, "publish_store", request("first"))
-    assert first["published"]
-    assert _sql(database, "SELECT COUNT(*) FROM performance_cost_execution WHERE snapshot_id='first'") == [[1]]
-    assert _sql(
-        database,
-        "SELECT s.data_until,r.range_key,r.end FROM performance_snapshot s "
-        "JOIN performance_result_range r ON r.snapshot_id=s.id WHERE s.id='first' ORDER BY r.range_key",
-    ) == [[item.created_at, key, item.created_at] for key in ("30", "90", "all")]
-
+    first = native_store_call(database, "analysis_update", request("first"))
+    assert first["updated"]
+    assert _sql(database, "SELECT range_key,last_time FROM analysis_state ORDER BY range_key") == [
+        [key, item.created_at + ".000000"] for key in ("30", "90", "all")
+    ]
     stale = request("stale")
     _sql(database, "UPDATE account_analysis SET source_version=source_version+1 WHERE account_id=1")
-    skipped = native_store_call(database, "publish_store", stale)
-    assert not skipped["published"] and skipped["reason"] == "source_changed"
-
+    assert not native_store_call(database, "analysis_update", stale)["updated"]
     retry = request("retry")
     _sql(
         database,
-        "CREATE TRIGGER reject_publication BEFORE INSERT ON performance_snapshot "
-        "BEGIN SELECT RAISE(ABORT,'reuse-publication'); END",
+        "CREATE TRIGGER reject_analysis BEFORE INSERT ON analysis_state BEGIN SELECT RAISE(ABORT,'reuse-analysis'); END",
     )
-    with pytest.raises(core.NativeError) as caught:
-        native_store_call(database, "publish_store", retry)
-    assert caught.value.args[0] == "PUBLICATION_WRITE"
-    assert "reuse-publication" in caught.value.args[1]
-    _sql(database, "DROP TRIGGER reject_publication")
-    published = native_store_call(database, "publish_store", retry)
-    assert published["published"]
+    with pytest.raises(core.NativeError, match="reuse-analysis"):
+        native_store_call(database, "analysis_update", retry)
+    _sql(database, "DROP TRIGGER reject_analysis")
+    assert native_store_call(database, "analysis_update", retry)["updated"]
+    assert _sql(database, "SELECT count(*) FROM analysis_state") == [[3]]
     assert _sql(
         database,
-        "SELECT snapshot_id,COUNT(*) FROM performance_cost_execution GROUP BY snapshot_id ORDER BY snapshot_id",
-    ) == [["first", 1], ["retry", 1]]
-    assert _sql(
-        database, "SELECT snapshot_id,COUNT(*) FROM performance_result_range GROUP BY snapshot_id ORDER BY snapshot_id"
-    ) == [["first", 3], ["retry", 3]]
-    assert _sql(database, "SELECT id FROM performance_snapshot ORDER BY id") == [["first"], ["retry"]]
-    assert _sql(
-        database,
-        "SELECT current_snapshot,source_version=published_version,running_version,running_token "
-        "FROM account_analysis WHERE account_id=1",
-    ) == [["retry", 1, None, None]]
+        "SELECT source_version=(SELECT version FROM analysis_state WHERE range_key='all' AND account_id=1),running_version,running_token FROM account_analysis WHERE account_id=1",
+    ) == [[1, None, None]]
     assert _sql(database, "PRAGMA foreign_key_check") == []
     assert _sql(database, "PRAGMA wal_checkpoint(TRUNCATE)")[0][0] == 0

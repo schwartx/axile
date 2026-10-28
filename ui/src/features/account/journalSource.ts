@@ -9,15 +9,15 @@ import { executionRecordSummary, executionRecordView } from '@/features/account/
 
 export interface JournalData { executions: JournalExecution[]; symbols: JournalSymbol[]; dataUntil: string | null }
 export type SnapshotScope = Omit<CostQuery, 'dimension' | 'cursor' | 'sort' | 'limit'>
-export const SNAPSHOT_PARAMS = ['snapshot_id', 'performance_range', 'start', 'end', 'day', 'record_id']
+export const SNAPSHOT_PARAMS = ['version', 'performance_range', 'start', 'end', 'day', 'record_id']
 
 export function parseJournalScope(params: URLSearchParams): { scope: SnapshotScope | null; error: Error | null } {
   if (!SNAPSHOT_PARAMS.some(key => params.has(key))) return { scope: null, error: null }
   const invalid = () => ({ scope: null, error: new Error('绩效范围链接无效，请返回实盘绩效重新选择') })
-  const snapshot_id = params.get('snapshot_id')
+  const version = params.get('version')
   const range = params.get('performance_range')
-  if (!snapshot_id || !['30', '90', 'all'].includes(range ?? '')) return invalid()
-  const scope: SnapshotScope = { snapshot_id, range: range as PerformanceRange }
+  if (!version || !['30', '90', 'all'].includes(range ?? '')) return invalid()
+  const scope: SnapshotScope = { version, range: range as PerformanceRange }
   if (params.has('start') || params.has('end')) {
     const start = Number(params.get('start')), end = Number(params.get('end'))
     if (!params.get('start') || !params.get('end') || !Number.isFinite(start) || !Number.isFinite(end) || start >= end || Math.abs(start) > 8.64e15 - 86400000 || Math.abs(end) > 8.64e15 - 86400000 || params.has('day')) return invalid()
@@ -38,7 +38,7 @@ export function parseJournalScope(params: URLSearchParams): { scope: SnapshotSco
 }
 
 export function performanceJournalPath(accountId: number, snapshotId: string, range: PerformanceRange, selection: ChartSelection): string {
-  const params = new URLSearchParams({ snapshot_id: snapshotId, performance_range: range })
+  const params = new URLSearchParams({ version: snapshotId, performance_range: range })
   for (const [key, value] of Object.entries(selectionQuery(selection))) params.set(key, String(value))
   return `/accounts/${accountId}/executions?${params}`
 }
@@ -58,20 +58,20 @@ export async function loadCostGroups<T>(accountId: number, query: CostQuery, sig
     signal.throwIfAborted()
     const page = await fetchPage({ ...query, limit: 100, cursor })
     signal.throwIfAborted()
-    if (page.snapshot_id !== query.snapshot_id || (first && first.count !== page.count)) throw new Error('快照分页范围发生变化，请重新读取')
+    if (page.version !== query.version || (first && first.count !== page.count)) throw new Error('分析分页范围发生变化，请重新读取')
     first ??= page
     for (const row of page.data) {
       const grouped = row as { key?: string; symbol?: string }
       const identity = typeof row === 'object' && row != null ? grouped.key ?? grouped.symbol : String(row)
-      if (identity != null && identities.has(identity)) throw new Error('快照分页发生重叠，请重试')
+      if (identity != null && identities.has(identity)) throw new Error('分析分页发生重叠，请重试')
       if (identity != null) identities.add(identity)
       rows.push(row)
     }
-    if (page.next_cursor && (!page.data.length || cursors.has(page.next_cursor))) throw new Error('快照分页不完整，请重试')
+    if (page.next_cursor && (!page.data.length || cursors.has(page.next_cursor))) throw new Error('分析分页不完整，请重试')
     if (page.next_cursor) cursors.add(page.next_cursor)
     cursor = page.next_cursor ?? undefined
   } while (cursor)
-  if (!first || rows.length !== first.count) throw new Error('快照分页不完整，请重试')
+  if (!first || rows.length !== first.count) throw new Error('分析分页不完整，请重试')
   return { ...first, data: rows, next_cursor: null }
 }
 
@@ -80,7 +80,7 @@ export function snapshotExecution(row: CostExecutionRow): JournalExecution {
   return { key: `execution:${row.record.id}`, recordId: row.record.id, executionId: row.record.execution_id,
     time: row.record.created_at, status: view.title, warning: view.warning,
     description: executionRecordSummary(row.record, row.tradeCount ?? (view.tradeCount || row.summary.count)),
-    symbols: [...new Set([...(row.transactions ?? []).map(t => t.symbol), ...(row.attempts ?? []).map(a => a.symbol)])],
+    symbols: row.symbols ?? [],
     trades: [], summary: row.summary, durationSec: row.durationSec ?? null }
 }
 export async function loadSnapshotJournal(accountId: number, scope: SnapshotScope, view: string, keyword: string, signal: AbortSignal): Promise<JournalData> {

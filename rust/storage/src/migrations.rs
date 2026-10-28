@@ -11,12 +11,13 @@ use crate::error::AnalysisError;
 mod contributions;
 mod execution_views;
 mod legacy;
+mod native_analysis;
 mod private;
 mod query_indexes;
 mod remove_history_hiding;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0038";
+pub const PUBLIC_HEAD: &str = "0039";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
@@ -24,7 +25,7 @@ const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const LEGACY_HEAD: u32 = 33;
-const PUBLIC_HEAD_NUMBER: u32 = 38;
+const PUBLIC_HEAD_NUMBER: u32 = 39;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -116,9 +117,9 @@ impl<'a> Policy<'a> {
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0038, private base/axon_0001")
+            invalid("supported targets: public 0012 through 0039, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0038")
+            invalid("supported targets: public base/0001 through 0039")
         }
     }
 }
@@ -330,9 +331,11 @@ fn move_public(
             (true, 36) => contributions::upgrade(connection)?,
             (true, 37) => execution_views::upgrade(connection)?,
             (true, 38) => remove_history_hiding::upgrade(connection)?,
+            (true, 39) => native_analysis::upgrade(connection)?,
             (false, 1..=33) => legacy::downgrade(connection, revision)?,
             (false, 34) => structured::downgrade(connection)?,
             (false, 35) => query_indexes::downgrade(connection)?,
+            (false, 39) => native_analysis::downgrade(connection)?,
             (false, 38) => remove_history_hiding::downgrade(connection)?,
             (false, 37) => execution_views::downgrade(connection)?,
             (false, 36) => contributions::downgrade(connection)?,
@@ -517,7 +520,7 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         let minimum = if policy.codes.is_some() { 12 } else { 1 };
         if current.public < minimum {
             return Err(invalid(if policy.codes.is_some() {
-                "downgrade requires public revision 0012 through 0038"
+                "downgrade requires public revision 0012 through 0039"
             } else {
                 "downgrade requires an existing public revision"
             }));

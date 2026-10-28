@@ -53,7 +53,6 @@ from axile.server.execution.scheduler import delete_job
 from axile.server.integrity import plan_executable_target
 from axile.server.native_store import native_operation
 from axile.server.performance import close_before, local_time
-from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from axile.server.trading_calendar import CalendarDecisionStatus, evaluate_channel_calendar_moment
 
 router = APIRouter()
@@ -414,7 +413,7 @@ async def account_dashboard(sched: SchedDep) -> AccountDashboardPublic:
     """
     context = await _account_operation(
         "account_dashboard_context",
-        {"logic_version": LOGIC_VERSION, "engine_version": ENGINE_VERSION, "live_sessions": public_session_views()},
+        {"live_sessions": public_session_views()},
     )
     inputs = context["inputs"]
     items: list[AccountDashboardItemPublic] = []

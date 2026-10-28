@@ -1,26 +1,18 @@
 //! Frozen cash-flow P&L at the same observations as the account curve.
+use crate::analysis::sql as sql_error;
 use crate::error::AnalysisError;
-use crate::publication::{finite, sql_error, stage_error};
-use rusqlite::{params, Connection, OptionalExtension};
+fn finite(v: Option<f64>) -> Option<f64> {
+    v.filter(|v| v.is_finite())
+}
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Default, Clone)]
-struct Position {
-    quantity: f64,
-    value: Option<f64>,
-    product: String,
-}
-#[derive(Default)]
-struct Ledger {
-    initial: Option<f64>,
-    quantity: f64,
-    cash: f64,
-    fee: f64,
-    fee_missing: i64,
-    issues: i64,
-    trades: i64,
-    product: String,
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Position {
+    pub(crate) quantity: f64,
+    pub(crate) value: Option<f64>,
+    pub(crate) product: String,
 }
 
 fn product(channel: &str, symbol: &str, extra: &Value) -> String {
@@ -54,7 +46,7 @@ fn product(channel: &str, symbol: &str, extra: &Value) -> String {
     }
 }
 
-fn positions(
+pub(crate) fn positions(
     connection: &Connection,
     record: i64,
     channel: &str,
@@ -122,18 +114,18 @@ fn positions(
 }
 
 #[derive(Clone)]
-struct Fill {
-    symbol: String,
-    id: Option<String>,
-    quantity: Option<f64>,
-    amount: Option<f64>,
-    fee: Option<f64>,
-    currency: Option<String>,
-    product: String,
-    converted_currency: Option<String>,
+pub(crate) struct Fill {
+    pub(crate) symbol: String,
+    pub(crate) id: Option<String>,
+    pub(crate) quantity: Option<f64>,
+    pub(crate) amount: Option<f64>,
+    pub(crate) fee: Option<f64>,
+    pub(crate) currency: Option<String>,
+    pub(crate) product: String,
+    pub(crate) converted_currency: Option<String>,
 }
 
-fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<Fill> {
+pub(crate) fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<Fill> {
     let symbol: String = row.get(1)?;
     let extra: Value = serde_json::from_str(&row.get::<_, Option<String>>(6)?.unwrap_or_default())
         .unwrap_or(Value::Null);
@@ -197,159 +189,7 @@ fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<Fill> {
     })
 }
 
-fn apply(
-    ledger: &mut BTreeMap<String, Ledger>,
-    target: &Connection,
-    trade: Fill,
-    currency: Option<&str>,
-    initial_known: bool,
-) -> Result<(), AnalysisError> {
-    let p = ledger
-        .entry(trade.symbol.clone())
-        .or_insert_with(|| Ledger {
-            initial: initial_known.then_some(0.0),
-            product: trade.product.clone(),
-            ..Default::default()
-        });
-    if let Some(id) = trade
-        .id
-        .as_ref()
-        .filter(|id| !matches!(id.as_str(), "null" | "\"\""))
-    {
-        let previous = target.query_row(
-            "SELECT quantity,amount,fee,currency FROM native_stage.contribution_seen WHERE symbol=?1 AND id=?2",
-            params![trade.symbol,id], |r| Ok((r.get::<_,Option<f64>>(0)?,r.get::<_,Option<f64>>(1)?,r.get::<_,Option<f64>>(2)?,r.get::<_,Option<String>>(3)?))
-        ).optional().map_err(stage_error)?;
-        let fingerprint = (
-            trade.quantity,
-            trade.amount,
-            trade.fee,
-            trade.currency.clone(),
-        );
-        if let Some(previous) = previous {
-            if previous != fingerprint {
-                p.issues += 1;
-            }
-            return Ok(());
-        }
-        target
-            .execute(
-                "INSERT INTO native_stage.contribution_seen VALUES(?1,?2,?3,?4,?5,?6)",
-                params![
-                    trade.symbol,
-                    id,
-                    trade.quantity,
-                    trade.amount,
-                    trade.fee,
-                    trade.currency
-                ],
-            )
-            .map_err(stage_error)?;
-    } else {
-        p.issues += 1;
-    }
-    p.trades += 1;
-    if let Some(q) = trade.quantity {
-        p.quantity += q;
-    } else {
-        p.issues += 1;
-    }
-    if trade
-        .converted_currency
-        .as_deref()
-        .is_some_and(|value| Some(value) != currency)
-    {
-        p.issues += 1;
-    }
-    if let Some(v) = trade.amount {
-        p.cash += v;
-    } else {
-        p.issues += 1;
-    }
-    if let Some(fee) = trade
-        .fee
-        .filter(|_| trade.currency.as_deref() == currency && currency.is_some())
-    {
-        p.fee += fee;
-    } else {
-        p.fee_missing += 1;
-    }
-    Ok(())
-}
-
-pub(crate) fn write(
-    source: &Connection,
-    target: &Connection,
-    account: i64,
-) -> Result<(), AnalysisError> {
-    target.execute_batch("CREATE TABLE IF NOT EXISTS native_stage.contribution_seen(symbol TEXT,id TEXT,quantity REAL,amount REAL,fee REAL,currency TEXT,PRIMARY KEY(symbol,id));").map_err(stage_error)?;
-    let channel: String = source
-        .query_row(
-            "SELECT trade_channel FROM account WHERE id=?1",
-            [account],
-            |r| r.get(0),
-        )
-        .map_err(sql_error)?;
-    for range in ["30", "90", "all"] {
-        write_range(source, target, account, &channel, range)?;
-    }
-    Ok(())
-}
-
-fn write_range(
-    source: &Connection,
-    target: &Connection,
-    account: i64,
-    channel: &str,
-    range: &str,
-) -> Result<(), AnalysisError> {
-    let mut points=target.prepare("SELECT idx,observed_at,record_id FROM native_stage.performance_result_point WHERE range_key=?1 ORDER BY idx").map_err(stage_error)?;
-    let points = points
-        .query_map([range], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-            ))
-        })
-        .map_err(stage_error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(stage_error)?;
-    let Some((_, first_time, Some(first_record))) = points.first() else {
-        return Ok(());
-    };
-    let (mut currency, initial) = positions(source, *first_record, channel)?;
-    let mut ledger = BTreeMap::<String, Ledger>::new();
-    if initial.is_none() {
-        ledger.insert(
-            "[unknown]".into(),
-            Ledger {
-                initial: None,
-                product: "未归因持仓".into(),
-                issues: 1,
-                ..Default::default()
-            },
-        );
-    }
-    if let Some(initial) = initial.as_ref() {
-        for (symbol, p) in initial {
-            ledger.insert(
-                symbol.clone(),
-                Ledger {
-                    initial: p.value,
-                    quantity: p.quantity,
-                    product: p.product.clone(),
-                    ..Default::default()
-                },
-            );
-        }
-    }
-    target
-        .execute("DELETE FROM native_stage.contribution_seen", [])
-        .map_err(stage_error)?;
-    // 清仓规划可省略乘数；只复用同账户、同合约在成交之前冻结的有效值。
-    // 可选换算的显式 null 与未提供等价，其他无效换算仍交给 fill 标记。
-    let mut statement=source.prepare("SELECT axile_time(r.created_at),COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,
+pub(crate) const FILLS:&str="SELECT axile_time(r.created_at),COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,
         COALESCE(z.unit_multiplier,(
             SELECT previous.unit_multiplier FROM execution_symbol_sizing previous
             JOIN executerecord pr ON pr.id=previous.record_id
@@ -362,314 +202,8 @@ fn write_range(
         )),t.extra,t.fee,t.fee_state,t.fee_currency,
         CASE WHEN v.state='malformed' AND v.malformed_value='null' THEN 0 ELSE t.conversion_recorded END,
         v.rate,v.value_currency,
-        (SELECT o.direction FROM execution_order o WHERE o.record_id=t.record_id AND o.order_id=t.order_id ORDER BY o.ordinal DESC LIMIT 1)
+        (SELECT o.direction FROM execution_order o WHERE o.record_id=t.record_id AND o.order_id=t.order_id ORDER BY o.ordinal DESC LIMIT 1),r.id,t.path
         FROM executerecord r JOIN business_trade t ON t.record_id=r.id
         LEFT JOIN execution_symbol_sizing z ON z.record_id=t.record_id AND z.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
         LEFT JOIN business_trade_conversion v ON v.record_id=t.record_id AND v.trade_path=t.path
-        WHERE r.account_id=?1 AND r.result_staged=0 AND axile_time(r.created_at)>axile_time(?2) ORDER BY axile_time(r.created_at),r.id,t.ordinal").map_err(sql_error)?;
-    let mut fills = statement
-        .query(params![account, first_time])
-        .map_err(sql_error)?;
-    let mut pending = fills
-        .next()
-        .map_err(sql_error)?
-        .map(|row| {
-            Ok::<_, AnalysisError>((
-                row.get::<_, String>(0).map_err(sql_error)?,
-                fill(row, channel).map_err(sql_error)?,
-            ))
-        })
-        .transpose()?;
-    let mut insert=target.prepare_cached("INSERT INTO native_stage.performance_contribution(range_key,idx,symbol,product,currency,gross_pnl,fee,fee_missing,issues,trades) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)").map_err(stage_error)?;
-    for (idx, time, record) in points {
-        let cutoff = crate::calendar::canonical_time(&time)
-            .map_err(|e| AnalysisError::new("INVALID_RESULT_TIME", e))?;
-        while pending.as_ref().is_some_and(|(t, _)| t <= &cutoff) {
-            let (_, trade) = pending.take().unwrap();
-            apply(
-                &mut ledger,
-                target,
-                trade,
-                currency.as_deref(),
-                initial.is_some(),
-            )?;
-            pending = fills
-                .next()
-                .map_err(sql_error)?
-                .map(|row| {
-                    Ok::<_, AnalysisError>((
-                        row.get::<_, String>(0).map_err(sql_error)?,
-                        fill(row, channel).map_err(sql_error)?,
-                    ))
-                })
-                .transpose()?;
-        }
-        let (current_currency, current) = match record {
-            Some(id) => positions(source, id, channel)?,
-            None => (None, None),
-        };
-        if currency.is_none() && current.is_some() {
-            currency.clone_from(&current_currency);
-        }
-        if let Some(positions) = current.as_ref() {
-            for (symbol, p) in positions {
-                ledger.entry(symbol.clone()).or_insert_with(|| Ledger {
-                    initial: if initial.is_some() { Some(0.0) } else { None },
-                    product: p.product.clone(),
-                    ..Default::default()
-                });
-            }
-        }
-        for (symbol, p) in &mut ledger {
-            let value = if let Some(positions) = current.as_ref() {
-                let actual = positions.get(symbol);
-                let quantity = actual.map_or(0.0, |v| v.quantity);
-                if (quantity - p.quantity).abs() > 1e-8 {
-                    p.issues += 1;
-                }
-                p.quantity = quantity;
-                actual.map_or(Some(0.0), |v| v.value)
-            } else {
-                p.issues += 1;
-                None
-            };
-            let value =
-                finite(value).filter(|_| current_currency == currency && currency.is_some());
-            if value.is_none() {
-                p.issues += 1;
-            }
-            // 期初估值未知时只建立后续分段基准；异常计数保留此前缺口。
-            if p.initial.is_none() && value.is_some() && symbol != "[unknown]" {
-                p.initial = value;
-                p.cash = 0.0;
-                p.issues += 1;
-            }
-            let gross = finite(value.zip(p.initial).map(|(v, b)| p.cash + v - b));
-            insert
-                .execute(params![
-                    range,
-                    idx,
-                    symbol,
-                    p.product,
-                    currency,
-                    gross,
-                    p.fee,
-                    p.fee_missing,
-                    p.issues,
-                    p.trades
-                ])
-                .map_err(stage_error)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn database() -> Connection {
-        let c = Connection::open_in_memory().unwrap();
-        crate::calendar::register_time_function(&c).unwrap();
-        c.execute_batch("CREATE TABLE account(id INTEGER,trade_channel TEXT);
-          INSERT INTO account VALUES(1,'tq');
-          CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,result_staged INTEGER DEFAULT 0);
-          CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
-          CREATE TABLE business_asset_snapshot(asset_id TEXT,currency TEXT,positions_kind TEXT,positions_count INTEGER,observation_valid INTEGER,source TEXT);
-          CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER,symbol TEXT,volume REAL,direction TEXT,market_value REAL,extra TEXT,volume_state TEXT,market_value_state TEXT);
-          CREATE TABLE business_trade(record_id INTEGER,symbol TEXT,trade_id TEXT,trade_volume REAL,trade_price REAL,extra TEXT,fee REAL,fee_state TEXT,fee_currency TEXT,conversion_recorded INTEGER,collection_path TEXT,path TEXT,ordinal INTEGER);
-          CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
-          CREATE TABLE business_trade_conversion(record_id INTEGER,trade_path TEXT,rate REAL,value_currency TEXT,state TEXT,malformed_value TEXT);
-          CREATE TABLE execution_order(record_id INTEGER,order_id TEXT,direction TEXT,ordinal INTEGER);
-          ATTACH DATABASE '' AS native_stage;
-          CREATE TABLE native_stage.performance_result_point(range_key TEXT,idx INTEGER,observed_at TEXT,record_id INTEGER);
-          CREATE TABLE native_stage.performance_contribution(range_key TEXT,idx INTEGER,symbol TEXT,product TEXT,currency TEXT,gross_pnl REAL,fee REAL,fee_missing INTEGER,issues INTEGER,trades INTEGER);
-          INSERT INTO executerecord(id,account_id,created_at) VALUES(1,1,'2026-01-01T09:00:00'),(2,1,'2026-01-02T09:00:00'),(3,1,'2026-01-03T09:00:00');
-          INSERT INTO native_stage.performance_result_point VALUES('all',0,'2026-01-01T09:00:00',1),('all',1,'2026-01-02T09:00:00',2),('all',2,'2026-01-03T09:00:00',3);
-          INSERT INTO business_asset_binding VALUES(1,'/account_assets','a'),(2,'/account_assets','b'),(3,'/account_assets','c');
-          INSERT INTO business_asset_snapshot VALUES('a','CNY','array',1,1,'real'),('b','CNY','array',1,1,'real'),('c','CNY','array',0,1,'real');
-          INSERT INTO business_asset_position VALUES('a',0,'fu2601',2,'多头',2000,'{\"tq_symbol\":\"SHFE.fu2601\"}','value','value'),('b',0,'fu2601',1,'多头',1200,'{\"tq_symbol\":\"SHFE.fu2601\"}','value','value');
-          INSERT INTO execution_symbol_sizing VALUES(2,'/symbol_results/fu2601/sizing',10),(3,'/symbol_results/fu2601/sizing',10);
-          INSERT INTO business_trade VALUES(2,'fu2601','sell1',1,110,'{\"direction\":\"SELL\",\"tq_symbol\":\"SHFE.fu2601\"}',1,'value','CNY',0,'/symbol_results/fu2601/trades','/symbol_results/fu2601/trades/0',0),
-          (3,'fu2601','sell2',1,125,'{\"direction\":\"SELL\",\"tq_symbol\":\"SHFE.fu2601\"}',NULL,'absent',NULL,0,'/symbol_results/fu2601/trades','/symbol_results/fu2601/trades/0',0);").unwrap();
-        c.execute_batch("ALTER TABLE business_trade ADD COLUMN order_id TEXT;")
-            .unwrap();
-        c
-    }
-    fn values(c: &Connection) -> Vec<(f64, f64, i64, i64)> {
-        c.prepare("SELECT gross_pnl,fee,fee_missing,issues FROM native_stage.performance_contribution ORDER BY idx").unwrap()
-          .query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
-    }
-    #[test]
-    fn initial_holdings_partial_close_and_flat_contract_keep_money_and_unknown_fees() {
-        let c = database();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(
-            values(&c),
-            vec![(0.0, 0.0, 0, 0), (300.0, 1.0, 0, 0), (350.0, 1.0, 1, 0)]
-        );
-    }
-    #[test]
-    fn optional_null_conversion_keeps_native_amounts() {
-        let c = database();
-        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;
-          INSERT INTO business_trade_conversion SELECT record_id,path,NULL,NULL,'malformed','null' FROM business_trade;").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(values(&c)[2], (350.0, 1.0, 1, 0));
-    }
-
-    #[test]
-    fn explicit_conversion_still_applies_its_recorded_rate() {
-        let c = database();
-        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;
-          INSERT INTO business_trade_conversion SELECT record_id,path,2,'CNY','object',NULL FROM business_trade;").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(values(&c)[2], (2700.0, 1.0, 1, 0));
-    }
-
-    #[test]
-    fn closing_trade_reuses_previous_multiplier_for_the_same_contract() {
-        let c = database();
-        c.execute_batch(
-            "UPDATE execution_symbol_sizing SET unit_multiplier=NULL WHERE record_id=3;",
-        )
-        .unwrap();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(values(&c)[2], (350.0, 1.0, 1, 0));
-    }
-
-    #[test]
-    fn invalid_conversion_or_multiplier_remains_an_issue() {
-        for conversion in [
-            "'malformed','\"invalid\"',NULL,NULL",
-            "'object',NULL,0,'CNY'",
-            "'object',NULL,1,'USD'",
-        ] {
-            let c = database();
-            c.execute_batch(&format!("UPDATE business_trade SET conversion_recorded=1 WHERE record_id=3;
-              INSERT INTO business_trade_conversion(record_id,trade_path,state,malformed_value,rate,value_currency)
-              VALUES(3,'/symbol_results/fu2601/trades/0',{conversion});")).unwrap();
-            write(&c, &c, 1).unwrap();
-            assert!(values(&c)[2].3 > 0, "{conversion}");
-        }
-        let c = database();
-        c.execute_batch("UPDATE execution_symbol_sizing SET unit_multiplier=0 WHERE record_id=3;")
-            .unwrap();
-        write(&c, &c, 1).unwrap();
-        assert!(values(&c)[2].3 > 0);
-        let c = database();
-        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;")
-            .unwrap();
-        write(&c, &c, 1).unwrap();
-        assert!(values(&c)[2].3 > 0);
-    }
-
-    #[test]
-    fn multiplier_fallback_cannot_use_future_records_or_another_contract_or_account() {
-        let c = database();
-        c.execute_batch(
-            "UPDATE execution_symbol_sizing SET unit_multiplier=NULL;
-          INSERT INTO executerecord(id,account_id,created_at) VALUES(4,1,'2026-01-04T09:00:00'),(5,2,'2026-01-01T09:00:00');
-          INSERT INTO execution_symbol_sizing VALUES(4,'/symbol_results/fu2601/sizing',10),
-          (1,'/symbol_results/fu2605/sizing',10),(5,'/symbol_results/fu2601/sizing',10);",
-        )
-        .unwrap();
-        write(&c, &c, 1).unwrap();
-        assert!(values(&c)[1].3 > 0);
-        assert!(values(&c)[2].3 > 0);
-    }
-    #[test]
-    fn duplicate_fill_is_counted_once_but_missing_fill_is_an_issue() {
-        let c = database();
-        c.execute_batch("INSERT INTO business_trade SELECT record_id,symbol,trade_id,trade_volume,trade_price,extra,fee,fee_state,fee_currency,conversion_recorded,collection_path,path,1,order_id FROM business_trade WHERE record_id=2;").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(values(&c)[1], (300.0, 1.0, 0, 0));
-        c.execute_batch("DELETE FROM native_stage.performance_contribution; DELETE FROM business_trade WHERE record_id=2;").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert!(values(&c)[1].3 > 0);
-    }
-
-    #[test]
-    fn missing_fill_allows_later_pnl_differences_without_clearing_the_gap() {
-        let c = database();
-        c.execute_batch("DELETE FROM business_trade WHERE record_id=2;")
-            .unwrap();
-        write(&c, &c, 1).unwrap();
-        let rows = values(&c);
-        assert!(rows[1].3 > 0);
-        assert_eq!(rows[2].3, rows[1].3);
-        assert_eq!(rows[2].0 - rows[1].0, 50.0);
-    }
-
-    #[test]
-    fn missing_valuation_breaks_quality_but_the_next_snapshot_can_resume() {
-        let c = database();
-        c.execute_batch("UPDATE business_asset_position SET market_value=NULL,market_value_state='absent' WHERE asset_id='b';").unwrap();
-        write(&c, &c, 1).unwrap();
-        let rows: Vec<(Option<f64>, i64)> = c
-            .prepare(
-                "SELECT gross_pnl,issues FROM native_stage.performance_contribution ORDER BY idx",
-            )
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(rows[0], (Some(0.0), 0));
-        assert_eq!(rows[1], (None, 1));
-        assert_eq!(rows[2], (Some(350.0), 1));
-    }
-    #[test]
-    fn futures_rolls_group_by_exchange_and_options_remain_separate() {
-        assert_eq!(
-            product(
-                "tq",
-                "fu2601",
-                &serde_json::json!({"tq_symbol":"SHFE.fu2601"})
-            ),
-            "SHFE.fu"
-        );
-        assert_eq!(
-            product("ctp", "fu2605", &serde_json::json!({"exchange_id":"SHFE"})),
-            "SHFE.fu"
-        );
-        assert_eq!(
-            product(
-                "tq",
-                "fu2601C1000",
-                &serde_json::json!({"tq_symbol":"SHFE.fu2601C1000"})
-            ),
-            "fu2601C1000"
-        );
-        assert_eq!(product("qmt", "000001", &Value::Null), "000001");
-    }
-
-    #[test]
-    fn short_holdings_and_missing_multiplier_keep_direction_and_quality() {
-        let c = database();
-        c.execute_batch("UPDATE business_asset_position SET direction='空头'; UPDATE business_trade SET extra=replace(extra,'SELL','BUY');").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert_eq!(values(&c)[2].0, -350.0);
-        c.execute_batch("DELETE FROM native_stage.performance_contribution; UPDATE execution_symbol_sizing SET unit_multiplier=NULL;").unwrap();
-        write(&c, &c, 1).unwrap();
-        assert!(values(&c)[2].3 > 0);
-    }
-
-    #[test]
-    fn unknown_initial_holdings_resume_only_from_a_later_known_snapshot() {
-        let c = database();
-        c.execute_batch("DELETE FROM business_asset_snapshot WHERE asset_id='a';")
-            .unwrap();
-        write(&c, &c, 1).unwrap();
-        let rows: Vec<(i64, f64, i64)> = c.prepare("SELECT idx,gross_pnl,issues FROM native_stage.performance_contribution WHERE symbol='fu2601' ORDER BY idx").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 1);
-        assert_eq!(rows[0].1, 0.0);
-        assert_eq!(rows[1].1, 50.0);
-        assert!(rows[0].2 > 0);
-        assert_eq!(rows[0].2, rows[1].2);
-        let unknown: i64 = c.query_row("SELECT count(*) FROM native_stage.performance_contribution WHERE symbol='[unknown]' AND gross_pnl IS NOT NULL",[],|r|r.get(0)).unwrap();
-        assert_eq!(unknown, 0);
-    }
-}
+        WHERE r.account_id=?1 AND r.result_staged=0 AND axile_time(r.created_at)>axile_time(?2) ORDER BY axile_time(r.created_at),r.id,t.ordinal";

@@ -19,7 +19,6 @@ import { intervalSelection, pointTime, reconcileSelection, type ChartSelection }
 import { loadPerformanceView, performanceViews, savePerformanceView, type BacktestMode } from '@/features/history/viewState'
 import { getPerformanceCosts, selectionQuery, savePerformanceSettings, type AnalysisMetadata } from '@/lib/api/performance'
 import { usePerformanceSnapshot } from '@/features/history/usePerformanceSnapshot'
-import { ApiError } from '@/lib/api/client'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { withViewTransition } from '@/lib/viewTransition'
 import { useDomainStore } from '@/stores/domain'
@@ -45,8 +44,7 @@ const MARKERS: Array<{ value: 'on' | 'off'; label: string }> = [
 ]
 
 /** Distinguish a ready publication from a chart that has finished loading. */
-function historyLoadingMessage(metadata: AnalysisMetadata | null, hasResult: boolean, loadingResult: boolean, unavailable: boolean): string | undefined {
-  if (unavailable) return metadata?.status === 'pending' || metadata?.status === 'stale' ? '正在重新计算，完成后显示绩效结果' : '当前快照需要重新计算，请刷新绩效与成本'
+function historyLoadingMessage(metadata: AnalysisMetadata | null, hasResult: boolean, loadingResult: boolean): string | undefined {
   if (loadingResult) return hasResult ? '正在读取新版绩效，当前保留上次结果' : '正在读取绩效结果'
   if (metadata?.status === 'pending' || metadata?.status === 'stale') return hasResult ? '正在重新计算，当前保留上次结果' : '正在计算绩效'
   if (metadata?.status === 'failed' && metadata.retry_at != null) return hasResult ? '计算失败，等待重试；当前保留上次结果' : '计算失败，等待重试'
@@ -118,8 +116,8 @@ function AccountHistory({ accountId }: { accountId: number }) {
   }, [snapshot])
   const selectionKey = JSON.stringify(selectionQuery(selection))
   const displayedRange = snapshot?.range ?? range
-  const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { snapshot_id: snapshot!.snapshot_id, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.snapshot_id, displayedRange, selectionKey]), {
-    queryKey: `performance-summary:${accountId}:${snapshot?.snapshot_id}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.snapshot_id && selection?.kind === 'interval',
+  const intervalCosts = usePolling(useCallback((s: AbortSignal) => getPerformanceCosts(accountId, { version: snapshot!.version, range: displayedRange, dimension: 'summary', ...JSON.parse(selectionKey) }, s), [accountId, snapshot?.version, displayedRange, selectionKey]), {
+    queryKey: `performance-summary:${accountId}:${snapshot?.version}:${displayedRange}:${selectionKey}`, intervalMs: 0, enabled: !!snapshot?.version && selection?.kind === 'interval',
   })
   const portfolios = usePolling(useCallback((s: AbortSignal) => getPortfolios(s), []), { queryKey: 'performance-portfolios', intervalMs: 0 })
   const portfolioNames = useMemo(() => new Map(portfolios.data?.data.flatMap(p => p.id == null ? [] : [[p.id, p.name] as const]) ?? []), [portfolios.data])
@@ -159,9 +157,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
   const costs = useMemo(() => snapshot?.result ? new Map(Object.entries(snapshot.daily_costs)) : null, [snapshot?.result, snapshot?.daily_costs])
   const events = snapshot?.events ?? []
   const calculationError = useMemo(() => metadata?.error ? new Error(metadata.error) : null, [metadata?.error])
-  const readViewUnavailable = !!metadata?.snapshot_id && metadata.read_view_schema_version < 1
-    || performance.resultError instanceof ApiError && performance.resultError.code === 'ANALYSIS_READ_VIEW_UNAVAILABLE'
-  const loadingMessage = historyLoadingMessage(metadata, !!data, performance.loadingResult, readViewUnavailable)
+  const loadingMessage = historyLoadingMessage(metadata, !!data, performance.loadingResult)
   const initialError = calculationError || performance.statusError || performance.resultError || performance.refreshError
   const pendingSettings = !!data && settings?.backtest_fee_rate !== data.settings.backtest_fee_rate
   const intervalOptions = useMemo(() => data?.points.map(point => ({ value: pointTime(point), label: point.observed_at ? shanghaiLabel(point.observed_at) : point.date })) ?? [], [data?.points])
@@ -254,7 +250,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
     <ErrorNotice intent="read" title="区间成本读取失败" error={intervalCosts.error} hasData={intervalCosts.data != null} variant="compact" onRetry={intervalCosts.refresh} />
     {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />}
     {data && <div className="pb-4">
-      <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.snapshot_id} viewKey={`${accountId}:${displayedRange}`} data={data} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
+      <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.version} viewKey={`${accountId}:${displayedRange}`} data={data} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
 
     </div>}
     {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} scaleMode={scale} />}

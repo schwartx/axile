@@ -105,8 +105,8 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     result = inputs(path)
     assert set(result) == {"1", "2", "3"}
     assert result["1"]["performance"] == {
-        "snapshot_id": None,
-        "status": "empty",
+        "version": None,
+        "status": "pending",
         "computed_at": None,
         "observed_at": None,
         "account_equity": None,
@@ -169,21 +169,6 @@ def test_dashboard_invalid_target_recovery(dashboard_database, value):
     path, _ = dashboard_database
     _target(path, 7, {"normalized_weights": value})
     assert inputs(path)["1"]["target_weights"] == ({"X": None} if isinstance(value, dict) else value)
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"logic_version": None},
-        {"logic_version": False},
-        {"logic_version": "20"},
-        {"logic_version": "20", "engine_version": None},
-    ],
-)
-def test_dashboard_context_requires_version_fields(native_database, payload):
-    with pytest.raises(_core.NativeError, match="缺少分析"):
-        native_store_call(native_database, "account_dashboard_context", payload)
 
 
 def test_dashboard_native_exports_follow_current_context_entrypoint():

@@ -6,9 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDateTime};
-use rusqlite::{Connection, OptionalExtension};
 #[cfg(test)]
 use rusqlite::params;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -53,12 +53,13 @@ impl Sample {
     }
 }
 
+#[derive(Clone)]
 struct DaySamples {
     last: Sample,
     participant: Option<Sample>,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub(crate) struct Skips {
     pub(crate) count: usize,
     pub(crate) missing_target: usize,
@@ -68,6 +69,7 @@ pub(crate) struct Skips {
 }
 
 /// Tracks the same carried target as build_wbt_input, without materializing bars.
+#[derive(Clone)]
 struct Participants {
     previous_symbols: BTreeSet<String>,
     used: usize,
@@ -130,7 +132,7 @@ impl Participants {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct FallbackRange {
     pub(crate) start: String,
     pub(crate) end: String,
@@ -147,8 +149,9 @@ pub(crate) struct Range {
     pub(crate) target_skips: Option<Skips>,
 }
 
+#[derive(Clone)]
 struct RangeState {
-    key: &'static str,
+    key: String,
     start: String,
     count: usize,
     invalid_assets: usize,
@@ -172,12 +175,16 @@ struct RangeBaseline {
 
 impl RangeBaseline {
     fn push(&mut self, item: &Observation) {
-        let Some(asset) = item.asset.filter(|asset| *asset > 0.0) else { return };
+        let Some(asset) = item.asset.filter(|asset| *asset > 0.0) else {
+            return;
+        };
         if item.time >= self.cutoff && self.fallback_equity.is_none() {
             self.fallback_equity = Some(asset);
         }
         let eligible = item.target.as_ref().is_some_and(|target| {
-            target.iter().all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
+            target
+                .iter()
+                .all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
         });
         if eligible && (item.time <= self.cutoff || self.candidate.is_none()) {
             self.candidate = Some((item.time.clone(), asset));
@@ -242,7 +249,13 @@ impl RangeState {
         Ok(())
     }
 
-    fn finish(self, settings: &Value, record_count: i64, include_backtest: bool) -> Range {
+    fn finish(
+        self,
+        settings: &Value,
+        record_count: i64,
+        include_backtest: bool,
+        previous: Option<&Point>,
+    ) -> Range {
         let executable_start = self.executable.start.clone();
         let target_start = self.target.start.clone();
         let executable_daily = self.executable.ledger.map(ReplayLedger::finish);
@@ -255,6 +268,7 @@ impl RangeState {
             target_daily.as_ref(),
             target_start.as_deref(),
             &self.fallback_days,
+            previous,
         );
         let baseline = points.first().map(|point| point.date.clone());
         let header = json!({
@@ -276,7 +290,9 @@ impl RangeState {
                 "closed_ranges":[], "unavailable_ranges":[]}
         });
         Range {
-            header, points, sizing_fallback_ranges: self.fallback_ranges,
+            header,
+            points,
+            sizing_fallback_ranges: self.fallback_ranges,
             skips: (include_backtest && self.count > 0).then_some(self.executable.skips),
             target_skips: (include_backtest && self.count > 0).then_some(self.target.skips),
         }
@@ -308,6 +324,7 @@ fn merge_daily(
     target_daily: Option<&BTreeMap<String, ReplayClose>>,
     target_start: Option<&str>,
     fallback_days: &BTreeSet<String>,
+    previous: Option<&Point>,
 ) -> Vec<Point> {
     let Some(base) = baseline else {
         return Vec::new();
@@ -317,14 +334,27 @@ fn merge_daily(
     let from_target =
         target_daily.is_some() && target_start.is_some_and(|when| when <= base.time.as_str());
     let mut points = vec![Point {
-        date: base.time.clone(), observed_at: base.time.clone(), record_id: Some(base.id),
-        execution_id: base.execution_id.clone(), account_return: Some(0.0), account_equity: Some(base_asset),
-        portfolio_return: from_backtest.then_some(0.0), account_daily_return: None, portfolio_daily_return: None,
-        target_portfolio_return: from_target.then_some(0.0), target_portfolio_daily_return: None,
-        sizing_fallback: false, difference: from_backtest.then_some(0.0),
+        date: base.time.clone(),
+        observed_at: base.time.clone(),
+        record_id: Some(base.id),
+        execution_id: base.execution_id.clone(),
+        account_return: Some(0.0),
+        account_equity: Some(base_asset),
+        portfolio_return: from_backtest.then_some(0.0),
+        account_daily_return: None,
+        portfolio_daily_return: None,
+        target_portfolio_return: from_target.then_some(0.0),
+        target_portfolio_daily_return: None,
+        sizing_fallback: false,
+        difference: from_backtest.then_some(0.0),
     }];
-    let mut previous_asset = Some(base_asset);
-    let (mut portfolio, mut target_portfolio) = (0.0, 0.0);
+    let mut previous_asset = previous.map_or(Some(base_asset), |p| p.account_equity);
+    let (mut portfolio, mut target_portfolio) = previous.map_or((0.0, 0.0), |p| {
+        (
+            p.portfolio_return.unwrap_or(0.0),
+            p.target_portfolio_return.unwrap_or(0.0),
+        )
+    });
     for (day, samples) in days {
         let last = samples.participant.as_ref().unwrap_or(&samples.last);
         let account = last.asset.map(|amount| amount / base_asset - 1.0);
@@ -343,14 +373,20 @@ fn merge_daily(
             target_portfolio = close.cumulative_return;
         }
         points.push(Point {
-            date: day.clone(), observed_at: last.time.clone(), record_id: Some(last.id),
-            execution_id: last.execution_id.clone(), account_return: account, account_equity: last.asset,
-            portfolio_return: close.map(|value| value.cumulative_return), account_daily_return: account_daily,
+            date: day.clone(),
+            observed_at: last.time.clone(),
+            record_id: Some(last.id),
+            execution_id: last.execution_id.clone(),
+            account_return: account,
+            account_equity: last.asset,
+            portfolio_return: close.map(|value| value.cumulative_return),
+            account_daily_return: account_daily,
             portfolio_daily_return: close.and_then(|value| value.daily_return),
             target_portfolio_return: target_close.map(|value| value.cumulative_return),
             target_portfolio_daily_return: target_close.and_then(|value| value.daily_return),
             sizing_fallback: fallback_days.contains(day),
-            difference: account.and_then(|account| close.map(|value| account-value.cumulative_return)),
+            difference: account
+                .and_then(|account| close.map(|value| account - value.cumulative_return)),
         });
     }
     points
@@ -421,19 +457,46 @@ pub fn performance(connection: &Connection, request: &PerformanceRequest) -> Res
     if request.range.is_some() {
         return serde_json::to_value(ranges.pop()).map_err(|error| error.to_string());
     }
-    ranges.into_iter().map(|range| {
-        Ok((range.header["range"].as_str().expect("calculated range").to_owned(),
-            serde_json::to_value(range).map_err(|error| error.to_string())?))
-    }).collect::<Result<serde_json::Map<_, _>, String>>().map(Value::Object)
+    ranges
+        .into_iter()
+        .map(|range| {
+            Ok((
+                range.header["range"]
+                    .as_str()
+                    .expect("calculated range")
+                    .to_owned(),
+                serde_json::to_value(range).map_err(|error| error.to_string())?,
+            ))
+        })
+        .collect::<Result<serde_json::Map<_, _>, String>>()
+        .map(Value::Object)
 }
 
-pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -> Result<Vec<Range>, String> {
+pub(crate) fn calculate(
+    connection: &Connection,
+    request: &PerformanceRequest,
+) -> Result<Vec<Range>, String> {
+    let (states, settings, count) = calculate_states(connection, request)?;
+    states
+        .into_iter()
+        .map(|state| {
+            let mut range = state.finish(&settings, count, request.include_backtest, None);
+            if request.include_metadata {
+                crate::calendar::enrich(connection, request.account_id, &mut range.header)?;
+            }
+            Ok(range)
+        })
+        .collect()
+}
+fn calculate_states(
+    connection: &Connection,
+    request: &PerformanceRequest,
+) -> Result<(Vec<RangeState>, Value, i64), String> {
     let account_id = request.account_id;
     check_source_version(connection, account_id, request.expected_source_version)?;
     if request.require_observation_facts {
         check_observation_facts(connection, account_id)?;
     }
-    let include_metadata = request.include_metadata;
     let fee = request.backtest_fee_rate;
     if !fee.is_finite() || !(0.0..1.0).contains(&fee) {
         return Err("backtest_fee_rate must be finite and in [0,1)".to_owned());
@@ -471,10 +534,17 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
         } else {
             String::new()
         };
-        baselines.push(RangeBaseline {key,cutoff,candidate:None,fallback_equity:None});
+        baselines.push(RangeBaseline {
+            key,
+            cutoff,
+            candidate: None,
+            fallback_equity: None,
+        });
     }
     crate::fact_observation::scan(connection, account_id, "", |item| {
-        for baseline in &mut baselines { baseline.push(&item); }
+        for baseline in &mut baselines {
+            baseline.push(&item);
+        }
         Ok(())
     })?;
     let mut states = Vec::new();
@@ -502,7 +572,7 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
             true,
         )?;
         states.push(RangeState {
-            key: baseline.key,
+            key: baseline.key.into(),
             start,
             count: 0,
             invalid_assets: 0,
@@ -526,14 +596,10 @@ pub(crate) fn calculate(connection: &Connection, request: &PerformanceRequest) -
             Ok(())
         })?;
     }
-    states.into_iter().map(|state| {
-        let mut range = state.finish(&settings, record_count, include_backtest);
-        if include_metadata {
-            crate::calendar::enrich(connection, account_id, &mut range.header)?;
-        }
-        Ok(range)
-    }).collect()
+    Ok((states, settings, record_count))
 }
+
+pub(crate) mod incremental;
 
 #[cfg(test)]
 mod tests {
@@ -857,9 +923,30 @@ mod tests {
     #[test]
     fn canonical_time_deduplicates_aliases_and_keeps_the_last_record() {
         let connection = fixture();
-        insert(&connection, 1, "2026-01-01T01:00:00.000006Z", Some(100.0), true, Some(10.0));
-        insert(&connection, 2, "2026-01-01 09:00:00.000006+08:00", Some(110.0), true, Some(11.0));
-        insert(&connection, 3, "2026-01-01T09:00:00.000007", Some(120.0), true, Some(12.0));
+        insert(
+            &connection,
+            1,
+            "2026-01-01T01:00:00.000006Z",
+            Some(100.0),
+            true,
+            Some(10.0),
+        );
+        insert(
+            &connection,
+            2,
+            "2026-01-01 09:00:00.000006+08:00",
+            Some(110.0),
+            true,
+            Some(11.0),
+        );
+        insert(
+            &connection,
+            3,
+            "2026-01-01T09:00:00.000007",
+            Some(120.0),
+            true,
+            Some(12.0),
+        );
         let result = calculate(&connection, true);
         assert_eq!(result["all"]["record_count"], 3);
         assert_eq!(result["all"]["observation_count"], 2);

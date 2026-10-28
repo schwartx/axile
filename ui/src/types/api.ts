@@ -297,7 +297,6 @@ export interface AccountPerformance {
   skips: { count: number; missing_target: number; missing_ticks: number; first_time: string | null; last_time: string | null } | null
   target_skips?: AccountPerformance['skips']
   sizing_fallback_count?: number | null
-  sizing_fallback_ranges?: Array<{ start: string; end: string; count: number }>
   points: PerformancePoint[]
   executions?: import('@/lib/api/performance').CostExecutionRow[]
   bindings: Array<{ time: string; portfolio_id: number | null }>
@@ -442,7 +441,7 @@ export interface AccountDashboardItem {
 }
 
 export interface PerformanceSummary {
-  snapshot_id: string | null
+  version: string | null
   status: 'empty' | 'pending' | 'ready' | 'stale' | 'failed'
   computed_at: string | null
   observed_at: string | null

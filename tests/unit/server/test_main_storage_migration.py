@@ -223,9 +223,6 @@ def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database)
         register_time_function(connection)
         connection.execute("UPDATE performance_snapshot SET ranges='invalid JSON'")
     receipt = native_store_call(main_database, "migration_upgrade", {"public": "0036"})
-    result = json.loads(_core.snapshot(_core.Store(str(main_database)), 1, "all", "18", "equity-ledger-1"))
-    assert result["status"] == "pending"
-    assert result["result"] is None
     with closing(sqlite3.connect(main_database)) as connection, connection:
         register_time_function(connection)
         assert connection.execute(
@@ -245,23 +242,15 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
     assert claim is not None
     receipt = native_store_call(
         main_database,
-        "publish_store",
+        "analysis_update",
         {
-            "command": "publish_store",
-            "protocol": 1,
             "account_id": 1,
             "expected_source_version": claim["source_version"],
-            "snapshot_id": "main-publish",
-            "claim_token": "main-publish",
-            "logic_version": "18",
-            "engine_version": "equity-ledger-1",
+            "claim_token": claim["running_token"],
             "computed_at": "2026-10-25T10:00:00",
-            "trade_channel": "tq",
-            "include_backtest": False,
-            "settings": {"backtest_weight_type": "cs", "backtest_fee_rate": 0},
         },
     )
-    assert receipt["published"] is True
+    assert receipt["updated"] is True
     native_store_call(main_database, "migration_downgrade", {"public": "0033"})
     with closing(sqlite3.connect(main_database)) as connection, connection:
         register_time_function(connection)
@@ -271,7 +260,7 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
         assert result["account_assets"]["total_asset"] == 103.0
 
 
-@pytest.mark.parametrize("revision", ["0039", "0040", "0041", "0042"])
+@pytest.mark.parametrize("revision", ["0040", "0041", "0042"])
 def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path, revision):
     path = tmp_path / "missing.db"
     with pytest.raises(_core.NativeError):

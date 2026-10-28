@@ -3,9 +3,17 @@
 use rusqlite::{Connection, OptionalExtension};
 
 pub(crate) fn validate(connection: &Connection, account: i64) -> Result<(), String> {
+    validate_since(connection, account, i64::MIN)
+}
+
+pub(crate) fn validate_since(
+    connection: &Connection,
+    account: i64,
+    after: i64,
+) -> Result<(), String> {
     let invalid = connection.query_row(
         "SELECT e.id FROM executerecord e
-         WHERE e.account_id=?1 AND e.result_staged=0 AND (
+         WHERE e.account_id=?1 AND e.id>?2 AND e.result_staged=0 AND (
              e.facts_complete IS NOT 1
              OR (e.input_id IS NOT NULL AND NOT EXISTS (
                  SELECT 1 FROM execution_input i WHERE i.id=e.input_id AND i.account_id=e.account_id))
@@ -24,7 +32,7 @@ pub(crate) fn validate(connection: &Connection, account: i64) -> Result<(), Stri
                  WHERE c.record_id=e.id AND c.state='array' AND c.member_count IS NOT
                      (SELECT COUNT(*) FROM business_trade t WHERE t.record_id=e.id AND t.collection_path=c.path))
          ) ORDER BY e.id LIMIT 1",
-        [account], |row| row.get::<_, i64>(0),
+        [account, after], |row| row.get::<_, i64>(0),
     ).optional().map_err(|error| format!("SOURCE_FACTS_READ: {error}"))?;
     match invalid {
         Some(id) => Err(format!(

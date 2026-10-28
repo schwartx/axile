@@ -233,3 +233,12 @@ fn page(connection: &Connection, table: &str, after: i64) -> Result<Vec<Object>>
         [after],
     )
 }
+
+pub(super) fn install_incremental(c: &Connection) -> Result<()> {
+    guards::install_incremental(c)
+}
+pub(super) fn restore_analysis_triggers(c: &Connection) -> Result<()> {
+    c.execute_batch("DROP TRIGGER analysis_account_channel")
+        .map_err(sql)?;
+    guards::install_analysis(c)
+}

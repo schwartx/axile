@@ -11,9 +11,9 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     const options = JSON.parse(process.env.HISTORY_SCENARIO)
     const charts = [], queries = [], notices = [], retryHandlers = new Map()
     let checks = 0, refreshes = 0
-    const metadata = { schema_version: 1, status: options.status ?? 'ready', source_version: 2, snapshot_id: 's2', snapshot_version: 2, logic_version: 'logic', engine_version: 'engine', computed_at: '2026-10-20T12:00:00', data_until: null, error: options.errors ? 'calculation failed' : null, retry_at: null, read_view_schema_version: options.marker ?? 1 }
+    const metadata = { schema_version: 1, status: options.status ?? 'ready', source_version: 2, version: 's2', logic_version: 'logic', engine_version: 'engine', computed_at: '2026-10-20T12:00:00', data_until: null, error: options.errors ? 'calculation failed' : null, retry_at: null }
     const result = { range: '90', settings: { backtest_fee_rate: 0, backtest_weight_type: 'cs' }, backtest_included: true, engine_version: 'engine', baseline: '1970-01-01T00:00:00Z', end: '1970-01-01T00:00:01Z', record_count: 1, observation_count: 2, used_record_count: 1, invalid_asset_count: 0, skips: null, points: [{ date: '1970-01-01', observed_at: '1970-01-01T00:00:00Z', account_return: 0, portfolio_return: 0 }, { date: '1970-01-01', observed_at: '1970-01-01T00:00:01Z', account_return: 0.1, portfolio_return: 0.1 }], bindings: [], calendar: { status: 'available', calendar_id: 'test', label: 'fixture', closed_ranges: [], unavailable_ranges: [] } }
-    const displayed = options.displayed === false ? null : { snapshot_id: 's1', snapshot_version: 1, range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false }] }
+    const displayed = options.displayed === false ? null : { version: 's1', range: '90', computed_at: null, data_until: null, result, daily_costs: {}, events: [], event_count: 0, execution_index: [{ record_id: 11, time_ms: 1000, has_transactions: false }] }
     mock.module('react-router', () => ({ useParams: () => ({ id: '7' }) }))
     mock.module('@/components/ui/nav', () => ({ useNavigate: () => () => {} }))
     mock.module('@/features/account/pageHead', () => ({ AccountPageTitle: () => createElement('h1', null, 'History') }))
@@ -25,7 +25,7 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     mock.module('@/components/viz/PerformanceChart', () => ({ PerformanceChart: props => { charts.push({ snapshotId: props.snapshotId, executionIndex: props.executionIndex, hasFullExecutions: 'executions' in props.data, daily: props.daily, backtestMode: props.backtestMode, scaleMode: props.scaleMode, showExecutions: props.showExecutions }); return createElement('div', { 'data-chart-snapshot': props.snapshotId }, props.controls) } }))
     mock.module('@/features/history/PerformanceChartPlaceholder', () => ({ PerformanceChartPlaceholder: props => createElement('div', { 'data-placeholder-loading': String(props.loading), 'data-placeholder-failed': String(props.failed) }, props.message, props.controls) }))
     mock.module('@/lib/api/performance', () => ({
-      getPerformanceCosts: async (accountId, query) => { queries.push({ accountId, ...query }); return { snapshot_id: query.snapshot_id, summary: {} } },
+      getPerformanceCosts: async (accountId, query) => { queries.push({ accountId, ...query }); return { version: query.version, summary: {} } },
       selectionQuery: selection => selection?.kind === 'interval' ? { start: selection.start, end: selection.end } : {},
       savePerformanceSettings: async () => ({ backtest_fee_rate: 0, backtest_weight_type: 'cs' }),
     }))
@@ -47,33 +47,16 @@ function renderPage(options: { displayed?: boolean; marker?: number; status?: st
     encoding: 'utf8', timeout: 20_000,
   })
   if (child.status !== 0) throw new Error(child.error?.message ?? child.stderr ?? `Child exited ${child.status}`)
-  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ snapshot_id: string; range: string; accountId: number; dimension: string; start: number; end: number }>; notices: string[]; checks: number; refreshes: number }
+  return JSON.parse(child.stdout) as { html: string; charts: Array<{ snapshotId: string; executionIndex: Array<{ record_id: number; time_ms: number; has_transactions: boolean }>; hasFullExecutions: boolean; daily: boolean; backtestMode: string; scaleMode: string; showExecutions: boolean }>; queries: Array<{ version: string; range: string; accountId: number; dimension: string; start: number; end: number }>; notices: string[]; checks: number; refreshes: number }
 }
 
 test('新版结果未齐时图表、成本查询和浏览偏好仍绑定完整旧版', () => {
   const page = renderPage({ loadingResult: true })
   expect(page.charts).toEqual([{ snapshotId: 's1', executionIndex: [{ record_id: 11, time_ms: 1000, has_transactions: false }], hasFullExecutions: false, daily: true, backtestMode: 'target', scaleMode: 'natural', showExecutions: false }])
-  expect(page.queries).toEqual([{ accountId: 7, snapshot_id: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
+  expect(page.queries).toEqual([{ accountId: 7, version: 's1', range: '90', dimension: 'summary', start: 0, end: 1000 }])
   expect(page.html).toContain('正在读取新版绩效，当前保留上次结果')
   expect(page.html).toContain('data-segment="90"')
   expect(page.refreshes).toBe(0)
-})
-
-test('历史 marker0 明确要求计算且保留可用刷新入口', () => {
-  const page = renderPage({ displayed: false, marker: 0 })
-  expect(page.html).toContain('当前快照需要重新计算，请刷新绩效与成本')
-  expect(page.html).toContain('data-placeholder-loading="false"')
-  expect(page.html).toMatch(/aria-label="刷新绩效与成本"[^>]*>/)
-  expect(page.html).not.toMatch(/aria-label="刷新绩效与成本"[^>]* disabled=/)
-  expect(page.queries).toEqual([])
-  expect(page.refreshes).toBe(0)
-})
-
-test('marker0 已在计算时展示计算状态，避免要求点击禁用的刷新入口', () => {
-  const page = renderPage({ displayed: false, marker: 0, status: 'pending' })
-  expect(page.html).toContain('正在重新计算，完成后显示绩效结果')
-  expect(page.html).not.toContain('请刷新绩效与成本')
-  expect(page.html).toMatch(/aria-label="刷新绩效与成本"[^>]* disabled=/)
 })
 
 test('状态、结果、计算和刷新错误分别保留，读重试不会提交新计算', () => {

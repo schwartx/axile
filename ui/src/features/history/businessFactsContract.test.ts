@@ -11,7 +11,7 @@ const summary = { value: null, cost: null, loss_bp: null, coverage: null, covere
 
 function page(snapshot: string, record: number, more = false): AnalysisExecutionDetail {
   return {
-    schema_version: 1, snapshot_id: snapshot, record_id: record,
+    schema_version: 1, version: snapshot, record_id: record,
     header: { execution_id: null, created_at: null, is_success: null, noop: null, reason: null, raw_present: 0, has_symbol_results: false, positions_present: true },
     summary,
     tables: {
@@ -83,7 +83,7 @@ test('corrupt later facts page cannot partially replace published snapshot evide
     { idx: 1, symbol: 'cu2701', quantity: null, direction: null },
   ])
   expect(paths.map(path => path.searchParams.get('offset'))).toEqual(['0', '200', '200'])
-  expect(paths.every(path => path.searchParams.get('snapshot_id') === 'facts-corrupt-page' && path.searchParams.get('record_id') === '27001')).toBe(true)
+  expect(paths.every(path => path.searchParams.get('version') === 'facts-corrupt-page' && path.pathname.endsWith('/execution/27001'))).toBe(true)
 })
 
 test('snapshot expiry after a first page preserves evidence and blocks further load-more requests', async () => {
@@ -91,7 +91,7 @@ test('snapshot expiry after a first page preserves evidence and blocks further l
   fetchWith(async (input, init) => {
     expect(init?.method).toBeUndefined()
     paths.push(String(input))
-    return paths.length === 1 ? Response.json(page('facts-expired-page', 27002, true)) : Response.json({ detail: 'snapshot expired' }, { status: 410 })
+    return paths.length === 1 ? Response.json(page('facts-expired-page', 27002, true)) : Response.json({ detail: 'snapshot expired' }, { status: 409 })
   })
   const entry = executionDetailEntry(27002, 'facts-expired-page', 27002)
   await loadExecutionDetail(entry)
@@ -104,7 +104,7 @@ test('snapshot expiry after a first page preserves evidence and blocks further l
   expect(entry.state.error).toBeInstanceOf(ApiError)
   await loadExecutionDetail(entry, true)
   expect(paths).toHaveLength(2)
-  expect(paths.every(path => path.includes('snapshot_id=facts-expired-page') && path.includes('record_id=27002'))).toBe(true)
+  expect(paths.every(path => path.includes('version=facts-expired-page') && path.includes('/execution/27002'))).toBe(true)
 })
 
 test('late failure for another account cannot invalidate equal snapshot and record identities', async () => {
@@ -113,7 +113,7 @@ test('late failure for another account cannot invalidate equal snapshot and reco
   fetchWith(async input => {
     const path = String(input)
     paths.push(path)
-    if (path.includes('/account/performance/27003/')) {
+    if (path.includes('/account/analysis/27003/')) {
       await new Promise<void>(resolve => { release = resolve })
       return Response.json({ detail: 'record unavailable in this account' }, { status: 404 })
     }
@@ -128,8 +128,8 @@ test('late failure for another account cannot invalidate equal snapshot and reco
   release()
   await late
   expect(paths).toHaveLength(2)
-  expect(paths.some(path => path.includes('/account/performance/27003/'))).toBe(true)
-  expect(paths.some(path => path.includes('/account/performance/27004/'))).toBe(true)
+  expect(paths.some(path => path.includes('/account/analysis/27003/'))).toBe(true)
+  expect(paths.some(path => path.includes('/account/analysis/27004/'))).toBe(true)
   expect(failed.state.data).toBeNull()
   expect(failed.state.error).toBeInstanceOf(ApiError)
   expect(valid.state.data).toBe(published)

@@ -1,26 +1,16 @@
 """验证独立权益回放、缺口与回测设置持久化."""
 
-import asyncio
-import sqlite3
-from contextlib import closing
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from axile.server._native import _core
-from axile.server.api.routes import account_performance
-from axile.server.api.routes.account_performance import router
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance import close_before
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
 from tests.conftest import initialize_native_database, native_store_call
-from tests.unit.server._business_analysis_support import analysis_record, database, persist_records
 from tests.unit.server._business_analysis_support import schema_template as schema_template
-from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._performance_oracle import (
     Observation,
     build_wbt_input,
@@ -611,101 +601,4 @@ def test_migration_roundtrip_defaults(tmp_path):
         assert tuple(connection.execute("SELECT backtest_weight_type, backtest_fee_rate FROM account").fetchone()) == (
             "ts",
             0,
-        )
-
-
-@pytest.mark.parametrize("range_key", ["30", "90", "all"])
-def test_account_returns_survive_failed_analysis(tmp_path, schema_template, monkeypatch, range_key):
-    path = tmp_path / "analysis.db"
-
-    async def setup():
-        async with database(tmp_path, schema_template):
-            pass
-
-    asyncio.run(setup())
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("UPDATE account_analysis SET error='analysis failed' WHERE account_id=2")
-    assert asyncio.run(account_performance.read_snapshot_status(str(path), 2)) == "failed"
-    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
-    monkeypatch.setattr(account_performance, "database_path", lambda: str(path))
-    monkeypatch.setattr(account_performance, "analysis_store", lambda: _core.Store(str(path)))
-    app = FastAPI()
-    app.include_router(router, prefix="/account")
-
-    with TestClient(app) as client:
-        response = client.get("/account/performance/2", params={"include_backtest": False, "range": range_key})
-        assert response.status_code == 200, response.text
-        result = response.json()
-        assert result["range"] == range_key
-        assert result["backtest_included"] is False
-        assert result["record_count"] == result["observation_count"] == 3
-        assert result["points"][-1]["account_equity"] == 103
-        assert result["points"][-1]["account_return"] == pytest.approx(103 / 101 - 1)
-        assert all(point["portfolio_return"] is None for point in result["points"])
-        assert client.get("/account/performance/2", params={"include_backtest": True}).status_code == 503
-
-    assert asyncio.run(account_performance.read_snapshot_status(str(path), 2)) == "failed"
-
-
-def test_routes_persist_settings_across_sessions_without_scheduler(tmp_path, schema_template, monkeypatch):
-    path = tmp_path / "analysis.db"
-
-    async def setup():
-        async with database(tmp_path, schema_template, count=0) as (_, sessions, _):
-            with closing(sqlite3.connect(path)) as connection, connection:
-                insert_account(connection, build_account(id=3, account_control_preset="default"))
-                connection.execute(
-                    "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES (2,NULL,'2026-01-02T09:00:00')"
-                )
-            async with sessions() as session:
-                await persist_records(
-                    session,
-                    [
-                        analysis_record(
-                            id=i + 1,
-                            execution_id=f"routes-{i}",
-                            account_id=2,
-                            is_success=1,
-                            created_at=f"2026-01-0{i + 1}T09:00:00",
-                            input={"curr_target": {"A": 1}},
-                            result={
-                                "account_assets": {"total_asset": price},
-                                "first_ticks": {"A": {"bid_price": price, "ask_price": price}},
-                            },
-                        )
-                        for i, price in enumerate([100, 110, 99])
-                    ],
-                )
-
-    asyncio.run(setup())
-    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
-    monkeypatch.setattr(account_performance, "database_path", lambda: str(path))
-    monkeypatch.setattr(account_performance, "analysis_store", lambda: _core.Store(str(path)))
-    app = FastAPI()
-    app.include_router(router, prefix="/account")
-
-    with TestClient(app) as client:
-        # worker 重建前仅同步路径可用;带回测读取依赖快照发布,写路径阶段恢复。
-        initial = client.get("/account/performance/2?include_backtest=false").json()
-        assert initial["backtest_included"] is False
-        assert initial["settings"] == {"backtest_weight_type": "cs", "backtest_fee_rate": 0}
-        assert initial["bindings"][0]["portfolio_id"] is None
-        settings = {"backtest_weight_type": "cs", "backtest_fee_rate": 0.0002}
-        response = client.patch("/account/performance-settings/2", json=settings)
-        assert response.status_code == 200, response.text
-        assert response.json() == settings
-        assert client.post("/account/performance/2/refresh").status_code == 202
-    with TestClient(app) as client:
-        assert client.get("/account/performance/2?include_backtest=false").json()["settings"] == settings
-        assert (
-            client.get("/account/performance/3?include_backtest=false").json()["settings"]["backtest_weight_type"]
-            == "cs"
-        )
-        assert client.get("/account/performance/999").status_code == 404
-        assert client.get("/account/performance/2?range=bad").status_code == 422
-        assert (
-            client.patch(
-                "/account/performance-settings/2", json={**settings, "backtest_weight_type": "bad"}
-            ).status_code
-            == 422
         )
