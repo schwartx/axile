@@ -10,7 +10,7 @@ from tests.unit.server._migration_support import _connect
 from tests.unit.server._native_read_views import persist_record_fixture
 
 
-def seed_account(path):
+def seed_account(path, *, null_conversion=False, zero_target_close=False):
     """生成禁止调度的合成期货账户，包含期初有仓、部分平仓和费用缺失。"""
     initialize_native_database(path)
     account = build_account(trade_channel="tq", portfolio_id=None, is_started=False, backtest_fee_rate=0.0)
@@ -37,6 +37,7 @@ def seed_account(path):
                     "trade_time": time,
                     "trade_price": 110 if day == 2 else 125,
                     "trade_volume": 1,
+                    **({"value_conversion": None} if null_conversion else {}),
                     "extra": {
                         "direction": "SELL",
                         "tq_symbol": "SHFE.fu2701",
@@ -64,7 +65,11 @@ def seed_account(path):
                         "positions": [position] if quantity else [],
                     },
                     "symbol_results": {
-                        "fu2701": {"status": "SUCCEEDED", "sizing": {"unit_multiplier": 10}, "trades": trades}
+                        "fu2701": {
+                            "status": "SUCCEEDED",
+                            "sizing": {"unit_multiplier": None if zero_target_close and day == 3 else 10},
+                            "trades": trades,
+                        }
                     },
                 },
             },
@@ -96,8 +101,14 @@ def seed_account(path):
     return json.loads(core.chart(core.Store(str(path)), 1, claim["running_token"], "all"))
 
 
-def test_published_contributions_use_account_observations_and_keep_closed_contract(tmp_path):
-    result = seed_account(tmp_path / "contribution.db")
+@pytest.mark.parametrize("null_conversion", [False, True])
+@pytest.mark.parametrize("zero_target_close", [False, True])
+def test_published_contributions_use_account_observations_and_keep_closed_contract(
+    tmp_path, null_conversion, zero_target_close
+):
+    result = seed_account(
+        tmp_path / "contribution.db", null_conversion=null_conversion, zero_target_close=zero_target_close
+    )
     table = result["tables"]["contributions"]
     rows = [dict(zip(table["columns"], row, strict=True)) for row in table["rows"]]
     last = rows[-1]

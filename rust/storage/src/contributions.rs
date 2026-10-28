@@ -346,7 +346,21 @@ fn write_range(
     target
         .execute("DELETE FROM native_stage.contribution_seen", [])
         .map_err(stage_error)?;
-    let mut statement=source.prepare("SELECT axile_time(r.created_at),COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,z.unit_multiplier,t.extra,t.fee,t.fee_state,t.fee_currency,t.conversion_recorded,v.rate,v.value_currency,
+    // 清仓规划可省略乘数；只复用同账户、同合约在成交之前冻结的有效值。
+    // 可选换算的显式 null 与未提供等价，其他无效换算仍交给 fill 标记。
+    let mut statement=source.prepare("SELECT axile_time(r.created_at),COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,
+        COALESCE(z.unit_multiplier,(
+            SELECT previous.unit_multiplier FROM execution_symbol_sizing previous
+            JOIN executerecord pr ON pr.id=previous.record_id
+            WHERE pr.account_id=r.account_id
+              AND previous.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
+              AND previous.unit_multiplier>0
+              AND (axile_time(pr.created_at)<axile_time(r.created_at)
+                OR (axile_time(pr.created_at)=axile_time(r.created_at) AND pr.id<r.id))
+            ORDER BY axile_time(pr.created_at) DESC,pr.id DESC LIMIT 1
+        )),t.extra,t.fee,t.fee_state,t.fee_currency,
+        CASE WHEN v.state='malformed' AND v.malformed_value='null' THEN 0 ELSE t.conversion_recorded END,
+        v.rate,v.value_currency,
         (SELECT o.direction FROM execution_order o WHERE o.record_id=t.record_id AND o.order_id=t.order_id ORDER BY o.ordinal DESC LIMIT 1)
         FROM executerecord r JOIN business_trade t ON t.record_id=r.id
         LEFT JOIN execution_symbol_sizing z ON z.record_id=t.record_id AND z.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
@@ -449,7 +463,7 @@ mod tests {
           CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER,symbol TEXT,volume REAL,direction TEXT,market_value REAL,extra TEXT,volume_state TEXT,market_value_state TEXT);
           CREATE TABLE business_trade(record_id INTEGER,symbol TEXT,trade_id TEXT,trade_volume REAL,trade_price REAL,extra TEXT,fee REAL,fee_state TEXT,fee_currency TEXT,conversion_recorded INTEGER,collection_path TEXT,path TEXT,ordinal INTEGER);
           CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
-          CREATE TABLE business_trade_conversion(record_id INTEGER,trade_path TEXT,rate REAL,value_currency TEXT);
+          CREATE TABLE business_trade_conversion(record_id INTEGER,trade_path TEXT,rate REAL,value_currency TEXT,state TEXT,malformed_value TEXT);
           CREATE TABLE execution_order(record_id INTEGER,order_id TEXT,direction TEXT,ordinal INTEGER);
           ATTACH DATABASE '' AS native_stage;
           CREATE TABLE native_stage.performance_result_point(range_key TEXT,idx INTEGER,observed_at TEXT,record_id INTEGER);
@@ -478,6 +492,75 @@ mod tests {
             values(&c),
             vec![(0.0, 0.0, 0, 0), (300.0, 1.0, 0, 0), (350.0, 1.0, 1, 0)]
         );
+    }
+    #[test]
+    fn optional_null_conversion_keeps_native_amounts() {
+        let c = database();
+        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;
+          INSERT INTO business_trade_conversion SELECT record_id,path,NULL,NULL,'malformed','null' FROM business_trade;").unwrap();
+        write(&c, &c, 1).unwrap();
+        assert_eq!(values(&c)[2], (350.0, 1.0, 1, 0));
+    }
+
+    #[test]
+    fn explicit_conversion_still_applies_its_recorded_rate() {
+        let c = database();
+        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;
+          INSERT INTO business_trade_conversion SELECT record_id,path,2,'CNY','object',NULL FROM business_trade;").unwrap();
+        write(&c, &c, 1).unwrap();
+        assert_eq!(values(&c)[2], (2700.0, 1.0, 1, 0));
+    }
+
+    #[test]
+    fn closing_trade_reuses_previous_multiplier_for_the_same_contract() {
+        let c = database();
+        c.execute_batch(
+            "UPDATE execution_symbol_sizing SET unit_multiplier=NULL WHERE record_id=3;",
+        )
+        .unwrap();
+        write(&c, &c, 1).unwrap();
+        assert_eq!(values(&c)[2], (350.0, 1.0, 1, 0));
+    }
+
+    #[test]
+    fn invalid_conversion_or_multiplier_remains_an_issue() {
+        for conversion in [
+            "'malformed','\"invalid\"',NULL,NULL",
+            "'object',NULL,0,'CNY'",
+            "'object',NULL,1,'USD'",
+        ] {
+            let c = database();
+            c.execute_batch(&format!("UPDATE business_trade SET conversion_recorded=1 WHERE record_id=3;
+              INSERT INTO business_trade_conversion(record_id,trade_path,state,malformed_value,rate,value_currency)
+              VALUES(3,'/symbol_results/fu2601/trades/0',{conversion});")).unwrap();
+            write(&c, &c, 1).unwrap();
+            assert!(values(&c)[2].3 > 0, "{conversion}");
+        }
+        let c = database();
+        c.execute_batch("UPDATE execution_symbol_sizing SET unit_multiplier=0 WHERE record_id=3;")
+            .unwrap();
+        write(&c, &c, 1).unwrap();
+        assert!(values(&c)[2].3 > 0);
+        let c = database();
+        c.execute_batch("UPDATE business_trade SET conversion_recorded=1;")
+            .unwrap();
+        write(&c, &c, 1).unwrap();
+        assert!(values(&c)[2].3 > 0);
+    }
+
+    #[test]
+    fn multiplier_fallback_cannot_use_future_records_or_another_contract_or_account() {
+        let c = database();
+        c.execute_batch(
+            "UPDATE execution_symbol_sizing SET unit_multiplier=NULL;
+          INSERT INTO executerecord VALUES(4,1,'2026-01-04T09:00:00'),(5,2,'2026-01-01T09:00:00');
+          INSERT INTO execution_symbol_sizing VALUES(4,'/symbol_results/fu2601/sizing',10),
+          (1,'/symbol_results/fu2605/sizing',10),(5,'/symbol_results/fu2601/sizing',10);",
+        )
+        .unwrap();
+        write(&c, &c, 1).unwrap();
+        assert!(values(&c)[1].3 > 0);
+        assert!(values(&c)[2].3 > 0);
     }
     #[test]
     fn duplicate_fill_is_counted_once_but_missing_fill_is_an_issue() {

@@ -12,8 +12,8 @@ from axile.server.core.db import database_path
 from axile.server.db.models.account_settings import BacktestSettings
 from axile.server.native_store import native_call, native_operation
 
-# 统一历史时间、区间边界和展示归一；重建旧快照与同版卡片。
-LOGIC_VERSION = "21"
+# 修正可选金额换算与清仓乘数；重建旧贡献快照和同版卡片。
+LOGIC_VERSION = "22"
 ENGINE_VERSION = "equity-ledger-1"
 
 
