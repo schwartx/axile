@@ -75,4 +75,6 @@ test('任意品种的颜色和线型按身份固定，排名、勾选集合和�
   const before = new Map(symbols.map(key => [key, seriesStyle(key)]))
   for (const key of symbols.toReversed().slice(0, 2)) expect(seriesStyle(key)).toEqual(before.get(key)!)
   expect(new Set(symbols.map(key => JSON.stringify(seriesStyle(key)))).size).toBeGreaterThan(1)
+  const colors = new Set(Array.from({ length: 50 }, (_, i) => seriesStyle(`product-${i}`).color))
+  expect(colors).toEqual(new Set([1, 2, 3, 4, 5].map(i => `var(--color-chart-${i})`)))
 })
