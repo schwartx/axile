@@ -43,7 +43,7 @@ pub fn query(
     let mut statement = conn
         .prepare(&format!(
             "SELECT id,created_at,execution_id,facts_complete FROM executerecord
-             WHERE account_id=?1{}
+             WHERE account_id=?1 AND history_visible=1 AND result_staged=0{}
              ORDER BY axile_time(created_at) DESC,id DESC",
             time_predicate("created_at", since.is_some(), until.is_some())
         ))

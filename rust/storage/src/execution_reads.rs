@@ -203,7 +203,7 @@ fn sizing_context(connection: &Connection, input_id: &str) -> Result<Value, Anal
 fn last_target(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let input: Option<Option<String>> = connection
         .query_row(
-            "SELECT input_id FROM executerecord WHERE account_id=?1 AND is_success=1
+            "SELECT input_id FROM executerecord WHERE account_id=?1 AND is_success=1 AND history_visible=1 AND result_staged=0
              ORDER BY id DESC LIMIT 1",
             [integer(request, "account_id")?],
             |row| row.get(0),
@@ -230,7 +230,7 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
     let mut statement = connection
         .prepare(
             "SELECT lower(artifact_type),schema_version FROM execution_artifact
-             WHERE execution_id=?1 AND lower(artifact_type) IN ('target_snapshot','execution_summary')",
+             WHERE execution_id=?1 AND lower(artifact_type)='target_snapshot'",
         )
         .map_err(sql)?;
     let versions = statement
@@ -274,6 +274,39 @@ fn target_sizing(connection: &Connection, request: &Value) -> Result<Value, Anal
 
 fn read_on(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     match text(request, "op")? {
+        "detail" => {
+            let Some(record) = record_on(
+                connection,
+                text(request, "execution_id")?,
+                Some(integer(request, "account_id")?),
+            )?
+            else {
+                return Ok(Value::Null);
+            };
+            let mut detail = crate::executions::detail(
+                connection,
+                integer(request, "account_id")?,
+                record["id"]
+                    .as_i64()
+                    .ok_or_else(|| invalid("invalid record id"))?,
+            )
+            .map_err(invalid)?;
+            let artifact = connection.query_row("SELECT content FROM execution_artifact WHERE execution_id=?1 AND upper(artifact_type)='ACCOUNT_SNAPSHOT_BEFORE'", [text(request,"execution_id")?], |r| r.get::<_,String>(0)).optional().map_err(sql)?;
+            if let Some(content) = artifact {
+                let content: Value =
+                    serde_json::from_str(&content).map_err(|e| invalid(e.to_string()))?;
+                let artifact = json!({"execution_id":request["execution_id"],"artifact_type":"account_snapshot_before","content":content});
+                detail["before_account_assets"] = summary_refs::resolve_artifact_content(
+                    connection,
+                    &artifact,
+                    Some(integer(request, "account_id")?),
+                )?["account_assets"]
+                    .clone();
+            }
+            detail["view"] =
+                crate::execution_view::build(&detail["result"], &detail["before_account_assets"]);
+            Ok(detail)
+        }
         "status" => persisted_status(connection, request),
         "target_sizing" => target_sizing(connection, request),
         "last_target" => last_target(connection, request),
@@ -294,7 +327,7 @@ mod tests {
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,
-            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at TEXT);
+            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,curr_target_state TEXT,curr_target_count INTEGER,
               sizing_context_state TEXT,long_leverage REAL,short_leverage REAL,weight_precision REAL);
             CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);").unwrap();

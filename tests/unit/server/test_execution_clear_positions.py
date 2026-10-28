@@ -30,6 +30,7 @@ from tests.unit.server._execution_test_support import (
 @pytest.fixture(autouse=True)
 def _worker_commands(monkeypatch):
     """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
+    monkeypatch.setattr(worker_audit, "stage_execute_result_sync", lambda **kwargs: None)
     manager = WorkerCommandHarness()
     monkeypatch.setattr(clear_positions_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
@@ -444,6 +445,4 @@ def test_empty_positions_captures_before_account_snapshot(
         ).fetchone()
     assert stored == (1000.0,)
     # 前基线确实穿进对账，source_before 不再恒为 unavailable
-    summary = next(a["content"] for a in artifacts if a["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY)
-    assert summary["reconciliation"]["account"]["source_before"] == "real"
-    assert summary["reconciliation"]["account"]["equity_before"] == 1000.0
+    assert all(a["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for a in artifacts)

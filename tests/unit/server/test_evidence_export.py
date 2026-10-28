@@ -37,7 +37,7 @@ from axile.server.api.routes import account_evidence
 from axile.server.db.models import Account
 from axile.server.db.models.account_control_session import AccountControlSession
 from axile.server.db.models.base import now_ms, now_str
-from axile.server.db.models.execution import ExecutionArtifact, ExecutionEvent
+from axile.server.db.models.execution import ExecutionEvent
 from axile.server.evidence import archive as evidence_archive
 from axile.server.evidence import collect
 from axile.server.evidence.archive import build_archive
@@ -301,21 +301,17 @@ def _csv(archive, path):
 
 
 def test_single_execution_retains_partial_native_evidence_and_redacts(database):
-    recon = {
-        "account": {"source_after": "real"},
-        "symbols": [{"symbol": "rb2610", "before": 0, "target": 2, "after": 1, "filled": 1, "reached": False}],
+    record = _record()
+    record.raw_result["account_assets"] = {
+        "source": "real",
+        "positions": [{"symbol": "rb2610", "direction": "多头", "volume": 1}],
     }
     _seed(
         database,
         _intent(),
-        _record(),
+        record,
         _event(),
         _control(),
-        ExecutionArtifact(
-            execution_id="exec-1",
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            content={"reconciliation": recon},
-        ),
     )
     client = _client(database)
     archive = _zip(client.get("/account/executions/exec-1/evidence"))
@@ -326,7 +322,7 @@ def test_single_execution_retains_partial_native_evidence_and_redacts(database):
     assert report["known_pending_order_ids"] == ["20261015-1-2-3"]
     assert report["coverage"]["coverage"] == "incomplete"
     assert report["execution_environment"] is None
-    assert _csv(archive, "executions/exec-1/reconciliation.csv")[0]["after"] == "1"
+    assert float(_csv(archive, "executions/exec-1/reconciliation.csv")[0]["after"]) == 1
     orders = _csv(archive, "executions/exec-1/orders.csv")
     assert json.loads(orders[0]["extra"])["OrderSysID"] == "native-4"
     assert _csv(archive, "executions/exec-1/trades.csv")[0]["trade_id"] == "trade-1"
@@ -654,10 +650,10 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert first["executions"] == second["executions"]
     assert first["export_id"] != second["export_id"]
     _seed(database, _record())
-    # 终态工厂会完成 intent；此场景显式模拟旧 intent 尚未收敛。
+    # 结果事实可以先到，任务状态仍由 intent 的结算决定。
     sql(database, "UPDATE execution_intent SET status='RUNNING',finished_at=NULL WHERE execution_id='exec-1'")
     third = _manifest(_zip(client.get("/account/executions/exec-1/evidence")))
-    assert third["executions"][0]["task_status"] == "SUCCEEDED"
+    assert third["executions"][0]["task_status"] == "RUNNING"
     assert third["executions"][0]["business_outcome"] == "not_reached"
     assert first["executions"][0]["business_outcome"] == "unknown"
 
@@ -685,7 +681,8 @@ def test_csv_formulas_escaped_unknown_fields_excluded_and_nulls_remain_null(data
     raw = archive.read("executions/exec-1/record.json").decode()
     assert "not-for-sharing" not in raw
     assert json.loads(raw)["result"]["account_assets"]["positions"] is None
-    assert _csv(archive, "executions/exec-1/reconciliation.csv") == []
+    row = _csv(archive, "executions/exec-1/reconciliation.csv")[0]
+    assert row["before"] == row["after"] == row["reached"] == ""
 
 
 def test_export_task_cancellation_cleans_finished_thread_archive(database, monkeypatch):
@@ -904,8 +901,7 @@ def test_mixed_result_retains_different_snapshots_without_counting_new_records(d
     assert "不同快照" in archive.read("executions/exec-1/summary.md").decode()
 
 
-@pytest.mark.parametrize("result_source", ["record", "artifact"])
-def test_flat_result_inherits_contract_from_result_context(database, result_source):
+def test_flat_result_inherits_contract_from_result_context(database):
     record = _record()
     result = record.raw_result
     group = result.pop("symbol_results")["rb2610"]
@@ -913,16 +909,7 @@ def test_flat_result_inherits_contract_from_result_context(database, result_sour
     for field in ("orders", "trades"):
         result[field] = group[field]
         result[field][0].pop("symbol")
-    rows = (
-        [record]
-        if result_source == "record"
-        else [
-            ExecutionArtifact(
-                execution_id="exec-1", artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY, content=result
-            )
-        ]
-    )
-    _seed(database, _intent(), *rows)
+    _seed(database, _intent(), record)
     archive = _zip(_client(database).get("/account/executions/exec-1/evidence"))
     report = _manifest(archive)["executions"][0]
     assert report["orders"] == report["trades"] == 1
@@ -930,9 +917,7 @@ def test_flat_result_inherits_contract_from_result_context(database, result_sour
         exported = _csv(archive, f"executions/exec-1/{field}.csv")
         assert len(exported) == 1
         assert exported[0]["symbol"] == "rb2610"
-        assert exported[0]["source_path"].startswith(
-            "record.json#/result/" if result_source == "record" else "artifacts.json#"
-        )
+        assert exported[0]["source_path"].startswith("record.json#/result/")
 
 
 def test_mixed_result_without_stable_identity_keeps_every_snapshot(database):

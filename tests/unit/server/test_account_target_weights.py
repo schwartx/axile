@@ -378,10 +378,10 @@ def test_account_target_snapshot_returns_complete_execution_sizing(monkeypatch) 
                     content={"reconciliation": {"symbols": []}},
                 )
             ],
-            "legacy",
+            "pending_execution",
         ),
     ],
-    ids=["v2-target-pending", "v2-summary-incomplete", "v1-summary-legacy"],
+    ids=["v2-target-pending", "v2-summary-incomplete", "v1-summary-ignored"],
 )
 def test_account_target_snapshot_reports_sizing_evidence_state(
     monkeypatch,
@@ -779,7 +779,7 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
         row = {
             "id": 7,
             "execution_id": "legacy",
-            "artifact_type": "execution_summary",
+            "artifact_type": "environment_snapshot",
             "content": {"outcome": "not_reached", "msg": "目标尚未到位"},
         }
 
@@ -790,9 +790,8 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
             value["event_uid"] = f"legacy-event-{value['id']}"
     else:
         kinds = [value.value for value in ExecutionArtifactType if value != ExecutionArtifactType.EXECUTION_SUMMARY]
-        kinds.insert(2, ExecutionArtifactType.EXECUTION_SUMMARY.value)
         # 历史大小写变体保留原始身份；读取时再归一为公开枚举。
-        for value, artifact_type in zip(values, [*kinds, "EXECUTION_SUMMARY"], strict=True):
+        for value, artifact_type in zip(values, [*kinds, "ENVIRONMENT_SNAPSHOT", "ACCOUNT_SNAPSHOT"], strict=True):
             value["artifact_type"] = artifact_type
     engine = sa.create_engine(f"sqlite:///{native_database}")
     try:
@@ -815,7 +814,8 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
     body = response.json()
     assert body["count"] == 9 and body["data"][0]["id"] == 7
     content = body["data"][0]["details" if kind == "events" else "content"]
-    assert content["error"] == "目标尚未到位"
-    if kind == "artifacts":
-        assert content["status"] == "PARTIAL"
+    if kind == "events":
+        assert content["error"] == "目标尚未到位"
+    else:
+        assert content == row["content"]
     assert calls == [(f"list_execution_{kind}_json", {"execution_id": "legacy", "skip": 2, "limit": 5})]

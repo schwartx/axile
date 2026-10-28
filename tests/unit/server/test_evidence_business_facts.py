@@ -85,7 +85,7 @@ def test_missing_canonical_result_is_visible_instead_of_using_another_evidence()
     assert error.value.code == "EVIDENCE_INVALID_DATA"
 
 
-def test_summary_reconciliation_points_to_exact_persisted_artifact_occurrence():
+def test_orphan_summary_is_not_used_as_canonical_facts():
     item = ExecutionEvidence(
         key="summary-only",
         execution_id="summary-only",
@@ -95,8 +95,8 @@ def test_summary_reconciliation_points_to_exact_persisted_artifact_occurrence():
         ],
     )
     report, _, _, _ = execution_report(item)
-    assert report["result_source"] == "artifacts.json#/1/content"
-    assert report["reconciliation_source"] == "artifacts.json#/1/content/reconciliation"
+    assert report["result_source"] == "unavailable"
+    assert report["reconciliation_source"] == "unavailable"
 
 
 def test_archive_marks_canonical_assembly_and_preserves_missing_asset_values():

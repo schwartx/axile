@@ -73,6 +73,11 @@ pub fn persist_execution_state(path: &str, request: &Value) -> Result<Value, Ana
     let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
     crate::writer_scope::immediate(&connection, || {
         let record = persist_execute_record_in(&connection, request)?;
+        if request["stage_only"] == true {
+            return Ok(record);
+        }
+        finalize_staged_result(&connection, &record, request)?;
+        let record = Value::Object(record_row(&connection, record["id"].as_i64().unwrap())?);
         if let Some(execution_id) = record["execution_id"].as_str() {
             let status = record["task_status"]
                 .as_str()
@@ -97,6 +102,80 @@ pub fn persist_execution_state(path: &str, request: &Value) -> Result<Value, Ana
             record.as_object().expect("persisted record"),
         )
     })
+}
+
+fn finalize_staged_result(
+    connection: &Connection,
+    record: &Value,
+    request: &Value,
+) -> Result<(), AnalysisError> {
+    if record["result_staged"] != true && record["result_staged"] != 1 {
+        return Ok(());
+    }
+    let is_success = integer(request, "is_success")?;
+    if !matches!(is_success, 0 | 1) {
+        return Err(facts_error("执行成功标识必须为 0 或 1"));
+    }
+    let raw_input = request.get("raw_input").filter(|value| !value.is_null());
+    if raw_input.is_some_and(|value| !value.is_object()) {
+        return Err(facts_error("执行输入必须是对象"));
+    }
+    attach_inputs(
+        connection,
+        request,
+        record["id"].as_i64().unwrap(),
+        raw_input,
+        &request["raw_result"],
+    )?;
+    {
+        let head = result_head::execution_head_values(
+            &request["raw_result"],
+            Some(is_success),
+        )?;
+        for (name, value) in head.iter().filter(|(name, _)| {
+            name.as_str() == "task_status"
+                || name.as_str() == "result_input_kind"
+                || name.as_str() == "result_input_value"
+                || name.starts_with("termination_")
+                || name.as_str() == "execution_kind"
+                    && request["raw_result"]
+                        .get(name)
+                        .is_some_and(|v| !v.is_null())
+                || (head["task_status"] == "FAILED" && name.as_str() == "display_error")
+        }) {
+            let value = match value {
+                Value::Null => rusqlite::types::Value::Null,
+                Value::Bool(v) => rusqlite::types::Value::Integer(i64::from(*v)),
+                Value::Number(v) => rusqlite::types::Value::Integer(v.as_i64().unwrap_or_default()),
+                Value::String(v) => rusqlite::types::Value::Text(v.clone()),
+                _ => rusqlite::types::Value::Text(value.to_string()),
+            };
+            connection
+                .execute(
+                    &format!("UPDATE executerecord SET {name}=?1 WHERE id=?2"),
+                    params![value, record["id"].as_i64()],
+                )
+                .map_err(sql)?;
+        }
+        connection
+            .execute(
+                "DELETE FROM execution_termination_cancel_failure WHERE record_id=?1",
+                [record["id"].as_i64().unwrap()],
+            )
+            .map_err(sql)?;
+        result_head::write_result_cancellations(
+            connection,
+            record["id"].as_i64().unwrap(),
+            &request["raw_result"],
+        )?;
+        connection
+            .execute(
+                "UPDATE executerecord SET result_staged=0,is_success=?1 WHERE id=?2",
+                params![is_success, record["id"].as_i64()],
+            )
+            .map_err(sql)?;
+    }
+    Ok(())
 }
 
 fn persist_execute_record_in(
@@ -130,8 +209,17 @@ fn persist_execute_record_in(
     head.insert("is_success".into(), json!(is_success));
     head.insert("created_at".into(), json!(created_at));
     head.insert("facts_complete".into(), json!(false));
+
     result_head::insert_execution(connection, &head)?;
     let record_id = connection.last_insert_rowid();
+    if request["stage_only"] == true {
+        connection
+            .execute(
+                "UPDATE executerecord SET result_staged=1 WHERE id=?1",
+                [record_id],
+            )
+            .map_err(sql)?;
+    }
     let input_id = attach_inputs(connection, request, record_id, raw_input, raw_result)?;
     let root_asset_id = match (input_id, raw_result.as_object()) {
         (Some(input_id), Some(payload))
@@ -222,17 +310,24 @@ fn attach_inputs(
     Ok(input_id)
 }
 
-/// 清理历史前物化摘要，保留人工资产与独立事件、附件审计。
+/// 隐藏历史但保留审计所需的唯一事实。
 pub fn delete_execution_history(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = integer(request, "account_id")?;
     let connection = crate::storage_connection::open_writer(Path::new(path), false)?;
     crate::writer_scope::immediate(&connection, || {
         require_account(&connection, account_id)?;
-        Ok(json!({"deleted": delete_execution_history_in(&connection, account_id)?}))
+        connection
+            .execute(
+                "DELETE FROM account_asset_snapshot WHERE account_id=?1 AND source='execution'",
+                [account_id],
+            )
+            .map_err(sql)?;
+        let count = connection.execute("UPDATE executerecord SET history_visible=0 WHERE account_id=?1 AND history_visible=1", [account_id]).map_err(sql)?;
+        Ok(json!({"deleted": count}))
     })
 }
 
-/// 由历史清理与账户删除的外层事务共用，不能独立提交。
+/// 账户删除的物理清理由外层事务统一提交。
 pub(crate) fn delete_execution_history_in(
     connection: &Connection,
     account_id: i64,
@@ -243,7 +338,7 @@ pub(crate) fn delete_execution_history_in(
             [account_id],
         )
         .map_err(sql)?;
-    // 0037 清理触发器同时移除结果子表，保留仍被审计引用的冻结输入。
+    // 清理触发器同时移除结果子表，保留仍被审计引用的冻结输入。
     connection
         .execute(
             "DELETE FROM executerecord WHERE account_id=?1",

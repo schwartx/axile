@@ -222,15 +222,6 @@ async def _sizing_evidence_for_snapshot(
                 target_context=evidence["target_context"],
             )
             status = "available" if rows and set(account_weights).issubset(rows) else "unavailable"
-            if not rows and versions.get(ExecutionArtifactType.EXECUTION_SUMMARY, 1) < 2:
-                status = "legacy"
-        elif ExecutionArtifactType.EXECUTION_SUMMARY in versions:
-            status = (
-                "pending_execution"
-                if input_id is not None or versions[ExecutionArtifactType.EXECUTION_SUMMARY] >= 2
-                else "legacy"
-            )
-            inflight = status == "pending_execution"
         elif input_id is not None or versions.get(ExecutionArtifactType.TARGET_SNAPSHOT, 0) >= 2:
             status = "pending_execution"
             inflight = True
@@ -460,6 +451,17 @@ async def _terminate_account_execution(
         execution_id=state.execution_id,
         status=state.status,
     )
+
+
+@router.get("/executions/{execution_id}/detail")
+async def execution_detail(execution_id: str, account_id: int) -> dict[str, object] | None:
+    """按账户归属读取冻结事实，并临时计算执行详情。"""
+    record = await native_operation(
+        "execution_read", {"op": "detail", "execution_id": execution_id, "account_id": account_id}
+    )
+    if record is None:
+        return None
+    return record["view"]
 
 
 @router.get("/executions/{execution_id}/events", response_model=ExecutionEventListPublic)

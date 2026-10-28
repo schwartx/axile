@@ -45,11 +45,16 @@ export function getExecutionEvents(
   return apiGet<ExecutionEventList>(`/account/executions/${executionId}/events?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`, signal)
 }
 
-/** 执行附件（standard_input / target_snapshot / execution_summary …）。 */
+/** 执行附件（standard_input / target_snapshot …）。 */
 export function getExecutionArtifacts(
   executionId: string,
   signal?: AbortSignal,
   params: { skip?: number; limit?: number } = {},
 ): Promise<ExecutionArtifactList> {
   return apiGet<ExecutionArtifactList>(`/account/executions/${executionId}/artifacts?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`, signal)
+}
+
+/** 执行事实临时组装的详情，尚无结果时返回 null。 */
+export function getExecutionDetail(executionId: string, accountId: number, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+  return apiGet(`/account/executions/${executionId}/detail?account_id=${accountId}`, signal)
 }

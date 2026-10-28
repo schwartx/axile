@@ -1,4 +1,4 @@
-"""实际 main 的 0033 数据库是最终存储迁移的兼容基线。"""
+"""固定验证 0033→0036 事实转换；0037 摘要移除另有冲突与备份测试。"""
 
 import json
 import sqlite3
@@ -36,7 +36,7 @@ def test_main_upgrade_downgrade_repeat_preserves_facts_and_complete_artifacts(ma
         register_time_function(connection)
         artifacts = connection.execute("SELECT content FROM execution_artifact ORDER BY id").fetchall()
     for _ in range(2):
-        assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0036"
+        assert native_store_call(main_database, "migration_upgrade", {"public": "0036"})["public"] == "0036"
         detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
         assert detail["input"]["extra"]["sentinel"] == 9007199254740993
         assert detail["result"]["account_assets"]["total_asset"] == 101.0
@@ -65,7 +65,7 @@ def test_main_conversion_failure_rolls_back_schema_rows_and_revision(main_databa
         connection.execute("UPDATE executerecord SET raw_input='invalid JSON' WHERE id=2")
     before = _dump(main_database)
     with pytest.raises(_core.NativeError):
-        native_store_call(main_database, "migration_upgrade", {})
+        native_store_call(main_database, "migration_upgrade", {"public": "0036"})
     assert _dump(main_database) == before
 
 
@@ -105,7 +105,7 @@ def test_0034_preserves_target_aliases_and_selected_fields_on_repeated_migration
             (json.dumps({"decision": content}),),
         )
     for _ in range(2):
-        native_store_call(main_database, "migration_upgrade", {})
+        native_store_call(main_database, "migration_upgrade", {"public": "0036"})
         _core.close_database(str(main_database))
         with closing(sqlite3.connect(main_database)) as connection:
             register_time_function(connection)
@@ -149,7 +149,7 @@ def test_0034_invalid_artifact_selector_blocks_downgrade_without_mutation(main_d
             "INSERT INTO execution_artifact VALUES('main-1','TARGET_SNAPSHOT',1,?,'2026-10-01',4)",
             (json.dumps({"account_target": {"A": 0.5}}),),
         )
-    native_store_call(main_database, "migration_upgrade", {})
+    native_store_call(main_database, "migration_upgrade", {"public": "0036"})
     _core.close_database(str(main_database))
     with closing(sqlite3.connect(main_database)) as connection, connection:
         register_time_function(connection)
@@ -206,7 +206,7 @@ def test_0034_preserves_explicit_nulls_without_inventing_missing_fields(main_dat
         assert actual["inputs"]["sizing_context"] == {"weight_precision": None}
 
     for _ in range(2):
-        native_store_call(main_database, "migration_upgrade", {})
+        native_store_call(main_database, "migration_upgrade", {"public": "0036"})
         detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
         check(detail["result"])
         assert detail["input"]["sizing_context"] == {"weight_precision": None}
@@ -222,7 +222,7 @@ def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database)
     with closing(sqlite3.connect(main_database)) as connection, connection:
         register_time_function(connection)
         connection.execute("UPDATE performance_snapshot SET ranges='invalid JSON'")
-    receipt = native_store_call(main_database, "migration_upgrade", {})
+    receipt = native_store_call(main_database, "migration_upgrade", {"public": "0036"})
     result = json.loads(_core.snapshot(_core.Store(str(main_database)), 1, "all", "18", "equity-ledger-1"))
     assert result["status"] == "pending"
     assert result["result"] is None
@@ -238,6 +238,8 @@ def test_old_cache_is_requeued_and_its_original_body_is_backed_up(main_database)
 
 
 def test_new_publication_and_downgrade_preserve_main_business_facts(main_database):
+    with closing(sqlite3.connect(main_database)) as connection, connection:
+        connection.execute("DELETE FROM execution_artifact WHERE upper(artifact_type)='EXECUTION_SUMMARY'")
     native_store_call(main_database, "migration_upgrade", {})
     claim = _core.queue_claim(str(main_database), 1792890000.0, "main-publish")
     assert claim is not None
@@ -269,7 +271,7 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
         assert result["account_assets"]["total_asset"] == 103.0
 
 
-@pytest.mark.parametrize("revision", ["0037", "0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0038", "0039", "0040", "0041"])
 def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path, revision):
     path = tmp_path / "missing.db"
     with pytest.raises(_core.NativeError):

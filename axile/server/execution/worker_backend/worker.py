@@ -333,7 +333,6 @@ def _handle_execute_trade(
             output=output,
             result=result,
             executor=executor,
-            before_account_assets=before_account_assets,
         )
         return _build_result_response(
             request_id=request.request_id,
@@ -429,7 +428,6 @@ def _handle_empty_positions(
             output=output,
             result=result,
             executor=executor,
-            before_account_assets=before_account_assets,
         )
         return _build_result_response(request_id=request.request_id, result=result)
     except ExecutionTerminated as exc:

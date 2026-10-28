@@ -12,7 +12,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { SizingEvidence } from '@/features/account/SizingEvidence'
 import { weightText } from '@/features/account/sizingEvidenceModel'
 import { usePolling } from '@/lib/hooks/usePolling'
-import { getExecutionArtifacts, getExecutionEvents, getExecutionStatus } from '@/lib/api/executions'
+import { getExecutionDetail, getExecutionArtifacts, getExecutionEvents, getExecutionStatus } from '@/lib/api/executions'
 import { shortErrorReason } from '@/lib/errorInfo'
 import { currencyOf } from '@/lib/derive'
 import { displayCurrencyUnit, fmtBps, fmtMoney, withCurrency } from '@/lib/format'
@@ -569,10 +569,13 @@ export function ExecutionDetailPage() {
     enabled: Boolean(executionId),
   })
 
+  const detail = usePolling(useCallback((signal: AbortSignal) => executionId ? getExecutionDetail(executionId, accountId, signal) : Promise.resolve(null), [executionId, accountId]), {
+    queryKey: `execution:${executionId}:detail`, intervalMs: pollMs, enabled: Boolean(executionId),
+  })
   const loading = status.loading && events.loading && artifacts.loading
   const rawEvents = events.data?.data ?? []
   const hasAnyData = status.data != null || events.data != null || artifacts.data != null
-  const model = hasAnyData ? buildExecutionDetail(rawEvents, artifacts.data?.data ?? [], status.data) : null
+  const model = hasAnyData ? buildExecutionDetail(rawEvents, artifacts.data?.data ?? [], status.data, detail.data) : null
 
   return (
     <section>
@@ -613,7 +616,7 @@ export function ExecutionDetailPage() {
       <Card className="mt-4 px-6 py-5">
         {loading && <SkeletonLines rows={5} />}
         <ErrorNotice intent="read" title="执行事件加载失败" error={events.error ?? events.data?.error} contextKey={executionId} onRetry={events.refresh} />
-        <ErrorNotice intent="read" title="执行证据加载失败" error={artifacts.error ?? artifacts.data?.error} contextKey={executionId} onRetry={artifacts.refresh} />
+        <ErrorNotice intent="read" title="执行证据加载失败" error={detail.error ?? artifacts.error ?? artifacts.data?.error} contextKey={executionId} onRetry={() => { void detail.refresh(); void artifacts.refresh() }} />
         {model && (
           <>
             <TargetChangeView m={model} />

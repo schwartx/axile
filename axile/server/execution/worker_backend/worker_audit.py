@@ -1,7 +1,7 @@
 """补写 worker 执行前后所需的审计事件与附件.
 
 worker 进程会在真实执行前后把关键状态转为持久化审计记录，确保
-主进程即使只收到最终响应，也能回放这次执行的输入、摘要和失败
+主进程即使只收到最终响应，也能回放这次执行的输入、结果事实和失败
 原因。
 """
 
@@ -30,15 +30,13 @@ from axile.server.execution.audit_batch import (
 )
 from axile.server.execution.environment import execution_environment
 from axile.server.execution.execution_summaries import (
-    build_execution_outcome_details,
-    build_execution_summary_from_symbol_results,
-    build_symbol_reconciliation,
     count_orders_from_symbol_results,
 )
 from axile.server.execution.input_persistence import (
     persist_post_execute_assets_sync,
     persist_pre_execute_input_sync,
 )
+from axile.server.execution.records import stage_execute_result_sync
 from axile.server.execution.worker_backend.protocol import WorkerBackendErrorPayload
 from axile.server.execution_audit import append_execution_event_sync, build_execution_event
 
@@ -297,22 +295,16 @@ def _append_success_audit(
     output: UnifiedStandardOutput,
     result: dict[str, object],
     executor: object,
-    before_account_assets: dict[str, object] | None = None,
 ) -> None:
-    """补写成功结果相关的摘要、账户快照、逐只对账与完成事件.
-
-    Notes
-    -----
-    这里优先基于最终 `result` 字典生成摘要，而不是重新从执行器
-    对象读取状态，目的是保证持久化审计与返回给主进程的结果视图
-    一致。
-    """
+    """回传前保存结果事实，再补写账户引用和完成事件。"""
     if not execution_id:
         return
 
     after_reference = persist_post_execute_assets_sync(
         account_id=cast(int, account.id), execution_id=execution_id, payload=result
     )
+    # 结果事实必须先于 IPC 响应提交，任务终态仍由父进程结算。
+    stage_execute_result_sync(account_id=cast(int, account.id), execution_id=execution_id, result=result)
     batch = ExecutionAuditBatch(max_entries=POST_EXECUTE_AUDIT_LIMIT)
     if after_reference is not None:
         input_id, asset_id = after_reference
@@ -325,18 +317,6 @@ def _append_success_audit(
                 "orders_count": count_orders_from_symbol_results(result),
             },
         )
-    batch.add_artifact(
-        execution_id=execution_id,
-        artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-        schema_version=2,
-        content={
-            **build_execution_outcome_details(result),
-            "summary": build_execution_summary_from_symbol_results(result),
-            "success": result.get("success", True),
-            "execution_time": result.get("execution_time"),
-            "reconciliation": build_symbol_reconciliation(result, before_account_assets),
-        },
-    )
     batch.add_event(
         build_execution_event(
             execution_id=execution_id,

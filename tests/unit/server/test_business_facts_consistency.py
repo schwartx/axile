@@ -13,7 +13,7 @@ import pytest
 
 from axile.domain.execution import ExecutionArtifactType
 from axile.server._native import _core
-from axile.server.business_facts.artifacts import REFERENCE_KEY, make_artifact_reference
+from axile.server.business_facts.artifacts import make_artifact_reference
 from axile.server.db.models import ExecutionArtifact
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
@@ -23,7 +23,7 @@ from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
-from tests.unit.server._native_read_views import persist_record_fixture, read_view
+from tests.unit.server._native_read_views import persist_record_fixture
 
 _CREATED = "2026-10-20T09:30:00.000001"
 
@@ -214,40 +214,6 @@ def _result(*, inputs=None):
     if inputs is not None:
         payload["inputs"] = inputs
     return payload
-
-
-def _summary_content(result):
-    """使用真实 worker 的正文结构，另保留独立于业务结果的审计附注。"""
-    from axile.server.execution.execution_summaries import (
-        build_execution_outcome_details,
-        build_execution_summary_from_symbol_results,
-        build_symbol_reconciliation,
-    )
-
-    return {
-        **build_execution_outcome_details(result),
-        "summary": build_execution_summary_from_symbol_results(result),
-        "success": result.get("success", True),
-        "execution_time": result.get("execution_time"),
-        "reconciliation": build_symbol_reconciliation(result, None),
-        "independent_evidence": {"review_note": "retain journal after history deletion", "observed_zero": 0},
-    }
-
-
-def _wire_json(value):
-    """比较原始线上的字段顺序与数值表示，不对键排序或补默认值。"""
-    import json
-
-    return json.dumps(
-        business_evidence(value), sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-    )
-
-
-def _store_summary(path, *, execution_id="facts-one", account_id=1):
-    original = _summary_content(_result())
-    _append_artifact(path, execution_id, ExecutionArtifactType.EXECUTION_SUMMARY, deepcopy(original), 2)
-    record = _store(path, execution_id=execution_id, account_id=account_id)
-    return record, _artifact(path, execution_id), original
 
 
 def test_duplicate_terminal_write_keeps_first_facts_and_versions(tmp_path):
@@ -561,129 +527,6 @@ def test_account_snapshot_cannot_read_another_execution_asset(tmp_path, monkeypa
         return
     with pytest.raises(_core.NativeError):
         _core.asset_snapshots(_core.Store(str(path)), snapshot["account_id"], 0, 100)
-
-
-@pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_direct_terminal_delete_keeps_independent_summary(tmp_path, foreign_keys):
-    """直接 SQL 删除终态也不改变完整审计快照。"""
-    path = _database(tmp_path)
-    record, artifact, original = _store_summary(path)
-    assert REFERENCE_KEY not in artifact.content
-    with _connection(path, foreign_keys) as connection:
-        connection.execute("DELETE FROM executerecord WHERE id=?", (record.id,))
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord WHERE id=?", (record.id,)) == 0
-    assert _wire_json(_resolved(path, record.execution_id)) == _wire_json(original)
-
-
-@pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_application_history_delete_preserves_independent_summary_wire(tmp_path, foreign_keys):
-    """应用删除物化摘要，独立审计正文与其他账户的引用保持原义。"""
-    from axile.server.api.routes.account_crud import delete_execute_records
-
-    path = _database(tmp_path)
-    record, artifact, original = _store_summary(path)
-    other, other_artifact, other_original = _store_summary(path, execution_id="other-account-summary", account_id=2)
-    asyncio.run(delete_execute_records(account_id=1))
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord WHERE id=?", (record.id,)) == 0
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord WHERE id=?", (other.id,)) == 1
-    journal = _artifact(path, record.execution_id)
-    assert journal.id == artifact.id and journal.schema_version == 2
-    assert REFERENCE_KEY not in journal.content
-    assert _wire_json(journal.content) == _wire_json(original)
-    assert _wire_json(_resolved(path, record.execution_id)) == _wire_json(original)
-    untouched = _artifact(path, other.execution_id)
-    assert untouched.id == other_artifact.id and REFERENCE_KEY not in untouched.content
-    resolved = _resolved(path, other.execution_id)
-    resolved.pop(REFERENCE_KEY, None)
-    assert _wire_json(resolved) == _wire_json(other_original)
-
-
-@pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_detach_and_delete_rollback_restore_original_summary_reference(tmp_path, foreign_keys):
-    """删除后的故障回滚摘要物化、历史和整份事实图。"""
-    path = _database(tmp_path)
-    record, artifact, original = _store_summary(path)
-    counts, version = _counts(path), _version(path)
-    history = _rows(path, "SELECT * FROM account_asset_snapshot")
-    with _connection(path, foreign_keys) as connection:
-        connection.execute(
-            "CREATE TRIGGER reject_history_delete AFTER DELETE ON executerecord BEGIN "
-            "SELECT CASE WHEN EXISTS(SELECT 1 FROM execution_artifact WHERE "
-            "json_extract(content,'$.business_facts_ref.view')='result') "
-            "THEN RAISE(ABORT,'summary was not detached') END; "
-            "SELECT RAISE(ABORT,'synthetic failure after detach and delete'); END"
-        )
-    with pytest.raises(_core.NativeError, match="synthetic failure after detach and delete"):
-        native_store_call(path, "delete_execution_history", {"account_id": 1})
-    assert _counts(path) == counts and _version(path) == version
-    assert _rows(path, "SELECT * FROM account_asset_snapshot") == history
-    journal = _artifact(path, record.execution_id)
-    assert journal.id == artifact.id and REFERENCE_KEY not in journal.content
-    resolved = _resolved(path, record.execution_id)
-    resolved.pop(REFERENCE_KEY, None)
-    assert _wire_json(resolved) == _wire_json(original)
-
-
-@pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_terminal_write_never_rebuilds_previously_committed_worker_summary(tmp_path, foreign_keys):
-    """终态写入不得重建 worker 已提交的完整摘要。"""
-    path = _database(tmp_path)
-    input_id = _freeze(path)
-    original = _summary_content(_result())
-    artifact = _append_artifact(path, "facts-one", ExecutionArtifactType.EXECUTION_SUMMARY, deepcopy(original), 2)
-    with _connection(path, foreign_keys) as connection:
-        connection.execute(
-            "CREATE TRIGGER reject_compaction AFTER UPDATE OF content ON execution_artifact "
-            "WHEN json_type(NEW.content,'$.symbol_results')='object' "
-            "BEGIN SELECT RAISE(ABORT,'synthetic failure after summary compaction'); END"
-        )
-    _store(path)
-    assert _scalar(path, "SELECT COUNT(*) FROM executerecord") == 1
-    assert business_evidence(_input_view(input_id)) == business_evidence(_input())
-    journal = _artifact(path, "facts-one")
-    assert journal.id == artifact.id and journal.schema_version == 2 and REFERENCE_KEY not in journal.content
-    assert _wire_json(_resolved(path, "facts-one")) == _wire_json(original)
-
-
-@pytest.mark.parametrize(
-    ("account_id", "execution_id"),
-    [(2, "facts-one"), (1, "unrelated-execution")],
-    ids=["wrong-account", "wrong-execution"],
-)
-def test_summary_reference_rejects_foreign_account_or_execution(tmp_path, account_id, execution_id):
-    """正确的结果编号也不能在其他账户或执行上下文解析。"""
-
-    path = _database(tmp_path)
-    _, artifact, _ = _store_summary(path)
-    assert REFERENCE_KEY not in artifact.content
-    assert (
-        read_view(
-            path,
-            "resolve_execution_artifact",
-            {
-                "artifact": {
-                    "execution_id": execution_id,
-                    "artifact_type": artifact.artifact_type,
-                    "content": artifact.content,
-                },
-                "account_id": account_id,
-            },
-        )
-        == artifact.content
-    )
-
-
-@pytest.mark.parametrize("foreign_keys", [False, True], ids=["fk-off", "fk-on"])
-def test_summary_reference_freezes_child_until_journal_is_materialized(tmp_path, foreign_keys):
-    """摘要引用期间禁止改成交；物化后业务可改，原审计保留原值。"""
-    path = _database(tmp_path)
-    record, artifact, original = _store_summary(path)
-    with _connection(path, foreign_keys) as connection:
-        connection.execute("UPDATE business_trade SET trade_price=101 WHERE record_id=?", (record.id,))
-    journal = _artifact(path, record.execution_id)
-    assert REFERENCE_KEY not in journal.content
-    assert _wire_json(journal.content) == _wire_json(original)
-    assert _result_view(record)["symbol_results"]["A"]["trades"][0]["trade_price"] == 101.0
 
 
 @pytest.mark.parametrize("second_account", [1, 2], ids=["same-account", "other-account"])

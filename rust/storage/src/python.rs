@@ -192,6 +192,21 @@ fn normalize_execution_result(py: Python<'_>, request_json: &str) -> PyResult<Py
 }
 
 #[pyfunction]
+fn execution_result_view(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
+    let result = py
+        .detach(|| {
+            let request = crate::json_codec::parse(request_json)
+                .map_err(|error| AnalysisError::new("INVALID_REQUEST", error))?;
+            Ok(crate::execution_view::build(
+                &request["result"],
+                &request["before_account_assets"],
+            ))
+        })
+        .map_err(raise)?;
+    json_to_py(py, &result)
+}
+
+#[pyfunction]
 fn execution_notification_context(py: Python<'_>, request_json: &str) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(|| {
@@ -743,6 +758,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collect_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(execution_notification_context, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_execution_result, m)?)?;
+    m.add_function(wrap_pyfunction!(execution_result_view, m)?)?;
     m.add("NativeError", m.py().get_type::<NativeError>())?;
     Ok(())
 }

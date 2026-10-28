@@ -213,15 +213,8 @@ fn write_result(
         result_extensions::encode_extensions(record_id, document).map_err(AnalysisError::from)?;
     let changed = connection
         .execute(
-            "UPDATE execution_extension SET audit_evidence=?1,reconciliation=?2 WHERE record_id=?3",
-            params![
-                extension["audit_evidence"].to_string(),
-                extension
-                    .get("reconciliation")
-                    .filter(|value| !value.is_null())
-                    .map(Value::to_string),
-                record_id
-            ],
+            "UPDATE execution_extension SET audit_evidence=?1 WHERE record_id=?2",
+            params![extension["audit_evidence"].to_string(), record_id],
         )
         .map_err(sql)?;
     if changed != 1 {

@@ -25,7 +25,12 @@ def rows(path, name):
     sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.connect() as connection:
-            return [dict(row) for row in connection.execute(sa.select(table(name))).mappings()]
+            return [
+                dict(row)
+                for row in connection.execute(
+                    sa.select(sa.Table(name, sa.MetaData(), autoload_with=connection))
+                ).mappings()
+            ]
     finally:
         engine.dispose()
 

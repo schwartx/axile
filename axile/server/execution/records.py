@@ -21,7 +21,24 @@ from axile.server.business_facts.summary_refs import raise_business_fact_error
 from axile.server.db.models.account import AccountContext
 from axile.server.db.models.base import now_str
 from axile.server.execution.input_persistence import sanitize_execution_input
-from axile.server.native_store import native_operation
+from axile.server.native_store import native_operation, native_operation_sync
+
+
+def stage_execute_result_sync(*, account_id: int, execution_id: str, result: dict[str, object]) -> None:
+    """回传前冻结执行事实，不提前结束任务或发送终态通知。"""
+    native_operation_sync(
+        "persist_execution_state",
+        {
+            "account_id": account_id,
+            "execution_id": execution_id,
+            "raw_result": result,
+            "is_success": int(bool(result.get("success"))),
+            "created_at": now_str(),
+            "input_id": str(uuid.uuid4()),
+            "result_input_id": str(uuid.uuid4()),
+            "stage_only": True,
+        },
+    )
 
 
 async def _persist_execute_record(
@@ -32,7 +49,7 @@ async def _persist_execute_record(
     raw_result: dict[str, object],
     is_success: int,
 ) -> dict[str, Any]:
-    """一次原生事务提交终态、输入、结果事实、资产历史与完整摘要快照。"""
+    """一次原生事务提交终态、输入、结果事实与资产历史。"""
     try:
         stored = await native_operation(
             "persist_execution_state",

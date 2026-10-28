@@ -6,7 +6,7 @@ import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { usePolling } from '@/lib/hooks/usePolling'
 import { getActivitySymbols } from '@/lib/api/accounts'
 import { getPerformanceCosts, type CostPage, type CostQuery } from '@/lib/api/performance'
-import { getExecutionArtifacts, getExecutionEvents } from '@/lib/api/executions'
+import { getExecutionDetail, getExecutionArtifacts, getExecutionEvents } from '@/lib/api/executions'
 import { ExecutionErrorEvidence } from '@/features/history/ExecutionErrorEvidence'
 import { readEvidencePages } from '@/features/history/executionErrorAdapter'
 import { ExecutionEvidence } from '@/features/history/ExecutionEvidence'
@@ -14,7 +14,7 @@ import { quantityUnit } from '@/features/history/executionEvidenceModel'
 import { buildExecutionDetail, type ExecutionDetailModel } from '@/features/account/executionDetail'
 import { amount, quantityText, shanghaiLabel, lossClass, coverageText, durationText, type CostSummary, type CostTrade } from '@/features/history/costs'
 import type { JournalExecution, JournalSymbol } from '@/features/account/executionJournal'
-import { tradesFromArtifacts, type LiveWindow } from '@/features/account/journalActivity'
+import { tradesFromResult, type LiveWindow } from '@/features/account/journalActivity'
 import type { SnapshotScope } from '@/features/account/journalSource'
 import type { ChannelCapability } from '@/types/api'
 
@@ -44,13 +44,13 @@ function remember<K, V>(cache: Map<K, V>, key: K, value: V) {
   cache.set(key, value)
   if (cache.size > 200) cache.delete(cache.keys().next().value!)
 }
-function readEvidence(row: JournalExecution, signal: AbortSignal): Promise<{ model: ExecutionDetailModel; trades: CostTrade[]; eventsError: Error | null; artifactsError: Error | null }> {
+function readEvidence(row: JournalExecution, accountId: number, signal: AbortSignal): Promise<{ model: ExecutionDetailModel; trades: CostTrade[]; eventsError: Error | null; artifactsError: Error | null }> {
   const id = row.executionId!
-  const flight = Promise.all([readEvidencePages((skip, limit) => getExecutionEvents(id, signal, { skip, limit }), signal), readEvidencePages((skip, limit) => getExecutionArtifacts(id, signal, { skip, limit }), signal)])
-    .then(([events, artifacts]) => ({
-      model: buildExecutionDetail(events.data, artifacts.data),
+  const flight = Promise.all([readEvidencePages((skip, limit) => getExecutionEvents(id, signal, { skip, limit }), signal), readEvidencePages((skip, limit) => getExecutionArtifacts(id, signal, { skip, limit }), signal), getExecutionDetail(id, accountId, signal)])
+    .then(([events, artifacts, detail]) => ({
+      model: buildExecutionDetail(events.data, artifacts.data, null, detail),
       eventsError: events.error, artifactsError: artifacts.error,
-      trades: tradesFromArtifacts(artifacts.data, { id: row.recordId, execution_id: id, created_at: row.time }),
+      trades: tradesFromResult(detail, { id: row.recordId, execution_id: id, created_at: row.time }),
     }))
   return flight
 }
@@ -94,7 +94,7 @@ function TradeList({ accountId, scope, trades, expansion, update, currency, unit
 }
 
 function ExecutionExpansion({ row, accountId, scope, expansion, update, currency, units, detailLink }: RowProps) {
-  const evidence = usePolling(useCallback((signal: AbortSignal) => readEvidence(row, signal), [row]), {
+  const evidence = usePolling(useCallback((signal: AbortSignal) => readEvidence(row, accountId, signal), [row, accountId]), {
     queryKey: `journal-evidence:${row.executionId}`, intervalMs: 0, enabled: expansion.open && !!row.executionId,
   })
   const scoped = !!scope && (scope.start != null || !!scope.day)

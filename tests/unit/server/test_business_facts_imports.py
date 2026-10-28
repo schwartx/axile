@@ -46,7 +46,7 @@ schema = json.loads(Path('tests/fixtures/rust_store/public-0034.json').read_text
 with closing(sqlite3.connect(sys.argv[2])) as connection, connection:
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert set(schema['table_columns']) <= tables
-    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0036',)]
+    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0037',)]
     assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
 """,
             module,

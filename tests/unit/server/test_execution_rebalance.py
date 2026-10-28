@@ -52,6 +52,7 @@ class _VolumeCalcStub:
 @pytest.fixture(autouse=True)
 def _worker_commands(monkeypatch) -> dict[str, dict[str, object]]:
     """在 worker 命令边界测试编排，IPC 传输由 manager 用例覆盖。"""
+    monkeypatch.setattr(worker_audit, "stage_execute_result_sync", lambda **kwargs: None)
     manager = WorkerCommandHarness()
     monkeypatch.setattr(rebalance_execution, "get_worker_backend_manager", lambda: manager)
     monkeypatch.setattr(worker_state, "create_executor_instance", lambda *args, **kwargs: FakeExecutor())
@@ -616,7 +617,7 @@ def test_trade_emits_execution_events_and_artifacts(
     captured_events: list[tuple[str, str]] = []
     captured_artifacts: list[str] = []
     artifact_versions: dict[str, int] = {}
-    execution_summary_content: dict[str, object] | None = None
+
     target_snapshot_content: dict[str, object] | None = None
 
     async def fake_append_execution_event(**kwargs: object) -> bool:
@@ -626,12 +627,10 @@ def test_trade_emits_execution_events_and_artifacts(
         return True
 
     async def fake_append_execution_artifact(**kwargs: object) -> bool:
-        nonlocal execution_summary_content, target_snapshot_content
+        nonlocal target_snapshot_content
         artifact_type = cast(ExecutionArtifactType, kwargs["artifact_type"])
         captured_artifacts.append(artifact_type.value)
         artifact_versions[artifact_type.value] = cast(int, kwargs.get("schema_version", 1))
-        if artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY:
-            execution_summary_content = cast("dict[str, object]", kwargs["content"])
         if artifact_type == ExecutionArtifactType.TARGET_SNAPSHOT:
             target_snapshot_content = cast("dict[str, object]", kwargs["content"])
         return True
@@ -679,27 +678,8 @@ def test_trade_emits_execution_events_and_artifacts(
     assert "trade_rules_snapshot" in captured_artifacts
     assert "account_snapshot_before" in captured_artifacts
     assert "account_snapshot" in captured_artifacts
-    assert "execution_summary" in captured_artifacts
+    assert "execution_summary" not in captured_artifacts
     assert artifact_versions["target_snapshot"] == 3
-    assert artifact_versions["execution_summary"] == 2
-    assert execution_summary_content is not None
-    assert execution_summary_content["summary"] == {
-        "symbols_total": 1,
-        "symbols_succeeded": 1,
-        "symbols_failed": 0,
-        "symbols_noop": 0,
-    }
-    assert execution_summary_content["success"] is True
-    assert execution_summary_content["execution_time"] == 0.1
-    reconciliation = cast("dict[str, object]", execution_summary_content["reconciliation"])
-    account_block = cast("dict[str, object]", reconciliation["account"])
-    assert account_block["source_before"] == "real"
-    assert account_block["equity_before"] == 1000.0
-    symbols = cast("list[dict[str, object]]", reconciliation["symbols"])
-    ag_row = next(row for row in symbols if row["symbol"] == "ag2612")
-    assert ag_row["target"] == 0.1
-    assert ag_row["after"] == 0.0
-    assert ag_row["reached"] is False
     assert target_snapshot_content is not None
     assert target_snapshot_content == {
         "business_facts_ref": {"version": 1, "view": "targets", "input_id": "input-test"}

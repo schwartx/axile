@@ -16,6 +16,7 @@ from tests.unit.server._business_facts_test_support import (
 )
 
 _DOMAIN_FIELDS = (
+    "reconciliation",
     "status",
     "symbol",
     "technical_detail",
@@ -65,7 +66,8 @@ def test_historical_non_object_root_does_not_become_empty_object(native_database
     row = rows(native_database, "execution_extension")[0]
     assert row["root_kind"] == kind
     assert read_result(native_database, record) == payload
-    assert row["memory"] is None and row["extra"] is None and row["reconciliation"] is None
+    assert row["memory"] is None and row["extra"] is None
+    assert "reconciliation" not in row
     assert row["audit_evidence"] == {}
 
 

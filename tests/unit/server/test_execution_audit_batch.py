@@ -38,7 +38,7 @@ def test_batch_enforces_hard_limit_and_reuses_payload_references():
     entry = _event(details=details)
     assert batch.add_event(entry) is None
     batch.add_artifact(
-        execution_id="batch-execution", artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY, content=content
+        execution_id="batch-execution", artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT, content=content
     )
     batch.add_event(_event(seq=2))
     entries = tuple(batch)
@@ -82,7 +82,7 @@ def test_batch_sends_good_rows_once_and_isolates_unserializable_payloads(monkeyp
     )
     batch.add_artifact(
         execution_id="batch-execution",
-        artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+        artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
         content={"nonfinite": float("nan")},
     )
     batch.add_event(_event(seq=3))

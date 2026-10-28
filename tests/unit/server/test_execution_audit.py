@@ -52,7 +52,7 @@ def test_event_notifies_only_after_successful_native_commit(monkeypatch, inserte
 def test_artifact_returns_native_duplicate_receipt(monkeypatch, inserted):
     async def persist(name, row):
         assert name == "append_execution_artifact"
-        assert row["artifact_type"] == "execution_summary"
+        assert row["artifact_type"] == "environment_snapshot"
         assert row["content"] == {"summary": {"filled": 1}}
         return inserted
 
@@ -61,7 +61,7 @@ def test_artifact_returns_native_duplicate_receipt(monkeypatch, inserted):
         asyncio.run(
             execution_audit.append_execution_artifact(
                 execution_id="exec-1",
-                artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+                artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
                 content={"summary": {"filled": 1}},
             )
         )
@@ -132,7 +132,7 @@ def test_append_execution_artifact_sync_swallows_timeout(monkeypatch: pytest.Mon
 
     result = execution_audit.append_execution_artifact_sync(
         execution_id="exec-1",
-        artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
+        artifact_type=ExecutionArtifactType.ENVIRONMENT_SNAPSHOT,
         content={"summary": {"filled": 1}},
     )
 

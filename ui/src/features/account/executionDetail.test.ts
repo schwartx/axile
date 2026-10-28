@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'bun:test'
 
-import { buildExecutionDetail, executionHeadline, formatOrderTradeCounts } from './executionDetail'
+import { buildExecutionDetail as buildFromFacts, executionHeadline, formatOrderTradeCounts } from './executionDetail'
+
+// Historical fixtures provide the derived view separately from persisted artifacts.
+const buildExecutionDetail: typeof buildFromFacts = (events, artifacts, task, detail) =>
+  buildFromFacts(events, artifacts, task,
+    detail ?? artifacts.find(a => a.artifact_type === 'execution_summary')?.content ?? null)
 import type { ExecutionArtifact, ExecutionEvent, ExecutionStatus } from '@/types/api'
 
 /** 造一条最小可用的执行事件。 */
