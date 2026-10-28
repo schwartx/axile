@@ -154,25 +154,35 @@ fn baseline_moves(c: &Connection, s: &State, last: &str) -> Result<bool, Analysi
     if s.baseline_asset.is_none() {
         return Ok(true);
     }
-    if s.range_key == "all" {
+    let mut reader = crate::fact_observation::ObservationReader::new(c).map_err(analysis::sql)?;
+    let confirmed = s
+        .baseline_id
+        .map(|id| reader.read(s.account_id, id).map_err(error))
+        .transpose()?
+        .as_ref()
+        .is_some_and(baseline_eligible);
+    if confirmed && s.range_key == "all" {
         return Ok(false);
     }
-    let cutoff = canonical_time(
-        parse_time(last).map_err(error)?
-            - Duration::days(s.range_key.parse::<i64>().map_err(error)?),
-    );
-    let mut reader = crate::fact_observation::ObservationReader::new(c).map_err(analysis::sql)?;
-    let ids=analysis::rows(c,"SELECT max(id) AS id FROM executerecord WHERE account_id=?1 AND result_staged=0 AND axile_time(created_at)>?2 AND axile_time(created_at)<=?3 GROUP BY axile_time(created_at) ORDER BY axile_time(created_at) DESC",&[&s.account_id,&s.baseline_time.as_deref().map(crate::calendar::canonical_time).transpose().map_err(error)?.unwrap_or_default(),&cutoff])?;
+    let cutoff = if confirmed {
+        canonical_time(
+            parse_time(last).map_err(error)?
+                - Duration::days(s.range_key.parse::<i64>().map_err(error)?),
+        )
+    } else {
+        last.to_owned()
+    };
+    let after = if confirmed {
+        s.baseline_time.as_deref()
+    } else {
+        s.last_time.as_deref()
+    };
+    let ids=analysis::rows(c,"SELECT max(id) AS id FROM executerecord WHERE account_id=?1 AND result_staged=0 AND axile_time(created_at)>?2 AND axile_time(created_at)<=?3 GROUP BY axile_time(created_at) ORDER BY axile_time(created_at) DESC",&[&s.account_id,&after.map(crate::calendar::canonical_time).transpose().map_err(error)?.unwrap_or_default(),&cutoff])?;
     for id in ids {
         let item = reader
             .read(s.account_id, id["id"].as_i64().unwrap())
             .map_err(error)?;
-        if item.asset.is_some_and(|a| a > 0.0)
-            && item.target.as_ref().is_some_and(|t| {
-                t.iter()
-                    .all(|(symbol, w)| *w == 0.0 || item.prices.contains_key(symbol))
-            })
-        {
+        if baseline_eligible(&item) {
             return Ok(true);
         }
     }

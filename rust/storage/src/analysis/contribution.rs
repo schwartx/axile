@@ -115,7 +115,7 @@ pub(crate) fn advance(
         "ORDER BY axile_time(r.created_at),r.id,t.ordinal",
         "AND axile_time(r.created_at)<=?3 ORDER BY axile_time(r.created_at),r.id,t.ordinal",
     );
-    let first=contributions::FILLS.replace("axile_time(?2)","?2").replace("ORDER BY axile_time(r.created_at),r.id,t.ordinal","AND COALESCE(NULLIF(t.symbol,''),'[unknown]')=?3 AND t.trade_id=?4 ORDER BY axile_time(r.created_at),r.id,t.ordinal LIMIT 1");
+    let first=contributions::FILLS.replace("axile_time(?2)","?2").replace("ORDER BY axile_time(r.created_at),r.id,t.ordinal","AND COALESCE(NULLIF(t.symbol,''),'[unknown]')=?3 AND t.trade_id=?4 AND COALESCE(json_extract(t.extra,'$.trading_day'),'')=?5 AND COALESCE(json_extract(t.extra,'$.exchange_id'),'')=?6 ORDER BY axile_time(r.created_at),r.id,t.ordinal LIMIT 1");
     let mut query = source.prepare(&bounded).map_err(sql)?;
     let mut first = source.prepare(&first).map_err(sql)?;
     for point in points {
@@ -176,13 +176,16 @@ fn apply_fills(
                 .filter(|id| !matches!(id.as_str(), "null" | "\"\""))
         {
             let original = first
-                .query_row(params![s.account_id, "", t.symbol, id], |r| {
-                    Ok((
-                        r.get::<_, i64>(14)?,
-                        r.get::<_, String>(15)?,
-                        contributions::fill(r, &s.trade_channel)?,
-                    ))
-                })
+                .query_row(
+                    params![s.account_id, "", t.symbol, id, t.trading_day, t.exchange_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(14)?,
+                            r.get::<_, String>(15)?,
+                            contributions::fill(r, &s.trade_channel)?,
+                        ))
+                    },
+                )
                 .optional()
                 .map_err(sql)?;
             if let Some((record, path, prior)) = original {

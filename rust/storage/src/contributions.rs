@@ -117,6 +117,8 @@ pub(crate) fn positions(
 pub(crate) struct Fill {
     pub(crate) symbol: String,
     pub(crate) id: Option<String>,
+    pub(crate) trading_day: String,
+    pub(crate) exchange_id: String,
     pub(crate) quantity: Option<f64>,
     pub(crate) amount: Option<f64>,
     pub(crate) fee: Option<f64>,
@@ -173,6 +175,8 @@ pub(crate) fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<F
     Ok(Fill {
         symbol: symbol.clone(),
         id: row.get(2)?,
+        trading_day: extra["trading_day"].as_str().unwrap_or_default().into(),
+        exchange_id: extra["exchange_id"].as_str().unwrap_or_default().into(),
         quantity,
         amount,
         fee,

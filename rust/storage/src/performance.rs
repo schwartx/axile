@@ -173,6 +173,15 @@ struct RangeBaseline {
     fallback_equity: Option<f64>,
 }
 
+fn baseline_eligible(item: &Observation) -> bool {
+    item.asset.is_some_and(|asset| asset > 0.0)
+        && item.target.as_ref().is_some_and(|target| {
+            target
+                .iter()
+                .all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
+        })
+}
+
 impl RangeBaseline {
     fn push(&mut self, item: &Observation) {
         let Some(asset) = item.asset.filter(|asset| *asset > 0.0) else {
@@ -181,12 +190,7 @@ impl RangeBaseline {
         if item.time >= self.cutoff && self.fallback_equity.is_none() {
             self.fallback_equity = Some(asset);
         }
-        let eligible = item.target.as_ref().is_some_and(|target| {
-            target
-                .iter()
-                .all(|(symbol, weight)| *weight == 0.0 || item.prices.contains_key(symbol))
-        });
-        if eligible && (item.time <= self.cutoff || self.candidate.is_none()) {
+        if baseline_eligible(item) && (item.time <= self.cutoff || self.candidate.is_none()) {
             self.candidate = Some((item.time.clone(), asset));
         }
     }

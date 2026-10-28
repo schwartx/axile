@@ -28,7 +28,7 @@ def account(native_database):
     return native_database
 
 
-def append(path, index, *, hour=9, target=True, price=None):
+def append(path, index, *, hour=9, target=True, price=None, positions=()):
     time = (datetime(2026, 1, 1, hour) + timedelta(days=index - 1)).isoformat()
     identity = f"e-{index}-{hour}"
     price = 100 + index if price is None else price
@@ -44,7 +44,12 @@ def append(path, index, *, hour=9, target=True, price=None):
             "raw_input": {"curr_target": {"A": 1}} if target else {},
             "raw_result": {
                 "status": "SUCCEEDED",
-                "account_assets": {"total_asset": price, "source": "real", "currency": "CNY", "positions": []},
+                "account_assets": {
+                    "total_asset": price,
+                    "source": "real",
+                    "currency": "CNY",
+                    "positions": list(positions),
+                },
                 "symbol_results": {
                     "A": {
                         "status": "SUCCEEDED",
@@ -112,6 +117,7 @@ def assert_full_replay(path):
         full = json.loads(core.account_performance(store, 1, key))
         actual = query(path, range=key)["result"]
         for field in [
+            "baseline",
             "observation_count",
             "used_record_count",
             "target_used_record_count",
@@ -171,7 +177,7 @@ def test_stale_claim_never_advances_any_state_and_recovery_resumes(account):
     assert not update(account, row)["updated"]
     assert sql(account, "SELECT version,max_id FROM analysis_state ORDER BY range_key") == previous
     core = require_native_store()
-    core.queue_recover(str(account), "24", "equity-ledger-1")
+    core.queue_recover(str(account), "25", "equity-ledger-1")
     receipt = update(account)
     assert receipt["updated"]
     assert_full_replay(account)
@@ -181,7 +187,7 @@ def test_stale_claim_never_advances_any_state_and_recovery_resumes(account):
         {
             "account_id": 1,
             "source_version": receipt["version"],
-            "logic_version": "24",
+            "logic_version": "25",
             "engine_version": "equity-ledger-1",
         },
     )
@@ -299,3 +305,146 @@ def test_fill_seen_before_baseline_is_not_new_cash_flow(account):
     update(account)
     last = query(account)["contributions"][-1]
     assert last["trades"] == 0 and last["gross_pnl"] == 0
+
+
+@pytest.mark.parametrize("missing", ["target", "price"])
+def test_first_eligible_baseline_arriving_after_fallback_replays(account, missing):
+    for day in [1, 2]:
+        time = f"2026-01-0{day}T09:00:00"
+        persist_record_fixture(
+            account,
+            {
+                "account_id": 1,
+                "execution_id": f"fallback-{day}",
+                "created_at": time,
+                "is_success": 1,
+                "input_id": f"fallback-in-{day}",
+                "result_input_id": f"fallback-out-{day}",
+                "raw_input": {"curr_target": {"A": 1}} if missing == "price" else {},
+                "raw_result": {
+                    "status": "SUCCEEDED",
+                    "account_assets": {"total_asset": 100, "currency": "CNY", "positions": []},
+                    "symbol_results": {},
+                },
+            },
+        )
+        assert update(account)["processed_observations"] == 3
+        assert_full_replay(account)
+    append(account, 3)
+    require_native_store().close_database(str(account))
+    update(account)
+    assert_full_replay(account)
+    for key in ["30", "90", "all"]:
+        result = query(account, range=key)["result"]
+        assert result["baseline"].startswith("2026-01-03")
+        assert result["points"][-1]["account_return"] == 0
+
+
+@pytest.mark.parametrize("incremental", [False, True])
+@pytest.mark.parametrize("different", ["trading_day", "exchange_id"])
+def test_reused_trade_id_in_another_day_or_exchange_is_new_cash_flow(account, incremental, different):
+    for index, day, quantity, price, asset in [
+        (1, "2026-01-01", 1, 100, 1000),
+        (2, "2026-01-02", 1, 100, 1000),
+        (3, "2026-02-01", 2, 110, 1010),
+        (4, "2026-02-02", 2, 110, 1010),
+    ]:
+        time = day + "T09:00:00"
+        extra = {
+            "direction": "BUY",
+            "commission": 0,
+            "commission_asset": "CNY",
+            "trading_day": "20260101",
+            "exchange_id": "SHFE",
+        }
+        if index >= 3:
+            extra[different] = "20260201" if different == "trading_day" else "DCE"
+        trades = (
+            []
+            if index == 2
+            else [
+                {
+                    "symbol": "A",
+                    "trade_id": "one",
+                    "order_id": "order",
+                    "trade_time": time,
+                    "trade_price": price,
+                    "trade_volume": 1,
+                    "extra": extra,
+                }
+            ]
+        )
+        persist_record_fixture(
+            account,
+            {
+                "account_id": 1,
+                "execution_id": f"reuse-{index}",
+                "created_at": time,
+                "is_success": 1,
+                "input_id": f"reuse-in-{index}",
+                "result_input_id": f"reuse-out-{index}",
+                "raw_input": {"curr_target": {"A": 1}},
+                "raw_result": {
+                    "status": "SUCCEEDED",
+                    "account_assets": {
+                        "total_asset": asset,
+                        "currency": "CNY",
+                        "positions": [
+                            {"symbol": "A", "volume": quantity, "direction": "多头", "market_value": quantity * price}
+                        ],
+                    },
+                    "symbol_results": {
+                        "A": {
+                            "status": "SUCCEEDED",
+                            "first_tick": {"bid_price": price, "ask_price": price},
+                            "sizing": {
+                                "sizing_mode": "weight",
+                                "status": "SIZED",
+                                "current_quantity": max(quantity - 1, 0),
+                                "target_quantity": quantity,
+                                "equity": asset,
+                                "unit_notional": price,
+                                "reference_price": price,
+                                "unit_multiplier": 1,
+                            },
+                            "trades": trades,
+                        }
+                    },
+                },
+            },
+        )
+        if incremental or index == 4:
+            update(account)
+        if index == 4 or incremental and index >= 3:
+            for key in ["30", "90", "all"]:
+                last = query(account, range=key)["contributions"][-1]
+                assert last["gross_pnl"] == pytest.approx(10), (key, last)
+                assert last["trades"] == 1 and last["issues"] == 0, (key, last)
+
+
+@pytest.mark.parametrize("volume,known,count", [(None, False, None), (0, True, 0), (2, True, 1)])
+def test_position_validity_is_shared_by_summary_and_detail(account, volume, known, count):
+    append(account, 1)
+    record = append(account, 2, positions=[{"symbol": "A", "volume": volume, "direction": "多头"}])
+    update(account)
+    detail = query(account, "detail", record_id=record["id"])
+    summary = next(r for r in query(account)["execution_index"] if r["record_id"] == record["id"])
+    for header in [detail["header"], summary]:
+        assert header["positions_present"] is known
+        assert header["position_count"] == count
+    assert len(detail["tables"]["positions"]["rows"]) == (count or 0)
+
+
+def test_old_logic_is_invalidated_and_rebuilt_without_new_facts(account):
+    append(account, 1)
+    append(account, 2)
+    update(account)
+    sql(account, "UPDATE analysis_state SET logic_version='24'")
+    sql(account, "UPDATE analysis_contribution_day SET gross_pnl=999")
+    core = require_native_store()
+    with pytest.raises(core.NativeError, match="ANALYSIS_VERSION_CHANGED"):
+        query(account)
+    core.queue_recover(str(account), "25", "equity-ledger-1")
+    assert update(account)["processed_observations"] == 6
+    assert_full_replay(account)
+    assert query(account)["contributions"][-1]["gross_pnl"] != 999

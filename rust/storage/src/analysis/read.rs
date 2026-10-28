@@ -2,7 +2,7 @@
 use super::{self as store, failure, sql, State};
 use crate::{cost_summary::Summary, error::AnalysisError, fact_trades::Trade};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -123,7 +123,7 @@ fn snake_summary(s: &Summary) -> Value {
 struct Record {
     head: Value,
     trades: Vec<Trade>,
-    positions: Option<i64>,
+    positions: Option<usize>,
     noop: bool,
     time: f64,
 }
@@ -138,6 +138,7 @@ fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, 
     let heads=store::rows(c,"SELECT * FROM executerecord WHERE account_id=?1 AND result_staged=0 AND (?2 IS NULL OR id=?2) AND axile_time(created_at)>=?3 AND axile_time(created_at)<=?4 ORDER BY axile_time(created_at),id",&[&s.account_id,&only,&start,&s.last_time.as_deref().unwrap_or("")])?;
     let mut ticks = crate::fact_ticks::TickReader::new(c).map_err(sql)?;
     let mut reader = crate::fact_trades::TradeReader::new(c).map_err(sql)?;
+    let mut position_reader = crate::fact_positions::PositionReader::new(c).map_err(sql)?;
     let mut out = Vec::new();
     for head in heads {
         let id = head["id"].as_i64().unwrap();
@@ -146,7 +147,10 @@ fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, 
         let trades = reader
             .read(id, when, &prices)
             .map_err(|e| failure("ANALYSIS_FACTS", e))?;
-        let positions:Option<i64>=c.query_row("SELECT CASE WHEN a.positions_kind='array' AND COALESCE(a.source,'real') NOT IN ('assumed','error','unavailable') AND a.positions_count=(SELECT count(*) FROM business_asset_position p WHERE p.asset_id=a.asset_id) THEN a.positions_count ELSE NULL END FROM business_asset_binding b JOIN business_asset_snapshot a ON a.asset_id=b.asset_id WHERE b.record_id=?1 AND b.path='/account_assets'",[id],|r|r.get(0)).optional().map_err(sql)?.flatten();
+        let positions = position_reader
+            .read(id)
+            .map_err(|e| failure("ANALYSIS_FACTS", e))?
+            .map(|v| v.len());
         let has_fills:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM execution_order WHERE record_id=?1 AND filled_volume>0)",[id],|r|r.get(0)).map_err(sql)?;
         let (has_symbols,non_noop):(bool,bool)=c.query_row("SELECT count(*)>0,COALESCE(sum(status IS NOT 'NOOP'),0)>0 FROM execution_symbol_result WHERE record_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
         let noop = head["is_success"] == 1

@@ -228,7 +228,7 @@ def test_analysis_can_repeat_after_stale_source_and_failed_commit(database: Path
 
     def request(token):
         core.queue_enqueue(str(database), 1, True)
-        core.queue_recover(str(database), "24", "equity-ledger-1")
+        core.queue_recover(str(database), "25", "equity-ledger-1")
         claim = core.queue_claim(str(database), 1_800_000_000.0, token)
         assert claim
         return {

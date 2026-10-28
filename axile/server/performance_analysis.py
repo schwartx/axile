@@ -12,7 +12,7 @@ from axile.server.core.db import database_path
 from axile.server.native_store import native_call, native_operation
 
 # 标记贡献估值缺口并允许后续分段恢复；重建旧分析。
-LOGIC_VERSION = "24"
+LOGIC_VERSION = "25"
 ENGINE_VERSION = "equity-ledger-1"
 
 
