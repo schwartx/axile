@@ -170,7 +170,6 @@ const AT = {
   target: 'target_snapshot',
   before: 'account_snapshot_before',
   after: 'account_snapshot',
-  summary: 'execution_summary',
 } as const
 
 const SOURCE_RANK: Record<string, number> = { real: 0, assumed: 1, error: 2, unavailable: 3 }
@@ -641,13 +640,6 @@ function buildSpine(
   return nodes
 }
 
-/** 取整条执行的对账块（execution_summary.content.reconciliation）。 */
-function reconciliationOf(artifacts: ExecutionArtifact[]): ExecutionReconciliation | null {
-  const summary = artifactContent(artifacts, AT.summary)
-  const recon = asDict(summary?.reconciliation)
-  return recon ? (recon as unknown as ExecutionReconciliation) : null
-}
-
 /**
  * 由事件流与附件组合出执行详情视图模型.
  *
@@ -658,13 +650,13 @@ export function buildExecutionDetail(
   events: ExecutionEvent[],
   artifacts: ExecutionArtifact[],
   task: ExecutionStatus | null = null,
+  summary: Record<string, unknown> | null = null,
 ): ExecutionDetailModel {
   const started = eventAt(events, 'execution_started')
   const startedAt = started?.ts_local_created ?? null
   const startedDebug = asDict(asDict(started?.details)?.debug)
 
-  const summary = artifactContent(artifacts, AT.summary)
-  const recon = reconciliationOf(artifacts)
+  const recon = asDict(summary?.reconciliation) as unknown as ExecutionReconciliation | null
   const beforeAssets = accountAssets(artifactContent(artifacts, AT.before))
   const afterAssets = accountAssets(artifactContent(artifacts, AT.after))
   const srcBefore = recon?.account.source_before ?? snapshotSource(artifactContent(artifacts, AT.before), beforeAssets)

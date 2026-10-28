@@ -95,6 +95,9 @@ fn insert_event(connection: &Connection, row: &Value) -> Result<bool, AnalysisEr
 }
 
 fn insert_artifact(connection: &Connection, row: &Value) -> Result<bool, AnalysisError> {
+    if text(row, "artifact_type")?.eq_ignore_ascii_case("execution_summary") {
+        return Err(invalid("EXECUTION_SUMMARY is derived from facts"));
+    }
     inserted(
         connection.execute(
             "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at)
@@ -139,41 +142,7 @@ fn persist_batch(connection: &Connection, entries: &[Value]) -> Result<Value, An
             let kind = entry.get("kind").and_then(Value::as_str);
             let result = match kind {
                 Some("event") => insert_event(connection, row),
-                Some("artifact") => (|| {
-                    let mut row = row.clone();
-                    if row["artifact_type"]
-                        .as_str()
-                        .is_some_and(|value| value.eq_ignore_ascii_case("execution_summary"))
-                        && row["content"].get("outcome_symbols").is_some()
-                    {
-                        let normalized = result_head::normalize_legacy_result(&row["content"])?;
-                        for name in [
-                            "status",
-                            "error",
-                            "reason_code",
-                            "outcome",
-                            "outcome_reason",
-                            "symbol_results",
-                        ] {
-                            if let Some(value) = normalized.get(name) {
-                                row["content"][name] = value.clone();
-                            }
-                        }
-                        row["content"].as_object_mut().unwrap().remove("memory");
-                        row["content"]["outcome_symbols"] = json!(normalized["symbol_results"]
-                            .as_object()
-                            .map(|symbols| symbols
-                                .iter()
-                                .filter(|(_, value)| matches!(
-                                    value["outcome"].as_str(),
-                                    Some("not_reached" | "blocked")
-                                ))
-                                .map(|(symbol, _)| symbol.clone())
-                                .collect::<Vec<_>>())
-                            .unwrap_or_default());
-                    }
-                    insert_artifact(connection, &row)
-                })(),
+                Some("artifact") => insert_artifact(connection, row),
                 _ => Err(invalid(
                     entry
                         .get("error")
@@ -302,12 +271,9 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
             public_event(&mut item)?;
         } else {
             item["content"] = summary_refs::resolve_artifact_content(connection, &item, None)?;
-            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|execution_summary|environment_snapshot")?;
+            enum_field(&item, "artifact_type", "standard_input|target_snapshot|account_snapshot|account_snapshot_before|trade_rules_snapshot|market_snapshot|environment_snapshot")?;
             if !item["content"].is_object() {
                 return Err(invalid("附件内容必须是对象"));
-            }
-            if item["artifact_type"] == "execution_summary" {
-                item["content"] = result_head::normalize_legacy_result(&item["content"])?;
             }
         }
         data.push(item);
@@ -391,60 +357,6 @@ mod tests {
             "schema_version":1,"event_uid":uid,"event_type":"execution_started","status":"INFO",
             "reason_family":"SYSTEM","reason_code":"started","ts_local_created":"t",
             "ts_persisted":"t","seq":seq,"details":{}})
-    }
-
-    #[test]
-    fn current_summary_keeps_message_fallback_without_persisting_transport_context() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
-        persist_batch(&connection, &[json!({"kind":"artifact","row":{
-            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,"created_at":"t",
-            "content":{"status":"PARTIAL","error":null,"outcome_reason":null,"outcome_symbols":[],
-                "memory":{"message":"保留业务原因"},"symbol_results":{}}}})]).unwrap();
-        let saved: String = connection
-            .query_row("SELECT content FROM execution_artifact", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        let saved: Value = serde_json::from_str(&saved).unwrap();
-        assert_eq!(saved["error"], "保留业务原因");
-        assert_eq!(saved["outcome"], "not_reached");
-        assert!(saved.get("memory").is_none());
-    }
-
-    #[test]
-    fn current_summary_is_normalized_in_its_existing_write_stage() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,schema_version INTEGER,content TEXT,created_at TEXT);").unwrap();
-        let content = json!({"status":"PARTIAL","outcome_symbols":[],"symbol_results":{
-            "first":{"status":"BLOCKED","error":"当前不在交易时间"},
-            "second":{"status":"NOOP"}},"summary":{"symbols_total":2},"reconciliation":[]});
-        let normalized = result_head::normalize_legacy_result(&content).unwrap();
-        persist_batch(
-            &connection,
-            &[json!({"kind":"artifact","row":{
-            "execution_id":"e1","artifact_type":"execution_summary","schema_version":2,
-            "content":content,"created_at":"t"}})],
-        )
-        .unwrap();
-        let saved: String = connection
-            .query_row("SELECT content FROM execution_artifact", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        let saved: Value = serde_json::from_str(&saved).unwrap();
-        for name in [
-            "status",
-            "error",
-            "reason_code",
-            "outcome",
-            "outcome_reason",
-            "symbol_results",
-        ] {
-            assert_eq!(saved.get(name), normalized.get(name));
-        }
-        assert_eq!(saved["outcome_symbols"], json!(["first"]));
-        assert_eq!(saved["summary"], json!({"symbols_total":2}));
     }
 
     #[test]

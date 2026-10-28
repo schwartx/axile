@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +27,7 @@ from tests.unit.server._business_facts_test_support import (
 from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
-from tests.unit.server._native_read_views import read_execution_input, read_view
+from tests.unit.server._native_read_views import read_execution_input
 
 
 @pytest.fixture
@@ -204,8 +203,8 @@ def test_target_sizing_uses_immutable_audit_input_context(database):
 
 
 @pytest.mark.parametrize("delete_account", [False, True])
-def test_delete_execution_records_preserves_independent_summary_journal(database, monkeypatch, delete_account):
-    """真实引用经应用删除后仍可读，且结果事实级联删除不影响其他账户。"""
+def test_clear_history_keeps_facts_until_account_deletion(database, monkeypatch, delete_account):
+    """隐藏历史保留显式审计；删除账户才清理事实，且不影响其他账户。"""
 
     async def drop_worker(_account_id):
         return None
@@ -223,14 +222,10 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
             }
         },
     }
-    journal = {**deepcopy(result), "journal_note": {"independent": True}}
-    _append_artifact(database, "delete-summary", ExecutionArtifactType.EXECUTION_SUMMARY, deepcopy(journal))
     record = persist_result(
         database, result, execution_id="delete-summary", is_success=1, raw_input={"curr_target": {"rb2610": 1}}
     )
     other = persist_result(database, {}, account_id=2, execution_id="keep-other", is_success=1)
-    artifact = next(row for row in rows(database, "execution_artifact") if row["execution_id"] == "delete-summary")
-    assert artifact["content"] == journal
 
     if delete_account:
         message = asyncio.run(account_crud.delete_account(sched=SimpleNamespace(), account_id=1))
@@ -239,12 +234,12 @@ def test_delete_execution_records_preserves_independent_summary_journal(database
         message = asyncio.run(account_crud.delete_execute_records(account_id=1))
         assert message.message == "成功删除"
     remaining = {row["id"] for row in rows(database, "executerecord")}
-    assert record["id"] not in remaining
     assert other["id"] in remaining
-    assert not [row for row in rows(database, "execution_extension") if row["record_id"] == record["id"]]
-    artifact = next(row for row in rows(database, "execution_artifact") if row["id"] == artifact["id"])
-    assert artifact["schema_version"] == 2
-    assert "business_facts_ref" not in artifact["content"]
-    assert business_evidence(
-        read_view(database, "resolve_execution_artifact", {"artifact": artifact, "account_id": 1})
-    ) == business_evidence(journal)
+    if delete_account:
+        assert record["id"] not in remaining
+        assert not [row for row in rows(database, "execution_extension") if row["record_id"] == record["id"]]
+    else:
+        assert record["id"] in remaining
+        assert json.loads(_summary_page().body)["count"] == 0
+        detail = json.loads(_core.execution_record_detail(_core.Store(str(database)), 1, record["id"]))
+        assert business_evidence(detail["result"]) == business_evidence(result)

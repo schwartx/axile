@@ -55,7 +55,7 @@ fn read_context(connection: &Connection, account: i64) -> Result<Value, Analysis
         .map_err(|error| AnalysisError::new("ANALYSIS_DATABASE", error.to_string()))?
         .unwrap_or(Value::Null);
     let mut statement = connection
-        .prepare("SELECT created_at FROM executerecord WHERE account_id=?1")
+        .prepare("SELECT created_at FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0")
         .map_err(database_error)?;
     let mut rows = statement.query([account]).map_err(database_error)?;
     let mut first: Option<NaiveDate> = None;
@@ -172,10 +172,10 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE account(id INTEGER,trade_channel TEXT);
              CREATE TABLE account_settings(account_id INTEGER,backtest TEXT);
-             CREATE TABLE executerecord(account_id INTEGER,created_at TEXT);
+             CREATE TABLE executerecord(account_id INTEGER,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
              INSERT INTO account VALUES(1,'ctp'),(2,'ctp');
              INSERT INTO account_settings VALUES(1,'{\"backtest_fee_rate\":0.01}');
-             INSERT INTO executerecord VALUES(1,'2026-01-01T23:30:00-05:00'),
+             INSERT INTO executerecord(account_id,created_at) VALUES(1,'2026-01-01T23:30:00-05:00'),
              (1,'2026-01-02T00:30:00+14:00'),(2,'2020-01-01');",
             )
             .unwrap();

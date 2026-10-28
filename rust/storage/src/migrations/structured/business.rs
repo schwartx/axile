@@ -197,6 +197,14 @@ fn backfill_records(connection: &Connection) -> Result<()> {
         let record_id = integer(&row, "id")?;
         let raw_input = parse(&row, "raw_input", "executerecord", "/raw_input")?;
         let raw_result = parse(&row, "raw_result", "executerecord", "/raw_result")?;
+        if raw_result
+            .get("reconciliation")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(error(format!(
+                "Cannot migrate executerecord id={record_id}: independent reconciliation requires reconciliation before upgrading"
+            )));
+        }
         let input_id = insert_input(
             connection,
             &raw_input,

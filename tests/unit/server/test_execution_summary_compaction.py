@@ -1,4 +1,4 @@
-"""终态摘要去重保留冻结指标，独立 worker journal 保留原生执行证据。"""
+"""worker 回传前保存原生事实，附件不再承载结果 JSON。"""
 
 from types import SimpleNamespace
 
@@ -10,6 +10,8 @@ from tests.unit.server._execution_test_support import build_account, capture_wor
 
 def test_worker_journal_keeps_native_orders_until_terminal_facts_commit(monkeypatch):
     artifacts = []
+    staged = []
+    monkeypatch.setattr(worker_audit, "stage_execute_result_sync", lambda **kwargs: staged.append(kwargs))
     result = {
         "status": "SUCCEEDED",
         "success": True,
@@ -39,9 +41,5 @@ def test_worker_journal_keeps_native_orders_until_terminal_facts_commit(monkeypa
         result=result,
         executor=object(),
     )
-    summary = next(
-        item["content"] for item in artifacts if item["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY
-    )
-    assert summary["symbol_results"]["A"]["orders"] == result["symbol_results"]["A"]["orders"]
-    assert summary["symbol_results"]["A"]["trades"] == result["symbol_results"]["A"]["trades"]
-    assert summary["reconciliation"]["symbols"][0]["orders"][0]["order_id"] == "journal-order"
+    assert staged[0]["result"] == result
+    assert all(item["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for item in artifacts)

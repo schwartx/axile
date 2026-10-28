@@ -745,134 +745,19 @@ def test_business_storage_has_no_complete_raw_document_columns(facts_database):
     ) == business_evidence(35000.125)
 
 
-def _summary_result() -> dict:
-    payload = _result()
-    payload["symbol_results"]["rb2610"]["orders"][0]["extra"]["native_observation"] = "observed callback frame\n" * 128
-    return payload
-
-
-def _pending_summary(payload: dict) -> dict:
-    """worker 在终态记录之前保存的完整 journal，含独立对账证据。"""
-    return {
-        "status": payload["status"],
-        "error": payload["error"],
-        "outcome": payload["outcome"],
-        "outcome_reason": payload["outcome_reason"],
-        "symbol_results": deepcopy(payload["symbol_results"]),
-        "summary": {"symbols_total": 1, "symbols_failed": 1},
-        "success": False,
-        "execution_time": 0.0,
-        "reconciliation": {
-            "account": {"source_before": "real", "source_after": "real"},
-            "symbols": [{"symbol": "rb2610", "before": 0, "target": 2, "after": 1, "reached": False}],
-        },
-        "diagnostic": {"marker": "independent-worker-observation", "attempt": 0},
-    }
-
-
-async def _seed_pending_summary(path, summary):
-    freeze_input(path, _input(), execution_id=_EXECUTION, created_at="2026-10-20T09:00:00+08:00")
-    _seed(
-        path,
-        _running_intent(),
-        ExecutionArtifact(
-            execution_id=_EXECUTION,
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            schema_version=2,
-            content=deepcopy(summary),
-        ),
-    )
-
-
-async def _write_real_terminal(path, payload):
-    return await records._persist_execute_record(
-        account_id=1, execution_id=_EXECUTION, raw_input=_input(), raw_result=deepcopy(payload), is_success=0
-    )
-
-
-def test_terminal_commit_freezes_full_summary_and_preserves_evidence(facts_database):
-    """终态及完整摘要同事务提交，冷读和下载仍保留原始 journal 内容。"""
-    payload = _summary_result()
-    journal = _pending_summary(payload)
-    asyncio.run(_seed_pending_summary(facts_database, journal))
-    asyncio.run(_write_real_terminal(facts_database, payload))
-
-    async def read_summary():
-        artifact = _get(facts_database, "execution_artifact")
-        stored = deepcopy(artifact.content)
-        hydrated = read_view(
-            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
-        )
-        return stored, hydrated
-
-    stored, hydrated = asyncio.run(read_summary())
-    assert "business_facts_ref" not in stored
-    assert stored == hydrated
-    assert business_evidence(hydrated) == business_evidence(journal)
+def test_worker_facts_support_export_without_summary(facts_database):
+    """worker 回传前提交事实，导出不依赖持久化摘要。"""
+    freeze_input(facts_database, _input(), execution_id=_EXECUTION, created_at="2026-10-20T09:00:00+08:00")
+    records.stage_execute_result_sync(account_id=1, execution_id=_EXECUTION, result=_result())
     snapshot = asyncio.run(_collect(facts_database))
+    assert snapshot.executions[_EXECUTION].record is not None
+    assert not any(row["artifact_type"] == "execution_summary" for row in snapshot.executions[_EXECUTION].artifacts)
     bundle = build_archive(snapshot, EvidenceProfile.INTERNAL, ExportBudget())
     try:
         with ZipFile(bundle.path) as archive:
-            artifacts = json.loads(archive.read(f"executions/{_EXECUTION}/artifacts.json"))
-            summary = next(row["content"] for row in artifacts if row["artifact_type"] == "execution_summary")
-            summary.pop("business_facts_ref", None)
-            assert business_evidence(summary) == business_evidence(journal)
-            assert business_evidence(
-                _csv(archive, f"executions/{_EXECUTION}/trades.csv")[0]["trade_id"]
-            ) == business_evidence("native-fill-01")
+            assert _csv(archive, f"executions/{_EXECUTION}/trades.csv")[0]["trade_id"] == "native-fill-01"
     finally:
         bundle.close()
-
-
-def test_failed_terminal_transaction_keeps_original_worker_journal(facts_database):
-    """终态提交失败时，已保存的 worker 摘要保持原文。"""
-    payload = _summary_result()
-    journal = _pending_summary(payload)
-    asyncio.run(_seed_pending_summary(facts_database, journal))
-
-    sql(
-        facts_database,
-        """CREATE TRIGGER reject_terminal AFTER UPDATE OF facts_complete ON executerecord
-        WHEN NEW.facts_complete=1
-        BEGIN SELECT RAISE(ABORT,'synthetic terminal persistence failure'); END""",
-    )
-    with pytest.raises(_core.NativeError, match="terminal persistence failure"):
-        asyncio.run(_write_real_terminal(facts_database, payload))
-
-    async def read_after_rollback():
-        count = len(rows(facts_database, "executerecord"))
-        artifact = _get(facts_database, "execution_artifact")
-        return count, artifact.schema_version, artifact.content
-
-    count, version, retained = asyncio.run(read_after_rollback())
-    assert business_evidence(count) == business_evidence(0)
-    assert business_evidence(version) == business_evidence(2)
-    assert business_evidence(retained) == business_evidence(journal)
-    snapshot = asyncio.run(_collect(facts_database))
-    assert snapshot.executions[_EXECUTION].record is None
-    assert business_evidence(snapshot.executions[_EXECUTION].artifacts[0]["content"]) == business_evidence(journal)
-
-
-def test_terminal_compaction_keeps_distinct_journal_observation(facts_database):
-    """不同的历史观测不能被最终结果引用覆盖。"""
-    payload = _summary_result()
-    journal = _pending_summary(payload)
-    journal["symbol_results"]["rb2610"]["orders"][0]["filled_volume"] = 0
-    asyncio.run(_seed_pending_summary(facts_database, journal))
-    asyncio.run(_write_real_terminal(facts_database, payload))
-
-    async def read_summary():
-        artifact = _get(facts_database, "execution_artifact")
-        return artifact.content, read_view(
-            facts_database, "resolve_execution_artifact", {"artifact": vars(artifact), "account_id": 1}
-        )
-
-    stored, hydrated = asyncio.run(read_summary())
-    assert business_evidence(stored["symbol_results"]["rb2610"]["orders"]) == business_evidence(
-        journal["symbol_results"]["rb2610"]["orders"]
-    )
-    hydrated.pop("business_facts_ref", None)
-    assert business_evidence(hydrated) == business_evidence(journal)
 
 
 def _large_captured_notification() -> dict:

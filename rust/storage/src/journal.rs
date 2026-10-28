@@ -39,7 +39,7 @@ pub(crate) fn time_predicate(column: &str, since: bool, until: bool) -> String {
 fn headers(since: bool, until: bool) -> String {
     format!(
         "SELECT id,axile_time(created_at) AS occurred_at,0 AS kind FROM executerecord
-         WHERE account_id=?1{}
+         WHERE account_id=?1 AND history_visible=1 AND result_staged=0{}
          UNION ALL SELECT id,axile_time(triggered_at),1 FROM schedule_skip
          WHERE account_id=?1{}",
         time_predicate("created_at", since, until),
@@ -395,9 +395,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&conn).unwrap();
         conn.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
             CREATE TABLE schedule_skip(id INTEGER,account_id INTEGER,triggered_at TEXT);
-            INSERT INTO executerecord VALUES(1,1,'2026-01-01'),(2,1,'2026-01-02'),(9,2,'2026-01-04');
+            INSERT INTO executerecord(id,account_id,created_at) VALUES(1,1,'2026-01-01'),(2,1,'2026-01-02'),(9,2,'2026-01-04');
             INSERT INTO schedule_skip VALUES(2,1,'2026-01-02'),(3,1,'2026-01-03');",
         )
         .unwrap();

@@ -396,7 +396,7 @@ pub(crate) fn execution_detail(
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
-        let record = connection.query_row("SELECT id,execution_id,created_at FROM executerecord WHERE account_id=?1 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":row.get::<_,String>(2)?}))).optional().map_err(database)?;
+        let record = connection.query_row("SELECT id,execution_id,created_at FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":row.get::<_,String>(2)?}))).optional().map_err(database)?;
         let Some(record) = record else {
             return Ok(Value::Null);
         };
@@ -509,7 +509,7 @@ mod tests {
                     last_attempt_execution_id TEXT,last_attempt_ok BOOLEAN,last_attempt_error TEXT);
                  CREATE TABLE system_notification_state(id INTEGER PRIMARY KEY,finished_at TEXT,mode TEXT,event_type TEXT,
                     execution_id TEXT,account_id INTEGER,ok BOOLEAN,error TEXT);
-                 CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT);"
+                 CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);"
             ).unwrap();
             Self(path)
         }
@@ -801,7 +801,7 @@ mod tests {
         let connection = Connection::open(&db.0).unwrap();
         connection
             .execute(
-                "INSERT INTO executerecord VALUES(1,1,'preview','2026-10-23T10:00:00')",
+                "INSERT INTO executerecord(id,account_id,execution_id,created_at) VALUES(1,1,'preview','2026-10-23T10:00:00')",
                 [],
             )
             .unwrap();

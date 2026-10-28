@@ -122,7 +122,7 @@ pub(crate) fn scan(
     let mut statement = connection
         .prepare(
             "WITH times AS MATERIALIZED (
-                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1
+                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0
              ) SELECT max(id) FROM times WHERE time>=?2 GROUP BY time ORDER BY time",
         )
         .map_err(|error| error.to_string())?;
@@ -168,7 +168,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
@@ -179,7 +179,7 @@ mod tests {
              CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,sizing_mode TEXT,status TEXT,target_quantity REAL,equity REAL,unit_notional REAL,reference_price REAL,unit_multiplier REAL,conversion_recorded INTEGER);
              CREATE TABLE execution_symbol_conversion(record_id INTEGER,path TEXT,rate REAL);
-             INSERT INTO executerecord VALUES(1,7,'one','2026-01-01T09:00:00','clear_positions',NULL),(2,7,'two','2026-01-02T09:00:00','clear_positions',NULL);
+             INSERT INTO executerecord(id,account_id,execution_id,created_at,execution_kind,input_id) VALUES(1,7,'one','2026-01-01T09:00:00','clear_positions',NULL),(2,7,'two','2026-01-02T09:00:00','clear_positions',NULL);
              INSERT INTO business_asset_binding VALUES(1,'/account_assets','a'),(2,'/account_assets','b');
              INSERT INTO business_asset_snapshot VALUES('a',1000,1),('b',1100,1);"
         ).unwrap();

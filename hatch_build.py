@@ -24,8 +24,8 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
     raise RuntimeError('Native extension requires analysis fact schema 40')
-if getattr(module, 'PUBLIC_HEAD', None) != '0036':
-    raise RuntimeError('Native extension requires public migration head 0036')
+if getattr(module, 'PUBLIC_HEAD', None) != '0037':
+    raise RuntimeError('Native extension requires public migration head 0037')
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'asset_snapshots',
@@ -36,7 +36,7 @@ required = (
     'persist_execution_state', 'freeze_execution_input', 'freeze_execution_after_assets',
     'queue_enqueue', 'queue_status', 'queue_recover', 'queue_claim', 'queue_fail', 'queue_release',
     'migration_current', 'migration_check', 'migration_upgrade', 'migration_downgrade',
-    'execution_notification_context', 'normalize_execution_result',
+    'execution_notification_context', 'normalize_execution_result', 'execution_result_view',
     'list_execution_events_json', 'list_execution_artifacts_json',
     'account_public', 'connection_accounts', 'execution_read', 'supplement_has_execution_steps',
     'account_runtime_sync_json', 'notifications_get_system_json',

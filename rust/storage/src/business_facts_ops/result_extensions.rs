@@ -6,12 +6,9 @@ use serde_json::{json, Map, Value};
 use super::encode::{audit_value, store_columns};
 use crate::error::AnalysisError;
 
-const FIELDS: &[(&str, &str)] = &[
-    ("memory", "json"),
-    ("extra", "json"),
-    ("reconciliation", "json"),
-];
+const FIELDS: &[(&str, &str)] = &[("memory", "json"), ("extra", "json")];
 const DOMAINS: &[&str] = &[
+    "reconciliation",
     "status",
     "symbol",
     "technical_detail",
@@ -97,7 +94,6 @@ pub(crate) fn encode_result_root_value(
         ("record_id".into(), json!(record_id)),
         ("memory".into(), Value::Null),
         ("extra".into(), Value::Null),
-        ("reconciliation".into(), Value::Null),
         ("root_kind".into(), json!(kind)),
         ("audit_evidence".into(), json!({})),
         ("root_value".into(), audit_value(payload)),
@@ -126,7 +122,6 @@ pub(crate) fn insert_extension(
             ("record_id", "integer"),
             ("memory", "json"),
             ("extra", "json"),
-            ("reconciliation", "json"),
             ("root_kind", "text"),
             ("root_value", "json"),
             ("audit_evidence", "json"),

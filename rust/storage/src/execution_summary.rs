@@ -32,14 +32,14 @@ pub(crate) mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
              CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
              CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
              CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
              CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
-             INSERT INTO executerecord VALUES(1,2,'2026-01-01T09:00:00'),(2,2,'2026-01-02T09:00:00'),(3,9,'2026-01-03T09:00:00');
+             INSERT INTO executerecord(id,account_id,created_at) VALUES(1,2,'2026-01-01T09:00:00'),(2,2,'2026-01-02T09:00:00'),(3,9,'2026-01-03T09:00:00');
              INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0);
              INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,100,100,100,1);
              INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1);

@@ -97,7 +97,7 @@ def test_terminal_facts_use_durable_input_and_commit_once(native_database, monke
     seed_account(native_database)
     native = AsyncMock(wraps=records.native_operation)
     monkeypatch.setattr(records, "native_operation", native)
-    monkeypatch.setattr(records, "now_str", lambda: "frozen-time")
+    monkeypatch.setattr(records, "now_str", lambda: "2026-10-28T10:00:00")
     raw_input = {"curr_target": {"A": 0.1}, "account_config": {"secret": "synthetic"}}
     result = {
         "status": "SUCCEEDED",
@@ -111,7 +111,7 @@ def test_terminal_facts_use_durable_input_and_commit_once(native_database, monke
                 "account_id": 1,
                 "execution_id": "terminal",
                 "input_id": "durable-normalized-input",
-                "created_at": "frozen-time",
+                "created_at": "2026-10-28T10:00:00",
                 "payload": raw_input,
             }
         ),
@@ -131,7 +131,7 @@ def test_terminal_facts_use_durable_input_and_commit_once(native_database, monke
     assert command == "persist_execution_state"
     assert request["raw_input"] is raw_input
     assert request["raw_result"] is result
-    assert request["created_at"] == "frozen-time"
+    assert request["created_at"] == "2026-10-28T10:00:00"
     assert request["account_id"] == 1
     assert request["execution_id"] == "terminal"
     assert uuid.UUID(request["input_id"]) != uuid.UUID(request["result_input_id"])
@@ -203,7 +203,7 @@ def test_task_status_uses_canonical_terminal_column(status, native_database):
                 "execution_id": "terminal-column",
                 "input_id": "input",
                 "result_input_id": "result",
-                "created_at": "frozen",
+                "created_at": "2026-10-28T10:00:00",
                 "is_success": 0,
                 "raw_input": {},
                 "raw_result": {"task_status": status},

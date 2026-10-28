@@ -940,7 +940,7 @@ export interface SymbolTca {
   fee_asset: string | null
 }
 
-/** 单只对账行（`execution_summary.content.reconciliation.symbols[]`）。 */
+/** 单只对账行（`执行详情 reconciliation.symbols[]`）。 */
 export interface SymbolReconciliation {
   symbol: string
   status: string | null
@@ -975,7 +975,7 @@ export interface SymbolReconciliation {
   orders: ExecOrder[]
 }
 
-/** 逐只对账块（`execution_summary` 附件 `content.reconciliation`）。 */
+/** 逐只对账块（执行详情 `reconciliation`）。 */
 export interface ExecutionReconciliation {
   account: {
     equity_before: number | null

@@ -1,4 +1,4 @@
-"""已发布 0033 直接迁到当前 0036，失败不破坏业务事实或旧缓存。"""
+"""已发布 0033 直接迁到当前 0037，失败不破坏业务事实或旧缓存。"""
 
 import json
 from contextlib import closing
@@ -60,7 +60,7 @@ def _state(path):
 
 def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(old_database):
     receipt = initialize_native_database(old_database)
-    assert receipt["public"] == "0036"
+    assert receipt["public"] == "0037"
     backup = Path(receipt["backup"])
     assert backup.is_file()
     with closing(oracle_connect(backup)) as connection:
@@ -79,7 +79,7 @@ def test_direct_upgrade_preserves_business_data_backs_up_wal_and_requeues_cache(
         assert connection.execute(
             "SELECT execution_id,account_id,is_success FROM executerecord WHERE id=7"
         ).fetchone() == ("original", 1, 1)
-        assert json.loads(connection.execute("SELECT content FROM execution_artifact").fetchone()[0]) == _RESULT
+        assert connection.execute("SELECT COUNT(*) FROM execution_artifact").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone() == (0,)
         assert connection.execute(
             "SELECT current_snapshot,previous_snapshot,running_version,running_token,requested,failures,error FROM account_analysis"
@@ -98,11 +98,11 @@ def test_downgrade_restores_business_documents_and_can_upgrade_again(old_databas
         row = connection.execute("SELECT raw_input,raw_result FROM executerecord WHERE id=7").fetchone()
         assert json.loads(row[0])["extra"] == _INPUT["extra"]
         assert json.loads(row[1]) == _RESULT | {"task_status": "SUCCEEDED"}
-        assert json.loads(connection.execute("SELECT content FROM execution_artifact").fetchone()[0]) == _RESULT
+        assert connection.execute("SELECT COUNT(*) FROM execution_artifact").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM performance_snapshot").fetchone() == (0,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert initialize_native_database(old_database)["public"] == "0036"
+    assert initialize_native_database(old_database)["public"] == "0037"
 
 
 @pytest.mark.parametrize("failure", ["invalid_document", "stamp"])
@@ -138,10 +138,10 @@ def test_pending_facts_block_lossy_downgrade_before_any_change(old_database):
     with pytest.raises(_core.NativeError, match="unrepresented pending execution input"):
         native_store_call(old_database, "migration_downgrade", {"public": "0033"})
     assert _state(old_database) == before
-    assert native_store_call(old_database, "migration_current", {})["public"] == "0036"
+    assert native_store_call(old_database, "migration_current", {})["public"] == "0037"
 
 
-@pytest.mark.parametrize("revision", ["0037", "0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0038", "0039", "0040", "0041"])
 def test_unreleased_intermediate_targets_are_rejected(old_database, revision):
     before = _state(old_database)
     with pytest.raises(_core.NativeError, match="supported targets"):

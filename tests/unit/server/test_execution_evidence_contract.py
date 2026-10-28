@@ -18,10 +18,12 @@ from axile.executor.models.execution_result import AlgorithmResult
 from axile.executor.models.unified_account_assets import Position, PositionDirection, UnifiedAccountAssets
 from axile.executor.models.unified_order import OrderDirection, OrderType, UnifiedOrder
 from axile.executor.session_closed import COMMON_SESSION_CLOSED
+from axile.server._native import _core
 from axile.server.business_facts.artifacts import parse_artifact_reference
 from axile.server.business_facts.assets import input_asset_fact_id
 from axile.server.db.models import ExecutionArtifact
 from axile.server.execution import input_persistence
+from axile.server.execution.execution_summaries import execution_result_view
 from axile.server.execution.worker_backend import worker_audit
 from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from scripts.business_facts_contract import business_evidence
@@ -32,7 +34,6 @@ from tests.unit.server._business_analysis_support import _events
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
 from tests.unit.server._native_read_views import read_execution_result, read_view
-from tests.unit.server._performance_costs_oracle import project_execution
 from tests.unit.server.test_evidence_export import _seed
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "execution_evidence_contract.json"
@@ -151,7 +152,6 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
                 output=output,
                 result=worker_raw,
                 executor=object(),
-                before_account_assets=before_assets,
             )
         post_writer.assert_called_once_with(account_id=1, execution_id="contract", payload=worker_raw)
         record = persist_result(
@@ -180,19 +180,19 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
         )
         assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
-        summary = next(
-            item for item in stored_artifacts if item.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY
-        )
-        assert summary.schema_version == 2
+        assert all(item.artifact_type != ExecutionArtifactType.EXECUTION_SUMMARY for item in stored_artifacts)
+        summary = execution_result_view(result, before_assets)
         assert "raw_input" not in table("executerecord").c
         assert "raw_result" not in table("executerecord").c
+        listed = json.loads(_core.execution_records(_core.Store(str(path)), 1, 0, 10))["data"][0]
         return SimpleNamespace(
             id=record["id"],
             execution_id=record["execution_id"],
             created_at=record["created_at"],
             is_success=record["is_success"],
             result=result,
-        ), summary.content
+            listed=listed,
+        ), summary
 
 
 def build_contract_wire(case, monkeypatch):
@@ -211,7 +211,15 @@ def build_contract_wire(case, monkeypatch):
     record, summary = asyncio.run(
         _persist_contract_result(output, worker_raw, _assets(inputs["before"]).model_dump(mode="json"), monkeypatch)
     )
-    projected, _ = project_execution(record)
+    listed = {
+        key: record.listed[key]
+        for key in ("status", "task_status", "error", "outcome", "outcome_reason", "reason_code")
+        if record.listed[key] is not None
+    }
+    listed["symbol_results"] = {
+        symbol: {key: value for key, value in result.items() if value is not None}
+        for symbol, result in record.listed["symbol_results"].items()
+    }
     events = _events([record], [], [])
     result_keys = ("status", "error", "target_volume", "final_volume")
     row_keys = ("symbol", "before", "after", "target", "reached", "attained_ratio", "moved", "drift")
@@ -224,7 +232,7 @@ def build_contract_wire(case, monkeypatch):
                 "symbols": [{key: summary["reconciliation"]["symbols"][0][key] for key in row_keys}],
             },
         },
-        "list_result": projected["record"]["raw_result"],
+        "list_result": listed,
         "event_label": events[0]["tag"] if events else None,
     }
 

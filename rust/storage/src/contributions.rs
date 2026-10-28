@@ -353,7 +353,7 @@ fn write_range(
         COALESCE(z.unit_multiplier,(
             SELECT previous.unit_multiplier FROM execution_symbol_sizing previous
             JOIN executerecord pr ON pr.id=previous.record_id
-            WHERE pr.account_id=r.account_id
+            WHERE pr.account_id=r.account_id AND pr.history_visible=1 AND pr.result_staged=0
               AND previous.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
               AND previous.unit_multiplier>0
               AND (axile_time(pr.created_at)<axile_time(r.created_at)
@@ -366,7 +366,7 @@ fn write_range(
         FROM executerecord r JOIN business_trade t ON t.record_id=r.id
         LEFT JOIN execution_symbol_sizing z ON z.record_id=t.record_id AND z.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
         LEFT JOIN business_trade_conversion v ON v.record_id=t.record_id AND v.trade_path=t.path
-        WHERE r.account_id=?1 AND axile_time(r.created_at)>axile_time(?2) ORDER BY axile_time(r.created_at),r.id,t.ordinal").map_err(sql_error)?;
+        WHERE r.account_id=?1 AND r.history_visible=1 AND r.result_staged=0 AND axile_time(r.created_at)>axile_time(?2) ORDER BY axile_time(r.created_at),r.id,t.ordinal").map_err(sql_error)?;
     let mut fills = statement
         .query(params![account, first_time])
         .map_err(sql_error)?;
@@ -472,7 +472,7 @@ mod tests {
         crate::calendar::register_time_function(&c).unwrap();
         c.execute_batch("CREATE TABLE account(id INTEGER,trade_channel TEXT);
           INSERT INTO account VALUES(1,'tq');
-          CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT);
+          CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
           CREATE TABLE business_asset_binding(record_id INTEGER,path TEXT,asset_id TEXT);
           CREATE TABLE business_asset_snapshot(asset_id TEXT,currency TEXT,positions_kind TEXT,positions_count INTEGER,observation_valid INTEGER,source TEXT);
           CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER,symbol TEXT,volume REAL,direction TEXT,market_value REAL,extra TEXT,volume_state TEXT,market_value_state TEXT);
@@ -483,7 +483,7 @@ mod tests {
           ATTACH DATABASE '' AS native_stage;
           CREATE TABLE native_stage.performance_result_point(range_key TEXT,idx INTEGER,observed_at TEXT,record_id INTEGER);
           CREATE TABLE native_stage.performance_contribution(range_key TEXT,idx INTEGER,symbol TEXT,product TEXT,currency TEXT,gross_pnl REAL,fee REAL,fee_missing INTEGER,issues INTEGER,trades INTEGER);
-          INSERT INTO executerecord VALUES(1,1,'2026-01-01T09:00:00'),(2,1,'2026-01-02T09:00:00'),(3,1,'2026-01-03T09:00:00');
+          INSERT INTO executerecord(id,account_id,created_at) VALUES(1,1,'2026-01-01T09:00:00'),(2,1,'2026-01-02T09:00:00'),(3,1,'2026-01-03T09:00:00');
           INSERT INTO native_stage.performance_result_point VALUES('all',0,'2026-01-01T09:00:00',1),('all',1,'2026-01-02T09:00:00',2),('all',2,'2026-01-03T09:00:00',3);
           INSERT INTO business_asset_binding VALUES(1,'/account_assets','a'),(2,'/account_assets','b'),(3,'/account_assets','c');
           INSERT INTO business_asset_snapshot VALUES('a','CNY','array',1,1,'real'),('b','CNY','array',1,1,'real'),('c','CNY','array',0,1,'real');
@@ -568,7 +568,7 @@ mod tests {
         let c = database();
         c.execute_batch(
             "UPDATE execution_symbol_sizing SET unit_multiplier=NULL;
-          INSERT INTO executerecord VALUES(4,1,'2026-01-04T09:00:00'),(5,2,'2026-01-01T09:00:00');
+          INSERT INTO executerecord(id,account_id,created_at) VALUES(4,1,'2026-01-04T09:00:00'),(5,2,'2026-01-01T09:00:00');
           INSERT INTO execution_symbol_sizing VALUES(4,'/symbol_results/fu2601/sizing',10),
           (1,'/symbol_results/fu2605/sizing',10),(5,'/symbol_results/fu2601/sizing',10);",
         )

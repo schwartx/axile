@@ -26,6 +26,7 @@ pub(crate) mod evidence_ops;
 pub(crate) mod execution_ops;
 pub(crate) mod execution_reads;
 pub(crate) mod execution_summary;
+pub(crate) mod execution_view;
 pub mod executions;
 pub(crate) mod fact_attempts;
 pub(crate) mod fact_cost_rows;

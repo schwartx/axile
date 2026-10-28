@@ -13,19 +13,12 @@ export function activityWindowQuery(window: TimeWindow): { since: string; until:
 
 export interface LiveWindow { since: string; until: string }
 
-/** 从执行摘要附件抽出成交；没有附件就是空列表。 */
-export function tradesFromArtifacts(
-  artifacts: Array<{ artifact_type: string; content: unknown }>,
-  record: { id?: number | null; execution_id?: string | null; created_at: string },
-): CostTrade[] {
-  const summary = artifacts.find((item) => item.artifact_type === 'execution_summary')
-  if (!summary || summary.content == null || typeof summary.content !== 'object' || Array.isArray(summary.content)) return []
-  return costTrades({
-    id: record.id ?? null,
-    execution_id: record.execution_id ?? null,
-    created_at: record.created_at,
-    result: summary.content as ExecuteRecord['result'],
-  })
+/** 从冻结结果事实抽出成交。 */
+export function tradesFromResult(result: Record<string, unknown> | null,
+  record: { id?: number | null; execution_id?: string | null; created_at: string }): CostTrade[] {
+  if (!result) return []
+  return costTrades({ id: record.id ?? null, execution_id: record.execution_id ?? null,
+    created_at: record.created_at, result: result as ExecuteRecord['result'] })
 }
 
 /** 统一活动流按时间倒序分页；读到区间下界才停止，失败不返回半份汇总。 */

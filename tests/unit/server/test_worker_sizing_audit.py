@@ -10,18 +10,20 @@ from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import TargetSizingDecision
 from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import UnifiedStandardOutput
+from axile.server.execution.execution_summaries import execution_result_view
 from axile.server.execution.input_persistence import sanitize_execution_input
 from axile.server.execution.worker_backend import worker_audit
+from tests.conftest import native_store_call
 from tests.unit.server._business_facts_test_support import seed_account
 from tests.unit.server._execution_test_support import FakeExecutor, build_account, capture_worker_audit_batch
 from tests.unit.server._native_read_views import read_view
 
 
-def test_worker_target_reference_and_summary_keep_sizing(
+def test_worker_target_reference_and_derived_detail_keep_sizing(
     native_database: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """目标使用不可变引用，执行摘要保留完整的 v2 换算证据。"""
+    """目标使用不可变引用，结果事实按需组装换算证据。"""
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     seed_account(native_database)
     account = build_account()
@@ -95,9 +97,7 @@ def test_worker_target_reference_and_summary_keep_sizing(
     target = next(
         artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.TARGET_SNAPSHOT
     )
-    summary = next(
-        artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.EXECUTION_SUMMARY
-    )
+    assert all(a["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for a in artifacts)
     input_id = cast("dict[str, dict[str, object]]", standard["content"])["business_facts_ref"]["input_id"]
     persist_input.assert_called_once_with(
         account_id=account.id,
@@ -117,7 +117,11 @@ def test_worker_target_reference_and_summary_keep_sizing(
         "short_leverage": 3.0,
         "weight_precision": 0.01,
     }
-    assert summary["schema_version"] == 2
-    reconciliation = cast("dict[str, object]", cast("dict[str, object]", summary["content"])["reconciliation"])
+    detail = native_store_call(
+        native_database,
+        "execution_read",
+        {"op": "detail", "execution_id": "exec-worker-sizing", "account_id": account.id},
+    )
+    reconciliation = execution_result_view(detail["result"])["reconciliation"]
     symbols = cast("list[dict[str, object]]", reconciliation["symbols"])
     assert symbols[0]["sizing"] == symbol_result.sizing.model_dump(mode="json")

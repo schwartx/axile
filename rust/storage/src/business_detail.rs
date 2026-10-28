@@ -276,10 +276,7 @@ fn read_detail(
         collections(conn, &id, &mut result, false)?;
         collections(conn, &id, &mut result, true)?;
         merge(&mut result, asset_fragment)?;
-        merge(
-            &mut result,
-            fields(extension, &["memory", "extra", "reconciliation"])?,
-        )?;
+        merge(&mut result, fields(extension, &["memory", "extra"])?)?;
         if let Some(value) = result_input {
             result.insert("inputs".into(), value);
         }
@@ -404,10 +401,7 @@ pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
                     "malformed_value"
                 )
                 | ("business_trade", "trade_id" | "order_id" | "extra")
-                | (
-                    "execution_extension",
-                    "memory" | "extra" | "reconciliation" | "root_value"
-                )
+                | ("execution_extension", "memory" | "extra" | "root_value")
         );
         let bool_column = matches!(
             (table, *name),
