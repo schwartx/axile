@@ -3,7 +3,8 @@ import { Link } from '@/components/ui/nav'
 import { performanceJournalPath } from '@/features/account/journalSource'
 import { lossClass } from '@/features/history/costs'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { CircleHelp, X } from 'lucide-react'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { ChartTradingOverlay } from '@/features/history/ChartTradingOverlay'
 import { executionSelection } from '@/features/history/executionSelection'
 import { executionAt } from '@/features/history/tradeAnnotations'
@@ -17,7 +18,7 @@ import type { AnalysisChart, AnalysisExecutionSummary } from '@/lib/api/performa
 import { Select } from '@/components/ui/Select'
 import { OverflowText } from '@/components/ui/OverflowText'
 import { chartAxis } from '@/components/viz/performanceCanvas'
-import { amount, feeText, shanghaiTime, type CostSummary } from '@/features/history/costs'
+import { amount, feeText, shanghaiLabel, shanghaiTime, type CostSummary } from '@/features/history/costs'
 import { returnText } from '@/features/history/performance'
 import { bindingSelection, clampViewport, intervalReturn, intervalSelection, nearestIndex, navigationTimes as chartNavigationTimes, pointTime, precisePoints, timeLabel, type ChartSelection, type Viewport } from '@/features/history/chartModel'
 import { bindingAtObservation, bindingObservationSpan, CHART_HEIGHT, drawOverlay, drawScene, hasExecutionMarker, PLOT, plotRight, pointLabel, readCanvasTheme, seriesKeys, xPosition, xTime, type ChartScene } from '@/components/viz/performanceCanvas'
@@ -351,6 +352,18 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
         <span className={lossClass(costReady ? readingCost?.cost : null)}>滑点成本 {slippageCostAmount(costReady ? readingCost?.cost ?? null : null)} {displayCurrencyUnit(accountInfo?.currency)}</span>
         <span className={coverageNeedsAttention ? 'text-warn' : undefined}>{coverage}</span>
         {interval && costReady && readingCost && <><span>手续费 {feeText(readingCost)}</span>{estimated > 0 && <span className="text-warn">{estimated} 笔使用执行时间</span>}</>}
+    <Tooltip content={<p>账户收益未调整出入金 · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>} arrow>
+      <button type="button" aria-label="收益计算口径说明" className="inline-flex min-h-5 items-center gap-1.5 rounded text-xs text-ink-3 hover:text-ink-1 focus-visible:outline-accent"><CircleHelp size={15} aria-hidden="true" /><span>计算口径</span></button>
+    </Tooltip>
+      {((backtestMode === 'target' ? data.target_skips : data.skips)?.count || data.invalid_asset_count > 0 || backtestMode === 'sized' && !!data.sizing_fallback_count) ? <div role="status" className="text-xs text-warn">
+        <Tooltip content={<div className="space-y-2">
+      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p className="text-ink-2">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算：{data.sizing_fallback_ranges?.map(range => `${shanghaiLabel(range.start)} → ${shanghaiLabel(range.end)}（${range.count} 条）`).join('、')}</p>}
+      {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p className="text-ink-2">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
+      {data.invalid_asset_count > 0 && <p className="text-ink-2">{data.invalid_asset_count} 条账户资产快照不可用</p>}
+        </div>} arrow>
+          <button type="button" aria-label="查看回测与账户数据缺失详情" className="inline-flex min-h-5 items-center gap-1.5 rounded text-left focus-visible:outline-accent"><span>回测与账户数据存在缺失</span><CircleHelp size={15} aria-hidden="true" /></button>
+        </Tooltip>
+      </div> : null}
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-2">
@@ -451,7 +464,7 @@ function CanvasPerformanceChart({ data, executionIndex, daily, backtestMode, sca
     <p id="performance-keyboard-reading" className="sr-only" aria-live="polite">{pointLabel(point)}，账户 {returnText(point[keys[0]])}，回测 {returnText(point[keys[1]])}。方向键选点，回车确认，Escape 清除，加减号缩放，0 恢复范围。</p>
     {scaleMode === 'observations' && <p className="sr-only">观测序列已压缩 {closedGapDays.reduce((sum, days) => sum + days, 0)} 个完整休市日。</p>}
     <div className="flex min-h-7 flex-wrap justify-between gap-2 text-[11px] text-ink-3"><span data-testid="chart-viewport">{timeLabel(viewport.start)} → {timeLabel(viewport.end)}</span><span>上海时间 · 收益差 = 回测 − 账户</span></div>
-    <p className="text-[11px] leading-5 text-ink-3">账户收益未调整出入金 · 回测单边费率 {Number((data.settings.backtest_fee_rate * 10000).toFixed(8))} BP</p>
+
     <div id="performance-interaction-hint" className="sr-only">
       <span>Ctrl + 滚轮缩放</span><span>拖动框选区间 · 底部导航条平移 · 双击恢复时间范围</span><span>聚焦图表后：← → 查看 · Home / End 首末点 · Enter / 空格选择 · Esc 清除 · + / - 缩放 · 0 重置</span>
     </div>

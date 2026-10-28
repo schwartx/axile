@@ -227,9 +227,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
     {!data && <PerformanceChartPlaceholder accountId={accountId} controls={controls} loading={backtestBusy || !metadata && !initialError} failed={!!initialError} message={loadingMessage} />}
     {data && <div className="pb-4">
       <PerformanceChart key={displayedRange} accountId={accountId} snapshotId={snapshot?.snapshot_id} viewKey={`${accountId}:${displayedRange}`} data={data} executionIndex={snapshot!.execution_index} daily={daily} backtestMode={backtestMode} scaleMode={scale} costs={costs} intervalCost={intervalCosts.error || intervalCosts.loading ? null : intervalCosts.data?.summary ?? null} onSelect={value => { setSelectionNotice(false); setSelection(value) }} selection={selection} portfolioNames={portfolioNames} controls={controls} showExecutions={markers} />
-      {backtestMode === 'sized' && !!data.sizing_fallback_count && <p role="status" className="mt-2 text-xs text-ink-3">{data.sizing_fallback_count} 条参与回测的执行记录因缺少数量换算证据，按目标权重计算：{data.sizing_fallback_ranges?.map(range => `${shanghaiLabel(range.start)} → ${shanghaiLabel(range.end)}（${range.count} 条）`).join('、')}</p>}
-      {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p role="status" className="mt-2 text-xs text-warn">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
-      {data.invalid_asset_count > 0 && <p className="mt-2 text-xs text-warn">{data.invalid_asset_count} 条账户资产快照不可用</p>}
+
     </div>}
     {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} onSelect={setSelection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
