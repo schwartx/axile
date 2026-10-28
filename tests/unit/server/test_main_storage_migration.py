@@ -271,7 +271,7 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
         assert result["account_assets"]["total_asset"] == 103.0
 
 
-@pytest.mark.parametrize("revision", ["0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0039", "0040", "0041", "0042"])
 def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path, revision):
     path = tmp_path / "missing.db"
     with pytest.raises(_core.NativeError):

@@ -203,7 +203,7 @@ fn sizing_context(connection: &Connection, input_id: &str) -> Result<Value, Anal
 fn last_target(connection: &Connection, request: &Value) -> Result<Value, AnalysisError> {
     let input: Option<Option<String>> = connection
         .query_row(
-            "SELECT input_id FROM executerecord WHERE account_id=?1 AND is_success=1 AND history_visible=1 AND result_staged=0
+            "SELECT input_id FROM executerecord WHERE account_id=?1 AND is_success=1 AND result_staged=0
              ORDER BY id DESC LIMIT 1",
             [integer(request, "account_id")?],
             |row| row.get(0),
@@ -327,7 +327,7 @@ mod tests {
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,
-            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at TEXT,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,curr_target_state TEXT,curr_target_count INTEGER,
               sizing_context_state TEXT,long_leverage REAL,short_leverage REAL,weight_precision REAL);
             CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);").unwrap();

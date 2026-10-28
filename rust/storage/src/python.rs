@@ -336,7 +336,6 @@ business_operations! { register_business_operations, business_operation, PyAny;
     portfolio_operation => crate::portfolio_ops::portfolio_operation,
     target_operation => crate::target_ops::target_operation,
     persist_execution_state => crate::execution_ops::persist_execution_state,
-    delete_execution_history => crate::execution_ops::delete_execution_history,
     asset_snapshot_write => crate::asset_ops::asset_snapshot_write,
     asset_snapshot_latest => crate::asset_ops::asset_snapshot_latest,
     append_execution_event => crate::audit_ops::append_execution_event,

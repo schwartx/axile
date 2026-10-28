@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension};
 pub(crate) fn validate(connection: &Connection, account: i64) -> Result<(), String> {
     let invalid = connection.query_row(
         "SELECT e.id FROM executerecord e
-         WHERE e.account_id=?1 AND e.history_visible=1 AND e.result_staged=0 AND (
+         WHERE e.account_id=?1 AND e.result_staged=0 AND (
              e.facts_complete IS NOT 1
              OR (e.input_id IS NOT NULL AND NOT EXISTS (
                  SELECT 1 FROM execution_input i WHERE i.id=e.input_id AND i.account_id=e.account_id))
@@ -42,7 +42,7 @@ mod tests {
     fn incomplete_and_cross_account_inputs_are_rejected() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,facts_complete INTEGER,input_id TEXT,result_input_id TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,facts_complete INTEGER,input_id TEXT,result_input_id TEXT,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER);
              CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT,member_count INTEGER);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,tick_recorded INTEGER,sizing_recorded INTEGER);

@@ -139,7 +139,7 @@ pub fn dashboard_inputs(
         .prepare(&format!(
             "{cte},
         recent AS (SELECT r.* FROM ids JOIN executerecord r ON r.id=(
-            SELECT id FROM executerecord WHERE account_id=ids.id AND history_visible=1 AND result_staged=0 ORDER BY id DESC LIMIT 1))
+            SELECT id FROM executerecord WHERE account_id=ids.id AND result_staged=0 ORDER BY id DESC LIMIT 1))
         SELECT ids.id,b.portfolio_id,r.id,r.created_at,r.is_success,r.display_status
         FROM ids LEFT JOIN bindings b ON b.account_id=ids.id
         LEFT JOIN recent r ON r.account_id=ids.id"
@@ -275,7 +275,7 @@ mod tests {
             CREATE TABLE business_asset_snapshot(asset_id TEXT,observation_valid INTEGER,account_snapshot_id INTEGER,record_id INTEGER,input_id TEXT,path TEXT,scope TEXT);
             CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER);
             CREATE TABLE business_asset_binding(asset_id TEXT,record_id INTEGER,path TEXT);
-            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at TEXT,is_success INTEGER,display_status TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at TEXT,is_success INTEGER,display_status TEXT,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
             CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);

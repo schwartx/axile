@@ -39,7 +39,7 @@ async def _release_oracle_connections(session) -> Path:
 def install_analysis_triggers(connection):
     """验证真实迁移已安装触发器；不再从生产 Python 迁移模块补建。"""
     revision = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-    assert revision in {"0034", "0035", "0036", "0037"}, "请在打开测试事务前调用 initialize_native_database"
+    assert revision in {"0034", "0035", "0036", "0037", "0038"}, "请在打开测试事务前调用 initialize_native_database"
     names = set(connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='trigger'").scalars())
     assert {
         "analysis_snapshot_delete",

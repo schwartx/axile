@@ -139,7 +139,7 @@ fn begin_on(connection: &Connection, input: &Begin) -> Result<Value, AnalysisErr
              status='pending',last_error=NULL,synchronized_at=NULL WHERE account_id=?1
              RETURNING revision,reset_worker,
              (SELECT portfolio_id FROM portfolioaccount WHERE account_id=?1 ORDER BY id DESC LIMIT 1),
-             (SELECT created_at FROM executerecord WHERE account_id=?1 AND history_visible=1 AND result_staged=0 ORDER BY id DESC LIMIT 1)",
+             (SELECT created_at FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id DESC LIMIT 1)",
             params![input.account_id, input.now],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?,
                 row.get::<_, Option<i64>>(2)?, row.get::<_, Option<String>>(3)?)),
@@ -363,7 +363,7 @@ mod tests {
              CREATE TABLE account_settings(account_id INTEGER,connection TEXT,execution TEXT,
              schedule TEXT,notification TEXT,backtest TEXT);
              CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER);
-             CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+             CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,result_staged INTEGER DEFAULT 0);
              CREATE TABLE accountruntimesync(id INTEGER PRIMARY KEY,account_id INTEGER UNIQUE,revision INTEGER,
              status TEXT,reset_worker INTEGER,create_request_key TEXT UNIQUE,attempts INTEGER,last_error TEXT,
              requested_at TEXT,last_attempt_at TEXT,synchronized_at TEXT);

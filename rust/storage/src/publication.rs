@@ -119,7 +119,7 @@ fn events(
     {
         let mut statement = connection.prepare(
             "SELECT id,created_at,display_status,task_status,reason_code,display_error,execution_id FROM executerecord
-             WHERE account_id=?1 AND history_visible=1 AND result_staged=0 AND is_success IS NOT 1 ORDER BY id"
+             WHERE account_id=?1 AND result_staged=0 AND is_success IS NOT 1 ORDER BY id"
         ).map_err(sql_error)?;
         let mut labels = crate::fact_events::EventReader::new(connection).map_err(sql_error)?;
         let mut cursor = statement.query([account]).map_err(sql_error)?;
@@ -578,7 +578,7 @@ mod tests {
     fn scalar_fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,display_status TEXT,task_status TEXT,reason_code TEXT,display_error TEXT,execution_id TEXT,is_success INTEGER,history_visible INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,created_at TEXT,display_status TEXT,task_status TEXT,reason_code TEXT,display_error TEXT,execution_id TEXT,is_success INTEGER,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,ordinal INTEGER,node_kind TEXT,status TEXT,reason_code TEXT);
              CREATE TABLE execution_order(record_id INTEGER,path TEXT);
              CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT); CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT); CREATE TABLE execution_order_collection(record_id INTEGER,kind TEXT); CREATE TABLE business_trade_collection(record_id INTEGER,state TEXT,malformed_value TEXT);

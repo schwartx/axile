@@ -24,8 +24,8 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
     raise RuntimeError('Native extension requires analysis fact schema 40')
-if getattr(module, 'PUBLIC_HEAD', None) != '0037':
-    raise RuntimeError('Native extension requires public migration head 0037')
+if getattr(module, 'PUBLIC_HEAD', None) != '0038':
+    raise RuntimeError('Native extension requires public migration head 0038')
 required = (
     'Store', 'close_database', 'journal', 'activity_symbols', 'execution_records',
     'execution_record_detail', 'asset_snapshots',
