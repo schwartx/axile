@@ -38,8 +38,8 @@ def require_native_store(*operations: str) -> ModuleType:
     except ImportError as error:
         pytest.fail(f"需要当前源码构建的 Rust SQLite 扩展: {error}", pytrace=False)
     missing = [name for name in operations if not callable(getattr(_core, name, None))]
-    if getattr(_core, "PUBLIC_HEAD", None) != "0039":
-        missing.append("PUBLIC_HEAD=0039")
+    if getattr(_core, "PUBLIC_HEAD", None) != "0034":
+        missing.append("PUBLIC_HEAD=0034")
     if missing:
         pytest.fail(f"Rust SQLite 扩展缺少能力: {', '.join(missing)}；请先构建当前源码", pytrace=False)
     return _core
@@ -53,7 +53,19 @@ def native_store_call(path: Path | str, operation: str, request: object) -> obje
 
 
 def initialize_native_database(path: Path | str, *, revision: str = "head") -> dict:
-    """通过完整公开迁移链创建文件库，包含索引、触发器和版本记录。"""
+    """使用原生最终结构建库；0033 测试库来自冻结的已发布 DDL。"""
+    if revision == "0033":
+        from contextlib import closing
+
+        from tests.fixtures.rust_store.schema_contract import load_schema
+        from tests.sqlite_oracle import connect
+
+        source = Path(__file__).parent / "fixtures/rust_store/v0.23.1.sql"
+        with closing(connect(path)) as connection, connection:
+            assert not connection.execute("SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").fetchall()
+            load_schema(connection, source.read_text(encoding="utf-8"))
+            connection.execute("INSERT INTO alembic_version VALUES('0033')")
+        return {"public": "0033", "private": None}
     result = native_store_call(path, "migration_upgrade", {"public": revision})
     assert isinstance(result, dict), "migration_upgrade 必须返回迁移回执"
     return result

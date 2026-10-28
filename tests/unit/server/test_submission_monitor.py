@@ -1,9 +1,7 @@
 """真实 SQLite 与 HTTP 验证报撤同口径、到值当笔、重启去重和未知状态。"""
 
 import asyncio
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -17,28 +15,6 @@ from axile.server._native import _core
 from axile.server.api.routes import account_orders as routes
 from axile.server.api.routes.account_orders import router
 from tests.unit.server._submission_test_support import initialize_submission_database
-
-
-def test_migration_keeps_existing_submission_facts(tmp_path, monkeypatch):
-    from tests.conftest import native_store_call
-
-    path = str(tmp_path / "migration.db")
-    initialize_submission_database(path, monkeypatch)
-    native_store_call(path, "migration_downgrade", {"public": "0032"})
-
-    def tables():
-        with closing(sqlite3.connect(path)) as connection:
-            return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-
-    before = tables()
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("INSERT INTO order_submission VALUES ('existing',1,1,0,'{}')")
-    native_store_call(path, "migration_upgrade", {"public": "0033"})
-    assert tables() - before == {"order_submission_monitor", "order_submission_warning"}
-    native_store_call(path, "migration_downgrade", {"public": "0032"})
-    with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT submission_uid FROM order_submission").fetchone()[0] == "existing"
-    assert tables() == before
 
 
 @pytest.mark.parametrize("concurrent", [False, True])

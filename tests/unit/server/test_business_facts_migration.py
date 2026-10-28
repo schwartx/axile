@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import register_time_function
 from tests.unit.server._native_read_views import read_view
 
 
@@ -16,6 +17,7 @@ from tests.unit.server._native_read_views import read_view
 def _connect(database):
     """Close test-side SQLite handles before every Rust business operation."""
     engine = sa.create_engine(f"sqlite:///{database}", poolclass=sa.pool.NullPool)
+    sa.event.listen(engine, "connect", register_time_function)
     try:
         with engine.begin() as connection:
             yield connection
@@ -153,13 +155,13 @@ def test_analysis_publication_does_not_invalidate_business_source(fact_connectio
     connection = fact_connection
     before = connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     connection.exec_driver_sql(
-        "INSERT INTO performance_snapshot(id,account_id,source_version,logic_version,engine_version,computed_at) VALUES('publication',1,1,'1','1','now')"
+        "INSERT INTO analysis_day(account_id,range_key,day,observed_at,sizing_fallback) VALUES(1,'all','2026-01-02','2026-01-02',0)"
     )
     assert business_evidence(
         connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     ) == business_evidence(before)
     assert business_evidence(
-        connection.exec_driver_sql("SELECT COUNT(*) FROM performance_snapshot").scalar_one()
+        connection.exec_driver_sql("SELECT COUNT(*) FROM analysis_day").scalar_one()
     ) == business_evidence(1)
 
 
@@ -421,7 +423,12 @@ def _summary_fixture(connection, metadata, now, *, captured=None):
         "trades": [],
         "sizing": {"target_quantity": 1},
     }
-    result = {"inputs": {"curr_target": {"A": 1}}, "symbol_results": {"A": symbol}}
+    result = {
+        "status": "SUCCEEDED",
+        "success": True,
+        "inputs": {"curr_target": {"A": 1}},
+        "symbol_results": {"A": symbol},
+    }
     if captured is not None:
         result["extra"] = {"server_notification_context": captured}
     connection.execute(
@@ -444,22 +451,22 @@ def _summary_fixture(connection, metadata, now, *, captured=None):
     return result, summary
 
 
-def test_migration_keeps_summary_body_independent_through_downgrade(legacy_connection):
+def test_derivable_summary_is_removed_without_losing_execution_facts(legacy_connection):
     database, metadata, now = legacy_connection
     with _connect(database) as connection:
-        _result, summary = _summary_fixture(connection, metadata, now)
+        result, _summary = _summary_fixture(connection, metadata, now)
     _upgrade(database)
     with _connect(database) as connection:
-        compact = json.loads(connection.exec_driver_sql("SELECT content FROM execution_artifact").scalar_one())
-        assert "business_facts_ref" not in compact
-        assert compact == summary
-        connection.exec_driver_sql("UPDATE execution_order SET price=2 WHERE record_id=1")
-        connection.exec_driver_sql("UPDATE executerecord SET display_error='display-only' WHERE id=1")
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM execution_artifact").scalar_one() == 0
+    actual = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    assert business_evidence(actual) == business_evidence(result)
     _downgrade(database)
     with _connect(database) as connection:
-        restored = json.loads(connection.exec_driver_sql("SELECT content FROM execution_artifact").scalar_one())
-        assert business_evidence(restored) == business_evidence(summary)
-        assert set(restored["symbol_results"]["A"]) - {"availability"} == set(summary["symbol_results"]["A"])
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM execution_artifact").scalar_one() == 0
+        restored = json.loads(
+            connection.exec_driver_sql("SELECT raw_result FROM executerecord WHERE id=1").scalar_one()
+        )
+        assert business_evidence(restored) == business_evidence(result)
 
 
 def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_connection):

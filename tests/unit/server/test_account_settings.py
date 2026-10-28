@@ -1,6 +1,5 @@
 """账户拆分的持久化、迁移与通知成功摘要契约。"""
 
-import json
 import sqlite3
 from contextlib import closing
 
@@ -10,7 +9,7 @@ from pydantic import ValidationError
 from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
 from axile.server.execution import notification_state
-from tests.conftest import initialize_native_database, native_store_call
+from tests.conftest import native_store_call
 from tests.unit.server._execution_test_support import insert_account
 from tests.unit.server._native_read_views import account_view
 
@@ -67,45 +66,6 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
     with closing(sqlite3.connect(native_database)) as connection:
         assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
     assert account.model_dump()["algorithm"] == account_data()["algorithm"]
-
-
-def test_migration_preserves_all_settings_and_binding_rows(tmp_path):
-    path = tmp_path / "settings-migration.db"
-    initialize_native_database(path, revision="0019")
-    values = Account(**account_data()).model_dump(mode="json")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.row_factory = sqlite3.Row
-        columns = {row[1]: row[2] for row in connection.execute("PRAGMA table_info(account)")}
-        json_fields = {name for name, kind in columns.items() if kind == "JSON"}
-        values = {
-            key: json.dumps(value) if key in json_fields else value for key, value in values.items() if key in columns
-        }
-        connection.execute(
-            f"INSERT INTO account ({','.join(values)}) VALUES ({','.join('?' for _ in values)})", list(values.values())
-        )
-        connection.execute(
-            "INSERT INTO portfolioaccount (account_id, portfolio_id, created_at) VALUES (1, NULL, '2026-09-30')"
-        )
-        before = dict(connection.execute("SELECT * FROM account").fetchone())
-    initialize_native_database(path, revision="0020")
-    with closing(sqlite3.connect(path)) as connection:
-        connection.row_factory = sqlite3.Row
-        stored = connection.execute("SELECT * FROM account_settings").fetchone()
-        assert json.loads(stored["connection"]) == json.loads(before["account_config"])
-        assert (
-            json.loads(stored["notification"])["execution_notification_code"] == before["execution_notification_code"]
-        )
-        assert connection.execute("SELECT count(*) FROM portfolioaccount").fetchone()[0] == 1
-        assert "algorithm" not in {row[1] for row in connection.execute("PRAGMA table_info(account)")}
-    native_store_call(path, "migration_downgrade", {"public": "0019"})
-    with closing(sqlite3.connect(path)) as connection:
-        connection.row_factory = sqlite3.Row
-        restored = dict(connection.execute("SELECT * FROM account").fetchone())
-        for row in (before, restored):
-            for field in json_fields & row.keys():
-                row[field] = json.loads(row[field]) if row[field] is not None else None
-        assert restored == before
-        assert connection.execute("SELECT count(*) FROM portfolioaccount").fetchone()[0] == 1
 
 
 def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch, native_database):
@@ -166,26 +126,3 @@ def test_notification_result_preserves_success_and_ignores_older_results(monkeyp
     assert state.last_attempt_ok is False
     assert state.last_attempt_error == "timeout"
     notification_state.record_notification_result(999, "missing", "2026-09-30T12:00:00", True, None)
-
-
-def test_notification_result_migration_preserves_legacy_success(tmp_path):
-    path = tmp_path / "notification-migration.db"
-    initialize_native_database(path, revision="0020")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(
-            "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (1, 'test', '期货', 'ctp', 0, 'now', 'now')"
-        )
-        connection.execute("INSERT INTO account_notification_state VALUES (1, '2026-09-30T10:00:00', 'old')")
-    initialize_native_database(path, revision="0021")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(
-            "INSERT INTO account (id, name, market, trade_channel, brokerage, created_at, updated_at) VALUES (2, 'test2', '期货', 'ctp', 0, 'now', 'now')"
-        )
-        connection.execute("INSERT INTO account_notification_state (account_id, last_attempt_ok) VALUES (2, 0)")
-        assert (
-            connection.execute("SELECT execution_id FROM account_notification_state WHERE account_id = 1").fetchone()[0]
-            == "old"
-        )
-    native_store_call(path, "migration_downgrade", {"public": "0020"})
-    with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT count(*) FROM account_notification_state").fetchone()[0] == 1

@@ -1,17 +1,134 @@
+//! 私有错误码修补与字段恢复；调用方提供码表和事务。
+
 use std::collections::BTreeSet;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 
-use super::*;
+use crate::error::AnalysisError;
 
-pub(crate) fn public_codes() -> Value {
-    json!({
-        "TQ":{"CLOSED":"非交易时段","CALENDAR_UNAVAILABLE":"交易日历不可用","QUOTE_TRADING_TIME_UNAVAILABLE":"无法获取品种交易时段"},
-        "CTP":{"CTP.SESSION.CLOSED":"非交易时段","CTP.SESSION.NO_METADATA":"合约资料不可用，交易时段尚未确认","CTP.SESSION.NO_SESSION_TABLE":"未配置合约交易时段","CTP.SESSION.CALENDAR_UNAVAILABLE":"交易日历不可用，交易时段尚未确认","3":"CTP 登录校验失败","31":"资金不足"},
-        "GM":{"gm_authentication_error":"GM token 无效或已失效","1000":"GM token 无效或已失效"}
+type Result<T> = std::result::Result<T, AnalysisError>;
+
+fn error(message: impl Into<String>) -> AnalysisError {
+    AnalysisError::new("MIGRATION_ERROR", message)
+}
+
+fn db(error: rusqlite::Error) -> AnalysisError {
+    self::error(error.to_string())
+}
+
+fn sql(connection: &Connection, statement: &str) -> Result<()> {
+    connection.execute_batch(statement).map_err(db)
+}
+
+fn query_rows<T>(
+    connection: &Connection,
+    statement: &str,
+    parameters: impl rusqlite::Params,
+    map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>> {
+    let mut query = connection.prepare(statement).map_err(db)?;
+    let rows = query.query_map(parameters, map).map_err(db)?;
+    rows.collect::<std::result::Result<_, _>>().map_err(db)
+}
+
+fn identifier(value: &str) -> Result<String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Err(error("invalid migration identifier"));
+    }
+    Ok(format!("\"{value}\""))
+}
+
+fn table_exists(connection: &Connection, name: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(db)
+}
+
+fn value(row: &Row<'_>, column: &str) -> rusqlite::Result<Value> {
+    Ok(match row.get::<_, SqlValue>(column)? {
+        SqlValue::Null => Value::Null,
+        SqlValue::Integer(value) => value.into(),
+        SqlValue::Real(value) => serde_json::json!(value),
+        SqlValue::Text(value) => Value::String(value),
+        SqlValue::Blob(_) => Value::Null,
     })
+}
+
+fn decode(value: &Value) -> Result<Value> {
+    match value {
+        Value::String(value) => crate::json_codec::parse(value).map_err(error),
+        _ => Ok(value.clone()),
+    }
+}
+
+fn document(value: &Value) -> Option<Value> {
+    decode(value).ok().filter(Value::is_object)
+}
+
+fn encoded(value: &Value) -> Result<String> {
+    serde_json::to_string(value).map_err(|err| error(err.to_string()))
+}
+
+fn same_json(left: &Value, right: &Value) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            if left.is_f64() || right.is_f64() {
+                let (float, integer) = if left.is_f64() {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
+                let float = float.as_f64().unwrap();
+                if let Some(integer) = integer.as_i64() {
+                    float >= i64::MIN as f64
+                        && float < -(i64::MIN as f64)
+                        && float.fract() == 0.0
+                        && float as i64 == integer
+                } else if let Some(integer) = integer.as_u64() {
+                    float >= 0.0
+                        && float < 18_446_744_073_709_551_616.0
+                        && float.fract() == 0.0
+                        && float as u64 == integer
+                } else {
+                    left.as_f64() == right.as_f64()
+                }
+            } else {
+                false
+            }
+        }
+        (Value::Bool(left), Value::Number(right)) | (Value::Number(right), Value::Bool(left)) => {
+            right.as_f64() == Some(if *left { 1.0 } else { 0.0 })
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| same_json(left, right))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .all(|(key, left)| right.get(key).is_some_and(|right| same_json(left, right)))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -140,11 +257,7 @@ fn message(
     }
     if let Some(reason) = text(document.get("outcome_reason")) {
         if !technical(document.get("outcome_reason")) && Some(reason) != original {
-            return if codes == &public_codes() {
-                Some((reason.into(), "outcome_reason".into()))
-            } else {
-                None
-            };
+            return None;
         }
     }
     let channel = channel(
@@ -346,7 +459,7 @@ pub(crate) fn path_set(
 }
 
 pub(crate) fn invalidate(connection: &Connection, execution_id: Option<&str>) -> Result<()> {
-    connection.execute(&format!("INSERT INTO account_analysis(account_id,source_version) SELECT DISTINCT account_id,1 FROM execution_event WHERE execution_id=?1 AND account_id IN(SELECT id FROM account) UNION SELECT account_id,1 FROM executerecord WHERE execution_id=?1 AND account_id IN(SELECT id FROM account) {}",super::early::ANALYSIS_UPSERT),[execution_id]).map_err(db)?;
+    connection.execute("INSERT INTO account_analysis(account_id,source_version) SELECT DISTINCT account_id,1 FROM execution_event WHERE execution_id=?1 AND account_id IN(SELECT id FROM account) UNION SELECT account_id,1 FROM executerecord WHERE execution_id=?1 AND account_id IN(SELECT id FROM account) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL",[execution_id]).map_err(db)?;
     Ok(())
 }
 
@@ -367,7 +480,7 @@ fn evidence(connection: &Connection, execution_id: Option<&str>) -> Result<Vec<V
     let mut output = Vec::new();
     for query in ["SELECT raw_input FROM executerecord WHERE execution_id=?1","SELECT raw_result FROM executerecord WHERE execution_id=?1","SELECT content FROM execution_artifact WHERE execution_id=?1 AND artifact_type IN('STANDARD_INPUT','EXECUTION_SUMMARY')"] {
         for row in query_rows(connection,query,[execution],|row|row.get::<_,Option<String>>(0))? {
-            output.push(row.and_then(|value|serde_json::from_str(&value).ok()).unwrap_or_default());
+            output.push(row.and_then(|value|crate::json_codec::parse(&value).ok()).unwrap_or_default());
         }
     }
     for channel in query_rows(
@@ -601,25 +714,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_patch_requires_channel_and_code_agreement_and_updates_mirror() {
-        let raw = json!({"channel":"CTP","symbol_results":{"ag":{"error":"3","native_code":3,"error_type":"CtpRequestError"}},"reconciliation":{"symbols":[{"symbol":"ag","error":"3"}]}});
-        let (after, changes) = patch_document(&raw, &[], &public_codes()).unwrap();
-        assert_eq!(after["symbol_results"]["ag"]["error"], "CTP 登录校验失败");
+    fn raw_patch_and_restore_preserve_historical_numbers_and_channel_evidence() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,execution_id TEXT,account_id INTEGER,created_at TEXT,raw_input JSON,raw_result JSON);
+             CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT,artifact_type TEXT,content JSON,created_at TEXT);
+             CREATE TABLE execution_event(execution_id TEXT,channel TEXT);"
+        ).unwrap();
+        let source = r#"{"error":"-2019","metrics":[NaN,Infinity,-Infinity,1e400],"huge":123456789012345678901234567890,"literal":{"invalid_number":"nan"},"text":"NaN Infinity"}"#;
+        let evidence = r#"{"channel_type":"BINANCE","metrics":[NaN,Infinity]}"#;
+        connection
+            .execute(
+                "INSERT INTO executerecord VALUES(1,'frozen',1,'date','{}',?1)",
+                [source],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO execution_artifact VALUES(1,'frozen','STANDARD_INPUT',?1,'date')",
+                [evidence],
+            )
+            .unwrap();
+        let read = || {
+            let text: String = connection
+                .query_row(
+                    "SELECT raw_result FROM executerecord WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            crate::json_codec::parse(&text).unwrap()
+        };
+        let original = read();
+        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
         assert_eq!(
-            after["reconciliation"]["symbols"][0]["error"],
-            "CTP 登录校验失败"
+            patch_errors(&connection, "private_error_backup", &codes, false).unwrap()["fields"],
+            2
         );
+        let patched = read();
+        assert_eq!(patched["error"], "保证金不足");
+        assert_eq!(patched["technical_detail"], "-2019");
+        for key in ["metrics", "huge", "literal", "text"] {
+            assert_eq!(patched[key], original[key]);
+        }
+        restore_errors(&connection, "private_error_backup", true).unwrap();
+        assert_eq!(read(), patched);
+        restore_errors(&connection, "private_error_backup", false).unwrap();
+        assert_eq!(read(), original);
+        assert!(connection
+            .prepare("SELECT * FROM private_error_backup")
+            .is_err());
+    }
+
+    #[test]
+    fn invalidation_uses_fields_shared_by_0033_and_incremental_analysis() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE account(id INTEGER PRIMARY KEY);
+             CREATE TABLE account_analysis(account_id INTEGER PRIMARY KEY,source_version INTEGER,requested INTEGER,failures INTEGER,retry_at REAL,error TEXT);
+             CREATE TABLE execution_event(execution_id TEXT,account_id INTEGER);
+             CREATE TABLE executerecord(execution_id TEXT,account_id INTEGER);
+             INSERT INTO account VALUES(1);
+             INSERT INTO account_analysis VALUES(1,4,0,2,8,'failure');
+             INSERT INTO executerecord VALUES('patched',1);"
+        ).unwrap();
+        invalidate(&connection, Some("patched")).unwrap();
+        let state = connection.query_row(
+            "SELECT source_version,requested,failures,retry_at,error FROM account_analysis WHERE account_id=1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?,row.get::<_, i64>(2)?,row.get::<_, f64>(3)?,row.get::<_, Option<String>>(4)?)),
+        ).unwrap();
+        assert_eq!(state, (5, 1, 0, 0.0, None));
+    }
+
+    #[test]
+    fn private_patch_requires_channel_agreement_and_updates_mirror() {
+        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
+        let raw = json!({"channel":"BINANCE","symbol_results":{"ag":{"error":"-2019"}},"reconciliation":{"symbols":[{"symbol":"ag","error":"-2019"}]}});
+        let (after, changes) = patch_document(&raw, &[], &codes).unwrap();
+        assert_eq!(after["symbol_results"]["ag"]["error"], "保证金不足");
+        assert_eq!(after["reconciliation"]["symbols"][0]["error"], "保证金不足");
         assert_eq!(changes.len(), 3);
         let (unchanged, changes) =
-            patch_document(&raw, &[json!({"channel":"TQ"})], &public_codes()).unwrap();
+            patch_document(&raw, &[json!({"channel":"TQ"})], &codes).unwrap();
         assert_eq!(unchanged, raw);
         assert!(changes.is_empty());
     }
 
     #[test]
-    fn patch_restore_roundtrip_preserves_absence_and_null() {
-        let raw = json!({"channel":"CTP","reason_code":"CTP.SESSION.CLOSED","error":null});
-        let (mut after, changes) = patch_document(&raw, &[], &public_codes()).unwrap();
+    fn patch_restore_roundtrip_preserves_absence_null_and_business_reason() {
+        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
+        let raw = json!({"channel":"BINANCE","reason_code":"-2019","error":null});
+        let (mut after, changes) = patch_document(&raw, &[], &codes).unwrap();
         for change in changes.iter().rev() {
             assert_eq!(
                 path_get(&after, &change.path),
@@ -634,8 +820,7 @@ mod tests {
             .unwrap();
         }
         assert_eq!(after, raw);
-        let private = json!({"CTP":{"CTP.SESSION.CLOSED":"私有说明"}});
-        let raw = json!({"error":"RuntimeError","outcome_reason":"保留原业务说明"});
-        assert!(patch_document(&raw, &[], &private).unwrap().1.is_empty());
+        let raw = json!({"channel":"BINANCE","error":"-2019","outcome_reason":"保留原业务说明"});
+        assert!(patch_document(&raw, &[], &codes).unwrap().1.is_empty());
     }
 }

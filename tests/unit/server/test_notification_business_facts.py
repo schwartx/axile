@@ -205,7 +205,7 @@ def test_rebuild_keeps_explicit_errors_and_native_order_time(monkeypatch, native
 
     assert context["execution"]["error"] == error
     assert context["symbols"][0]["error"] == error
-    assert ("update_time" in context["orders"][0]) == (time_fields.get("update_time") is not None)
-    if time_fields.get("update_time") is not None:
+    assert ("update_time" in context["orders"][0]) == ("update_time" in time_fields)
+    if "update_time" in time_fields:
         assert context["orders"][0]["update_time"] == time_fields["update_time"]
     assert payload == original

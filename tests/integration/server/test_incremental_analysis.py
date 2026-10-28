@@ -213,11 +213,11 @@ def test_facts_read_on_demand_versions_and_filter_cursors(account):
         query(account, "detail", record_id=record["id"])
 
 
-def test_upgrade_removes_nineteen_tables_and_keeps_facts(tmp_path):
+def test_released_upgrade_replaces_caches_and_keeps_facts(tmp_path):
     path = tmp_path / "upgrade.db"
-    initialize_native_database(path, revision="0038")
+    initialize_native_database(path, revision="0033")
     old = {r[0] for r in sql(path, "SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'performance_%'")}
-    assert len(old) == 19
+    assert len(old) == 3
     sql(
         path,
         "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'keep','期货','tq','','2026-01-01','2026-01-01')",
@@ -230,7 +230,7 @@ def test_upgrade_removes_nineteen_tables_and_keeps_facts(tmp_path):
     assert not {"current_snapshot", "previous_snapshot", "published_version"} & {
         r[1] for r in sql(path, "PRAGMA table_info(account_analysis)")
     }
-    native_store_call(path, "migration_downgrade", {"public": "0038"})
+    native_store_call(path, "migration_downgrade", {"public": "0033"})
     assert old <= {r[0] for r in sql(path, "SELECT name FROM sqlite_schema WHERE type='table'")}
     initialize_native_database(path)
     assert sql(path, "PRAGMA foreign_key_check") == []

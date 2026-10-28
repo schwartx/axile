@@ -914,6 +914,18 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     guards::install_business(connection)
 }
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
+    if !rows(
+        connection,
+        "SELECT id FROM executerecord WHERE result_staged=1 LIMIT 1",
+        [],
+    )?
+    .is_empty()
+    {
+        return Err(error(
+            "Cannot downgrade 0034: staged worker results cannot be downgraded",
+        ));
+    }
+
     if !rows(connection,"SELECT id FROM execution_input AS i WHERE NOT EXISTS(SELECT 1 FROM executerecord WHERE input_id=i.id OR result_input_id=i.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.input_id')=i.id) AND NOT EXISTS(SELECT 1 FROM execution_event WHERE json_valid(details) AND json_extract(details,'$.decision.business_facts_ref.input_id')=i.id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0034: unrepresented pending execution input; retain this database or restore its backup"));}
     if !rows(connection,"SELECT asset_id FROM business_asset_snapshot AS a WHERE NOT EXISTS(SELECT 1 FROM business_asset_binding WHERE asset_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id=a.asset_id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE json_valid(content) AND json_extract(content,'$.business_facts_ref.asset_id')=a.asset_id) LIMIT 1",[])?.is_empty(){return Err(error("Cannot downgrade 0034: unrepresented pending asset evidence; retain this database or restore its backup"));}
     Ok(())

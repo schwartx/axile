@@ -8,24 +8,20 @@ use serde_json::{json, Value};
 
 use crate::error::AnalysisError;
 
-mod contributions;
+mod error_patch;
 mod execution_views;
-mod legacy;
-mod native_analysis;
 mod private;
-mod query_indexes;
-mod remove_history_hiding;
 mod structured;
 
-pub const PUBLIC_HEAD: &str = "0039";
+pub const PUBLIC_HEAD: &str = "0034";
 pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
 const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
 const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
-const LEGACY_HEAD: u32 = 33;
-const PUBLIC_HEAD_NUMBER: u32 = 39;
+const BASELINE_REVISION: u32 = 33;
+const PUBLIC_HEAD_NUMBER: u32 = 34;
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("MIGRATION_VALUE", message)
@@ -91,12 +87,11 @@ impl<'a> Policy<'a> {
         let public = target_string(request, "public", explicit)?;
         let public = match public {
             "head" => PUBLIC_HEAD_NUMBER,
-            "base" if self.codes.is_none() => 0,
-            revision => revision_number(revision).ok_or_else(|| self.target_error())?,
+
+            revision => revision_number(revision)
+                .filter(|n| matches!(*n, BASELINE_REVISION | PUBLIC_HEAD_NUMBER))
+                .ok_or_else(|| self.target_error())?,
         };
-        if self.codes.is_some() && public < 12 {
-            return Err(self.target_error());
-        }
         let private = if self.codes.is_some() {
             Some(match target_string(request, "private", explicit)? {
                 "head" | PRIVATE_HEAD => true,
@@ -109,17 +104,14 @@ impl<'a> Policy<'a> {
             }
             None
         };
-        if private == Some(true) && public < 13 {
-            return Err(invalid("axon_0001 requires public 0013 or later"));
-        }
         Ok(Targets { public, private })
     }
 
     fn target_error(&self) -> AnalysisError {
         if self.codes.is_some() {
-            invalid("supported targets: public 0012 through 0039, private base/axon_0001")
+            invalid("supported targets: public 0033/0034, private base/axon_0001")
         } else {
-            invalid("supported targets: public base/0001 through 0039")
+            invalid("supported targets: public 0033/0034")
         }
     }
 }
@@ -145,7 +137,7 @@ fn revision_number(revision: &str) -> Option<u32> {
         return None;
     }
     let number = revision.parse::<u32>().ok()?;
-    (1..=PUBLIC_HEAD_NUMBER).contains(&number).then_some(number)
+    (1..=9999).contains(&number).then_some(number)
 }
 
 fn database_path(path: &str) -> Result<&Path, AnalysisError> {
@@ -259,9 +251,34 @@ fn state(connection: Option<&Connection>) -> Result<State, AnalysisError> {
         return Ok(State::default());
     };
     let public = match version(connection, PUBLIC_VERSION_TABLE, "public")? {
-        None => 0,
+        None => {
+            let populated: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            if populated {
+                return Err(invalid("unversioned nonempty database cannot be migrated"));
+            }
+            0
+        }
         Some(revision) => {
-            revision_number(&revision).ok_or_else(|| invalid("unknown database revision"))?
+            let number =
+                revision_number(&revision).ok_or_else(|| invalid("unknown database revision"))?;
+            if number < BASELINE_REVISION {
+                return Err(invalid(format!("当前数据库版本为 {revision}，本版本仅支持从 0033 升级。请先安装 Axile v0.23.1 并完成数据库升级，再安装本版本。")));
+            }
+            if number > PUBLIC_HEAD_NUMBER {
+                return Err(invalid(format!(
+                    "unsupported development database revision: {revision}"
+                )));
+            }
+            if number == PUBLIC_HEAD_NUMBER {
+                validate_final_schema(connection)?;
+            }
+            number
         }
     };
     let private = match version(connection, PRIVATE_VERSION_TABLE, "private")?.as_deref() {
@@ -269,8 +286,8 @@ fn state(connection: Option<&Connection>) -> Result<State, AnalysisError> {
         Some(PRIVATE_HEAD) => true,
         _ => return Err(invalid("unknown database revision")),
     };
-    if private && public < 13 {
-        return Err(invalid("axon_0001 requires public 0013 or later"));
+    if private && public < BASELINE_REVISION {
+        return Err(invalid("axon_0001 requires public 0033 or later"));
     }
     Ok(State { public, private })
 }
@@ -312,40 +329,46 @@ fn stamp(
     Ok(())
 }
 
+fn validate_final_schema(connection: &Connection) -> Result<(), AnalysisError> {
+    let final_layout: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='analysis_state')
+        AND EXISTS(SELECT 1 FROM pragma_table_info('account_analysis') WHERE name='dirty_record')
+        AND EXISTS(SELECT 1 FROM pragma_table_info('executerecord') WHERE name='result_staged')
+        AND NOT EXISTS(SELECT 1 FROM pragma_table_info('executerecord') WHERE name IN ('raw_result','history_visible'))
+        AND NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='performance_snapshot')",
+        [], |row| row.get(0),
+    ).map_err(sql)?;
+    if !final_layout {
+        return Err(invalid("database revision 0034 has an unsupported development schema; use the final 0034 schema or a published 0033 database"));
+    }
+    Ok(())
+}
+
 fn move_public(
     connection: &Connection,
     current: &mut State,
     target: u32,
     upgrade: bool,
 ) -> Result<(), AnalysisError> {
-    while current.public != target {
-        let revision = if upgrade {
-            current.public + 1
-        } else {
-            current.public
-        };
-        match (upgrade, revision) {
-            (true, 1..=33) => legacy::upgrade(connection, revision)?,
-            (true, 34) => structured::upgrade(connection)?,
-            (true, 35) => query_indexes::upgrade(connection)?,
-            (true, 36) => contributions::upgrade(connection)?,
-            (true, 37) => execution_views::upgrade(connection)?,
-            (true, 38) => remove_history_hiding::upgrade(connection)?,
-            (true, 39) => native_analysis::upgrade(connection)?,
-            (false, 1..=33) => legacy::downgrade(connection, revision)?,
-            (false, 34) => structured::downgrade(connection)?,
-            (false, 35) => query_indexes::downgrade(connection)?,
-            (false, 39) => native_analysis::downgrade(connection)?,
-            (false, 38) => remove_history_hiding::downgrade(connection)?,
-            (false, 37) => execution_views::downgrade(connection)?,
-            (false, 36) => contributions::downgrade(connection)?,
-            _ => return Err(invalid(format!("unsupported public revision {revision}"))),
-        }
-        current.public = if upgrade { revision } else { revision - 1 };
-        let revision = (current.public != 0).then(|| format!("{:04}", current.public));
-        stamp(connection, PUBLIC_VERSION_TABLE, revision.as_deref())?;
+    if current.public == target {
+        return Ok(());
     }
-    Ok(())
+    match (upgrade, current.public, target) {
+        (true, 0, PUBLIC_HEAD_NUMBER) => structured::create(connection)?,
+        (true, BASELINE_REVISION, PUBLIC_HEAD_NUMBER) => structured::upgrade(connection)?,
+        (false, PUBLIC_HEAD_NUMBER, BASELINE_REVISION) => structured::downgrade(connection)?,
+        _ => {
+            return Err(invalid(
+                "supported migration paths: empty/0033 to 0034, 0034 to 0033",
+            ))
+        }
+    }
+    current.public = target;
+    stamp(
+        connection,
+        PUBLIC_VERSION_TABLE,
+        Some(&format!("{target:04}")),
+    )
 }
 
 fn state_json(current: State) -> Value {
@@ -357,11 +380,7 @@ fn state_json(current: State) -> Value {
 
 fn result_json(current: State, targets: Targets) -> Value {
     let mut result = state_json(current);
-    result["public_target"] = json!(if targets.public == 0 {
-        "base".to_owned()
-    } else {
-        format!("{:04}", targets.public)
-    });
+    result["public_target"] = json!(format!("{:04}", targets.public));
     result["private_target"] = json!(targets.private.map(|installed| {
         if installed {
             PRIVATE_HEAD
@@ -394,7 +413,6 @@ pub fn migration_check(path: &str, request: &Value) -> Result<Value, AnalysisErr
     let targets = policy.targets(request, false)?;
     read_scope(path, |connection| {
         let current = state(connection)?;
-        validate_dependency(current, targets)?;
         let mut result = result_json(current, targets);
         result["public_fields"] = json!(0);
         result["private_fields"] = json!(0);
@@ -407,13 +425,6 @@ pub fn migration_check(path: &str, request: &Value) -> Result<Value, AnalysisErr
     })
 }
 
-fn validate_dependency(current: State, targets: Targets) -> Result<(), AnalysisError> {
-    if targets.private.unwrap_or(current.private) && targets.public < 13 {
-        return Err(invalid("axon_0001 requires public 0013 or later"));
-    }
-    Ok(())
-}
-
 fn scan(
     connection: &Connection,
     current: State,
@@ -421,24 +432,11 @@ fn scan(
     policy: &Policy<'_>,
     result: &mut Value,
 ) -> Result<(), AnalysisError> {
-    if current.public > LEGACY_HEAD && targets.public <= LEGACY_HEAD {
+    if current.public > BASELINE_REVISION && targets.public <= BASELINE_REVISION {
         structured::preflight_downgrade(connection)?;
     }
     if current.private && targets.private == Some(false) {
         private::restore_errors(connection, PRIVATE_BACKUP_TABLE, true)?;
-    }
-    if current.public >= 13 && targets.public < 13 {
-        private::restore_errors(connection, PUBLIC_BACKUP_TABLE, true)?;
-    }
-    if current.public == 12 && targets.public >= 13 {
-        let patch = legacy::patch_errors(
-            connection,
-            PUBLIC_BACKUP_TABLE,
-            &legacy::public_codes(),
-            true,
-        )?;
-        result["public_fields"] = patch["fields"].clone();
-        result["public_scan"] = patch["scan"].clone();
     }
     if !current.private && targets.private == Some(true) {
         let patch = private::patch_errors(
@@ -457,40 +455,43 @@ fn scan(
 pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let policy = Policy::parse(request)?;
     let targets = policy.targets(request, false)?;
+    read_scope(path, |connection| {
+        let current = state(connection)?;
+        if current.public == 0 && targets.public != PUBLIC_HEAD_NUMBER {
+            return Err(invalid("empty databases can only be initialized at 0034"));
+        }
+        if current.public == BASELINE_REVISION && targets.public == PUBLIC_HEAD_NUMBER {
+            structured::check_analysis_dependencies(
+                connection.expect("existing baseline"),
+                current.public,
+            )?;
+        }
+        Ok(())
+    })?;
     write_scope(path, true, |connection| {
         let mut current = state(Some(connection))?;
-        validate_dependency(current, targets)?;
         if targets.public < current.public || current.private && targets.private == Some(false) {
             return Err(invalid("upgrade cannot downgrade a chain"));
         }
         // 写锁已阻止其他写入；独立读连接备份尚未修改的已提交数据与 WAL。
-        let crosses_structured = current.public <= LEGACY_HEAD && targets.public > LEGACY_HEAD;
-        let crosses_views = current.public < 37 && targets.public >= 37;
-        let backup = if current.public > 0 && (crosses_structured || crosses_views) {
+        let crosses_structured =
+            current.public == BASELINE_REVISION && targets.public == PUBLIC_HEAD_NUMBER;
+        let backup = if current.public > 0 && crosses_structured {
             let database = database_path(path)?;
             let backup = crate::maintenance_ops::backup_path(
                 database,
                 &json!({"backup_suffix":std::process::id().to_string()}),
-                if crosses_structured {
-                    "before-0034"
-                } else {
-                    "before-0037"
-                },
+                "before-0034",
             )?;
             crate::maintenance_ops::backup(database, &backup)?;
             Some(backup)
         } else {
             None
         };
+        if current.public == 0 {
+            move_public(connection, &mut current, targets.public, true)?;
+        }
         if !current.private && targets.private == Some(true) {
-            if current.public <= LEGACY_HEAD {
-                move_public(
-                    connection,
-                    &mut current,
-                    targets.public.min(LEGACY_HEAD),
-                    true,
-                )?;
-            }
             private::patch_errors(
                 connection,
                 PRIVATE_BACKUP_TABLE,
@@ -514,13 +515,22 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
 pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let policy = Policy::parse(request)?;
     let targets = policy.targets(request, true)?;
+    read_scope(path, |connection| {
+        let current = state(connection)?;
+        if current.public == PUBLIC_HEAD_NUMBER && targets.public == BASELINE_REVISION {
+            structured::check_analysis_dependencies(
+                connection.expect("existing final schema"),
+                current.public,
+            )?;
+        }
+        Ok(())
+    })?;
     write_scope(path, false, |connection| {
         let mut current = state(Some(connection))?;
-        validate_dependency(current, targets)?;
-        let minimum = if policy.codes.is_some() { 12 } else { 1 };
+        let minimum = BASELINE_REVISION;
         if current.public < minimum {
             return Err(invalid(if policy.codes.is_some() {
-                "downgrade requires public revision 0012 through 0039"
+                "downgrade requires public revision 0033/0034"
             } else {
                 "downgrade requires an existing public revision"
             }));
@@ -528,8 +538,8 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         if targets.public > current.public || !current.private && targets.private == Some(true) {
             return Err(invalid("downgrade cannot upgrade a chain"));
         }
-        if current.public > LEGACY_HEAD && targets.public <= LEGACY_HEAD {
-            move_public(connection, &mut current, LEGACY_HEAD, false)?;
+        if current.public > BASELINE_REVISION && targets.public <= BASELINE_REVISION {
+            move_public(connection, &mut current, BASELINE_REVISION, false)?;
         }
         if current.private && targets.private == Some(false) {
             private::restore_errors(connection, PRIVATE_BACKUP_TABLE, false)?;
@@ -601,31 +611,15 @@ mod tests {
     }
 
     #[test]
-    fn public_initial_revision_roundtrips_to_base_without_a_private_chain() {
-        let path = DatabasePath::new();
-        let upgraded = migration_upgrade(path.as_str(), &json!({"public": "0001"})).unwrap();
-        assert_eq!(upgraded["public"], "0001");
-        assert_eq!(upgraded["private"], Value::Null);
-        let mode: String = Connection::open(path.as_str())
-            .unwrap()
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, "wal");
-        let downgraded = migration_downgrade(path.as_str(), &json!({"public": "base"})).unwrap();
-        assert_eq!(downgraded["public"], Value::Null);
-        let connection = Connection::open(path.as_str()).unwrap();
-        assert!(connection
-            .prepare("SELECT version_num FROM alembic_version")
-            .is_ok());
-        assert!(connection
-            .prepare("SELECT version_num FROM axon_alembic_version")
-            .is_err());
-    }
-
-    #[test]
     fn private_stamp_failure_rolls_back_both_chains_and_backup_tables() {
         let path = DatabasePath::new();
-        migration_upgrade(path.as_str(), &json!({"public": "0012"})).unwrap();
+        write_scope(path.as_str(), true, |connection| {
+            connection
+                .execute_batch(include_str!("testdata/migration_0033.sql"))
+                .map_err(sql)?;
+            stamp(connection, PUBLIC_VERSION_TABLE, Some("0033"))
+        })
+        .unwrap();
         write_scope(path.as_str(), false, |connection| {
             connection.execute_batch(
                 "CREATE TABLE axon_alembic_version(version_num VARCHAR(32) NOT NULL PRIMARY KEY); \
@@ -640,95 +634,17 @@ mod tests {
             .error
             .contains("injected private stamp failure"));
         let current = migration_current(path.as_str(), &json!({})).unwrap();
-        assert_eq!(current["public"], "0012");
+        assert_eq!(current["public"], "0033");
         assert_eq!(current["private"], Value::Null);
         let connection = Connection::open(path.as_str()).unwrap();
         let backups: i64 = connection
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name IN \
-             ('axile_0013_error_backup','axon_0001_error_backup')",
+                "SELECT count(*) FROM sqlite_master WHERE name='axon_0001_error_backup'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(backups, 0);
-    }
-
-    #[test]
-    fn targets_preserve_public_and_private_chain_limits() {
-        let request = json!({"public": "0001"});
-        assert_eq!(
-            Policy::parse(&request)
-                .unwrap()
-                .targets(&request, true)
-                .unwrap()
-                .public,
-            1
-        );
-        let request = json!({"public": "base"});
-        assert_eq!(
-            Policy::parse(&request)
-                .unwrap()
-                .targets(&request, true)
-                .unwrap()
-                .public,
-            0
-        );
-        for (public, private) in [("0011", "base"), ("0012", "head"), ("head", "invalid")] {
-            let request = dual_request(public, private);
-            assert!(Policy::parse(&request)
-                .unwrap()
-                .targets(&request, false)
-                .is_err());
-        }
-        let request = dual_request("0034", "head");
-        assert_eq!(
-            Policy::parse(&request)
-                .unwrap()
-                .targets(&request, true)
-                .unwrap()
-                .public,
-            34
-        );
-        assert!(Policy::parse(&json!({}))
-            .unwrap()
-            .targets(&json!({}), true)
-            .is_err());
-    }
-
-    #[test]
-    fn rejects_unknown_multiple_and_orphaned_heads() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE alembic_version(version_num TEXT); \
-             INSERT INTO alembic_version VALUES('0033'),('0034');",
-            )
-            .unwrap();
-        assert!(state(Some(&connection))
-            .unwrap_err()
-            .error
-            .contains("multiple public"));
-        connection
-            .execute_batch(
-                "DELETE FROM alembic_version; INSERT INTO alembic_version VALUES('0042');",
-            )
-            .unwrap();
-        assert!(state(Some(&connection))
-            .unwrap_err()
-            .error
-            .contains("unknown database"));
-        connection
-            .execute_batch(
-                "UPDATE alembic_version SET version_num='0012'; \
-             CREATE TABLE axon_alembic_version(version_num TEXT); \
-             INSERT INTO axon_alembic_version VALUES('axon_0001');",
-            )
-            .unwrap();
-        assert!(state(Some(&connection))
-            .unwrap_err()
-            .error
-            .contains("requires public 0013"));
     }
 
     #[test]
@@ -795,7 +711,7 @@ mod tests {
     fn read_scope_is_query_only_and_cannot_mutate_existing_database() {
         let path = DatabasePath::new();
         let connection = Connection::open(path.as_str()).unwrap();
-        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0034")).unwrap();
+        stamp(&connection, PUBLIC_VERSION_TABLE, Some("0033")).unwrap();
         let mode: String = connection
             .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
             .unwrap();
@@ -806,7 +722,7 @@ mod tests {
             assert!(connection
                 .execute("DELETE FROM alembic_version", [])
                 .is_err());
-            assert_eq!(state(Some(connection))?.public, 34);
+            assert_eq!(state(Some(connection))?.public, 33);
             Ok(())
         })
         .unwrap();
@@ -863,5 +779,60 @@ mod tests {
         let mut request = dual_request("head", "head");
         request["private_rules"]["codes"] = json!({"PRIVATE": {"code": 1}});
         assert!(Policy::parse(&request).is_err());
+    }
+
+    #[test]
+    fn targets_only_allow_the_published_baseline_and_final_revision() {
+        for target in ["0033", "0034", "head"] {
+            let request = dual_request(target, "head");
+            assert!(Policy::parse(&request)
+                .unwrap()
+                .targets(&request, true)
+                .is_ok());
+        }
+        for target in ["base", "0001", "0032", "0035", "0039"] {
+            let request = dual_request(target, "base");
+            assert!(Policy::parse(&request)
+                .unwrap()
+                .targets(&request, true)
+                .is_err());
+        }
+        assert!(Policy::parse(&json!({}))
+            .unwrap()
+            .targets(&json!({}), true)
+            .is_err());
+    }
+
+    #[test]
+    fn old_revisions_require_the_published_bridge_before_a_write() {
+        for revision in 1..33 {
+            let path = DatabasePath::new();
+            let connection = Connection::open(path.as_str()).unwrap();
+            stamp(
+                &connection,
+                PUBLIC_VERSION_TABLE,
+                Some(&format!("{revision:04}")),
+            )
+            .unwrap();
+            drop(connection);
+            let before = std::fs::read(&path.0).unwrap();
+            let error = migration_upgrade(path.as_str(), &json!({})).unwrap_err();
+            assert!(error.error.contains("v0.23.1"), "{error:?}");
+            assert_eq!(std::fs::read(&path.0).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn final_revision_is_not_a_stamp_only_shortcut() {
+        let path = DatabasePath::new();
+        let connection = Connection::open(path.as_str()).unwrap();
+        stamp(&connection, PUBLIC_VERSION_TABLE, Some(PUBLIC_HEAD)).unwrap();
+        drop(connection);
+        let before = std::fs::read(&path.0).unwrap();
+        assert!(migration_upgrade(path.as_str(), &json!({}))
+            .unwrap_err()
+            .error
+            .contains("development schema"));
+        assert_eq!(std::fs::read(&path.0).unwrap(), before);
     }
 }

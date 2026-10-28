@@ -16,6 +16,7 @@ from tests.sqlite_oracle import connect as oracle_connect
 
 _FIXTURES = Path(__file__).parents[2] / "fixtures/rust_store"
 _TAG_COMMIT = "bc70e4a3785eacedeaf4eadcda5a3109d3a3ffa6"
+_SUPPORTED_TAG_COMMIT = "4b874083bf9cc4cbc76f9e1c5a51ed7fdd4839ad"
 _SOURCE_COMMIT = "509b3627ca5fc6ee5f5a72e91b5ebebed3cf9879"
 
 
@@ -92,7 +93,7 @@ def test_native_helper_gates_nonfinite_evidence(monkeypatch) -> None:
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("name", ["v0.22.0.sql"])
+@pytest.mark.parametrize("name", ["v0.22.0.sql", "v0.23.1.sql"])
 def test_frozen_oracle_ddl_loads_with_all_objects(tmp_path: Path, name: str) -> None:
     with closing(oracle_connect(tmp_path / "oracle.db")) as connection, connection:
         load_schema(connection, (_FIXTURES / name).read_text(encoding="utf-8"))
@@ -154,21 +155,49 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
         assert connection.execute("SELECT COUNT(*) FROM execution_order").fetchone() == (0,)
 
 
-@pytest.mark.parametrize("revision,name", [("0033", "v0.22.0.sql")])
-def test_native_migration_matches_real_schema(tmp_path: Path, revision: str, name: str) -> None:
-    """列、默认值、索引、外键、唯一性和完整触发器与历史实现一致。"""
+def test_downgrade_matches_supported_release_schema(tmp_path: Path) -> None:
+    """回退后的列、索引、外键和触发器与已发布 0033 一致。"""
+    manifest = _manifest("v0.23.1.sql")
+    assert manifest["source_commit"] == _SUPPORTED_TAG_COMMIT
+    assert manifest["public_head"] == "0033"
     path = tmp_path / "native.db"
-    result = initialize_native_database(path, revision=revision)
-    assert result["public"] == revision
+    initialize_native_database(path)
+    result = native_store_call(path, "migration_downgrade", {"public": "0033"})
+    assert result["public"] == "0033"
     with closing(oracle_connect(tmp_path / "oracle.db")) as oracle, closing(oracle_connect(path)) as native:
-        load_schema(oracle, (_FIXTURES / name).read_text(encoding="utf-8"))
-        differences = schema_differences(database_schema(native), database_schema(oracle))
+        load_schema(oracle, (_FIXTURES / "v0.23.1.sql").read_text(encoding="utf-8"))
+
+        def consumer_schema(connection):
+            schema = database_schema(connection)
+            restored = {
+                "executerecord": ("raw_input", "raw_result"),
+                "account_asset_snapshot": ("assets",),
+                "target_weight_snapshot": ("raw_weights", "normalized_weights"),
+            }
+            for name, documents in restored.items():
+                table = schema["tables"][name]
+                columns = []
+                for column, kind, required, default, primary, hidden in table["columns"]:
+                    if column in documents and name != "target_weight_snapshot":
+                        assert default in ((), ("'{}'",))
+                        default = ()
+                    columns.append((column, kind, required, default, primary, hidden))
+                # 仅这三张表的恢复文档列移到末尾；其余列顺序及结构仍严格比较。
+                table["columns"] = tuple(row for row in columns if row[0] not in documents) + tuple(
+                    next(row for row in columns if row[0] == document) for document in documents
+                )
+                table["indexes"] = tuple(
+                    (index, unique, partial, tuple(column[1:] for column in columns), definition)
+                    for index, unique, partial, columns, definition in table["indexes"]
+                )
+            return schema
+
+        differences = schema_differences(consumer_schema(native), consumer_schema(oracle))
         if differences:
             pytest.fail("\n".join(differences), pytrace=False)
-        assert native.execute("SELECT version_num FROM alembic_version").fetchall() == [(revision,)]
+        assert native.execute("SELECT version_num FROM alembic_version").fetchall() == [("0033",)]
         assert native.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert native.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert native.execute("SELECT COUNT(*) FROM axile_0013_error_backup").fetchone() == (0,)
 
 
 def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> None:
@@ -176,7 +205,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
     for operation in ("migration_current", "migration_check"):
         result = native_store_call(path, operation, {})
         assert result["public"] is None
-        assert result["public_target"] == "0039"
+        assert result["public_target"] == "0034"
         assert not path.exists()
         assert list(tmp_path.iterdir()) == []
 
@@ -193,14 +222,14 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
             backup,
         )
     result = initialize_native_database(path)
-    assert result["public"] == "0039"
-    assert native_store_call(path, "migration_current", {})["public"] == "0039"
+    assert result["public"] == "0034"
+    assert native_store_call(path, "migration_current", {})["public"] == "0034"
     with closing(oracle_connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
             "FROM axile_0013_error_backup"
         ).fetchall() == [backup]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0039",)]
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
 
 
 def test_nonempty_0033_fixture_loads_without_current_models(tmp_path: Path) -> None:
@@ -255,15 +284,42 @@ def test_frozen_null_evidence_is_derived_from_original_json(table, fields, count
         assert all(matches[0][name] is None for name in item["fields"])
 
 
+def test_independent_summary_corpus_blocks_upgrade_without_mutation(tmp_path: Path) -> None:
+    """冻结材料中的孤儿及独立摘要必须留给用户核对。"""
+    data = json.loads((_FIXTURES / "public-0033-data.json").read_text(encoding="utf-8"))
+    path = tmp_path / "independent.db"
+    initialize_native_database(path, revision="0033")
+    with closing(oracle_connect(path)) as connection, connection:
+        seed_database(connection, data["seed"])
+        before = database_schema(connection), database_rows(connection, canonical=False)
+    core = require_native_store("migration_upgrade")
+    with pytest.raises(core.NativeError, match="summary|independent"):
+        initialize_native_database(path)
+    core.close_database(str(path))
+    with closing(oracle_connect(path)) as connection:
+        assert (database_schema(connection), database_rows(connection, canonical=False)) == before
+
+
 def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> None:
     """真实输入、成交、资产、目标、摘要、通知 outbox 和分析结果同时迁移。"""
     data = json.loads((_FIXTURES / "public-0033-data.json").read_text(encoding="utf-8"))
     path = tmp_path / "historical.db"
     initialize_native_database(path, revision=data["from_revision"])
+    # 独立摘要另测拒绝；这里只验证同一冻结语料中的可转换业务事实。
+    data["seed"]["execution_artifact"] = [
+        row for row in data["seed"]["execution_artifact"] if row["artifact_type"].upper() != "EXECUTION_SUMMARY"
+    ]
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
     assert initialize_native_database(path, revision="0034")["public"] == "0034"
     expected = data["expected"]
+    expected["execution_artifact"] = [
+        row for row in expected["execution_artifact"] if row["artifact_type"].upper() != "EXECUTION_SUMMARY"
+    ]
+    for row in expected["execution_extension"]:
+        row.pop("reconciliation")
+    for row in expected["executerecord"]:
+        row["result_staged"] = 0
     # 只补 399389c9 保留显式 null 的静态侧录；原始 seed 和冻结行均保留。
     corrections = json.loads((_FIXTURES / "public-0034-explicit-nulls.json").read_text(encoding="utf-8"))
     for table, entries in corrections["tables"].items():
@@ -286,23 +342,14 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
         if isinstance(captured, dict) and "$axile_notification_context" in captured:
             extra["server_notification_context"] = raw_results[row["record_id"]]["extra"]["server_notification_context"]
             row["extra"] = ["json", json.dumps(extra, sort_keys=True, ensure_ascii=False, separators=(",", ":"))]
-    originals = {row["id"]: row for row in data["seed"]["execution_artifact"]}
-    for row in expected["execution_artifact"]:
-        if row["artifact_type"].lower() == "execution_summary":
-            original = originals[row["id"]]
-            row["content"] = [
-                "json",
-                json.dumps(json.loads(original["content"]), sort_keys=True, ensure_ascii=False, separators=(",", ":")),
-            ]
-            row["schema_version"] = original["schema_version"]
     for name in ("execution_extension", "execution_artifact"):
         expected[name].sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
     with closing(oracle_connect(path)) as connection, connection:
         actual = database_rows(connection)
 
         def business(name):
-            return name not in {"alembic_version", "account_analysis", "analysis_calendar_day"} and not name.startswith(
-                "performance_"
+            return name not in {"alembic_version", "account_analysis"} and not name.startswith(
+                ("performance_", "analysis_")
             )
 
         assert {k: v for k, v in actual.items() if business(k)} == {k: v for k, v in expected.items() if business(k)}

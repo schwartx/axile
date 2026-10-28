@@ -4,7 +4,6 @@ import pytest
 
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.unit.server._execution_test_support import build_account
-from tests.unit.server._migration_support import _connect
 from tests.unit.server._native_read_views import persist_record_fixture
 
 
@@ -161,25 +160,3 @@ def test_published_gap_keeps_later_observations_available_without_erasing_qualit
         assert after["gross_pnl"] - before["gross_pnl"] == 50.0
     else:
         assert before["gross_pnl"] is None
-
-
-def _inspect(path):
-    with _connect(path) as connection:
-        return connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one(), [
-            tuple(row)
-            for row in connection.exec_driver_sql(
-                "SELECT name FROM sqlite_master WHERE name='performance_contribution'"
-            )
-        ]
-
-
-def test_contribution_migration_upgrades_existing_0035_and_downgrades_cleanly(tmp_path):
-    path = tmp_path / "previous.db"
-    initialize_native_database(path, revision="0035")
-    assert _inspect(path) == ("0035", [])
-    initialize_native_database(path, revision="0036")
-    assert _inspect(path) == ("0036", [("performance_contribution",)])
-    native_store_call(path, "migration_downgrade", {"public": "0035"})
-    assert _inspect(path) == ("0035", [])
-    initialize_native_database(path, revision="0036")
-    assert _inspect(path)[0] == "0036"

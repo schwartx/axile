@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from axile.server.db.models.performance import PerformanceSettings
 from axile.server.performance import close_before
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
-from tests.conftest import initialize_native_database, native_store_call
 from tests.unit.server._business_analysis_support import schema_template as schema_template
 from tests.unit.server._performance_oracle import (
     Observation,
@@ -18,7 +17,6 @@ from tests.unit.server._performance_oracle import (
     observation,
     performance_calendar,
 )
-from tests.unit.server.test_initial_migration import _connection, _insert_account
 
 
 def obs(day, prices=None, target=None, asset=100, **kwargs):
@@ -579,26 +577,3 @@ def test_only_explicit_degraded_asset_sources_are_excluded(source, expected):
         result={"account_assets": {"total_asset": 100, "source": source}},
     )
     assert observation(record).asset == expected
-
-
-def test_migration_roundtrip_defaults(tmp_path):
-    path = tmp_path / "migration.db"
-    initialize_native_database(path, revision="0010")
-    with _connection(path) as connection:
-        _insert_account(connection, id=2)
-    initialize_native_database(path, revision="0011")
-    with _connection(path) as connection:
-        assert tuple(connection.execute("SELECT backtest_weight_type, backtest_fee_rate FROM account").fetchone()) == (
-            "ts",
-            0,
-        )
-    native_store_call(path, "migration_downgrade", {"public": "0010"})
-    with _connection(path) as connection:
-        assert connection.execute("SELECT id FROM account").fetchone()[0] == 2
-        assert "backtest_weight_type" not in {row["name"] for row in connection.execute("PRAGMA table_info(account)")}
-    initialize_native_database(path, revision="0011")
-    with _connection(path) as connection:
-        assert tuple(connection.execute("SELECT backtest_weight_type, backtest_fee_rate FROM account").fetchone()) == (
-            "ts",
-            0,
-        )

@@ -20,7 +20,6 @@ from axile.server.api.routes import init as init_module
 from axile.server.core import db
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_state
-from tests.conftest import initialize_native_database, native_store_call
 
 
 @pytest.fixture
@@ -182,22 +181,3 @@ def test_state_write_failure_does_not_escape_notification(client, monkeypatch, n
     asyncio.run(error_notifications.send_feishu_error(RuntimeError("error"), None, "saved-key"))
     assert len(calls) == 1
     assert client.get("/api/v1/init/execution-alert/result").json()["ok"] is None
-
-
-def test_system_notification_migration_roundtrip(tmp_path):
-    path = tmp_path / "migration.db"
-    initialize_native_database(path, revision="0021")
-    initialize_native_database(path, revision="0022")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        assert connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='system_notification_state'"
-        ).fetchone()
-        connection.execute("INSERT INTO system_notification_state (id, ok) VALUES (1, 0)")
-    native_store_call(path, "migration_downgrade", {"public": "0021"})
-    with closing(sqlite3.connect(path)) as connection:
-        assert (
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='system_notification_state'"
-            ).fetchone()
-            is None
-        )

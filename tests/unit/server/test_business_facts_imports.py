@@ -50,7 +50,7 @@ with closing(sqlite3.connect(sys.argv[2])) as connection, connection:
     assert not any(name.startswith('performance_') for name in tables)
     assert {'analysis_state', 'analysis_replay_position', 'analysis_contribution_state',
             'analysis_day', 'analysis_contribution_day'} <= tables
-    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0039',)]
+    assert connection.execute('SELECT version_num FROM alembic_version').fetchall() == [('0034',)]
     assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
 """,
             module,
