@@ -93,7 +93,7 @@ test('刷新请求错误的重试只发起一次计算请求', () => {
 test('共用筛选集中在吸顶栏，空选区也可从起止观测建立区间', () => {
   const page = renderPage({ selected: false })
   const toolbar = page.html.slice(page.html.indexOf('aria-label="绩效与品种贡献共用筛选"'), page.html.indexOf('data-chart-snapshot'))
-  expect(toolbar).toContain('sticky top-0')
+  expect(page.html).toMatch(/data-testid="performance-sticky-header" class="sticky top-0/)
   expect(toolbar).toContain('data-segment="90"')
   expect(toolbar).toContain('data-segment="natural"')
   for (const label of ['比较起点', '比较终点']) {

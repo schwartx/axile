@@ -187,8 +187,9 @@ function AccountHistory({ accountId }: { accountId: number }) {
         </div>
 
   return <section className="min-w-0 [&_button]:min-h-9">
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+    <div data-testid="performance-sticky-header" className="sticky top-0 z-30 flex flex-wrap items-center gap-x-1 gap-y-1 border-b border-line bg-bg py-1">
+    <div className="flex shrink-0 items-center [&_h1]:text-sm!">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 [&>div]:gap-1!">
         <AccountPageTitle
           accountId={accountId}
           page="实盘绩效"
@@ -201,16 +202,16 @@ function AccountHistory({ accountId }: { accountId: number }) {
           <div><dt className="inline text-ink-3">有效回测记录：</dt><dd className="inline">{data.backtest_included ? `${backtestMode === 'target' ? data.target_used_record_count ?? 0 : data.used_record_count}/${data.observation_count}` : 0}</dd></div>
           <div><dt className="inline text-ink-3">历史记录：</dt><dd className="inline">{data.record_count}</dd></div>
         </dl> : <span>{metadata?.data_until ? `数据截止 ${shanghaiLabel(metadata.data_until)}` : '暂无绩效快照'}</span>} arrow>
-          <button type="button" aria-label="绩效数据说明" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"><Info size={15} aria-hidden="true" /></button>
+          <button type="button" aria-label="绩效数据说明" className="inline-flex h-[30px] w-6 min-h-0! shrink-0 items-center justify-center rounded text-ink-3 hover:bg-fill hover:text-ink-1 focus-visible:outline-2 focus-visible:outline-accent"><Info size={15} aria-hidden="true" /></button>
         </Tooltip>
       </div>
     </div>
-    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-y border-line bg-bg py-1.5 text-xs text-ink-2">
-      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" value={range} options={RANGES} onChange={value => withViewTransition(() => { setSelectionNotice(false); setSelection(null); setRange(value) })} /></fieldset>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label="分析区间">
+    <div role="group" aria-label="绩效与品种贡献共用筛选" data-testid="performance-shared-controls" className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 text-xs text-ink-2 [&_button]:min-h-0!">
+      <fieldset><legend className="sr-only">绩效时间范围</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={range} options={RANGES} onChange={value => withViewTransition(() => { setSelectionNotice(false); setSelection(null); setRange(value) })} /></fieldset>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1" role="group" aria-label="分析区间">
         {(['start', 'end'] as const).map(edge => <label key={edge} className="flex min-w-0 items-center gap-1">
           <span className="shrink-0 text-ink-3">{edge === 'start' ? '起点' : '终点'}</span>
-          <Select<number> ariaLabel={edge === 'start' ? '比较起点' : '比较终点'} appearance="inline" className="h-9 w-[166px] min-w-0 justify-between px-1.5 text-xs"
+          <Select<number> ariaLabel={edge === 'start' ? '比较起点' : '比较终点'} appearance="inline" className="h-[30px] w-auto min-w-0 gap-1! px-1 text-xs"
             disabled={intervalOptions.length < 2} value={(edge === 'start' ? intervalStart : intervalEnd) ?? 0}
             options={intervalOptions.filter(option => option.value !== (edge === 'start' ? intervalEnd : intervalStart))}
             placeholder="暂无观测"
@@ -225,11 +226,12 @@ function AccountHistory({ accountId }: { accountId: number }) {
               setSelection(intervalSelection(value, other))
             }} />
         </label>)}
-        <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
+        <button type="button" aria-label="取消选择" disabled={!selection} onClick={() => { setSelectionNotice(false); setSelection(null) }} className="inline-flex h-[30px] w-6 shrink-0 items-center justify-center rounded hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"><X size={15} aria-hidden="true" /></button>
       </div>
-      <fieldset className="sm:ml-auto"><legend className="sr-only">横轴尺度</legend><Segmented size="sm" value={scale} options={SCALES} onChange={setScale} /></fieldset>
+      <fieldset><legend className="sr-only">横轴尺度</legend><Segmented size="sm" className="rounded-md! [&_button]:h-[26px] [&_button]:px-2 [&_button]:py-0" value={scale} options={SCALES} onChange={setScale} /></fieldset>
     </div>
-    <div className="border-t border-line pt-2">
+    </div>
+    <div className="pt-2">
       {difference != null && difference < 0 && <p className="mt-1 text-xs text-warn">账户收益高于回测，待核对差异</p>}
       {data && data.observation_count > 0 && (data.calendar.status === 'partial' || data.calendar.status === 'unavailable') && <p role="status" className="mt-1 text-xs text-warn">部分日期交易日历不可用，休市标记可能不完整</p>}
       {!parsed && !editingFee && <p role="alert" className="mt-2 text-xs text-warn">费率须大于等于 0 且小于 10000 BP</p>}
