@@ -43,7 +43,7 @@ def test_obsolete_native_rejected_before_background_services(monkeypatch, missin
 
     native = SimpleNamespace(
         ANALYSIS_FACT_SCHEMA=40,
-        PUBLIC_HEAD="0039",
+        PUBLIC_HEAD="0034",
         **{name: MagicMock() for name in NATIVE_OPERATIONS if name != missing},
     )
     monkeypatch.setattr(performance_analysis, "_core", native)

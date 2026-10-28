@@ -218,7 +218,7 @@ fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()
                 .map(|scope| scope.1.clone())
                 .collect::<Vec<_>>()
                 .join(" UNION ");
-            let body = format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL;");
+            let body = format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL;");
             let condition = if action == "INSERT"
                 && ![
                     "executerecord",
@@ -353,15 +353,82 @@ pub(super) fn install_business(connection: &Connection) -> Result<()> {
     cleanup(connection, &tables)
 }
 
+pub(super) fn drop_analysis(connection: &Connection) -> Result<()> {
+    for table in [
+        "executerecord",
+        "portfolioaccount",
+        "schedule_skip",
+        "target_weight_snapshot",
+    ] {
+        for action in ["insert", "update", "delete"] {
+            execute(
+                connection,
+                &format!("DROP TRIGGER IF EXISTS analysis_{table}_{action}"),
+            )?;
+        }
+    }
+    for name in [
+        "analysis_account_delete",
+        "analysis_account_settings",
+        "analysis_account_channel",
+        "analysis_channel_change",
+        "execution_result_staged",
+        "execution_summary_removed",
+    ] {
+        execute(connection, &format!("DROP TRIGGER IF EXISTS {name}"))?;
+    }
+    for table in schema::BUSINESS_TABLES {
+        for action in ["insert", "update", "update_new", "delete"] {
+            execute(
+                connection,
+                &format!("DROP TRIGGER IF EXISTS incremental_{table}_{action}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn install_analysis(connection: &Connection) -> Result<()> {
-    execute(connection,"CREATE TRIGGER analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL; END;")?;
-    let deletes = schema::ANALYSIS_TABLES
+    for table in [
+        "executerecord",
+        "portfolioaccount",
+        "schedule_skip",
+        "target_weight_snapshot",
+    ] {
+        for action in ["INSERT", "UPDATE", "DELETE"] {
+            let references = match action {
+                "INSERT" => vec!["NEW"],
+                "UPDATE" => vec!["OLD", "NEW"],
+                _ => vec!["OLD"],
+            };
+            let mut body = String::new();
+            for reference in references {
+                let changed = if action == "UPDATE" && reference == "NEW" {
+                    "AND NEW.account_id IS NOT OLD.account_id"
+                } else {
+                    ""
+                };
+                body.push_str(&format!("INSERT INTO account_analysis(account_id,source_version) SELECT {reference}.account_id,1 WHERE {reference}.account_id IS NOT NULL AND EXISTS(SELECT 1 FROM account WHERE id={reference}.account_id) {changed} ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL;"));
+            }
+            execute(
+                connection,
+                &format!(
+                    "CREATE TRIGGER analysis_{table}_{} AFTER {action} ON {table} BEGIN {body} END",
+                    action.to_lowercase()
+                ),
+            )?;
+        }
+    }
+    execute(connection,"CREATE TRIGGER analysis_account_settings AFTER UPDATE OF backtest ON account_settings WHEN json_extract(OLD.backtest,'$.backtest_weight_type') IS NOT json_extract(NEW.backtest,'$.backtest_weight_type') OR json_extract(OLD.backtest,'$.backtest_fee_rate') IS NOT json_extract(NEW.backtest,'$.backtest_fee_rate') BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
+        CREATE TRIGGER analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
+        CREATE TRIGGER analysis_channel_change AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN UPDATE account_analysis SET dirty_record=0 WHERE account_id=NEW.id; END;
+        CREATE TRIGGER execution_result_staged AFTER UPDATE OF result_staged ON executerecord WHEN OLD.result_staged!=NEW.result_staged BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
+        CREATE TRIGGER execution_summary_removed BEFORE INSERT ON execution_artifact WHEN upper(NEW.artifact_type)='EXECUTION_SUMMARY' BEGIN SELECT RAISE(ABORT,'EXECUTION_SUMMARY is derived from facts'); END;")?;
+    let cleanup = crate::analysis::TABLES
         .iter()
-        .filter(|name| !matches!(**name, "performance_snapshot" | "analysis_calendar_day"))
-        .map(|name| format!("DELETE FROM {name} WHERE snapshot_id=OLD.id;"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    execute(connection, &format!("CREATE TRIGGER analysis_snapshot_delete AFTER DELETE ON performance_snapshot BEGIN {deletes} END"))
+        .map(|table| format!("DELETE FROM {table} WHERE account_id=OLD.id;"))
+        .collect::<String>();
+    execute(connection,&format!("CREATE TRIGGER analysis_account_delete AFTER DELETE ON account BEGIN {cleanup} DELETE FROM account_analysis WHERE account_id=OLD.id; END"))
 }
 
 pub(super) fn install_incremental(c: &Connection) -> Result<()> {

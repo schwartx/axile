@@ -13,62 +13,124 @@ mod schema;
 type Object = Map<String, Value>;
 type Result<T> = std::result::Result<T, AnalysisError>;
 
+pub(super) fn create(connection: &Connection) -> Result<()> {
+    execute(connection, include_str!("schema_0034.sql"))?;
+    execute(connection, include_str!("structured/business.sql"))?;
+    execute(connection, include_str!("../analysis/schema.sql"))?;
+    guards::install_business(connection)?;
+    guards::install_analysis(connection)?;
+    guards::install_incremental(connection)
+}
+
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
-    reset_analysis(connection)?;
+    check_analysis_dependencies(connection, super::BASELINE_REVISION)?;
+    guards::drop_analysis(connection)?;
+    let state = rows(
+        connection,
+        "SELECT account_id,source_version FROM account_analysis",
+        [],
+    )?;
     for table in [
         "performance_cost_trade",
         "performance_cost_execution",
         "performance_snapshot",
+        "account_analysis",
     ] {
         execute(connection, &format!("DROP TABLE {table}"))?;
     }
-    execute(
-        connection,
-        "ALTER TABLE account_analysis ADD COLUMN running_token TEXT",
-    )?;
     execute(connection, include_str!("structured/analysis.sql"))?;
+    execute(connection, include_str!("../analysis/schema.sql"))?;
+    requeue_analysis(connection, state)?;
     business::upgrade(connection)?;
     account_identity::upgrade(connection)?;
-    guards::install_analysis(connection)
+    super::execution_views::upgrade(connection)?;
+    schema::install_query_indexes(connection)?;
+    guards::install_analysis(connection)?;
+    guards::install_incremental(connection)
 }
 
 pub(super) fn downgrade(connection: &Connection) -> Result<()> {
+    preflight_downgrade(connection)?;
+    guards::drop_analysis(connection)?;
+    let state = rows(
+        connection,
+        "SELECT account_id,source_version FROM account_analysis",
+        [],
+    )?;
+    schema::drop_query_indexes(connection)?;
     business::downgrade(connection)?;
     account_identity::downgrade(connection)?;
-    reset_analysis(connection)?;
-    execute(
-        connection,
-        "DROP TRIGGER analysis_account_channel; DROP TRIGGER analysis_snapshot_delete",
-    )?;
-    execute(
-        connection,
-        "ALTER TABLE account_analysis DROP COLUMN running_token",
-    )?;
-    for table in schema::ANALYSIS_TABLES {
+    for table in crate::analysis::TABLES
+        .iter()
+        .chain(["analysis_calendar_day", "account_analysis"].iter())
+    {
         execute(connection, &format!("DROP TABLE {}", quote(table)))?;
     }
-    let legacy = include_str!("legacy/0012.sql");
-    execute(
-        connection,
-        &legacy[legacy
-            .find("CREATE TABLE performance_snapshot")
-            .expect("frozen cache schema")..],
-    )
+    execute(connection, include_str!("structured/analysis_0033.sql"))?;
+    requeue_analysis(connection, state)
 }
 
-fn reset_analysis(connection: &Connection) -> Result<()> {
-    execute(
-        connection,
-        "UPDATE account_analysis SET
-        source_version=source_version+1,published_version=0,
-        requested=(requested OR current_snapshot IS NOT NULL OR running_version IS NOT NULL),
-        current_snapshot=NULL,previous_snapshot=NULL,running_version=NULL,
-        failures=0,retry_at=0,error=NULL,logic_version=NULL,engine_version=NULL",
-    )
+fn requeue_analysis(connection: &Connection, state: Vec<Object>) -> Result<()> {
+    for row in state {
+        insert(connection, "account_analysis", &row)?;
+    }
+    execute(connection,"UPDATE account_analysis SET source_version=source_version+1,requested=1,running_version=NULL,failures=0,retry_at=0,error=NULL")
 }
 
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
+    check_analysis_dependencies(connection, super::PUBLIC_HEAD_NUMBER)?;
     business::preflight_downgrade(connection)
+}
+
+pub(super) fn check_analysis_dependencies(
+    connection: &Connection,
+    source_revision: u32,
+) -> Result<()> {
+    let known_columns: &[&str] = if source_revision == super::BASELINE_REVISION {
+        &[
+            "account_id",
+            "source_version",
+            "published_version",
+            "current_snapshot",
+            "previous_snapshot",
+            "requested",
+            "running_version",
+            "failures",
+            "retry_at",
+            "error",
+            "logic_version",
+            "engine_version",
+        ]
+    } else {
+        &[
+            "account_id",
+            "source_version",
+            "requested",
+            "running_version",
+            "failures",
+            "retry_at",
+            "error",
+            "running_token",
+            "dirty_record",
+        ]
+    };
+    for column in rows(connection, "PRAGMA table_xinfo(account_analysis)", [])? {
+        let name = text(&column, "name")?;
+        if !known_columns.contains(&name) {
+            return Err(error(format!(
+                "Cannot rebuild account_analysis: custom column {name}; preserve or remove it before migrating"
+            )));
+        }
+    }
+    let dependencies = rows(connection,
+        "SELECT name FROM sqlite_schema WHERE tbl_name='account_analysis' AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name", [])?;
+    if let Some(dependency) = dependencies.first() {
+        return Err(error(format!(
+            "Cannot rebuild account_analysis: custom dependency {}; preserve or remove it before migrating",
+            text(dependency, "name")?
+        )));
+    }
+    Ok(())
 }
 
 fn error(message: impl Into<String>) -> AnalysisError {
@@ -234,11 +296,155 @@ fn page(connection: &Connection, table: &str, after: i64) -> Result<Vec<Object>>
     )
 }
 
-pub(super) fn install_incremental(c: &Connection) -> Result<()> {
-    guards::install_incremental(c)
-}
-pub(super) fn restore_analysis_triggers(c: &Connection) -> Result<()> {
-    c.execute_batch("DROP TRIGGER analysis_account_channel")
-        .map_err(sql)?;
-    guards::install_analysis(c)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analysis_rebuild_rejects_custom_dependencies_before_removing_them() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(include_str!("../testdata/migration_0033.sql"))
+            .unwrap();
+        connection.execute_batch("CREATE TRIGGER custom_queue_audit AFTER UPDATE ON account_analysis BEGIN SELECT 1; END").unwrap();
+        assert!(upgrade(&connection)
+            .unwrap_err()
+            .error
+            .contains("custom_queue_audit"));
+        assert!(connection
+            .prepare("SELECT raw_result FROM executerecord")
+            .is_ok());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='custom_queue_audit'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+
+        let final_connection = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&final_connection).unwrap();
+        create(&final_connection).unwrap();
+        final_connection
+            .execute_batch("CREATE INDEX custom_queue_version ON account_analysis(source_version)")
+            .unwrap();
+        assert!(downgrade(&final_connection)
+            .unwrap_err()
+            .error
+            .contains("custom_queue_version"));
+        assert!(final_connection
+            .prepare("SELECT dirty_record FROM account_analysis")
+            .is_ok());
+        assert_eq!(
+            final_connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name='custom_queue_version'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn direct_upgrade_and_downgrade_preserve_facts_and_unrelated_schema() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
+        connection
+            .execute_batch(include_str!("../testdata/migration_0033.sql"))
+            .unwrap();
+        connection.execute_batch("CREATE TABLE unrelated_evidence(value TEXT); CREATE TRIGGER unrelated_write AFTER INSERT ON unrelated_evidence BEGIN SELECT 1; END;
+            INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'saved','FUTURES','ctp','','2026-10-28','2026-10-28');
+            INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,raw_input,raw_result) VALUES(7,1,'saved-execution',1,'2026-10-28','{\"curr_target\":{\"A\":0.5}}','{\"status\":\"SUCCEEDED\",\"success\":true,\"symbol_results\":{},\"extra\":{\"zero\":0,\"flag\":false,\"missing\":null}}');").unwrap();
+        for _ in 0..2 {
+            upgrade(&connection).unwrap();
+            let result = crate::business_detail::read(&connection, 1, 7).unwrap();
+            assert_eq!(result["input"]["curr_target"]["A"], serde_json::json!(0.5));
+            assert_eq!(
+                result["result"]["extra"],
+                serde_json::json!({"zero":0,"flag":false,"missing":null})
+            );
+            let retired: i64 = connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'performance_%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(retired, 0);
+            downgrade(&connection).unwrap();
+            let payload: String = connection
+                .query_row(
+                    "SELECT raw_result FROM executerecord WHERE id=7",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let result: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(
+                result["extra"],
+                serde_json::json!({"zero":0,"flag":false,"missing":null})
+            );
+            let retained: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('unrelated_evidence','unrelated_write')", [], |row| row.get(0)).unwrap();
+            assert_eq!(retained, 2);
+        }
+    }
+
+    #[test]
+    fn new_database_builds_only_final_schema_and_enforces_fact_ownership() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::calendar::register_time_function(&connection).unwrap();
+        create(&connection).unwrap();
+        let count: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 60);
+        let retired: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'performance_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retired, 0);
+        let hidden: i64 = connection.query_row("SELECT count(*) FROM pragma_table_info('executerecord') WHERE name='history_visible'", [], |row| row.get(0)).unwrap();
+        assert_eq!(hidden, 0);
+        let final_columns: i64 = connection.query_row("SELECT (SELECT count(*) FROM pragma_table_info('executerecord') WHERE name='result_staged') + (SELECT count(*) FROM pragma_table_info('account_analysis') WHERE name='dirty_record')", [], |row| row.get(0)).unwrap();
+        assert_eq!(final_columns, 2);
+        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'one','FUTURES','ctp','','2026-10-28','2026-10-28'),(2,'two','FUTURES','ctp','','2026-10-28','2026-10-28');").unwrap();
+        let input = crate::business_facts_ops::encode::encode_inputs(
+            "owned",
+            &serde_json::json!({}),
+            1,
+            None,
+            "2026-10-28",
+            None,
+        )
+        .unwrap();
+        crate::business_facts_ops::write_input(&connection, &input).unwrap();
+        let failure = connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,input_id) VALUES(1,2,'wrong-owner',1,'2026-10-28','owned')", []).unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("Execution input owner mismatch"));
+        connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,input_id) VALUES(1,1,'owned-execution',1,'2026-10-28','owned')", []).unwrap();
+        connection.execute_batch("UPDATE account_analysis SET source_version=7,requested=0,dirty_record=NULL WHERE account_id=1;UPDATE executerecord SET result_staged=1 WHERE id=1;").unwrap();
+        let (version, requested, dirty): (i64, bool, i64) = connection.query_row("SELECT source_version,requested,dirty_record FROM account_analysis WHERE account_id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        assert!(version > 7);
+        assert!(requested);
+        assert_eq!(dirty, 1);
+        connection
+            .execute("DELETE FROM account WHERE id=1", [])
+            .unwrap();
+        for table in ["executerecord", "execution_input", "account_analysis"] {
+            let rows: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
+    }
 }

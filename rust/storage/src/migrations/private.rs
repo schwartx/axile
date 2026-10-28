@@ -9,7 +9,7 @@ use crate::business_detail;
 use crate::business_facts_ops::{result_extensions, result_head, result_symbols};
 use crate::error::AnalysisError;
 
-use super::legacy::{self, Change};
+use super::error_patch::{self, Change};
 use crate::json_codec::parse as parse_legacy_json;
 
 type Result<T> = std::result::Result<T, AnalysisError>;
@@ -188,7 +188,7 @@ fn write_artifact(connection: &Connection, artifact: &Object, document: &Value) 
             params![document.to_string(), id(artifact)?],
         )
         .map_err(sql)?;
-    legacy::invalidate(connection, text(artifact, "execution_id"))
+    error_patch::invalidate(connection, text(artifact, "execution_id"))
 }
 
 fn write_result(
@@ -263,7 +263,7 @@ pub(super) fn patch_errors(
     dry_run: bool,
 ) -> Result<Value> {
     if !typed(connection)? {
-        return legacy::patch_errors(connection, backup_name, codes, dry_run);
+        return error_patch::patch_errors(connection, backup_name, codes, dry_run);
     }
     if !dry_run {
         backup(connection, backup_name)?;
@@ -296,7 +296,7 @@ pub(super) fn patch_errors(
                 };
                 let mut channels = vec![own_input];
                 channels.extend(evidence(connection, text(row, "execution_id"))?);
-                let (patched, changes) = legacy::patch_document(&original, &channels, codes)?;
+                let (patched, changes) = error_patch::patch_document(&original, &channels, codes)?;
                 for key in [
                     Some("scanned_rows"),
                     changes.is_empty().then_some(if original.is_object() {
@@ -408,7 +408,7 @@ fn restore_group(connection: &Connection, group: &[Backup], dry_run: bool) -> Re
         return Err(conflict(&first.table, &first.row_id));
     }
     for backup in group {
-        if legacy::path_get(&document, &backup.change.path)
+        if error_patch::path_get(&document, &backup.change.path)
             != (backup.change.after_present, backup.change.after.clone())
         {
             return Err(AnalysisError::new(
@@ -426,7 +426,7 @@ fn restore_group(connection: &Connection, group: &[Backup], dry_run: bool) -> Re
         return Ok(());
     }
     for backup in group.iter().rev() {
-        legacy::path_set(
+        error_patch::path_set(
             &mut document,
             &backup.change.path,
             backup.change.before_present,
@@ -448,7 +448,7 @@ pub(super) fn restore_errors(
     dry_run: bool,
 ) -> Result<()> {
     if !typed(connection)? {
-        return legacy::restore_errors(connection, backup_name, dry_run);
+        return error_patch::restore_errors(connection, backup_name, dry_run);
     }
     let exists: bool = connection
         .query_row(

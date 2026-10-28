@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from functools import wraps
 from pathlib import Path
@@ -12,7 +13,7 @@ import sqlalchemy as sa
 
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
-from tests.unit.server._business_facts_test_support import audit_artifacts
+from tests.sqlite_oracle import register_time_function
 from tests.unit.server._native_read_views import read_view
 
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
@@ -378,6 +379,7 @@ def _migration_database(tmp_path: Path, *, channel_documents=False):
     database = tmp_path / "business-facts-migration.db"
     initialize_native_database(database, revision="0033")
     engine = sa.create_engine(f"sqlite:///{database}", poolclass=sa.pool.NullPool)
+    sa.event.listen(engine, "connect", register_time_function)
     with engine.begin() as connection:
         expected = _seed_historical_records(connection, channel_documents=channel_documents)
     return database, engine, expected
@@ -465,11 +467,10 @@ def _seed_historical_snapshots(connection):
 
 def _historical_summary(result):
     """Freeze a worker journal with stable copies and independently retained metrics."""
-    from axile.server.execution.execution_summaries import build_symbol_reconciliation
-
-    reconciliation = build_symbol_reconciliation(result, {"total_asset": 123456.75, "positions": []})
-    reconciliation["account"]["equity_before"] = 123457.25
-    reconciliation["symbols"][0]["tca"]["journal_metric"] = {"captured": 0, "nullable": None}
+    reconciliation = {
+        "account": {"equity_before": 123457.25},
+        "symbols": [{"symbol": "A/B~C", "tca": {"journal_metric": {"captured": 0, "nullable": None}}}],
+    }
     return {
         **{
             key: deepcopy(result[key])
@@ -960,53 +961,19 @@ def test_migration_stores_valid_stable_domains_in_columns_without_shadow_documen
         engine.dispose()
 
 
-@_run_async
-async def test_migration_freezes_full_summary_and_restores_original_journal_wire(tmp_path):
-    """Compact verified stable copies while retaining differing and orphan journal evidence."""
+def test_independent_summary_journals_block_upgrade_without_losing_evidence(tmp_path):
     database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
-            records, originals = _seed_summary_journals(connection)
-        _apply_0034(database)
+            _seed_summary_journals(connection)
+            before_schema = _schema_signature(connection)
+            before = connection.exec_driver_sql("SELECT * FROM execution_artifact ORDER BY id").all()
+        with pytest.raises(require_native_store("migration_upgrade").NativeError, match="summary|independent"):
+            _apply_0034(database)
         with engine.begin() as connection:
-            table = sa.Table("execution_artifact", sa.MetaData(), autoload_with=connection)
-            compacted = {
-                row["id"]: dict(row) for row in connection.execute(sa.select(table).order_by(table.c.id)).mappings()
-            }
-            exact = compacted[531]["content"]
-            assert "business_facts_ref" not in exact
-            assert compacted[531]["schema_version"] == originals[531]["schema_version"]
-            assert "orders" in exact["symbol_results"]["A/B~C"]
-            assert "trades" in exact["symbol_results"]["A/B~C"]
-            assert exact["reconciliation"] == originals[531]["content"]["reconciliation"]
-            assert business_evidence(exact["reconciliation"]["account"]["equity_before"]) == business_evidence(
-                123457.25
-            )
-            _assert_same_evidence(
-                originals[532]["content"]["symbol_results"]["A/B~C"]["orders"],
-                compacted[532]["content"]["symbol_results"]["A/B~C"]["orders"],
-                "different-journal/orders",
-            )
-            _assert_same_evidence(originals[599], compacted[599], "orphan-journal")
-
-        for artifact_id, record_id in ((531, 31), (532, 32)):
-            result = read_view(database, "read_execution_result", {"account_id": 2, "record_id": record_id})
-            hydrated = read_view(
-                database, "resolve_execution_artifact", {"artifact": compacted[artifact_id], "account_id": 2}
-            )
-            hydrated.pop("business_facts_ref", None)
-            _assert_same_evidence(originals[artifact_id]["content"], hydrated, "summary-cold-wire")
-            resolved = audit_artifacts(database, records[record_id]["execution_id"])["data"][0]["content"]
-            resolved.pop("business_facts_ref", None)
-            _assert_same_evidence(originals[artifact_id]["content"], resolved, "summary-owned-cold-read")
-            _assert_same_evidence(records[record_id]["raw_result"], result, "summary-source-result")
-
-        _downgrade(database)
-        with engine.begin() as connection:
-            table = sa.Table("execution_artifact", sa.MetaData(), autoload_with=connection)
-            restored = {row["id"]: dict(row) for row in connection.execute(sa.select(table)).mappings()}
-            for artifact_id, original in originals.items():
-                _assert_same_evidence(original, restored[artifact_id], "summary-downgrade-wire")
+            assert _schema_signature(connection) == before_schema
+            assert connection.exec_driver_sql("SELECT * FROM execution_artifact ORDER BY id").all() == before
+            assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
     finally:
         engine.dispose()
 
@@ -1071,7 +1038,13 @@ def test_failed_migration_restores_summary_and_notification_evidence_before_retr
     database, engine, _ = _migration_database(tmp_path)
     try:
         with engine.begin() as connection:
-            _seed_summary_journals(connection)
+            records, _ = _seed_summary_journals(connection)
+            connection.exec_driver_sql("DELETE FROM execution_artifact WHERE id=599")
+            for record_id in records:
+                connection.exec_driver_sql(
+                    "UPDATE execution_artifact SET content=? WHERE id=?",
+                    (json.dumps({"status": records[record_id]["raw_result"]["status"]}), 500 + record_id),
+                )
             _seed_notification_outbox_evidence(connection)
             # 版本落盘时失败，已转换的事实、摘要、通知引用和 DDL 必须一并回滚。
             connection.exec_driver_sql(

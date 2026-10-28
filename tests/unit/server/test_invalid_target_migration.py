@@ -11,7 +11,6 @@ from tests.unit.server._migration_support import database as structured_database
 
 def test_invalid_target_values_migrate_without_losing_original_evidence(request):
     database = request.getfixturevalue("structured_database")
-    _upgrade(database, "0033")
     expected = {
         "raw_weights": {"bad": "not-a-number", "bool": False, "nested": {"value": 2}, "null": None, "ok": 0.5},
         "normalized_weights": {"bad": [1, 2], "zero": 0},

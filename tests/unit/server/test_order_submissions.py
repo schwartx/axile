@@ -2,8 +2,6 @@
 
 import asyncio
 import json
-import sqlite3
-from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -16,28 +14,6 @@ from axile.server._native import _core
 from axile.server.api.routes import account_orders as routes
 from axile.server.api.routes.account_orders import router
 from tests.unit.server._submission_test_support import initialize_submission_database
-
-
-def test_migration_creates_and_removes_only_submission_table(tmp_path):
-    from tests.conftest import initialize_native_database, native_store_call
-
-    path = tmp_path / "migration.db"
-    initialize_native_database(path, revision="0031")
-
-    def tables():
-        with closing(sqlite3.connect(path)) as connection:
-            return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-
-    before = tables()
-    native_store_call(path, "migration_upgrade", {"public": "0032"})
-    assert tables() - before == {"order_submission"}
-    with closing(sqlite3.connect(path)) as connection:
-        assert [row[2] for row in connection.execute("PRAGMA index_info(ix_order_submission_account_time)")] == [
-            "account_id",
-            "occurred_at_ms",
-        ]
-    native_store_call(path, "migration_downgrade", {"public": "0031"})
-    assert tables() == before
 
 
 def test_main_and_script_share_account_day_without_recounting_callbacks(tmp_path, monkeypatch):

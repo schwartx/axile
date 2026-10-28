@@ -1,4 +1,4 @@
-//! 0037 删除可推导执行摘要；冲突证据阻止整个升级事务。
+//! 0033 升级时只删除可推导的执行摘要；独立证据阻止整个事务。
 use super::{invalid, sql, PRIVATE_BACKUP_TABLE, PUBLIC_BACKUP_TABLE};
 use crate::business_facts_ops::encode::py_eq;
 use crate::error::AnalysisError;
@@ -51,7 +51,7 @@ pub(super) fn upgrade(connection: &Connection) -> Result<(), AnalysisError> {
         let (execution, content, record, account) = row.map_err(sql)?;
         let record = record.ok_or_else(|| {
             invalid(format!(
-                "0037: {execution}: summary has no complete result facts"
+                "0034: {execution}: summary has no complete result facts"
             ))
         })?;
         let summary: Value = serde_json::from_str(&content).map_err(|e| invalid(e.to_string()))?;
@@ -60,7 +60,7 @@ pub(super) fn upgrade(connection: &Connection) -> Result<(), AnalysisError> {
         let view = crate::execution_view::build(&result, &before_assets(connection, &execution)?);
         let object = summary
             .as_object()
-            .ok_or_else(|| invalid(format!("0037: {execution}: invalid summary")))?;
+            .ok_or_else(|| invalid(format!("0034: {execution}: invalid summary")))?;
         for (key, value) in object {
             let fact = if view.get(key).is_some() {
                 &view
@@ -68,14 +68,9 @@ pub(super) fn upgrade(connection: &Connection) -> Result<(), AnalysisError> {
                 &result
             };
             if !represented(&json!({key: value}), fact) {
-                return Err(invalid(format!("0037: {execution}: independent summary field {key}; reconcile facts before upgrading")));
+                return Err(invalid(format!("0034: {execution}: independent summary field {key}; reconcile facts before upgrading")));
             }
         }
-    }
-    // 旧扩展中的独立对账无法保证重算等价，必须先明确处理。
-    let independent: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM execution_extension WHERE reconciliation IS NOT NULL AND reconciliation!='null')",[],|r|r.get(0)).map_err(sql)?;
-    if independent {
-        return Err(invalid("0037: independent execution_extension reconciliation requires reconciliation before upgrading"));
     }
     // 摘要删除后不再有恢复目标；事实记录的错误码备份继续保留。
     for table in [PUBLIC_BACKUP_TABLE, PRIVATE_BACKUP_TABLE] {
@@ -90,34 +85,11 @@ pub(super) fn upgrade(connection: &Connection) -> Result<(), AnalysisError> {
             connection.execute(&format!("DELETE FROM {table} WHERE table_name='execution_artifact' AND json_column='content' AND row_id IN (SELECT CAST(id AS TEXT) FROM execution_artifact WHERE upper(artifact_type)='EXECUTION_SUMMARY')"), []).map_err(sql)?;
         }
     }
-    connection.execute_batch("DELETE FROM execution_artifact WHERE upper(artifact_type)='EXECUTION_SUMMARY';
-        ALTER TABLE execution_extension DROP COLUMN reconciliation;
-        ALTER TABLE executerecord ADD COLUMN history_visible INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE executerecord ADD COLUMN result_staged INTEGER NOT NULL DEFAULT 0;
-        CREATE TRIGGER execution_summary_removed BEFORE INSERT ON execution_artifact WHEN upper(NEW.artifact_type)='EXECUTION_SUMMARY' BEGIN SELECT RAISE(ABORT,'EXECUTION_SUMMARY is derived from facts'); END;
-        CREATE TRIGGER execution_history_visibility AFTER UPDATE OF history_visible,result_staged ON executerecord WHEN OLD.history_visible!=NEW.history_visible OR OLD.result_staged!=NEW.result_staged BEGIN
-        INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=CASE WHEN failures>0 OR current_snapshot IS NOT NULL OR running_version IS NOT NULL THEN 1 ELSE requested END,failures=0,retry_at=0,error=NULL; END;").map_err(sql)
-}
-
-pub(super) fn downgrade(connection: &Connection) -> Result<(), AnalysisError> {
-    let hidden: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM executerecord WHERE history_visible=0 OR result_staged=1)",
+    connection
+        .execute(
+            "DELETE FROM execution_artifact WHERE upper(artifact_type)='EXECUTION_SUMMARY'",
             [],
-            |r| r.get(0),
         )
         .map_err(sql)?;
-    if hidden {
-        return Err(invalid(
-            "0037: hidden history or staged worker results cannot be downgraded",
-        ));
-    }
-    connection
-        .execute_batch(
-            "DROP TRIGGER execution_history_visibility; DROP TRIGGER execution_summary_removed;
-        ALTER TABLE execution_extension ADD COLUMN reconciliation TEXT;
-        ALTER TABLE executerecord DROP COLUMN history_visible;
-        ALTER TABLE executerecord DROP COLUMN result_staged;",
-        )
-        .map_err(sql)
+    Ok(())
 }

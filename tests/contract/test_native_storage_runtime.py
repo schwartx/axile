@@ -115,7 +115,7 @@ def _assert_native_migrations() -> None:
     from axile.server.core.db import initialize_database
     from axile.server.native_store import native_operation_sync
 
-    assert _core.PUBLIC_HEAD == "0039"
+    assert _core.PUBLIC_HEAD == "0034"
     assert _core.ANALYSIS_FACT_SCHEMA == 40
     database = Path(os.environ["AXILE_CONTRACT_DB"])
     try:
@@ -134,13 +134,13 @@ def _assert_native_migrations() -> None:
     for name in ("migration_current", "migration_check"):
         result = getattr(_core, name)(str(database), '{"public":"head"}')
         assert result["public"] is None and result["private"] is None
-        assert result["public_target"] == "0039"
+        assert result["public_target"] == "0034"
         assert not database.exists(), f"{name} created a missing database"
 
     initialize_database()
-    assert _core.migration_current(str(database), "{}")["public"] == "0039"
+    assert _core.migration_current(str(database), "{}")["public"] == "0034"
     with closing(sqlite3.connect(database)) as oracle:
-        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0039",)]
+        assert oracle.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
         journal_mode = oracle.execute("PRAGMA journal_mode").fetchone()
         assert journal_mode == ("wal",), journal_mode
         before = list(oracle.iterdump())
@@ -151,7 +151,7 @@ def _assert_native_migrations() -> None:
     _core.migration_downgrade(str(database), '{"public":"0033"}')
     assert _core.migration_current(str(database), "{}")["public"] == "0033"
     _core.migration_upgrade(str(database), "{}")
-    assert _core.migration_current(str(database), "{}")["public"] == "0039"
+    assert _core.migration_current(str(database), "{}")["public"] == "0034"
     plan = _core.migration_check(str(database), '{"public":"head"}')
     assert plan["public_fields"] == plan["private_fields"] == 0
     json.dumps(plan, allow_nan=False)
@@ -170,11 +170,12 @@ def _assert_migration_rollback() -> None:
     from axile.server._native import _core
 
     database = os.environ["AXILE_CONTRACT_DB"]
-    _core.migration_upgrade(database, '{"public":"0012"}')
+    _core.migration_upgrade(database, "{}")
+    _core.migration_downgrade(database, '{"public":"0033"}')
     with closing(sqlite3.connect(database)) as oracle, oracle:
         oracle.execute(
             "CREATE TRIGGER reject_revision BEFORE UPDATE ON alembic_version "
-            "WHEN NEW.version_num != '0012' BEGIN SELECT RAISE(ABORT,'contract rollback'); END"
+            "WHEN NEW.version_num != '0033' BEGIN SELECT RAISE(ABORT,'contract rollback'); END"
         )
     with closing(sqlite3.connect(database)) as oracle:
         before = list(oracle.iterdump())
@@ -186,7 +187,7 @@ def _assert_migration_rollback() -> None:
         raise AssertionError("injected migration failure was ignored")
     with closing(sqlite3.connect(database)) as oracle:
         assert list(oracle.iterdump()) == before
-    assert _core.migration_current(database, "{}")["public"] == "0012"
+    assert _core.migration_current(database, "{}")["public"] == "0033"
 
 
 def test_native_upgrade_failure_preserves_schema_and_revision(tmp_path: Path) -> None:
