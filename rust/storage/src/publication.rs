@@ -359,6 +359,7 @@ pub(crate) fn write(
     for (((key, _, _), count), range) in bounds.iter().zip(counts).zip(ranges) {
         range_rows(target, key, range, count)?;
     }
+    crate::contributions::write(source, target, task.account_id)?;
     Ok(data_until)
 }
 

@@ -1,3 +1,4 @@
+import { ContributionPanel } from '@/features/history/ContributionPanel'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import { CircleHelp, RefreshCw, Save } from 'lucide-react'
@@ -230,6 +231,7 @@ function AccountHistory({ accountId }: { accountId: number }) {
       {(backtestMode === 'target' ? data.target_skips : data.skips)?.count ? <p role="status" className="mt-2 text-xs text-warn">{(backtestMode === 'target' ? data.target_skips : data.skips)?.count} 条执行快照未参与回测（{[(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target ? `目标权重缺失 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_target} 条` : null, (backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks ? `缺少首笔盘口 ${(backtestMode === 'target' ? data.target_skips : data.skips)?.missing_ticks} 条` : null].filter(Boolean).join('、')}），组合收益按最后持仓延续估算</p> : null}
       {data.invalid_asset_count > 0 && <p className="mt-2 text-xs text-warn">{data.invalid_asset_count} 条账户资产快照不可用</p>}
     </div>}
+    {snapshot && <ContributionPanel key={accountId} chart={snapshot} selection={selection} onSelect={setSelection} scaleMode={scale} />}
     <div className="border-t border-line py-4">
       <SectionLabel>账户时间线</SectionLabel>
       {events.length === 0 ? <p className="text-sm text-ink-3">{snapshot ? '本区间无异常事件' : '绩效结果就绪后显示账户事件'}</p> : events.slice(0, showEvents ? undefined : 8).map((event, i) => <div key={i} className="flex flex-wrap items-baseline gap-3 border-b border-line py-2 text-xs">

@@ -36,7 +36,7 @@ def test_main_upgrade_downgrade_repeat_preserves_facts_and_complete_artifacts(ma
         register_time_function(connection)
         artifacts = connection.execute("SELECT content FROM execution_artifact ORDER BY id").fetchall()
     for _ in range(2):
-        assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0035"
+        assert native_store_call(main_database, "migration_upgrade", {})["public"] == "0036"
         detail = read_view(main_database, "read_execution_detail", {"account_id": 1, "record_id": 1})
         assert detail["input"]["extra"]["sentinel"] == 9007199254740993
         assert detail["result"]["account_assets"]["total_asset"] == 101.0
@@ -269,7 +269,7 @@ def test_new_publication_and_downgrade_preserve_main_business_facts(main_databas
         assert result["account_assets"]["total_asset"] == 103.0
 
 
-@pytest.mark.parametrize("revision", ["0036", "0037", "0038", "0039", "0040", "0041"])
+@pytest.mark.parametrize("revision", ["0037", "0038", "0039", "0040", "0041"])
 def test_unpublished_revisions_are_rejected_without_creating_a_database(tmp_path, revision):
     path = tmp_path / "missing.db"
     with pytest.raises(_core.NativeError):

@@ -8,6 +8,7 @@ const STAGE: &str = "native_stage";
 
 // Only migrated result tables participate in staging and publication.
 pub(super) const RESULT_TABLES: &[&str] = &[
+    "performance_contribution",
     "performance_result_daily_fee",
     "performance_result_daily_cost",
     "performance_result_event",

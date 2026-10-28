@@ -136,7 +136,7 @@ export interface AnalysisChartResponse {
   data_until: string | null
   settings: PerformanceSettings
   header: AnalysisHeader
-  tables: Record<'points' | 'bindings' | 'fallbacks' | 'calendar_ranges' | 'daily_costs' | 'daily_fees' | 'events' | 'execution_index' | 'execution_fees', AnalysisTable>
+  tables: { contributions?: AnalysisTable } & Record<'points' | 'bindings' | 'fallbacks' | 'calendar_ranges' | 'daily_costs' | 'daily_fees' | 'events' | 'execution_index' | 'execution_fees', AnalysisTable>
 }
 
 /** A complete lightweight chart. It contains no execution details or holdings. */
@@ -151,6 +151,7 @@ export interface AnalysisChart {
   events: PerformanceSnapshot['events']
   event_count: number
   execution_index: AnalysisExecutionSummary[]
+  contributions?: ContributionObservation[]
 }
 
 export type AnalysisDisplay = AnalysisChart
@@ -200,3 +201,15 @@ export const getAnalysisStatus = (id: number, signal?: AbortSignal) => apiGet<An
 export const getAnalysisChart = (id: number, snapshotId: string, range: PerformanceRange, signal?: AbortSignal) => apiGet<AnalysisChartResponse>(`/account/performance/${id}/chart?${analysisQuery({ snapshot_id: snapshotId, range })}`, signal)
 export const getAnalysisExecutionSummary = (id: number, query: AnalysisSummaryQuery, signal?: AbortSignal) => apiGet<AnalysisSummaryResponse>(`/account/performance/${id}/execution-summary?${analysisQuery(query)}`, signal)
 export const getAnalysisExecutionDetail = (id: number, query: AnalysisDetailQuery, signal?: AbortSignal) => apiGet<AnalysisExecutionDetail>(`/account/performance/${id}/execution-detail?${analysisQuery(query)}`, signal)
+
+export interface ContributionObservation {
+  idx: number
+  symbol: string
+  product: string
+  currency: string | null
+  gross_pnl: number | null
+  fee: number
+  fee_missing: number
+  issues: number
+  trades: number
+}

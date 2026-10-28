@@ -1,4 +1,4 @@
-import type { AnalysisChart, AnalysisChartResponse, AnalysisExecutionSummary, AnalysisTable } from '@/lib/api/performance'
+import type { AnalysisChart, AnalysisChartResponse, AnalysisExecutionSummary, AnalysisTable, ContributionObservation } from '@/lib/api/performance'
 import type { AccountPerformance, PerformancePoint } from '@/types/api'
 import type { CostSummary } from '@/features/history/costs'
 
@@ -14,6 +14,24 @@ export function decodeAnalysisTable<T extends object = Row>(table: AnalysisTable
     if (!Array.isArray(row) || row.length !== columns.length) throw new Error('分析表行长度无效')
     return Object.fromEntries(columns.map((column, index) => [column, row[index]])) as T
   })
+}
+
+function contributionRows(table: AnalysisTable | undefined, pointCount: number) {
+  if (!table) return undefined
+  const rows = decodeAnalysisTable<ContributionObservation>(table, ['idx', 'symbol', 'product', 'currency', 'gross_pnl', 'fee', 'fee_missing', 'issues', 'trades'])
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const key = `${row.idx}:${row.symbol}`
+    if (!Number.isInteger(row.idx) || row.idx < 0 || row.idx >= pointCount
+      || typeof row.symbol !== 'string' || !row.symbol || typeof row.product !== 'string' || !row.product
+      || row.currency != null && (typeof row.currency !== 'string' || !row.currency.trim())
+      || row.gross_pnl != null && (typeof row.gross_pnl !== 'number' || !Number.isFinite(row.gross_pnl))
+      || typeof row.fee !== 'number' || !Number.isFinite(row.fee)
+      || [row.fee_missing, row.issues, row.trades].some(v => !Number.isSafeInteger(v) || v < 0)
+      || seen.has(key)) throw new Error('品种贡献数据无效')
+    seen.add(key)
+  }
+  return rows
 }
 
 function boolean(value: unknown): boolean {
@@ -110,5 +128,6 @@ export function decodeAnalysisChart(response: AnalysisChartResponse): AnalysisCh
     events: decodeAnalysisTable<{ time: string; tag: string; text: string; execution_id: string | null }>(response.tables.events, ['time', 'tag', 'text', 'execution_id']).map(({ time, tag, text, execution_id }) => ({ time, tag, text, executionId: execution_id })),
     event_count: response.header.event_count,
     execution_index: executionIndex(response),
+    contributions: contributionRows(response.tables.contributions, response.tables.points.rows.length),
   }
 }

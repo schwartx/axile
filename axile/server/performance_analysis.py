@@ -13,7 +13,7 @@ from axile.server.db.models.account_settings import BacktestSettings
 from axile.server.native_store import native_call, native_operation
 
 # 统一历史时间、区间边界和展示归一；重建旧快照与同版卡片。
-LOGIC_VERSION = "20"
+LOGIC_VERSION = "21"
 ENGINE_VERSION = "equity-ledger-1"
 
 

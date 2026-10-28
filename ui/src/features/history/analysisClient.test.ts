@@ -10,6 +10,20 @@ test('table decoding follows column names and preserves null, zero and precision
   expect(() => decodeAnalysisTable(analysisTable(['value']), ['cost'])).toThrow('必要字段')
 })
 
+test('contribution decoding preserves zero and rejects invalid observations before display', () => {
+  const response = chartFixture(812)
+  response.tables.contributions = analysisTable(['idx', 'symbol', 'product', 'currency', 'gross_pnl', 'fee', 'fee_missing', 'issues', 'trades'], [[1, 'fu2701', 'SHFE.fu', 'CNY', 0, 0, 0, 0, 1]])
+  expect(decodeAnalysisChart(response).contributions?.[0]).toMatchObject({ gross_pnl: 0, fee: 0, issues: 0 })
+  response.tables.contributions.rows[0][0] = 999
+  expect(() => decodeAnalysisChart(response)).toThrow('贡献数据无效')
+  response.tables.contributions.rows[0][0] = 1
+  response.tables.contributions.rows[0][6] = -1
+  expect(() => decodeAnalysisChart(response)).toThrow('贡献数据无效')
+  response.tables.contributions.rows[0][6] = 0
+  response.tables.contributions.rows.push([...response.tables.contributions.rows[0]])
+  expect(() => decodeAnalysisChart(response)).toThrow('贡献数据无效')
+})
+
 test('chart decoder preserves summary presence, actual zero fees and currency rebates', () => {
   const response = chartFixture(810)
   response.tables.daily_costs = analysisTable(['day', ...summaryColumns, 'present'], [['2026-10-20', 0, null, null, null, 0, 0, true, 2, 0, 0, 1023 & ~(1 << 1)]])
