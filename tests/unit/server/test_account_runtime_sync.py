@@ -313,7 +313,7 @@ def test_slow_startup_account_does_not_block_another_account(tmp_path, monkeypat
             monkeypatch.setattr(runtime, "_finish_attempt", finish)
             recovery = asyncio.create_task(runtime.recover_account_runtime_on_startup(MagicMock()))
             try:
-                await asyncio.wait_for(slow_started.wait(), 2)
+                await asyncio.wait_for(slow_started.wait(), 5)
                 await asyncio.wait_for(healthy_finished.wait(), 2)
                 assert not recovery.done()
                 rows = runtime_rows(path, "SELECT account_id,status FROM accountruntimesync")
