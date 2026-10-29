@@ -5,9 +5,32 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from axile.executor.models.unified_order import UnifiedOrder
 from axile.server.execution.worker_backend import worker
-from axile.server.execution.worker_backend.protocol import WorkerBackendRequest
+from axile.server.execution.worker_backend.manager import WorkerBackendManager
+from axile.server.execution.worker_backend.protocol import WorkerBackendRequest, WorkerBackendResponse
+from axile.server.execution.worker_backend.worker_responses import _dump_output_payload
 from tests.unit.server._execution_test_support import FakeExecutor, build_account
+
+
+def test_worker_result_roundtrip_preserves_order_observation_time():
+    output = FakeExecutor().execute(None)
+    order = UnifiedOrder(
+        order_id="O-time",
+        symbol="ag2612",
+        direction="BUY",
+        order_type="LIMIT",
+        volume=1,
+        price=1,
+        status="已撤销",
+        update_timestamp=1,
+    )
+    output.symbol_results["ag2612"].orders = [order]
+    payload = _dump_output_payload(output)
+    response = WorkerBackendResponse(request_id="order-time", kind="result", output_payload=payload)
+    restored = WorkerBackendManager._build_output(response)
+    assert _dump_output_payload(restored) == payload
+    assert restored.orders[0].update_timestamp == 1
 
 
 @pytest.mark.parametrize("command", ["execute_trade", "empty_positions"])

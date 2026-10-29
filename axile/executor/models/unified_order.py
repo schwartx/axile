@@ -50,6 +50,15 @@ from axile.executor.models.value_conversion import PriceValueConversion  # noqa:
 ExtraData = dict[str, object]
 
 
+def _order_update_time(data: dict[str, object]) -> str:
+    """从旧版显式时间或时间戳恢复订单更新时间。"""
+    extra = cast(ExtraData, data["extra"])
+    explicit = extra.get("_update_time_str")
+    if isinstance(explicit, str):
+        return explicit
+    return datetime.fromtimestamp(cast(float, data["update_timestamp"])).isoformat()
+
+
 class OrderDirection(str, Enum):
     """订单方向枚举."""
 
@@ -248,24 +257,21 @@ class UnifiedOrder(BaseModel):
         default={},
         description="渠道特有数据，包含原始订单数据和渠道特定字段",
     )
+    update_time: str = Field(
+        default_factory=_order_update_time,
+        description="更新时间（ISO格式，跨进程序列化时保留原值）",
+    )
+
+    @override
+    def model_post_init(self, context: object) -> None:
+        """让兼容时间戳与持久化时间一致，包括跳过校验的构造入口。"""
+        try:
+            self.update_timestamp = datetime.fromisoformat(self.update_time).timestamp()
+        except (ValueError, OverflowError, OSError):
+            # 旧渠道允许原生时间文本；解析失败仍保留原文。
+            pass
 
     # === 计算字段（缓存计算结果） ===
-    @computed_field
-    @property
-    def update_time(self) -> str:
-        """
-        返回订单更新时间字符串.
-
-        Returns
-        -------
-        str
-            显式更新时间或由时间戳动态生成的 ISO 字符串。
-        """
-        explicit_update_time = self.extra.get("_update_time_str")
-        if isinstance(explicit_update_time, str):
-            return explicit_update_time
-        return datetime.fromtimestamp(self.update_timestamp).isoformat()
-
     @computed_field
     @property
     def remaining_volume(self) -> float:
@@ -370,17 +376,7 @@ class UnifiedOrder(BaseModel):
         status_obj = kwargs.get("status", OrderStatus.SUBMITTED)
         status = status_obj if isinstance(status_obj, str) else OrderStatus.SUBMITTED
 
-        # 处理 update_time 参数（转换为时间戳）
         update_time_str = kwargs.get("update_time", _get_now_iso())
-        update_timestamp = _get_now_timestamp()
-        if isinstance(update_time_str, str):
-            try:
-                normalized_update_time = (
-                    update_time_str.replace("Z", "+00:00") if update_time_str.endswith("Z") else update_time_str
-                )
-                update_timestamp = datetime.fromisoformat(normalized_update_time).timestamp()
-            except (ValueError, AttributeError):
-                update_timestamp = _get_now_timestamp()
 
         # 创建订单
         filled_volume_obj = kwargs.get("filled_volume", 0.0)
@@ -398,7 +394,7 @@ class UnifiedOrder(BaseModel):
             filled_volume=float(filled_volume_obj) if isinstance(filled_volume_obj, (int, float, str)) else 0.0,
             avg_price=float(avg_price_obj) if isinstance(avg_price_obj, (int, float, str)) else 0.0,
             create_time=(create_time_obj if isinstance(create_time_obj, str) else _get_now_iso()),
-            update_timestamp=update_timestamp,
+            update_time=update_time_str if isinstance(update_time_str, str) else _get_now_iso(),
         )
 
         # 添加渠道特有数据
