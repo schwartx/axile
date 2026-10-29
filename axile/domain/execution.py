@@ -55,7 +55,6 @@ class ExecutionArtifactType(str, Enum):
     ACCOUNT_SNAPSHOT_BEFORE = "account_snapshot_before"
     TRADE_RULES_SNAPSHOT = "trade_rules_snapshot"
     MARKET_SNAPSHOT = "market_snapshot"
-    EXECUTION_SUMMARY = "execution_summary"
     ENVIRONMENT_SNAPSHOT = "environment_snapshot"
 
 

@@ -73,7 +73,7 @@ class TestUnifiedOrderMethods:
 def test_order_update_time_survives_construction_and_json_roundtrip(construct, updated):
     payload = {
         "order_id": "O-time",
-        "symbol": "XRPUSDT",
+        "symbol": "rb2610",
         "direction": "BUY",
         "order_type": "LIMIT",
         "volume": 1.0,
@@ -93,7 +93,7 @@ def test_order_update_time_survives_construction_and_json_roundtrip(construct, u
 
 
 def test_order_legacy_timestamp_and_explicit_time_are_preserved():
-    order = UnifiedOrder.create("O-time", "XRPUSDT", "BUY", "LIMIT", 1, update_time="2026-10-15T18:38:33")
+    order = UnifiedOrder.create("O-time", "rb2610", "BUY", "LIMIT", 1, update_time="2026-10-15T18:38:33")
     assert UnifiedOrder.model_validate(order.model_dump()).update_time == order.update_time
     payload = order.model_dump()
     payload.pop("update_time")

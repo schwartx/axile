@@ -56,7 +56,7 @@ def test_terminal_receipt_is_final_ordered_and_first_write_wins(native_database)
         "account_id": 1,
         "execution_id": "receipt",
         "is_success": 0,
-        "created_at": "frozen",
+        "created_at": "2026-10-23T09:30:00",
         "input_id": "receipt-input",
         "result_input_id": "receipt-result",
         "raw_input": {},

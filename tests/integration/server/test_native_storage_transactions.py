@@ -58,9 +58,11 @@ _RESULT = {
 _SQLITE_ORACLE = """
 import pickle, sqlite3, sys
 from contextlib import closing
+from tests.sqlite_oracle import register_time_function
 arguments = pickle.loads(sys.stdin.buffer.read())
 with closing(sqlite3.connect(sys.argv[1], timeout=2)) as connection:
     connection.row_factory = sqlite3.Row
+    register_time_function(connection)
 
     def rows(table):
         columns = ','.join('"' + row[1] + '"' for row in connection.execute('PRAGMA table_info("' + table + '")'))
@@ -233,7 +235,7 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
     _sql(
         database,
         "INSERT INTO execution_artifact (execution_id,artifact_type,schema_version,content,created_at) "
-        "VALUES (?,'EXECUTION_SUMMARY',2,?,?)",
+        "VALUES (?,'ENVIRONMENT_SNAPSHOT',2,?,?)",
         (execution_id, json.dumps({"symbol_results": _RESULT["symbol_results"]}), _NOW),
     )
     table, event = (

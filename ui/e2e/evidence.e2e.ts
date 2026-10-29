@@ -81,13 +81,13 @@ test('account journal preserves oversized dates and exports complete scope with 
 
 test('snapshot day shows current-data explanation; unknown snapshot dates require an explicit selection', async ({ page }) => {
   await defaults(page)
-  await visit(page, '/accounts/7/executions?snapshot_id=snapshot-test&performance_range=90&day=2026-09-02')
+  await visit(page, '/accounts/7/executions?version=snapshot-test&performance_range=90&day=2026-09-02')
   await page.getByRole('button', { name: '按日期导出' }).click()
   let dialog = page.getByRole('dialog', { name: '导出账户证据' })
   await expect(dialog).toContainText('可能与绩效快照不同')
   await expect(dialog.getByLabel('导出开始日期', { exact: true })).toHaveValue('2026-09-02')
   await expect(dialog.getByLabel('导出结束日期', { exact: true })).toHaveValue('2026-09-02')
-  await visit(page, '/accounts/7/executions?snapshot_id=snapshot-test&performance_range=all')
+  await visit(page, '/accounts/7/executions?version=snapshot-test&performance_range=all')
   await page.getByRole('button', { name: '按日期导出' }).click()
   dialog = page.getByRole('dialog', { name: '导出账户证据' })
   await expect(dialog.getByLabel('导出开始日期', { exact: true })).toHaveValue('')

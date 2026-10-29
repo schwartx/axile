@@ -131,7 +131,7 @@ def test_event_fields_enums_and_error_promotion_match_public_model(client, nativ
     assert client.get("/account/executions/missing/events").json() == {"data": [], "count": 0}
 
 
-def test_artifact_projection_and_summary_normalization_match_existing_reader(client, native_database):
+def test_artifact_projection_preserves_supported_attachment_contents(client, native_database):
     summary = {
         "outcome": "error",
         "outcome_reason": "RuntimeError: offline",
@@ -156,24 +156,6 @@ def test_artifact_projection_and_summary_normalization_match_existing_reader(cli
     runtime_rows(native_database, "ALTER TABLE execution_artifact ADD COLUMN internal_only TEXT DEFAULT 'private'")
     before = _audit_rows(native_database, "execution_artifact")
     expected = [ExecutionArtifactPublic.model_validate(row).model_dump(mode="json") for row in before]
-    for item in expected:
-        if item["artifact_type"] == "execution_summary":
-            item["content"] = {
-                **summary,
-                "status": "FAILED",
-                "error": "执行失败，具体原因见执行证据",
-                "technical_detail": "RuntimeError: offline",
-                "symbol_results": {
-                    "a": {
-                        "status": "BLOCKED",
-                        "error": "执行受阻，具体原因见执行证据",
-                        "outcome": "blocked",
-                        "reason_code": "COMMON.SESSION.CLOSED",
-                    },
-                    "b": {"status": "PARTIAL", "error": "执行不到位", "outcome": "not_reached", "final_volume": 0},
-                    "c": {"task_status": "TERMINATED", "outcome": "terminated", "error": "执行已终止"},
-                },
-            }
     response = client.get("/account/executions/e1/artifacts")
     assert response.status_code == 200, response.text
     assert response.json() == {"data": expected, "count": len(before)}

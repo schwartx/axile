@@ -838,7 +838,7 @@ def test_native_delete_cleans_owned_state_atomically(native_database, reject_del
                 (ident,),
             )
             connection.execute(
-                "INSERT INTO accountruntimesyncattempt(account_id,revision,succeeded,attempted_at) VALUES(?,1,0,'now')",
+                "INSERT INTO accountruntimesyncattempt(account_id,revision,succeeded,attempted_at) VALUES(?,1,0,'2026-10-23T09:30:00')",
                 (ident,),
             )
             connection.execute("INSERT INTO order_submission_monitor(account_id,data) VALUES(?,'{}')", (ident,))
@@ -851,7 +851,7 @@ def test_native_delete_cleans_owned_state_atomically(native_database, reject_del
                 (f"w{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO account_control_event(account_id,control_date,execution_id,seq,channel,operation,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms) VALUES(?,'day',?,1,'ctp','submit','{}','allow',1,'ok',?,'now',1)",
+                "INSERT INTO account_control_event(account_id,control_date,execution_id,seq,channel,operation,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms) VALUES(?,'day',?,1,'ctp','submit','{}','allow',1,'ok',?,'2026-10-23T09:30:00',1)",
                 (ident, f"e{ident}", f"c{ident}"),
             )
             connection.execute(
@@ -859,42 +859,43 @@ def test_native_delete_cleans_owned_state_atomically(native_database, reject_del
                 (ident, f"e{ident}", f"d{ident}"),
             )
             connection.execute(
-                "INSERT INTO schedule_skip(account_id,channel,triggered_at,calendar_id,calendar_day,calendar_label,reason_code) VALUES(?,'ctp','now','test','day','test','test')",
+                "INSERT INTO schedule_skip(account_id,channel,triggered_at,calendar_id,calendar_day,calendar_label,reason_code) VALUES(?,'ctp','2026-10-23T09:30:00','test','day','test','test')",
                 (ident,),
             )
             connection.execute(
-                "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at,expires_at,configured_count,effective_count,status) VALUES(?,?,'key','now','later',1,1,'active')",
+                "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at,expires_at,configured_count,effective_count,status) VALUES(?,?,'key','2026-10-23T09:30:00','2026-10-23T10:30:00',1,1,'active')",
                 (f"g{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at,status) VALUES(?,?,0,'now','pending')",
+                "INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at,status) VALUES(?,?,0,'2026-10-23T09:30:00','pending')",
                 (f"s{ident}", f"g{ident}"),
             )
             connection.execute(
-                "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) VALUES(?,?,'now','execution.finished',?,'pending')",
+                "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) VALUES(?,?,'2026-10-23T09:30:00','execution.finished',?,'pending')",
                 (f"n{ident}", ident, '{"sentinel": ' + str(ident) + "}"),
             )
             connection.execute(
-                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at) VALUES(?,?,'REBALANCE','manual','QUEUED','{}','now')",
+                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at) VALUES(?,?,'REBALANCE','manual','QUEUED','{}','2026-10-23T09:30:00')",
                 (f"e{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,facts_complete,audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) VALUES(?,?,1,'now',0,'{}','{}','absent','absent','absent')",
+                "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,facts_complete,audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) VALUES(?,?,1,'2026-10-23T09:30:00',0,'{}','{}','absent','absent','absent')",
                 (ident, f"e{ident}"),
             )
             connection.execute(
-                "INSERT INTO account_asset_snapshot(account_id,source,created_at) VALUES(?,'manual','now')", (ident,)
+                "INSERT INTO account_asset_snapshot(account_id,source,created_at) VALUES(?,'manual','2026-10-23T09:30:00')",
+                (ident,),
             )
             connection.execute(
                 "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES(?,?,?,'unknown','unknown','Asia/Shanghai',1,'active')",
                 (f"i{ident}", ident, f"e{ident}"),
             )
             connection.execute(
-                "INSERT INTO execution_event(account_id,execution_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,ts_local_created,ts_persisted,seq,details) VALUES(?,?,'ctp','SINGLE-MAKER',1,?,'ORDER_SUBMITTED','INFO','SYSTEM','TEST','now','now',0,'{}')",
+                "INSERT INTO execution_event(account_id,execution_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,ts_local_created,ts_persisted,seq,details) VALUES(?,?,'ctp','SINGLE-MAKER',1,?,'ORDER_SUBMITTED','INFO','SYSTEM','TEST','2026-10-23T09:30:00','2026-10-23T09:30:00',0,'{}')",
                 (ident, f"e{ident}", f"event{ident}"),
             )
             connection.execute(
-                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES(?,'TARGET_SNAPSHOT',1,?,'now')",
+                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES(?,'TARGET_SNAPSHOT',1,?,'2026-10-23T09:30:00')",
                 (f"e{ident}", '{"sentinel": ' + str(ident) + "}"),
             )
     expected = {

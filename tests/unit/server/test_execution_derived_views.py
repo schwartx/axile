@@ -14,7 +14,7 @@ _PRIVATE_RULES = {
     "version_table": "axon_alembic_version",
     "backup_table": "axon_0001_error_backup",
     "dependency": "0013",
-    "codes": {"BINANCE": {"-2019": "保证金不足"}},
+    "codes": {"EXAMPLE_CHANNEL": {"-2019": "保证金不足"}},
 }
 
 
@@ -119,7 +119,7 @@ def test_private_error_patch_and_restore_without_reconciliation_column(native_da
         native_database,
         is_success=0,
         raw_result={
-            "channel_type": "binance",
+            "channel_type": "example_channel",
             "status": "FAILED",
             "error": "-2019",
             "symbol_results": {"A": {"error": "-2019"}},
@@ -151,7 +151,7 @@ def test_summary_backup_cleanup_preserves_private_restore_and_conflict_checks(tm
     path = tmp_path / "summary-backup.db"
     initialize_native_database(path, revision="0033")
     seed_account(path)
-    result = {"channel_type": "binance", "status": "FAILED", "error": "-2019"}
+    result = {"channel_type": "example_channel", "status": "FAILED", "error": "-2019"}
     sql(
         path,
         "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,raw_input,raw_result) "

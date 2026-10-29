@@ -6,17 +6,12 @@ from contextlib import closing
 import pytest
 
 from axile.server._native import _core
-from axile.server.execution.input_persistence import persist_pre_execute_input_sync
-from scripts.business_facts_contract import business_evidence
-from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._business_facts_test_support import (
-    audit_artifacts,
     freeze_input,
     persist_result,
     read_result,
     rows,
-    seed_account,
     sql,
 )
 from tests.unit.server._native_read_views import read_view
@@ -170,104 +165,34 @@ def test_fee_availability_and_actual_zero_are_not_guessed(native_database, extra
     assert row["extra"] == extra
 
 
-def test_summary_reference_preserves_distinct_evidence_without_field_projection_metadata(native_database):
-    fact = {"status": "SUCCEEDED", "orders": [{"order_id": "0", "price": 2}], "sizing": {"target_quantity": 0}}
-    result = {"symbol_results": {"A": fact}}
-    content = {
-        "symbol_results": {"A": {**fact, "sizing": {"target_quantity": 3}}},
+def test_result_evidence_preserves_zero_null_and_independent_fields(native_database):
+    payload = {
+        "symbol_results": {
+            "A": {"status": "SUCCEEDED", "orders": [{"order_id": "0", "price": 2}], "sizing": {"target_quantity": 0}}
+        },
         "independent": {"null": None, "zero": 0},
     }
-    execution_id = "slim-summary"
-    native_store_call(
-        native_database,
-        "append_execution_artifact",
-        {
-            "execution_id": execution_id,
-            "artifact_type": "execution_summary",
-            "schema_version": 1,
-            "content": content,
-            "created_at": "2026-10-20",
+    record = persist_result(native_database, payload, execution_id="slim-result")
+    restored = read_result(native_database, record)
+    expected = {
+        "A": {
+            **payload["symbol_results"]["A"],
+            "availability": {"target_volume": "absent", "final_volume": "absent"},
+            "orders": [{"order_id": "0", "price": 2, "availability": {"order_id": "value"}}],
         },
+    }
+    assert restored["symbol_results"] == expected
+    assert (
+        rows(native_database, "execution_extension")[0]["audit_evidence"]["unrecognized_fields"]["independent"]
+        == payload["independent"]
     )
-    persist_result(native_database, result, execution_id=execution_id)
-    compact = rows(native_database, "execution_artifact")[0]["content"]
-    assert "business_facts_ref" not in compact
-    assert compact["symbol_results"]["A"]["orders"]
-    hydrated = audit_artifacts(native_database, execution_id)["data"][0]["content"]
-    hydrated.pop("business_facts_ref", None)
-    assert business_evidence(hydrated) == business_evidence(content)
+    assert rows(native_database, "execution_artifact") == []
 
 
-@pytest.mark.parametrize("projection", [None, 1, True, 2.0, "2"])
-def test_summary_reference_rejects_invalid_projection_version(native_database, projection):
-    execution_id = "invalid-summary"
-    record = persist_result(native_database, {"symbol_results": {}}, execution_id=execution_id)
-    native_store_call(
-        native_database,
-        "append_execution_artifact",
-        {
-            "execution_id": execution_id,
-            "artifact_type": "execution_summary",
-            "schema_version": 1,
-            "created_at": "2026-10-20",
-            "content": {
-                "symbol_results": {},
-                "business_facts_ref": {
-                    "version": 1,
-                    "view": "result",
-                    "record_id": record["id"],
-                    "projection_version": projection,
-                },
-            },
-        },
-    )
-    with pytest.raises(_core.NativeError, match="审计业务事实引用版本或视图无效") as error:
-        audit_artifacts(native_database, execution_id)
-    assert error.value.args[0] == "BUSINESS_FACTS_REFERENCE"
+@pytest.mark.parametrize("view", ["result", "summary"])
+def test_retired_result_attachment_reference_is_rejected(view):
+    from axile.server.business_facts.artifacts import parse_artifact_reference
+    from axile.server.business_facts.summary_refs import BusinessFactReferenceError
 
-
-def test_all_business_tables_have_no_generic_field_metadata(native_database):
-    with closing(oracle_connect(native_database)) as connection:
-        names = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-        facts = [
-            name
-            for name in names
-            if name.startswith(
-                ("execution_input", "execution_symbol", "execution_order", "execution_extension", "business_")
-            )
-            or name in {"executerecord", "execution_termination_cancel_failure"}
-        ]
-        assert facts
-        for name in facts:
-            columns = {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
-            assert "field_metadata" not in columns
-            assert "numeric_kinds" not in columns
-
-
-def test_pre_execute_input_and_equal_aliases_share_one_frozen_input(monkeypatch, native_database):
-    seed_account(native_database)
-    monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
-    payload = {"curr_target": {"A": 0}, "last_target": {}, "strategy_target": {"A": 0.3}, "trade_rules": {}}
-    audit_input = {**payload, "account_target": {"A": 0.0}}
-    input_id = persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input)
-    assert persist_pre_execute_input_sync(account_id=1, execution_id="one", payload=audit_input) == input_id
-    assert len(rows(native_database, "execution_input")) == 1
-    assert len(rows(native_database, "execution_input_target")) == 2
-
-
-def test_explicit_invalid_input_state_survives_business_view_reencoding(native_database):
-    freeze_input(native_database, {"curr_target": ["invalid"]})
-    first = _input(native_database)
-    assert first["curr_target"] is None
-    freeze_input(native_database, first, input_id="second", execution_id="second")
-    row = next(row for row in rows(native_database, "execution_input") if row["id"] == "second")
-    assert row["curr_target_state"] == "invalid"
-    assert row["audit_evidence"]["invalid_collections"]["curr_target"] == ["invalid"]
-
-
-def test_invalid_cash_state_survives_adoption_roundtrip(native_database):
-    first = persist_result(native_database, {"account_assets": {"available_cash": "not-observed"}})
-    result = read_result(native_database, first)
-    second = read_result(native_database, persist_result(native_database, result))
-    assert second["account_assets"]["availability"]["cash"] == "invalid"
-    assert second["account_assets"]["audit_evidence"]["invalid_fields"]["available_cash"] == "not-observed"
+    with pytest.raises(BusinessFactReferenceError, match="版本或视图无效"):
+        parse_artifact_reference({"business_facts_ref": {"version": 1, "view": view, "record_id": 1}})

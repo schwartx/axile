@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 
-from axile.domain.execution import ExecutionArtifactType
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.server.execution.worker_backend import worker_audit
 from tests.unit.server._execution_test_support import build_account, capture_worker_audit_batch
@@ -42,4 +41,4 @@ def test_worker_journal_keeps_native_orders_until_terminal_facts_commit(monkeypa
         executor=object(),
     )
     assert staged[0]["result"] == result
-    assert all(item["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for item in artifacts)
+    assert all(item["artifact_type"] != "execution_summary" for item in artifacts)

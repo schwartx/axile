@@ -282,7 +282,7 @@ test('evidence reads exact record and every event/artifact page before copying a
       if (skip) await delayed
       const artifacts = url.pathname.endsWith('/artifacts')
       return route.fulfill({ json: { count: 501, data: Array.from({ length: skip ? 1 : 500 }, (_, i) => artifacts
-        ? { id: skip + i + 1, artifact_type: 'execution_summary', content: skip ? { error: '最后一页附件根因' } : {} }
+        ? { id: skip + i + 1, artifact_type: 'environment_snapshot', content: skip ? { error: '最后一页附件根因' } : {} }
         : { id: skip + i + 1, event_type: skip ? 'instruments_failed' : 'noop', reason_code: 'CATALOG.FAIL', details: skip ? { message: raw('event'), symbols: ['rb2701'], elapsed_seconds: 28 } : {} }) } })
     }
     return route.fulfill({ json: { status: 'FAILED', execution_id: 'A', account_id: 7, error: 'script failed' } })

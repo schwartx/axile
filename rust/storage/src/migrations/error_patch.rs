@@ -722,7 +722,7 @@ mod tests {
              CREATE TABLE execution_event(execution_id TEXT,channel TEXT);"
         ).unwrap();
         let source = r#"{"error":"-2019","metrics":[NaN,Infinity,-Infinity,1e400],"huge":123456789012345678901234567890,"literal":{"invalid_number":"nan"},"text":"NaN Infinity"}"#;
-        let evidence = r#"{"channel_type":"BINANCE","metrics":[NaN,Infinity]}"#;
+        let evidence = r#"{"channel_type":"EXAMPLE_CHANNEL","metrics":[NaN,Infinity]}"#;
         connection
             .execute(
                 "INSERT INTO executerecord VALUES(1,'frozen',1,'date','{}',?1)",
@@ -746,7 +746,7 @@ mod tests {
             crate::json_codec::parse(&text).unwrap()
         };
         let original = read();
-        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
+        let codes = json!({"EXAMPLE_CHANNEL":{"-2019":"保证金不足"}});
         assert_eq!(
             patch_errors(&connection, "private_error_backup", &codes, false).unwrap()["fields"],
             2
@@ -789,8 +789,8 @@ mod tests {
 
     #[test]
     fn private_patch_requires_channel_agreement_and_updates_mirror() {
-        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
-        let raw = json!({"channel":"BINANCE","symbol_results":{"ag":{"error":"-2019"}},"reconciliation":{"symbols":[{"symbol":"ag","error":"-2019"}]}});
+        let codes = json!({"EXAMPLE_CHANNEL":{"-2019":"保证金不足"}});
+        let raw = json!({"channel":"EXAMPLE_CHANNEL","symbol_results":{"ag":{"error":"-2019"}},"reconciliation":{"symbols":[{"symbol":"ag","error":"-2019"}]}});
         let (after, changes) = patch_document(&raw, &[], &codes).unwrap();
         assert_eq!(after["symbol_results"]["ag"]["error"], "保证金不足");
         assert_eq!(after["reconciliation"]["symbols"][0]["error"], "保证金不足");
@@ -803,8 +803,8 @@ mod tests {
 
     #[test]
     fn patch_restore_roundtrip_preserves_absence_null_and_business_reason() {
-        let codes = json!({"BINANCE":{"-2019":"保证金不足"}});
-        let raw = json!({"channel":"BINANCE","reason_code":"-2019","error":null});
+        let codes = json!({"EXAMPLE_CHANNEL":{"-2019":"保证金不足"}});
+        let raw = json!({"channel":"EXAMPLE_CHANNEL","reason_code":"-2019","error":null});
         let (mut after, changes) = patch_document(&raw, &[], &codes).unwrap();
         for change in changes.iter().rev() {
             assert_eq!(
@@ -820,7 +820,7 @@ mod tests {
             .unwrap();
         }
         assert_eq!(after, raw);
-        let raw = json!({"channel":"BINANCE","error":"-2019","outcome_reason":"保留原业务说明"});
+        let raw = json!({"channel":"EXAMPLE_CHANNEL","error":"-2019","outcome_reason":"保留原业务说明"});
         assert!(patch_document(&raw, &[], &codes).unwrap().1.is_empty());
     }
 }

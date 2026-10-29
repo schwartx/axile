@@ -3,22 +3,18 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { buildExecutionDetail } from '@/features/account/executionDetail'
 import { ExecutionEvidence } from '@/features/history/ExecutionEvidence'
-import type { ExecutionArtifact } from '@/types/api'
 
 function renderEvidence(includeUnreached = false, noop = false) {
   const symbols = [
     { symbol: 'ag2612', status: noop ? 'NOOP' : 'SUCCEEDED', before: 0, target: noop ? 0 : 2, after: noop ? 0 : 2, filled: noop ? 0 : 2, avg_price: noop ? null : 1782.73, reached: true },
     ...(includeUnreached ? [{ symbol: 'rb2610', status: 'PARTIAL', before: 0, target: 3, after: 1, filled: 1, avg_price: 3000, reached: false }] : []),
   ]
-  const artifacts: ExecutionArtifact[] = [{
-    id: null, execution_id: 'e', artifact_type: 'execution_summary', created_at: '',
-    content: {
+  const summary = {
       status: noop ? 'NOOP' : 'PARTIAL', error: noop ? null : '最终账户查询失败',
       symbol_results: Object.fromEntries(symbols.map(s => [s.symbol, { status: s.status, final_volume: s.after }])),
       reconciliation: { account: { source_before: 'real', source_after: null }, symbols },
-    },
-  }]
-  const model = buildExecutionDetail([], artifacts)
+  }
+  const model = buildExecutionDetail([], [], null, summary)
   return renderToStaticMarkup(createElement(ExecutionEvidence, { model, currency: 'CNY' }))
 }
 
