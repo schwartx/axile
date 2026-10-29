@@ -29,6 +29,7 @@ from scripts.benchmark_business_fact_storage import (
     synthetic_record,
 )
 from scripts.business_facts_contract import business_evidence
+from tests.sqlite_oracle import connect as oracle_connect
 
 
 def test_frozen_fixture_is_reproducible_and_matches_occurrence_counts(tmp_path):
@@ -191,7 +192,7 @@ def test_lifecycle_hashes_use_native_audit_pages_and_reject_incomplete_evidence(
     artifact = {
         "id": 1,
         "execution_id": execution_id,
-        "artifact_type": "execution_summary",
+        "artifact_type": "environment_snapshot",
         "schema_version": 1,
         "content": {"complete": False, "fees": None},
         "created_at": created,
@@ -218,7 +219,7 @@ def test_lifecycle_hashes_use_native_audit_pages_and_reject_incomplete_evidence(
         "seq": 7,
         "details": {"error": "original", "retry_after": 1791680400},
     }
-    with closing(sqlite3.connect(native_database)) as connection, connection:
+    with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
             "INSERT INTO executerecord(account_id,execution_id,created_at,is_success) VALUES(1,?,?,0)",
             (execution_id, created),

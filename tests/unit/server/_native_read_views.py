@@ -68,7 +68,7 @@ def artifact_view(path, artifact, *, account_id=None):
                     str(target), json.dumps({"execution_id": identity, "skip": 0, "limit": 500})
                 )
             )
-            if artifact["artifact_type"].lower() != "execution_summary" and account_id is None:
+            if account_id is None:
                 return public["data"][0]["content"]
             selection = (
                 {"execution_id": identity}

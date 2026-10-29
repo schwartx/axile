@@ -168,7 +168,6 @@ def complete_execution(key="exec-1", **overrides):
         "standard_input",
         "target_snapshot",
         "trade_rules_snapshot",
-        "execution_summary",
         "account_snapshot",
     ):
         content = {"account_assets": {"positions": [], "source": "real"}} if "account_snapshot" in kind else {}

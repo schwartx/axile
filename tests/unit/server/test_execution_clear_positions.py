@@ -445,4 +445,4 @@ def test_empty_positions_captures_before_account_snapshot(
         ).fetchone()
     assert stored == (1000.0,)
     # 前基线确实穿进对账，source_before 不再恒为 unavailable
-    assert all(a["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for a in artifacts)
+    assert all(a["artifact_type"] != "execution_summary" for a in artifacts)

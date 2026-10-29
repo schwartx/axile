@@ -97,7 +97,7 @@ def test_worker_target_reference_and_derived_detail_keep_sizing(
     target = next(
         artifact for artifact in artifacts if artifact["artifact_type"] == ExecutionArtifactType.TARGET_SNAPSHOT
     )
-    assert all(a["artifact_type"] != ExecutionArtifactType.EXECUTION_SUMMARY for a in artifacts)
+    assert all(a["artifact_type"] != "execution_summary" for a in artifacts)
     input_id = cast("dict[str, dict[str, object]]", standard["content"])["business_facts_ref"]["input_id"]
     persist_input.assert_called_once_with(
         account_id=account.id,

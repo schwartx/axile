@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 import sqlalchemy as sa
 from fastapi import FastAPI, HTTPException
@@ -17,29 +19,46 @@ from axile.server.execution.intents import SubmitResult
 from tests.fixtures.rust_store.oracle_tables import table
 
 
+@dataclass
+class _ResultFacts:
+    """模拟执行结果读取入口的数据，与持久化附件分开。"""
+
+    execution_id: str
+    content: dict
+
+
 class _RouteData:
     def __init__(
         self,
         account: Account | None,
         portfolio: Portfolio | None,
-        artifacts: list[ExecutionArtifact] | None = None,
+        evidence: list[ExecutionArtifact | _ResultFacts] | None = None,
     ) -> None:
         self.account = account
         self.portfolio = portfolio
-        self.artifacts = artifacts or []
+        self.evidence = evidence or []
 
     def sizing_evidence(self, execution_id: str) -> dict[str, object]:
-        artifacts = [artifact for artifact in self.artifacts if artifact.execution_id == execution_id]
-        target = next((a for a in artifacts if a.artifact_type == ExecutionArtifactType.TARGET_SNAPSHOT), None)
-        summary = next((a for a in artifacts if a.artifact_type == ExecutionArtifactType.EXECUTION_SUMMARY), None)
+        evidence = [artifact for artifact in self.evidence if artifact.execution_id == execution_id]
+        target = next(
+            (
+                a
+                for a in evidence
+                if isinstance(a, ExecutionArtifact) and a.artifact_type == ExecutionArtifactType.TARGET_SNAPSHOT
+            ),
+            None,
+        )
+        result = next((a for a in evidence if isinstance(a, _ResultFacts)), None)
         return {
-            "artifact_versions": {a.artifact_type: a.schema_version for a in artifacts},
-            "record_id": 1 if summary else None,
-            "input_id": f"input:{execution_id}" if target or summary else None,
+            "artifact_versions": {
+                a.artifact_type: a.schema_version for a in evidence if isinstance(a, ExecutionArtifact)
+            },
+            "record_id": 1 if result else None,
+            "input_id": f"input:{execution_id}" if target or result else None,
             "target_context": target.content.get("sizing_context", {}) if target else {},
             "sizings": {
                 item["symbol"]: dict(item["sizing"])
-                for item in (summary.content.get("reconciliation", {}).get("symbols", []) if summary else [])
+                for item in (result.content.get("reconciliation", {}).get("symbols", []) if result else [])
                 if isinstance(item.get("sizing"), dict)
             },
         }
@@ -283,10 +302,8 @@ def test_account_target_snapshot_returns_complete_execution_sizing(monkeypatch) 
             schema_version=2,
             content={"sizing_context": {"weight_precision": 0.01}},
         ),
-        ExecutionArtifact(
+        _ResultFacts(
             execution_id="exec-v2",
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            schema_version=2,
             content={
                 "reconciliation": {
                     "symbols": [
@@ -360,24 +377,12 @@ def test_account_target_snapshot_returns_complete_execution_sizing(monkeypatch) 
                     schema_version=2,
                     content={"sizing_context": {"weight_precision": 0.01}},
                 ),
-                ExecutionArtifact(
-                    execution_id="exec-status",
-                    artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-                    schema_version=2,
-                    content={"reconciliation": {"symbols": []}},
-                ),
+                _ResultFacts(execution_id="exec-status", content={"reconciliation": {"symbols": []}}),
             ],
             "pending_execution",
         ),
         (
-            [
-                ExecutionArtifact(
-                    execution_id="exec-status",
-                    artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-                    schema_version=1,
-                    content={"reconciliation": {"symbols": []}},
-                )
-            ],
+            [_ResultFacts(execution_id="exec-status", content={"reconciliation": {"symbols": []}})],
             "pending_execution",
         ),
     ],
@@ -414,7 +419,7 @@ def test_account_target_snapshot_reports_sizing_evidence_state(
     assert body["quantities"] is None
 
 
-def _complete_sizing_artifacts(
+def _complete_sizing_evidence(
     execution_id: str, *, symbol: str = "TA701", quantity: float = -1.0
 ) -> list[ExecutionArtifact]:
     return [
@@ -424,10 +429,8 @@ def _complete_sizing_artifacts(
             schema_version=2,
             content={"sizing_context": {"weight_precision": 0.01}},
         ),
-        ExecutionArtifact(
+        _ResultFacts(
             execution_id=execution_id,
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            schema_version=2,
             content={
                 "reconciliation": {
                     "symbols": [
@@ -448,7 +451,7 @@ def _complete_sizing_artifacts(
     ]
 
 
-def _empty_summary_artifacts(execution_id: str) -> list[ExecutionArtifact]:
+def _empty_result_evidence(execution_id: str) -> list[ExecutionArtifact]:
     return [
         ExecutionArtifact(
             execution_id=execution_id,
@@ -456,16 +459,11 @@ def _empty_summary_artifacts(execution_id: str) -> list[ExecutionArtifact]:
             schema_version=2,
             content={"sizing_context": {"weight_precision": 0.01}},
         ),
-        ExecutionArtifact(
-            execution_id=execution_id,
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            schema_version=2,
-            content={"reconciliation": {"symbols": []}},
-        ),
+        _ResultFacts(execution_id=execution_id, content={"reconciliation": {"symbols": []}}),
     ]
 
 
-def _unavailable_sizing_artifacts(execution_id: str, *, symbol: str = "TA701") -> list[ExecutionArtifact]:
+def _unavailable_sizing_evidence(execution_id: str, *, symbol: str = "TA701") -> list[ExecutionArtifact]:
     return [
         ExecutionArtifact(
             execution_id=execution_id,
@@ -473,10 +471,8 @@ def _unavailable_sizing_artifacts(execution_id: str, *, symbol: str = "TA701") -
             schema_version=2,
             content={"sizing_context": {"weight_precision": 0.01}},
         ),
-        ExecutionArtifact(
+        _ResultFacts(
             execution_id=execution_id,
-            artifact_type=ExecutionArtifactType.EXECUTION_SUMMARY,
-            schema_version=2,
             content={
                 "reconciliation": {
                     "symbols": [
@@ -498,7 +494,7 @@ def _unavailable_sizing_artifacts(execution_id: str, *, symbol: str = "TA701") -
 
 def test_account_target_snapshot_falls_back_to_same_weight_complete_sizing(monkeypatch) -> None:
     """最新 BLOCKED 没手数时，沿用同一套权重上一次完整换算."""
-    artifacts = _empty_summary_artifacts("exec-blocked") + _complete_sizing_artifacts("exec-sized")
+    artifacts = _empty_result_evidence("exec-blocked") + _complete_sizing_evidence("exec-sized")
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
@@ -542,7 +538,7 @@ def test_account_target_snapshot_falls_back_to_same_weight_complete_sizing(monke
 
 
 def test_account_target_snapshot_does_not_reuse_lots_when_weights_changed(monkeypatch) -> None:
-    artifacts = _empty_summary_artifacts("exec-blocked") + _complete_sizing_artifacts("exec-sized")
+    artifacts = _empty_result_evidence("exec-blocked") + _complete_sizing_evidence("exec-sized")
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
@@ -582,7 +578,7 @@ def test_account_target_snapshot_does_not_reuse_lots_when_weights_changed(monkey
 
 
 def test_account_target_snapshot_falls_back_when_current_quantities_are_null(monkeypatch) -> None:
-    artifacts = _unavailable_sizing_artifacts("exec-now") + _complete_sizing_artifacts("exec-sized")
+    artifacts = _unavailable_sizing_evidence("exec-now") + _complete_sizing_evidence("exec-sized")
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
@@ -622,7 +618,7 @@ def test_account_target_snapshot_falls_back_when_current_quantities_are_null(mon
 
 
 def test_account_target_snapshot_keeps_unavailable_without_complete_history(monkeypatch) -> None:
-    session = _RouteData(_build_account(), _build_portfolio(), _unavailable_sizing_artifacts("exec-now"))
+    session = _RouteData(_build_account(), _build_portfolio(), _unavailable_sizing_evidence("exec-now"))
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
 
     async def fake_latest(_account_id: int, _portfolio_id: int) -> dict[str, object]:
@@ -646,9 +642,9 @@ def test_account_target_snapshot_keeps_unavailable_without_complete_history(monk
 
 def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -> None:
     artifacts = (
-        _empty_summary_artifacts("exec-now")
-        + _complete_sizing_artifacts("exec-a", symbol="TA701", quantity=-1.0)
-        + _complete_sizing_artifacts("exec-b", symbol="rb2610", quantity=2.0)
+        _empty_result_evidence("exec-now")
+        + _complete_sizing_evidence("exec-a", symbol="TA701", quantity=-1.0)
+        + _complete_sizing_evidence("exec-b", symbol="rb2610", quantity=2.0)
     )
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={})
@@ -698,7 +694,7 @@ def test_account_target_snapshot_does_not_union_partial_histories(monkeypatch) -
 
 
 def test_account_target_refresh_reuses_same_weight_lots(monkeypatch) -> None:
-    artifacts = _complete_sizing_artifacts("exec-sized")
+    artifacts = _complete_sizing_evidence("exec-sized")
     session = _RouteData(_build_account(), _build_portfolio(), artifacts)
     _patch_resolution(monkeypatch, portfolio_id=7, raw_target={"TA2701": -0.1067})
 
@@ -789,7 +785,7 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
         for value in values:
             value["event_uid"] = f"legacy-event-{value['id']}"
     else:
-        kinds = [value.value for value in ExecutionArtifactType if value != ExecutionArtifactType.EXECUTION_SUMMARY]
+        kinds = [value.value for value in ExecutionArtifactType]
         # 历史大小写变体保留原始身份；读取时再归一为公开枚举。
         for value, artifact_type in zip(values, [*kinds, "ENVIRONMENT_SNAPSHOT", "ACCOUNT_SNAPSHOT"], strict=True):
             value["artifact_type"] = artifact_type

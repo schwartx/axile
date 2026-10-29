@@ -3,7 +3,6 @@ import { expect, test } from 'bun:test'
 import { executionRecordSummary, executionRecordView } from './executionOutcome'
 import { withCurrency } from '@/lib/format'
 import { buildExecutionDetail, executionHeadline } from './executionDetail'
-import type { ExecutionArtifact } from '@/types/api'
 
 test('摘要只统计已有品种和成交，缺失证据不补零个品种或零笔成交', () => {
   expect(executionRecordSummary({})).toBe('调仓 · 成交信息未获取')
@@ -52,9 +51,8 @@ test.each([
   ['FAILED', '执行失败', 'warn'], ['invalid', '执行状态未知', 'neutral'],
 ])('详情和记录视图状态一致：%s', (status, title, tone) => {
   const raw = { status, error: '旧裸错误' }
-  const artifacts: ExecutionArtifact[] = [{ id: 1, execution_id: 'test', created_at: '2026-09-15', artifact_type: 'execution_summary', content: raw }]
   expect(executionRecordView(raw)).toMatchObject({ title, tone, reason: '旧裸错误' })
-  expect(executionHeadline(buildExecutionDetail([], artifacts)).text).toBe(title)
+  expect(executionHeadline(buildExecutionDetail([], [], null, raw)).text).toBe(title)
 })
 
 test('错误只按明确字段顺序回放，品种同因和不同因分别汇总', () => {
@@ -126,8 +124,7 @@ test('真实错误或订单证据不会被休市原因遮住', () => {
 
 test('详情逐只状态使用原始结果，不把受阻且缺仓位的品种显示为到位', () => {
   const content = { status: 'BLOCKED', symbol_results: { A: { status: 'BLOCKED', error: '休市', orders: [], trades: [] } } }
-  const artifacts: ExecutionArtifact[] = [{ id: 1, execution_id: 'test', created_at: '2026-09-15', artifact_type: 'execution_summary', content }]
-  const symbol = buildExecutionDetail([], artifacts).symbols[0]
+  const symbol = buildExecutionDetail([], [], null, content).symbols[0]
   expect(symbol).toMatchObject({ status: 'BLOCKED', action: 'skipped', observedAfter: null, reason: '休市', broken: true })
 })
 

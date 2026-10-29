@@ -149,7 +149,7 @@ def test_real_execution_limit_still_applies_including_promoted_artifact_only_con
     _seed(
         database,
         *[_control(key) for key in keys],
-        *[ExecutionArtifact(execution_id=key, artifact_type="execution_summary", content={}) for key in keys],
+        *[ExecutionArtifact(execution_id=key, artifact_type="environment_snapshot", content={}) for key in keys],
     )
     monkeypatch.setattr(
         account_evidence, "ExportBudget", lambda: ExportBudget(limits=replace(EvidenceLimits(), executions=1))

@@ -24,7 +24,7 @@ def client(monkeypatch):
             raise HTTPException(404, detail="账户不存在")
         return build_account()
 
-    monkeypatch.setattr(routes, "_get_account_or_404", account)
+    monkeypatch.setattr(routes, "_get_account_snapshot_or_404", account)
     with TestClient(app) as client:
         yield client
 

@@ -180,7 +180,7 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
             path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
         )
         assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
-        assert all(item.artifact_type != ExecutionArtifactType.EXECUTION_SUMMARY for item in stored_artifacts)
+        assert all(item.artifact_type != "execution_summary" for item in stored_artifacts)
         summary = execution_result_view(result, before_assets)
         assert "raw_input" not in table("executerecord").c
         assert "raw_result" not in table("executerecord").c

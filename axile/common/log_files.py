@@ -402,7 +402,7 @@ def _sequence_gaps(records: Iterable[dict[str, Any]]) -> list[str]:
     sequences: dict[str, set[int]] = {}
     for record in records:
         run, seq = record.get("run_id"), record.get("seq")
-        if isinstance(run, str) and _integer(seq, minimum=1):
+        if isinstance(run, str) and isinstance(seq, int) and _integer(seq, minimum=1):
             sequences.setdefault(run, set()).add(seq)
     issues = []
     # shortcut: 仅检测输入事件之间的缺口，确认运行首尾完整需要运行清单。

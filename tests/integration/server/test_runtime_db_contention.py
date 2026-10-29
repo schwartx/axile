@@ -88,7 +88,7 @@ def test_worker_process_can_commit_during_prepare(tmp_path: Path, monkeypatch: p
 
             monkeypatch.setattr(runtime, "reconcile_china_channel_account", prepare)
             sync = await runtime.reconcile_account_runtime(1, MagicMock())
-            assert sync.status == "synchronized"
+            assert sync["status"] == "synchronized"
             with closing(sqlite3.connect(database)) as connection:
                 assert connection.execute("SELECT delta_count FROM account_control_counter_delta").fetchone() == (1,)
 

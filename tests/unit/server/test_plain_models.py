@@ -190,6 +190,8 @@ def test_execution_audit_enums_and_json_defaults():
     assert event.model_dump(mode="json")["event_type"] == "execution_started"
     event.details["first"] = True
     assert ExecutionEvent.model_validate(event_data).details == {}
-    artifact = ExecutionArtifact(execution_id="execution", artifact_type="execution_summary")
-    assert artifact.artifact_type is ExecutionArtifactType.EXECUTION_SUMMARY
-    assert artifact.model_dump(mode="json")["artifact_type"] == "execution_summary"
+    artifact = ExecutionArtifact(execution_id="execution", artifact_type="environment_snapshot")
+    assert artifact.artifact_type is ExecutionArtifactType.ENVIRONMENT_SNAPSHOT
+    assert artifact.model_dump(mode="json")["artifact_type"] == "environment_snapshot"
+    with pytest.raises(ValidationError):
+        ExecutionArtifact.model_validate({"execution_id": "execution", "artifact_type": "execution_summary"})
