@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import AsyncAdaptedQueuePool, event
+from sqlalchemy import NullPool, event
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from axile.common.config import settings
@@ -44,7 +44,7 @@ def register_sqlite_concurrency_pragmas(target_engine: AsyncEngine) -> None:
 engine = create_async_engine(
     str(settings.sqlalchemy_database_uri),
     echo=False,
-    poolclass=AsyncAdaptedQueuePool,
+    poolclass=NullPool,
     json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),  # type: ignore[arg-type]
 )
 

@@ -106,18 +106,26 @@ def test_append_execution_artifact_ignores_duplicate(
     assert fake_session.rollback_called is True
 
 
-def test_run_coroutine_sync_times_out_with_running_loop() -> None:
-    """有 loop 分支：从运行中的事件循环同步调用，挂起协程也应在超时内抛 TimeoutError。"""
+@pytest.mark.parametrize("kind", ["event", "artifact"])
+def test_sync_audit_rejects_running_loop_before_starting_write(monkeypatch, kind):
+    async def unexpected(**_kwargs):
+        pytest.fail("循环内同步误用不应开始写入")
 
-    async def _hang() -> None:
-        await asyncio.sleep(5)
+    monkeypatch.setattr(execution_audit, f"append_execution_{kind}", unexpected)
 
-    async def _driver() -> None:
-        # 在运行中的 loop 内调用，触发临时线程分支。
-        execution_audit._run_coroutine_sync(lambda: _hang(), timeout=0.1)
+    async def check():
+        heartbeat = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(heartbeat.set_result, True)
+        with pytest.raises(execution_audit.SyncAuditContextError, match="await"):
+            getattr(execution_audit, f"append_execution_{kind}_sync")()
+        assert await asyncio.wait_for(heartbeat, 1)
 
+    asyncio.run(check())
+
+
+def test_sync_audit_keeps_worker_coroutine_deadline():
     with pytest.raises(TimeoutError):
-        asyncio.run(_driver())
+        execution_audit._run_coroutine_sync(lambda: asyncio.sleep(1), timeout=0.01)
 
 
 def test_append_execution_event_sync_swallows_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
