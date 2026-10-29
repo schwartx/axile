@@ -12,6 +12,7 @@ from loguru import logger
 from axile.domain.execution import ExecutionArtifactType, ExecutionEventType
 from axile.server.db.models import ExecutionArtifact, ExecutionEvent, now_str
 from axile.server.execution_audit import (
+    SyncAuditContextError,
     _notify_live_hub,
     _run_coroutine_sync,
 )
@@ -147,6 +148,8 @@ def append_execution_audit_batch_sync(batch: ExecutionAuditBatch) -> int:
     """同步等待一次提交，并在调用方线程通知，不在临时 DB 线程广播。"""
     try:
         committed = _run_coroutine_sync(lambda: _persist_batch(batch))
+    except SyncAuditContextError:
+        raise
     except Exception as exc:
         logger.error("同步提交执行审计批次失败，已放弃（审计尽力而为）: {}", exc)
         return 0
