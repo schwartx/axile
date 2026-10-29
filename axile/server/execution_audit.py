@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import threading
 from collections.abc import Callable, Coroutine
 from typing import TypedDict, TypeVar, cast
 
@@ -51,26 +50,11 @@ def _notify_live_hub(
 
 
 _AUDIT_COROUTINE_TIMEOUT_SECONDS = 10.0
-"""同步执行审计协程（DB 写入/广播）的硬超时（秒）。.
+"""同步审计的取消期限；原生调用退出与资源清理完成后才返回。"""
 
-审计是尽力而为的旁路：单行 INSERT 正常是毫秒级，该值只用于兜住 DB/通知链路
-挂起的场景，避免调用线程（乃至事件循环线程）被无限拖死。
 
-取值依据（非 SLA，是「挂死安全阀」的阈值）：
-
-- **下界**：须远高于健康写入延迟（<1s）与瞬时慢（连接池饱和、DB 短暂
-  failover、commit 等 WAL，量级几秒），否则会误杀「慢但没死」的写入。
-- **上界**：一次执行会多次调用审计（started / 每 symbol 决策 / completed /
-  若干 artifact，最坏约数十次）。DB 全线退化时累计延迟 ≈ N × 本超时，须稳在
-  worker recv 600s 兜底（见 ``worker_backend.manager``）之内，否则执行会被那层
-  反杀、本超时形同虚设；同时也压低万一命中事件循环线程分支时的冻结暴露。
-
-10s ≈ 健康延迟的上千倍（不误杀）、高于瞬时慢（几秒）、按最坏约 30 次累计封顶
-约 300s 稳在 600s 之内。
-"""
-
-_AUDIT_JOIN_GRACE_SECONDS = 5.0
-"""临时线程 ``join`` 相对协程超时额外预留的宽限（秒），作为最外层兜底。."""
+class SyncAuditContextError(RuntimeError):
+    """同步审计被误用于运行中的事件循环。"""
 
 
 def _run_coroutine_sync(
@@ -78,63 +62,18 @@ def _run_coroutine_sync(
     *,
     timeout: float = _AUDIT_COROUTINE_TIMEOUT_SECONDS,
 ) -> T:
-    """在同步上下文安全执行协程，并施加超时上界.
-
-    Parameters
-    ----------
-    coro_factory : Callable[[], Coroutine[object, object, T]]
-        待执行协程的工厂；延迟到真正运行时才构造协程。
-    timeout : float, default=30.0
-        协程执行的硬超时秒数；超时视为失败并抛出 ``TimeoutError``。
-
-    Returns
-    -------
-    T
-        协程的返回值。
-
-    Raises
-    ------
-    TimeoutError
-        协程在 ``timeout`` 内未完成。
-
-    Notes
-    -----
-    - 无运行中事件循环时，直接 ``asyncio.run``；
-    - 已有运行中事件循环时，切到临时线程执行，避免与当前循环冲突；
-    - 两条路径都以 ``timeout`` 为硬上界（``asyncio.wait_for``），DB 或审计通知
-      链路挂起时不会永久阻塞调用线程；有循环分支额外用 ``join(timeout+宽限)``
-      兜底，即便协程不可取消也不会永久冻结事件循环（临时 daemon 线程被孤儿化，
-      但调用方得以脱身）。
-    """
+    """仅在无运行循环的工作线程中同步执行审计，禁止阻塞事件循环。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise SyncAuditContextError("同步审计入口不能在运行中的事件循环内调用，请 await 异步入口或移至工作线程")
 
     async def _run_with_deadline() -> T:
         return await asyncio.wait_for(coro_factory(), timeout)
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_run_with_deadline())
-
-    result: list[T] = []
-    error: dict[str, BaseException] = {}
-
-    def _runner() -> None:
-        try:
-            result.append(asyncio.run(_run_with_deadline()))
-        except BaseException as exc:  # noqa: BLE001
-            error["value"] = exc
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join(timeout + _AUDIT_JOIN_GRACE_SECONDS)
-
-    if thread.is_alive():
-        raise TimeoutError(f"同步执行审计协程超时（{timeout}s），临时线程未在宽限内结束")
-    if "value" in error:
-        raise error["value"]
-    if result:
-        return result[0]
-    raise RuntimeError("同步执行协程失败：未返回结果且未抛出异常")
+    return asyncio.run(_run_with_deadline())
 
 
 def build_event_uid(

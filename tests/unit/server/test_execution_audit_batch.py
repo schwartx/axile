@@ -129,12 +129,11 @@ def test_sync_batch_notifies_in_caller_thread_after_database_thread_returns(monk
     monkeypatch.setattr(audit_batch, "_notify_live_hub", lambda **_: trace.append(("notify", threading.get_ident())))
 
     async def check():
-        caller = threading.get_ident()
         batch = audit_batch.ExecutionAuditBatch(max_entries=3)
         batch.add_event(_event())
-        assert audit_batch.append_execution_audit_batch_sync(batch) == 1
-        assert trace[0][0] == "commit" and trace[0][1] != caller
-        assert trace[1] == ("notify", caller)
+        assert await asyncio.to_thread(audit_batch.append_execution_audit_batch_sync, batch) == 1
+        assert trace[0][0] == "commit" and trace[0][1] != threading.get_ident()
+        assert trace[1] == ("notify", trace[0][1])
 
     asyncio.run(check())
 
