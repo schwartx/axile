@@ -1,5 +1,9 @@
 """统一订单的成交关联、剩余数量及零数量保护。"""
 
+from datetime import datetime
+
+import pytest
+
 from axile.executor.models.unified_order import (
     TradeRecord,
     UnifiedOrder,
@@ -62,6 +66,46 @@ class TestUnifiedOrderMethods:
         # 零委托量（保护）
         order_zero_volume = UnifiedOrder.create("O17", "rb2610", "BUY", "LIMIT", 0.0, 30000)
         assert order_zero_volume.filled_ratio == 0.0
+
+
+@pytest.mark.parametrize("construct", [False, True])
+@pytest.mark.parametrize("updated", ["2026-10-15T18:38:33.939061", "2026-10-15T10:38:33.939061Z"])
+def test_order_update_time_survives_construction_and_json_roundtrip(construct, updated):
+    payload = {
+        "order_id": "O-time",
+        "symbol": "XRPUSDT",
+        "direction": "BUY",
+        "order_type": "LIMIT",
+        "volume": 1.0,
+        "price": 1.0,
+        "status": "已撤销",
+        "update_time": updated,
+        "extra": {},
+    }
+    order = UnifiedOrder.model_construct(**payload) if construct else UnifiedOrder.model_validate(payload)
+    for _ in range(2):
+        assert order.update_time == updated
+        assert order.update_timestamp == datetime.fromisoformat(updated).timestamp()
+        dumped = order.model_dump(mode="json")
+        assert "update_timestamp" not in dumped
+        assert dumped["extra"] == {}
+        order = UnifiedOrder.model_validate_json(order.model_dump_json())
+
+
+def test_order_legacy_timestamp_and_explicit_time_are_preserved():
+    order = UnifiedOrder.create("O-time", "XRPUSDT", "BUY", "LIMIT", 1, update_time="2026-10-15T18:38:33")
+    assert UnifiedOrder.model_validate(order.model_dump()).update_time == order.update_time
+    payload = order.model_dump()
+    payload.pop("update_time")
+    payload["extra"] = {}
+    payload["update_timestamp"] = 1.0
+    restored = UnifiedOrder.model_validate(payload)
+    assert restored.update_time == datetime.fromtimestamp(1).isoformat()
+    assert UnifiedOrder.model_validate(restored.model_dump()).update_timestamp == 1.0
+    payload["extra"] = {"_update_time_str": "2026-10-15T18:38:33"}
+    assert UnifiedOrder.model_validate(payload).update_time == "2026-10-15T18:38:33"
+    payload["update_time"] = "2026-10-16T18:38:33"
+    assert UnifiedOrder.model_validate(payload).update_time == "2026-10-16T18:38:33"
 
 
 class TestUnifiedOrderTrades:

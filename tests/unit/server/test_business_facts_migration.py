@@ -2,6 +2,7 @@
 
 import json
 from contextlib import contextmanager
+from copy import deepcopy
 
 import pytest
 import sqlalchemy as sa
@@ -467,6 +468,150 @@ def test_derivable_summary_is_removed_without_losing_execution_facts(legacy_conn
             connection.exec_driver_sql("SELECT raw_result FROM executerecord WHERE id=1").scalar_one()
         )
         assert business_evidence(restored) == business_evidence(result)
+
+
+def _summary_time_fixture(connection, metadata, now, *, root_orders=False):
+    result, summary = _summary_fixture(connection, metadata, now)
+    order = result["symbol_results"]["A"]["orders"][0]
+    order.update(update_time="2026-10-15T18:38:34.582412", extra={})
+    if root_orders:
+        result["orders"] = result["symbol_results"]["A"].pop("orders")
+        summary["orders"] = result["orders"]
+    else:
+        result["symbol_results"]["A/B~C"] = result["symbol_results"].pop("A")
+        summary["symbol_results"] = result["symbol_results"]
+    summary = deepcopy(summary)
+    summary_order = summary["orders"][0] if root_orders else summary["symbol_results"]["A/B~C"]["orders"][0]
+    summary_order["update_time"] = "2026-10-15T18:38:33.939061"
+    result["audit_evidence"] = {"original": {"zero": 0, "unknown": None}}
+    connection.execute(
+        metadata.tables["executerecord"]
+        .update()
+        .where(metadata.tables["executerecord"].c.id == 1)
+        .values(raw_result=result)
+    )
+    connection.execute(metadata.tables["execution_artifact"].update().values(content=summary))
+    return result, summary, summary_order
+
+
+@pytest.mark.parametrize("root_orders", [False, True])
+def test_legacy_order_times_are_preserved_as_sparse_evidence(legacy_connection, root_orders):
+    database, metadata, now = legacy_connection
+    with _connect(database) as connection:
+        result, summary, _ = _summary_time_fixture(connection, metadata, now, root_orders=root_orders)
+        connection.execute(
+            metadata.tables["execution_artifact"].insert(),
+            {
+                "execution_id": "migration-exec",
+                "artifact_type": "execution_summary",
+                "schema_version": 2,
+                "created_at": now,
+                "content": summary,
+            },
+        )
+        sources = connection.exec_driver_sql("SELECT id,artifact_type FROM execution_artifact ORDER BY id").all()
+    _upgrade(database)
+    actual = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    evidence = actual["audit_evidence"].pop("legacy_order_update_times")
+    assert actual["audit_evidence"] == result["audit_evidence"]
+    assert business_evidence(actual) == business_evidence(result)
+    assert evidence == [
+        {
+            "artifact_id": artifact_id,
+            "artifact_type": kind,
+            "schema_version": 2,
+            "created_at": now,
+            "orders": [
+                {
+                    "path": "/orders/0" if root_orders else "/symbol_results/A~1B~0C/orders/0",
+                    "order_id": "one",
+                    "summary_update_time": "2026-10-15T18:38:33.939061",
+                    "result_update_time": "2026-10-15T18:38:34.582412",
+                }
+            ],
+        }
+        for artifact_id, kind in sources
+    ]
+    _upgrade(database)
+    repeated = read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})
+    assert repeated["audit_evidence"]["legacy_order_update_times"] == evidence
+    with _connect(database) as connection:
+        assert connection.exec_driver_sql("SELECT COUNT(*) FROM execution_artifact").scalar_one() == 0
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0034"
+        assert connection.exec_driver_sql("PRAGMA integrity_check").scalar_one() == "ok"
+    _downgrade(database)
+    with _connect(database) as connection:
+        restored = json.loads(
+            connection.exec_driver_sql("SELECT raw_result FROM executerecord WHERE id=1").scalar_one()
+        )
+        assert restored["audit_evidence"]["legacy_order_update_times"] == evidence
+        assert business_evidence(restored) == business_evidence(result)
+    _upgrade(database)
+    assert (
+        read_view(database, "read_execution_result", {"account_id": 1, "record_id": 1})["audit_evidence"][
+            "legacy_order_update_times"
+        ]
+        == evidence
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("price", 99),
+        ("status", "已成交"),
+        ("filled_volume", 2),
+        ("order_id", "other"),
+        ("update_time", "invalid"),
+        ("update_timestamp", 1),
+        ("extra", {"_update_time_str": "2026-10-15T18:38:33.939061"}),
+    ],
+)
+def test_legacy_order_time_compatibility_still_rejects_other_conflicts(legacy_connection, field, value):
+    database, metadata, now = legacy_connection
+    with _connect(database) as connection:
+        _result, summary, order = _summary_time_fixture(connection, metadata, now)
+        # 首条摘要会写入时间证据；第二条冲突必须让它一起回滚。
+        connection.execute(
+            metadata.tables["execution_artifact"].insert(),
+            {
+                "execution_id": "migration-exec",
+                "artifact_type": "execution_summary",
+                "schema_version": 2,
+                "created_at": now,
+                "content": {**summary, "symbol_results": deepcopy(summary["symbol_results"])},
+            },
+        )
+        order[field] = value
+        connection.execute(
+            metadata.tables["execution_artifact"]
+            .update()
+            .where(metadata.tables["execution_artifact"].c.id == 2)
+            .values(content=summary)
+        )
+        before = connection.exec_driver_sql("SELECT * FROM execution_artifact ORDER BY id").all()
+    with pytest.raises(require_native_store("migration_upgrade").NativeError, match="independent summary field"):
+        _upgrade(database)
+    with _connect(database) as connection:
+        assert connection.exec_driver_sql("SELECT * FROM execution_artifact ORDER BY id").all() == before
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0033"
+        assert not connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE name='execution_extension'").all()
+
+
+@pytest.mark.parametrize("explicit", ["timestamp", "extra"])
+def test_explicit_order_times_are_not_treated_as_legacy_clock_loss(legacy_connection, explicit):
+    database, metadata, now = legacy_connection
+    with _connect(database) as connection:
+        result, summary, order = _summary_time_fixture(connection, metadata, now)
+        fact = result["symbol_results"]["A/B~C"]["orders"][0]
+        if explicit == "timestamp":
+            order["update_timestamp"] = fact["update_timestamp"] = 1
+        else:
+            order["extra"] = fact["extra"] = {"_update_time_str": fact["update_time"]}
+        connection.execute(metadata.tables["executerecord"].update().values(raw_result=result))
+        connection.execute(metadata.tables["execution_artifact"].update().values(content=summary))
+    with pytest.raises(require_native_store("migration_upgrade").NativeError, match="independent summary field"):
+        _upgrade(database)
 
 
 def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_connection):
