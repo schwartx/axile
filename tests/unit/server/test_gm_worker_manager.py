@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from threading import Event, Lock, Thread
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from axile.common.trade_channel import TradeChannel
+from axile.executor.algorithms.utils import clock as clock_module
+from axile.executor.instrument_catalog_records import Instrument
 from axile.executor.models.execution_result import ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
 from axile.executor.termination import ExecutionTerminated, ExecutionTerminationController
@@ -631,6 +635,47 @@ def test_execution_activity_does_not_reenable_paused_catalog_source():
         assert manager._catalog_accounts[2][1] is False
         assert handle.catalog.configure.call_args.kwargs["enabled"] is False
         assert manager._catalog_accounts[2][2] >= "2026-10-13T20:00:00"
+    finally:
+        manager.close()
+
+
+def test_execution_activity_keeps_latest_catalog_source_in_negative_timezone(monkeypatch):
+    frozen = datetime(2026, 10, 30, 13, 30, 0, 123456, tzinfo=UTC)
+
+    class FixedClock(clock_module.RealClock):
+        def time_us(self):
+            return int(frozen.timestamp()) * 1_000_000 + frozen.microsecond
+
+    real_now = clock_module.clock_now
+
+    def local_now(clock=None, tz=None):
+        current = real_now(clock, tz=tz or ZoneInfo("America/New_York"))
+        return current if tz is not None else current.replace(tzinfo=None)
+
+    monkeypatch.setattr(clock_module, "_default_clock", FixedClock())
+    monkeypatch.setattr(clock_module, "clock_now", local_now)
+    manager = WorkerBackendManager()
+    calls = []
+    instrument = Instrument("SHFE", "rb2701", "FUTURE", 10, 1)
+    try:
+        for account_id, last_execution in [(1, "12:00:00"), (2, "13:00:00")]:
+            manager.configure_catalog_account(
+                build_account(id=account_id, trade_channel=TradeChannel.CTP, is_started=True),
+                last_execution=f"2026-10-30T{last_execution}.000000Z",
+            )
+        manager._record_catalog_execution(1)
+        for account_id, (channel, enabled, last_execution) in manager._catalog_accounts.items():
+
+            def query(symbols, timeout, source=account_id):
+                calls.append(source)
+                return [instrument]
+
+            manager.instrument_catalog.register(
+                str(account_id), query, channel=channel, enabled=enabled, last_execution=last_execution
+            )
+        assert manager.instrument_catalog.ensure([instrument.key])[instrument.key] == instrument
+        assert calls == [1]
+        assert manager._catalog_accounts[1][2] == "2026-10-30T13:30:00.123456Z"
     finally:
         manager.close()
 

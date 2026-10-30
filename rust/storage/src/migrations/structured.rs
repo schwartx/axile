@@ -25,6 +25,17 @@ pub(super) fn create(connection: &Connection) -> Result<()> {
 }
 
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
+    // 0033 predates this namespace; reject collisions before replacing triggers.
+    if let Some(trigger) = rows(
+        connection,
+        "SELECT name FROM sqlite_schema WHERE type='trigger' AND lower(name) GLOB 'business_facts_0034_*' ORDER BY name LIMIT 1",
+        [],
+    )?.first() {
+        return Err(error(format!(
+            "Cannot upgrade 0033: reserved trigger name {}; rename it before migrating",
+            text(trigger, "name")?
+        )));
+    }
     check_analysis_dependencies(connection, super::BASELINE_REVISION)?;
     guards::drop_analysis(connection)?;
     let state = rows(

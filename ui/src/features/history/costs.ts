@@ -24,7 +24,8 @@ export function shanghaiDay(value: string): string {
 }
 
 export function shanghaiLabel(value: string): string {
-  return new Date(shanghaiTime(value) + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ')
+  const date = new Date(shanghaiTime(value.trim()) + 8 * 3600000)
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 19).replace('T', ' ') : ''
 }
 
 export interface CostTrade {

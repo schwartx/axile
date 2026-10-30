@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { costExecutions, costTrades, durationText, dailyCosts, executionsOnDay, loadPerformanceActivity, shanghaiDay, shanghaiTime, summarizeCosts } from './costs'
+import { costExecutions, costTrades, durationText, dailyCosts, executionsOnDay, loadPerformanceActivity, shanghaiDay, shanghaiLabel, shanghaiTime, summarizeCosts } from './costs'
 import { loadJournal } from '@/features/account/executionJournal'
 import type { AccountActivity } from '@/lib/api/accounts'
 import type { ExecuteRecord, ExecutionResultFacts } from '@/types/api'
@@ -91,6 +91,15 @@ test('上海跨年日分组，逐日和逐执行及品种汇总一致，无成�
   expect(days.has('2026-01-03')).toBe(false)
   expect(shanghaiDay('2025-12-31T16:00:00Z')).toBe('2026-01-01')
   expect(shanghaiTime('2026-01-01T00:00:00')).toBe(shanghaiTime('2025-12-31T16:00:00Z'))
+})
+
+test('上海时间标签兼容历史空白，无法解析或超出范围时留空', () => {
+  for (const value of ['2026-01-02T00:30:00', '2026-01-01T16:30:00.123456Z', ' 2026-01-02T00:30:00+08:00 ']) {
+    expect(shanghaiLabel(value)).toBe('2026-01-02 00:30:00')
+  }
+  for (const value of ['', '  ', 'invalidTtime', '+275760-09-13T00:00:00.000Z']) {
+    expect(shanghaiLabel(value)).toBe('')
+  }
 })
 
 test('上海时间完整分页超过 500 条，边界包含基准与截止毫秒', async () => {

@@ -46,17 +46,23 @@ fn plan(connection: &Connection, upgrade: bool) -> Result<Vec<Table>> {
 }
 
 fn check_dependencies(connection: &Connection, tables: &[Table], upgrade: bool) -> Result<()> {
-    let literals = Regex::new(r"'(?:''|[^'])*'").map_err(|failure| error(failure.to_string()))?;
+    let quoted_and_comments = Regex::new(
+        r#"(?s)'(?:''|[^'])*'|"(?:""|[^"])*"|\[[^]]*\]|`(?:``|[^`])*`|--[^\r\n]*|/\*.*?(?:\*/|\z)"#,
+    )
+    .map_err(|failure| error(failure.to_string()))?;
     let identifiers = Regex::new(r#""[^"]+"|\[[^]]+\]|`[^`]+`|\b\w+\b"#)
         .map_err(|failure| error(failure.to_string()))?;
-    let wildcard =
-        Regex::new(r#"(?i)(?:\bSELECT\s+(?:(?:DISTINCT|ALL)\s+)?|,)\s*(?:"?\w+"?\.)?\*"#)
-            .map_err(|failure| error(failure.to_string()))?;
+    let wildcard = Regex::new(
+        r#"(?i)(?:\bSELECT\s+(?:(?:DISTINCT|ALL)\s+)?|,)\s*(?:(?:\w+|"(?:""|[^"])*"|\[[^]]*\]|`(?:``|[^`])*`)\s*\.\s*)?\*"#,
+    )
+    .map_err(|failure| error(failure.to_string()))?;
     for object in rows(connection,"SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE type IN ('trigger','view','index') AND sql IS NOT NULL",[])? {
         let name=text(&object,"name")?;
         let kind=text(&object,"type")?;
+        let owner=text(&object,"tbl_name")?;
         if kind == "trigger" && schema::BUSINESS_TABLES.iter().any(|table| {
-            ["insert", "update", "delete"].iter().any(|action| name == format!("business_facts_0034_{table}_{action}"))
+            owner == *table
+                && ["insert", "update", "delete"].iter().any(|action| name == format!("business_facts_0034_{table}_{action}"))
         }) { continue; }
         if kind=="index" {
             if matches!(name,"ix_executerecord_account_time_id"|"ix_schedule_skip_account_time_id") { continue; }
@@ -64,9 +70,12 @@ fn check_dependencies(connection: &Connection, tables: &[Table], upgrade: bool) 
             let partial=rows(connection,&format!("PRAGMA index_list({})",quote(text(&object,"tbl_name")?)),[])?.iter().any(|row|value(row,"name")==&Value::from(name) && value(row,"partial")==&Value::from(1));
             if !expression && !partial { continue; }
         }
-        let without_literals=literals.replace_all(text(&object,"sql")?,"");
+        let without_literals=quoted_and_comments.replace_all(text(&object,"sql")?,|capture: &regex::Captures<'_>| {
+            let token=&capture[0];
+            if token.starts_with(['\'', '-', '/']) { " ".to_owned() } else { token.to_owned() }
+        });
         let tokens=identifiers.find_iter(&without_literals).map(|token|token.as_str().trim_matches(['"','`','[',']']).to_ascii_lowercase()).collect::<std::collections::BTreeSet<_>>();
-        let affected=tables.iter().any(|table|tokens.contains(table.name) && (kind=="view" && wildcard.is_match(&without_literals) || table.columns.iter().any(|column|tokens.contains(if upgrade {column.name}else{column.storage}))));
+        let affected=tables.iter().any(|table|tokens.contains(table.name) && (matches!(kind,"view"|"trigger") && wildcard.is_match(&without_literals) || table.columns.iter().any(|column|tokens.contains(if upgrade {column.name}else{column.storage}))));
         if affected { return Err(error(format!("Cannot convert scalar time: custom {kind} {name} depends on a time column; preserve or update it before migrating"))); }
     }
     Ok(())
@@ -331,7 +340,7 @@ mod tests {
              CREATE INDEX account_time ON account(created_at);
              CREATE TABLE audit(account_id INTEGER,observed TEXT);
              CREATE TRIGGER account_audit AFTER UPDATE ON account BEGIN INSERT INTO audit VALUES(NEW.id,NEW.id); END;
-             CREATE VIEW account_view AS SELECT id FROM account;
+             CREATE VIEW account_view AS SELECT id /* created_at is not selected */ FROM account;
              INSERT INTO account VALUES(1,'1970-01-01T00:00:00.000001Z','1970-01-01T08:00:00+08:00',X'7B2022637265617465645F617422203A20226E6F742D612D74696D6522207D');
              UPDATE sqlite_sequence SET seq=99 WHERE name='account';"
         ).unwrap();
@@ -434,6 +443,10 @@ mod tests {
             "CREATE INDEX time_dependency ON account(julianday(created_at))",
             "CREATE INDEX time_dependency ON account(id) WHERE created_at>'2025-01-01'",
             "CREATE VIEW time_dependency AS SELECT * FROM account",
+            "CREATE VIEW time_dependency AS SELECT /* readable comment */ * FROM account",
+            "CREATE VIEW time_dependency AS SELECT -- readable comment\n * FROM account",
+            "CREATE VIEW time_dependency AS SELECT DISTINCT \"a/*\"\"--\".* FROM account AS \"a/*\"\"--\"",
+            "CREATE TRIGGER time_dependency AFTER UPDATE ON account BEGIN SELECT * FROM account; END",
         ] {
             let mut connection=Connection::open_in_memory().unwrap();
             connection.execute_batch("CREATE TABLE account(id INTEGER PRIMARY KEY,created_at TEXT,updated_at TEXT); INSERT INTO account VALUES(1,'1970-01-01T00:00:00Z','1970-01-01T00:00:00Z');").unwrap();

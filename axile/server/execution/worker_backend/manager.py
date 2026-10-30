@@ -13,7 +13,7 @@ from typing import cast
 from uuid import uuid4
 
 from axile.common.trade_channel import TradeChannel
-from axile.executor.algorithms.utils.clock import clock_monotonic, clock_now_iso
+from axile.executor.algorithms.utils.clock import clock_monotonic
 from axile.executor.instrument_catalog import InstrumentCatalog
 from axile.executor.models.execution_result import ExecutionOutcome, ExecutionStatus
 from axile.executor.models.unified_account_assets import UnifiedAccountAssets
@@ -23,6 +23,7 @@ from axile.server.account_control.ipc import RemoteMonitor
 from axile.server.connection_state import ConnectionBinding
 from axile.server.db.models.account import AccountContext, AccountSnapshot
 from axile.server.db.models.account_connection import AccountConnectionPublic
+from axile.server.db.models.base import now_str
 from axile.server.execution.worker_backend.catalog import CatalogSession
 from axile.server.execution.worker_backend.orders import OrdersChannel
 from axile.server.execution.worker_backend.protocol import (
@@ -260,7 +261,7 @@ class WorkerBackendManager:
         """只更新使用时间，避免在途请求的旧快照重新启用已暂停来源。"""
         with self._lock:
             channel, enabled, _ = self._catalog_accounts[account_id]
-            latest = clock_now_iso().replace(" ", "T")
+            latest = now_str()
             self._catalog_accounts[account_id] = channel, enabled, latest
             handle = self._workers.get(account_id)
             if handle is not None and handle.catalog is not None:
