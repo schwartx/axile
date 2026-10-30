@@ -57,11 +57,12 @@ fn write_manual_snapshot(
     if !exists {
         return Err(AnalysisError::new("ACCOUNT_NOT_FOUND", "账户不存在"));
     }
+    let created_at_us = crate::time_us::parse(created_at).map_err(invalid)?;
     connection
         .execute(
-            "INSERT INTO account_asset_snapshot(account_id,source,created_at)
+            "INSERT INTO account_asset_snapshot(account_id,source,created_at_us)
              VALUES(?1,'manual',?2)",
-            params![account_id, created_at],
+            params![account_id, created_at_us],
         )
         .map_err(sql)?;
     let snapshot_id = connection.last_insert_rowid();
@@ -81,7 +82,7 @@ fn write_manual_snapshot(
         .map_err(sql)?;
     Ok(
         json!({"id": snapshot_id, "account_id": account_id, "asset_fact_id": asset_id,
-            "source": "manual", "execution_id": null, "created_at": created_at}),
+            "source": "manual", "execution_id": null, "created_at": crate::time_us::format(created_at_us).map_err(invalid)?}),
     )
 }
 
@@ -323,13 +324,22 @@ pub(crate) fn ensure_execution_asset_snapshot(
     let Some(reference) = reference else {
         return Ok(());
     };
-    let (account_id, execution_id, created_at): (i64, Option<String>, String) = connection
-        .query_row(
-            "SELECT account_id,execution_id,created_at FROM executerecord WHERE id=?1",
-            [record_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(sql)?;
+    let typed: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executerecord') WHERE name='created_at_us')",
+        [], |row| row.get(0),
+    ).map_err(sql)?;
+    // 0033 转换先核对原始证据，之后才统一标量时间。
+    let time_column = if typed { "created_at_us" } else { "created_at" };
+    let (account_id, execution_id, created_at): (i64, Option<String>, rusqlite::types::Value) =
+        connection
+            .query_row(
+                &format!(
+                    "SELECT account_id,execution_id,{time_column} FROM executerecord WHERE id=?1"
+                ),
+                [record_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(sql)?;
     let (lookup, identity) = match execution_id.as_deref() {
         Some(execution) => ("execution_id", execution),
         None => ("asset_fact_id", reference.as_str()),
@@ -355,8 +365,8 @@ pub(crate) fn ensure_execution_asset_snapshot(
         return Ok(());
     }
     connection.execute(
-        "INSERT INTO account_asset_snapshot(account_id,asset_fact_id,source,execution_id,created_at)
-         VALUES(?1,?2,'execution',?3,?4)",
+        &format!("INSERT INTO account_asset_snapshot(account_id,asset_fact_id,source,execution_id,{time_column})
+         VALUES(?1,?2,'execution',?3,?4)"),
         params![account_id, reference, execution_id, created_at],
     ).map_err(sql)?;
     Ok(())
@@ -427,16 +437,16 @@ mod tests {
              CREATE TABLE execution_input(id TEXT PRIMARY KEY,account_id INTEGER,
                  execution_id TEXT,owner_execution_id TEXT);
              CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,
-                 execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at TEXT);
+                 execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at_us INTEGER);
              CREATE TABLE account_asset_snapshot(id INTEGER PRIMARY KEY,account_id INTEGER NOT NULL,
-                 asset_fact_id TEXT,source TEXT NOT NULL,execution_id TEXT UNIQUE,created_at TEXT NOT NULL);
+                 asset_fact_id TEXT,source TEXT NOT NULL,execution_id TEXT UNIQUE,created_at_us INTEGER NOT NULL);
              CREATE TABLE business_asset_snapshot(asset_id TEXT PRIMARY KEY,record_id INTEGER,
                  input_id TEXT,account_snapshot_id INTEGER,path TEXT NOT NULL,scope TEXT NOT NULL,
                  ordinal INTEGER NOT NULL,map_key TEXT,payload_kind TEXT NOT NULL,payload_value JSON,
                  audit_evidence JSON NOT NULL,cash_state TEXT NOT NULL,equity_state TEXT NOT NULL,
                  market_state TEXT NOT NULL,positions_kind TEXT NOT NULL,positions_count INTEGER,
                  positions_value JSON,observation_valid INTEGER NOT NULL,available_cash REAL,
-                 total_asset REAL,market_value REAL,currency TEXT,update_time TEXT,source TEXT,extra JSON,
+                 total_asset REAL,market_value REAL,currency TEXT,update_time_us INTEGER,source TEXT,extra JSON,
                  CHECK ((record_id IS NOT NULL)+(input_id IS NOT NULL)+(account_snapshot_id IS NOT NULL)=1));
              CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER,payload_kind TEXT NOT NULL,
                  payload_value JSON,audit_evidence JSON NOT NULL,volume_state TEXT NOT NULL,
@@ -466,10 +476,43 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "INSERT INTO executerecord VALUES(17,1,?1,'i1',NULL,'terminal-time')",
+                "INSERT INTO executerecord VALUES(17,1,?1,'i1',NULL,1792746000000000)",
                 [execution_id],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn legacy_conversion_copies_time_before_scalar_normalization() {
+        let connection = schema();
+        connection
+            .execute_batch(
+                "ALTER TABLE executerecord RENAME COLUMN created_at_us TO created_at;
+            ALTER TABLE account_asset_snapshot RENAME COLUMN created_at_us TO created_at;",
+            )
+            .unwrap();
+        input_and_record(&connection, Some("e1"));
+        let original = "2026-10-23T09:00:00.123456+08:00";
+        connection
+            .execute(
+                "UPDATE executerecord SET created_at=?1 WHERE id=17",
+                [original],
+            )
+            .unwrap();
+        write_result_assets(
+            &connection,
+            17,
+            &json!({"account_assets":{"total_asset":1,"positions":[]}}),
+            None,
+        )
+        .unwrap();
+        ensure_execution_asset_snapshot(&connection, 17).unwrap();
+        let copied: String = connection
+            .query_row("SELECT created_at FROM account_asset_snapshot", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(copied, original);
     }
 
     #[test]
@@ -477,7 +520,7 @@ mod tests {
         let connection = schema();
         let first = json!({"account_assets":{"total_asset":50,"positions":[]}});
         crate::writer_scope::immediate(&connection, || {
-            write_manual_snapshot(&connection, 1, "first", &first)
+            write_manual_snapshot(&connection, 1, "2026-10-23T08:00:00.000000Z", &first)
         })
         .unwrap();
         connection
@@ -489,7 +532,7 @@ mod tests {
         let request =
             json!({"account_assets":{"total_asset":0,"positions":[{"symbol":"A"},{"symbol":"B"}]}});
         let result = crate::writer_scope::immediate(&connection, || {
-            write_manual_snapshot(&connection, 1, "failed", &request)
+            write_manual_snapshot(&connection, 1, "2026-10-23T10:00:00.000000Z", &request)
         });
         assert!(result.is_err());
         assert_eq!(count(&connection, "account_asset_snapshot"), 1);
@@ -497,7 +540,7 @@ mod tests {
         assert_eq!(count(&connection, "business_asset_position"), 0);
         assert_eq!(
             crate::assets::page(&connection, 1, 0, 1).unwrap()["data"][0]["created_at"],
-            "first"
+            "2026-10-23T08:00:00.000000Z"
         );
     }
 
@@ -517,7 +560,12 @@ mod tests {
         ] {
             let request = json!({"account_assets":value});
             crate::writer_scope::immediate(&connection, || {
-                write_manual_snapshot(&connection, account_id, "t", &request)
+                write_manual_snapshot(
+                    &connection,
+                    account_id,
+                    "2026-10-23T09:00:00.000000Z",
+                    &request,
+                )
             })
             .unwrap();
         }
@@ -553,7 +601,7 @@ mod tests {
         let snapshot = write_manual_snapshot(
             &connection,
             1,
-            "t",
+            "2026-10-23T09:00:00.000000Z",
             &json!({"account_assets":{"total_asset":5,"positions":[{"symbol":"A","volume":5}]}}),
         )
         .unwrap();
@@ -647,7 +695,7 @@ mod tests {
                     let first = history()?;
                     ensure_execution_asset_snapshot(&connection, 17)?;
                     assert_eq!(first, history()?);
-                    assert_eq!(first[0]["created_at"], "terminal-time");
+                    assert_eq!(first[0]["created_at"], "2026-10-23T09:00:00.000000Z");
                     assert_eq!(first[0]["source"], "execution");
                     assert_eq!(count(&connection, "account_asset_snapshot"), 1);
                     assert_eq!(count(&connection, "business_asset_snapshot"), 1);

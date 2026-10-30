@@ -145,10 +145,16 @@ def test_custom_analysis_columns_block_migration_without_losing_data(tmp_path, r
     with closing(connect(path)) as connection:
         with connection:
             connection.execute(f"ALTER TABLE account_analysis ADD COLUMN audit_tag {definition}")
-            connection.execute(
-                "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
-                "VALUES(1,'saved','FUTURES','ctp','','2026-10-28','2026-10-28')"
-            )
+            if revision == "0033":
+                connection.execute(
+                    "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
+                    "VALUES(1,'saved','FUTURES','ctp','','2026-10-28','2026-10-28')"
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
+                    "VALUES(1,'saved','FUTURES','ctp','',0,0)"
+                )
             connection.execute("INSERT OR IGNORE INTO account_analysis(account_id) VALUES(1)")
             if definition == "TEXT":
                 connection.execute("UPDATE account_analysis SET audit_tag='keep-me' WHERE account_id=1")

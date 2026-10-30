@@ -53,7 +53,7 @@ from axile.server.evidence.privacy import EvidenceRedactor
 from axile.server.execution.worker_backend import worker_audit
 from tests.conftest import initialize_native_database
 from tests.fixtures.rust_store.oracle_tables import table
-from tests.sqlite_oracle import sqlite_oracle
+from tests.sqlite_oracle import sqlite_oracle, to_us
 from tests.unit.server._business_facts_test_support import persist_result, sql
 from tests.unit.server._business_facts_test_support import rows as fact_rows
 from tests.unit.server._execution_test_support import capture_worker_audit_batch
@@ -253,6 +253,16 @@ def _seed_rows(path, *items):
                 target = table(name)
                 if "metadata_" in values:
                     values["metadata"] = values.pop("metadata_")
+                for key in tuple(values):
+                    stored = key.removesuffix("_ms") + "_us" if key.endswith("_ms") else key + "_us"
+                    if stored in target.c:
+                        value = values.pop(key)
+                        if value is None:
+                            values[stored] = None
+                        elif key.endswith("_ms"):
+                            values[stored] = value * 1000
+                        else:
+                            values[stored] = to_us(value)
                 values = {
                     key: value
                     for key, value in values.items()
@@ -651,7 +661,7 @@ def test_repeated_exports_are_read_only_and_late_results_remain_distinct(databas
     assert first["export_id"] != second["export_id"]
     _seed(database, _record())
     # 结果事实可以先到，任务状态仍由 intent 的结算决定。
-    sql(database, "UPDATE execution_intent SET status='RUNNING',finished_at=NULL WHERE execution_id='exec-1'")
+    sql(database, "UPDATE execution_intent SET status='RUNNING',finished_at_us=NULL WHERE execution_id='exec-1'")
     third = _manifest(_zip(client.get("/account/executions/exec-1/evidence")))
     assert third["executions"][0]["task_status"] == "RUNNING"
     assert third["executions"][0]["business_outcome"] == "not_reached"

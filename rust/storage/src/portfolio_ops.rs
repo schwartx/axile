@@ -9,7 +9,7 @@ use crate::error::AnalysisError;
 use crate::{accounts, target_ops, writer_scope};
 
 const COLUMNS: &str =
-    "id,name,market,description,custom_calc_py_code,status,tag,updated_at,created_at";
+    "id,name,market,description,custom_calc_py_code,status,tag,updated_at_us,created_at_us";
 const UPDATE_FIELDS: [&str; 6] = [
     "name",
     "market",
@@ -48,8 +48,8 @@ fn portfolio_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         "custom_calc_py_code": row.get::<_, String>("custom_calc_py_code")?,
         "status": row.get::<_, Option<String>>("status")?,
         "tag": row.get::<_, Option<String>>("tag")?,
-        "updated_at": row.get::<_, String>("updated_at")?,
-        "created_at": row.get::<_, String>("created_at")?,
+        "updated_at": crate::time_us::read(row, "updated_at_us")?,
+        "created_at": crate::time_us::read(row, "created_at_us")?,
     }))
 }
 
@@ -84,9 +84,9 @@ fn create_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
         return Err(invalid("自定义组合计算函数不能为空"));
     }
     connection.execute(
-        "INSERT INTO portfolio(name,market,description,custom_calc_py_code,status,tag,updated_at,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        "INSERT INTO portfolio(name,market,description,custom_calc_py_code,status,tag,updated_at_us,created_at_us) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![text(portfolio, "name")?, text(portfolio, "market")?, portfolio["description"].as_str(), code,
-            portfolio["status"].as_str(), portfolio["tag"].as_str(), text(portfolio, "updated_at")?, text(portfolio, "created_at")?],
+            portfolio["status"].as_str(), portfolio["tag"].as_str(), crate::time_us::parse(text(portfolio, "updated_at")?).map_err(invalid)?, crate::time_us::parse(text(portfolio, "created_at")?).map_err(invalid)?],
     ).map_err(sql)?;
     let mut saved = require_portfolio(connection, connection.last_insert_rowid())?;
     saved["account_id"] = Value::Null;
@@ -129,8 +129,8 @@ fn update_on(connection: &Connection, request: &Value) -> Result<Value, Analysis
         custom_calc_py_code=CASE WHEN json_type(?1,'$.custom_calc_py_code') IS NULL THEN custom_calc_py_code ELSE json_extract(?1,'$.custom_calc_py_code') END,
         status=CASE WHEN json_type(?1,'$.status') IS NULL THEN status ELSE json_extract(?1,'$.status') END,
         tag=CASE WHEN json_type(?1,'$.tag') IS NULL THEN tag ELSE json_extract(?1,'$.tag') END,
-        updated_at=?2 WHERE id=?3",
-        params![Value::Object(changes.clone()).to_string(), text(request, "updated_at")?, id],
+        updated_at_us=?2 WHERE id=?3",
+        params![Value::Object(changes.clone()).to_string(), crate::time_us::parse(text(request, "updated_at")?).map_err(invalid)?, id],
     ).map_err(sql)?;
     require_portfolio(connection, id)
 }
@@ -272,11 +272,11 @@ mod tests {
     use super::*;
 
     fn schema(connection: &Connection) {
-        connection.execute_batch("CREATE TABLE portfolio(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,description TEXT,custom_calc_py_code TEXT NOT NULL,status TEXT,tag TEXT,updated_at TEXT NOT NULL,created_at TEXT NOT NULL);").unwrap();
+        connection.execute_batch("CREATE TABLE portfolio(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,description TEXT,custom_calc_py_code TEXT NOT NULL,status TEXT,tag TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL);").unwrap();
     }
 
     fn initial(connection: &Connection) -> Value {
-        create_on(connection, &json!({"portfolio":{"name":"old","market":"futures","custom_calc_py_code":"def calculate_portfolio(context): return {}","updated_at":"before","created_at":"created"}})).unwrap()
+        create_on(connection, &json!({"portfolio":{"name":"old","market":"futures","custom_calc_py_code":"def calculate_portfolio(context): return {}","updated_at":"2026-10-23T09:00:00.000000Z","created_at":"2026-10-23T08:00:00.000000Z"}})).unwrap()
     }
 
     #[test]
@@ -285,22 +285,22 @@ mod tests {
         schema(&connection);
         let saved = initial(&connection);
         let id = saved["id"].clone();
-        let updated = update_on(&connection, &json!({"portfolio_id":id,"changes":{"description":"desc","tag":"tag"},"updated_at":"after"})).unwrap();
-        assert_eq!(updated["updated_at"], "after");
+        let updated = update_on(&connection, &json!({"portfolio_id":id,"changes":{"description":"desc","tag":"tag"},"updated_at":"2026-10-23T10:00:00.000000Z"})).unwrap();
+        assert_eq!(updated["updated_at"], "2026-10-23T10:00:00.000000Z");
         let unchanged = update_on(
             &connection,
-            &json!({"portfolio_id":id,"changes":{"tag":"tag"},"updated_at":"later"}),
+            &json!({"portfolio_id":id,"changes":{"tag":"tag"},"updated_at":"2026-10-23T11:00:00.000000Z"}),
         )
         .unwrap();
-        assert_eq!(unchanged["updated_at"], "later");
+        assert_eq!(unchanged["updated_at"], "2026-10-23T11:00:00.000000Z");
         let cleared = update_on(
             &connection,
-            &json!({"portfolio_id":id,"changes":{"description":null},"updated_at":"later"}),
+            &json!({"portfolio_id":id,"changes":{"description":null},"updated_at":"2026-10-23T11:00:00.000000Z"}),
         )
         .unwrap();
         assert!(cleared["description"].is_null());
         assert_eq!(cleared["tag"], "tag");
-        assert_eq!(cleared["created_at"], "created");
+        assert_eq!(cleared["created_at"], "2026-10-23T08:00:00.000000Z");
     }
 
     #[test]
@@ -308,8 +308,8 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         schema(&connection);
         let saved = initial(&connection);
-        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER,account_id INTEGER,raw_weights_kind TEXT,normalized_weights_kind TEXT,weights_metadata TEXT,source TEXT,execution_id TEXT,calculated_at TEXT); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT); CREATE TRIGGER reject_weight BEFORE INSERT ON target_weight_snapshot_weight BEGIN SELECT RAISE(ABORT,'reject weight'); END;").unwrap();
-        let request = json!({"portfolio_id":saved["id"],"changes":{"name":"changed","custom_calc_py_code":"new code"},"updated_at":"after","raw_weights":{"rb2610":1.0},"normalized_weights":null,"source":"manual","calculated_at":"after"});
+        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER,account_id INTEGER,raw_weights_kind TEXT,normalized_weights_kind TEXT,weights_metadata TEXT,source TEXT,execution_id TEXT,calculated_at_us INTEGER); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT); CREATE TRIGGER reject_weight BEFORE INSERT ON target_weight_snapshot_weight BEGIN SELECT RAISE(ABORT,'reject weight'); END;").unwrap();
+        let request = json!({"portfolio_id":saved["id"],"changes":{"name":"changed","custom_calc_py_code":"new code"},"updated_at":"2026-10-23T10:00:00.000000Z","raw_weights":{"rb2610":1.0},"normalized_weights":null,"source":"manual","calculated_at":"2026-10-23T10:00:00.000000Z"});
         let result = writer_scope::immediate(&connection, || {
             update_on(&connection, &request)?;
             target_ops::append_target_snapshot(&connection, &request)
@@ -317,7 +317,7 @@ mod tests {
         assert!(result.is_err());
         let portfolio = require_portfolio(&connection, saved["id"].as_i64().unwrap()).unwrap();
         assert_eq!(portfolio["name"], "old");
-        assert_eq!(portfolio["updated_at"], "before");
+        assert_eq!(portfolio["updated_at"], "2026-10-23T09:00:00.000000Z");
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM target_weight_snapshot", [], |row| row
@@ -372,11 +372,14 @@ mod tests {
             json!(""),
         ] {
             assert_eq!(
-                target_public(Some(json!({"raw_weights":raw,"source":"manual"}))).unwrap()["weights"],
+                target_public(Some(json!({"raw_weights":raw,"source":"manual"}))).unwrap()
+                    ["weights"],
                 json!({})
             );
         }
-        assert!(target_public(Some(json!({"raw_weights":{"bad":null},"source":"manual"}))).is_err());
+        assert!(
+            target_public(Some(json!({"raw_weights":{"bad":null},"source":"manual"}))).is_err()
+        );
         assert!(target_public(Some(json!({"raw_weights":[1],"source":"manual"}))).is_err());
     }
 
@@ -394,11 +397,11 @@ mod tests {
         assert_eq!(
             target_public(Some(
                 json!({"raw_weights":{"native":0.5},"source":"execution",
-            "calculated_at":"t","execution_id":"e1","account_id":2})
+            "calculated_at":"2026-10-23T09:00:00.000000Z","execution_id":"e1","account_id":2})
             ))
             .unwrap(),
             json!({"weights":{"native":0.5},"quantities":null,"strategy_weights":null,
-                "account_weights":null,"sizing":null,"calculated_at":"t","source":"execution",
+                "account_weights":null,"sizing":null,"calculated_at":"2026-10-23T09:00:00.000000Z","source":"execution",
                 "execution_id":"e1","context_account_id":2})
         );
     }

@@ -3,11 +3,12 @@
 import json
 import tempfile
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from axile.server._native import _core
 from tests.sqlite_oracle import connect as oracle_connect
-from tests.sqlite_oracle import sqlite_oracle
+from tests.sqlite_oracle import sqlite_oracle, to_us
 
 
 @sqlite_oracle
@@ -27,22 +28,24 @@ def _artifact_fixture(source, destination, artifact, account_id):
         ).fetchone()
         owner = owner[0] if owner else account_id or 1
         copy.execute(
-            "INSERT OR IGNORE INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES (?,'evidence-fixture','期货','ctp','','2026-10-20','2026-10-20')",
-            (owner,),
+            "INSERT OR IGNORE INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) VALUES (?,'evidence-fixture','期货','ctp','',?,?)",
+            (owner, to_us("2026-10-20"), to_us("2026-10-20")),
         )
         copy.execute(
-            "INSERT OR IGNORE INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at) VALUES (?,?,'rebalance','manual','SUCCEEDED','ctp','SINGLE-MAKER','{}','2026-10-20')",
-            (identity, owner),
+            "INSERT OR IGNORE INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us) VALUES (?,?,'rebalance','manual','SUCCEEDED','ctp','SINGLE-MAKER','{}',?)",
+            (identity, owner, to_us("2026-10-20")),
         )
         copy.execute("DELETE FROM execution_artifact WHERE execution_id IS ?", (artifact["execution_id"],))
         copy.execute(
-            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at_us) VALUES (?,?,?,?,?)",
             (
                 artifact["execution_id"],
                 artifact["artifact_type"],
                 artifact.get("schema_version", 3),
                 json.dumps(artifact["content"], ensure_ascii=False),
-                artifact.get("created_at", "2026-10-20"),
+                artifact["created_at_us"]
+                if "created_at_us" in artifact
+                else to_us(artifact.get("created_at", "2026-10-20")),
             ),
         )
         copy.commit()
@@ -156,6 +159,11 @@ def _connection_fixture(path, account, state):
     with closing(oracle_connect(path)) as connection, connection:
         insert_account(connection, Account.model_validate(account))
         if state is not None:
+            state = dict(state)
+            for name in ("observed_at", "last_success_at"):
+                if name in state:
+                    value = state.pop(name)
+                    state[name + "_us"] = to_us(value) if value is not None else None
             names = {row[1] for row in connection.execute("PRAGMA table_info(account_connection_state)")}
             values = {key: value for key, value in state.items() if key in names}
             for key in ("error", "presentation", "last_failure"):
@@ -194,6 +202,14 @@ def connection_view(account, *, detail=False):
 @sqlite_oracle
 def _status_fixture(path, values, symbols, intent):
     with closing(oracle_connect(path)) as connection, connection:
+        values = dict(values)
+        for name in ("created_at", "termination_requested_at", "termination_acked_at", "termination_finished_at"):
+            if name in values:
+                value = values.pop(name)
+                values[name + "_us"] = to_us(value) if value is not None else None
+        if "execution_time" in values:
+            value = values.pop("execution_time")
+            values["execution_time_us"] = round(value * 1_000_000) if value is not None else None
         names = {row[1] for row in connection.execute("PRAGMA table_info(executerecord)")}
         values = {key: value for key, value in values.items() if key in names}
         for key, value in values.items():
@@ -201,8 +217,8 @@ def _status_fixture(path, values, symbols, intent):
                 values[key] = json.dumps(value, ensure_ascii=False)
         values["input_id"], values["result_input_id"] = None, None
         connection.execute(
-            "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES (?,'status-fixture','期货','ctp','','2026-10-20','2026-10-20')",
-            (values["account_id"],),
+            "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) VALUES (?,'status-fixture','期货','ctp','',?,?)",
+            (values["account_id"], to_us("2026-10-20"), to_us("2026-10-20")),
         )
         keys = list(values)
         connection.execute(
@@ -211,12 +227,12 @@ def _status_fixture(path, values, symbols, intent):
         )
         if intent is not None:
             connection.execute(
-                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at,error) VALUES (?,?,'rebalance','manual',?,'ctp','SINGLE-MAKER','{}',?,?)",
+                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us,error) VALUES (?,?,'rebalance','manual',?,'ctp','SINGLE-MAKER','{}',?,?)",
                 (
                     values["execution_id"],
                     values["account_id"],
                     intent["status"],
-                    values["created_at"],
+                    values["created_at_us"],
                     intent.get("error"),
                 ),
             )
@@ -258,7 +274,26 @@ def persist_record_fixture(path, request):
     from tests.unit.server._business_facts_test_support import rows
 
     receipt = _core.persist_execution_state(str(path), json.dumps(request, ensure_ascii=False, allow_nan=True))
-    return next(row for row in rows(path, "executerecord") if row["id"] == receipt["record_id"])
+    return _record_model_values(next(row for row in rows(path, "executerecord") if row["id"] == receipt["record_id"]))
+
+
+def _record_model_values(row):
+    """显式恢复测试 DTO 时间，SQL oracle 的物理列仍保持整数。"""
+    row = dict(row)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    for name in ("created_at", "termination_requested_at", "termination_acked_at", "termination_finished_at"):
+        stored = name + "_us"
+        if stored in row:
+            value = row.pop(stored)
+            row[name] = (
+                (epoch + timedelta(microseconds=value)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+                if value is not None
+                else None
+            )
+    if "execution_time_us" in row:
+        value = row.pop("execution_time_us")
+        row["execution_time"] = value / 1_000_000 if value is not None else None
+    return row
 
 
 def execution_receipt(*, record_id=1, account_id=1, status="FAILED", is_success=0, **fields):
@@ -283,4 +318,6 @@ def receipt_record(receipt):
     from axile.server.core.db import database_path
     from tests.unit.server._business_facts_test_support import rows
 
-    return next(row for row in rows(database_path(), "executerecord") if row["id"] == receipt["record_id"])
+    return _record_model_values(
+        next(row for row in rows(database_path(), "executerecord") if row["id"] == receipt["record_id"])
+    )

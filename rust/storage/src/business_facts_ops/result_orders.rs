@@ -17,8 +17,8 @@ const ORDER_FIELDS: &[(&str, &str)] = &[
     ("status", "text"),
     ("filled_volume", "number"),
     ("avg_price", "number"),
-    ("create_time", "text"),
-    ("update_time", "text"),
+    ("create_time", "time"),
+    ("update_time", "time"),
     ("update_timestamp", "number"),
     ("remaining_volume", "number"),
     ("filled_ratio", "number"),
@@ -242,7 +242,20 @@ mod tests {
             ("execution_order_collection", &batch.0),
             ("execution_order", &batch.1),
         ] {
-            assert_eq!(json!(rows), frozen["orders"][table], "{table}");
+            let mut expected = frozen["orders"][table].clone();
+            if table == "execution_order" {
+                let mut changed = 0;
+                for row in expected.as_array_mut().unwrap() {
+                    if row["update_time"] == "native time" {
+                        row["update_time"] = Value::Null;
+                        row["audit_evidence"]["invalid_fields"] =
+                            json!({"update_time":"native time"});
+                        changed += 1;
+                    }
+                }
+                assert_eq!(changed, 3);
+            }
+            assert_eq!(json!(rows), expected, "{table}");
         }
         assert_eq!(Value::Object(payload.clone()), frozen["payload"]);
     }
@@ -259,7 +272,20 @@ mod tests {
         assert!(!connection.is_autocommit());
         let mut result = Map::new();
         crate::business_detail::collections(&connection, &json!(19), &mut result, false).unwrap();
-        assert_eq!(Value::Object(result), frozen["decoded_sql_orders"]);
+        let mut expected = frozen["decoded_sql_orders"].clone();
+        for path in [
+            "/orders/0",
+            "/orders/1",
+            "/symbol_results/alias~1~0key/orders/0",
+        ] {
+            let order = expected.pointer_mut(path).unwrap().as_object_mut().unwrap();
+            assert_eq!(order.remove("update_time"), Some(json!("native time")));
+            order.insert(
+                "audit_evidence".into(),
+                json!({"invalid_fields":{"update_time":"native time"}}),
+            );
+        }
+        assert_eq!(Value::Object(result), expected);
         connection.execute_batch("ROLLBACK").unwrap();
         assert_eq!(
             connection

@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 from contextlib import closing, contextmanager
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -23,6 +24,7 @@ from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._native_read_views import read_execution_input, read_execution_result, status_view
+from tests.unit.server._runtime_db_support import to_us, utc_time
 
 
 @contextmanager
@@ -47,6 +49,17 @@ def _persisted(path, record_id):
     (row,) = _rows(path, "SELECT * FROM executerecord WHERE id=?", (record_id,))
     for field in ("audit_evidence", "termination_evidence"):
         row[field] = json.loads(row[field])
+    for field in ("created_at", "termination_requested_at", "termination_acked_at", "termination_finished_at"):
+        value = row.pop(f"{field}_us")
+        row[field] = (
+            (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value))
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+            if value is not None
+            else None
+        )
+    duration = row.pop("execution_time_us")
+    row["execution_time"] = duration / 1_000_000 if duration is not None else None
     return ExecuteRecord.model_validate(row)
 
 
@@ -206,9 +219,11 @@ def test_termination_preserves_original_output_and_cancellation_evidence(
             assert business_evidence(replay["status"]) == business_evidence("TERMINATED")
             assert business_evidence(replay["output_status"]) == business_evidence(output_status)
             assert business_evidence(replay["outcome"]) == business_evidence("terminated")
-            assert business_evidence(replay["finished_at"]) == business_evidence("2026-10-20T10:01:01.456+08:00")
+            assert business_evidence(replay["finished_at"]) == business_evidence(
+                utc_time("2026-10-20T10:01:01.456+08:00")
+            )
             assert business_evidence(replay["cancel_requested_at"]) == business_evidence(
-                "2026-10-20T10:01:00.123+08:00"
+                utc_time("2026-10-20T10:01:00.123+08:00")
             )
             assert replay["error"] is None
 
@@ -368,7 +383,8 @@ def test_committed_input_and_before_assets_survive_without_terminal_record(
             assert business_evidence(observed["available_cash"]) == business_evidence(0)
             assert business_evidence(observed["total_asset"]) == business_evidence(120.5)
             assert business_evidence(observed["source"]) == business_evidence("real")
-            assert business_evidence(observed["update_time"]) == business_evidence(before["update_time"])
+            assert observed["update_time_us"] == to_us(before["update_time"])
+            assert isinstance(observed["update_time_us"], int)
 
     asyncio.run(scenario())
 

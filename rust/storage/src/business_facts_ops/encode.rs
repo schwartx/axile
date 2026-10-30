@@ -63,7 +63,7 @@ const ASSET_FIELDS: &[(&str, &str)] = &[
     ("total_asset", "number"),
     ("market_value", "number"),
     ("currency", "text"),
-    ("update_time", "text"),
+    ("update_time", "time"),
     ("source", "text"),
     ("extra", "json"),
 ];
@@ -163,6 +163,9 @@ pub(crate) fn valid(value: &Value, kind: &str) -> bool {
         "json" => true,
         "identity" => value.is_string() || value.is_number() && integer_text(value).is_some(),
         "text" => matches!(value, Value::String(_)),
+        "time" => value
+            .as_str()
+            .is_some_and(|value| crate::time_us::parse(value).is_ok()),
         "boolean" => matches!(value, Value::Bool(_)),
         "integer" => matches!(value, Value::Number(n) if n.is_i64()),
         // SQLite REAL 不能精确保留的大整数转为审计证据。
@@ -1109,6 +1112,17 @@ pub(super) fn input_value((head, targets, symbols, plans): &InputRows) -> Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_scalar_time_is_evidence_and_json_time_stays_opaque() {
+        let payload =
+            json!({"update_time":"native-unknown", "extra":{"update_time":"native-unknown"}});
+        let (columns, evidence) =
+            store_columns(payload.as_object().unwrap(), ASSET_FIELDS, &[]).unwrap();
+        assert_eq!(columns["update_time"], Value::Null);
+        assert_eq!(evidence["invalid_fields"]["update_time"], "native-unknown");
+        assert_eq!(columns["extra"], payload["extra"]);
+    }
 
     #[test]
     fn frozen_0037_input_fixtures_match_python_columns_and_evidence() {

@@ -9,6 +9,7 @@ mod account_identity;
 mod business;
 mod guards;
 mod schema;
+mod times;
 
 type Object = Map<String, Value>;
 type Result<T> = std::result::Result<T, AnalysisError>;
@@ -17,6 +18,7 @@ pub(super) fn create(connection: &Connection) -> Result<()> {
     execute(connection, include_str!("schema_0034.sql"))?;
     execute(connection, include_str!("structured/business.sql"))?;
     execute(connection, include_str!("../analysis/schema.sql"))?;
+    times::upgrade(connection)?;
     guards::install_business(connection)?;
     guards::install_analysis(connection)?;
     guards::install_incremental(connection)
@@ -40,10 +42,11 @@ pub(super) fn upgrade(connection: &Connection) -> Result<()> {
     }
     execute(connection, include_str!("structured/analysis.sql"))?;
     execute(connection, include_str!("../analysis/schema.sql"))?;
-    requeue_analysis(connection, state)?;
+    requeue_analysis(connection, state, "retry_at_us")?;
     business::upgrade(connection)?;
     account_identity::upgrade(connection)?;
     super::execution_views::upgrade(connection)?;
+    times::upgrade(connection)?;
     schema::install_query_indexes(connection)?;
     guards::install_analysis(connection)?;
     guards::install_incremental(connection)
@@ -58,6 +61,7 @@ pub(super) fn downgrade(connection: &Connection) -> Result<()> {
         [],
     )?;
     schema::drop_query_indexes(connection)?;
+    times::downgrade(connection)?;
     business::downgrade(connection)?;
     account_identity::downgrade(connection)?;
     for table in crate::analysis::TABLES
@@ -67,14 +71,14 @@ pub(super) fn downgrade(connection: &Connection) -> Result<()> {
         execute(connection, &format!("DROP TABLE {}", quote(table)))?;
     }
     execute(connection, include_str!("structured/analysis_0033.sql"))?;
-    requeue_analysis(connection, state)
+    requeue_analysis(connection, state, "retry_at")
 }
 
-fn requeue_analysis(connection: &Connection, state: Vec<Object>) -> Result<()> {
+fn requeue_analysis(connection: &Connection, state: Vec<Object>, retry: &str) -> Result<()> {
     for row in state {
         insert(connection, "account_analysis", &row)?;
     }
-    execute(connection,"UPDATE account_analysis SET source_version=source_version+1,requested=1,running_version=NULL,failures=0,retry_at=0,error=NULL")
+    execute(connection,&format!("UPDATE account_analysis SET source_version=source_version+1,requested=1,running_version=NULL,failures=0,{retry}=0,error=NULL"))
 }
 
 pub(super) fn preflight_downgrade(connection: &Connection) -> Result<()> {
@@ -108,7 +112,7 @@ pub(super) fn check_analysis_dependencies(
             "requested",
             "running_version",
             "failures",
-            "retry_at",
+            "retry_at_us",
             "error",
             "running_token",
             "dirty_record",
@@ -414,7 +418,7 @@ mod tests {
         assert_eq!(hidden, 0);
         let final_columns: i64 = connection.query_row("SELECT (SELECT count(*) FROM pragma_table_info('executerecord') WHERE name='result_staged') + (SELECT count(*) FROM pragma_table_info('account_analysis') WHERE name='dirty_record')", [], |row| row.get(0)).unwrap();
         assert_eq!(final_columns, 2);
-        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'one','FUTURES','ctp','','2026-10-28','2026-10-28'),(2,'two','FUTURES','ctp','','2026-10-28','2026-10-28');").unwrap();
+        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) VALUES(1,'one','FUTURES','ctp','',0,0),(2,'two','FUTURES','ctp','',0,0);").unwrap();
         let input = crate::business_facts_ops::encode::encode_inputs(
             "owned",
             &serde_json::json!({}),
@@ -425,11 +429,14 @@ mod tests {
         )
         .unwrap();
         crate::business_facts_ops::write_input(&connection, &input).unwrap();
-        let failure = connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,input_id) VALUES(1,2,'wrong-owner',1,'2026-10-28','owned')", []).unwrap_err();
-        assert!(failure
-            .to_string()
-            .contains("Execution input owner mismatch"));
-        connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,input_id) VALUES(1,1,'owned-execution',1,'2026-10-28','owned')", []).unwrap();
+        let failure = connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,input_id) VALUES(1,2,'wrong-owner',1,0,'owned')", []).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("Execution input owner mismatch"),
+            "{failure:?}"
+        );
+        connection.execute("INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,input_id) VALUES(1,1,'owned-execution',1,0,'owned')", []).unwrap();
         connection.execute_batch("UPDATE account_analysis SET source_version=7,requested=0,dirty_record=NULL WHERE account_id=1;UPDATE executerecord SET result_staged=1 WHERE id=1;").unwrap();
         let (version, requested, dirty): (i64, bool, i64) = connection.query_row("SELECT source_version,requested,dirty_record FROM account_analysis WHERE account_id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
         assert!(version > 7);

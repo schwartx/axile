@@ -193,16 +193,16 @@ pub(crate) fn fill(row: &rusqlite::Row<'_>, channel: &str) -> rusqlite::Result<F
     })
 }
 
-pub(crate) const FILLS:&str="SELECT axile_time(r.created_at),COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,
+pub(crate) const FILLS:&str="SELECT r.created_at_us,COALESCE(NULLIF(t.symbol,''),'[unknown]'),t.trade_id,t.trade_volume,t.trade_price,
         COALESCE(z.unit_multiplier,(
             SELECT previous.unit_multiplier FROM execution_symbol_sizing previous
             JOIN executerecord pr ON pr.id=previous.record_id
             WHERE pr.account_id=r.account_id AND pr.result_staged=0
               AND previous.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
               AND previous.unit_multiplier>0
-              AND (axile_time(pr.created_at)<axile_time(r.created_at)
-                OR (axile_time(pr.created_at)=axile_time(r.created_at) AND pr.id<r.id))
-            ORDER BY axile_time(pr.created_at) DESC,pr.id DESC LIMIT 1
+              AND (pr.created_at_us<r.created_at_us
+                OR (pr.created_at_us=r.created_at_us AND pr.id<r.id))
+            ORDER BY pr.created_at_us DESC,pr.id DESC LIMIT 1
         )),t.extra,t.fee,t.fee_state,t.fee_currency,
         CASE WHEN v.state='malformed' AND v.malformed_value='null' THEN 0 ELSE t.conversion_recorded END,
         v.rate,v.value_currency,
@@ -210,4 +210,4 @@ pub(crate) const FILLS:&str="SELECT axile_time(r.created_at),COALESCE(NULLIF(t.s
         FROM executerecord r JOIN business_trade t ON t.record_id=r.id
         LEFT JOIN execution_symbol_sizing z ON z.record_id=t.record_id AND z.path=substr(t.collection_path,1,length(t.collection_path)-7) || '/sizing'
         LEFT JOIN business_trade_conversion v ON v.record_id=t.record_id AND v.trade_path=t.path
-        WHERE r.account_id=?1 AND r.result_staged=0 AND axile_time(r.created_at)>axile_time(?2) ORDER BY axile_time(r.created_at),r.id,t.ordinal";
+        WHERE r.account_id=?1 AND r.result_staged=0 AND r.created_at_us>?2 ORDER BY r.created_at_us,r.id,t.ordinal";

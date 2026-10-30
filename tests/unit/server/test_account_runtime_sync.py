@@ -9,6 +9,7 @@ import pytest
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution import account_runtime_sync as runtime
 from axile.server.native_store import native_operation
+from tests.sqlite_oracle import to_us, utc_time
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._runtime_db_support import runtime_database, runtime_rows, runtime_sync
 
@@ -250,7 +251,7 @@ def test_uninitialized_waits_and_session_prepare_updates_sync(tmp_path, monkeypa
                 assert {"pending": reason, "failed": "CTP 登录校验失败"}[mode] in sync["last_error"]
                 assert "Traceback" in sync["last_error"]
             assert sync["reset_worker"] is (mode != "success")
-            assert bool(sync["synchronized_at"]) is (mode == "success")
+            assert bool(sync["synchronized_at_us"]) is (mode == "success")
             assert [row[0] for row in attempts] == [False, mode == "success"]
             assert reason in attempts[0][1] and resets == [True, True]
 
@@ -334,10 +335,12 @@ def test_runtime_target_keeps_latest_execution_time_for_catalog_preference(tmp_p
         async with runtime_database(tmp_path / "runtime.db") as path:
             for succeeded, at in [(1, "2026-10-13 20:00:00"), (0, "2026-10-13 21:00:00")]:
                 runtime_rows(
-                    path, "INSERT INTO executerecord(account_id,is_success,created_at) VALUES (1,?,?)", (succeeded, at)
+                    path,
+                    "INSERT INTO executerecord(account_id,is_success,created_at_us) VALUES (1,?,?)",
+                    (succeeded, to_us(at)),
                 )
             target = await runtime._begin_attempt(1)
-            assert target.last_execution == "2026-10-13 21:00:00"
+            assert target.last_execution == utc_time("2026-10-13 21:00:00")
             assert runtime_rows(path, "SELECT id FROM accountruntimesyncattempt WHERE id=?", (target.attempt_id,))
 
     asyncio.run(scenario())

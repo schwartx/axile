@@ -9,7 +9,7 @@ use crate::error::AnalysisError;
 use crate::writer_scope;
 
 const ROLES: [&str; 2] = ["raw_weights", "normalized_weights"];
-const HEAD_COLUMNS: &str = "id,portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at";
+const HEAD_COLUMNS: &str = "id,portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us";
 
 fn invalid(message: impl Into<String>) -> AnalysisError {
     AnalysisError::new("TARGET_INVALID", message)
@@ -153,7 +153,7 @@ fn head(row: &Row<'_>) -> rusqlite::Result<Value> {
         "weights_metadata": json_column(row, "weights_metadata")?,
         "source": row.get::<_, String>("source")?,
         "execution_id": row.get::<_, Option<String>>("execution_id")?,
-        "calculated_at": row.get::<_, String>("calculated_at")?,
+        "calculated_at": crate::time_us::read(row, "calculated_at_us")?,
     }))
 }
 
@@ -212,12 +212,14 @@ pub(crate) fn append_target_snapshot(
     if !matches!(source, "manual" | "execution") {
         return Err(invalid("目标权重快照来源无效"));
     }
-    let calculated_at = text(request, "calculated_at")?;
+    let calculated_at_us =
+        crate::time_us::parse(text(request, "calculated_at")?).map_err(invalid)?;
+    let calculated_at = crate::time_us::format(calculated_at_us).map_err(invalid)?;
     let execution_id = optional_text(request, "execution_id")?;
     let (columns, mut rows) = encode_snapshot_weights(0, request)?;
     connection.execute(
-        "INSERT INTO target_weight_snapshot(portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![portfolio_id, account_id, text(&columns, "raw_weights_kind")?, text(&columns, "normalized_weights_kind")?, columns["weights_metadata"].to_string(), source, execution_id, calculated_at],
+        "INSERT INTO target_weight_snapshot(portfolio_id,account_id,raw_weights_kind,normalized_weights_kind,weights_metadata,source,execution_id,calculated_at_us) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![portfolio_id, account_id, text(&columns, "raw_weights_kind")?, text(&columns, "normalized_weights_kind")?, columns["weights_metadata"].to_string(), source, execution_id, calculated_at_us],
     ).map_err(sql)?;
     let id = connection.last_insert_rowid();
     let mut statement = connection.prepare_cached("INSERT INTO target_weight_snapshot_weight(snapshot_id,role,map_key,value,audit_evidence) VALUES (?1,?2,?3,?4,?5)").map_err(sql)?;
@@ -329,7 +331,7 @@ mod tests {
     use super::*;
 
     fn schema(connection: &Connection) {
-        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER NOT NULL,account_id INTEGER,raw_weights_kind TEXT NOT NULL,normalized_weights_kind TEXT NOT NULL,weights_metadata TEXT NOT NULL,source TEXT NOT NULL,execution_id TEXT UNIQUE,calculated_at TEXT NOT NULL); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT NOT NULL,PRIMARY KEY(snapshot_id,role,map_key)) WITHOUT ROWID;").unwrap();
+        connection.execute_batch("CREATE TABLE target_weight_snapshot(id INTEGER PRIMARY KEY,portfolio_id INTEGER NOT NULL,account_id INTEGER,raw_weights_kind TEXT NOT NULL,normalized_weights_kind TEXT NOT NULL,weights_metadata TEXT NOT NULL,source TEXT NOT NULL,execution_id TEXT UNIQUE,calculated_at_us INTEGER NOT NULL); CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL,audit_evidence TEXT NOT NULL,PRIMARY KEY(snapshot_id,role,map_key)) WITHOUT ROWID;").unwrap();
     }
 
     #[test]
@@ -369,10 +371,10 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         schema(&connection);
         for request in [
-            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":{"native": 0.5},"normalized_weights":{"native":1.0},"source":"execution","execution_id":"e1","calculated_at":"t"}),
-            json!({"portfolio_id": 8,"account_id": 2,"raw_weights":{},"normalized_weights":{"other":1.0},"source":"execution","execution_id":"e2","calculated_at":"t"}),
-            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":{},"normalized_weights":null,"source":"manual","calculated_at":"t"}),
-            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":null,"normalized_weights":{},"source":"execution","execution_id":"e3","calculated_at":"t"}),
+            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":{"native": 0.5},"normalized_weights":{"native":1.0},"source":"execution","execution_id":"e1","calculated_at":"2026-10-23T09:00:00.000000Z"}),
+            json!({"portfolio_id": 8,"account_id": 2,"raw_weights":{},"normalized_weights":{"other":1.0},"source":"execution","execution_id":"e2","calculated_at":"2026-10-23T09:00:00.000000Z"}),
+            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":{},"normalized_weights":null,"source":"manual","calculated_at":"2026-10-23T09:00:00.000000Z"}),
+            json!({"portfolio_id": 7,"account_id": 2,"raw_weights":null,"normalized_weights":{},"source":"execution","execution_id":"e3","calculated_at":"2026-10-23T09:00:00.000000Z"}),
         ] {
             append_target_snapshot(&connection, &request).unwrap();
         }
@@ -420,7 +422,7 @@ mod tests {
         .enumerate()
         {
             let mut request = json!({"portfolio_id":7,"account_id":2,"source":"execution",
-                "execution_id":format!("e{index}"),"calculated_at":"t"});
+                "execution_id":format!("e{index}"),"calculated_at":"2026-10-23T09:00:00.000000Z"});
             request
                 .as_object_mut()
                 .unwrap()
@@ -462,7 +464,7 @@ mod tests {
         let saved = append_target_snapshot(
             &connection,
             &json!({"portfolio_id":7,
-            "raw_weights":{"native":-0.0},"source":"manual","calculated_at":"t"}),
+            "raw_weights":{"native":-0.0},"source":"manual","calculated_at":"2026-10-23T09:00:00.000000Z"}),
         )
         .unwrap();
         let stored = latest_portfolio_target_snapshot(&connection, 7)
@@ -483,7 +485,7 @@ mod tests {
                 .map_err(sql)?;
             append_target_snapshot(
                 &connection,
-                &json!({"portfolio_id":7,"raw_weights":{"x":1},"source":"manual","calculated_at":"t"}),
+                &json!({"portfolio_id":7,"raw_weights":{"x":1},"source":"manual","calculated_at":"2026-10-23T09:00:00.000000Z"}),
             )
         });
         assert!(result.is_err());

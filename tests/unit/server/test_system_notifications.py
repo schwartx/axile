@@ -20,6 +20,7 @@ from axile.server.api.routes import init as init_module
 from axile.server.core import db
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from axile.server.execution import notification_state
+from tests.sqlite_oracle import utc_time
 
 
 @pytest.fixture
@@ -157,7 +158,10 @@ def test_latest_result_is_persistent_and_older_completions_cannot_overwrite(clie
     notification_state.record_system_notification_result(
         SystemNotificationStatePublic(finished_at="2026-09-30T10:01:00+08:00", ok=True)
     )
-    assert client.get("/api/v1/init/execution-alert/result").json() == latest.model_dump(mode="json")
+    assert client.get("/api/v1/init/execution-alert/result").json() == {
+        **latest.model_dump(mode="json"),
+        "finished_at": utc_time(latest.finished_at),
+    }
 
 
 def test_state_write_failure_does_not_escape_notification(client, monkeypatch, native_database):

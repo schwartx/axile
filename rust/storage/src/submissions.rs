@@ -92,19 +92,26 @@ pub fn summary(
         .prepare(
             "SELECT coalesce(json_extract(data,'$.operation'),'place_order'),
          json_extract(data,'$.send_status'),json_extract(data,'$.broker_status'),count(*)
-         FROM order_submission WHERE account_id=?1 AND occurred_at_ms>=?2 AND occurred_at_ms<?3
+         FROM order_submission WHERE account_id=?1 AND occurred_at_us>=?2 AND occurred_at_us<?3
          GROUP BY 1,2,3",
         )
         .map_err(database)?;
     let rows = statement
-        .query_map(params![account_id, start, end], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
+        .query_map(
+            params![
+                account_id,
+                crate::time_us::from_millis(start)?,
+                crate::time_us::from_millis(end)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
         .map_err(database)?;
     for row in rows {
         let (operation, send, broker, count) = row.map_err(database)?;
@@ -204,13 +211,19 @@ pub fn page(
     }
     let summary = summary(connection, account_id, start, end)?;
     let mut statement = connection.prepare(
-        "SELECT data FROM order_submission WHERE account_id=?1 AND occurred_at_ms>=?2 AND occurred_at_ms<?3
-         ORDER BY occurred_at_ms DESC,submission_uid LIMIT ?4"
+        "SELECT data FROM order_submission WHERE account_id=?1 AND occurred_at_us>=?2 AND occurred_at_us<?3
+         ORDER BY occurred_at_us DESC,submission_uid LIMIT ?4"
     ).map_err(database)?;
     let rows = statement
-        .query_map(params![account_id, start, end, limit], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map(
+            params![
+                account_id,
+                crate::time_us::from_millis(start)?,
+                crate::time_us::from_millis(end)?,
+                limit
+            ],
+            |row| row.get::<_, String>(0),
+        )
         .map_err(database)?;
     let mut data = Vec::new();
     for row in rows {
@@ -408,12 +421,12 @@ pub fn save_order_submission(path: &str, request: &Value) -> Result<Value, Analy
     let connection = open_writer(path)?;
     writer_scope::immediate(&connection, || {
         let applied = connection.execute(
-            "INSERT INTO order_submission(submission_uid,account_id,occurred_at_ms,revision,data)
+            "INSERT INTO order_submission(submission_uid,account_id,occurred_at_us,revision,data)
              VALUES (?1,?2,?3,?4,?5) ON CONFLICT(submission_uid) DO UPDATE SET
-             occurred_at_ms=excluded.occurred_at_ms,revision=excluded.revision,data=excluded.data
+             occurred_at_us=excluded.occurred_at_us,revision=excluded.revision,data=excluded.data
              WHERE excluded.revision>order_submission.revision
              AND excluded.account_id=order_submission.account_id",
-            params![fact.submission_uid, fact.account_id, fact.occurred_at_ms, fact.revision,
+            params![fact.submission_uid, fact.account_id, crate::time_us::from_millis(fact.occurred_at_ms)?, fact.revision,
                 serde_json::to_string(&fact).expect("fact is serializable")],
         ).map_err(database)? != 0;
         if applied {
@@ -493,12 +506,12 @@ fn record_warnings(
         };
         connection
             .execute(
-                "INSERT INTO order_submission_warning(event_uid,account_id,occurred_at_ms,data)
+                "INSERT INTO order_submission_warning(event_uid,account_id,occurred_at_us,data)
              VALUES (?1,?2,?3,?4) ON CONFLICT(event_uid) DO NOTHING",
                 params![
                     warning.event_uid,
                     account_id,
-                    now,
+                    crate::time_us::from_millis(now)?,
                     serde_json::to_string(&warning).expect("warning is serializable")
                 ],
             )
@@ -602,7 +615,7 @@ mod tests {
     use std::thread;
     fn connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE order_submission(submission_uid TEXT, account_id INTEGER, occurred_at_ms INTEGER,data TEXT);
+        connection.execute_batch("CREATE TABLE order_submission(submission_uid TEXT, account_id INTEGER, occurred_at_us INTEGER,data TEXT);
             CREATE TABLE order_submission_monitor(account_id INTEGER,data TEXT);
             CREATE TABLE order_submission_warning(account_id INTEGER,data TEXT);").unwrap();
         connection
@@ -622,7 +635,7 @@ mod tests {
             }
             db.execute(
                 "INSERT INTO order_submission VALUES (?1,1,?2,?3)",
-                params![uid, time, data.to_string()],
+                params![uid, time * 1_000, data.to_string()],
             )
             .unwrap();
         }
@@ -647,7 +660,7 @@ mod tests {
         let (day, start, end) = effective_window(now, "America/New_York").unwrap();
         db.execute(
             "INSERT INTO order_submission VALUES ('a',1,?1,?2)",
-            params![start, json!({"send_status":"accepted"}).to_string()],
+            params![start * 1_000, json!({"send_status":"accepted"}).to_string()],
         )
         .unwrap();
         for (metric, revision, warning_day) in [
@@ -698,10 +711,10 @@ mod tests {
              CREATE TABLE account(id INTEGER PRIMARY KEY);
              INSERT INTO account VALUES (1),(2);
              CREATE TABLE order_submission(submission_uid TEXT PRIMARY KEY,account_id INTEGER NOT NULL
-                REFERENCES account(id),occurred_at_ms INTEGER NOT NULL,revision INTEGER NOT NULL,data TEXT NOT NULL);
+                REFERENCES account(id),occurred_at_us INTEGER NOT NULL,revision INTEGER NOT NULL,data TEXT NOT NULL);
              CREATE TABLE order_submission_monitor(account_id INTEGER PRIMARY KEY REFERENCES account(id),data TEXT NOT NULL);
              CREATE TABLE order_submission_warning(event_uid TEXT PRIMARY KEY,account_id INTEGER NOT NULL
-                REFERENCES account(id),occurred_at_ms INTEGER NOT NULL,data TEXT NOT NULL);"
+                REFERENCES account(id),occurred_at_us INTEGER NOT NULL,data TEXT NOT NULL);"
         ).unwrap();
         (path, connection)
     }
@@ -714,6 +727,35 @@ mod tests {
 
     fn config(time: i64, order: i64, combined: i64) -> Value {
         json!({"account_id":1,"order_limit":order,"combined_limit":combined,"timezone":"UTC","now_ms":time})
+    }
+
+    #[test]
+    fn scalar_time_conversion_rejects_overflow_without_changing_json_units() {
+        let (path, db) = writer_database();
+        let request = fact("precise", 0, 1_792_382_400_123, "pending");
+        save_order_submission(path.to_str().unwrap(), &request).unwrap();
+        let stored: (i64, String, i64) = db
+            .query_row(
+                "SELECT occurred_at_us,typeof(occurred_at_us),json_extract(data,'$.occurred_at_ms') FROM order_submission",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            (1_792_382_400_123_000, "integer".into(), 1_792_382_400_123)
+        );
+        let mut overflow = fact("overflow", 0, 1, "pending");
+        overflow["fact"]["occurred_at_ms"] = json!(i64::MAX);
+        assert!(save_order_submission(path.to_str().unwrap(), &overflow).is_err());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM order_submission", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+        );
+        drop(db);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -731,6 +773,7 @@ mod tests {
             .query_row("SELECT data FROM order_submission", [], |row| row.get(0))
             .unwrap();
         assert_eq!(decode::<Value>(&stored).unwrap()["send_status"], "pending");
+        assert_eq!(decode::<Value>(&stored).unwrap()["occurred_at_ms"], time);
         assert_eq!(
             save_order_submission(path_str, &fact("a", 2, time + 5, "accepted")).unwrap()
                 ["applied"],
@@ -753,10 +796,10 @@ mod tests {
             "INVALID_REQUEST"
         );
         let stored: (i64, i64, String) = reopened.query_row(
-            "SELECT revision,occurred_at_ms,json_extract(data,'$.send_status') FROM order_submission",
+            "SELECT revision,occurred_at_us,json_extract(data,'$.send_status') FROM order_submission",
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).unwrap();
-        assert_eq!(stored, (2, time + 5, "accepted".to_owned()));
+        assert_eq!(stored, (2, (time + 5) * 1_000, "accepted".to_owned()));
         let writer = open_writer(path_str).unwrap();
         assert_eq!(
             writer

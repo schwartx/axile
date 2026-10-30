@@ -9,6 +9,7 @@ import pytest
 
 from axile.server import account_control_audit
 from axile.server._native import _core
+from tests.unit.server._runtime_db_support import to_us, utc_time
 from tests.unit.server.test_account_control_monitor import database
 
 
@@ -32,6 +33,8 @@ def seed_event(path, **changes):
         "occurred_at_ms": 1763226660123,
         **changes,
     }
+    event["created_at_us"] = to_us(event.pop("created_at"))
+    event["occurred_at_us"] = event.pop("occurred_at_ms") * 1_000
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             f"INSERT INTO account_control_event({','.join(event)}) VALUES ({','.join('?' for _ in event)})",
@@ -107,8 +110,8 @@ def test_executions_orders_recent_first_and_preserves_page_count(monkeypatch):
                     {
                         "execution_id": "exec-newer",
                         "event_count": 3,
-                        "first_event_at": "2026-03-22T09:34:00",
-                        "last_event_at": "2026-03-22T09:36:00",
+                        "first_event_at": utc_time("2026-03-22T09:34:00"),
+                        "last_event_at": utc_time("2026-03-22T09:36:00"),
                         "context_kind": "execution",
                         "sources": ["algorithm"],
                     }
@@ -140,7 +143,7 @@ def test_events_filter_and_order_by_seq_then_id(monkeypatch):
             event = page["data"][0]
             assert event["metadata"] == {"order_id": "oid-1", "null": None}
             assert event["decision"] == "allowed" and event["counted"] is True
-            assert event["created_at"] == "2026-03-22T09:34:00"
+            assert event["created_at"] == utc_time("2026-03-22T09:34:00")
             assert event["occurred_at_ms"] == 1763226660123
 
     asyncio.run(scenario())

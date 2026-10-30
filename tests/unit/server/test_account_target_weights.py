@@ -17,6 +17,7 @@ from axile.server.db.models import Account, ExecutionArtifact, ExecutionEvent, P
 from axile.server.db.models.account import AccountSnapshot
 from axile.server.execution.intents import SubmitResult
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import to_us
 
 
 @dataclass
@@ -781,6 +782,10 @@ def test_audit_http_pages_normalize_hydrated_legacy_content(native_database, mon
 
     model = ExecutionEvent if kind == "events" else ExecutionArtifact
     values = [model(**(row | {"id": identity})).model_dump(mode="json") for identity in range(5, 14)]
+    for value in values:
+        for name in ("ts_local_created", "ts_exchange", "ts_persisted") if kind == "events" else ("created_at",):
+            recorded = value.pop(name)
+            value[f"{name}_us"] = to_us(recorded) if recorded is not None else None
     if kind == "events":
         for value in values:
             value["event_uid"] = f"legacy-event-{value['id']}"

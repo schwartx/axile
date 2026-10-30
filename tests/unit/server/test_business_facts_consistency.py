@@ -20,6 +20,7 @@ from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us
 from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import audit_artifacts
 from tests.unit.server._execution_test_support import build_account, insert_account
@@ -260,9 +261,9 @@ def test_cross_account_input_references_are_rejected_by_database(tmp_path, forei
     with _connection(path, foreign_keys) as connection:
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
-                f"INSERT INTO executerecord(account_id,execution_id,created_at,is_success,{reference}) "
+                f"INSERT INTO executerecord(account_id,execution_id,created_at_us,is_success,{reference}) "
                 "VALUES(2,'cross-account',?,1,?)",
-                (_CREATED, borrowed),
+                (to_us(_CREATED), borrowed),
             )
         connection.rollback()
         assert connection.execute("SELECT COUNT(*) FROM executerecord").fetchone()[0] == 0
@@ -295,7 +296,7 @@ def test_preorder_replay_preserves_identity_time_and_before_assets(tmp_path):
     )
     assert replay == first
     assert _counts(path) == counts and _version(path) == version
-    assert _scalar(path, "SELECT created_at FROM execution_input") == _CREATED
+    assert _scalar(path, "SELECT created_at_us FROM execution_input") == to_us(_CREATED)
     assert _scalar(path, "SELECT total_asset FROM business_asset_snapshot") == 1000.0
     with pytest.raises(_core.NativeError):
         _freeze(path, execution_id="before-replay", payload=_input(0.75))

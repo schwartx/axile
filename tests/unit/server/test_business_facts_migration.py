@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
 from tests.fixtures.rust_store.oracle_tables import table
-from tests.sqlite_oracle import register_time_function
+from tests.sqlite_oracle import register_time_function, to_us
 from tests.unit.server._native_read_views import read_view
 
 
@@ -45,9 +45,9 @@ def fact_connection(tmp_path):
     with _connect(database) as connection:
         for account_id in (1, 2):
             connection.exec_driver_sql(
-                "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
-                "VALUES(?,'synthetic','FUTURES','ctp','','2026-01-02','2026-01-02')",
-                (account_id,),
+                "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
+                "VALUES(?,'synthetic','FUTURES','ctp','',?,?)",
+                (account_id, to_us("2026-01-02"), to_us("2026-01-02")),
             )
     for account_id, input_id in ((1, "one"), (2, "two")):
         native_store_call(
@@ -64,9 +64,9 @@ def fact_connection(tmp_path):
     with _connect(database) as connection:
         for account_id, input_id in ((1, "one"), (2, "two")):
             connection.exec_driver_sql(
-                "INSERT INTO executerecord(id,account_id,execution_id,input_id,is_success,created_at,facts_complete) "
-                "VALUES(?,?,?,?,0,'2026-01-02',1)",
-                (account_id, account_id, input_id, input_id),
+                "INSERT INTO executerecord(id,account_id,execution_id,input_id,is_success,created_at_us,facts_complete) "
+                "VALUES(?,?,?,?,0,?,1)",
+                (account_id, account_id, input_id, input_id, to_us("2026-01-02")),
             )
         connection.exec_driver_sql(
             "INSERT INTO account_analysis(account_id) VALUES(1),(2) "
@@ -156,7 +156,8 @@ def test_analysis_publication_does_not_invalidate_business_source(fact_connectio
     connection = fact_connection
     before = connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
     connection.exec_driver_sql(
-        "INSERT INTO analysis_day(account_id,range_key,day,observed_at,sizing_fallback) VALUES(1,'all','2026-01-02','2026-01-02',0)"
+        "INSERT INTO analysis_day(account_id,range_key,day,observed_at_us,sizing_fallback) VALUES(1,'all','2026-01-02',?,0)",
+        (to_us("2026-01-02"),),
     )
     assert business_evidence(
         connection.exec_driver_sql("SELECT source_version FROM account_analysis WHERE account_id=1").scalar_one()
@@ -172,7 +173,7 @@ def legacy_connection(tmp_path):
     initialize_native_database(database, revision="0033")
     with _connect(database) as connection:
         metadata = sa.MetaData()
-        metadata.reflect(connection, only=["account", "executerecord", "execution_artifact"])
+        metadata.reflect(connection, only=["account", "executerecord", "execution_artifact", "notification_event"])
         now = "2026-01-02T09:30:00+08:00"
         connection.execute(
             metadata.tables["account"].insert(),
@@ -632,7 +633,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
             {
                 "id": event_id,
                 "account_id": 1,
-                "created_at": now,
+                "created_at_us": to_us(now),
                 "event_type": "execution.finished",
                 "context": captured,
                 "status": "succeeded",
@@ -647,8 +648,8 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
                 "trigger_source": "scheduled",
                 "status": "RUNNING",
                 "payload": {},
-                "created_at": now,
-                "started_at": now,
+                "created_at_us": to_us(now),
+                "started_at_us": to_us(now),
             },
         )
         connection.execute(
@@ -657,8 +658,8 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
                 "id": "late-group",
                 "account_id": 1,
                 "fingerprint": "late-context",
-                "base_scheduled_at": now,
-                "expires_at": now,
+                "base_scheduled_at_us": to_us(now),
+                "expires_at_us": to_us(now),
                 "configured_count": 1,
                 "effective_count": 1,
                 "status": "active",
@@ -670,7 +671,7 @@ def test_late_outbox_keeps_full_capture_with_legacy_summary_reference(legacy_con
                 "id": "late-step",
                 "group_id": "late-group",
                 "index": 1,
-                "scheduled_at": now,
+                "scheduled_at_us": to_us(now),
                 "status": "running",
                 "execution_id": "migration-exec",
             },
@@ -710,7 +711,7 @@ def test_migration_context_dedup_requires_existing_outbox_and_downgrades_lossles
     with _connect(database) as connection:
         _summary_fixture(connection, metadata, now, captured=captured)
         connection.execute(
-            table("notification_event").insert(),
+            metadata.tables["notification_event"].insert(),
             {
                 "id": "execution:migration-exec",
                 "account_id": 1,
@@ -765,7 +766,7 @@ def test_independent_asset_indices_version_account_and_preserve_execution_assets
                 "account_id": 1,
                 "source": "execution",
                 "execution_id": "migration-exec-2",
-                "created_at": now,
+                "created_at_us": to_us(now),
                 "asset_fact_id": "record:2:/account_assets",
             },
         )

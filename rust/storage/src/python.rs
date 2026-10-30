@@ -592,7 +592,7 @@ fn queue_claim(py: Python<'_>, path: &str, now: f64, token: &str) -> PyResult<Py
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("ANALYSIS_FACT_SCHEMA", 40)?;
+    m.add("ANALYSIS_FACT_SCHEMA", 41)?;
     m.add("PUBLIC_HEAD", crate::migrations::PUBLIC_HEAD)?;
     m.add(
         "EVIDENCE_INPUT_STAGES",

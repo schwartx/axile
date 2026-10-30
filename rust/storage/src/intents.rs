@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 use crate::error::AnalysisError;
 use crate::writer_scope::{immediate, open_writer};
 
-const COLUMNS: &str = "execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at,started_at,finished_at,error,cancel_requested_at,cancel_reason,terminate_mode";
+const COLUMNS: &str = "execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us,started_at_us,finished_at_us,error,cancel_requested_at_us,cancel_reason,terminate_mode";
 const TERMINAL: [&str; 5] = ["TERMINATED", "SUCCEEDED", "FAILED", "SKIPPED", "PARTIAL"];
 const PROCESS_INTERRUPTED_REASON: &str = "上次执行中断，未自动续跑";
 const FIELDS: [&str; 6] = [
@@ -48,6 +48,10 @@ fn text<'a>(request: &'a Value, key: &str) -> Result<&'a str, AnalysisError> {
                 format!("intent {key} must be a nonempty string"),
             )
         })
+}
+
+fn moment(value: &str) -> Result<i64, AnalysisError> {
+    crate::time_us::parse(value).map_err(|message| AnalysisError::new("INVALID_REQUEST", message))
 }
 
 fn account_id(request: &Value) -> Result<i64, AnalysisError> {
@@ -101,11 +105,11 @@ fn decode(row: &Row<'_>) -> rusqlite::Result<Value> {
         "channel": row.get::<_, Option<String>>(5)?,
         "algorithm": row.get::<_, Option<String>>(6)?,
         "payload": payload,
-        "created_at": row.get::<_, String>(8)?,
-        "started_at": row.get::<_, Option<String>>(9)?,
-        "finished_at": row.get::<_, Option<String>>(10)?,
+        "created_at": crate::time_us::read(row, 8)?,
+        "started_at": crate::time_us::read_optional(row, 9)?,
+        "finished_at": crate::time_us::read_optional(row, 10)?,
         "error": row.get::<_, Option<String>>(11)?,
-        "cancel_requested_at": row.get::<_, Option<String>>(12)?,
+        "cancel_requested_at": crate::time_us::read_optional(row, 12)?,
         "cancel_reason": row.get::<_, Option<String>>(13)?,
         "terminate_mode": row.get::<_, Option<String>>(14)?,
     }))
@@ -220,8 +224,8 @@ fn insert_in_connection(connection: &Connection, request: &Value) -> Result<Valu
     let payload = serde_json::to_string(&request["payload"])
         .map_err(|error| AnalysisError::new("INVALID_REQUEST", error.to_string()))?;
     connection.execute(
-        "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at) VALUES(?1,?2,?3,?4,'QUEUED',?5,?6,?7,?8)",
-        params![execution_id, account, kind, text(request,"trigger_source")?, nullable_text(request,"channel")?, nullable_text(request,"algorithm")?, payload, text(request,"created_at")?],
+        "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us) VALUES(?1,?2,?3,?4,'QUEUED',?5,?6,?7,?8)",
+        params![execution_id, account, kind, text(request,"trigger_source")?, nullable_text(request,"channel")?, nullable_text(request,"algorithm")?, payload, moment(text(request,"created_at")?)?],
     ).map_err(database)?;
     crate::supplements::attach_step(
         connection,
@@ -301,12 +305,20 @@ fn update_in_connection(
                 "unknown termination mode",
             ));
         }
-        assignments.push(format!("{field}=?"));
-        values.push(
-            value
-                .as_str()
-                .map_or(SqlValue::Null, |value| SqlValue::Text(value.to_owned())),
-        );
+        if ["started_at", "finished_at", "cancel_requested_at"].contains(&field.as_str()) {
+            assignments.push(format!("{field}_us=?"));
+            values.push(match value.as_str() {
+                Some(value) => SqlValue::Integer(moment(value)?),
+                None => SqlValue::Null,
+            });
+        } else {
+            assignments.push(format!("{field}=?"));
+            values.push(
+                value
+                    .as_str()
+                    .map_or(SqlValue::Null, |value| SqlValue::Text(value.to_owned())),
+            );
+        }
     }
     values.push(SqlValue::Text(execution_id.to_owned()));
     values.push(SqlValue::Text(expected.to_owned()));
@@ -398,13 +410,13 @@ mod tests {
                 id INTEGER PRIMARY KEY, execution_id TEXT UNIQUE NOT NULL,
                 account_id INTEGER NOT NULL, kind TEXT NOT NULL, trigger_source TEXT NOT NULL,
                 status TEXT NOT NULL, channel TEXT, algorithm TEXT, payload TEXT NOT NULL,
-                created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, error TEXT,
-                cancel_requested_at TEXT, cancel_reason TEXT, terminate_mode TEXT
+                created_at_us INTEGER NOT NULL, started_at_us INTEGER, finished_at_us INTEGER, error TEXT,
+                cancel_requested_at_us INTEGER, cancel_reason TEXT, terminate_mode TEXT
              );
              CREATE UNIQUE INDEX uq_intent_account_queued ON execution_intent(account_id) WHERE status='QUEUED';
              CREATE UNIQUE INDEX uq_intent_account_running ON execution_intent(account_id) WHERE status IN ('RUNNING','TERMINATING');
              CREATE TABLE supplement_step (id TEXT PRIMARY KEY, group_id TEXT, [index] INTEGER,
-                scheduled_at TEXT, status TEXT, execution_id TEXT);
+                scheduled_at_us INTEGER, status TEXT, execution_id TEXT);
              CREATE TABLE executerecord (id INTEGER PRIMARY KEY, execution_id TEXT UNIQUE);
              CREATE TABLE notification_event (id TEXT PRIMARY KEY);",
         ).unwrap();
@@ -485,12 +497,57 @@ mod tests {
         assert_eq!(receipt["changed"], false);
         assert_eq!(receipt["intent"]["status"], "FAILED");
         assert_eq!(receipt["intent"]["error"], "first");
-        assert_eq!(receipt["intent"]["finished_at"], finish["finished_at"]);
+        assert_eq!(
+            receipt["intent"]["finished_at"],
+            crate::time_us::format(moment(finish["finished_at"].as_str().unwrap()).unwrap())
+                .unwrap()
+        );
         assert!(
             update_in_connection(&connection, "one", "FAILED", "RUNNING", &Map::new())
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn integer_time_columns_preserve_microseconds_without_touching_payload_times() {
+        let connection = database();
+        let mut request = request("precise");
+        request["created_at"] = json!("2026-10-23T10:00:00.123456+08:00");
+        request["payload"] = json!({"created_at": "historical local text"});
+        let inserted = insert_in_connection(&connection, &request).unwrap();
+        assert_eq!(inserted["created_at"], "2026-10-23T02:00:00.123456Z");
+        assert_eq!(inserted["payload"]["created_at"], "historical local text");
+        let (kind, micros): (String, i64) = connection
+            .query_row(
+                "SELECT typeof(created_at_us),created_at_us FROM execution_intent",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "integer");
+        assert_eq!(micros.rem_euclid(1_000_000), 123456);
+        let fields =
+            json!({"started_at": "2026-10-23T02:00:00.123457Z", "cancel_requested_at": null});
+        let updated = update_in_connection(
+            &connection,
+            "precise",
+            "QUEUED",
+            "RUNNING",
+            fields.as_object().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated["started_at"], "2026-10-23T02:00:00.123457Z");
+        assert!(updated["cancel_requested_at"].is_null());
+        let elapsed: i64 = connection
+            .query_row(
+                "SELECT started_at_us-created_at_us FROM execution_intent",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(elapsed, 1);
     }
 
     #[test]
@@ -504,7 +561,7 @@ mod tests {
             ("still-running", "RUNNING", PROCESS_INTERRUPTED_REASON),
         ] {
             connection.execute(
-                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at,error) VALUES(?1,1,'rebalance','scheduler',?2,'{}','2026-01-01T10:00:00+08:00',?3)",
+                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at_us,error) VALUES(?1,1,'rebalance','scheduler',?2,'{}',1767232800000000,?3)",
                 params![execution_id, status, error],
             ).unwrap();
         }

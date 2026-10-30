@@ -79,7 +79,7 @@ fn observations(
     let mut statement = connection
         .prepare(&format!(
             "{cte}
-        SELECT a.*,s.account_id,s.created_at,s.source AS snapshot_source,
+        SELECT a.*,s.account_id,s.created_at_us,s.source AS snapshot_source,
         {} AS owner_valid FROM observations s
         JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id",
             assets::OWNER_VALID
@@ -103,7 +103,7 @@ fn observations(
             positions.get(&asset_id).map(Vec::as_slice).unwrap_or(&[]),
         )?;
         result.insert(row.get("account_id").map_err(database)?, json!({
-            "assets": assets, "created_at": row.get::<_, String>("created_at").map_err(database)?
+            "assets": assets, "created_at": crate::time_us::read(row, "created_at_us").map_err(database)?
         }));
     }
     Ok(result)
@@ -135,7 +135,7 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
             "{cte},
         recent AS (SELECT r.* FROM ids JOIN executerecord r ON r.id=(
             SELECT id FROM executerecord WHERE account_id=ids.id AND result_staged=0 ORDER BY id DESC LIMIT 1))
-        SELECT ids.id,b.portfolio_id,r.id,r.created_at,r.is_success,r.display_status
+        SELECT ids.id,b.portfolio_id,r.id,r.created_at_us,r.is_success,r.display_status
         FROM ids LEFT JOIN bindings b ON b.account_id=ids.id
         LEFT JOIN recent r ON r.account_id=ids.id"
         ))
@@ -146,7 +146,7 @@ pub fn dashboard_inputs(connection: &Connection, account_ids: &[i64]) -> Result<
         let id: i64 = row.get(0).map_err(database)?;
         let latest = if row.get::<_, Option<i64>>(2).map_err(database)?.is_some() {
             let status: Option<String> = row.get(5).map_err(database)?;
-            json!({"created_at":row.get::<_, String>(3).map_err(database)?,
+            json!({"created_at":crate::time_us::read(row, 3).map_err(database)?,
                 "is_success":row.get::<_, i64>(4).map_err(database)?,
                 "display_status":status.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_owned())})
         } else {
@@ -187,39 +187,39 @@ mod tests {
             .unwrap();
         let connection = Connection::open(&path).unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
-        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at)
-                VALUES(1,'latest','futures','ctp','','2026-10-27','2026-10-27');
-            INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at)
-                VALUES(7,'latest','futures','','2026-10-27','2026-10-27');
+        connection.execute_batch("INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us)
+                VALUES(1,'latest','futures','ctp','',1793059200000000,1793059200000000);
+            INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us)
+                VALUES(7,'latest','futures','',1793059200000000,1793059200000000);
             CREATE TEMP TABLE history(id INTEGER PRIMARY KEY);
             WITH RECURSIVE ids(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM ids WHERE id<10000)
                 INSERT INTO history SELECT id FROM ids;
-            INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,facts_complete)
-                VALUES(0,1,'e0',1,'2026-10-27T09:00:00',1);
+            INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,facts_complete)
+                VALUES(0,1,'e0',1,1793091600000000,1);
             INSERT INTO business_asset_snapshot(asset_id,record_id,path,scope,ordinal,payload_kind,
                 audit_evidence,cash_state,equity_state,market_state,positions_kind,positions_count,observation_valid,total_asset)
                 VALUES('execution:0',0,'/account_assets','after',0,'object','{}','absent','value','absent','array',0,1,100);
             INSERT INTO business_asset_binding(record_id,path,asset_id,scope,ordinal)
                 VALUES(0,'/account_assets','execution:0','after',0);
-            INSERT INTO account_asset_snapshot(id,account_id,asset_fact_id,source,execution_id,created_at)
-                VALUES(0,1,'execution:0','execution','e0','2026-10-27T09:00:00');").unwrap();
+            INSERT INTO account_asset_snapshot(id,account_id,asset_fact_id,source,execution_id,created_at_us)
+                VALUES(0,1,'execution:0','execution','e0',1793091600000000);").unwrap();
         let mut previous = 0;
         let mut work = Vec::new();
         for count in [100, 10000] {
             connection.execute_batch(&format!("BEGIN;
-                INSERT INTO account_asset_snapshot(id,account_id,source,created_at)
-                    SELECT id,1,'manual','2026-10-27T09:00:00' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO account_asset_snapshot(id,account_id,source,created_at_us)
+                    SELECT id,1,'manual',1793091600000000 FROM history WHERE id>{previous} AND id<={count};
                 INSERT INTO business_asset_snapshot(asset_id,account_snapshot_id,path,scope,ordinal,payload_kind,
                     audit_evidence,cash_state,equity_state,market_state,positions_kind,positions_count,observation_valid,total_asset)
                     SELECT 'snapshot:'||id,id,'/account_assets','manual',0,'object','{{}}','absent','value','absent','array',0,1,id
                     FROM history WHERE id>{previous} AND id<={count};
                 UPDATE account_asset_snapshot SET asset_fact_id='snapshot:'||id WHERE id>{previous} AND id<={count};
-                INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at)
-                    SELECT id,1,7,'2026-10-27T09:00:00' FROM history WHERE id>{previous} AND id<={count};
-                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at,normalized_weights_kind,weights_metadata)
-                    SELECT id,1,7,'manual','2026-10-27T09:00:00','mapping','{{}}' FROM history WHERE id>{previous} AND id<={count};
-                INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,facts_complete)
-                    SELECT id,1,'e'||id,1,'2026-10-27T09:00:00',1 FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at_us)
+                    SELECT id,1,7,1793091600000000 FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO target_weight_snapshot(id,account_id,portfolio_id,source,calculated_at_us,normalized_weights_kind,weights_metadata)
+                    SELECT id,1,7,'manual',1793091600000000,'mapping','{{}}' FROM history WHERE id>{previous} AND id<={count};
+                INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,facts_complete)
+                    SELECT id,1,'e'||id,1,1793091600000000,1 FROM history WHERE id>{previous} AND id<={count};
                 COMMIT;")).unwrap();
             let steps = Arc::new(AtomicUsize::new(0));
             let counter = Arc::clone(&steps);
@@ -266,15 +266,15 @@ mod tests {
         let reader = Connection::open(&path).unwrap();
         reader.execute_batch("PRAGMA journal_mode=WAL;
             CREATE TABLE portfolioaccount(id INTEGER,account_id INTEGER,portfolio_id INTEGER);
-            CREATE TABLE account_asset_snapshot(id INTEGER,account_id INTEGER,asset_fact_id TEXT,created_at TEXT,source TEXT,execution_id TEXT);
+            CREATE TABLE account_asset_snapshot(id INTEGER,account_id INTEGER,asset_fact_id TEXT,created_at_us INTEGER,source TEXT,execution_id TEXT);
             CREATE TABLE business_asset_snapshot(asset_id TEXT,observation_valid INTEGER,account_snapshot_id INTEGER,record_id INTEGER,input_id TEXT,path TEXT,scope TEXT);
             CREATE TABLE business_asset_position(asset_id TEXT,ordinal INTEGER);
             CREATE TABLE business_asset_binding(asset_id TEXT,record_id INTEGER,path TEXT);
-            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at TEXT,is_success INTEGER,display_status TEXT,result_staged INTEGER DEFAULT 0);
+            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,input_id TEXT,result_input_id TEXT,created_at_us INTEGER,is_success INTEGER,display_status TEXT,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,owner_execution_id TEXT,execution_id TEXT);
             CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,portfolio_id INTEGER,normalized_weights_kind TEXT,weights_metadata TEXT);
             CREATE TABLE target_weight_snapshot_weight(snapshot_id INTEGER,role TEXT,map_key TEXT,value REAL);
-            CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(1),(2); CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,retry_at REAL);
+            CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(1),(2); CREATE TABLE account_analysis(account_id INTEGER,source_version INTEGER,requested INTEGER,running_version INTEGER,error TEXT,retry_at_us INTEGER);
             INSERT INTO portfolioaccount VALUES(1,1,7);
             INSERT INTO target_weight_snapshot VALUES(1,1,7,'mapping','{}');
             ").unwrap();

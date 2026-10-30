@@ -327,11 +327,11 @@ mod tests {
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,
-            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at TEXT,result_staged INTEGER DEFAULT 0);
+            account_id INTEGER,is_success INTEGER,input_id TEXT,execution_id TEXT,created_at_us INTEGER,result_staged INTEGER DEFAULT 0);
             CREATE TABLE execution_input(id TEXT,curr_target_state TEXT,curr_target_count INTEGER,
               sizing_context_state TEXT,long_leverage REAL,short_leverage REAL,weight_precision REAL);
             CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);").unwrap();
-        connection.execute_batch("CREATE TABLE execution_intent(execution_id TEXT,account_id INTEGER,kind TEXT,trigger_source TEXT,status TEXT,channel TEXT,algorithm TEXT,payload TEXT,created_at TEXT,started_at TEXT,finished_at TEXT,error TEXT,cancel_requested_at TEXT,cancel_reason TEXT,terminate_mode TEXT);").unwrap();
+        connection.execute_batch("CREATE TABLE execution_intent(execution_id TEXT,account_id INTEGER,kind TEXT,trigger_source TEXT,status TEXT,channel TEXT,algorithm TEXT,payload TEXT,created_at_us INTEGER,started_at_us INTEGER,finished_at_us INTEGER,error TEXT,cancel_requested_at_us INTEGER,cancel_reason TEXT,terminate_mode TEXT);").unwrap();
         connection
     }
 
@@ -352,21 +352,27 @@ mod tests {
             "termination_mode",
         ] {
             if !["execution_id"].contains(&name) {
+                let declaration = match name {
+                    "termination_finished_at" | "termination_requested_at" => {
+                        format!("{name}_us INTEGER")
+                    }
+                    _ => format!("{name} TEXT"),
+                };
                 connection
                     .execute_batch(&format!(
-                        "ALTER TABLE executerecord ADD COLUMN {name} TEXT;"
+                        "ALTER TABLE executerecord ADD COLUMN {declaration};"
                     ))
                     .unwrap();
             }
         }
-        connection.execute_batch("INSERT INTO executerecord(id,account_id,is_success,created_at,task_status,execution_id,display_status,display_error,termination_mode) VALUES(7,1,0,'t','PARTIAL','status','PARTIAL','partial evidence','graceful');").unwrap();
+        connection.execute_batch("INSERT INTO executerecord(id,account_id,is_success,created_at_us,task_status,execution_id,display_status,display_error,termination_mode) VALUES(7,1,0,1767229200123456,'PARTIAL','status','PARTIAL','partial evidence','graceful');").unwrap();
         connection.execute_batch("CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,node_kind TEXT,status TEXT,outcome TEXT,ordinal INTEGER);").unwrap();
         let request = json!({"execution_id":"status"});
         assert_eq!(
             persisted_status(&connection, &request).unwrap()["status"],
             "PARTIAL"
         );
-        connection.execute_batch("INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at) VALUES('status',1,'rebalance','manual','QUEUED','ctp','SINGLE-MAKER','{}','t');").unwrap();
+        connection.execute_batch("INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,channel,algorithm,payload,created_at_us) VALUES('status',1,'rebalance','manual','QUEUED','ctp','SINGLE-MAKER','{}',1767229200123456);").unwrap();
         let queued = persisted_status(&connection, &request).unwrap();
         assert_eq!(queued["status"], "QUEUED");
         assert!(queued["record_id"].is_null());
@@ -381,7 +387,7 @@ mod tests {
         assert_eq!(failed["terminate_mode"], "graceful");
         connection
             .execute_batch(
-                "UPDATE executerecord SET task_status='TERMINATED',termination_finished_at=NULL;",
+                "UPDATE executerecord SET task_status='TERMINATED',termination_finished_at_us=NULL;",
             )
             .unwrap();
         let row = record_on(&connection, "status", None).unwrap().unwrap();
@@ -389,7 +395,7 @@ mod tests {
         assert!(receipt["finished_at"].is_null());
         assert_eq!(receipt["error"], "partial evidence");
         let persisted = persisted_status(&connection, &request).unwrap();
-        assert_eq!(persisted["finished_at"], "t");
+        assert_eq!(persisted["finished_at"], "2026-01-01T01:00:00.123456Z");
         assert!(persisted["error"].is_null());
     }
 
@@ -432,14 +438,14 @@ mod tests {
     #[test]
     fn latest_success_without_input_does_not_search_older_input() {
         let connection = fixture();
-        connection.execute("INSERT INTO executerecord(id,account_id,is_success,input_id,created_at) VALUES(1,1,1,'missing-input','t')", []).unwrap();
+        connection.execute("INSERT INTO executerecord(id,account_id,is_success,input_id,created_at_us) VALUES(1,1,1,'missing-input',1767229200123456)", []).unwrap();
         connection
             .execute(
-                "INSERT INTO executerecord(id,account_id,is_success,created_at) VALUES(2,1,1,'t')",
+                "INSERT INTO executerecord(id,account_id,is_success,created_at_us) VALUES(2,1,1,1767229200123456)",
                 [],
             )
             .unwrap();
-        connection.execute("INSERT INTO executerecord(id,account_id,is_success,input_id,created_at) VALUES(3,1,0,'missing-input','t')", []).unwrap();
+        connection.execute("INSERT INTO executerecord(id,account_id,is_success,input_id,created_at_us) VALUES(3,1,0,'missing-input',1767229200123456)", []).unwrap();
         assert_eq!(
             last_target(&connection, &json!({"account_id":1})).unwrap(),
             json!({"present":false,"target":null})

@@ -31,21 +31,21 @@ pub fn query(
         return Err("ACCOUNT_NOT_FOUND: account does not exist".into());
     }
     let since = (!since.is_empty())
-        .then(|| crate::calendar::canonical_boundary(since))
+        .then(|| crate::time_us::boundary(since))
         .transpose()?;
     let until = (!until.is_empty())
-        .then(|| crate::calendar::canonical_boundary(until))
+        .then(|| crate::time_us::boundary(until))
         .transpose()?;
-    let mut groups: Vec<(String, f64, Summary, Vec<Value>)> = Vec::new();
+    let mut groups: Vec<(String, i64, Summary, Vec<Value>)> = Vec::new();
     let mut indices = HashMap::new();
     let mut ticks = crate::fact_ticks::TickReader::new(conn).map_err(database)?;
     let mut trades = crate::fact_trades::TradeReader::new(conn).map_err(database)?;
     let mut statement = conn
         .prepare(&format!(
-            "SELECT id,created_at,execution_id,facts_complete FROM executerecord
+            "SELECT id,created_at_us,execution_id,facts_complete FROM executerecord
              WHERE account_id=?1 AND result_staged=0{}
-             ORDER BY axile_time(created_at) DESC,id DESC",
-            time_predicate("created_at", since.is_some(), until.is_some())
+             ORDER BY created_at_us DESC,id DESC",
+            time_predicate("created_at_us", since.is_some(), until.is_some())
         ))
         .map_err(database)?;
     let args = params![account_id, since, until];
@@ -54,13 +54,13 @@ pub fn query(
         .map_err(database)?;
     while let Some(row) = rows.next().map_err(database)? {
         let id: i64 = row.get(0).map_err(database)?;
-        let created: String = row.get(1).map_err(database)?;
+        let created: i64 = row.get(1).map_err(database)?;
         let execution: Option<String> = row.get(2).map_err(database)?;
         if !row.get::<_, bool>(3).map_err(database)? {
             return Err(format!("SOURCE_FACTS_INCOMPLETE: record {id}"));
         }
         let prices = ticks.read(id).map_err(database)?;
-        for trade in trades.read(id, &created, &prices)? {
+        for trade in trades.read(id, created, &prices)? {
             if symbol.is_some_and(|name| name != trade.symbol) {
                 continue;
             }
@@ -74,10 +74,10 @@ pub fn query(
                 groups.len() - 1
             });
             let (_, last, summary, fills) = &mut groups[index];
-            *last = last.max(trade.time);
+            *last = (*last).max(trade.time);
             summary.push(&trade);
             if symbol.is_some_and(|name| !name.is_empty()) {
-                fills.push(json!({"symbol":trade.symbol,"day":trade.day,"time":trade.time,
+                fills.push(json!({"symbol":trade.symbol,"day":trade.day,"time":trade.time as f64 / 1000.0,
                     "timeEstimated":trade.estimated,"side":trade.side,"quantity":trade.quantity,
                     "price":trade.price,"reference":trade.reference,"referenceSource":trade.reference_source,
                     "value":trade.value,"cost":trade.cost,"lossBp":trade.loss_bp,"fee":trade.fee,
@@ -89,7 +89,7 @@ pub fn query(
         .into_iter()
         .map(|(name, last, summary, fills)| {
             let summary = historical_summary(summary.output());
-            json!({"symbol":name,"last_time":last as i64,"n_trades":summary["count"],
+            json!({"symbol":name,"last_time":last.div_euclid(1000),"n_trades":summary["count"],
             "summary":summary,"trades":fills})
         })
         .collect();
@@ -107,8 +107,8 @@ mod tests {
             "CREATE TABLE account(id INTEGER); INSERT INTO account VALUES(2);
             ALTER TABLE executerecord ADD COLUMN execution_id TEXT;
             ALTER TABLE executerecord ADD COLUMN facts_complete INTEGER DEFAULT 1;
-            UPDATE executerecord SET created_at='2026-01-31T16:30:00Z' WHERE id=1;
-            UPDATE business_trade SET trade_time=NULL;",
+            UPDATE executerecord SET created_at_us=1769877000000000 WHERE id=1;
+            UPDATE business_trade SET trade_time_us=NULL;",
         )
         .unwrap();
         let result = query(

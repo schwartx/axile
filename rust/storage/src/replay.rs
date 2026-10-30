@@ -16,8 +16,8 @@ pub const ENGINE_VERSION: &str = "equity-ledger-1";
 pub struct Observation {
     pub id: i64,
     pub execution_id: Option<String>,
-    /// Shanghai local ISO datetime supplied by the storage projection.
-    pub time: String,
+    /// UTC Unix microseconds supplied by the storage projection.
+    pub time: i64,
     pub asset: Option<f64>,
     pub target: Option<BTreeMap<String, f64>>,
     pub prices: BTreeMap<String, f64>,
@@ -90,11 +90,9 @@ impl ReplayLedger {
     /// and missing-price observations must be rejected by the participation
     /// filter before calling this method: skipped observations do not move marks.
     pub fn push(&mut self, item: &Observation) -> Result<(), String> {
-        let day = item
-            .time
-            .get(..10)
-            .filter(|day| day.as_bytes()[4] == b'-' && day.as_bytes()[7] == b'-')
-            .ok_or_else(|| format!("invalid observation time: {}", item.time))?;
+        let day = crate::time_us::local_datetime(item.time)?
+            .date()
+            .to_string();
 
         // Compute the complete transition before replacing state, so a missing
         // price or invalid weight transition never partially advances a ledger.
@@ -123,7 +121,7 @@ impl ReplayLedger {
         self.positions = target;
         self.equity = equity;
         self.initialized = true;
-        self.closes.insert(day.to_owned(), equity);
+        self.closes.insert(day, equity);
         Ok(())
     }
 
@@ -236,7 +234,11 @@ mod tests {
         Observation {
             id: index as i64,
             execution_id: Some(format!("exec-{index}")),
-            time: format!("2026-01-{day:02}T{:02}:00:00", 9 + index % 10),
+            time: crate::time_us::parse(&format!(
+                "2026-01-{day:02}T{:02}:00:00+08:00",
+                9 + index % 10
+            ))
+            .unwrap(),
             asset: Some(100.0),
             target: Some(BTreeMap::from([("A".into(), quantity * price / 100.0)])),
             prices: BTreeMap::from([("A".into(), price)]),
@@ -322,7 +324,7 @@ mod tests {
         roll.target_units = Some(BTreeMap::from([("B".into(), 1.0)]));
         roll.target_quantities = Some(BTreeMap::from([("B".into(), 1.0)]));
         let mut last = roll.clone();
-        last.time = "2026-01-01T11:00:00".into();
+        last.time = crate::time_us::parse("2026-01-01T11:00:00+08:00").unwrap();
         last.prices = BTreeMap::from([("B".into(), 220.0)]);
         let result = run(&[first, roll, last], 0.001, false);
         near(result["2026-01-01"].cumulative_return, 0.2969);
@@ -452,6 +454,21 @@ mod tests {
         let mut ledger = ReplayLedger::new(100.0, 0.0, true).unwrap();
         ledger.push(&first).unwrap();
         assert!(ledger.push(&last).unwrap_err().contains("模拟权益非正"));
+    }
+
+    #[test]
+    fn utc_microseconds_cross_the_shanghai_day_at_the_exact_boundary() {
+        let mut first = snapshot(0, 1, 100.0, 1.0);
+        let mut second = snapshot(1, 1, 110.0, 1.0);
+        first.time = crate::time_us::parse("2025-12-31T15:59:59.999999Z").unwrap();
+        second.time = crate::time_us::parse("2025-12-31T16:00:00.000000Z").unwrap();
+        assert_eq!(second.time - first.time, 1);
+        let result = run(&[first, second], 0.0, false);
+        assert_eq!(
+            result.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["2025-12-31", "2026-01-01"]
+        );
+        near(result["2026-01-01"].cumulative_return, 0.1);
     }
 
     #[test]

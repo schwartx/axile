@@ -26,6 +26,7 @@ fn request(account: i64, key: &str, fee: f64) -> PerformanceRequest {
 pub(crate) fn point(value: Value) -> Result<Point, AnalysisError> {
     let mut v = value;
     v["date"] = v["day"].clone();
+    v["observed_at"] = v["observed_at_us"].clone();
     v["sizing_fallback"] = json!(v["sizing_fallback"] == 1);
     serde_json::from_value(v).map_err(error)
 }
@@ -118,13 +119,7 @@ fn hydrate(c: &Connection, s: &State) -> Result<RangeState, AnalysisError> {
     let mut days = BTreeMap::new();
     if let Some(day) = &s.current_day {
         let last = Sample {
-            time: s
-                .last_time
-                .as_deref()
-                .map(display_time)
-                .transpose()
-                .map_err(error)?
-                .unwrap_or_default(),
+            time: s.last_time.unwrap_or_default(),
             id: s.last_id.unwrap(),
             execution_id: s.last_execution.clone(),
             asset: s.last_asset,
@@ -137,7 +132,7 @@ fn hydrate(c: &Connection, s: &State) -> Result<RangeState, AnalysisError> {
             )?
             .pop()
             .map(|p| Sample {
-                time: p["observed_at"].as_str().unwrap().into(),
+                time: p["observed_at_us"].as_i64().unwrap(),
                 id: p["record_id"].as_i64().unwrap(),
                 execution_id: p["execution_id"].as_str().map(str::to_owned),
                 asset: p["account_equity"].as_f64(),
@@ -150,7 +145,7 @@ fn hydrate(c: &Connection, s: &State) -> Result<RangeState, AnalysisError> {
     Ok(RangeState{key:s.range_key.clone(),start:s.start.clone(),count:s.observations as usize,invalid_assets:s.invalid_assets as usize,end:s.last_time.clone(),baseline,days,executable:participants(c,s,"executable")?,target:participants(c,s,"target")?,fallback_days:analysis::rows(c,"SELECT day FROM analysis_day WHERE account_id=?1 AND range_key=?2 AND day=?3 AND sizing_fallback=1",&[&s.account_id,&s.range_key,&s.current_day])?.iter().filter_map(|p|p["day"].as_str().map(str::to_owned)).collect(),fallback_count:s.fallback_count as usize,fallback_ranges:Vec::new(),in_fallback:false})
 }
 
-fn baseline_moves(c: &Connection, s: &State, last: &str) -> Result<bool, AnalysisError> {
+fn baseline_moves(c: &Connection, s: &State, last: i64) -> Result<bool, AnalysisError> {
     if s.baseline_asset.is_none() {
         return Ok(true);
     }
@@ -170,14 +165,14 @@ fn baseline_moves(c: &Connection, s: &State, last: &str) -> Result<bool, Analysi
                 - Duration::days(s.range_key.parse::<i64>().map_err(error)?),
         )
     } else {
-        last.to_owned()
+        last
     };
     let after = if confirmed {
-        s.baseline_time.as_deref()
+        s.baseline_time
     } else {
-        s.last_time.as_deref()
+        s.last_time
     };
-    let ids=analysis::rows(c,"SELECT max(id) AS id FROM executerecord WHERE account_id=?1 AND result_staged=0 AND axile_time(created_at)>?2 AND axile_time(created_at)<=?3 GROUP BY axile_time(created_at) ORDER BY axile_time(created_at) DESC",&[&s.account_id,&after.map(crate::calendar::canonical_time).transpose().map_err(error)?.unwrap_or_default(),&cutoff])?;
+    let ids=analysis::rows(c,"SELECT max(id) AS id FROM executerecord WHERE account_id=?1 AND result_staged=0 AND created_at_us>?2 AND created_at_us<=?3 GROUP BY created_at_us ORDER BY created_at_us DESC",&[&s.account_id,&after.unwrap_or(i64::MIN),&cutoff])?;
     for id in ids {
         let item = reader
             .read(s.account_id, id["id"].as_i64().unwrap())
@@ -195,7 +190,7 @@ pub(crate) fn compute(
     account: i64,
     key: &str,
     version: i64,
-    now: &str,
+    now: i64,
 ) -> Result<(bool, usize), AnalysisError> {
     let (channel,raw):(String,Option<String>)=source.query_row("SELECT a.trade_channel,s.backtest FROM account a LEFT JOIN account_settings s ON s.account_id=a.id WHERE a.id=?1",[account],|r|Ok((r.get(0)?,r.get(1)?))).map_err(analysis::sql)?;
     let settings: Value = raw
@@ -221,7 +216,7 @@ pub(crate) fn compute(
             |r| r.get(0),
         )
         .map_err(analysis::sql)?;
-    let pending=analysis::rows(source,"SELECT max(id) AS id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1 AND result_staged=0 AND id>?2 GROUP BY axile_time(created_at) ORDER BY axile_time(created_at)",&[&account,&old.as_ref().map_or(0,|s|s.max_id)])?;
+    let pending=analysis::rows(source,"SELECT max(id) AS id,created_at_us AS time FROM executerecord WHERE account_id=?1 AND result_staged=0 AND id>?2 GROUP BY created_at_us ORDER BY created_at_us",&[&account,&old.as_ref().map_or(0,|s|s.max_id)])?;
     let reset = needs_replay(source, old.as_ref(), dirty, &pending, fee, &channel)?;
     let mut runtime = if reset {
         calculate_states(source, &request(account, key, fee))
@@ -238,12 +233,11 @@ pub(crate) fn compute(
         let mut reader =
             crate::fact_observation::ObservationReader::new(source).map_err(analysis::sql)?;
         for p in &pending {
-            let mut item = reader
+            let item = reader
                 .read(account, p["id"].as_i64().unwrap())
                 .map_err(error)?;
-            item.time = display_time(&item.time).map_err(error)?;
             runtime
-                .push(&item, p["time"].as_str().unwrap(), true)
+                .push(&item, p["time"].as_i64().unwrap(), true)
                 .map_err(error)?;
             processed += 1;
         }
@@ -258,7 +252,7 @@ pub(crate) fn compute(
     saved.version = version;
     saved.logic_version = analysis::LOGIC_VERSION.into();
     saved.engine_version = ENGINE_VERSION.into();
-    saved.computed_at = now.into();
+    saved.computed_at = now;
     saved.fee_rate = fee;
     saved.trade_channel = channel;
     saved.max_id = maximum;
@@ -269,18 +263,22 @@ pub(crate) fn compute(
     } else {
         analysis::rows(source,"SELECT * FROM analysis_day WHERE account_id=?1 AND range_key=?2 AND day<?3 ORDER BY day DESC LIMIT 1",&[&account,&key,&first])?.pop().map(point).transpose()?
     };
-    let result = runtime.finish(
-        &json!({"backtest_weight_type":"cs","backtest_fee_rate":fee}),
-        0,
-        true,
-        seed.as_ref(),
-    );
+    let result = runtime
+        .finish(
+            &json!({"backtest_weight_type":"cs","backtest_fee_rate":fee}),
+            0,
+            true,
+            seed.as_ref(),
+        )
+        .map_err(error)?;
     let points = result.points.into_iter().skip(1).collect::<Vec<_>>();
     for p in &points {
         let mut body = serde_json::to_value(p).map_err(error)?;
         let body = body.as_object_mut().unwrap();
         let day = body.remove("date").unwrap();
         body.insert("day".into(), day);
+        body.remove("observed_at");
+        body.insert("observed_at_us".into(), json!(p.observed_at));
         body.insert("account_id".into(), json!(account));
         body.insert("range_key".into(), json!(key));
         analysis::put(stage, "analysis_day", &Value::Object(body.clone()))?;
@@ -296,12 +294,7 @@ pub(crate) fn compute(
 
 fn save_runtime(stage: &Connection, r: &RangeState, s: &mut State) -> Result<(), AnalysisError> {
     s.start = r.start.clone();
-    s.last_time = r
-        .end
-        .as_deref()
-        .map(crate::calendar::canonical_time)
-        .transpose()
-        .map_err(error)?;
+    s.last_time = r.end;
     s.observations = r.count as i64;
     s.invalid_assets = r.invalid_assets as i64;
     s.fallback_count = r.fallback_count as i64;
@@ -392,13 +385,12 @@ fn needs_replay(
             || dirty.is_some_and(|id| id <= s.max_id)
             || pending.first().is_some_and(|p| {
                 s.last_time
-                    .as_deref()
-                    .is_some_and(|t| p["time"].as_str().unwrap() <= t)
+                    .is_some_and(|t| p["time"].as_i64().unwrap() <= t)
             })
     });
     if !reset {
         if let (Some(s), Some(last)) = (old, pending.last()) {
-            reset = baseline_moves(source, s, last["time"].as_str().unwrap())?;
+            reset = baseline_moves(source, s, last["time"].as_i64().unwrap())?;
         }
     }
     Ok(reset)

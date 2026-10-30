@@ -14,6 +14,7 @@ from axile.executor.models.unified_input import UnifiedStandardInput
 from axile.executor.models.unified_output import ExecutionStatus, UnifiedStandardOutput
 from axile.server.db.models import Account, ExecutionArtifact
 from axile.server.execution.audit_batch import ExecutionAuditBatch
+from tests.sqlite_oracle import to_us
 
 
 def capture_worker_audit_batch(
@@ -324,6 +325,8 @@ def account_settings_values(account: Account) -> dict[str, object]:
 def insert_account(connection: sqlite3.Connection, account: Account) -> None:
     """为已迁移的测试库设置显式账户 ID 与分组配置。"""
     values = account.model_dump(mode="json")
+    for name in ("created_at", "updated_at"):
+        values[name + "_us"] = to_us(values.pop(name))
     names = (
         "id",
         "name",
@@ -332,8 +335,8 @@ def insert_account(connection: sqlite3.Connection, account: Account) -> None:
         "remark",
         "brokerage",
         "portfolio_id",
-        "created_at",
-        "updated_at",
+        "created_at_us",
+        "updated_at_us",
         "copied_from_account_id",
         "copied_from_account_name",
     )

@@ -19,7 +19,7 @@ from axile.server.execution import ctp_channels
 from axile.server.execution.runtime_locks import account_runtime_lock
 from axile.server.execution.worker_backend import manager as worker_manager
 from axile.server.native_store import native_operation
-from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
+from tests.unit.server._runtime_db_support import runtime_database, runtime_rows, to_us
 
 
 def _worker_can_write_and_checkpoint(path: Path) -> None:
@@ -38,15 +38,15 @@ def test_routes_release_transactions_before_worker(tmp_path, monkeypatch, entry,
     async def scenario():
         async with runtime_database(tmp_path / "runtime.db", wal=wal) as path:
             code = "def calculate_portfolio(context):\n    return {}"
-            now = runtime.now_str()
+            now_us = to_us(runtime.now_str())
             runtime_rows(
                 path,
-                "INSERT INTO portfolio(id,name,market,custom_calc_py_code,updated_at,created_at) "
+                "INSERT INTO portfolio(id,name,market,custom_calc_py_code,updated_at_us,created_at_us) "
                 "VALUES (1,'test','期货',?,?,?)",
-                (code, now, now),
+                (code, now_us, now_us),
             )
             runtime_rows(
-                path, "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES (1,1,?)", (now,)
+                path, "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES (1,1,?)", (now_us,)
             )
             called = False
 

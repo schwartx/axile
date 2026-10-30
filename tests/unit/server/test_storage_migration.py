@@ -28,14 +28,14 @@ def old_database(tmp_path):
             connection.execute("INSERT INTO alembic_version VALUES('0033')")
 
             connection.execute(
-                "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'synthetic','FUTURES','ctp','','now','now')"
+                "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) VALUES(1,'synthetic','FUTURES','ctp','','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')"
             )
             connection.execute(
                 "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,raw_input,raw_result) VALUES(7,1,'original',1,'2026-10-01',?,?)",
                 (json.dumps(_INPUT), json.dumps(_RESULT)),
             )
             connection.execute(
-                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES('original','EXECUTION_SUMMARY',2,?,'now')",
+                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES('original','EXECUTION_SUMMARY',2,?,'2026-10-01T00:00:00Z')",
                 (json.dumps(_RESULT),),
             )
             connection.execute(
@@ -134,7 +134,7 @@ def test_pending_facts_block_lossy_downgrade_before_any_change(old_database):
             "account_id": 1,
             "execution_id": "pending",
             "input_id": "pending",
-            "created_at": "now",
+            "created_at": "2026-10-01T00:00:00Z",
             "payload": {"curr_target": {"A": 1}},
         },
     )

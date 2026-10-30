@@ -9,7 +9,7 @@ from axile.server.business_facts.artifacts import make_artifact_reference
 from tests.conftest import native_store_call
 from tests.fixtures.rust_store.oracle_tables import table
 from tests.sqlite_oracle import connect as oracle_connect
-from tests.sqlite_oracle import register_time_function, sqlite_oracle
+from tests.sqlite_oracle import register_time_function, sqlite_oracle, to_us
 from tests.unit.server._native_read_views import persist_record_fixture, read_view
 
 
@@ -38,9 +38,9 @@ def rows(path, name):
 def seed_account(path, account_id=1):
     sql(
         path,
-        "INSERT OR IGNORE INTO account (id,name,market,trade_channel,brokerage,created_at,updated_at) "
-        "VALUES (?,'oracle','期货','ctp','','2026-10-20','2026-10-20')",
-        (account_id,),
+        "INSERT OR IGNORE INTO account (id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
+        "VALUES (?,'oracle','期货','ctp','',?,?)",
+        (account_id, to_us("2026-10-20"), to_us("2026-10-20")),
     )
 
 
@@ -65,6 +65,7 @@ def seed_historical_input(path, input_id, owner_execution_id, **columns):
         "audit_evidence": {},
         **columns,
     }
+    values["created_at_us"] = to_us(values.pop("created_at"))
     engine = sa.create_engine(f"sqlite:///{path}")
     sa.event.listen(engine, "connect", register_time_function)
     try:

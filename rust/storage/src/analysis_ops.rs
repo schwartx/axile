@@ -56,10 +56,10 @@ fn read_context(connection: &Connection, account: i64) -> Result<Value, Analysis
         .unwrap_or(Value::Null);
     let mut bounds = Vec::new();
     for order in ["ASC", "DESC"] {
-        let value:Option<String>=connection.query_row(&format!("SELECT created_at FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY axile_time(created_at) {order},id {order} LIMIT 1"),[account],|r|r.get(0)).optional().map_err(database_error)?;
+        let value:Option<i64>=connection.query_row(&format!("SELECT created_at_us FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY created_at_us {order},id {order} LIMIT 1"),[account],|r|r.get(0)).optional().map_err(database_error)?;
         bounds.push(
             value
-                .map(|t| crate::calendar::local_time(&t).map(|v| v.date()))
+                .map(|t| crate::time_us::local_datetime(t).map(|v| v.date()))
                 .transpose()
                 .map_err(AnalysisError::from)?,
         );

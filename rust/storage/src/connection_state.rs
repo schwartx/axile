@@ -260,13 +260,13 @@ pub fn reset_connection_for_config(
     connection
         .execute(
             "INSERT INTO account_connection_state
-             (account_id,config_key,instance_id,sequence,status,observed_at,message,error,
-              label,presentation,last_success_at,last_failure,manually_disconnected)
+             (account_id,config_key,instance_id,sequence,status,observed_at_us,message,error,
+              label,presentation,last_success_at_us,last_failure,manually_disconnected)
              VALUES (?1,?2,'',0,'unknown',NULL,NULL,NULL,NULL,NULL,NULL,NULL,0)
              ON CONFLICT(account_id) DO UPDATE SET
               config_key=excluded.config_key,instance_id='',sequence=0,status='unknown',
-              observed_at=NULL,message=NULL,error=NULL,label=NULL,presentation=NULL,
-              last_success_at=NULL,last_failure=NULL,manually_disconnected=0
+              observed_at_us=NULL,message=NULL,error=NULL,label=NULL,presentation=NULL,
+              last_success_at_us=NULL,last_failure=NULL,manually_disconnected=0
              WHERE account_connection_state.config_key<>excluded.config_key",
             params![account_id, config_key],
         )
@@ -361,9 +361,9 @@ fn observe_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
     }
     let changed = connection
         .execute(
-            "UPDATE account_connection_state SET sequence=?4,status=?5,observed_at=?6,
+            "UPDATE account_connection_state SET sequence=?4,status=?5,observed_at_us=?6,
              message=?7,error=?8,label=?9,presentation=?10,
-             last_success_at=COALESCE(?11,last_success_at),last_failure=COALESCE(?12,last_failure),
+             last_success_at_us=COALESCE(?11,last_success_at_us),last_failure=COALESCE(?12,last_failure),
              manually_disconnected=COALESCE(?13,manually_disconnected)
              WHERE account_id=?1 AND config_key=?2 AND instance_id=?3 AND sequence<?4",
             params![
@@ -372,12 +372,15 @@ fn observe_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
                 instance,
                 sequence,
                 status,
-                observed_at,
+                crate::time_us::parse(observed_at).map_err(invalid)?,
                 message,
                 error,
                 label,
                 presentation,
-                last_success,
+                last_success
+                    .map(crate::time_us::parse)
+                    .transpose()
+                    .map_err(invalid)?,
                 failure,
                 manually_disconnected,
             ],
@@ -481,8 +484,8 @@ mod tests {
                  CREATE TABLE account_connection_state(
                     account_id INTEGER PRIMARY KEY REFERENCES account(id) ON DELETE CASCADE,
                     config_key TEXT NOT NULL,instance_id TEXT NOT NULL,sequence INTEGER NOT NULL,
-                    status TEXT NOT NULL,observed_at TEXT,message TEXT,error JSON,label TEXT,presentation JSON,
-                    last_success_at TEXT,last_failure JSON,manually_disconnected BOOLEAN NOT NULL);
+                    status TEXT NOT NULL,observed_at_us INTEGER,message TEXT,error JSON,label TEXT,presentation JSON,
+                    last_success_at_us INTEGER,last_failure JSON,manually_disconnected BOOLEAN NOT NULL);
                  INSERT INTO account VALUES(1,'ctp');
                  INSERT INTO account_settings VALUES(1,'{}');",
             )
@@ -515,14 +518,14 @@ mod tests {
     fn history(connection: &Connection) -> (String, i64, Option<String>, Option<String>, bool) {
         connection
             .query_row(
-                "SELECT instance_id,sequence,last_success_at,last_failure,manually_disconnected
+                "SELECT instance_id,sequence,last_success_at_us,last_failure,manually_disconnected
                  FROM account_connection_state WHERE account_id=1",
                 [],
                 |row| {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
-                        row.get(2)?,
+                        crate::time_us::read_optional(row, 2)?,
                         row.get(3)?,
                         row.get(4)?,
                     ))
@@ -558,14 +561,14 @@ mod tests {
         let key = config_key("ctp", &json!({"password":"secret"})).unwrap();
         let account = json!({
             "id":1,"trade_channel":"ctp","account_config":{"password":"secret"},
-            "connection_state":{"config_key":key,"status":"ok","last_success_at":"access", "manually_disconnected":false,
-                "last_failure":{"observed_at":"failure","message":"original","error":{"technical_detail":"evidence"},
+            "connection_state":{"config_key":key,"status":"ok","last_success_at":"2026-10-23T10:00:00.000000Z", "manually_disconnected":false,
+                "last_failure":{"observed_at":"2026-10-23T10:00:01.000000Z","message":"original","error":{"technical_detail":"evidence"},
                     "presentation":{"title":"original title","sections":[{"fields":[{"label":"fact","value":"value"}]}]}}}
         });
         let offline = public_connection(&account, &json!({}), true).unwrap();
         assert_eq!(offline["status"], "uninitialized");
-        assert_eq!(offline["last_success_at"], "access");
-        assert_eq!(offline["last_failure_at"], "failure");
+        assert_eq!(offline["last_success_at"], "2026-10-23T10:00:00.000000Z");
+        assert_eq!(offline["last_failure_at"], "2026-10-23T10:00:01.000000Z");
         assert!(offline["error"].is_null());
         assert_eq!(
             offline["last_failure"]["presentation"]["summary"],
@@ -594,8 +597,8 @@ mod tests {
         let key = config_key("ctp", &json!({})).unwrap();
         let account = json!({
             "id":1,"trade_channel":"ctp","account_config":{},
-            "connection_state":{"config_key":key,"last_success_at":"access","manually_disconnected":true,
-                "last_failure":{"observed_at":"failure","label":"original label","error":{"technical_detail":"original"},
+            "connection_state":{"config_key":key,"last_success_at":"2026-10-23T10:00:00.000000Z","manually_disconnected":true,
+                "last_failure":{"observed_at":"2026-10-23T10:00:01.000000Z","label":"original label","error":{"technical_detail":"original"},
                     "presentation":{"title":123,"sections":"invalid"}}}
         });
         let disconnected = public_connection(&account, &json!({}), true).unwrap();
@@ -646,12 +649,17 @@ mod tests {
                     path,
                     &current,
                     2,
-                    json!({"status":"error","observed_at":"failure","message":"current"})
+                    json!({"status":"error","observed_at":"2026-10-23T10:00:01.000000Z","message":"current"})
                 )["applied"],
                 true
             );
             assert_eq!(
-                observe(path, &old, 99, json!({"status":"ok","observed_at":"late"}))["applied"],
+                observe(
+                    path,
+                    &old,
+                    99,
+                    json!({"status":"ok","observed_at":"2026-10-23T10:00:02.000000Z"})
+                )["applied"],
                 false
             );
             assert_eq!(
@@ -659,14 +667,14 @@ mod tests {
                     path,
                     &current,
                     1,
-                    json!({"status":"ok","observed_at":"earlier"})
+                    json!({"status":"ok","observed_at":"2026-10-23T10:00:03.000000Z"})
                 )["applied"],
                 false
             );
             assert_eq!(
                 connection_end(
                     path,
-                    &json!({"binding":old,"last_failure":{"observed_at":"late"}})
+                    &json!({"binding":old,"last_failure":{"observed_at":"2026-10-23T10:00:02.000000Z"}})
                 )
                 .unwrap()["applied"],
                 false
@@ -674,13 +682,13 @@ mod tests {
             let state = history(connection);
             assert_eq!((&state.0, state.1), (&"current".to_owned(), 2));
             assert!(state.3.unwrap().contains("current"));
-            assert_eq!(connection_end(path, &json!({"binding":current,"last_failure":{"observed_at":"ended","error":{"technical_detail":"original"}}})).unwrap()["applied"], true);
+            assert_eq!(connection_end(path, &json!({"binding":current,"last_failure":{"observed_at":"2026-10-23T10:00:04.000000Z","error":{"technical_detail":"original"}}})).unwrap()["applied"], true);
             assert_eq!(
                 observe(
                     path,
                     &current,
                     3,
-                    json!({"status":"ok","observed_at":"too-late"})
+                    json!({"status":"ok","observed_at":"2026-10-23T10:00:05.000000Z"})
                 )["applied"],
                 false
             );
@@ -696,25 +704,25 @@ mod tests {
                 path,
                 &binding,
                 1,
-                json!({"status":"error","observed_at":"failure","error":{"technical_detail":"evidence"}}),
+                json!({"status":"error","observed_at":"2026-10-23T10:00:01.000000Z","error":{"technical_detail":"evidence"}}),
             );
             observe(
                 path,
                 &binding,
                 2,
-                json!({"status":"ok","observed_at":"success","kind":"access"}),
+                json!({"status":"ok","observed_at":"2026-10-23T10:00:06.000000Z","kind":"access"}),
             );
             observe(
                 path,
                 &binding,
                 3,
-                json!({"status":"disconnected","observed_at":"manual","kind":"session"}),
+                json!({"status":"disconnected","observed_at":"2026-10-23T10:00:07.000000Z","kind":"session"}),
             );
             connection_recover(path, &json!({})).unwrap();
             let state = history(connection);
             assert_eq!(
                 (&state.0, state.1, state.2.as_deref(), state.4),
-                (&String::new(), 0, Some("success"), true)
+                (&String::new(), 0, Some("2026-10-23T10:00:06.000000Z"), true)
             );
             assert!(state.3.unwrap().contains("evidence"));
             assert_eq!(
@@ -722,7 +730,7 @@ mod tests {
                     path,
                     &binding,
                     99,
-                    json!({"status":"ok","observed_at":"late","kind":"session"})
+                    json!({"status":"ok","observed_at":"2026-10-23T10:00:02.000000Z","kind":"session"})
                 )["applied"],
                 false
             );
@@ -732,7 +740,7 @@ mod tests {
                 path,
                 &replacement,
                 1,
-                json!({"status":"connecting","observed_at":"explicit","kind":"session"}),
+                json!({"status":"connecting","observed_at":"2026-10-23T10:00:08.000000Z","kind":"session"}),
             );
             assert!(!history(connection).4);
             let error: Option<String> = connection
@@ -754,14 +762,14 @@ mod tests {
                     path,
                     &binding,
                     1,
-                    json!({"status":"error","observed_at":"first"})
+                    json!({"status":"error","observed_at":"2026-10-23T10:00:09.000000Z"})
                 )["applied"],
                 true
             );
             assert_eq!(
                 history(connection).3.as_deref(),
                 Some(
-                    r#"{"observed_at":"first","message":null,"label":null,"error":null,"presentation":null}"#
+                    r#"{"observed_at":"2026-10-23T10:00:09.000000Z","message":null,"label":null,"error":null,"presentation":null}"#
                 )
             );
             let evidence = json!({"code":9007199254740993_u64,"detail":{"native":true}});
@@ -770,19 +778,19 @@ mod tests {
                 path,
                 &binding,
                 2,
-                json!({"status":"cooldown","observed_at":"second",
+                json!({"status":"cooldown","observed_at":"2026-10-23T10:00:10.000000Z",
                 "message":"重试","label":"连接","error":evidence,"presentation":presentation,"extra":true}),
             );
             assert_eq!(
                 serde_json::from_str::<Value>(&history(connection).3.unwrap()).unwrap(),
-                json!({"observed_at":"second","message":"重试","label":"连接",
+                json!({"observed_at":"2026-10-23T10:00:10.000000Z","message":"重试","label":"连接",
                     "error":evidence,"presentation":presentation})
             );
-            let historical = json!({"observed_at":"prior","message":"历史故障","error":evidence});
+            let historical = json!({"observed_at":"2026-10-23T10:00:11.000000Z","message":"历史故障","error":evidence});
             connection_observe(
                 path,
                 &json!({"binding":binding,"sequence":3,
-                "observation":{"status":"error","observed_at":"current"},
+                "observation":{"status":"error","observed_at":"2026-10-23T10:00:12.000000Z"},
                 "history":{"last_failure":historical}}),
             )
             .unwrap();
@@ -793,7 +801,7 @@ mod tests {
             let error = connection_observe(
                 path,
                 &json!({"binding":binding,"sequence":4,
-                "observation":{"status":"error","observed_at":"invalid","error":"not an object"}}),
+                "observation":{"status":"error","observed_at":"2026-10-23T10:00:13.000000Z","error":"not an object"}}),
             )
             .unwrap_err();
             assert_eq!(error.code, "INVALID_REQUEST");
@@ -807,11 +815,11 @@ mod tests {
             let binding = begin(path, key, "worker");
             connection_observe(path, &json!({
                 "binding":binding,"sequence":5,
-                "observation":{"status":"ok","observed_at":"ready","kind":"session"},
-                "history":{"last_success_at":"access","last_failure":{"observed_at":"failure","message":"intermediate"}}
+                "observation":{"status":"ok","observed_at":"2026-10-23T10:00:14.000000Z","kind":"session"},
+                "history":{"last_success_at":"2026-10-23T10:00:00.000000Z","last_failure":{"observed_at":"2026-10-23T10:00:01.000000Z","message":"intermediate"}}
             })).unwrap();
             let state = history(connection);
-            assert_eq!(state.2.as_deref(), Some("access"));
+            assert_eq!(state.2.as_deref(), Some("2026-10-23T10:00:00.000000Z"));
             assert!(state.3.unwrap().contains("intermediate"));
         });
     }
@@ -824,7 +832,7 @@ mod tests {
                 path,
                 &binding,
                 1,
-                json!({"status":"error","observed_at":"failure"}),
+                json!({"status":"error","observed_at":"2026-10-23T10:00:01.000000Z"}),
             );
             let replacement = config_key("ctp", &json!({"password":"replacement"})).unwrap();
             connection.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -851,7 +859,7 @@ mod tests {
                     path,
                     &binding,
                     99,
-                    json!({"status":"ok","observed_at":"stale"})
+                    json!({"status":"ok","observed_at":"2026-10-23T10:00:15.000000Z"})
                 )["applied"],
                 false
             );
@@ -873,6 +881,37 @@ mod tests {
                     .unwrap(),
                 0
             );
+        });
+    }
+
+    #[test]
+    fn scalar_time_is_integer_and_failure_json_retains_original_timestamp() {
+        database(|connection, path, key| {
+            let binding = begin(path, key, "worker");
+            let original = "2026-10-23T10:00:00.123456+08:00";
+            observe(
+                path,
+                &binding,
+                1,
+                json!({"status":"error","observed_at":original}),
+            );
+            let (stored, kind, failure): (i64, String, String) = connection.query_row(
+                "SELECT observed_at_us,typeof(observed_at_us),last_failure FROM account_connection_state",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+            assert_eq!(stored, crate::time_us::parse(original).unwrap());
+            assert_eq!(kind, "integer");
+            assert_eq!(
+                serde_json::from_str::<Value>(&failure).unwrap()["observed_at"],
+                original
+            );
+            let invalid = connection_observe(
+                path,
+                &json!({"binding":binding,"sequence":2,
+                "observation":{"status":"ok","observed_at":"not a timestamp"}}),
+            );
+            assert!(invalid.is_err());
+            assert_eq!(history(connection).1, 1);
         });
     }
 }

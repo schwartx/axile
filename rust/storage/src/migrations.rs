@@ -340,6 +340,17 @@ fn validate_final_schema(connection: &Connection) -> Result<(), AnalysisError> {
     if !final_layout {
         return Err(invalid("database revision 0034 has an unsupported development schema; use the final 0034 schema or a published 0033 database"));
     }
+    for table in crate::time_us::TABLES {
+        for column in crate::time_us::columns(table) {
+            let canonical: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2 AND upper(type)='INTEGER') AND NOT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?3)",
+                [*table,column.storage,column.name], |row|row.get(0),
+            ).map_err(sql)?;
+            if !canonical {
+                return Err(invalid(format!("database revision 0034 has an unsupported development time schema: {table}.{} must be INTEGER microseconds; restore a published 0033 database", column.storage)));
+            }
+        }
+    }
     Ok(())
 }
 

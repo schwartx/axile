@@ -11,7 +11,7 @@ use crate::writer_scope::{immediate, open_writer};
 const CONTROL_WARNING: &str = "account_control.warning";
 const UNKNOWN: &str = "服务重启，通知调用结果未知";
 const EVENT_COLUMNS: &str =
-    "sequence,id,account_id,created_at,event_type,context,status,finished_at,error";
+    "sequence,id,account_id,created_at_us,event_type,context,status,finished_at_us,error";
 
 fn database(error: rusqlite::Error) -> AnalysisError {
     AnalysisError::new("NOTIFICATION_STORE", error.to_string())
@@ -54,9 +54,9 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     })?;
     let mut event = json!({
         "sequence": row.get::<_, i64>(0)?, "id": row.get::<_, String>(1)?,
-        "account_id": row.get::<_, i64>(2)?, "created_at": row.get::<_, String>(3)?,
+        "account_id": row.get::<_, i64>(2)?, "created_at": crate::time_us::read(row, 3)?,
         "event_type": row.get::<_, String>(4)?, "context": null,
-        "status": row.get::<_, String>(6)?, "finished_at": row.get::<_, Option<String>>(7)?,
+        "status": row.get::<_, String>(6)?, "finished_at": crate::time_us::read_optional(row, 7)?,
         "error": row.get::<_, Option<String>>(8)?
     });
     event["context"] = context;
@@ -86,7 +86,7 @@ pub(crate) fn enqueue_in_connection(
     let event_id = text(request, "id")?;
     let account_id = id(request, "account_id")?;
     let event_type = text(request, "event_type")?;
-    let created_at = text(request, "created_at")?;
+    let created_at = crate::time_us::parse(text(request, "created_at")?).map_err(invalid)?;
     if !request["context"].is_object() {
         return Err(invalid("context must be an object"));
     }
@@ -101,7 +101,7 @@ pub(crate) fn enqueue_in_connection(
     }
     connection
         .execute(
-            "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) \
+            "INSERT INTO notification_event(id,account_id,created_at_us,event_type,context,status) \
          VALUES (?1,?2,?3,?4,?5,'pending') ON CONFLICT(id) DO NOTHING",
             params![
                 event_id,
@@ -155,8 +155,8 @@ pub fn claim(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         if !settings.is_object() {
             return Err(invalid("notification settings must be an object"));
         }
-        let mut current =
-            event(&connection, "sequence", sequence)?.ok_or_else(|| invalid("notification disappeared"))?;
+        let mut current = event(&connection, "sequence", sequence)?
+            .ok_or_else(|| invalid("notification disappeared"))?;
         let context = current["context"]
             .as_object_mut()
             .ok_or_else(|| invalid("notification context must be an object"))?;
@@ -176,7 +176,7 @@ pub(crate) fn record_account_in_connection(
     request: &Value,
 ) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
-    let finished = text(request, "finished_at")?;
+    let finished = crate::time_us::parse(text(request, "finished_at")?).map_err(invalid)?;
     let event_type = text(request, "event_type")?;
     let ok = request["ok"]
         .as_bool()
@@ -184,15 +184,15 @@ pub(crate) fn record_account_in_connection(
     let execution = optional_text(request, "execution_id")?;
     let error = optional_text(request, "error")?;
     let changed = connection.execute(
-        "INSERT INTO account_notification_state(account_id,last_success_at,execution_id, \
-         last_attempt_event_type,last_attempt_at,last_attempt_execution_id,last_attempt_ok,last_attempt_error) \
+        "INSERT INTO account_notification_state(account_id,last_success_at_us,execution_id, \
+         last_attempt_event_type,last_attempt_at_us,last_attempt_execution_id,last_attempt_ok,last_attempt_error) \
          SELECT id,CASE WHEN ?5 THEN ?2 END,CASE WHEN ?5 THEN ?3 END,?4,?2,?3,?5,?6 \
          FROM account WHERE id=?1 ON CONFLICT(account_id) DO UPDATE SET \
-         last_success_at=CASE WHEN ?5 THEN ?2 ELSE last_success_at END, \
+         last_success_at_us=CASE WHEN ?5 THEN ?2 ELSE last_success_at_us END, \
          execution_id=CASE WHEN ?5 THEN ?3 ELSE execution_id END, \
-         last_attempt_event_type=?4,last_attempt_at=?2,last_attempt_execution_id=?3, \
+         last_attempt_event_type=?4,last_attempt_at_us=?2,last_attempt_execution_id=?3, \
          last_attempt_ok=?5,last_attempt_error=?6 \
-         WHERE last_attempt_at IS NULL OR last_attempt_at<?2",
+         WHERE last_attempt_at_us IS NULL OR last_attempt_at_us<?2",
         params![account_id,finished,execution,event_type,ok,error],
     ).map_err(database)?;
     Ok(json!({"updated":changed==1}))
@@ -209,7 +209,7 @@ fn record_system_in_connection(
     connection: &Connection,
     request: &Value,
 ) -> Result<Value, AnalysisError> {
-    let finished = text(request, "finished_at")?;
+    let finished = crate::time_us::parse(text(request, "finished_at")?).map_err(invalid)?;
     let ok = match &request["ok"] {
         Value::Null => None,
         Value::Bool(ok) => Some(*ok),
@@ -220,11 +220,11 @@ fn record_system_in_connection(
         _ => Some(id(request, "account_id")?),
     };
     let changed = connection.execute(
-        "INSERT INTO system_notification_state(id,finished_at,mode,event_type,execution_id,account_id,ok,error) \
+        "INSERT INTO system_notification_state(id,finished_at_us,mode,event_type,execution_id,account_id,ok,error) \
          VALUES(1,?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET \
-         finished_at=excluded.finished_at,mode=excluded.mode,event_type=excluded.event_type, \
+         finished_at_us=excluded.finished_at_us,mode=excluded.mode,event_type=excluded.event_type, \
          execution_id=excluded.execution_id,account_id=excluded.account_id,ok=excluded.ok,error=excluded.error \
-         WHERE system_notification_state.finished_at IS NULL OR system_notification_state.finished_at<excluded.finished_at",
+         WHERE system_notification_state.finished_at_us IS NULL OR system_notification_state.finished_at_us<excluded.finished_at_us",
         params![finished,optional_text(request,"mode")?,optional_text(request,"event_type")?,optional_text(request,"execution_id")?,account,ok,optional_text(request,"error")?],
     ).map_err(database)?;
     Ok(json!({"updated":changed==1}))
@@ -240,8 +240,8 @@ pub fn record_system(path: &str, request: &Value) -> Result<Value, AnalysisError
 pub fn get_system(path: &str, _request: &Value) -> Result<Value, AnalysisError> {
     crate::with_read_snapshot(Path::new(path), |connection| {
         connection.query_row(
-            "SELECT finished_at,mode,event_type,execution_id,account_id,ok,error FROM system_notification_state WHERE id=1",
-            [], |row| Ok(json!({"finished_at":row.get::<_,Option<String>>(0)?,"mode":row.get::<_,Option<String>>(1)?,"event_type":row.get::<_,Option<String>>(2)?,"execution_id":row.get::<_,Option<String>>(3)?,"account_id":row.get::<_,Option<i64>>(4)?,"ok":row.get::<_,Option<bool>>(5)?,"error":row.get::<_,Option<String>>(6)?})),
+            "SELECT finished_at_us,mode,event_type,execution_id,account_id,ok,error FROM system_notification_state WHERE id=1",
+            [], |row| Ok(json!({"finished_at":crate::time_us::read_optional(row, 0)?,"mode":row.get::<_,Option<String>>(1)?,"event_type":row.get::<_,Option<String>>(2)?,"execution_id":row.get::<_,Option<String>>(3)?,"account_id":row.get::<_,Option<i64>>(4)?,"ok":row.get::<_,Option<bool>>(5)?,"error":row.get::<_,Option<String>>(6)?})),
         ).optional().map_err(database).map(|row| row.unwrap_or_else(|| json!({"finished_at":null,"mode":null,"event_type":null,"execution_id":null,"account_id":null,"ok":null,"error":null})))
     })
 }
@@ -252,14 +252,14 @@ pub(crate) fn finish_in_connection(
     request: &Value,
 ) -> Result<Value, AnalysisError> {
     let sequence = id(request, "sequence")?;
-    let finished = text(request, "finished_at")?;
+    let finished = crate::time_us::parse(text(request, "finished_at")?).map_err(invalid)?;
     let ok = request["ok"]
         .as_bool()
         .ok_or_else(|| invalid("ok must be a boolean"))?;
     let error = optional_text(request, "error")?;
     connection.query_row(
-        "UPDATE notification_event SET status=?2,finished_at=?3,error=?4 WHERE sequence=?1 AND status='calling' \
-         RETURNING sequence,account_id,event_type,status,finished_at,error",
+        "UPDATE notification_event SET status=?2,finished_at_us=?3,error=?4 WHERE sequence=?1 AND status='calling' \
+         RETURNING sequence,account_id,event_type,status,finished_at_us,error",
         params![sequence,if ok {"succeeded"} else {"failed"},finished,error],
         result_row,
     ).optional().map_err(database).map(|row|row.unwrap_or(Value::Null))
@@ -269,7 +269,7 @@ fn result_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(
         json!({"sequence":row.get::<_,i64>(0)?,"account_id":row.get::<_,i64>(1)?,
         "event_type":row.get::<_,String>(2)?,"status":row.get::<_,String>(3)?,
-        "finished_at":row.get::<_,Option<String>>(4)?,"error":row.get::<_,Option<String>>(5)?}),
+        "finished_at":crate::time_us::read_optional(row, 4)?,"error":row.get::<_,Option<String>>(5)?}),
     )
 }
 
@@ -317,16 +317,16 @@ pub fn finish(path: &str, request: &Value) -> Result<Value, AnalysisError> {
 }
 
 pub fn recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let finished = text(request, "finished_at")?;
+    let finished = crate::time_us::parse(text(request, "finished_at")?).map_err(invalid)?;
     let connection = open_writer(Path::new(path))?;
     let (unknown, accounts) = immediate(&connection, || {
-        let mut statement = connection.prepare("SELECT sequence,account_id,event_type,status,finished_at,error FROM notification_event WHERE status='calling' ORDER BY sequence").map_err(database)?;
+        let mut statement = connection.prepare("SELECT sequence,account_id,event_type,status,finished_at_us,error FROM notification_event WHERE status='calling' ORDER BY sequence").map_err(database)?;
         let rows = statement
             .query_map([], result_row)
             .map_err(database)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(database)?;
-        connection.execute("UPDATE notification_event SET status='unknown',finished_at=?1,error=?2 WHERE status='calling'",params![finished,UNKNOWN]).map_err(database)?;
+        connection.execute("UPDATE notification_event SET status='unknown',finished_at_us=?1,error=?2 WHERE status='calling'",params![finished,UNKNOWN]).map_err(database)?;
         let mut statement = connection.prepare("SELECT DISTINCT n.account_id FROM notification_event n JOIN account a ON a.id=n.account_id WHERE n.status='pending' ORDER BY n.account_id").map_err(database)?;
         let accounts = statement
             .query_map([], |row| row.get::<_, i64>(0))
@@ -336,8 +336,9 @@ pub fn recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
         Ok((rows, accounts))
     })?;
     let mut summary_errors = Vec::new();
+    let finished = crate::time_us::format(finished).map_err(invalid)?;
     for mut event in unknown {
-        event["finished_at"] = json!(finished);
+        event["finished_at"] = json!(&finished);
         event["error"] = json!(UNKNOWN);
         let result = immediate(&connection, || {
             let execution_id = execution_id(&connection, &event)?;
@@ -396,7 +397,7 @@ pub(crate) fn execution_detail(
 pub fn preview(path: &str, request: &Value) -> Result<Value, AnalysisError> {
     let account_id = id(request, "account_id")?;
     crate::with_read_snapshot(Path::new(path), |connection| {
-        let record = connection.query_row("SELECT id,execution_id,created_at FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":row.get::<_,String>(2)?}))).optional().map_err(database)?;
+        let record = connection.query_row("SELECT id,execution_id,created_at_us FROM executerecord WHERE account_id=?1 AND result_staged=0 ORDER BY id DESC LIMIT 1",[account_id],|row| Ok(json!({"id":row.get::<_,i64>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,"created_at":crate::time_us::read(row, 2)?}))).optional().map_err(database)?;
         let Some(record) = record else {
             return Ok(Value::Null);
         };
@@ -464,18 +465,40 @@ mod tests {
         let first = db.add("first", "execution.finished");
         let numeric = db.add("1", "execution.finished");
         let connection = open_writer(Path::new(&db.0)).unwrap();
-        assert_eq!(event(&connection, "id", "1").unwrap(), Some(numeric.clone()));
-        assert_eq!(event(&connection, "sequence", first["sequence"].as_i64().unwrap()).unwrap(), Some(first));
+        assert_eq!(
+            event(&connection, "id", "1").unwrap(),
+            Some(numeric.clone())
+        );
+        assert_eq!(
+            event(&connection, "sequence", first["sequence"].as_i64().unwrap()).unwrap(),
+            Some(first)
+        );
         assert_eq!(event(&connection, "id", "missing").unwrap(), None);
         assert_eq!(event(&connection, "sequence", 0).unwrap(), None);
-        connection.execute("UPDATE notification_event SET context='invalid JSON' WHERE id='1'", []).unwrap();
+        connection
+            .execute(
+                "UPDATE notification_event SET context='invalid JSON' WHERE id='1'",
+                [],
+            )
+            .unwrap();
         let by_id = event(&connection, "id", "1").unwrap_err();
-        let by_sequence = event(&connection, "sequence", numeric["sequence"].as_i64().unwrap()).unwrap_err();
+        let by_sequence = event(
+            &connection,
+            "sequence",
+            numeric["sequence"].as_i64().unwrap(),
+        )
+        .unwrap_err();
         assert_eq!(by_id.code, "NOTIFICATION_STORE");
-        assert_eq!((by_id.code, by_id.error), (by_sequence.code, by_sequence.error));
+        assert_eq!(
+            (by_id.code, by_id.error),
+            (by_sequence.code, by_sequence.error)
+        );
         connection.execute_batch("CREATE TRIGGER vanished AFTER INSERT ON notification_event WHEN NEW.id='vanishing' BEGIN DELETE FROM notification_event WHERE id=NEW.id; END;").unwrap();
-        let missing = enqueue_in_connection(&connection, &json!({"id":"vanishing","account_id":1,"created_at":"now","event_type":"execution.finished","context":{}})).unwrap_err();
-        assert_eq!((missing.code.as_str(), missing.error.as_str()), ("NOTIFICATION_STORE", "Query returned no rows"));
+        let missing = enqueue_in_connection(&connection, &json!({"id":"vanishing","account_id":1,"created_at":"2026-10-23T10:00:00.000000Z","event_type":"execution.finished","context":{}})).unwrap_err();
+        assert_eq!(
+            (missing.code.as_str(), missing.error.as_str()),
+            ("NOTIFICATION_STORE", "Query returned no rows")
+        );
     }
 
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -502,14 +525,14 @@ mod tests {
                  INSERT INTO account_settings VALUES(1,'{\"execution_notification_code\":\"code\",\"feishu_key\":\"key\"}');
                  CREATE TABLE notification_event(sequence INTEGER PRIMARY KEY,id TEXT NOT NULL UNIQUE,
                     account_id INTEGER NOT NULL REFERENCES account(id) ON DELETE CASCADE,
-                    created_at TEXT NOT NULL,event_type TEXT NOT NULL,context JSON NOT NULL,
-                    status TEXT NOT NULL,finished_at TEXT,error TEXT);
+                    created_at_us INTEGER NOT NULL,event_type TEXT NOT NULL,context JSON NOT NULL,
+                    status TEXT NOT NULL,finished_at_us INTEGER,error TEXT);
                  CREATE TABLE account_notification_state(account_id INTEGER PRIMARY KEY REFERENCES account(id) ON DELETE CASCADE,
-                    last_success_at TEXT,execution_id TEXT,last_attempt_event_type TEXT,last_attempt_at TEXT,
+                    last_success_at_us INTEGER,execution_id TEXT,last_attempt_event_type TEXT,last_attempt_at_us INTEGER,
                     last_attempt_execution_id TEXT,last_attempt_ok BOOLEAN,last_attempt_error TEXT);
-                 CREATE TABLE system_notification_state(id INTEGER PRIMARY KEY,finished_at TEXT,mode TEXT,event_type TEXT,
+                 CREATE TABLE system_notification_state(id INTEGER PRIMARY KEY,finished_at_us INTEGER,mode TEXT,event_type TEXT,
                     execution_id TEXT,account_id INTEGER,ok BOOLEAN,error TEXT);
-                 CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,result_staged INTEGER DEFAULT 0);"
+                 CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,result_staged INTEGER DEFAULT 0);"
             ).unwrap();
             Self(path)
         }
@@ -517,16 +540,16 @@ mod tests {
         fn add(&self, event_id: &str, event_type: &str) -> Value {
             let connection = open_writer(Path::new(&self.0)).unwrap();
             immediate(&connection, || enqueue_in_connection(&connection,&json!({
-                "id":event_id,"account_id":1,"event_type":event_type,"created_at":"2026-10-23T10:00:00",
+                "id":event_id,"account_id":1,"event_type":event_type,"created_at":"2026-10-23T10:00:00.000000Z",
                 "context":{"execution":{"id":event_id},"account":{"id":1,"name":"frozen"}}
             }))).unwrap()
         }
 
         fn state(&self) -> Value {
             let connection = Connection::open(&self.0).unwrap();
-            connection.query_row("SELECT last_success_at,execution_id,last_attempt_at,last_attempt_execution_id,last_attempt_ok,last_attempt_error FROM account_notification_state WHERE account_id=1",[],|row| Ok(json!({
-                "success_at":row.get::<_,Option<String>>(0)?,"execution_id":row.get::<_,Option<String>>(1)?,
-                "attempt_at":row.get::<_,String>(2)?,"attempt_execution_id":row.get::<_,Option<String>>(3)?,
+            connection.query_row("SELECT last_success_at_us,execution_id,last_attempt_at_us,last_attempt_execution_id,last_attempt_ok,last_attempt_error FROM account_notification_state WHERE account_id=1",[],|row| Ok(json!({
+                "success_at":crate::time_us::read_optional(row, 0)?,"execution_id":row.get::<_,Option<String>>(1)?,
+                "attempt_at":crate::time_us::read(row, 2)?,"attempt_execution_id":row.get::<_,Option<String>>(3)?,
                 "ok":row.get::<_,bool>(4)?,"error":row.get::<_,Option<String>>(5)?
             }))).unwrap()
         }
@@ -545,7 +568,7 @@ mod tests {
         let db = Database::new();
         let connection = open_writer(Path::new(&db.0)).unwrap();
         let context = crate::json_codec::parse(r#"{"assets":{"total_assets":NaN,"available_cash":Infinity},"execution":{"id":"nonfinite"}}"#).unwrap();
-        let mut request = json!({"id":"execution:nonfinite","account_id":1,"event_type":"execution.finished","created_at":"now","context":null});
+        let mut request = json!({"id":"execution:nonfinite","account_id":1,"event_type":"execution.finished","created_at":"2026-10-23T10:00:00.000000Z","context":null});
         request["context"] = context;
         let event =
             immediate(&connection, || enqueue_in_connection(&connection, &request)).unwrap();
@@ -591,16 +614,16 @@ mod tests {
             "calling"
         );
         assert!(claim(&db.0, &json!({"account_id":1})).unwrap().is_null());
-        finish(&db.0,&json!({"sequence":first["sequence"],"finished_at":"2026-10-23T10:01:00","ok":false,"error":"failed"})).unwrap();
+        finish(&db.0,&json!({"sequence":first["sequence"],"finished_at":"2026-10-23T10:01:00.000000Z","ok":false,"error":"failed"})).unwrap();
         assert_eq!(
             claim(&db.0, &json!({"account_id":1})).unwrap()["sequence"],
             second["sequence"]
         );
-        recover(&db.0, &json!({"finished_at":"2026-10-23T10:02:00"})).unwrap();
+        recover(&db.0, &json!({"finished_at":"2026-10-23T10:02:00.000000Z"})).unwrap();
         assert!(claim(&db.0, &json!({"account_id":1})).unwrap().is_null());
         assert_eq!(db.state()["attempt_execution_id"], "second");
         assert_eq!(db.state()["error"], UNKNOWN);
-        assert_eq!(finish(&db.0,&json!({"sequence":second["sequence"],"finished_at":"2026-10-23T10:03:00","ok":true})).unwrap()["updated"],false);
+        assert_eq!(finish(&db.0,&json!({"sequence":second["sequence"],"finished_at":"2026-10-23T10:03:00.000000Z","ok":true})).unwrap()["updated"],false);
     }
 
     #[test]
@@ -636,19 +659,19 @@ mod tests {
         let save = |execution: &str, time: &str, ok: bool| {
             record_account(&db.0,&json!({"account_id":1,"execution_id":execution,"event_type":"execution.finished","finished_at":time,"ok":ok,"error":if ok {None} else {Some("failed")}})).unwrap()
         };
-        save("success", "2026-10-23T10:00:00", true);
-        save("failure", "2026-10-23T11:00:00", false);
-        save("old", "2026-10-23T09:00:00", true);
+        save("success", "2026-10-23T10:00:00.000000Z", true);
+        save("failure", "2026-10-23T11:00:00.000000Z", false);
+        save("old", "2026-10-23T09:00:00.000000Z", true);
         assert_eq!(
             db.state(),
-            json!({"success_at":"2026-10-23T10:00:00","execution_id":"success","attempt_at":"2026-10-23T11:00:00","attempt_execution_id":"failure","ok":false,"error":"failed"})
+            json!({"success_at":"2026-10-23T10:00:00.000000Z","execution_id":"success","attempt_at":"2026-10-23T11:00:00.000000Z","attempt_execution_id":"failure","ok":false,"error":"failed"})
         );
         let connection = open_writer(Path::new(&db.0)).unwrap();
         connection
             .execute("DELETE FROM account WHERE id=1", [])
             .unwrap();
         assert_eq!(
-            save("deleted", "2026-10-23T12:00:00", true)["updated"],
+            save("deleted", "2026-10-23T12:00:00.000000Z", true)["updated"],
             false
         );
         assert_eq!(
@@ -672,7 +695,7 @@ mod tests {
         connection.execute_batch("CREATE TRIGGER reject_summary BEFORE INSERT ON account_notification_state BEGIN SELECT RAISE(ABORT,'summary unavailable'); END;").unwrap();
         let result = finish(
             &db.0,
-            &json!({"sequence":queued["sequence"],"finished_at":"2026-10-23T11:00:00","ok":true}),
+            &json!({"sequence":queued["sequence"],"finished_at":"2026-10-23T11:00:00.000000Z","ok":true}),
         )
         .unwrap();
         assert_eq!(result["status"], "succeeded");
@@ -681,9 +704,13 @@ mod tests {
             .unwrap()
             .contains("summary unavailable"));
         assert_eq!(
-            event(&connection, "sequence", queued["sequence"].as_i64().unwrap())
-                .unwrap()
-                .unwrap()["status"],
+            event(
+                &connection,
+                "sequence",
+                queued["sequence"].as_i64().unwrap()
+            )
+            .unwrap()
+            .unwrap()["status"],
             "succeeded"
         );
         assert!(claim(&db.0, &json!({"account_id":1})).unwrap().is_null());
@@ -694,13 +721,13 @@ mod tests {
         let db = Database::new();
         db.add("interrupted", "execution.finished");
         claim(&db.0, &json!({"account_id":1})).unwrap();
-        record_account(&db.0,&json!({"account_id":1,"execution_id":"newer","event_type":"execution.finished","finished_at":"2026-10-23T12:00:00","ok":true})).unwrap();
-        recover(&db.0, &json!({"finished_at":"2026-10-23T11:00:00"})).unwrap();
+        record_account(&db.0,&json!({"account_id":1,"execution_id":"newer","event_type":"execution.finished","finished_at":"2026-10-23T12:00:00.000000Z","ok":true})).unwrap();
+        recover(&db.0, &json!({"finished_at":"2026-10-23T11:00:00.000000Z"})).unwrap();
         assert_eq!(db.state()["attempt_execution_id"], "newer");
         db.add("warning", CONTROL_WARNING);
         claim(&db.0, &json!({"account_id":1})).unwrap();
         db.add("pending", "execution.finished");
-        let result = recover(&db.0, &json!({"finished_at":"2026-10-23T13:00:00"})).unwrap();
+        let result = recover(&db.0, &json!({"finished_at":"2026-10-23T13:00:00.000000Z"})).unwrap();
         assert_eq!(result["account_ids"], json!([1]));
         let system = get_system(&db.0, &json!({})).unwrap();
         assert_eq!(system["event_type"], CONTROL_WARNING);
@@ -708,7 +735,7 @@ mod tests {
         assert_eq!(db.state()["attempt_execution_id"], "newer");
         record_system(
             &db.0,
-            &json!({"finished_at":"2026-10-23T10:00:00","ok":true}),
+            &json!({"finished_at":"2026-10-23T10:00:00.000000Z","ok":true}),
         )
         .unwrap();
         assert_eq!(get_system(&db.0, &json!({})).unwrap(), system);
@@ -723,12 +750,16 @@ mod tests {
         connection
             .execute_batch("DROP TABLE system_notification_state;")
             .unwrap();
-        let result = recover(&db.0, &json!({"finished_at":"2026-10-23T13:00:00"})).unwrap();
+        let result = recover(&db.0, &json!({"finished_at":"2026-10-23T13:00:00.000000Z"})).unwrap();
         assert_eq!(result["summary_errors"].as_array().unwrap().len(), 1);
         assert_eq!(
-            event(&connection, "sequence", warning["sequence"].as_i64().unwrap())
-                .unwrap()
-                .unwrap()["status"],
+            event(
+                &connection,
+                "sequence",
+                warning["sequence"].as_i64().unwrap()
+            )
+            .unwrap()
+            .unwrap()["status"],
             "unknown"
         );
         assert!(claim(&db.0, &json!({"account_id":1})).unwrap().is_null());
@@ -748,7 +779,7 @@ mod tests {
             .unwrap();
         let result = finish(
             &db.0,
-            &json!({"sequence":queued["sequence"],"finished_at":"2026-10-23T13:00:00","ok":true}),
+            &json!({"sequence":queued["sequence"],"finished_at":"2026-10-23T13:00:00.000000Z","ok":true}),
         )
         .unwrap();
         assert_eq!(result["status"], "succeeded");
@@ -771,7 +802,7 @@ mod tests {
         let existing = db.add("frozen", "execution.finished");
         let connection = open_writer(Path::new(&db.0)).unwrap();
         connection.execute_batch("CREATE TRIGGER frozen BEFORE INSERT ON notification_event WHEN NEW.id='frozen' BEGIN SELECT RAISE(ABORT,'must not reinsert frozen event'); END;").unwrap();
-        let request = json!({"id":"frozen","account_id":1,"created_at":"now","event_type":"execution.finished","context":{"edited":true}});
+        let request = json!({"id":"frozen","account_id":1,"created_at":"2026-10-23T10:00:00.000000Z","event_type":"execution.finished","context":{"edited":true}});
         assert_eq!(
             enqueue_in_connection(&connection, &request).unwrap(),
             existing
@@ -780,7 +811,7 @@ mod tests {
         conflict["account_id"] = json!(2);
         assert!(enqueue_in_connection(&connection, &conflict).is_err());
         connection.execute_batch("BEGIN IMMEDIATE;").unwrap();
-        enqueue_in_connection(&connection,&json!({"id":"rollback","account_id":1,"created_at":"now","event_type":"supplement.cancelled","context":{}})).unwrap();
+        enqueue_in_connection(&connection,&json!({"id":"rollback","account_id":1,"created_at":"2026-10-23T10:00:00.000000Z","event_type":"supplement.cancelled","context":{}})).unwrap();
         connection.execute_batch("ROLLBACK;").unwrap();
         assert_eq!(
             connection
@@ -801,7 +832,7 @@ mod tests {
         let connection = Connection::open(&db.0).unwrap();
         connection
             .execute(
-                "INSERT INTO executerecord(id,account_id,execution_id,created_at) VALUES(1,1,'preview','2026-10-23T10:00:00')",
+                "INSERT INTO executerecord(id,account_id,execution_id,created_at_us) VALUES(1,1,'preview',1792749600000000)",
                 [],
             )
             .unwrap();
@@ -810,5 +841,39 @@ mod tests {
         assert_eq!(result["record"]["execution_id"], "preview");
         assert!(result.get("detail").is_none());
         assert!(preview(&db.0, &json!({"account_id":2})).unwrap().is_null());
+    }
+
+    #[test]
+    fn canonical_integer_times_preserve_frozen_json_and_order_offset_completions() {
+        let db = Database::new();
+        let connection = open_writer(Path::new(&db.0)).unwrap();
+        let context = json!({"execution":{"id":"precision","at":"not a timestamp"}});
+        let request = json!({"id":"precision","account_id":1,"event_type":"execution.finished",
+            "created_at":"2026-10-23T10:00:00.123456+08:00","context":context});
+        let event = enqueue_in_connection(&connection, &request).unwrap();
+        assert_eq!(event["created_at"], "2026-10-23T02:00:00.123456Z");
+        assert_eq!(event["context"], context);
+        let (kind, stored): (String, i64) = connection.query_row(
+            "SELECT typeof(created_at_us),created_at_us FROM notification_event WHERE id='precision'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(kind, "integer");
+        assert_eq!(
+            stored,
+            crate::time_us::parse(request["created_at"].as_str().unwrap()).unwrap()
+        );
+        record_account_in_connection(
+            &connection,
+            &json!({"account_id":1,"event_type":"execution.finished",
+            "finished_at":"2026-10-23T03:00:00Z","ok":true}),
+        )
+        .unwrap();
+        let older = record_account_in_connection(
+            &connection,
+            &json!({"account_id":1,"event_type":"execution.finished",
+            "finished_at":"2026-10-23T10:00:00+08:00","ok":true}),
+        )
+        .unwrap();
+        assert_eq!(older["updated"], false);
     }
 }

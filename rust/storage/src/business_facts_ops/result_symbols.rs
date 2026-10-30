@@ -66,8 +66,8 @@ const TICK_FIELDS: &[(&str, &str)] = &[
     ("volume", "number"),
     ("turnover", "number"),
     ("timestamp", "integer"),
-    ("update_time", "text"),
-    ("timestamp_datetime", "text"),
+    ("update_time", "time"),
+    ("timestamp_datetime", "time"),
     ("book_valid", "boolean"),
     ("extra", "json"),
 ];
@@ -578,13 +578,35 @@ mod tests {
                     case["name"]
                 );
             } else {
+                let mut expected = case["expected"].clone();
+                for tick in expected["execution_symbol_tick"].as_array_mut().unwrap() {
+                    for name in ["update_time", "timestamp_datetime"] {
+                        if let Some(value) = tick[name]
+                            .as_str()
+                            .filter(|value| {
+                                [
+                                    "native-time-without-timezone",
+                                    "update_time",
+                                    "timestamp_datetime",
+                                ]
+                                .contains(value)
+                            })
+                            .map(str::to_owned)
+                        {
+                            tick[name] = Value::Null;
+                            let evidence = tick["audit_evidence"].as_object_mut().unwrap();
+                            let invalid = evidence.entry("invalid_fields").or_insert(json!({}));
+                            invalid[name] = json!(value);
+                        }
+                    }
+                }
                 assert_eq!(
                     {
                         let (collections, results, sizings, conversions, ticks, targets) =
                             encoded.unwrap();
                         json!({"execution_symbol_collection":collections,"execution_symbol_result":results,"execution_symbol_sizing":sizings,"execution_symbol_conversion":conversions,"execution_symbol_tick":ticks,"execution_symbol_target":targets})
                     },
-                    case["expected"],
+                    expected,
                     "{}",
                     case["name"]
                 );

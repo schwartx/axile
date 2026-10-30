@@ -116,7 +116,7 @@ def _assert_native_migrations() -> None:
     from axile.server.native_store import native_operation_sync
 
     assert _core.PUBLIC_HEAD == "0034"
-    assert _core.ANALYSIS_FACT_SCHEMA == 40
+    assert _core.ANALYSIS_FACT_SCHEMA == 41
     database = Path(os.environ["AXILE_CONTRACT_DB"])
     try:
         _core.migration_current(str(database), "{")

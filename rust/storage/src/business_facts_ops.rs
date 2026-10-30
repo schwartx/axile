@@ -251,12 +251,17 @@ pub(crate) fn matching_after_asset(
     let incoming = payload
         .get("account_assets")
         .ok_or_else(|| facts_error("已持久化执行后观测，但终态结果缺少 account_assets"))?;
-    let right = match incoming {
+    let mut right = match incoming {
         Value::Object(map) if !map.contains_key("availability") => {
             encode::business_asset_value(incoming).map_err(facts_error)?
         }
         other => other.clone(),
     };
+    if let Some(row) = right.as_object_mut() {
+        crate::time_us::encode_on(connection, "business_asset_snapshot", row)
+            .map_err(facts_error)?;
+        crate::time_us::decode_columns("business_asset_snapshot", row).map_err(facts_error)?;
+    }
     if py_eq(&actual, &right) {
         return Ok(Some(asset_id));
     }
@@ -358,6 +363,13 @@ pub(crate) fn insert_rows(
     columns: &[(&str, &str)],
 ) -> Result<(), AnalysisError> {
     use rusqlite::params_from_iter;
+    let Some(first) = rows.first() else {
+        return Ok(());
+    };
+    let (first, columns) = storage_row(connection, table, first, columns)?;
+    let microseconds = crate::time_us::columns(table)
+        .iter()
+        .any(|column| columns.iter().any(|(name, _)| *name == column.storage));
     let names = columns
         .iter()
         .map(|(name, _)| format!("\"{name}\""))
@@ -367,11 +379,54 @@ pub(crate) fn insert_rows(
     let mut statement = connection
         .prepare_cached(&format!("INSERT INTO {table} ({names}) VALUES ({marks})"))
         .map_err(sql)?;
-    for row in rows {
-        let values = bind_columns(row, columns)?;
+    for (index, row) in rows.iter().enumerate() {
+        let encoded;
+        let row = if index == 0 {
+            &first
+        } else {
+            encoded = {
+                let mut value = row.clone();
+                if microseconds {
+                    crate::time_us::encode_columns(table, &mut value).map_err(facts_error)?;
+                }
+                value
+            };
+            &encoded
+        };
+        let values = bind_columns(row, &columns)?;
         statement.execute(params_from_iter(values)).map_err(sql)?;
     }
     Ok(())
+}
+
+/// 事实编码与旧 0033 转换共用入口；只转换最终表中声明的标量时间列。
+pub(crate) fn storage_row<'a>(
+    connection: &Connection,
+    table: &str,
+    row: &Map<String, Value>,
+    columns: &[(&'a str, &'a str)],
+) -> Result<(Map<String, Value>, Vec<(&'a str, &'a str)>), AnalysisError> {
+    let mut encoded = row.clone();
+    for &(name, _) in columns {
+        if let Some(stored) = crate::time_us::storage_name(table, name) {
+            if !encoded.contains_key(name) && !encoded.contains_key(stored) {
+                encoded.insert(name.into(), Value::Null);
+            }
+        }
+    }
+    crate::time_us::encode_on(connection, table, &mut encoded).map_err(facts_error)?;
+    let columns = columns
+        .iter()
+        .map(|&(name, kind)| {
+            match crate::time_us::storage_name(table, name)
+                .filter(|stored| encoded.contains_key(*stored))
+            {
+                Some(stored) => (stored, "integer"),
+                None => (name, kind),
+            }
+        })
+        .collect();
+    Ok((encoded, columns))
 }
 
 pub(crate) fn bind_columns(
@@ -399,22 +454,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scalar_times_use_integer_storage_without_touching_json() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE execution_order(create_time_us INTEGER,update_time_us INTEGER,update_timestamp_us INTEGER,extra JSON)"
+        ).unwrap();
+        let row = json!({
+            "create_time":"1970-01-01T00:00:01.123456Z", "update_time":null,
+            "update_timestamp":1.123456,
+            "extra":{"trade_time":"source-local-text","timestamp":123}
+        });
+        insert_rows(
+            &connection,
+            "execution_order",
+            &[
+                row.as_object().unwrap().clone(),
+                json!({"create_time":"1969-12-31T23:59:59.999999Z", "extra":row["extra"]})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ],
+            &[
+                ("create_time", "text"),
+                ("update_time", "text"),
+                ("update_timestamp", "number"),
+                ("extra", "json"),
+            ],
+        )
+        .unwrap();
+        assert!(connection.query_row(
+            "SELECT create_time_us=1123456 AND typeof(create_time_us)='integer' AND update_time_us IS NULL AND update_timestamp_us=1123456 FROM execution_order",
+            [], |row| row.get::<_,bool>(0)
+        ).unwrap());
+        assert!(connection.query_row(
+            "SELECT update_time_us IS NULL AND update_timestamp_us IS NULL FROM execution_order WHERE create_time_us=-1",
+            [], |row|row.get::<_,bool>(0)
+        ).unwrap());
+        let output = crate::business_detail::load(
+            &connection,
+            "execution_order",
+            "create_time_us",
+            &json!(1123456),
+        )
+        .unwrap();
+        assert_eq!(output[0]["create_time"], row["create_time"]);
+        assert_eq!(output[0]["update_time"], Value::Null);
+        assert_eq!(output[0]["update_timestamp"], row["update_timestamp"]);
+        assert_eq!(output[0]["extra"], row["extra"]);
+    }
+
+    #[test]
     fn fixed_fact_bindings_preserve_json_nulls_types_large_integers_and_rollback() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE binding_test(t TEXT,i INTEGER,n REAL,b INTEGER,j TEXT,s TEXT,missing TEXT); CREATE TABLE required_test(t TEXT NOT NULL)").unwrap();
         let row = json!({"t":7,"i":9007199254740993_i64,"n":"wrong type","b":false,"j":null,"s":"保留\n正文"});
-        insert_rows(&connection, "binding_test", &[row.as_object().unwrap().clone()], &[
-            ("t","text"),("i","integer"),("n","number"),("b","boolean"),
-            ("j","json"),("s","json"),("missing","json"),
-        ]).unwrap();
+        insert_rows(
+            &connection,
+            "binding_test",
+            &[row.as_object().unwrap().clone()],
+            &[
+                ("t", "text"),
+                ("i", "integer"),
+                ("n", "number"),
+                ("b", "boolean"),
+                ("j", "json"),
+                ("s", "json"),
+                ("missing", "json"),
+            ],
+        )
+        .unwrap();
         assert!(connection.query_row("SELECT t IS NULL AND i=9007199254740993 AND n IS NULL AND b=0 AND typeof(j)='text' AND json_type(j)='null' AND json_extract(s,'$')=?1 AND missing IS NULL FROM binding_test",["保留\n正文"],|row| row.get::<_,bool>(0)).unwrap());
-        let error = writer_scope::immediate(&connection, || insert_rows(&connection, "required_test", &[
-            json!({"t":"first"}).as_object().unwrap().clone(), Map::new(),
-        ], &[("t","text")])).unwrap_err();
+        let error = writer_scope::immediate(&connection, || {
+            insert_rows(
+                &connection,
+                "required_test",
+                &[
+                    json!({"t":"first"}).as_object().unwrap().clone(),
+                    Map::new(),
+                ],
+                &[("t", "text")],
+            )
+        })
+        .unwrap_err();
         assert_eq!(error.code, "BUSINESS_FACTS_SQL");
-        assert_eq!(connection.query_row("SELECT COUNT(*) FROM required_test", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM required_test", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
-
 
     fn schema() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

@@ -3,7 +3,7 @@
 import asyncio
 import json
 from contextlib import closing
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import Mock
 
 import sqlalchemy as sa
@@ -20,6 +20,7 @@ from tests.unit.server._execution_read_oracle import ExecuteRecordSummaryPublic
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._journal_oracle import _compact_execution_activity
 from tests.unit.server._performance_costs_oracle import project_execution
+from tests.unit.server._runtime_db_support import to_us
 
 
 @sqlite_oracle
@@ -28,10 +29,27 @@ def _heads(path):
     try:
         with engine.connect() as connection:
             records = table("executerecord")
-            return [
-                dict(head)
-                for head in connection.execute(sa.select(records).where(records.c.account_id == 2)).mappings()
-            ]
+            result = []
+            for head in connection.execute(sa.select(records).where(records.c.account_id == 2)).mappings():
+                body = dict(head)
+                for name in (
+                    "created_at",
+                    "termination_requested_at",
+                    "termination_acked_at",
+                    "termination_finished_at",
+                ):
+                    value = body.pop(f"{name}_us")
+                    body[name] = (
+                        (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value))
+                        .isoformat(timespec="microseconds")
+                        .replace("+00:00", "Z")
+                        if value is not None
+                        else None
+                    )
+                duration = body.pop("execution_time_us")
+                body["execution_time"] = duration / 1_000_000 if duration is not None else None
+                result.append(body)
+            return result
     finally:
         engine.dispose()
 
@@ -49,7 +67,7 @@ def test_mixed_pages_keep_ties_counts_filters_and_existing_projection(tmp_path, 
                         id=index,
                         account_id=2,
                         channel="ctp",
-                        triggered_at=record(index).created_at,
+                        triggered_at_us=to_us(record(index).created_at),
                         calendar_id="china",
                         calendar_day=date(2026, 1, index).isoformat(),
                         calendar_label="休市",
