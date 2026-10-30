@@ -232,3 +232,16 @@ def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts
         "2026-01-10": 1,
         "2026-02-15": 1,
     }
+
+
+def test_baseline_date_and_cost_selection_keep_shanghai_day(database):
+    for index, when in enumerate(["2026-01-02T00:30:00+08:00", "2026-01-02T01:30:00+08:00"]):
+        result = copy.deepcopy(_RESULT)
+        result["symbol_results"]["A"]["trades"][0]["trade_time"] = when
+        _persist(database, when, result, f"midnight-{index}")
+    _, _, version = _publish(database)
+    chart = _read(database, version, "chart", range="all")
+    assert chart["result"]["points"][0]["observed_at"] == "2026-01-01T16:30:00.000000Z"
+    assert chart["result"]["points"][0]["date"].startswith("2026-01-02T00:30:00")
+    assert all(point["date"][:10] == "2026-01-02" for point in chart["result"]["points"])
+    assert "2026-01-02" in chart["daily_costs"]

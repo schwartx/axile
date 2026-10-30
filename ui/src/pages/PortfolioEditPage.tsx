@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useViewTransitionState } from 'react-router'
 import { Pencil, Play, RefreshCw, Zap } from 'lucide-react'
@@ -175,7 +176,7 @@ export function PortfolioEditPage() {
     accounts?.find((account) => account.account_id === weights.data?.context_account_id)?.name
     ?? (weights.data?.context_account_id != null ? `#${weights.data.context_account_id}` : null)
   const snapshotStatusText = weights.data?.calculated_at
-    ? `${weights.data.context_account_id == null ? '样例数据' : `账户 ${snapshotContextName}`} · 目标更新于 ${weights.data.calculated_at.slice(11, 16)}`
+    ? `${weights.data.context_account_id == null ? '样例数据' : `账户 ${snapshotContextName}`} · 目标更新于 ${shanghaiLabel(weights.data.calculated_at).slice(11, 16)}`
     : weights.error
       ? '目标不可用'
       : weights.loading

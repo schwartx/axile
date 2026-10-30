@@ -55,9 +55,9 @@ fn check_dependencies(connection: &Connection, tables: &[Table], upgrade: bool) 
     for object in rows(connection,"SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE type IN ('trigger','view','index') AND sql IS NOT NULL",[])? {
         let name=text(&object,"name")?;
         let kind=text(&object,"type")?;
-        if kind=="trigger" && (name.starts_with("business_facts_0034_") || name.starts_with("analysis_") || matches!(name,"execution_result_staged"|"execution_summary_removed"|"account_settings_delete")) {
-            continue;
-        }
+        if kind == "trigger" && schema::BUSINESS_TABLES.iter().any(|table| {
+            ["insert", "update", "delete"].iter().any(|action| name == format!("business_facts_0034_{table}_{action}"))
+        }) { continue; }
         if kind=="index" {
             if matches!(name,"ix_executerecord_account_time_id"|"ix_schedule_skip_account_time_id") { continue; }
             let expression=rows(connection,&format!("PRAGMA index_xinfo({})",quote(name)),[])?.iter().any(|row|value(row,"cid")==&Value::from(-2));
@@ -427,6 +427,8 @@ mod tests {
     #[test]
     fn custom_time_expressions_are_rejected_without_touching_their_schema() {
         for definition in [
+            "CREATE TRIGGER business_facts_0034_time_dependency AFTER UPDATE ON account WHEN NEW.created_at>'2025-01-01' BEGIN SELECT 1; END",
+            "CREATE TRIGGER analysis_time_dependency AFTER UPDATE ON account WHEN NEW.created_at>'2025-01-01' BEGIN SELECT 1; END",
             "CREATE TRIGGER time_dependency AFTER UPDATE ON account WHEN NEW.created_at>'2025-01-01' BEGIN SELECT 1; END",
             "CREATE VIEW time_dependency AS SELECT created_at FROM account",
             "CREATE INDEX time_dependency ON account(julianday(created_at))",
@@ -440,7 +442,7 @@ mod tests {
             assert!(upgrade(&transaction).unwrap_err().error.contains("time_dependency"));
             transaction.rollback().unwrap();
             assert_eq!(connection.query_row("SELECT created_at FROM account",[],|row|row.get::<_,String>(0)).unwrap(),"1970-01-01T00:00:00Z");
-            assert_eq!(connection.query_row("SELECT sql FROM sqlite_schema WHERE name='time_dependency'",[],|row|row.get::<_,String>(0)).unwrap(),definition);
+            assert_eq!(connection.query_row("SELECT sql FROM sqlite_schema WHERE name IN ('time_dependency','analysis_time_dependency','business_facts_0034_time_dependency')",[],|row|row.get::<_,String>(0)).unwrap(),definition);
         }
     }
 }

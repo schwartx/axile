@@ -163,3 +163,8 @@ describe('平仓规则审计', () => {
     expect(lines[0].text).toContain('预设 v1')
   })
 })
+
+it('UTC事件时间显示为上海本地时间', () => {
+  const lines = buildSymbolActionStream([ev({ ts_local_created: '2026-01-01T16:30:00.123456Z' })], 'rb2610')
+  expect(lines[0].time).toBe('00:30:00')
+})

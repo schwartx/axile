@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import { useAccountConnection } from '@/stores/liveConnection'
 import { useConnectedAssets } from '@/features/account/useConnectedAssets'
 import { RuntimeSyncStatus } from '@/features/account/RuntimeSyncStatus'
@@ -870,7 +871,7 @@ export function AccountDetail({
             cap: 6,
             fetchLimit: RECENT_LIMIT,
           })
-          const fmt = (t: string) => t.replace('T', ' ').slice(5, 16)
+          const fmt = (t: string) => shanghaiLabel(t).slice(5, 16)
           return (
             <>
               {rows.map((row) => {

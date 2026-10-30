@@ -293,7 +293,10 @@ impl RangeState {
             &self.fallback_days,
             previous,
         )?;
-        let baseline = points.first().map(|point| point.date.clone());
+        let baseline = points
+            .first()
+            .map(|point| display_time(point.observed_at))
+            .transpose()?;
         let header = json!({
             "settings": settings,
             "backtest_included": include_backtest,
@@ -358,7 +361,9 @@ fn merge_daily(
     let from_backtest = daily.is_some() && start.is_some_and(|when| when <= base.time);
     let from_target = target_daily.is_some() && target_start.is_some_and(|when| when <= base.time);
     let mut points = vec![Point {
-        date: display_time(base.time)?,
+        date: parse_time(base.time)?
+            .format("%Y-%m-%dT%H:%M:%S%.6f")
+            .to_string(),
         observed_at: base.time,
         record_id: Some(base.id),
         execution_id: base.execution_id.clone(),
@@ -711,6 +716,32 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn baseline_date_keeps_shanghai_day_while_observation_is_utc() {
+        let base = Sample {
+            time: crate::time_us::parse("2026-01-02T00:30:00+08:00").unwrap(),
+            id: 1,
+            execution_id: None,
+            asset: Some(100.0),
+        };
+        let points = merge_daily(
+            Some(&base),
+            &BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            &BTreeSet::new(),
+            None,
+        )
+        .unwrap();
+        assert!(points[0].date.starts_with("2026-01-02T00:30:00"));
+        assert_eq!(
+            serde_json::to_value(&points[0]).unwrap()["observed_at"],
+            "2026-01-01T16:30:00.000000Z"
+        );
     }
 
     #[test]

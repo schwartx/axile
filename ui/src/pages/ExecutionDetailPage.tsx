@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
 import { lossClass } from '@/features/history/costs'
 import { useCallback } from 'react'
@@ -257,7 +258,7 @@ function OrderTree({ orders, currency, units }: { orders: ExecOrder[]; currency:
             {o.trades.map((t, i) => (
               <div key={i} className="pl-3 text-ink-3">
                 成交 {fmtQty(t.volume ?? 0, units)} @{fmtPrice(t.price ?? 0, units, currency)}
-                {t.time && <span> · {t.time.slice(11, 19)}</span>}
+                {t.time && <span> · {shanghaiLabel(t.time).slice(11, 19)}</span>}
               </div>
             ))}
           </div>

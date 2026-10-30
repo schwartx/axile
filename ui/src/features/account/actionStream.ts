@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import { executionOutcome } from '@/features/account/executionOutcome'
 /**
  * 把执行事件流铺成每品种的「动作流」——因果排序的动词时间线（纯函数，便于测试）。
@@ -54,8 +55,7 @@ function asStr(v: unknown): string {
 
 /** 秒级 ISO 本地时间戳 → `HH:MM:SS`。 */
 function hhmmss(ts: string): string {
-  const t = ts.includes('T') ? ts.split('T')[1] : ts
-  return (t ?? '').slice(0, 8)
+  return ts.includes('T') ? shanghaiLabel(ts).slice(11, 19) : ts.slice(0, 8)
 }
 
 /** 带号数量：保留精度、裁掉尾随零；空值为空串。 */

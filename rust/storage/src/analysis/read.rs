@@ -106,7 +106,7 @@ fn point_rows(c: &Connection, s: &State) -> Result<Vec<Value>, AnalysisError> {
         body.insert("sizing_fallback".into(), json!(b));
     }
     if let (Some(time), Some(equity)) = (&s.baseline_time, s.baseline_asset) {
-        points.insert(0,json!({"date":iso(*time)?,"observed_at":iso(*time)?,"record_id":s.baseline_id,"execution_id":s.baseline_execution,"account_return":0.0,"account_equity":equity,"account_daily_return":null,"portfolio_return":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"portfolio_daily_return":null,"target_portfolio_return":s.target_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"target_portfolio_daily_return":null,"difference":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"sizing_fallback":false}));
+        points.insert(0,json!({"date":crate::time_us::local_datetime(*time).map_err(|e|failure("ANALYSIS_TIME",e))?.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),"observed_at":iso(*time)?,"record_id":s.baseline_id,"execution_id":s.baseline_execution,"account_return":0.0,"account_equity":equity,"account_daily_return":null,"portfolio_return":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"portfolio_daily_return":null,"target_portfolio_return":s.target_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"target_portfolio_daily_return":null,"difference":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"sizing_fallback":false}));
     }
     Ok(points)
 }
