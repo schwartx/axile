@@ -100,6 +100,38 @@ def _database_dump(database):
             "BEGIN INSERT INTO account_copy SELECT * FROM account WHERE id=NEW.id; END",
             "time column",
         ),
+        pytest.param(
+            "CREATE VIEW custom_view AS SELECT * FROM 'account'",
+            "time column",
+            id="single_quoted_table",
+        ),
+        pytest.param(
+            "CREATE TRIGGER custom_audit AFTER UPDATE ON 'account' "
+            "WHEN NEW.'created_at'>'2025-01-01' BEGIN SELECT 1; END",
+            "time column",
+            id="single_quoted_column",
+        ),
+        pytest.param(
+            'CREATE VIEW custom_view AS SELECT "created_at" FROM "account"',
+            "time column",
+            id="double_quoted_column",
+        ),
+        pytest.param(
+            "CREATE VIEW custom_view AS SELECT `created_at` FROM `account`",
+            "time column",
+            id="backtick_quoted_column",
+        ),
+        pytest.param(
+            "CREATE VIEW custom_view AS SELECT [created_at] FROM [account]",
+            "time column",
+            id="bracket_quoted_column",
+        ),
+        pytest.param(
+            "CREATE TRIGGER custom_audit AFTER UPDATE OF remark ON account "
+            "BEGIN UPDATE account SET created_at='2026-07-01T09:00:00Z' WHERE id=NEW.id; END",
+            "time column",
+            id="trigger_writes_time_literal",
+        ),
         (
             "CREATE TRIGGER business_facts_0034_execution_input_insert AFTER UPDATE ON account "
             "WHEN NEW.created_at>'2025-01-01' BEGIN SELECT 1; END",
@@ -117,6 +149,11 @@ def _database_dump(database):
             "CREATE TRIGGER business_facts_0034_custom_delete AFTER DELETE ON executerecord BEGIN SELECT 1; END",
             "reserved trigger name",
         ),
+        pytest.param(
+            "CREATE INDEX ix_executerecord_account_time_id ON account(id) WHERE created_at>'2025-01-01'",
+            "reserved index name",
+            id="reserved_time_index",
+        ),
     ],
 )
 def test_custom_time_dependencies_and_reserved_names_leave_0033_unchanged(published_database, definition, reason):
@@ -129,6 +166,58 @@ def test_custom_time_dependencies_and_reserved_names_leave_0033_unchanged(publis
     assert _database_dump(published_database) == before
 
 
+@pytest.mark.parametrize(
+    ("table", "definition", "reason"),
+    [
+        pytest.param("account", "guard INTEGER CHECK(created_at<'2027-01-01')", "time column", id="check"),
+        # 身份表重建可能先拒绝限定列名，失败仍须原子回滚。
+        pytest.param(
+            "account",
+            "guard INTEGER CHECK(account.'created_at'<'2027-01-01')",
+            r"time column|no such column: account\.created_at",
+            id="qualified_check",
+        ),
+        pytest.param(
+            "account",
+            "guard TEXT GENERATED ALWAYS AS (substr(created_at,1,10)) VIRTUAL",
+            "time column",
+            id="generated_column",
+        ),
+        pytest.param(
+            "supplement_group",
+            "guard INTEGER CHECK(base_scheduled_at<'2027-01-01')",
+            "time column",
+            id="unique_column_check",
+        ),
+    ],
+)
+def test_custom_table_time_dependencies_leave_0033_unchanged(published_database, table, definition, reason):
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+    before = _database_dump(published_database)
+    with pytest.raises(_core.NativeError, match=reason):
+        native_store_call(published_database, "migration_upgrade", {})
+    assert _database_dump(published_database) == before
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "CREATE VIEW custom_view AS SELECT * FROM 'account'",
+        "CREATE TRIGGER custom_audit AFTER UPDATE ON 'account' WHEN NEW.'created_at_us'>0 BEGIN SELECT 1; END",
+    ],
+)
+def test_custom_quoted_time_dependencies_leave_0034_unchanged_on_downgrade(published_database, definition):
+    assert native_store_call(published_database, "migration_upgrade", {})["public"] == "0034"
+    _core.close_database(str(published_database))
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute(definition)
+    before = _database_dump(published_database)
+    with pytest.raises(_core.NativeError, match="time column"):
+        native_store_call(published_database, "migration_downgrade", {"public": "0033"})
+    assert _database_dump(published_database) == before
+
+
 def test_safe_custom_sql_and_opaque_json_survive_upgrade_downgrade_upgrade(published_database):
     opaque = b'{ "created_at": "not-a-date", "nested": {"trade_time": "unchanged"} }'
     with closing(sqlite3.connect(published_database)) as connection, connection:
@@ -136,7 +225,17 @@ def test_safe_custom_sql_and_opaque_json_survive_upgrade_downgrade_upgrade(publi
         connection.execute("INSERT INTO user_opaque VALUES(1,?)", (opaque,))
         connection.execute(
             'CREATE VIEW safe_view AS SELECT id AS "quoted/*""--", '
-            "'/* created_at */ --' AS literal /* updated_at */ FROM account"
+            "'/* created_at */ --' AS literal, 'created_at' AS column_literal, 'account' AS table_literal "
+            "/* updated_at */ FROM account"
+        )
+        connection.execute("ALTER TABLE account ADD COLUMN guard INTEGER CHECK(guard>=0)")
+        connection.execute("UPDATE account SET guard=2")
+        connection.execute("CREATE TABLE custom_trigger_audit(account_id INTEGER)")
+        connection.execute("CREATE VIEW editable_view AS SELECT id,guard FROM account")
+        connection.execute(
+            "CREATE TRIGGER safe_view_update INSTEAD OF UPDATE ON editable_view BEGIN "
+            "INSERT INTO custom_trigger_audit VALUES(NEW.id); "
+            "UPDATE account SET guard=NEW.guard WHERE id=OLD.id; END"
         )
         connection.execute("CREATE TRIGGER businessXfacts_0034_custom AFTER UPDATE ON account BEGIN SELECT 1; END")
     for operation, request, revision in [
@@ -147,10 +246,20 @@ def test_safe_custom_sql_and_opaque_json_survive_upgrade_downgrade_upgrade(publi
         assert native_store_call(published_database, operation, request)["public"] == revision
         _core.close_database(str(published_database))
         with closing(sqlite3.connect(published_database)) as connection:
-            assert connection.execute("SELECT * FROM safe_view").fetchall() == [(1, "/* created_at */ --")]
+            assert connection.execute("SELECT * FROM safe_view").fetchall() == [
+                (1, "/* created_at */ --", "created_at", "account")
+            ]
+            assert connection.execute("SELECT guard FROM account").fetchone() == (2,)
+            assert connection.execute("SELECT count(*) FROM custom_trigger_audit").fetchone() == (0,)
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+                connection.execute("UPDATE account SET guard=-1")
             assert connection.execute("SELECT payload FROM user_opaque").fetchone() == (opaque,)
             assert connection.execute(
                 "SELECT name FROM sqlite_schema WHERE name='businessXfacts_0034_custom'"
             ).fetchone()
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute("UPDATE editable_view SET guard=3 WHERE id=1")
+        assert connection.execute("SELECT guard FROM account").fetchone() == (3,)
+        assert connection.execute("SELECT account_id FROM custom_trigger_audit").fetchall() == [(1,)]

@@ -1,7 +1,16 @@
 //! Convert declared scalar columns only; opaque SQLite values are copied unchanged.
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use regex::Regex;
-use rusqlite::types::Value as SqlValue;
+use rusqlite::{
+    hooks::{AuthAction, AuthContext, Authorization},
+    types::Value as SqlValue,
+    ErrorCode,
+};
 
 use super::*;
 
@@ -45,38 +54,223 @@ fn plan(connection: &Connection, upgrade: bool) -> Result<Vec<Table>> {
     Ok(tables)
 }
 
-fn check_dependencies(connection: &Connection, tables: &[Table], upgrade: bool) -> Result<()> {
-    let quoted_and_comments = Regex::new(
-        r#"(?s)'(?:''|[^'])*'|"(?:""|[^"])*"|\[[^]]*\]|`(?:``|[^`])*`|--[^\r\n]*|/\*.*?(?:\*/|\z)"#,
+fn type_check(name: &str) -> String {
+    format!(
+        " CHECK ({} IS NULL OR typeof({})='integer')",
+        quote(name),
+        quote(name)
     )
-    .map_err(|failure| error(failure.to_string()))?;
-    let identifiers = Regex::new(r#""[^"]+"|\[[^]]+\]|`[^`]+`|\b\w+\b"#)
-        .map_err(|failure| error(failure.to_string()))?;
-    let wildcard = Regex::new(
-        r#"(?i)(?:\bSELECT\s+(?:(?:DISTINCT|ALL)\s+)?|,)\s*(?:(?:\w+|"(?:""|[^"])*"|\[[^]]*\]|`(?:``|[^`])*`)\s*\.\s*)?\*"#,
-    )
-    .map_err(|failure| error(failure.to_string()))?;
-    for object in rows(connection,"SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE type IN ('trigger','view','index') AND sql IS NOT NULL",[])? {
-        let name=text(&object,"name")?;
-        let kind=text(&object,"type")?;
-        let owner=text(&object,"tbl_name")?;
-        if kind == "trigger" && schema::BUSINESS_TABLES.iter().any(|table| {
-            owner == *table
-                && ["insert", "update", "delete"].iter().any(|action| name == format!("business_facts_0034_{table}_{action}"))
-        }) { continue; }
-        if kind=="index" {
-            if matches!(name,"ix_executerecord_account_time_id"|"ix_schedule_skip_account_time_id") { continue; }
-            let expression=rows(connection,&format!("PRAGMA index_xinfo({})",quote(name)),[])?.iter().any(|row|value(row,"cid")==&Value::from(-2));
-            let partial=rows(connection,&format!("PRAGMA index_list({})",quote(text(&object,"tbl_name")?)),[])?.iter().any(|row|value(row,"name")==&Value::from(name) && value(row,"partial")==&Value::from(1));
-            if !expression && !partial { continue; }
+}
+
+/// Prepare only: SQLite resolves quoted names and expressions without running SQL.
+fn check_statement(
+    connection: &Connection,
+    statement: &str,
+    object: &str,
+    columns: &[(String, String)],
+    trigger: Option<&str>,
+) -> Result<bool> {
+    let columns = columns.to_owned();
+    let trigger = trigger.map(str::to_owned);
+    let is_trigger = trigger.is_some();
+    let seen = Arc::new(AtomicBool::new(false));
+    let accessed = Arc::clone(&seen);
+    let mut autoindex = false;
+    connection.authorizer(Some(move |context: AuthContext<'_>| {
+        if trigger
+            .as_ref()
+            .is_some_and(|name| context.accessor != Some(name.as_str()))
+        {
+            return Authorization::Allow;
         }
-        let without_literals=quoted_and_comments.replace_all(text(&object,"sql")?,|capture: &regex::Captures<'_>| {
-            let token=&capture[0];
-            if token.starts_with(['\'', '-', '/']) { " ".to_owned() } else { token.to_owned() }
-        });
-        let tokens=identifiers.find_iter(&without_literals).map(|token|token.as_str().trim_matches(['"','`','[',']']).to_ascii_lowercase()).collect::<std::collections::BTreeSet<_>>();
-        let affected=tables.iter().any(|table|tokens.contains(table.name) && (matches!(kind,"view"|"trigger") && wildcard.is_match(&without_literals) || table.columns.iter().any(|column|tokens.contains(if upgrade {column.name}else{column.storage}))));
-        if affected { return Err(error(format!("Cannot convert scalar time: custom {kind} {name} depends on a time column; preserve or update it before migrating"))); }
+        accessed.store(true, Ordering::Relaxed);
+        // PK/UNIQUE key reads precede the schema write; CHECK expression reads follow it.
+        let structural_read = autoindex && matches!(context.action, AuthAction::Read { .. });
+        autoindex = match context.action {
+            AuthAction::CreateIndex { index_name, .. } => {
+                index_name.starts_with("sqlite_autoindex_")
+            }
+            AuthAction::Read { .. } => autoindex,
+            _ => false,
+        };
+        if structural_read {
+            return Authorization::Allow;
+        }
+        let affected = match context.action {
+            AuthAction::Read {
+                table_name,
+                column_name,
+            }
+            | AuthAction::Update {
+                table_name,
+                column_name,
+            } => columns.iter().any(|(table, column)| {
+                table.eq_ignore_ascii_case(table_name) && column.eq_ignore_ascii_case(column_name)
+            }),
+            // INSERT has no column-level callback, so custom trigger writes fail closed.
+            AuthAction::Insert { table_name } if is_trigger => columns
+                .iter()
+                .any(|(table, _)| table.eq_ignore_ascii_case(table_name)),
+            _ => false,
+        };
+        if affected {
+            Authorization::Deny
+        } else {
+            Authorization::Allow
+        }
+    }));
+    let prepared = connection.prepare(statement).map(drop);
+    connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    match prepared {
+        Err(failure)
+            if failure.sqlite_error_code() == Some(ErrorCode::AuthorizationForStatementDenied) =>
+        {
+            Err(error(format!("Cannot convert scalar time: custom {object} depends on a time column; preserve or update it before migrating")))
+        }
+        // A view may support only one of INSERT/UPDATE/DELETE through INSTEAD OF.
+        Err(_) if is_trigger && !seen.load(Ordering::Relaxed) => Ok(false),
+        Err(failure) => Err(sql(failure)),
+        Ok(()) => Ok(seen.load(Ordering::Relaxed)),
+    }
+}
+
+fn check_index(
+    connection: &Connection,
+    declarations: &Connection,
+    object: &Object,
+    tables: &[Table],
+    columns: &[(String, String)],
+) -> Result<()> {
+    let name = text(object, "name")?;
+    let owner = text(object, "tbl_name")?;
+    if !tables.iter().any(|table| table.name == owner)
+        || matches!(
+            name,
+            "ix_executerecord_account_time_id" | "ix_schedule_skip_account_time_id"
+        )
+    {
+        return Ok(());
+    }
+    let expression = rows(
+        connection,
+        &format!("PRAGMA index_xinfo({})", quote(name)),
+        [],
+    )?
+    .iter()
+    .any(|row| value(row, "cid") == &Value::from(-2));
+    let partial = rows(
+        connection,
+        &format!("PRAGMA index_list({})", quote(owner)),
+        [],
+    )?
+    .iter()
+    .any(|row| {
+        value(row, "name") == &Value::from(name) && value(row, "partial") == &Value::from(1)
+    });
+    if expression || partial {
+        check_statement(
+            declarations,
+            &format!("EXPLAIN {}", text(object, "sql")?),
+            &format!("index {name}"),
+            columns,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+fn check_trigger(
+    connection: &Connection,
+    object: &Object,
+    columns: &[(String, String)],
+) -> Result<()> {
+    let name = text(object, "name")?;
+    let owner = text(object, "tbl_name")?;
+    if schema::BUSINESS_TABLES.iter().any(|table| {
+        owner == *table
+            && ["insert", "update", "delete"]
+                .iter()
+                .any(|action| name == format!("business_facts_0034_{table}_{action}"))
+    }) {
+        return Ok(());
+    }
+    let assignments = rows(
+        connection,
+        &format!("PRAGMA table_info({})", quote(owner)),
+        [],
+    )?
+    .iter()
+    .map(|column| Ok(format!("{}=NULL", quote(text(column, "name")?))))
+    .collect::<Result<Vec<_>>>()?
+    .join(",");
+    let mut seen = false;
+    for statement in [
+        format!("EXPLAIN INSERT INTO {} DEFAULT VALUES", quote(owner)),
+        format!("EXPLAIN UPDATE {} SET {assignments}", quote(owner)),
+        format!("EXPLAIN DELETE FROM {}", quote(owner)),
+    ] {
+        seen |= check_statement(
+            connection,
+            &statement,
+            &format!("trigger {name}"),
+            columns,
+            Some(name),
+        )?;
+    }
+    if !seen {
+        return Err(error(format!(
+            "Cannot validate custom trigger {name} before converting scalar time"
+        )));
+    }
+    Ok(())
+}
+
+fn check_dependencies(connection: &Connection, tables: &[Table], upgrade: bool) -> Result<()> {
+    let columns = tables
+        .iter()
+        .flat_map(|table| {
+            table.columns.iter().map(move |column| {
+                (
+                    table.name.to_owned(),
+                    if upgrade { column.name } else { column.storage }.to_owned(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let declarations = Connection::open_in_memory().map_err(sql)?;
+    crate::calendar::register_time_function(&declarations).map_err(sql)?;
+    for table in tables {
+        let mut definition: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
+                [table.name],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if !upgrade {
+            for column in &table.columns {
+                definition = definition.replace(&type_check(column.storage), "");
+            }
+        }
+        check_statement(
+            &declarations,
+            &format!("EXPLAIN {definition}"),
+            &format!("table {}", table.name),
+            &columns,
+            None,
+        )?;
+        execute(&declarations, &definition)?;
+    }
+    for object in rows(connection, "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE type IN ('trigger','view','index') AND sql IS NOT NULL", [])? {
+        let name = text(&object, "name")?;
+        match text(&object, "type")? {
+            "view" => {
+                check_statement(connection, &format!("EXPLAIN SELECT * FROM {}", quote(name)), &format!("view {name}"), &columns, None)?;
+            }
+            "index" => check_index(connection, &declarations, &object, tables, &columns)?,
+            "trigger" => check_trigger(connection, &object, &columns)?,
+            _ => unreachable!(),
+        }
     }
     Ok(())
 }
@@ -109,14 +303,7 @@ fn table_sql(source: &str, table: &Table, temporary: &str, upgrade: bool) -> Res
     for column in &table.columns {
         let name = if upgrade { column.storage } else { column.name };
         if !upgrade {
-            source = source.replace(
-                &format!(
-                    " CHECK ({} IS NULL OR typeof({})='integer')",
-                    quote(name),
-                    quote(name)
-                ),
-                "",
-            );
+            source = source.replace(&type_check(name), "");
         }
         let pattern = format!(
             r#"(?i)([,(]\s*"?{}"?\s+)(?:TEXT|VARCHAR(?:\(\d+\))?|FLOAT|REAL|INTEGER|BIGINT|DATETIME|TIMESTAMP)\b"#,
@@ -135,11 +322,7 @@ fn table_sql(source: &str, table: &Table, temporary: &str, upgrade: bool) -> Res
             legacy_type(table.name, column)
         };
         let check = if upgrade {
-            format!(
-                " CHECK ({} IS NULL OR typeof({})='integer')",
-                quote(name),
-                quote(name)
-            )
+            type_check(name)
         } else {
             String::new()
         };

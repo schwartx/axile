@@ -20,6 +20,7 @@ from axile.server.trading_calendar import (
     CalendarDecisionStatus,
     CalendarUnavailableReason,
 )
+from tests.sqlite_oracle import to_us
 from tests.unit.server._runtime_db_support import runtime_database, runtime_rows
 
 
@@ -230,10 +231,10 @@ def test_native_schedule_reads_settings_and_commits_calendar_skip(tmp_path, monk
         async with runtime_database(tmp_path / "runtime.db") as path:
             await execution_scheduler.execute_scheduled_rebalance(1, "2026-08-29T09:30:00+08:00")
             rows = runtime_rows(
-                path, "SELECT account_id,channel,triggered_at,calendar_day,reason_code FROM schedule_skip"
+                path, "SELECT account_id,channel,triggered_at_us,calendar_day,reason_code FROM schedule_skip"
             )
             assert [tuple(row) for row in rows] == [
-                (1, "ctp", "2026-08-29T09:30:00+08:00", "2026-08-29", "CALENDAR.CLOSED")
+                (1, "ctp", to_us("2026-08-29T09:30:00+08:00"), "2026-08-29", "CALENDAR.CLOSED")
             ]
 
     asyncio.run(scenario())

@@ -25,15 +25,15 @@ pub(super) fn create(connection: &Connection) -> Result<()> {
 }
 
 pub(super) fn upgrade(connection: &Connection) -> Result<()> {
-    // 0033 predates this namespace; reject collisions before replacing triggers.
-    if let Some(trigger) = rows(
+    // 0033 predates these names; reject collisions before replacing managed SQL.
+    if let Some(object) = rows(
         connection,
-        "SELECT name FROM sqlite_schema WHERE type='trigger' AND lower(name) GLOB 'business_facts_0034_*' ORDER BY name LIMIT 1",
+        "SELECT type,name FROM sqlite_schema WHERE (type='trigger' AND lower(name) GLOB 'business_facts_0034_*') OR (type='index' AND lower(name) IN ('ix_executerecord_account_time_id','ix_schedule_skip_account_time_id')) ORDER BY name LIMIT 1",
         [],
     )?.first() {
         return Err(error(format!(
-            "Cannot upgrade 0033: reserved trigger name {}; rename it before migrating",
-            text(trigger, "name")?
+            "Cannot upgrade 0033: reserved {} name {}; rename it before migrating",
+            text(object, "type")?, text(object, "name")?
         )));
     }
     check_analysis_dependencies(connection, super::BASELINE_REVISION)?;
