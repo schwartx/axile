@@ -1,11 +1,4 @@
 -- Final public 0034 base schema; business facts and incremental results use their shared DDL.
-CREATE TABLE _futures_close_policy_backup (
-	account_id INTEGER NOT NULL,
-	previous_execution JSON NOT NULL,
-	migrated_execution JSON NOT NULL,
-	PRIMARY KEY (account_id)
-);
-
 CREATE TABLE "account" (
 	name TEXT NOT NULL,
 	market TEXT NOT NULL,
@@ -144,12 +137,6 @@ CREATE TABLE accountruntimesyncattempt (
 CREATE TABLE "alembic_version" (version_num VARCHAR(32) NOT NULL, CONSTRAINT "alembic_version_pkc" PRIMARY KEY (version_num));
 
 CREATE TABLE analysis_calendar_day(channel TEXT NOT NULL,day TEXT NOT NULL,status TEXT NOT NULL,calendar_id TEXT,label TEXT,PRIMARY KEY(channel,day));
-
-CREATE TABLE "axile_0013_error_backup"(id INTEGER NOT NULL PRIMARY KEY,table_name TEXT NOT NULL,row_id TEXT NOT NULL,json_column TEXT NOT NULL,path JSON NOT NULL,before_present BOOLEAN NOT NULL,before_value JSON,after_present BOOLEAN NOT NULL,after_value JSON,rule TEXT NOT NULL,identity JSON NOT NULL);
-
-CREATE TABLE axile_0014_market_value_backup(id INTEGER NOT NULL PRIMARY KEY,table_name TEXT NOT NULL,row_id INTEGER NOT NULL,json_column TEXT NOT NULL,before JSON NOT NULL,after JSON NOT NULL,execution_id TEXT);
-
-CREATE TABLE axile_0015_tq_market_value_backup(id INTEGER NOT NULL PRIMARY KEY,table_name TEXT NOT NULL,row_id INTEGER NOT NULL,json_column TEXT NOT NULL,before JSON NOT NULL,after JSON NOT NULL,execution_id TEXT);
 
 CREATE TABLE executerecord (
 	execution_id TEXT,

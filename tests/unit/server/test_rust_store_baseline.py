@@ -156,7 +156,7 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
 
 
 def test_downgrade_matches_supported_release_schema(tmp_path: Path) -> None:
-    """回退后的列、索引、外键和触发器与已发布 0033 一致。"""
+    """回退后的业务结构与已发布 0033 一致，已清理的迁移备份不再重建。"""
     manifest = _manifest("v0.23.1.sql")
     assert manifest["source_commit"] == _SUPPORTED_TAG_COMMIT
     assert manifest["public_head"] == "0033"
@@ -190,6 +190,13 @@ def test_downgrade_matches_supported_release_schema(tmp_path: Path) -> None:
                     (index, unique, partial, tuple(column[1:] for column in columns), definition)
                     for index, unique, partial, columns, definition in table["indexes"]
                 )
+            for name in (
+                "_futures_close_policy_backup",
+                "axile_0013_error_backup",
+                "axile_0014_market_value_backup",
+                "axile_0015_tq_market_value_backup",
+            ):
+                schema["tables"].pop(name, None)
             return schema
 
         differences = schema_differences(consumer_schema(native), consumer_schema(oracle))
@@ -210,7 +217,7 @@ def test_current_and_check_do_not_create_a_missing_database(tmp_path: Path) -> N
         assert list(tmp_path.iterdir()) == []
 
 
-def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) -> None:
+def test_0033_upgrade_discards_backup_rows_and_reaches_real_head(tmp_path: Path) -> None:
     path = tmp_path / "upgrade.db"
     initialize_native_database(path, revision="0033")
     backup = ("executerecord", "701", "raw_result", '"error"', 1, '"before"', 1, '"after"', "fixture", "{}")
@@ -225,10 +232,7 @@ def test_0033_upgrade_keeps_backup_rows_and_reaches_real_head(tmp_path: Path) ->
     assert result["public"] == "0034"
     assert native_store_call(path, "migration_current", {})["public"] == "0034"
     with closing(oracle_connect(path)) as connection, connection:
-        assert connection.execute(
-            "SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity "
-            "FROM axile_0013_error_backup"
-        ).fetchall() == [backup]
+        assert not connection.execute("SELECT name FROM sqlite_master WHERE name LIKE '%_backup'").fetchall()
         assert connection.execute("SELECT version_num FROM alembic_version").fetchall() == [("0034",)]
 
 
