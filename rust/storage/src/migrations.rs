@@ -18,7 +18,6 @@ pub const PRIVATE_HEAD: &str = "axon_0001";
 
 const PUBLIC_VERSION_TABLE: &str = "alembic_version";
 const PRIVATE_VERSION_TABLE: &str = "axon_alembic_version";
-const PUBLIC_BACKUP_TABLE: &str = "axile_0013_error_backup";
 const PRIVATE_BACKUP_TABLE: &str = "axon_0001_error_backup";
 const BASELINE_REVISION: u32 = 33;
 const PUBLIC_HEAD_NUMBER: u32 = 34;
@@ -502,6 +501,11 @@ pub fn migration_upgrade(path: &str, request: &Value) -> Result<Value, AnalysisE
             current.private = true;
         }
         move_public(connection, &mut current, targets.public, true)?;
+        if crosses_structured {
+            connection
+                .execute_batch(include_str!("migrations/cleanup_backups.sql"))
+                .map_err(sql)?;
+        }
         let mut result = result_json(current, targets);
         result["dependency_satisfied"] = json!(true);
         if let Some(backup) = backup {
@@ -537,6 +541,9 @@ pub fn migration_downgrade(path: &str, request: &Value) -> Result<Value, Analysi
         }
         if targets.public > current.public || !current.private && targets.private == Some(true) {
             return Err(invalid("downgrade cannot upgrade a chain"));
+        }
+        if current.private && targets.private == Some(false) {
+            private::restore_errors(connection, PRIVATE_BACKUP_TABLE, true)?;
         }
         if current.public > BASELINE_REVISION && targets.public <= BASELINE_REVISION {
             move_public(connection, &mut current, BASELINE_REVISION, false)?;
@@ -608,6 +615,62 @@ mod tests {
         let checked = migration_check(path.as_str(), &request).unwrap();
         assert_eq!(checked["private_fields"], 0);
         assert!(!path.0.exists());
+    }
+
+    #[test]
+    fn final_schema_discards_backups_for_new_and_upgraded_databases() {
+        for baseline in [false, true] {
+            let path = DatabasePath::new();
+            if baseline {
+                let connection = Connection::open(path.as_str()).unwrap();
+                connection
+                    .execute_batch(include_str!("testdata/migration_0033.sql"))
+                    .unwrap();
+                stamp(&connection, PUBLIC_VERSION_TABLE, Some("0033")).unwrap();
+                migration_upgrade(path.as_str(), &dual_request("0033", "head")).unwrap();
+            }
+            migration_upgrade(path.as_str(), &dual_request("head", "head")).unwrap();
+            let connection = Connection::open(path.as_str()).unwrap();
+            let backups: i64 = connection.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('_futures_close_policy_backup','axile_0013_error_backup','axile_0014_market_value_backup','axile_0015_tq_market_value_backup','axon_0001_error_backup')",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(backups, 0);
+            let error = migration_check(path.as_str(), &dual_request("head", "base")).unwrap_err();
+            assert!(error.error.contains("rollback is unavailable"));
+            migration_downgrade(path.as_str(), &dual_request("0033", "head")).unwrap();
+            migration_upgrade(path.as_str(), &dual_request("head", "head")).unwrap();
+        }
+    }
+
+    #[test]
+    fn already_0034_upgrade_preserves_backups_for_explicit_cleanup() {
+        let path = DatabasePath::new();
+        migration_upgrade(path.as_str(), &json!({})).unwrap();
+        let connection = Connection::open(path.as_str()).unwrap();
+        let tables = [
+            "_futures_close_policy_backup",
+            "axile_0013_error_backup",
+            "axile_0014_market_value_backup",
+            "axile_0015_tq_market_value_backup",
+            "axon_0001_error_backup",
+        ];
+        for table in tables {
+            connection
+                .execute_batch(&format!(
+                    "CREATE TABLE {table}(value TEXT); INSERT INTO {table} VALUES ('historical');"
+                ))
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let receipt = migration_upgrade(path.as_str(), &dual_request("head", "head")).unwrap();
+            assert!(receipt.get("backup").is_none());
+            for table in tables {
+                let value: String = connection
+                    .query_row(&format!("SELECT value FROM {table}"), [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(value, "historical");
+            }
+        }
     }
 
     #[test]

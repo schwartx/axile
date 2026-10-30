@@ -401,7 +401,7 @@ mod tests {
         crate::calendar::register_time_function(&connection).unwrap();
         create(&connection).unwrap();
         let count: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |row| row.get(0)).unwrap();
-        assert_eq!(count, 60);
+        assert_eq!(count, 56);
         let retired: i64 = connection
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name LIKE 'performance_%'",

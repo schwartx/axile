@@ -113,7 +113,7 @@ def test_result_writer_discards_reconciliation_instead_of_stashing_json(native_d
 
 
 @pytest.mark.parametrize("public", ["head", "0034"])
-def test_private_error_patch_and_restore_without_reconciliation_column(native_database, public):
+def test_private_patch_discards_backup_and_rejects_restore(native_database, public):
     seed_account(native_database)
     receipt = persist(
         native_database,
@@ -133,21 +133,17 @@ def test_private_error_patch_and_restore_without_reconciliation_column(native_da
     assert patched["symbol_results"]["A"]["error"] == "保证金不足"
     assert "reconciliation" not in json.dumps(rows(native_database, "execution_extension"))
 
-    restored = native_store_call(
-        native_database,
-        "migration_downgrade",
-        {"public": public, "private": "base", "private_rules": _PRIVATE_RULES},
-    )
-    assert restored["private"] is None
-    result = read_result(native_database, record)
-    assert result["error"] == "-2019"
-    assert result["symbol_results"]["A"]["error"] == "-2019"
-    assert result["extra"] == {"kept": False}
-    assert "reconciliation" not in result
+    with pytest.raises(_core.NativeError, match="rollback is unavailable"):
+        native_store_call(
+            native_database,
+            "migration_downgrade",
+            {"public": public, "private": "base", "private_rules": _PRIVATE_RULES},
+        )
+    assert read_result(native_database, record) == patched
 
 
 @pytest.mark.parametrize("edit_fact", [False, True])
-def test_summary_backup_cleanup_preserves_private_restore_and_conflict_checks(tmp_path, edit_fact):
+def test_backup_cleanup_preserves_facts_and_rejects_private_restore(tmp_path, edit_fact):
     path = tmp_path / "summary-backup.db"
     initialize_native_database(path, revision="0033")
     seed_account(path)
@@ -169,21 +165,15 @@ def test_summary_backup_cleanup_preserves_private_restore_and_conflict_checks(tm
         )
     request = {"private_rules": _PRIVATE_RULES}
     native_store_call(path, "migration_upgrade", request)
-    backups = rows(path, "axon_0001_error_backup")
-    assert backups
-    assert {backup["table_name"] for backup in backups} == {"executerecord"}
+    assert not any(row["name"].endswith("_backup") for row in rows(path, "sqlite_master"))
     assert [artifact["artifact_type"] for artifact in rows(path, "execution_artifact")] == ["DIAGNOSTIC"]
     downgrade = {**request, "public": "0033", "private": "base"}
     if edit_fact:
         sql(path, "UPDATE executerecord SET error='edited after migration' WHERE execution_id='derived'")
-        with pytest.raises(_core.NativeError, match="restore conflict"):
-            native_store_call(path, "migration_downgrade", downgrade)
-        assert native_store_call(path, "migration_current", {})["public"] == "0034"
-        assert rows(path, "axon_0001_error_backup") == backups
-        return
-    native_store_call(path, "migration_downgrade", downgrade)
-    assert rows(path, "executerecord")[0]["raw_result"]["error"] == "-2019"
-    assert [artifact["artifact_type"] for artifact in rows(path, "execution_artifact")] == ["DIAGNOSTIC"]
+    with pytest.raises(_core.NativeError, match="rollback is unavailable"):
+        native_store_call(path, "migration_downgrade", downgrade)
+    assert native_store_call(path, "migration_current", {})["public"] == "0034"
+    assert rows(path, "executerecord")[0]["error"] == ("edited after migration" if edit_fact else "保证金不足")
 
 
 def test_legacy_independent_reconciliation_is_rejected_before_dropping_json(tmp_path):

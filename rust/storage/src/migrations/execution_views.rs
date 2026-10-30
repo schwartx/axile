@@ -1,5 +1,5 @@
 //! 0033 摘要中的旧订单时间差异保留为稀疏证据，其余独立证据阻止整个事务。
-use super::{invalid, sql, PRIVATE_BACKUP_TABLE, PUBLIC_BACKUP_TABLE};
+use super::{invalid, sql};
 use crate::business_facts_ops::encode::py_eq;
 use crate::error::AnalysisError;
 use chrono::NaiveDateTime;
@@ -183,19 +183,6 @@ pub(super) fn upgrade(connection: &Connection) -> Result<(), AnalysisError> {
             }
         }
         preserve_order_times(connection, record, artifact, differences)?;
-    }
-    // 摘要删除后不再有恢复目标；事实记录的错误码备份继续保留。
-    for table in [PUBLIC_BACKUP_TABLE, PRIVATE_BACKUP_TABLE] {
-        let exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                [table],
-                |row| row.get(0),
-            )
-            .map_err(sql)?;
-        if exists {
-            connection.execute(&format!("DELETE FROM {table} WHERE table_name='execution_artifact' AND json_column='content' AND row_id IN (SELECT CAST(id AS TEXT) FROM execution_artifact WHERE upper(artifact_type)='EXECUTION_SUMMARY')"), []).map_err(sql)?;
-        }
     }
     connection
         .execute(

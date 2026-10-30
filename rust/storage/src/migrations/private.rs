@@ -134,53 +134,6 @@ fn evidence(connection: &Connection, execution_id: Option<&str>) -> Result<Vec<V
     Ok(evidence)
 }
 
-fn backup(connection: &Connection, name: &str) -> Result<()> {
-    connection
-        .execute_batch(&format!(
-        "CREATE TABLE {} (id INTEGER NOT NULL PRIMARY KEY, table_name TEXT NOT NULL, row_id TEXT NOT NULL,
-         json_column TEXT NOT NULL, path JSON NOT NULL, before_present BOOLEAN NOT NULL,
-         before_value JSON, after_present BOOLEAN NOT NULL, after_value JSON,
-         rule TEXT NOT NULL, identity JSON NOT NULL)", identifier(name)?
-    ))
-        .map_err(sql)
-}
-
-fn store_changes(
-    connection: &Connection,
-    backup: &str,
-    table: &str,
-    row: &Object,
-    changes: &[Change],
-) -> Result<()> {
-    let identity: Object = ["execution_id", "created_at", "account_id", "artifact_type"]
-        .into_iter()
-        .filter_map(|key| row.get(key).map(|value| (key.to_owned(), value.clone())))
-        .collect();
-    let sql_text = format!("INSERT INTO {} (table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", identifier(backup)?);
-    let mut statement = connection.prepare(&sql_text).map_err(sql)?;
-    for change in changes {
-        statement
-            .execute(params![
-                table,
-                id(row)?.to_string(),
-                if table == "executerecord" {
-                    "raw_result"
-                } else {
-                    "content"
-                },
-                json!(change.path).to_string(),
-                change.before_present,
-                change.before.to_string(),
-                change.after_present,
-                change.after.to_string(),
-                change.rule,
-                Value::Object(identity.clone()).to_string(),
-            ])
-            .map_err(sql)?;
-    }
-    Ok(())
-}
-
 fn write_artifact(connection: &Connection, artifact: &Object, document: &Value) -> Result<()> {
     connection
         .execute(
@@ -265,9 +218,6 @@ pub(super) fn patch_errors(
     if !typed(connection)? {
         return error_patch::patch_errors(connection, backup_name, codes, dry_run);
     }
-    if !dry_run {
-        backup(connection, backup_name)?;
-    }
     let mut fields = 0usize;
     let mut scan = Map::new();
     for table in ["executerecord", "execution_artifact"] {
@@ -315,7 +265,6 @@ pub(super) fn patch_errors(
                 if dry_run || changes.is_empty() {
                     continue;
                 }
-                store_changes(connection, backup_name, table, row, &changes)?;
                 if table == "executerecord" {
                     write_result(connection, row, &patched, &changes)?;
                 } else {
@@ -458,7 +407,7 @@ pub(super) fn restore_errors(
         )
         .map_err(sql)?;
     if !exists {
-        return Err(invalid(format!("migration backup missing: {backup_name}")));
+        return Err(invalid(format!("migration backup missing: {backup_name}; rollback is unavailable after 0034 cleanup, restore the pre-upgrade database backup instead")));
     }
     let mut statement = connection.prepare(&format!("SELECT table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,id,identity FROM {} ORDER BY table_name,row_id,json_column,id", identifier(backup_name)?)).map_err(sql)?;
     let mut cursor = statement.query([]).map_err(sql)?;
@@ -490,6 +439,53 @@ pub(super) fn restore_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn backup(connection: &Connection, name: &str) -> Result<()> {
+        connection
+            .execute_batch(&format!(
+            "CREATE TABLE {} (id INTEGER NOT NULL PRIMARY KEY, table_name TEXT NOT NULL, row_id TEXT NOT NULL,
+             json_column TEXT NOT NULL, path JSON NOT NULL, before_present BOOLEAN NOT NULL,
+             before_value JSON, after_present BOOLEAN NOT NULL, after_value JSON,
+             rule TEXT NOT NULL, identity JSON NOT NULL)", identifier(name)?
+        ))
+            .map_err(sql)
+    }
+
+    fn store_changes(
+        connection: &Connection,
+        backup: &str,
+        table: &str,
+        row: &Object,
+        changes: &[Change],
+    ) -> Result<()> {
+        let identity: Object = ["execution_id", "created_at", "account_id", "artifact_type"]
+            .into_iter()
+            .filter_map(|key| row.get(key).map(|value| (key.to_owned(), value.clone())))
+            .collect();
+        let sql_text = format!("INSERT INTO {} (table_name,row_id,json_column,path,before_present,before_value,after_present,after_value,rule,identity) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", identifier(backup)?);
+        let mut statement = connection.prepare(&sql_text).map_err(sql)?;
+        for change in changes {
+            statement
+                .execute(params![
+                    table,
+                    id(row)?.to_string(),
+                    if table == "executerecord" {
+                        "raw_result"
+                    } else {
+                        "content"
+                    },
+                    json!(change.path).to_string(),
+                    change.before_present,
+                    change.before.to_string(),
+                    change.after_present,
+                    change.after.to_string(),
+                    change.rule,
+                    Value::Object(identity.clone()).to_string(),
+                ])
+                .map_err(sql)?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn historical_artifact_numbers_do_not_hide_error_patches_or_restore_conflicts() {
@@ -540,6 +536,19 @@ mod tests {
             "123456789012345678901234567890"
         );
         assert_eq!(patched["text"], "NaN Infinity");
+        assert!(connection
+            .prepare("SELECT * FROM private_error_backup")
+            .is_err());
+        // 旧版备份仍可读取；新版补丁不再生成它。
+        backup(&connection, "private_error_backup").unwrap();
+        let (_, changes) =
+            error_patch::patch_document(&original, &[json!({"channel_type":"LOCAL"})], &codes)
+                .unwrap();
+        store_changes(
+            &connection, "private_error_backup", "execution_artifact",
+            json!({"id":1,"execution_id":"frozen","artifact_type":"EXECUTION_SUMMARY","created_at":"date"}).as_object().unwrap(),
+            &changes,
+        ).unwrap();
         restore_errors(&connection, "private_error_backup", true).unwrap();
         assert_eq!(read(), patched);
 
