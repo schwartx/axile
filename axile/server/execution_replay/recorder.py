@@ -44,6 +44,7 @@ class _Session:
     )
     next_poll: float = 0.0
     poll_pending: bool = False
+    waiting_for_writer: bool = False
 
 
 class ReplayRecorder:
@@ -140,6 +141,10 @@ class ReplayRecorder:
             "config_version": self._config_version,
             "effective_version": self._effective_version,
         }
+        if state == "starting":
+            result["effective_version"] = None
+        if state == "starting" and session is not None and session.waiting_for_writer:
+            result["reason"] = "等待上一段录制结束"
         if session:
             result["recording_id"] = session.recording_id
         if self._error:
@@ -814,13 +819,9 @@ class ReplayRecorder:
         writer = None
         try:
             self._seed_context_metadata(session)
-            writer = self._writer_factory(
-                self.root, self.account_id, session.recording_id, encode_json(session.context)
-            )
-            with self._condition:
-                session.state = "recording"
-                self._effective_version = self._config_version
-            self._notify()
+            writer = self._open_writer(session)
+            if writer is None:
+                return
             self._seed_interest(session)
             self._seed_cached_observations(session)
             while True:
@@ -864,6 +865,36 @@ class ReplayRecorder:
                     self._effective_version = self._config_version
                     self._start_locked()
             self._notify()
+
+    def _open_writer(self, session: _Session):
+        """仅重试交接期间的文件锁占用；等待可取消，采集队列仍受原预算约束。"""
+        context_json = encode_json(session.context)
+        while True:
+            with self._condition:
+                if session.stopping:
+                    return None
+            try:
+                writer = self._writer_factory(self.root, self.account_id, session.recording_id, context_json)
+                if writer is None:
+                    raise RuntimeError("writer factory returned no writer")
+            except BlockingIOError:
+                with self._condition:
+                    if session.stopping:
+                        return None
+                    first_wait = not session.waiting_for_writer
+                    session.waiting_for_writer = True
+                if first_wait:
+                    self._notify()
+                with self._condition:
+                    self._condition.wait_for(lambda: session.stopping, timeout=0.1)
+                continue
+            with self._condition:
+                session.waiting_for_writer = False
+                session.state = "recording"
+                if not session.stopping:
+                    self._effective_version = self._config_version
+            self._notify()
+            return writer
 
     def _seed_context_metadata(self, session: _Session) -> None:
         with self._condition:

@@ -40,3 +40,25 @@ it('关闭控制尚待生效时使用中性文案，不反向宣称正在启用'
   expect(html).not.toContain('正在启用录制')
   expect(html).not.toContain('已关闭')
 })
+
+it('等待旧录制释放时显示待生效，不能显示正在记录或永久故障', () => {
+  const html = renderStatus({ desired: true, state: 'starting', config_version: 3, effective_version: null,
+    reason: '等待上一段录制结束', recording_id: 'pending-recording' })
+  expect(html).toContain('录制设置待生效')
+  expect(html).toContain('设置尚待生效')
+  expect(html).toContain('等待上一段录制结束')
+  expect(html).not.toContain('正在记录')
+  expect(html).not.toContain('录制状态异常')
+  const ready = renderStatus({ desired: true, state: 'recording', config_version: 3, effective_version: 3,
+    recording_id: 'pending-recording' })
+  expect(ready).toContain('正在记录')
+  expect(ready).not.toContain('设置尚待生效')
+  expect(ready).not.toContain('等待上一段录制结束')
+})
+
+it('旧实例仍在录制而新实例等待时，聚合录制状态仍保留待生效标记', () => {
+  const html = renderStatus({ desired: true, state: 'recording', config_version: 1, effective_version: null })
+  expect(html).toContain('正在记录')
+  expect(html).toContain('设置尚待生效')
+  expect(html).not.toContain('已关闭')
+})

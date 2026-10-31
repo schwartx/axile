@@ -11,7 +11,12 @@ def native_writer(root: str, account_id: int, recording_id: str, context_json: s
     """延迟装载原生 writer，关闭录制时不创建文件或原生句柄。"""
     from axile.server._native import _core
 
-    return _core.ExecutionReplayWriter(root, account_id, recording_id, context_json)
+    try:
+        return _core.ExecutionReplayWriter(root, account_id, recording_id, context_json)
+    except _core.NativeError as error:
+        if error.args and error.args[0] == "REPLAY_BUSY":
+            raise BlockingIOError("replay_writer_busy") from error
+        raise
 
 
 def _read(name: str, root: str | Path, account_id: int, execution_id: str, *args: str) -> dict[str, object]:

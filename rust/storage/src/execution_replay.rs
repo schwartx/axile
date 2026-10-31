@@ -866,9 +866,10 @@ impl ExecutionReplayWriter {
             .write(true)
             .open(child_file(&account, ".writer.lock")?)
             .map_err(io_error)?;
-        lease
-            .try_lock()
-            .map_err(|error| failure("BUSY", error.to_string()))?;
+        lease.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => failure("BUSY", "account writer is still active"),
+            std::fs::TryLockError::Error(error) => io_error(error),
+        })?;
         let catalogs = read_catalogs(&account)?;
         if catalogs
             .iter()
