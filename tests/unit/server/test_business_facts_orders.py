@@ -7,6 +7,7 @@ import pytest
 
 from axile.server._native import _core
 from scripts.business_facts_contract import business_evidence
+from tests.sqlite_oracle import to_us
 from tests.unit.server._business_facts_test_support import persist_result, read_result, rows, sql
 
 _TABLES = ("execution_order_collection", "execution_order")
@@ -146,7 +147,12 @@ def test_orders_valid_stable_fields_live_in_columns_and_read_column_updates(nati
     record = persist_result(native_database, {"orders": [snapshot]})
     row = rows(native_database, "execution_order")[0]
 
-    assert set(snapshot).difference({"value_conversion"}) <= row.keys()
+    assert (
+        set(snapshot).difference({"value_conversion", "create_time", "update_time", "update_timestamp"}) <= row.keys()
+    )
+    assert row["create_time_us"] == to_us(snapshot["create_time"])
+    assert row["update_time_us"] == to_us(snapshot["update_time"])
+    assert row["update_timestamp_us"] == round(snapshot["update_timestamp"] * 1_000_000)
     assert business_evidence(row["order_id"]) == business_evidence(snapshot["order_id"])
     assert business_evidence(row["price"]) == business_evidence(snapshot["price"])
     assert business_evidence(row["conversion_rate"]) == business_evidence(0.14)

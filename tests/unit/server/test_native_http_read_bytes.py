@@ -1,6 +1,7 @@
 """四个原生 JSON 读取出口与原公开模型的行为对照。"""
 
 import json
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -21,6 +22,7 @@ from axile.server.db.models import ExecutionArtifact, ExecutionArtifactPublic, E
 from axile.server.db.models.account_runtime_sync import AccountRuntimeSyncPublic
 from axile.server.db.models.system_notification import SystemNotificationStatePublic
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import to_us, utc_time
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._runtime_db_support import runtime_rows
 
@@ -78,10 +80,27 @@ def _event(path, details, **overrides):
     native_store_call(path, "append_execution_event", values | overrides)
 
 
+def _public_times(row, fields):
+    result = dict(row)
+    for field in fields:
+        value = result.pop(f"{field}_us")
+        result[field] = (
+            None
+            if value is None
+            else (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value))
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
+    return result
+
+
 def _audit_rows(path, table):
     data = [dict(row) for row in runtime_rows(path, f"SELECT * FROM {table} ORDER BY id")]
     content, kind = ("details", "event_type") if table == "execution_event" else ("content", "artifact_type")
-    for row in data:
+    fields = ("ts_local_created", "ts_exchange", "ts_persisted") if table == "execution_event" else ("created_at",)
+    for index, raw in enumerate(data):
+        row = _public_times(raw, fields)
+        data[index] = row
         row[content] = json.loads(row[content])
         row[kind] = row[kind].lower()
     return data
@@ -205,14 +224,15 @@ def test_runtime_sync_keeps_only_public_fields_and_does_not_load_account(client,
     )
     runtime_rows(
         native_database,
-        "UPDATE accountruntimesync SET revision=0,status=?,attempts=0,reset_worker=1,create_request_key='private',last_error='失败原因',last_attempt_at='attempt',synchronized_at='synced' WHERE account_id=1",
-        (status,),
+        "UPDATE accountruntimesync SET revision=0,status=?,attempts=0,reset_worker=1,create_request_key='private',last_error='失败原因',last_attempt_at_us=?,synchronized_at_us=? WHERE account_id=1",
+        (status, to_us("2026-10-24T01:02:03+08:00"), to_us("2026-10-24T01:02:04+08:00")),
     )
     raw = dict(runtime_rows(native_database, "SELECT * FROM accountruntimesync")[0])
     monkeypatch.setattr(_core, "account_get", Mock(side_effect=AssertionError("must not load full account")))
     response = client.get("/account/1/runtime-sync")
     assert response.status_code == 200, response.text
-    assert response.json() == AccountRuntimeSyncPublic.model_validate(raw).model_dump(mode="json")
+    expected = _public_times(raw, ("last_attempt_at", "synchronized_at"))
+    assert response.json() == AccountRuntimeSyncPublic.model_validate(expected).model_dump(mode="json")
     assert dict(runtime_rows(native_database, "SELECT * FROM accountruntimesync")[0]) == raw
 
 
@@ -247,8 +267,9 @@ def test_system_notification_empty_and_saved_results_match_public_model(client, 
         error="发送失败" if ok is False else None,
     ).model_dump(mode="json")
     native_store_call(native_database, "notifications_record_system", result)
-    assert client.get("/init/execution-alert/result").json() == result
-    assert json.loads(native_store_call(native_database, "notifications_get_system_json", {})) == result
+    expected = result | {"finished_at": utc_time(result["finished_at"])}
+    assert client.get("/init/execution-alert/result").json() == expected
+    assert json.loads(native_store_call(native_database, "notifications_get_system_json", {})) == expected
 
 
 def test_unconfigured_system_notification_does_not_query_database(client, monkeypatch):

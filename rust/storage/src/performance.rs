@@ -9,7 +9,7 @@ use chrono::{Duration, NaiveDateTime};
 #[cfg(test)]
 use rusqlite::params;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 
 use crate::replay::{Observation, ReplayClose, ReplayLedger};
@@ -21,22 +21,38 @@ fn database_error(error: rusqlite::Error) -> String {
     error.to_string()
 }
 
-fn parse_time(value: &str) -> Result<NaiveDateTime, String> {
-    NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-        .map_err(|error| format!("Invalid observation time {value:?}: {error}"))
+fn parse_time(value: i64) -> Result<NaiveDateTime, String> {
+    crate::time_us::local_datetime(value)
 }
 
-fn canonical_time(value: NaiveDateTime) -> String {
-    value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
+fn canonical_time(value: NaiveDateTime) -> i64 {
+    crate::calendar::timestamp_micros(value)
 }
 
-fn display_time(value: &str) -> Result<String, String> {
-    Ok(crate::calendar::display_time(parse_time(value)?))
+fn display_time(value: i64) -> Result<String, String> {
+    crate::time_us::format(value)
+}
+
+fn serialize_time<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+    display_time(*value)
+        .map_err(serde::ser::Error::custom)?
+        .serialize(serializer)
+}
+
+fn serialize_optional_time<S: Serializer>(
+    value: &Option<i64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    value
+        .map(display_time)
+        .transpose()
+        .map_err(serde::ser::Error::custom)?
+        .serialize(serializer)
 }
 
 #[derive(Clone)]
 struct Sample {
-    time: String,
+    time: i64,
     id: i64,
     execution_id: Option<String>,
     asset: Option<f64>,
@@ -45,7 +61,7 @@ struct Sample {
 impl Sample {
     fn from_observation(item: &Observation) -> Self {
         Self {
-            time: item.time.clone(),
+            time: item.time,
             id: item.id,
             execution_id: item.execution_id.clone(),
             asset: item.asset,
@@ -64,8 +80,10 @@ pub(crate) struct Skips {
     pub(crate) count: usize,
     pub(crate) missing_target: usize,
     pub(crate) missing_ticks: usize,
-    pub(crate) first_time: Option<String>,
-    pub(crate) last_time: Option<String>,
+    #[serde(serialize_with = "serialize_optional_time")]
+    pub(crate) first_time: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_time")]
+    pub(crate) last_time: Option<i64>,
 }
 
 /// Tracks the same carried target as build_wbt_input, without materializing bars.
@@ -73,7 +91,7 @@ pub(crate) struct Skips {
 struct Participants {
     previous_symbols: BTreeSet<String>,
     used: usize,
-    start: Option<String>,
+    start: Option<i64>,
     skips: Skips,
     ledger: Option<ReplayLedger>,
 }
@@ -112,10 +130,8 @@ impl Participants {
             } else {
                 self.skips.missing_ticks += 1;
             }
-            self.skips
-                .first_time
-                .get_or_insert_with(|| item.time.clone());
-            self.skips.last_time = Some(item.time.clone());
+            self.skips.first_time.get_or_insert_with(|| item.time);
+            self.skips.last_time = Some(item.time);
             return Ok(false);
         }
         self.previous_symbols = target
@@ -124,7 +140,7 @@ impl Participants {
             .filter_map(|(symbol, weight)| (*weight != 0.0).then_some(symbol.clone()))
             .collect();
         self.used += 1;
-        self.start.get_or_insert_with(|| item.time.clone());
+        self.start.get_or_insert_with(|| item.time);
         if let Some(ledger) = self.ledger.as_mut() {
             ledger.push(item)?;
         }
@@ -134,8 +150,10 @@ impl Participants {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct FallbackRange {
-    pub(crate) start: String,
-    pub(crate) end: String,
+    #[serde(serialize_with = "serialize_time")]
+    pub(crate) start: i64,
+    #[serde(serialize_with = "serialize_time")]
+    pub(crate) end: i64,
     pub(crate) count: usize,
 }
 
@@ -152,10 +170,10 @@ pub(crate) struct Range {
 #[derive(Clone)]
 struct RangeState {
     key: String,
-    start: String,
+    start: i64,
     count: usize,
     invalid_assets: usize,
-    end: Option<String>,
+    end: Option<i64>,
     baseline: Option<Sample>,
     days: BTreeMap<String, DaySamples>,
     executable: Participants,
@@ -168,8 +186,8 @@ struct RangeState {
 
 struct RangeBaseline {
     key: &'static str,
-    cutoff: String,
-    candidate: Option<(String, f64)>,
+    cutoff: i64,
+    candidate: Option<(i64, f64)>,
     fallback_equity: Option<f64>,
 }
 
@@ -191,7 +209,7 @@ impl RangeBaseline {
             self.fallback_equity = Some(asset);
         }
         if baseline_eligible(item) && (item.time <= self.cutoff || self.candidate.is_none()) {
-            self.candidate = Some((item.time.clone(), asset));
+            self.candidate = Some((item.time, asset));
         }
     }
 }
@@ -200,15 +218,15 @@ impl RangeState {
     fn push(
         &mut self,
         item: &Observation,
-        time: &str,
+        time: i64,
         include_backtest: bool,
     ) -> Result<(), String> {
-        if time < self.start.as_str() {
+        if time < self.start {
             return Ok(());
         }
         self.count += 1;
         self.invalid_assets += usize::from(item.asset.is_none());
-        self.end = Some(item.time.clone());
+        self.end = Some(item.time);
         if self.baseline.is_none() && item.asset.is_some_and(|asset| asset > 0.0) {
             self.baseline = Some(Sample::from_observation(item));
         }
@@ -217,18 +235,19 @@ impl RangeState {
             self.target.push(item, true)?;
             if participant && item.sizing_fallback {
                 self.fallback_count += 1;
-                self.fallback_days.insert(item.time[..10].to_owned());
+                self.fallback_days
+                    .insert(parse_time(item.time)?.date().to_string());
                 if self.in_fallback {
                     let current = self
                         .fallback_ranges
                         .last_mut()
                         .expect("open fallback range");
-                    current.end = item.time.clone();
+                    current.end = item.time;
                     current.count += 1;
                 } else {
                     self.fallback_ranges.push(FallbackRange {
-                        start: item.time.clone(),
-                        end: item.time.clone(),
+                        start: item.time,
+                        end: item.time,
                         count: 1,
                     });
                 }
@@ -240,7 +259,7 @@ impl RangeState {
         }
         if self.baseline.is_some() {
             let sample = Sample::from_observation(item);
-            let day = item.time[..10].to_owned();
+            let day = parse_time(item.time)?.date().to_string();
             let samples = self.days.entry(day).or_insert_with(|| DaySamples {
                 last: sample.clone(),
                 participant: None,
@@ -259,29 +278,32 @@ impl RangeState {
         record_count: i64,
         include_backtest: bool,
         previous: Option<&Point>,
-    ) -> Range {
-        let executable_start = self.executable.start.clone();
-        let target_start = self.target.start.clone();
+    ) -> Result<Range, String> {
+        let executable_start = self.executable.start;
+        let target_start = self.target.start;
         let executable_daily = self.executable.ledger.map(ReplayLedger::finish);
         let target_daily = self.target.ledger.map(ReplayLedger::finish);
         let points = merge_daily(
             self.baseline.as_ref(),
             &self.days,
             executable_daily.as_ref(),
-            executable_start.as_deref(),
+            executable_start,
             target_daily.as_ref(),
-            target_start.as_deref(),
+            target_start,
             &self.fallback_days,
             previous,
-        );
-        let baseline = points.first().map(|point| point.date.clone());
+        )?;
+        let baseline = points
+            .first()
+            .map(|point| display_time(point.observed_at))
+            .transpose()?;
         let header = json!({
             "settings": settings,
             "backtest_included": include_backtest,
             "engine_version": ENGINE_VERSION,
             "range": self.key,
             "baseline": baseline,
-            "end": self.end,
+            "end": self.end.map(display_time).transpose()?,
             "record_count": record_count,
             "observation_count": self.count,
             "used_record_count": if include_backtest { self.executable.used } else { 0 },
@@ -293,30 +315,32 @@ impl RangeState {
             "calendar": {"status":"unavailable", "calendar_id":null, "label":null,
                 "closed_ranges":[], "unavailable_ranges":[]}
         });
-        Range {
+        Ok(Range {
             header,
             points,
             sizing_fallback_ranges: self.fallback_ranges,
             skips: (include_backtest && self.count > 0).then_some(self.executable.skips),
             target_skips: (include_backtest && self.count > 0).then_some(self.target.skips),
-        }
+        })
     }
 }
 
 fn replay_close(
     daily: Option<&BTreeMap<String, ReplayClose>>,
     day: &str,
-    start: Option<&str>,
+    start: Option<i64>,
     previous: f64,
-) -> Option<ReplayClose> {
-    let (daily, start) = (daily?, start?);
-    if day < &start[..10] {
-        return None;
+) -> Result<Option<ReplayClose>, String> {
+    let (Some(daily), Some(start)) = (daily, start) else {
+        return Ok(None);
+    };
+    if day < parse_time(start)?.date().to_string().as_str() {
+        return Ok(None);
     }
-    Some(*daily.get(day).unwrap_or(&ReplayClose {
+    Ok(Some(*daily.get(day).unwrap_or(&ReplayClose {
         cumulative_return: previous,
         daily_return: Some(0.0),
-    }))
+    })))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -324,22 +348,23 @@ fn merge_daily(
     baseline: Option<&Sample>,
     days: &BTreeMap<String, DaySamples>,
     daily: Option<&BTreeMap<String, ReplayClose>>,
-    start: Option<&str>,
+    start: Option<i64>,
     target_daily: Option<&BTreeMap<String, ReplayClose>>,
-    target_start: Option<&str>,
+    target_start: Option<i64>,
     fallback_days: &BTreeSet<String>,
     previous: Option<&Point>,
-) -> Vec<Point> {
+) -> Result<Vec<Point>, String> {
     let Some(base) = baseline else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let base_asset = base.asset.expect("positive baseline");
-    let from_backtest = daily.is_some() && start.is_some_and(|when| when <= base.time.as_str());
-    let from_target =
-        target_daily.is_some() && target_start.is_some_and(|when| when <= base.time.as_str());
+    let from_backtest = daily.is_some() && start.is_some_and(|when| when <= base.time);
+    let from_target = target_daily.is_some() && target_start.is_some_and(|when| when <= base.time);
     let mut points = vec![Point {
-        date: base.time.clone(),
-        observed_at: base.time.clone(),
+        date: parse_time(base.time)?
+            .format("%Y-%m-%dT%H:%M:%S%.6f")
+            .to_string(),
+        observed_at: base.time,
         record_id: Some(base.id),
         execution_id: base.execution_id.clone(),
         account_return: Some(0.0),
@@ -368,8 +393,8 @@ fn merge_daily(
                 .map(|previous| amount / previous - 1.0)
         });
         previous_asset = last.asset;
-        let close = replay_close(daily, day, start, portfolio);
-        let target_close = replay_close(target_daily, day, target_start, target_portfolio);
+        let close = replay_close(daily, day, start, portfolio)?;
+        let target_close = replay_close(target_daily, day, target_start, target_portfolio)?;
         if let Some(close) = close {
             portfolio = close.cumulative_return;
         }
@@ -378,7 +403,7 @@ fn merge_daily(
         }
         points.push(Point {
             date: day.clone(),
-            observed_at: last.time.clone(),
+            observed_at: last.time,
             record_id: Some(last.id),
             execution_id: last.execution_id.clone(),
             account_return: account,
@@ -393,20 +418,17 @@ fn merge_daily(
                 .and_then(|account| close.map(|value| account - value.cumulative_return)),
         });
     }
-    points
+    Ok(points)
 }
 
 /// Group a joined cursor into one owned observation, releasing it after use.
 fn scan(
     connection: &Connection,
     account_id: i64,
-    start: &str,
+    start: i64,
     mut consume: impl FnMut(&Observation) -> Result<(), String>,
 ) -> Result<(), String> {
-    crate::fact_observation::scan(connection, account_id, start, |mut item| {
-        item.time = display_time(&item.time)?;
-        consume(&item)
-    })
+    crate::fact_observation::scan(connection, account_id, start, |item| consume(&item))
 }
 
 fn check_source_version(
@@ -484,7 +506,7 @@ pub(crate) fn calculate(
     states
         .into_iter()
         .map(|state| {
-            let mut range = state.finish(&settings, count, request.include_backtest, None);
+            let mut range = state.finish(&settings, count, request.include_backtest, None)?;
             if request.include_metadata {
                 crate::calendar::enrich(connection, request.account_id, &mut range.header)?;
             }
@@ -514,8 +536,8 @@ fn calculate_states(
             |row| row.get(0),
         )
         .map_err(database_error)?;
-    let (first, last): (Option<String>, Option<String>) = connection.query_row(
-        "SELECT min(axile_time(created_at)),max(axile_time(created_at)) FROM executerecord WHERE account_id=?1 AND result_staged=0",
+    let (first, last): (Option<i64>, Option<i64>) = connection.query_row(
+        "SELECT min(created_at_us),max(created_at_us) FROM executerecord WHERE account_id=?1 AND result_staged=0",
         [account_id], |row| Ok((row.get(0)?,row.get(1)?)),
     ).map_err(database_error)?;
     let range_keys: &[&str] = match request.range {
@@ -529,14 +551,14 @@ fn calculate_states(
     for &key in range_keys {
         let cutoff = if let (Some(first), Some(last)) = (&first, &last) {
             if key == "all" {
-                first.clone()
+                *first
             } else {
                 canonical_time(
-                    parse_time(last)? - Duration::days(key.parse::<i64>().expect("range days")),
+                    parse_time(*last)? - Duration::days(key.parse::<i64>().expect("range days")),
                 )
             }
         } else {
-            String::new()
+            0
         };
         baselines.push(RangeBaseline {
             key,
@@ -545,7 +567,7 @@ fn calculate_states(
             fallback_equity: None,
         });
     }
-    crate::fact_observation::scan(connection, account_id, "", |item| {
+    crate::fact_observation::scan(connection, account_id, i64::MIN, |item| {
         for baseline in &mut baselines {
             baseline.push(&item);
         }
@@ -591,11 +613,11 @@ fn calculate_states(
             in_fallback: false,
         });
     }
-    if let Some(start) = states.iter().map(|state| state.start.clone()).min() {
-        scan(connection, account_id, &start, |item| {
-            let time = canonical_time(parse_time(&item.time)?);
+    if let Some(start) = states.iter().map(|state| state.start).min() {
+        scan(connection, account_id, start, |item| {
+            let time = item.time;
             for state in &mut states {
-                state.push(item, &time, include_backtest)?;
+                state.push(item, time, include_backtest)?;
             }
             Ok(())
         })?;
@@ -609,11 +631,15 @@ pub(crate) mod incremental;
 mod tests {
     use super::*;
 
+    fn test_time(value: &str) -> i64 {
+        crate::time_us::boundary(value).unwrap()
+    }
+
     fn fixture() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
@@ -641,8 +667,8 @@ mod tests {
     ) {
         connection
             .execute(
-                "INSERT INTO executerecord(id,account_id,execution_id,created_at,execution_kind,input_id,result_input_id,facts_complete) VALUES(?1,1,?2,?3,NULL,?4,NULL,1)",
-                params![id, format!("execution-{id}"), time, id.to_string()],
+                "INSERT INTO executerecord(id,account_id,execution_id,created_at_us,execution_kind,input_id,result_input_id,facts_complete) VALUES(?1,1,?2,?3,NULL,?4,NULL,1)",
+                params![id, format!("execution-{id}"), test_time(time), id.to_string()],
             )
             .unwrap();
         connection
@@ -690,6 +716,32 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn baseline_date_keeps_shanghai_day_while_observation_is_utc() {
+        let base = Sample {
+            time: crate::time_us::parse("2026-01-02T00:30:00+08:00").unwrap(),
+            id: 1,
+            execution_id: None,
+            asset: Some(100.0),
+        };
+        let points = merge_daily(
+            Some(&base),
+            &BTreeMap::new(),
+            None,
+            None,
+            None,
+            None,
+            &BTreeSet::new(),
+            None,
+        )
+        .unwrap();
+        assert!(points[0].date.starts_with("2026-01-02T00:30:00"));
+        assert_eq!(
+            serde_json::to_value(&points[0]).unwrap()["observed_at"],
+            "2026-01-01T16:30:00.000000Z"
+        );
     }
 
     #[test]
@@ -847,8 +899,8 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE account (id INTEGER PRIMARY KEY,trade_channel TEXT NOT NULL);
              INSERT INTO account VALUES (1,'ctp');
-             CREATE TABLE portfolioaccount (id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at TEXT);
-             INSERT INTO portfolioaccount VALUES (1,1,3,'2026-01-01T01:00:00Z');
+             CREATE TABLE portfolioaccount (id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at_us INTEGER);
+             INSERT INTO portfolioaccount VALUES (1,1,3,1767229200000000);
              CREATE TABLE analysis_calendar_day (channel TEXT,day TEXT,status TEXT,calendar_id TEXT,label TEXT,PRIMARY KEY(channel,day));
              INSERT INTO analysis_calendar_day VALUES ('ctp','2026-01-01','available_closed','china','中国');"
         ).unwrap();
@@ -869,7 +921,7 @@ mod tests {
         );
         assert_eq!(
             actual["bindings"],
-            json!([{"time":"2026-01-01T09:00:00","portfolio_id":3}])
+            json!([{"time":"2026-01-01T01:00:00.000000Z","portfolio_id":3}])
         );
         assert_eq!(
             calculate(&connection, true)["all"]["calendar"]["status"],
@@ -920,7 +972,7 @@ mod tests {
         let result = calculate(&connection, true);
         assert_eq!(result["all"]["record_count"], 3);
         assert_eq!(result["all"]["observation_count"], 1);
-        assert_eq!(result["all"]["baseline"], "2026-01-02T10:00:00");
+        assert_eq!(result["all"]["baseline"], "2026-01-02T02:00:00.000000Z");
         assert_eq!(result["all"]["points"][0]["record_id"], 3);
     }
 
@@ -995,10 +1047,10 @@ mod tests {
             Some(13.0),
         );
         let result = calculate(&connection, true);
-        assert_eq!(result["30"]["baseline"], "2026-01-10T10:00:00");
+        assert_eq!(result["30"]["baseline"], "2026-01-10T02:00:00.000000Z");
         assert_eq!(result["30"]["observation_count"], 3);
         assert_eq!(result["30"]["skips"]["missing_ticks"], 1);
-        assert_eq!(result["all"]["baseline"], "2026-01-01T10:00:00");
+        assert_eq!(result["all"]["baseline"], "2026-01-01T02:00:00.000000Z");
     }
 
     #[test]
@@ -1033,7 +1085,7 @@ mod tests {
         let last = full["all"]["points"].as_array().unwrap().last().unwrap();
         assert_eq!(last["record_id"], 2);
         assert_eq!(last["account_equity"], 110.0);
-        assert_eq!(full["all"]["end"], "2026-01-02T18:00:00");
+        assert_eq!(full["all"]["end"], "2026-01-02T10:00:00.000000Z");
         assert_eq!(quick["all"]["points"][2]["record_id"], 2);
         assert!(quick["all"]["points"][2]["portfolio_return"].is_null());
         assert!(quick["all"]["skips"].is_null());
@@ -1097,7 +1149,7 @@ mod tests {
         );
         let result = calculate(&connection, true);
         assert_eq!(result["all"]["observation_count"], 2);
-        assert_eq!(result["all"]["baseline"], "2026-01-01T10:00:00.000001");
+        assert_eq!(result["all"]["baseline"], "2026-01-01T02:00:00.000001Z");
         assert_eq!(result["all"]["skips"]["missing_target"], 2);
         assert_eq!(result["all"]["points"][2]["account_equity"], 110.0);
         assert!(result["all"]["points"][2]["portfolio_return"].is_null());

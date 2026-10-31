@@ -12,6 +12,7 @@ from threading import Barrier
 import pytest
 
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
+from tests.sqlite_oracle import to_us
 from tests.unit.server._business_analysis_support import sized_record as record
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
@@ -240,8 +241,8 @@ def test_analysis_can_repeat_after_stale_source_and_failed_commit(database: Path
 
     first = native_store_call(database, "analysis_update", request("first"))
     assert first["updated"]
-    assert _sql(database, "SELECT range_key,last_time FROM analysis_state ORDER BY range_key") == [
-        [key, item.created_at + ".000000"] for key in ("30", "90", "all")
+    assert _sql(database, "SELECT range_key,last_time_us FROM analysis_state ORDER BY range_key") == [
+        [key, to_us(item.created_at)] for key in ("30", "90", "all")
     ]
     stale = request("stale")
     _sql(database, "UPDATE account_analysis SET source_version=source_version+1 WHERE account_id=1")

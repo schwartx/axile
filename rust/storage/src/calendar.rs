@@ -3,7 +3,7 @@
 //! Calendar providers remain with Python's channel registry. Rust reads their
 //! frozen per-day decisions and never calls back across the process boundary.
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime};
 use rusqlite::{functions::FunctionFlags, params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
@@ -27,24 +27,13 @@ pub(crate) fn local_time(value: &str) -> Result<NaiveDateTime, String> {
 }
 
 pub(crate) fn canonical_time(value: &str) -> Result<String, String> {
-    Ok(local_time(value)?.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
-}
-
-pub(crate) fn canonical_boundary(value: &str) -> Result<String, String> {
-    match value.len() {
-        4 => canonical_time(&format!("{value}-01-01")),
-        7 => canonical_time(&format!("{value}-01")),
-        _ => canonical_time(value),
-    }
+    Ok(local_time(value)?
+        .format("%Y-%m-%dT%H:%M:%S%.6f")
+        .to_string())
 }
 
 pub(crate) fn timestamp_micros(value: NaiveDateTime) -> i64 {
     value.and_utc().timestamp_micros() - 28_800_000_000
-}
-
-pub(crate) fn timestamp_ms(value: &str) -> Result<f64, String> {
-    // Preserve Python's floating seconds before multiplying, including at SQL boundaries.
-    Ok(timestamp_micros(local_time(value)?) as f64 / 1_000_000.0 * 1000.0)
 }
 
 pub(crate) fn register_time_function(connection: &Connection) -> rusqlite::Result<()> {
@@ -61,14 +50,6 @@ pub(crate) fn register_time_function(connection: &Connection) -> rusqlite::Resul
             })
         },
     )
-}
-
-pub(crate) fn display_time(value: NaiveDateTime) -> String {
-    if value.nanosecond() == 0 {
-        value.format("%Y-%m-%dT%H:%M:%S").to_string()
-    } else {
-        value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
-    }
 }
 
 fn empty_calendar(status: &str) -> Value {
@@ -175,7 +156,7 @@ fn read_bindings(
 ) -> Result<Vec<Value>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT created_at,portfolio_id FROM portfolioaccount WHERE account_id=?1 ORDER BY id",
+            "SELECT created_at_us,portfolio_id FROM portfolioaccount WHERE account_id=?1 ORDER BY id",
         )
         .map_err(|error| error.to_string())?;
     let mut rows = statement
@@ -183,7 +164,9 @@ fn read_bindings(
         .map_err(|error| error.to_string())?;
     let mut selected = Vec::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let when = local_time(&row.get::<_, String>(0).map_err(|error| error.to_string())?)?;
+        let when = crate::time_us::local_datetime(
+            row.get::<_, i64>(0).map_err(|error| error.to_string())?,
+        )?;
         if start <= when && when <= end {
             let portfolio_id: Option<i64> = row.get(1).map_err(|error| error.to_string())?;
             selected.push((when, portfolio_id));
@@ -193,8 +176,8 @@ fn read_bindings(
     selected.sort_by_key(|(when, _)| *when);
     Ok(selected
         .into_iter()
-        .map(|(when, portfolio_id)| json!({"time":display_time(when),"portfolio_id":portfolio_id}))
-        .collect())
+        .map(|(when, portfolio_id)| Ok(json!({"time":crate::time_us::format(timestamp_micros(when))?,"portfolio_id":portfolio_id})))
+        .collect::<Result<Vec<_>,String>>()?)
 }
 
 /// Complete a computed range without decoding it in Python.
@@ -238,9 +221,15 @@ mod tests {
 
     #[test]
     fn query_boundaries_keep_main_date_prefixes_without_relaxing_source_times() {
-        assert_eq!(canonical_boundary("2099").unwrap(), "2099-01-01T00:00:00.000000");
-        assert_eq!(canonical_boundary("2026-02").unwrap(), "2026-02-01T00:00:00.000000");
-        assert!(canonical_boundary("2026-13").is_err());
+        assert_eq!(
+            crate::time_us::boundary("2099").unwrap(),
+            crate::time_us::boundary("2099-01-01").unwrap()
+        );
+        assert_eq!(
+            crate::time_us::boundary("2026-02").unwrap(),
+            crate::time_us::boundary("2026-02-01").unwrap()
+        );
+        assert!(crate::time_us::boundary("2026-13").is_err());
         assert!(canonical_time("2099").is_err());
     }
 
@@ -254,14 +243,27 @@ mod tests {
             "2026-01-01T01:00:00.000006Z",
             "2026-01-01 09:00:00.000006",
         ] {
-            assert_eq!(timestamp_ms(value).unwrap(), 1767229200000.0059);
-            assert_eq!(connection.query_row("SELECT axile_time(?1)", [value],
-                |row| row.get::<_, String>(0)).unwrap(), "2026-01-01T09:00:00.000006");
+            assert_eq!(crate::time_us::boundary(value).unwrap(), 1767229200000006);
+            assert_eq!(
+                connection
+                    .query_row("SELECT axile_time(?1)", [value], |row| row
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "2026-01-01T09:00:00.000006"
+            );
         }
-        assert_eq!(timestamp_ms("2026-01-01").unwrap(), timestamp_ms("2026-01-01T00:00:00+08:00").unwrap());
-        assert_eq!(canonical_time("2026-01-01 09:00").unwrap(), "2026-01-01T09:00:00.000000");
-        assert!(connection.query_row("SELECT axile_time('invalid')", [],
-            |row| row.get::<_, String>(0)).is_err());
+        assert_eq!(
+            crate::time_us::boundary("2026-01-01").unwrap(),
+            crate::time_us::boundary("2026-01-01T00:00:00+08:00").unwrap()
+        );
+        assert_eq!(
+            canonical_time("2026-01-01 09:00").unwrap(),
+            "2026-01-01T09:00:00.000000"
+        );
+        assert!(connection
+            .query_row("SELECT axile_time('invalid')", [], |row| row
+                .get::<_, String>(0))
+            .is_err());
     }
 
     fn fixture() -> Connection {
@@ -271,7 +273,7 @@ mod tests {
                 "CREATE TABLE account (id INTEGER PRIMARY KEY,trade_channel TEXT NOT NULL);
              INSERT INTO account VALUES (1,'ctp');
              CREATE TABLE portfolioaccount (id INTEGER PRIMARY KEY,account_id INTEGER,
-                 portfolio_id INTEGER,created_at TEXT NOT NULL);
+                 portfolio_id INTEGER,created_at_us INTEGER NOT NULL);
              CREATE TABLE analysis_calendar_day (channel TEXT NOT NULL,day TEXT NOT NULL,
                  status TEXT NOT NULL,calendar_id TEXT,label TEXT,PRIMARY KEY(channel,day));",
             )
@@ -307,10 +309,10 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO portfolioaccount VALUES
-             (1,1,5,'2026-01-02T01:00:00Z'),
-             (2,1,NULL,'2026-01-01T10:00:00'),
-             (3,1,7,'2026-01-02T09:00:00+08:00'),
-             (4,1,9,'2026-01-02T09:00:00.000001');",
+             (1,1,5,1767315600000000),
+             (2,1,NULL,1767232800000000),
+             (3,1,7,1767315600000000),
+             (4,1,9,1767315600000001);",
             )
             .unwrap();
         let mut performance = json!({"baseline":"2026-01-01T10:00:00","end":"2026-01-02T09:00:00"});
@@ -318,9 +320,9 @@ mod tests {
         assert_eq!(
             performance["bindings"],
             json!([
-            {"time":"2026-01-01T10:00:00","portfolio_id":null},
-            {"time":"2026-01-02T09:00:00","portfolio_id":5},
-            {"time":"2026-01-02T09:00:00","portfolio_id":7}])
+            {"time":"2026-01-01T02:00:00.000000Z","portfolio_id":null},
+            {"time":"2026-01-02T01:00:00.000000Z","portfolio_id":5},
+            {"time":"2026-01-02T01:00:00.000000Z","portfolio_id":7}])
         );
         assert_eq!(performance["calendar"]["status"], "unavailable");
     }

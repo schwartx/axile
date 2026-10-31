@@ -26,6 +26,7 @@ from axile.server.db.models import Account
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._native_read_views import account_view
+from tests.unit.server._runtime_db_support import to_us
 
 
 @pytest.fixture(autouse=True)
@@ -131,8 +132,8 @@ def account_client(native_database, monkeypatch):
     monkeypatch.setattr(account_crud_routes, "drop_account_worker", AsyncMock())
     with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
-            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES(1,?,?,?,?,?)",
-            ("组合", "期货", "def calculate_portfolio(context): return {}", "2026-10-23", "2026-10-23"),
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) VALUES(1,?,?,?,?,?)",
+            ("组合", "期货", "def calculate_portfolio(context): return {}", to_us("2026-10-23"), to_us("2026-10-23")),
         )
     with TestClient(_build_app()) as client:
         yield client, native_database
@@ -154,8 +155,7 @@ def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_cli
     for sync_status in ("pending", "synchronized", "failed"):
         with closing(oracle_connect(database)) as connection, connection:
             connection.execute(
-                "UPDATE accountruntimesync SET status=?,revision=?,attempts=3,last_error=?,"
-                "last_attempt_at='2026-10-24T09:00:00',create_request_key='private' WHERE account_id=1",
+                "UPDATE accountruntimesync SET status=?,revision=?,attempts=3,last_error=?,last_attempt_at_us=1792832400000000,create_request_key='private' WHERE account_id=1",
                 (sync_status, 2**63 - 1, "等待核对"),
             )
         response = client.get("/account/1/runtime-sync")
@@ -165,7 +165,7 @@ def test_runtime_sync_get_keeps_public_projection_and_missing_states(account_cli
             "revision": 2**63 - 1,
             "attempts": 3,
             "last_error": "等待核对",
-            "last_attempt_at": "2026-10-24T09:00:00",
+            "last_attempt_at": "2026-10-24T09:00:00.000000Z",
             "synchronized_at": None,
         }
     with closing(oracle_connect(database)) as connection, connection:
@@ -650,17 +650,17 @@ def test_copy_preserves_config_and_starts_without_source_history(account_client)
     source = _seed_account(database, is_started=False, feishu_key="server-only-webhook")
     with closing(oracle_connect(database)) as connection, connection:
         connection.execute(
-            "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,facts_complete,"
-            "audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) "
-            "VALUES(1,'old',1,'2026-10-22',0,'{}','{}','absent','absent','absent')"
+            "INSERT INTO executerecord(account_id,execution_id,is_success,created_at_us,facts_complete,audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) VALUES(1,'old',1,1792627200000000,0,'{}','{}','absent','absent','absent')"
         )
         connection.execute(
-            "INSERT INTO account_notification_state(account_id,last_success_at,execution_id) VALUES(1,'old','old')"
+            "INSERT INTO account_notification_state(account_id,last_success_at_us,execution_id) VALUES(1,1792627200000000,'old')"
         )
         connection.execute(
-            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(1,NULL,'2026-10-22')"
+            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(1,NULL,1792627200000000)"
         )
-        connection.execute("INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(1,1,'2026-10-23')")
+        connection.execute(
+            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(1,1,1792713600000000)"
+        )
     response = client.post("/account/1/copy", json={"name": "  新账户  "})
     assert response.status_code == 201, response.text
     assert "server-only-webhook" not in response.text
@@ -838,20 +838,20 @@ def test_native_delete_cleans_owned_state_atomically(native_database, reject_del
                 (ident,),
             )
             connection.execute(
-                "INSERT INTO accountruntimesyncattempt(account_id,revision,succeeded,attempted_at) VALUES(?,1,0,'2026-10-23T09:30:00')",
+                "INSERT INTO accountruntimesyncattempt(account_id,revision,succeeded,attempted_at_us) VALUES(?,1,0,1792747800000000)",
                 (ident,),
             )
             connection.execute("INSERT INTO order_submission_monitor(account_id,data) VALUES(?,'{}')", (ident,))
             connection.execute(
-                "INSERT INTO order_submission(submission_uid,account_id,occurred_at_ms,revision,data) VALUES(?,?,1,1,'{}')",
+                "INSERT INTO order_submission(submission_uid,account_id,occurred_at_us,revision,data) VALUES(?,?,1000,1,'{}')",
                 (f"o{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO order_submission_warning(event_uid,account_id,occurred_at_ms,data) VALUES(?,?,1,'{}')",
+                "INSERT INTO order_submission_warning(event_uid,account_id,occurred_at_us,data) VALUES(?,?,1000,'{}')",
                 (f"w{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO account_control_event(account_id,control_date,execution_id,seq,channel,operation,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms) VALUES(?,'day',?,1,'ctp','submit','{}','allow',1,'ok',?,'2026-10-23T09:30:00',1)",
+                "INSERT INTO account_control_event(account_id,control_date,execution_id,seq,channel,operation,metadata,decision,counted,outcome,event_uid,created_at_us,occurred_at_us) VALUES(?,'day',?,1,'ctp','submit','{}','allow',1,'ok',?,1792747800000000,1000)",
                 (ident, f"e{ident}", f"c{ident}"),
             )
             connection.execute(
@@ -859,43 +859,43 @@ def test_native_delete_cleans_owned_state_atomically(native_database, reject_del
                 (ident, f"e{ident}", f"d{ident}"),
             )
             connection.execute(
-                "INSERT INTO schedule_skip(account_id,channel,triggered_at,calendar_id,calendar_day,calendar_label,reason_code) VALUES(?,'ctp','2026-10-23T09:30:00','test','day','test','test')",
+                "INSERT INTO schedule_skip(account_id,channel,triggered_at_us,calendar_id,calendar_day,calendar_label,reason_code) VALUES(?,'ctp',1792747800000000,'test','day','test','test')",
                 (ident,),
             )
             connection.execute(
-                "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at,expires_at,configured_count,effective_count,status) VALUES(?,?,'key','2026-10-23T09:30:00','2026-10-23T10:30:00',1,1,'active')",
+                "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at_us,expires_at_us,configured_count,effective_count,status) VALUES(?,?,'key',1792747800000000,1792751400000000,1,1,'active')",
                 (f"g{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at,status) VALUES(?,?,0,'2026-10-23T09:30:00','pending')",
+                "INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at_us,status) VALUES(?,?,0,1792747800000000,'pending')",
                 (f"s{ident}", f"g{ident}"),
             )
             connection.execute(
-                "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) VALUES(?,?,'2026-10-23T09:30:00','execution.finished',?,'pending')",
+                "INSERT INTO notification_event(id,account_id,created_at_us,event_type,context,status) VALUES(?,?,1792747800000000,'execution.finished',?,'pending')",
                 (f"n{ident}", ident, '{"sentinel": ' + str(ident) + "}"),
             )
             connection.execute(
-                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at) VALUES(?,?,'REBALANCE','manual','QUEUED','{}','2026-10-23T09:30:00')",
+                "INSERT INTO execution_intent(execution_id,account_id,kind,trigger_source,status,payload,created_at_us) VALUES(?,?,'REBALANCE','manual','QUEUED','{}',1792747800000000)",
                 (f"e{ident}", ident),
             )
             connection.execute(
-                "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,facts_complete,audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) VALUES(?,?,1,'2026-10-23T09:30:00',0,'{}','{}','absent','absent','absent')",
+                "INSERT INTO executerecord(account_id,execution_id,is_success,created_at_us,facts_complete,audit_evidence,termination_evidence,result_input_kind,termination_kind,termination_cancel_ids_kind) VALUES(?,?,1,1792747800000000,0,'{}','{}','absent','absent','absent')",
                 (ident, f"e{ident}"),
             )
             connection.execute(
-                "INSERT INTO account_asset_snapshot(account_id,source,created_at) VALUES(?,'manual','2026-10-23T09:30:00')",
+                "INSERT INTO account_asset_snapshot(account_id,source,created_at_us) VALUES(?,'manual',1792747800000000)",
                 (ident,),
             )
             connection.execute(
-                "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES(?,?,?,'unknown','unknown','Asia/Shanghai',1,'active')",
+                "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_us,status) VALUES(?,?,?,'unknown','unknown','Asia/Shanghai',1000,'active')",
                 (f"i{ident}", ident, f"e{ident}"),
             )
             connection.execute(
-                "INSERT INTO execution_event(account_id,execution_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,ts_local_created,ts_persisted,seq,details) VALUES(?,?,'ctp','SINGLE-MAKER',1,?,'ORDER_SUBMITTED','INFO','SYSTEM','TEST','2026-10-23T09:30:00','2026-10-23T09:30:00',0,'{}')",
+                "INSERT INTO execution_event(account_id,execution_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,ts_local_created_us,ts_persisted_us,seq,details) VALUES(?,?,'ctp','SINGLE-MAKER',1,?,'ORDER_SUBMITTED','INFO','SYSTEM','TEST',1792747800000000,1792747800000000,0,'{}')",
                 (ident, f"e{ident}", f"event{ident}"),
             )
             connection.execute(
-                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES(?,'TARGET_SNAPSHOT',1,?,'2026-10-23T09:30:00')",
+                "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at_us) VALUES(?,'TARGET_SNAPSHOT',1,?,1792747800000000)",
                 (f"e{ident}", '{"sentinel": ' + str(ident) + "}"),
             )
     expected = {

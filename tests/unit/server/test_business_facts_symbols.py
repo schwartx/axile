@@ -164,7 +164,11 @@ def test_roundtrip_keeps_every_sizing_and_five_level_tick_field(native_database)
     payload = {"symbol_results": {"A": {"sizing": native["sizing"], "first_tick": native["first_tick"]}}}
 
     assert business_evidence(_roundtrip(native_database, payload)) == business_evidence(payload)
-    assert set(native["first_tick"]) <= rows(native_database, "execution_symbol_tick")[0].keys()
+    tick_columns = {
+        f"{name}_us" if name in {"timestamp", "timestamp_datetime", "update_time"} else name
+        for name in native["first_tick"]
+    }
+    assert tick_columns <= rows(native_database, "execution_symbol_tick")[0].keys()
     assert (
         set(native["sizing"]).difference({"value_conversion"})
         <= rows(native_database, "execution_symbol_sizing")[0].keys()

@@ -24,6 +24,7 @@ from tests.unit.server._business_facts_test_support import (
     sql,
 )
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._runtime_db_support import to_us, utc_time
 
 
 @pytest.fixture
@@ -337,8 +338,10 @@ def test_execution_asset_history_reuses_valid_canonical_root(database, input_own
         assert snapshot.asset_fact_id == reference
         assert snapshot.source == "execution"
         assert snapshot.execution_id == execution_id
-        assert snapshot.created_at == created_at
+        assert snapshot.created_at_us == to_us(created_at)
+        assert isinstance(snapshot.created_at_us, int)
         page = json.loads(_core.asset_snapshots(_core.Store(str(database)), 1, 0, 100))
+        assert page["data"][0]["created_at"] == utc_time(created_at)
         assert business_evidence({row["id"]: row["assets"] for row in page["data"]}) == business_evidence(
             {snapshot.id: payload["account_assets"]}
         )

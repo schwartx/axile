@@ -29,6 +29,10 @@ fn number(row: &Value, field: &str) -> Result<i64, AnalysisError> {
         .ok_or_else(|| invalid(field))
 }
 
+fn micros(row: &Value, field: &str) -> Result<i64, AnalysisError> {
+    crate::time_us::from_millis(number(row, field)?).map_err(|_| invalid(field))
+}
+
 fn optional_text<'a>(row: &'a Value, field: &str) -> Result<Option<&'a str>, AnalysisError> {
     match row.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -103,10 +107,10 @@ pub(crate) fn load_baseline_on(
         .map_err(sql)?;
     let mut statement = connection
         .prepare(
-            "SELECT operation,NULL,MAX(occurred_at_ms) FROM account_control_event
+            "SELECT operation,NULL,MAX(occurred_at_us) FROM account_control_event
              WHERE account_id=?1 AND decision='ALLOWED' AND counted=1 GROUP BY operation
              UNION ALL
-             SELECT operation,symbol,MAX(occurred_at_ms) FROM account_control_event
+             SELECT operation,symbol,MAX(occurred_at_us) FROM account_control_event
              WHERE account_id=?1 AND decision='ALLOWED' AND counted=1 AND symbol IS NOT NULL
              GROUP BY symbol,operation",
         )
@@ -116,7 +120,7 @@ pub(crate) fn load_baseline_on(
             Ok(json!({
                 "operation": row.get::<_, String>(0)?,
                 "symbol": row.get::<_, Option<String>>(1)?,
-                "occurred_at_ms": row.get::<_, i64>(2)?,
+                "occurred_at_ms": row.get::<_, i64>(2)?.div_euclid(1_000),
             }))
         })
         .map_err(sql)?
@@ -138,15 +142,15 @@ pub(crate) fn incomplete_history_on(
         .prepare(
             "SELECT instance_id,context_kind,execution_id,source,status
              FROM account_control_session
-             WHERE account_id=?1 AND status IN ('active','incomplete') AND started_at_ms<?2
-               AND (finished_at_ms IS NULL OR finished_at_ms>=?3)",
+             WHERE account_id=?1 AND status IN ('active','incomplete') AND started_at_us<?2
+               AND (finished_at_us IS NULL OR finished_at_us>=?3)",
         )
         .map_err(sql)?;
     let mut rows = statement
         .query(params![
             number(request, "account_id")?,
-            number(request, "end_ms")?,
-            number(request, "start_ms")?
+            micros(request, "end_ms")?,
+            micros(request, "start_ms")?
         ])
         .map_err(sql)?;
     while let Some(row) = rows.next().map_err(sql)? {
@@ -178,12 +182,12 @@ pub fn register_session(path: &str, request: &Value) -> Result<Value, AnalysisEr
         connection
             .execute(
                 "INSERT INTO account_control_session
-                 (instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status)
+                 (instance_id,account_id,execution_id,context_kind,source,timezone,started_at_us,status)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,'active')",
                 params![
                     text(request, "instance_id")?, number(request, "account_id")?,
                     text(request, "execution_id")?, text(request, "context_kind")?,
-                    text(request, "source")?, text(request, "timezone")?, number(request, "started_at_ms")?,
+                    text(request, "source")?, text(request, "timezone")?, micros(request, "started_at_ms")?,
                 ],
             )
             .map_err(sql)?;
@@ -266,7 +270,7 @@ fn flush_records_on(connection: &Connection, request: &Value) -> Result<Value, A
     }
     let mut event_statement = connection.prepare(
         "INSERT INTO account_control_event
-         (account_id,execution_id,context_kind,source,control_date,seq,channel,operation,symbol,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms)
+         (account_id,execution_id,context_kind,source,control_date,seq,channel,operation,symbol,metadata,decision,counted,outcome,event_uid,created_at_us,occurred_at_us)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(event_uid) DO NOTHING",
     ).map_err(sql)?;
     for row in array(request, "events")? {
@@ -301,8 +305,9 @@ fn flush_records_on(connection: &Connection, request: &Value) -> Result<Value, A
                 counted,
                 text(row, "outcome")?,
                 text(row, "event_uid")?,
-                text(row, "created_at")?,
-                number(row, "occurred_at_ms")?,
+                crate::time_us::parse(text(row, "created_at")?)
+                    .map_err(|_| invalid("created_at"))?,
+                micros(row, "occurred_at_ms")?,
             ])
             .map_err(sql)?;
     }
@@ -311,8 +316,8 @@ fn flush_records_on(connection: &Connection, request: &Value) -> Result<Value, A
         .filter(|value| !value.is_null())
     {
         connection.execute(
-            "UPDATE account_control_session SET status='closed',finished_at_ms=?1 WHERE instance_id=?2",
-            params![number(session,"finished_at_ms")?, text(session,"instance_id")?],
+            "UPDATE account_control_session SET status='closed',finished_at_us=?1 WHERE instance_id=?2",
+            params![micros(session,"finished_at_ms")?, text(session,"instance_id")?],
         ).map_err(sql)?;
     }
     Ok(Value::Null)

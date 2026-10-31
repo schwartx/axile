@@ -15,6 +15,7 @@ from axile.server.execution import input_persistence, records
 from axile.server.execution.worker_backend import worker_audit
 from scripts.business_facts_contract import business_evidence
 from tests.unit.server._execution_test_support import build_account
+from tests.unit.server._runtime_db_support import runtime_rows, to_us
 
 
 def test_pre_order_commit_hands_full_request_to_native_freeze(monkeypatch):
@@ -126,6 +127,12 @@ def test_terminal_facts_use_durable_input_and_commit_once(native_database, monke
         )
     )
     assert receipt_record(record)["input_id"] == "durable-normalized-input"
+    [(storage_kind, created_at_us)] = runtime_rows(
+        native_database,
+        "SELECT typeof(created_at_us),created_at_us FROM executerecord WHERE execution_id='terminal'",
+    )
+    assert storage_kind == "integer"
+    assert created_at_us == to_us("2026-10-28T10:00:00")
     native.assert_awaited_once()
     command, request = native.await_args.args
     assert command == "persist_execution_state"

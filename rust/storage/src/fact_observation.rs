@@ -17,7 +17,7 @@ pub(crate) struct ObservationReader<'a> {
 impl<'a> ObservationReader<'a> {
     pub(crate) fn new(connection: &'a Connection) -> rusqlite::Result<Self> {
         Ok(Self {
-            header: connection.prepare("SELECT e.execution_id,e.created_at,e.execution_kind,i.id,i.curr_target_state FROM executerecord e LEFT JOIN execution_input i ON i.id=e.input_id AND i.account_id=e.account_id WHERE e.id=?1 AND e.account_id=?2")?,
+            header: connection.prepare("SELECT e.execution_id,e.created_at_us,e.execution_kind,i.id,i.curr_target_state FROM executerecord e LEFT JOIN execution_input i ON i.id=e.input_id AND i.account_id=e.account_id WHERE e.id=?1 AND e.account_id=?2")?,
             target: connection.prepare("SELECT map_key,value FROM execution_input_target WHERE input_id=?1 AND role='curr_target' ORDER BY map_key")?,
             snapshot: connection.prepare("SELECT id,normalized_weights_kind FROM target_weight_snapshot WHERE account_id=?1 AND execution_id=?2 ORDER BY id DESC LIMIT 1")?,
             snapshot_weights: connection.prepare("SELECT map_key,value FROM target_weight_snapshot_weight WHERE snapshot_id=?1 AND role='normalized_weights' ORDER BY map_key")?,
@@ -33,7 +33,7 @@ impl<'a> ObservationReader<'a> {
             .query_row(params![record, account], |row| {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
@@ -92,9 +92,7 @@ impl<'a> ObservationReader<'a> {
         Ok(Observation {
             id: record,
             execution_id,
-            time: crate::calendar::local_time(&created_at)?
-                .format("%Y-%m-%dT%H:%M:%S%.6f")
-                .to_string(),
+            time: created_at,
             asset: asset.filter(|value| value.is_finite()),
             target,
             target_weight,
@@ -116,13 +114,13 @@ impl<'a> ObservationReader<'a> {
 pub(crate) fn scan(
     connection: &Connection,
     account: i64,
-    start: &str,
+    start: i64,
     mut consume: impl FnMut(Observation) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
             "WITH times AS MATERIALIZED (
-                 SELECT id,axile_time(created_at) AS time FROM executerecord WHERE account_id=?1 AND result_staged=0
+                 SELECT id,created_at_us AS time FROM executerecord WHERE account_id=?1 AND result_staged=0
              ) SELECT max(id) FROM times WHERE time>=?2 GROUP BY time ORDER BY time",
         )
         .map_err(|error| error.to_string())?;
@@ -168,7 +166,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         crate::calendar::register_time_function(&connection).unwrap();
         connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT,execution_kind TEXT,input_id TEXT,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at_us INTEGER,execution_kind TEXT,input_id TEXT,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_input(id TEXT,account_id INTEGER,curr_target_state TEXT);
              CREATE TABLE execution_input_target(input_id TEXT,role TEXT,map_key TEXT,value REAL);
              CREATE TABLE target_weight_snapshot(id INTEGER,account_id INTEGER,execution_id TEXT,normalized_weights_kind TEXT);
@@ -179,7 +177,7 @@ mod tests {
              CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,sizing_mode TEXT,status TEXT,target_quantity REAL,equity REAL,unit_notional REAL,reference_price REAL,unit_multiplier REAL,conversion_recorded INTEGER);
              CREATE TABLE execution_symbol_conversion(record_id INTEGER,path TEXT,rate REAL);
-             INSERT INTO executerecord(id,account_id,execution_id,created_at,execution_kind,input_id) VALUES(1,7,'one','2026-01-01T09:00:00','clear_positions',NULL),(2,7,'two','2026-01-02T09:00:00','clear_positions',NULL);
+             INSERT INTO executerecord(id,account_id,execution_id,created_at_us,execution_kind,input_id) VALUES(1,7,'one',1767229200000000,'clear_positions',NULL),(2,7,'two',1767315600000000,'clear_positions',NULL);
              INSERT INTO business_asset_binding VALUES(1,'/account_assets','a'),(2,'/account_assets','b');
              INSERT INTO business_asset_snapshot VALUES('a',1000,1),('b',1100,1);"
         ).unwrap();

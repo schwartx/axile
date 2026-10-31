@@ -223,8 +223,8 @@ def test_native_portfolio_patch_rejects_null_required_fields_without_writes(nati
                 "name": "组合",
                 "market": "期货",
                 "custom_calc_py_code": CODE,
-                "created_at": "before",
-                "updated_at": "before",
+                "created_at": "2026-10-23T09:00:00.000000Z",
+                "updated_at": "2026-10-23T09:00:00.000000Z",
             },
         },
     )
@@ -237,7 +237,7 @@ def test_native_portfolio_patch_rejects_null_required_fields_without_writes(nati
                 "op": "update",
                 "portfolio_id": identity,
                 "changes": {field: None, "description": "不可写入"},
-                "updated_at": "after",
+                "updated_at": "2026-10-23T10:00:00.000000Z",
             },
         )
     assert caught.value.args[0] == "VALIDATION"

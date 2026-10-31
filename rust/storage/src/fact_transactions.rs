@@ -60,18 +60,54 @@ impl<'a> TransactionReader<'a> {
             let time = trades
                 .iter()
                 .map(|trade| trade.time)
-                .fold(f64::INFINITY, f64::min);
+                .min()
+                .expect("nonempty trade group");
             let end = trades
                 .iter()
                 .map(|trade| trade.time)
-                .fold(f64::NEG_INFINITY, f64::max);
+                .max()
+                .expect("nonempty trade group");
             let mut summary = crate::cost_summary::Summary::empty();
             for trade in &trades {
                 summary.push(trade);
             }
             let (before, target_quantity) = sizing.get(symbol).copied().unwrap_or_default();
-            output.push(serde_json::json!({"symbol":symbol,"side":side,"quantity":quantity,"price":finite(price),"reference":finite(reference),"referenceSource":trades[0].reference_source,"time":time,"endTime":end,"timeEstimated":trades.iter().any(|t|t.estimated),"before":before,"target":target_quantity,"summary":summary.output()}));
+            output.push(serde_json::json!({"symbol":symbol,"side":side,"quantity":quantity,"price":finite(price),"reference":finite(reference),"referenceSource":trades[0].reference_source,"time":time as f64 / 1000.0,"endTime":end as f64 / 1000.0,"timeEstimated":trades.iter().any(|t|t.estimated),"before":before,"target":target_quantity,"summary":summary.output()}));
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_time_bounds_use_exact_microseconds_until_api_output() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE execution_symbol_result(record_id INTEGER,map_key TEXT,path TEXT,ordinal INTEGER);
+            CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,current_quantity REAL,target_quantity REAL);").unwrap();
+        let trade = |time| Trade {
+            symbol: "rb2610".into(),
+            time,
+            day: "1970-01-01".into(),
+            estimated: false,
+            side: "buy".into(),
+            quantity: Some(1.0),
+            price: Some(2.0),
+            reference: None,
+            reference_source: None,
+            value: Some(2.0),
+            cost: None,
+            loss_bp: None,
+            fee: None,
+            fee_currency: None,
+        };
+        let rows = TransactionReader::new(&connection)
+            .unwrap()
+            .read(1, &[trade(1), trade(-1)])
+            .unwrap();
+        assert_eq!(rows[0]["time"], -0.001);
+        assert_eq!(rows[0]["endTime"], 0.001);
     }
 }

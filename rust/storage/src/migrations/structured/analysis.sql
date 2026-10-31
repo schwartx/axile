@@ -5,7 +5,7 @@ CREATE TABLE account_analysis (
 	requested BOOLEAN DEFAULT '0' NOT NULL,
 	running_version INTEGER,
 	failures INTEGER DEFAULT '0' NOT NULL,
-	retry_at FLOAT DEFAULT '0' NOT NULL,
+	retry_at_us INTEGER DEFAULT '0' NOT NULL,
 	error TEXT,
 	running_token TEXT, dirty_record INTEGER,
 	PRIMARY KEY (account_id),

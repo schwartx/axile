@@ -103,25 +103,19 @@ pub(crate) fn advance(
             b.issues = 1;
             balances.insert(b.symbol.clone(), b);
         }
-        s.contribution_time = s
-            .baseline_time
-            .as_deref()
-            .map(crate::calendar::canonical_time)
-            .transpose()
-            .map_err(|e| failure("ANALYSIS_TIME", e))?;
+        s.contribution_time = s.baseline_time;
         s.contribution_day = None;
     }
     let bounded = contributions::FILLS.replace(
-        "ORDER BY axile_time(r.created_at),r.id,t.ordinal",
-        "AND axile_time(r.created_at)<=?3 ORDER BY axile_time(r.created_at),r.id,t.ordinal",
+        "ORDER BY r.created_at_us,r.id,t.ordinal",
+        "AND r.created_at_us<=?3 ORDER BY r.created_at_us,r.id,t.ordinal",
     );
-    let first=contributions::FILLS.replace("axile_time(?2)","?2").replace("ORDER BY axile_time(r.created_at),r.id,t.ordinal","AND COALESCE(NULLIF(t.symbol,''),'[unknown]')=?3 AND t.trade_id=?4 AND COALESCE(json_extract(t.extra,'$.trading_day'),'')=?5 AND COALESCE(json_extract(t.extra,'$.exchange_id'),'')=?6 ORDER BY axile_time(r.created_at),r.id,t.ordinal LIMIT 1");
+    let first=contributions::FILLS.replace("ORDER BY r.created_at_us,r.id,t.ordinal","AND COALESCE(NULLIF(t.symbol,''),'[unknown]')=?3 AND t.trade_id=?4 AND COALESCE(json_extract(t.extra,'$.trading_day'),'')=?5 AND COALESCE(json_extract(t.extra,'$.exchange_id'),'')=?6 ORDER BY r.created_at_us,r.id,t.ordinal LIMIT 1");
     let mut query = source.prepare(&bounded).map_err(sql)?;
     let mut first = source.prepare(&first).map_err(sql)?;
     for point in points {
-        let cutoff = crate::calendar::canonical_time(&point.observed_at)
-            .map_err(|e| failure("ANALYSIS_TIME", e))?;
-        let after = s.contribution_time.clone().unwrap_or_default();
+        let cutoff = point.observed_at;
+        let after = s.contribution_time.unwrap_or(i64::MIN);
         if cutoff < after {
             return Err(failure(
                 "ANALYSIS_ORDER",
@@ -160,8 +154,8 @@ fn apply_fills(
     first: &mut rusqlite::Statement<'_>,
     s: &State,
     balances: &mut BTreeMap<String, Balance>,
-    after: &str,
-    cutoff: &str,
+    after: &i64,
+    cutoff: &i64,
 ) -> Result<(), AnalysisError> {
     let mut fills = query
         .query(params![s.account_id, after, cutoff])
@@ -177,7 +171,14 @@ fn apply_fills(
         {
             let original = first
                 .query_row(
-                    params![s.account_id, "", t.symbol, id, t.trading_day, t.exchange_id],
+                    params![
+                        s.account_id,
+                        i64::MIN,
+                        t.symbol,
+                        id,
+                        t.trading_day,
+                        t.exchange_id
+                    ],
                     |r| {
                         Ok((
                             r.get::<_, i64>(14)?,

@@ -12,7 +12,7 @@ const TRADE_FIELDS: &[(&str, &str)] = &[
     ("trade_id", "identity"),
     ("symbol", "text"),
     ("order_id", "identity"),
-    ("trade_time", "text"),
+    ("trade_time", "time"),
     ("trade_volume", "number"),
     ("trade_price", "number"),
     ("trade_value", "number"),

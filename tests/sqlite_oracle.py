@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from functools import wraps
 
 _CHILD = """
@@ -41,6 +41,18 @@ while True:
 _worker = None
 _worker_pid = None
 _worker_lock = threading.Lock()
+
+
+def to_us(value: str | datetime) -> int:
+    """精确编码测试标量时间，无时区值使用本机时区。"""
+    current = datetime.fromisoformat(value) if isinstance(value, str) else value
+    delta = current.astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+def utc_time(value: str) -> str:
+    """生成公开接口使用的 UTC 微秒字符串。"""
+    return datetime.fromisoformat(value).astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _canonical_time(value):

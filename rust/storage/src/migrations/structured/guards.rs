@@ -218,7 +218,7 @@ fn install_invalidation(connection: &Connection, tables: &Registry) -> Result<()
                 .map(|scope| scope.1.clone())
                 .collect::<Vec<_>>()
                 .join(" UNION ");
-            let body = format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL;");
+            let body = format!(" INSERT INTO account_analysis(account_id,source_version) SELECT id,1 FROM account WHERE id IN ({accounts}) AND 1 ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at_us=0,error=NULL;");
             let condition = if action == "INSERT"
                 && ![
                     "executerecord",
@@ -289,8 +289,7 @@ fn asset_guards(connection: &Connection) -> Result<()> {
     for action in ["INSERT", "UPDATE"] {
         execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}snapshot_asset_owner_{} BEFORE {action} ON account_asset_snapshot WHEN NEW.asset_fact_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'Snapshot asset owner mismatch') WHERE ({}) IS NOT NEW.account_id; END",action.to_lowercase(),owner.replace("NEW.asset_id","NEW.asset_fact_id")))?;
     }
-    let retained="EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id=a.asset_id) OR EXISTS(SELECT 1 FROM execution_artifact WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.asset_id') END=a.asset_id)";
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}record_retain_assets BEFORE DELETE ON executerecord WHEN EXISTS(SELECT 1 FROM account WHERE id=OLD.account_id) BEGIN SELECT RAISE(ABORT,'Referenced asset requires a durable input owner') WHERE OLD.input_id IS NULL AND EXISTS(SELECT 1 FROM business_asset_snapshot AS a WHERE a.record_id=OLD.id AND ({retained})); UPDATE business_asset_snapshot SET record_id=NULL,input_id=OLD.input_id WHERE record_id=OLD.id AND ({}); END",retained.replace("a.","business_asset_snapshot.")))
+    Ok(())
 }
 fn cleanup(connection: &Connection, tables: &Registry) -> Result<()> {
     let deletes = tables
@@ -301,7 +300,10 @@ fn cleanup(connection: &Connection, tables: &Registry) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" ");
     let orphans="DELETE FROM execution_input WHERE id IN (OLD.input_id,OLD.result_input_id) AND NOT EXISTS(SELECT 1 FROM executerecord WHERE input_id=execution_input.id OR result_input_id=execution_input.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.input_id') END=execution_input.id) AND NOT EXISTS(SELECT 1 FROM execution_artifact WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.asset_id') END IN (SELECT asset_id FROM business_asset_snapshot WHERE input_id=execution_input.id)) AND NOT EXISTS(SELECT 1 FROM execution_event WHERE CASE WHEN json_valid(details) THEN json_extract(details,'$.decision.business_facts_ref.input_id') END=execution_input.id) AND NOT EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id IN (SELECT asset_id FROM business_asset_snapshot WHERE input_id=execution_input.id));";
-    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}record_cleanup AFTER DELETE ON executerecord BEGIN {deletes} {orphans} END"))?;
+    let retained="EXISTS(SELECT 1 FROM account_asset_snapshot WHERE asset_fact_id=a.asset_id) OR EXISTS(SELECT 1 FROM execution_artifact WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.business_facts_ref.asset_id') END=a.asset_id)";
+    // RESTRICT is checked before AFTER triggers, so detach bindings before owned assets.
+    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}record_retain_assets BEFORE DELETE ON executerecord BEGIN SELECT RAISE(ABORT,'Referenced asset requires a durable input owner') WHERE EXISTS(SELECT 1 FROM account WHERE id=OLD.account_id) AND OLD.input_id IS NULL AND EXISTS(SELECT 1 FROM business_asset_snapshot AS a WHERE a.record_id=OLD.id AND ({retained})); UPDATE business_asset_snapshot SET record_id=NULL,input_id=OLD.input_id WHERE EXISTS(SELECT 1 FROM account WHERE id=OLD.account_id) AND record_id=OLD.id AND ({}); {deletes} END",retained.replace("a.","business_asset_snapshot.")))?;
+    execute(connection,&format!("CREATE TRIGGER IF NOT EXISTS {PREFIX}record_cleanup AFTER DELETE ON executerecord BEGIN {orphans} END"))?;
     for table in tables {
         for parent in tables {
             if table.name == parent.name {
@@ -408,7 +410,7 @@ pub(super) fn install_analysis(connection: &Connection) -> Result<()> {
                 } else {
                     ""
                 };
-                body.push_str(&format!("INSERT INTO account_analysis(account_id,source_version) SELECT {reference}.account_id,1 WHERE {reference}.account_id IS NOT NULL AND EXISTS(SELECT 1 FROM account WHERE id={reference}.account_id) {changed} ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL;"));
+                body.push_str(&format!("INSERT INTO account_analysis(account_id,source_version) SELECT {reference}.account_id,1 WHERE {reference}.account_id IS NOT NULL AND EXISTS(SELECT 1 FROM account WHERE id={reference}.account_id) {changed} ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at_us=0,error=NULL;"));
             }
             execute(
                 connection,
@@ -419,10 +421,10 @@ pub(super) fn install_analysis(connection: &Connection) -> Result<()> {
             )?;
         }
     }
-    execute(connection,"CREATE TRIGGER analysis_account_settings AFTER UPDATE OF backtest ON account_settings WHEN json_extract(OLD.backtest,'$.backtest_weight_type') IS NOT json_extract(NEW.backtest,'$.backtest_weight_type') OR json_extract(OLD.backtest,'$.backtest_fee_rate') IS NOT json_extract(NEW.backtest,'$.backtest_fee_rate') BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
-        CREATE TRIGGER analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
+    execute(connection,"CREATE TRIGGER analysis_account_settings AFTER UPDATE OF backtest ON account_settings WHEN json_extract(OLD.backtest,'$.backtest_weight_type') IS NOT json_extract(NEW.backtest,'$.backtest_weight_type') OR json_extract(OLD.backtest,'$.backtest_fee_rate') IS NOT json_extract(NEW.backtest,'$.backtest_fee_rate') BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at_us=0,error=NULL; END;
+        CREATE TRIGGER analysis_account_channel AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at_us=0,error=NULL; END;
         CREATE TRIGGER analysis_channel_change AFTER UPDATE OF trade_channel ON account WHEN OLD.trade_channel IS NOT NEW.trade_channel BEGIN UPDATE account_analysis SET dirty_record=0 WHERE account_id=NEW.id; END;
-        CREATE TRIGGER execution_result_staged AFTER UPDATE OF result_staged ON executerecord WHEN OLD.result_staged!=NEW.result_staged BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at=0,error=NULL; END;
+        CREATE TRIGGER execution_result_staged AFTER UPDATE OF result_staged ON executerecord WHEN OLD.result_staged!=NEW.result_staged BEGIN INSERT INTO account_analysis(account_id,source_version) VALUES(NEW.account_id,1) ON CONFLICT(account_id) DO UPDATE SET source_version=source_version+1,requested=1,failures=0,retry_at_us=0,error=NULL; END;
         CREATE TRIGGER execution_summary_removed BEFORE INSERT ON execution_artifact WHEN upper(NEW.artifact_type)='EXECUTION_SUMMARY' BEGIN SELECT RAISE(ABORT,'EXECUTION_SUMMARY is derived from facts'); END;")?;
     let cleanup = crate::analysis::TABLES
         .iter()

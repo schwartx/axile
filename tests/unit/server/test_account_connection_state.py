@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import closing
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from multiprocessing import Pipe
 
 import pytest
@@ -22,6 +23,7 @@ from axile.server.execution.worker_backend.worker_responses import _build_error_
 from axile.server.portfolio_function import _error_from_exception
 from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._native_read_views import connection_view
 
@@ -36,6 +38,15 @@ def _states(path):
         connection.row_factory = sqlite3.Row
         rows = [dict(row) for row in connection.execute("SELECT * FROM account_connection_state")]
     for row in rows:
+        for field in ("observed_at", "last_success_at"):
+            value = row.pop(f"{field}_us")
+            row[field] = (
+                (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value))
+                .isoformat(timespec="microseconds")
+                .replace("+00:00", "Z")
+                if value is not None
+                else None
+            )
         for field in ("error", "presentation", "last_failure"):
             if row[field] is not None:
                 row[field] = json.loads(row[field])
@@ -121,14 +132,18 @@ def test_old_instance_and_out_of_order_snapshots_cannot_overwrite(database):
 def test_changed_config_rejects_old_runtime_and_clears_error(database):
     path, account = database
     binding = service.begin_connection_instance(account)
-    service.record_connection_observation(binding, 1, ConnectionObservation("error", "now", "旧凭证失效", {}))
+    service.record_connection_observation(
+        binding, 1, ConnectionObservation("error", "2026-10-14T14:47:00.000000Z", "旧凭证失效", {})
+    )
     current = _account(path)
     current.account_config = {**current.account_config, "password": "replacement"}
     native_store_call(
-        path, "account_update", {"account_id": 1, "patch": {"account_config": current.account_config}, "now": "changed"}
+        path,
+        "account_update",
+        {"account_id": 1, "patch": {"account_config": current.account_config}, "now": "2026-10-14T14:48:00.000000Z"},
     )
     assert connection_view(current).status == "uninitialized"
-    service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
+    service.record_connection_observation(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:01.000000Z"))
     assert service.begin_connection_instance(account) is None
     assert service.begin_connection_instance(current) is not None
     row = _state(path)
@@ -182,7 +197,9 @@ def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(d
     path, account = database
     binding = service.begin_connection_instance(account)
     service.record_connection_observation(
-        binding, 1, ConnectionObservation("error", "now", "连接失败", {"technical_detail": "1026"})
+        binding,
+        1,
+        ConnectionObservation("error", "2026-10-14T14:47:00.000000Z", "连接失败", {"technical_detail": "1026"}),
     )
     current = _account(path)
 
@@ -192,19 +209,21 @@ def test_connection_detail_route_is_read_only_and_account_dto_contains_summary(d
     assert _states(path) == before
     assert detail.last_failure.error["technical_detail"] == "1026"
     summary = connection_view(current)
-    assert summary.status == "uninitialized" and summary.last_failure_at == "now"
+    assert summary.status == "uninitialized" and summary.last_failure_at == "2026-10-14T14:47:00.000000Z"
 
 
 def test_account_deletion_cascades_latest_state_and_rejects_late_callback(database):
     path, account = database
     binding = service.begin_connection_instance(account)
-    service.record_connection_observation(binding, 1, ConnectionObservation("error", "now", "连接失败", {}))
+    service.record_connection_observation(
+        binding, 1, ConnectionObservation("error", "2026-10-14T14:47:00.000000Z", "连接失败", {})
+    )
     native_store_call(path, "account_delete", {"account_id": 1})
     replacement = native_store_call(
-        path, "account_create", {"account": account.model_dump(mode="json"), "now": "later"}
+        path, "account_create", {"account": account.model_dump(mode="json"), "now": "2026-10-14T14:48:00.000000Z"}
     )["account"]
     assert replacement["id"] > 1
-    service.record_connection_observation(binding, 2, ConnectionObservation("ok", "later"))
+    service.record_connection_observation(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:01.000000Z"))
     assert service.begin_connection_instance(account) is None
     assert _state(path) is None
 
@@ -236,12 +255,14 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
     service.consume_connection_snapshot(first)
     row = _state(path)
     assert row.label == "worker 自由文案" and row.presentation["title"] == "测试渠道自由详情"
-    assert row.sequence == 1 and row.observed_at == observation.observed_at
+    assert row.sequence == 1 and row.observed_at == utc_time(observation.observed_at)
     # 同配置重连仍未成功，保留上一故障；新实例和序号保护整份内容。
     newer = service.begin_connection_instance(account)
     service.consume_connection_snapshot(first)
     assert _state(path).label == "worker 自由文案"
-    service.record_connection_observation(newer, 1, ConnectionObservation("error", "later", "未知新故障", {}))
+    service.record_connection_observation(
+        newer, 1, ConnectionObservation("error", "2026-10-14T14:47:01.000000Z", "未知新故障", {})
+    )
     row = _state(path)
     assert row.label is None and row.presentation is None
     service.record_connection_observation(newer, 2, observation)
@@ -250,7 +271,11 @@ def test_direct_and_worker_paths_keep_custom_snapshot_and_lightweight_dtos(datab
     native_store_call(
         path,
         "account_update",
-        {"account_id": 1, "patch": {"account_config": current.account_config | {"password": "new"}}, "now": "reset"},
+        {
+            "account_id": 1,
+            "patch": {"account_config": current.account_config | {"password": "new"}},
+            "now": "2026-10-14T14:48:00.000000Z",
+        },
     )
 
     row = _state(path)
@@ -268,7 +293,9 @@ def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(datab
     server = threading.Thread(target=ipc.serve, args=(child, 1, collector.snapshot), daemon=True)
     server.start()
     collector.observe(
-        ConnectionObservation("error", "confirmed", "空闲断线", {}, "自定义空闲故障", {"title": "空闲期间观察"})
+        ConnectionObservation(
+            "error", "2026-10-14T14:47:02.000000Z", "空闲断线", {}, "自定义空闲故障", {"title": "空闲期间观察"}
+        )
     )
     monitor = ipc.RemoteMonitor(parent, 1)
     try:
@@ -277,7 +304,7 @@ def test_idle_monitor_preserves_presentation_and_rejects_old_configuration(datab
             row = _state(path)
             if row.label == "自定义空闲故障":
                 assert row.presentation["title"] == "空闲期间观察"
-                assert row.observed_at == "confirmed"
+                assert row.observed_at == "2026-10-14T14:47:02.000000Z"
                 break
             time.sleep(0.01)
         else:
@@ -293,7 +320,9 @@ def test_invalid_stored_presentation_cannot_hide_connection_detail(database):
     service.record_connection_observation(
         binding,
         1,
-        ConnectionObservation("error", "confirmed", "原始故障", {"technical_detail": "完整证据"}, "有效标签"),
+        ConnectionObservation(
+            "error", "2026-10-14T14:47:02.000000Z", "原始故障", {"technical_detail": "完整证据"}, "有效标签"
+        ),
     )
     with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
@@ -314,24 +343,24 @@ def test_current_session_requires_live_worker_and_host_reconciliation(database, 
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: alive[0])
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("connecting", "start"))
-    collector.observe(ConnectionObservation("ok", "sdk-initialized"))
+    collector.observe_session(ConnectionObservation("connecting", "2026-10-14T14:47:03.000000Z"))
+    collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:04.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "connecting"
     assert detail.last_success_at is None
-    collector.observe(ConnectionObservation("ok", "account-read", kind="access"))
-    collector.observe_session(ConnectionObservation("ok", "reconciled"))
+    collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:05.000000Z", kind="access"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:06.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "ready" and detail.worker_alive
-    assert detail.last_success_at == "account-read"
+    assert detail.last_success_at == "2026-10-14T14:47:05.000000Z"
     now[0] = 6
     assert connection_view(_account(path)).status == "unknown"
     # Heartbeat repeats the same evidence, restoring freshness without inventing access success.
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path))
-    assert detail.status == "ready" and detail.last_success_at == "account-read"
+    assert detail.status == "ready" and detail.last_success_at == "2026-10-14T14:47:05.000000Z"
     alive[0] = False
     detail = connection_view(_account(path))
     assert detail.status == "disconnected" and not detail.worker_alive
@@ -344,21 +373,25 @@ def test_recovered_history_survives_success_and_does_not_advertise_old_failure(d
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("connecting", "start"))
-    collector.observe(ConnectionObservation("error", "failure", "native timeout", {"technical_detail": "evidence"}))
+    collector.observe_session(ConnectionObservation("connecting", "2026-10-14T14:47:03.000000Z"))
+    collector.observe(
+        ConnectionObservation(
+            "error", "2026-10-14T14:47:07.000000Z", "native timeout", {"technical_detail": "evidence"}
+        )
+    )
     # An intermediate failure must survive even if monitoring first sees the successful final frame.
-    collector.observe(ConnectionObservation("ok", "access", kind="access"))
-    collector.observe_session(ConnectionObservation("ok", "ready"))
+    collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:08.000000Z", kind="access"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:09.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "ready" and detail.error is None
-    assert detail.last_success_at == "access"
+    assert detail.last_success_at == "2026-10-14T14:47:08.000000Z"
     assert detail.last_failure.message == "native timeout"
-    collector.observe(ConnectionObservation("error", "disconnect", "trade disconnected", {}))
+    collector.observe(ConnectionObservation("error", "2026-10-14T14:47:10.000000Z", "trade disconnected", {}))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "unavailable" and detail.message == "trade disconnected"
-    collector.observe(ConnectionObservation("ok", "native-login"))
+    collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:11.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     assert connection_view(_account(path)).status == "unavailable"
 
@@ -370,10 +403,10 @@ def test_timeout_ends_session_rejects_late_result_and_preserves_original_failure
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("connecting", "start"))
+    collector.observe_session(ConnectionObservation("connecting", "2026-10-14T14:47:03.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     service.end_connection_instance(binding, "连接准备超时", TimeoutError("original timeout"))
-    collector.observe_session(ConnectionObservation("ok", "late success"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:12.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "unavailable" and not detail.worker_alive
@@ -394,7 +427,7 @@ def test_active_business_failure_does_not_change_connection(database):
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("ok", "ready"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:09.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     # No connection event is published for a plain business rejection.
     assert "error_scope" not in exception_details(ValueError("余额不足"))
@@ -410,16 +443,16 @@ def test_restart_revokes_old_instance_but_retains_history_and_manual_disconnect(
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
-    collector.observe(ConnectionObservation("ok", "last-access", kind="access"))
-    collector.observe_session(ConnectionObservation("disconnected", "manual-stop"))
+    collector.observe(ConnectionObservation("ok", "2026-10-14T14:47:13.000000Z", kind="access"))
+    collector.observe_session(ConnectionObservation("disconnected", "2026-10-14T14:47:14.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
 
     asyncio.run(service.recover_connection_sessions())
-    collector.observe_session(ConnectionObservation("ok", "late-old-worker"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:15.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     detail = connection_view(_account(path), detail=True)
     assert detail.status == "disconnected" and not detail.worker_alive
-    assert detail.last_success_at == "last-access" and detail.manually_disconnected
+    assert detail.last_success_at == "2026-10-14T14:47:13.000000Z" and detail.manually_disconnected
     newer = service.begin_connection_instance(account)
     assert newer.manually_disconnected
 
@@ -433,7 +466,9 @@ def test_cooldown_elapsed_time_does_not_reset_with_heartbeats(database, monkeypa
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("cooldown", "failure", error={"retry_after_seconds": 30}))
+    collector.observe_session(
+        ConnectionObservation("cooldown", "2026-10-14T14:47:07.000000Z", error={"retry_after_seconds": 30})
+    )
     service.consume_connection_snapshot(collector.snapshot())
     assert runtime.current_session(1, binding.config_key).retry_after_seconds == 30
     now[0] = 10
@@ -521,7 +556,7 @@ def test_monitor_failure_with_live_process_becomes_unknown_without_ending_sdk(da
     monkeypatch.setattr(runtime, "clock_monotonic", lambda: now[0])
     binding = service.begin_connection_instance(account)
     runtime.register_session(binding, lambda: True)
-    runtime.observe_session(binding, 1, ConnectionObservation("ok", "ready", kind="session"))
+    runtime.observe_session(binding, 1, ConnectionObservation("ok", "2026-10-14T14:47:09.000000Z", kind="session"))
 
     def broken(*args):
         raise EOFError()
@@ -536,7 +571,7 @@ def test_monitor_failure_with_live_process_becomes_unknown_without_ending_sdk(da
     assert runtime.current_session(1, binding.config_key).status == "ready"
     now[0] = 6
     assert runtime.current_session(1, binding.config_key).status == "unknown"
-    runtime.observe_session(binding, 2, ConnectionObservation("ok", "business-response", kind="session"))
+    runtime.observe_session(binding, 2, ConnectionObservation("ok", "2026-10-14T14:47:16.000000Z", kind="session"))
     assert runtime.current_session(1, binding.config_key).status == "ready"
     runtime.forget_session(1)
     assert runtime.current_session(1, binding.config_key).status == "uninitialized"
@@ -657,11 +692,11 @@ def test_logout_snapshot_preserves_evidence_without_manual_disconnect(database):
     path, account = database
     binding = service.begin_connection_instance(account)
     collector = service.ConnectionCollector(binding)
-    collector.observe_session(ConnectionObservation("ok", "ready"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:09.000000Z"))
     collector.observe(
         ConnectionObservation(
             "error",
-            "logout",
+            "2026-10-14T14:47:17.000000Z",
             "CTP 交易会话已登出",
             {"reason_code": "CTP_USER_LOGOUT", "technical_detail": "OnRspUserLogout request_id=42"},
             "交易会话已登出",
@@ -673,8 +708,8 @@ def test_logout_snapshot_preserves_evidence_without_manual_disconnect(database):
     assert not row.manually_disconnected
     assert row.last_failure["error"]["reason_code"] == "CTP_USER_LOGOUT"
     assert row.last_failure["presentation"]["title"] == "交易会话已登出"
-    collector.observe_session(ConnectionObservation("ok", "recovered"))
+    collector.observe_session(ConnectionObservation("ok", "2026-10-14T14:47:18.000000Z"))
     service.consume_connection_snapshot(collector.snapshot())
     row = _state(path)
     assert row.error is None
-    assert row.last_failure["observed_at"] == "logout"
+    assert row.last_failure["observed_at"] == "2026-10-14T14:47:17.000000Z"

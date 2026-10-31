@@ -54,6 +54,11 @@ fn invalid(message: &str) -> String {
 }
 
 fn cell(row: &Row<'_>, name: &str) -> Result<Value, String> {
+    if name == "update_time" && row.as_ref().column_index("update_time_us").is_ok() {
+        return crate::time_us::read_optional(row, "update_time_us")
+            .map(|v| json!(v))
+            .map_err(database);
+    }
     if name == "payload_kind" || name == "positions_kind" || name.ends_with("_state") {
         return row
             .get::<_, String>(name)
@@ -301,7 +306,7 @@ fn read_page(
     let sql = format!(
         "WITH page AS ({page_sql})
         SELECT a.*,s.id AS snapshot_id,s.account_id AS snapshot_account_id,
-        s.source AS snapshot_source,s.execution_id AS snapshot_execution_id,s.created_at,
+        s.source AS snapshot_source,s.execution_id AS snapshot_execution_id,s.created_at_us,
         {OWNER_VALID} AS owner_valid
         FROM page s JOIN business_asset_snapshot a ON a.asset_id=s.asset_fact_id
         ORDER BY s.id DESC"
@@ -342,7 +347,7 @@ fn read_page(
             json!({"id":row.get::<_, i64>("snapshot_id").map_err(database)?,
             "account_id":account_id,"assets":assets,"source":source,
             "execution_id":row.get::<_, Option<String>>("snapshot_execution_id").map_err(database)?,
-            "created_at":row.get::<_, String>("created_at").map_err(database)?}),
+            "created_at":crate::time_us::read(row,"created_at_us").map_err(database)?}),
         );
     }
     Ok(data)
@@ -351,6 +356,35 @@ fn read_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_asset_time_is_formatted_without_touching_extension_json() {
+        let db = Connection::open_in_memory().unwrap();
+        let extension = r#"{"update_time":"unknown-local-time"}"#;
+        let (time, extra) = db
+            .query_row(
+                "SELECT 1 AS update_time_us,?1 AS extra",
+                [extension],
+                |row| {
+                    Ok((
+                        cell(row, "update_time").unwrap(),
+                        cell(row, "extra").unwrap(),
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(time, "1970-01-01T00:00:00.000001Z");
+        assert_eq!(extra, json!({"update_time":"unknown-local-time"}));
+        assert_eq!(
+            db.query_row("SELECT NULL AS update_time_us", [], |row| Ok(cell(
+                row,
+                "update_time"
+            )
+            .unwrap()))
+                .unwrap(),
+            Value::Null
+        );
+    }
 
     #[test]
     fn scalars_preserve_null_absent_and_invalid_evidence() {

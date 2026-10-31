@@ -8,7 +8,7 @@ use crate::fact_ticks::Prices;
 #[derive(Debug, Clone)]
 pub(crate) struct Trade {
     pub symbol: String,
-    pub time: f64,
+    pub time: i64,
     pub day: String,
     pub estimated: bool,
     pub side: String,
@@ -23,12 +23,9 @@ pub(crate) struct Trade {
     pub fee_currency: Option<String>,
 }
 
-fn timestamp(value: &str) -> Option<(f64, String)> {
-    let time = crate::calendar::local_time(value).ok()?;
-    Some((
-        crate::calendar::timestamp_micros(time) as f64 / 1_000_000.0 * 1000.0,
-        time.format("%Y-%m-%d").to_string(),
-    ))
+fn timestamp(value: i64) -> Option<(i64, String)> {
+    let time = crate::time_us::local_datetime(value).ok()?;
+    Some((value, time.format("%Y-%m-%d").to_string()))
 }
 
 pub(crate) struct TradeReader<'a> {
@@ -38,7 +35,7 @@ pub(crate) struct TradeReader<'a> {
 impl<'a> TradeReader<'a> {
     pub(crate) fn new(connection: &'a Connection) -> rusqlite::Result<Self> {
         Ok(Self { statement: connection.prepare(
-            "SELECT s.map_key,t.trade_time,t.trade_price,t.trade_volume,z.unit_multiplier,
+            "SELECT s.map_key,t.trade_time_us,t.trade_price,t.trade_volume,z.unit_multiplier,
                 COALESCE((SELECT lower(o.direction) FROM execution_order o
                     WHERE o.record_id=t.record_id AND o.path=s.path || '/orders'
                         AND o.order_id=t.order_id ORDER BY o.ordinal DESC LIMIT 1),'none'),
@@ -56,7 +53,7 @@ impl<'a> TradeReader<'a> {
     pub(crate) fn read(
         &mut self,
         record: i64,
-        created_at: &str,
+        created_at: i64,
         prices: &std::collections::BTreeMap<String, Prices>,
     ) -> Result<Vec<Trade>, String> {
         let fallback = timestamp(created_at).ok_or_else(|| {
@@ -67,7 +64,7 @@ impl<'a> TradeReader<'a> {
             .query_map([record], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(1)?,
                     row.get::<_, Option<f64>>(2)?,
                     row.get::<_, Option<f64>>(3)?,
                     row.get::<_, Option<f64>>(4)?,
@@ -110,7 +107,7 @@ impl<'a> TradeReader<'a> {
                     .map(|(price, reference)| {
                         (price - reference) * if side == "buy" { 1.0 } else { -1.0 }
                     });
-            let parsed_time = raw_time.as_deref().and_then(timestamp);
+            let parsed_time = raw_time.and_then(timestamp);
             let estimated = parsed_time.is_none();
             let (time, day) = parsed_time.unwrap_or_else(|| fallback.clone());
             let fee = match fee {
@@ -154,17 +151,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trade_timestamp_keeps_local_day_and_floating_microsecond_boundaries() {
-        for value in ["2026-01-01T00:00:00.000003", "2025-12-31T16:00:00.000003Z"] {
-            assert_eq!(
-                timestamp(value),
-                Some((
-                    crate::calendar::timestamp_ms(value).unwrap(),
-                    "2026-01-01".into()
-                ))
-            );
-        }
-        assert!(timestamp("invalid").is_none());
+    fn trade_timestamp_keeps_local_day_and_exact_microsecond_boundaries() {
+        let time = crate::time_us::parse("2025-12-31T16:00:00.000003Z").unwrap();
+        assert_eq!(timestamp(time), Some((time, "2026-01-01".into())));
+        assert_eq!(time % 1_000_000, 3);
     }
 
     #[test]
@@ -173,7 +163,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
              CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
-             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time_us INTEGER,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
              CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
              INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0);
@@ -181,8 +171,8 @@ mod tests {
              INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',2);
              INSERT INTO execution_order VALUES(1,'/symbol_results/A/orders','1',0,'buy');
              INSERT INTO business_trade VALUES
-               (1,'/symbol_results/A/trades',0,'invalid',101,3,'1','{\"commission\":0}','USD'),
-               (1,'/symbol_results/A/trades',1,'2026-01-01T01:00:00Z',99,1,'2','{\"commission\":-0.5,\"direction\":\"sell\"}','USD'),
+               (1,'/symbol_results/A/trades',0,NULL,101,3,'1','{\"commission\":0}','USD'),
+               (1,'/symbol_results/A/trades',1,1767229200000000,99,1,'2','{\"commission\":-0.5,\"direction\":\"sell\"}','USD'),
                (1,'/symbol_results/A/trades',2,NULL,100,1,'3','{\"commission\":true}',NULL);"
         ).unwrap();
         let prices = std::collections::BTreeMap::from([(
@@ -195,7 +185,7 @@ mod tests {
         )]);
         let trades = TradeReader::new(&connection)
             .unwrap()
-            .read(1, "2026-01-02T09:00:00", &prices)
+            .read(1, 1767315600000000, &prices)
             .unwrap();
         assert_eq!(trades.len(), 3);
         assert_eq!(trades[0].value, Some(606.0));

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import closing
-from pathlib import Path
 
 import pytest
 
@@ -20,27 +19,19 @@ from axile.server.account_control import store as store_module
 from axile.server.account_control.store import AccountControlStore
 from axile.server.native_store import native_operation_sync
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.unit.server._runtime_db_support import to_us
 
 
 @pytest.fixture
 def control_database(monkeypatch, tmp_path):
     """从留存 schema 提取控制表，使用文件库跨 FFI 验证。"""
     path = tmp_path / "controls.sqlite"
-    schema = (Path(__file__).parents[2] / "fixtures/rust_store/v0.22.0.sql").read_text()
+    native_operation_sync("migration_upgrade", {}, database=str(path))
     with closing(oracle_connect(path)) as connection, connection:
-        for table in (
-            "portfolio",
-            "account",
-            "account_control_counter_delta",
-            "account_control_event",
-            "account_control_session",
-            "notification_event",
-        ):
-            start = schema.index(f"CREATE TABLE {table} (")
-            connection.executescript(schema[start : schema.index(";", start) + 1])
         connection.execute(
-            "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
-            "VALUES (1,'测试账户','期货','ctp','ctp','2026-03-22','2026-03-22')"
+            "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
+            "VALUES (1,'测试账户','期货','ctp','ctp',?,?)",
+            (to_us("2026-03-22"), to_us("2026-03-22")),
         )
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
     for name in ("_guards", "_final", "_updates"):
@@ -82,7 +73,7 @@ def _event(uid="event-1", **changes):
             "decision": "allowed",
             "counted": True,
             "outcome": "submitted",
-            "metadata": {"note": "原始事实"},
+            "metadata": {"note": "原始事实", "created_at": "原样保留的时间"},
             "event_uid": uid,
             "created_at": "2026-03-22T10:00:00",
             "occurred_at_ms": 1000,
@@ -200,7 +191,7 @@ def test_flush_rolls_back_all_facts_and_close_then_retries_idempotently(control_
         with closing(oracle_connect(control_database)) as connection, connection:
             assert connection.execute("SELECT COUNT(*) FROM account_control_counter_delta").fetchone() == (0,)
             assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (0,)
-            assert connection.execute("SELECT status,finished_at_ms FROM account_control_session").fetchone() == (
+            assert connection.execute("SELECT status,finished_at_us FROM account_control_session").fetchone() == (
                 "active",
                 None,
             )
@@ -212,12 +203,12 @@ def test_flush_rolls_back_all_facts_and_close_then_retries_idempotently(control_
                 "SELECT COUNT(*),SUM(delta_count) FROM account_control_counter_delta"
             ).fetchone() == (1, 2)
             assert connection.execute("SELECT COUNT(*) FROM account_control_event").fetchone() == (2,)
-            assert connection.execute("SELECT status,finished_at_ms FROM account_control_session").fetchone() == (
+            assert connection.execute("SELECT status,finished_at_us FROM account_control_session").fetchone() == (
                 "closed",
-                2000,
+                2_000_000,
             )
             raw = connection.execute("SELECT metadata FROM account_control_event LIMIT 1").fetchone()[0]
-            assert json.loads(raw) == {"note": "原始事实"}
+            assert json.loads(raw) == {"note": "原始事实", "created_at": "原样保留的时间"}
 
     asyncio.run(scenario())
 
@@ -281,7 +272,10 @@ def test_incomplete_history_preserves_window_and_risk_exclusions(
     async def scenario():
         await _register(AccountControlStore(), context_kind=context_kind, source=source, execution_id=execution_id)
         with closing(oracle_connect(control_database)) as connection, connection:
-            connection.execute("UPDATE account_control_session SET status=?,finished_at_ms=?", (status, finished))
+            connection.execute(
+                "UPDATE account_control_session SET status=?,finished_at_us=?",
+                (status, None if finished is None else finished * 1_000),
+            )
         raw = native_operation_sync(
             "control_load_baseline",
             {

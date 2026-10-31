@@ -205,7 +205,9 @@ def test_gm_pre_order_and_terminal_assets_are_independent_observations(native_da
     before_rows = {name: rows(native_database, name) for name in _TABLES["assets"]}
     after_decoded, after_rows = _roundtrip(native_database, "assets", after)
 
-    assert business_evidence(before_decoded) == business_evidence({"before_account_assets": before["account_assets"]})
+    assert business_evidence(before_decoded["before_account_assets"], context="account_assets") == business_evidence(
+        before["account_assets"], context="account_assets"
+    )
     assert business_evidence(after_decoded) == business_evidence(after)
     assert any(row.get("input_id") == "gm-input-240" for rows in before_rows.values() for row in rows)
     record_id = rows(native_database, "executerecord")[0]["id"]

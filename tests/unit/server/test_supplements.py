@@ -28,6 +28,7 @@ from axile.server.supplement_plan import plan_supplements
 from axile.server.trading_calendar import CalendarDayDecision, CalendarDecisionStatus
 from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us
 from tests.unit.server._native_read_views import persist_record_fixture
 
 BASE = datetime(2026, 10, 9, 9, 30, tzinfo=SCHEDULER_TIMEZONE)
@@ -74,8 +75,14 @@ def database(monkeypatch, native_database):
     monkeypatch.setattr(supplements, "clock_now", lambda **_kwargs: now[0])
     with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
-            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES (1,?,?,?,?,?)",
-            ("test", "期货", "def calculate_portfolio(context): return {}", BASE.isoformat(), BASE.isoformat()),
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) VALUES (1,?,?,?,?,?)",
+            (
+                "test",
+                "期货",
+                "def calculate_portfolio(context): return {}",
+                to_us(BASE.isoformat()),
+                to_us(BASE.isoformat()),
+            ),
         )
         insert_account(
             connection, build_account(cron_expr="*/15 * * * *", supplement={"count": 2, "interval_minutes": 1})
@@ -129,8 +136,8 @@ def events(path):
 def running(path, execution_id):
     execute(
         path,
-        "UPDATE execution_intent SET status='RUNNING',started_at=? WHERE execution_id=?",
-        (BASE.isoformat(), execution_id),
+        "UPDATE execution_intent SET status='RUNNING',started_at_us=? WHERE execution_id=?",
+        (to_us(BASE.isoformat()), execution_id),
     )
     clear_queued_execution(1, execution_id)
 
@@ -555,8 +562,14 @@ def test_outbox_silent_success_failure_and_unknown_are_not_retried(monkeypatch, 
     with closing(oracle_connect(path)) as connection, connection:
         for index, status in enumerate(["pending", "pending", "calling"]):
             connection.execute(
-                "INSERT INTO notification_event(id,account_id,created_at,event_type,status,context) VALUES (?,1,?,?,?,?)",
-                (f"test:{index}", BASE.isoformat(), "supplement.cancelled", status, json.dumps({"execution": None})),
+                "INSERT INTO notification_event(id,account_id,created_at_us,event_type,status,context) VALUES (?,1,?,?,?,?)",
+                (
+                    f"test:{index}",
+                    to_us(BASE.isoformat()),
+                    "supplement.cancelled",
+                    status,
+                    json.dumps({"execution": None}),
+                ),
             )
     calls = []
 

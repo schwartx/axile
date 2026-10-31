@@ -118,8 +118,8 @@ pub fn replay_observe(path: &str, request: &Value) -> Result<Value, AnalysisErro
 
 fn execution_report(connection: &Connection, account: Option<i64>) -> Result<Value, AnalysisError> {
     let span = connection.query_row(
-        "SELECT MIN(created_at),MAX(created_at) FROM executerecord WHERE (?1 IS NULL OR account_id=?1)",
-        [account], |row| Ok(json!([row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?]))).map_err(sql)?;
+        "SELECT MIN(created_at_us),MAX(created_at_us) FROM executerecord WHERE (?1 IS NULL OR account_id=?1)",
+        [account], |row| Ok(json!([crate::time_us::read_optional(row,0)?,crate::time_us::read_optional(row,1)?]))).map_err(sql)?;
     let mut query = connection
         .prepare(
             "SELECT DISTINCT t.map_key FROM executerecord r
@@ -219,10 +219,32 @@ pub fn replay_report(path: &str, request: &Value) -> Result<Value, AnalysisError
             .unwrap_or(0)
             > 0
         {
-            let span = connection.query_row("SELECT MIN(created_at),MAX(created_at) FROM account_asset_snapshot WHERE (?1 IS NULL OR account_id=?1)",[account], |row|Ok(json!([row.get::<_,Option<String>>(0)?,row.get::<_,Option<String>>(1)?]))).map_err(sql)?;
+            let span = connection.query_row("SELECT MIN(created_at_us),MAX(created_at_us) FROM account_asset_snapshot WHERE (?1 IS NULL OR account_id=?1)",[account], |row|Ok(json!([crate::time_us::read_optional(row,0)?,crate::time_us::read_optional(row,1)?]))).map_err(sql)?;
             report.insert("asset_snapshot_span".into(), span);
         }
         report.insert("tables".into(), Value::Object(counts));
         Ok(Value::Object(report))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_report_formats_integer_span_in_chronological_order() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE executerecord(account_id INTEGER,input_id TEXT,status TEXT,created_at_us INTEGER);
+             CREATE TABLE execution_input(id TEXT,account_id INTEGER);
+             CREATE TABLE execution_input_target(input_id TEXT,map_key TEXT,role TEXT,value REAL);
+             INSERT INTO executerecord VALUES(7,NULL,'SUCCEEDED',2),(7,NULL,'SUCCEEDED',-1);",
+        ).unwrap();
+        let report = execution_report(&connection, Some(7)).unwrap();
+        assert_eq!(
+            report["executerecord_span"],
+            json!(["1969-12-31T23:59:59.999999Z", "1970-01-01T00:00:00.000002Z"])
+        );
+        assert_eq!(report["execution_status"]["SUCCEEDED"], 2);
+    }
 }

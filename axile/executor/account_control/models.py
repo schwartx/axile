@@ -9,7 +9,7 @@ Notes
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -158,15 +158,15 @@ class AccountControlDecision(str, Enum):
 
 
 def _now_str() -> str:
-    from axile.executor.algorithms.utils.clock import get_default_clock
+    from axile.executor.algorithms.utils.clock import clock_now
 
-    return datetime.fromtimestamp(get_default_clock().time()).replace(microsecond=0).isoformat()
+    return clock_now(tz=UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _now_ms() -> int:
-    from axile.executor.algorithms.utils.clock import get_default_clock
+    from axile.executor.algorithms.utils.clock import clock_now_ms
 
-    return int(get_default_clock().time() * 1_000)
+    return clock_now_ms()
 
 
 @dataclass(frozen=True)

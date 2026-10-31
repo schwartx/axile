@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 
 from pydantic import BaseModel, ConfigDict
 
@@ -16,8 +17,8 @@ class Model(BaseModel):
 
 
 def now_str() -> str:
-    """返回不带微秒的本地时间 ISO 字符串."""
-    return clock_now().replace(microsecond=0).isoformat()
+    """返回保留微秒的 UTC ISO 字符串。"""
+    return clock_now(tz=UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def now_ms() -> int:

@@ -34,7 +34,7 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, AnalysisError> {
         .ok_or_else(|| invalid(format!("{key} 必须是字符串")))
 }
 
-const SESSION_COLUMNS: &str = "id,instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,finished_at_ms,status";
+const SESSION_COLUMNS: &str = "id,instance_id,account_id,execution_id,context_kind,source,timezone,started_at_us,finished_at_us,status";
 
 fn session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let execution_id: String = row.get(3)?;
@@ -44,8 +44,8 @@ fn session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "account_id":row.get::<_,i64>(2)?,"execution_id":execution_id,
         "context_kind":kind,"source":row.get::<_,String>(5)?,
         "effective_context_kind":crate::control_audit::context_kind(&kind,&execution_id),
-        "timezone":row.get::<_,String>(6)?,"started_at_ms":row.get::<_,i64>(7)?,
-        "finished_at_ms":row.get::<_,Option<i64>>(8)?,"status":row.get::<_,String>(9)?
+        "timezone":row.get::<_,String>(6)?,"started_at_ms":row.get::<_,i64>(7)?.div_euclid(1_000),
+        "finished_at_ms":row.get::<_,Option<i64>>(8)?.map(|value| value.div_euclid(1_000)),"status":row.get::<_,String>(9)?
     }))
 }
 
@@ -56,10 +56,10 @@ fn sessions_on(connection: &Connection, request: &Value) -> Result<Vec<Value>, A
         .and_hms_opt(0, 0, 0)
         .expect("midnight")
         .and_utc()
-        .timestamp_millis();
+        .timestamp_micros();
     // 会话使用自己的时区；先覆盖所有合法 UTC 偏移，再由 Python 精筛缺口。
-    let lower = day - 86_400_000;
-    let upper = day + 172_800_000;
+    let lower = day - 86_400_000_000;
+    let upper = day + 172_800_000_000;
     let mut selected = BTreeMap::new();
     let mut statement = connection
         .prepare(&format!(
@@ -67,10 +67,10 @@ fn sessions_on(connection: &Connection, request: &Value) -> Result<Vec<Value>, A
          WHERE account_id=?1 AND status='active'
          UNION ALL SELECT {SESSION_COLUMNS} FROM account_control_session
          WHERE account_id=?1 AND status IN ('closed','incomplete')
-           AND finished_at_ms>=?2 AND started_at_ms<?3
+           AND finished_at_us>=?2 AND started_at_us<?3
          UNION ALL SELECT {SESSION_COLUMNS} FROM account_control_session
          WHERE account_id=?1 AND status IN ('closed','incomplete')
-           AND finished_at_ms IS NULL AND started_at_ms<?3"
+           AND finished_at_us IS NULL AND started_at_us<?3"
         ))
         .map_err(database)?;
     let mut rows = statement
@@ -152,11 +152,11 @@ pub fn control_monitor_inputs(path: &str, request: &Value) -> Result<Value, Anal
 }
 
 pub fn control_monitor_recover(path: &str, request: &Value) -> Result<Value, AnalysisError> {
-    let now = integer(request, "now_ms")?;
+    let now = crate::time_us::from_millis(integer(request, "now_ms")?).map_err(invalid)?;
     let connection = crate::writer_scope::open_writer(Path::new(path))?;
     crate::writer_scope::immediate(&connection, || {
         let updated = connection.execute(
-            "UPDATE account_control_session SET status='incomplete',finished_at_ms=?1 WHERE status='active'",
+            "UPDATE account_control_session SET status='incomplete',finished_at_us=?1 WHERE status='active'",
             [now],
         ).map_err(database)?;
         Ok(json!({"updated":updated}))
@@ -240,6 +240,7 @@ pub(crate) fn enqueue_quota_warnings_on(
         .iter()
         .map(|warning| warning.context(""))
         .collect::<Result<Vec<_>, _>>()?;
+    let created_at = crate::time_us::parse(created_at).map_err(invalid)?;
     let mut queued = BTreeSet::new();
     for (warning, mut context) in warnings.iter().zip(contexts) {
         let name: Option<String> = connection
@@ -254,7 +255,7 @@ pub(crate) fn enqueue_quota_warnings_on(
         context["account"]["name"] = json!(name);
         let inserted = connection
             .execute(
-                "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status)
+                "INSERT INTO notification_event(id,account_id,created_at_us,event_type,context,status)
              VALUES (?1,?2,?3,?4,?5,'pending') ON CONFLICT(id) DO NOTHING",
                 params![
                     warning.event_id(),
@@ -291,7 +292,7 @@ fn history_on(connection: &Connection, request: &Value) -> Result<Value, Analysi
     let mut history = crate::control_store::load_baseline_on(connection, request)?;
     let mut statement = connection
         .prepare(&format!(
-            "SELECT {EVENT_COLUMNS} FROM account_control_event WHERE account_id=?1 ORDER BY occurred_at_ms DESC,id DESC LIMIT 100"
+            "SELECT {EVENT_COLUMNS} FROM account_control_event WHERE account_id=?1 ORDER BY occurred_at_us DESC,id DESC LIMIT 100"
         ))
         .map_err(database)?;
     let mut rows = statement
@@ -373,9 +374,13 @@ fn refresh_on(connection: &Connection, requests: &[Value]) -> Result<Value, Anal
         if let Some(instance_id) = request["mark_incomplete"].as_str() {
             connection
                 .execute(
-                    "UPDATE account_control_session SET status='incomplete',finished_at_ms=?1
+                    "UPDATE account_control_session SET status='incomplete',finished_at_us=?1
                  WHERE account_id=?2 AND instance_id=?3 AND status='active'",
-                    params![now, account_id, instance_id],
+                    params![
+                        crate::time_us::from_millis(now).map_err(invalid)?,
+                        account_id,
+                        instance_id
+                    ],
                 )
                 .map_err(database)?;
         }
@@ -498,9 +503,9 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE account_control_session(
                 id INTEGER PRIMARY KEY,instance_id TEXT UNIQUE,account_id INTEGER,execution_id TEXT,
-                context_kind TEXT,source TEXT,timezone TEXT,started_at_ms INTEGER,finished_at_ms INTEGER,status TEXT);
+                context_kind TEXT,source TEXT,timezone TEXT,started_at_us INTEGER,finished_at_us INTEGER,status TEXT);
              CREATE INDEX ix_account_control_session_account_id ON account_control_session(account_id);
-             CREATE INDEX ix_control_session_account_status_finished ON account_control_session(account_id,status,finished_at_ms);
+             CREATE INDEX ix_control_session_account_status_finished ON account_control_session(account_id,status,finished_at_us);
              CREATE TABLE account_control_event(event_uid TEXT UNIQUE,account_id INTEGER,execution_id TEXT);"
         ).unwrap();
         connection
@@ -509,7 +514,7 @@ mod tests {
     #[test]
     fn session_context_keeps_current_active_and_latest_without_old_history_growth() {
         let connection = session_database();
-        let day = 1_792_713_600_000_i64;
+        let day = 1_792_713_600_000_000_i64;
         connection.execute_batch(&format!(
             "INSERT INTO account_control_session VALUES
                 (10000,'latest-execution',1,'execution','execution','algorithm','Asia/Shanghai',1,2,'closed'),
@@ -599,7 +604,7 @@ mod tests {
             "CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT);
              INSERT INTO account VALUES(1,'primary');
              CREATE TABLE notification_event(sequence INTEGER PRIMARY KEY,id TEXT UNIQUE,account_id INTEGER,
-                created_at TEXT,event_type TEXT,context TEXT,status TEXT);"
+                created_at_us INTEGER,event_type TEXT,context TEXT,status TEXT);"
         ).unwrap();
         connection
     }
@@ -613,8 +618,20 @@ mod tests {
         changed["used"] = json!(5);
         let mut deleted = first.clone();
         deleted["account_id"] = json!(2);
-        enqueue_quota_warnings_on(&connection, &json!([first, changed, deleted]), "created")
+        enqueue_quota_warnings_on(
+            &connection,
+            &json!([first, changed, deleted]),
+            "2026-10-23T01:02:03.123456Z",
+        )
+        .unwrap();
+        let stored_time: (i64, String) = connection
+            .query_row(
+                "SELECT created_at_us,typeof(created_at_us) FROM notification_event",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
+        assert_eq!(stored_time, (1_792_717_323_123_456, "integer".into()));
         let context: String = connection
             .query_row("SELECT context FROM notification_event", [], |row| {
                 row.get(0)
@@ -642,17 +659,21 @@ mod tests {
         let connection = connection();
         let mut invalid = warning();
         invalid["used"] = json!(true);
-        assert!(
-            enqueue_quota_warnings_on(&connection, &json!([warning(), invalid]), "created")
-                .is_err()
-        );
+        assert!(enqueue_quota_warnings_on(
+            &connection,
+            &json!([warning(), invalid]),
+            "2026-10-23T01:02:03.123456Z"
+        )
+        .is_err());
         assert!(pending_on(&connection).unwrap().is_empty());
         let mut invalid = warning();
         invalid["warning_percent"] = json!(100);
-        assert!(
-            enqueue_quota_warnings_on(&connection, &json!([warning(), invalid]), "created")
-                .is_err()
-        );
+        assert!(enqueue_quota_warnings_on(
+            &connection,
+            &json!([warning(), invalid]),
+            "2026-10-23T01:02:03.123456Z"
+        )
+        .is_err());
         assert!(pending_on(&connection).unwrap().is_empty());
     }
 }

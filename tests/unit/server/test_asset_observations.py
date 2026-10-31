@@ -75,7 +75,7 @@ def test_native_observation_validity_matches_boundary_cases(asset_database, resu
         "asset_snapshot_write",
         {
             "account_id": 1,
-            "created_at": "observed-time",
+            "created_at": "2026-10-23T09:30:00+08:00",
             "account_assets": result["account_assets"],
             "result": result,
         },
@@ -115,7 +115,7 @@ def test_placeholders_are_excluded_before_latest_selection_and_pagination(asset_
                 "asset_snapshot_write",
                 {
                     "account_id": account_id,
-                    "created_at": str(index),
+                    "created_at": f"2026-10-23T09:30:{index:02d}+08:00",
                     "account_assets": result["account_assets"],
                     "result": result,
                 },

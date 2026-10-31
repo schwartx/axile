@@ -141,7 +141,7 @@ pub fn control_audit_executions(path: &str, request: &Value) -> Result<Value, An
     ).map_err(database)?;
     let mut statement = connection.prepare(
         "WITH page AS (
-            SELECT execution_id,count(*) AS event_count,min(created_at) AS first_at,max(created_at) AS last_at
+            SELECT execution_id,count(*) AS event_count,min(created_at_us) AS first_at,max(created_at_us) AS last_at
             FROM account_control_event WHERE account_id=?1 AND control_date=?2 GROUP BY execution_id
             ORDER BY last_at DESC,execution_id DESC LIMIT ?3 OFFSET ?4)
          SELECT DISTINCT p.execution_id,p.event_count,p.first_at,p.last_at,e.context_kind,e.source
@@ -161,8 +161,8 @@ pub fn control_audit_executions(path: &str, request: &Value) -> Result<Value, An
         if !descriptions.contains_key(&id) {
             data.push(json!({
                 "execution_id":id,"event_count":row.get::<_,i64>(1).map_err(database)?,
-                "first_event_at":row.get::<_,String>(2).map_err(database)?,
-                "last_event_at":row.get::<_,String>(3).map_err(database)?
+                "first_event_at":crate::time_us::read(row, 2).map_err(database)?,
+                "last_event_at":crate::time_us::read(row, 3).map_err(database)?
             }));
         }
         let (kinds, sources) = descriptions.entry(id.clone()).or_default();
@@ -181,7 +181,7 @@ pub fn control_audit_executions(path: &str, request: &Value) -> Result<Value, An
     Ok(json!({"data":data,"count":count}))
 }
 
-pub(crate) const EVENT_COLUMNS: &str = "id,account_id,control_date,execution_id,context_kind,source,seq,channel,operation,symbol,metadata,decision,counted,outcome,event_uid,created_at,occurred_at_ms";
+pub(crate) const EVENT_COLUMNS: &str = "id,account_id,control_date,execution_id,context_kind,source,seq,channel,operation,symbol,metadata,decision,counted,outcome,event_uid,created_at_us,occurred_at_us";
 
 pub(crate) fn event(row: &Row<'_>) -> Result<Value, AnalysisError> {
     let metadata: String = row.get(10).map_err(database)?;
@@ -208,8 +208,8 @@ pub(crate) fn event(row: &Row<'_>) -> Result<Value, AnalysisError> {
         "counted":row.get::<_,bool>(12).map_err(database)?,
         "outcome":row.get::<_,String>(13).map_err(database)?,
         "event_uid":row.get::<_,String>(14).map_err(database)?,
-        "created_at":row.get::<_,String>(15).map_err(database)?,
-        "occurred_at_ms":row.get::<_,i64>(16).map_err(database)?
+        "created_at":crate::time_us::read(row, 15).map_err(database)?,
+        "occurred_at_ms":row.get::<_,i64>(16).map_err(database)?.div_euclid(1_000)
     }))
 }
 

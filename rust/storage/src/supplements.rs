@@ -2,7 +2,6 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension, Params};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -93,13 +92,7 @@ fn read(
 }
 
 fn moment(value: &str) -> Result<i64, AnalysisError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.timestamp_micros())
-        .or_else(|_| {
-            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-                .map(|value| value.and_utc().timestamp_micros())
-        })
-        .map_err(|error| invalid(format!("invalid supplement time: {error}")))
+    crate::time_us::parse(value).map_err(invalid)
 }
 
 fn account_schedule(
@@ -249,8 +242,8 @@ pub fn create_group(path: &str, request: &Value) -> Result<Value, AnalysisError>
             return Err(invalid("invalid supplement plan"));
         }
         let changed = connection.execute(
-            "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at,expires_at,configured_count,effective_count,status,end_reason,cancel_requested_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'active',NULL,NULL) ON CONFLICT(account_id,fingerprint,base_scheduled_at) DO NOTHING",
-            params![text(group,"id")?,account_id,text(group,"fingerprint")?,text(group,"base_scheduled_at")?,text(group,"expires_at")?,integer(group,"configured_count")?,integer(group,"effective_count")?],
+            "INSERT INTO supplement_group(id,account_id,fingerprint,base_scheduled_at_us,expires_at_us,configured_count,effective_count,status,end_reason,cancel_requested_at_us) VALUES (?1,?2,?3,?4,?5,?6,?7,'active',NULL,NULL) ON CONFLICT(account_id,fingerprint,base_scheduled_at_us) DO NOTHING",
+            params![text(group,"id")?,account_id,text(group,"fingerprint")?,moment(text(group,"base_scheduled_at")?)?,moment(text(group,"expires_at")?)?,integer(group,"configured_count")?,integer(group,"effective_count")?],
         ).map_err(database)?;
         if changed == 0 {
             return Ok(Value::Null);
@@ -259,7 +252,7 @@ pub fn create_group(path: &str, request: &Value) -> Result<Value, AnalysisError>
             if integer(step, "index")? != index as i64 || step["group_id"] != group["id"] {
                 return Err(invalid("invalid supplement step identity"));
             }
-            connection.execute("INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at,status,execution_id) VALUES (?1,?2,?3,?4,'pending',NULL)", params![text(step,"id")?,text(group,"id")?,index as i64,text(step,"scheduled_at")?]).map_err(database)?;
+            connection.execute("INSERT INTO supplement_step(id,group_id,\"index\",scheduled_at_us,status,execution_id) VALUES (?1,?2,?3,?4,'pending',NULL)", params![text(step,"id")?,text(group,"id")?,index as i64,moment(text(step,"scheduled_at")?)?]).map_err(database)?;
         }
         Ok(
             json!({"group":load(connection,"supplement_group","id",&group["id"])? ,"steps":steps_for_group(connection,text(group,"id")?)?}),
@@ -378,7 +371,7 @@ fn revoke_cancelled_intents(
         }
         let steps = linked_steps(connection, execution_id)?;
         if !steps.is_empty() && steps.iter().all(|step| step["status"] == "cancelled") {
-            connection.execute("UPDATE execution_intent SET status='TERMINATED',finished_at=?2,cancel_requested_at=?2,cancel_reason=?3 WHERE execution_id=?1 AND status='QUEUED'",params![execution_id,now,reason]).map_err(database)?;
+            connection.execute("UPDATE execution_intent SET status='TERMINATED',finished_at_us=?2,cancel_requested_at_us=?2,cancel_reason=?3 WHERE execution_id=?1 AND status='QUEUED'",params![execution_id,moment(now)?,reason]).map_err(database)?;
         }
     }
     Ok(())
@@ -452,7 +445,7 @@ pub(crate) fn cancel_groups_in_connection(
     let groups = rows(connection,"SELECT * FROM supplement_group WHERE account_id=?1 AND status='active' AND (?2 IS NULL OR id=?2)",params![account_id,group_id],"supplement_group")?;
     for group in &groups {
         let id = text(group, "id")?;
-        connection.execute("UPDATE supplement_group SET status='cancelling',end_reason=?2,cancel_requested_at=?3 WHERE id=?1",params![id,reason,now]).map_err(database)?;
+        connection.execute("UPDATE supplement_group SET status='cancelling',end_reason=?2,cancel_requested_at_us=?3 WHERE id=?1",params![id,reason,moment(now)?]).map_err(database)?;
         connection.execute("UPDATE supplement_step SET status='cancelled' WHERE group_id=?1 AND (status='pending' OR (status='queued' AND EXISTS (SELECT 1 FROM execution_intent i WHERE i.execution_id=supplement_step.execution_id AND i.status='QUEUED')))",[id]).map_err(database)?;
     }
     revoke_cancelled_intents(connection, account_id, reason, now)?;
@@ -772,10 +765,10 @@ mod tests {
             "PRAGMA foreign_keys=ON;
              CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT,trade_channel TEXT,portfolio_id INTEGER);
              CREATE TABLE account_settings(account_id INTEGER PRIMARY KEY,schedule JSON);
-             CREATE TABLE supplement_group(id TEXT PRIMARY KEY,account_id INTEGER,fingerprint TEXT,base_scheduled_at TEXT,expires_at TEXT,configured_count INTEGER,effective_count INTEGER,status TEXT,end_reason TEXT,cancel_requested_at TEXT,UNIQUE(account_id,fingerprint,base_scheduled_at));
-             CREATE TABLE supplement_step(id TEXT PRIMARY KEY,group_id TEXT,\"index\" INTEGER,scheduled_at TEXT,status TEXT,execution_id TEXT,UNIQUE(group_id,\"index\"));
-             CREATE TABLE execution_intent(id INTEGER PRIMARY KEY,execution_id TEXT UNIQUE,account_id INTEGER,kind TEXT,trigger_source TEXT,status TEXT,payload JSON,algorithm TEXT,started_at TEXT,finished_at TEXT,error TEXT,cancel_requested_at TEXT,cancel_reason TEXT);
-             CREATE TABLE notification_event(sequence INTEGER PRIMARY KEY,id TEXT UNIQUE,account_id INTEGER REFERENCES account(id),created_at TEXT,event_type TEXT,context JSON,status TEXT,finished_at TEXT,error TEXT);
+             CREATE TABLE supplement_group(id TEXT PRIMARY KEY,account_id INTEGER,fingerprint TEXT,base_scheduled_at_us INTEGER,expires_at_us INTEGER,configured_count INTEGER,effective_count INTEGER,status TEXT,end_reason TEXT,cancel_requested_at_us INTEGER,UNIQUE(account_id,fingerprint,base_scheduled_at_us));
+             CREATE TABLE supplement_step(id TEXT PRIMARY KEY,group_id TEXT,\"index\" INTEGER,scheduled_at_us INTEGER,status TEXT,execution_id TEXT,UNIQUE(group_id,\"index\"));
+             CREATE TABLE execution_intent(id INTEGER PRIMARY KEY,execution_id TEXT UNIQUE,account_id INTEGER,kind TEXT,trigger_source TEXT,status TEXT,payload JSON,algorithm TEXT,started_at_us INTEGER,finished_at_us INTEGER,error TEXT,cancel_requested_at_us INTEGER,cancel_reason TEXT);
+             CREATE TABLE notification_event(sequence INTEGER PRIMARY KEY,id TEXT UNIQUE,account_id INTEGER REFERENCES account(id),created_at_us INTEGER,event_type TEXT,context JSON,status TEXT,finished_at_us INTEGER,error TEXT);
              CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT);
              INSERT INTO account VALUES(1,'test','ctp',1);",
         ).unwrap();
@@ -783,7 +776,7 @@ mod tests {
             .execute("INSERT INTO account_settings VALUES(1,?1)", [SCHEDULE])
             .unwrap();
         let digest = fingerprint(&account_schedule(&connection, 1).unwrap().unwrap()).unwrap();
-        connection.execute("INSERT INTO supplement_group VALUES('group',1,?1,?2,'2026-10-09T09:45:00+08:00',2,2,'active',NULL,NULL)",params![digest,NOW]).unwrap();
+        connection.execute("INSERT INTO supplement_group VALUES('group',1,?1,?2,1791510300000000,2,2,'active',NULL,NULL)",params![digest,moment(NOW).unwrap()]).unwrap();
         for (index, time) in [
             NOW,
             "2026-10-09T09:31:00+08:00",
@@ -795,7 +788,7 @@ mod tests {
             connection
                 .execute(
                     "INSERT INTO supplement_step VALUES(?1,'group',?2,?3,'pending',NULL)",
-                    params![format!("step-{index}"), index as i64, time],
+                    params![format!("step-{index}"), index as i64, moment(time).unwrap()],
                 )
                 .unwrap();
         }
@@ -920,8 +913,8 @@ mod tests {
         attach_step(&connection, "execution", Some("step-0"), &request()).unwrap();
         connection
             .execute(
-                "UPDATE execution_intent SET status='RUNNING',started_at=?1",
-                [NOW],
+                "UPDATE execution_intent SET status='RUNNING',started_at_us=?1",
+                [moment(NOW).unwrap()],
             )
             .unwrap();
         cancel_groups_in_connection(&connection, 1, "terminated", None, NOW).unwrap();
@@ -941,8 +934,8 @@ mod tests {
         .is_empty());
         connection
             .execute(
-                "UPDATE execution_intent SET status='TERMINATED',finished_at=?1",
-                [NOW],
+                "UPDATE execution_intent SET status='TERMINATED',finished_at_us=?1",
+                [moment(NOW).unwrap()],
             )
             .unwrap();
         let row = intent(&connection, "execution").unwrap().unwrap();

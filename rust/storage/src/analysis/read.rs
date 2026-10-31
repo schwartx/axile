@@ -6,6 +6,16 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+fn iso(time: i64) -> Result<String, AnalysisError> {
+    crate::time_us::format(time).map_err(|e| failure("ANALYSIS_TIME", e))
+}
+fn optional_iso(time: Option<i64>) -> Result<Option<String>, AnalysisError> {
+    time.map(iso).transpose()
+}
+fn ms(time: i64) -> f64 {
+    time as f64 / 1000.0
+}
+
 pub(super) fn account(c: &Connection, id: i64) -> Result<(), AnalysisError> {
     let exists: bool = c
         .query_row(
@@ -51,7 +61,7 @@ pub(super) fn guard(
 pub(crate) fn status(c: &Connection, id: i64) -> Result<Value, AnalysisError> {
     account(c, id)?;
     let s = store::state(c, id, "all")?;
-    let q=store::rows(c,"SELECT source_version,requested,running_version,error,retry_at FROM account_analysis WHERE account_id=?1",&[&id])?.pop().unwrap_or_else(||json!({"source_version":1}));
+    let q=store::rows(c,"SELECT source_version,requested,running_version,error,retry_at_us FROM account_analysis WHERE account_id=?1",&[&id])?.pop().unwrap_or_else(||json!({"source_version":1}));
     let source = q["source_version"].as_i64().unwrap_or(1);
     let compatible = s.as_ref().is_some_and(|s| {
         s.logic_version == store::LOGIC_VERSION && s.engine_version == crate::replay::ENGINE_VERSION
@@ -72,7 +82,7 @@ pub(crate) fn status(c: &Connection, id: i64) -> Result<Value, AnalysisError> {
         "empty"
     };
     Ok(
-        json!({"schema_version":1,"status":state,"source_version":source,"version":s.as_ref().filter(|_|compatible).map(|s|s.version.to_string()),"logic_version":store::LOGIC_VERSION,"engine_version":crate::replay::ENGINE_VERSION,"computed_at":s.as_ref().map(|s|&s.computed_at),"data_until":s.as_ref().and_then(|s|s.last_time.as_deref()),"error":q["error"],"retry_at":q["retry_at"]}),
+        json!({"schema_version":1,"status":state,"source_version":source,"version":s.as_ref().filter(|_|compatible).map(|s|s.version.to_string()),"logic_version":store::LOGIC_VERSION,"engine_version":crate::replay::ENGINE_VERSION,"computed_at":s.as_ref().map(|s|iso(s.computed_at)).transpose()?,"data_until":optional_iso(s.as_ref().and_then(|s|s.last_time))?,"error":q["error"],"retry_at":q["retry_at_us"].as_i64().map(|v| v as f64 / 1_000_000.0)}),
     )
 }
 fn point_rows(c: &Connection, s: &State) -> Result<Vec<Value>, AnalysisError> {
@@ -85,13 +95,18 @@ fn point_rows(c: &Connection, s: &State) -> Result<Vec<Value>, AnalysisError> {
         let body = p.as_object_mut().unwrap();
         let day = body.remove("day").unwrap();
         body.insert("date".into(), day);
+        let time = body
+            .remove("observed_at_us")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| failure("ANALYSIS_STATE", "missing observation time"))?;
+        body.insert("observed_at".into(), json!(iso(time)?));
         body.remove("account_id");
         body.remove("range_key");
         let b = body["sizing_fallback"] == 1;
         body.insert("sizing_fallback".into(), json!(b));
     }
     if let (Some(time), Some(equity)) = (&s.baseline_time, s.baseline_asset) {
-        points.insert(0,json!({"date":time,"observed_at":time,"record_id":s.baseline_id,"execution_id":s.baseline_execution,"account_return":0.0,"account_equity":equity,"account_daily_return":null,"portfolio_return":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"portfolio_daily_return":null,"target_portfolio_return":s.target_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"target_portfolio_daily_return":null,"difference":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"sizing_fallback":false}));
+        points.insert(0,json!({"date":crate::time_us::local_datetime(*time).map_err(|e|failure("ANALYSIS_TIME",e))?.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),"observed_at":iso(*time)?,"record_id":s.baseline_id,"execution_id":s.baseline_execution,"account_return":0.0,"account_equity":equity,"account_daily_return":null,"portfolio_return":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"portfolio_daily_return":null,"target_portfolio_return":s.target_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"target_portfolio_daily_return":null,"difference":s.executable_start.as_ref().filter(|t|*t<=time).map(|_|0.0),"sizing_fallback":false}));
     }
     Ok(points)
 }
@@ -125,24 +140,19 @@ struct Record {
     trades: Vec<Trade>,
     positions: Option<usize>,
     noop: bool,
-    time: f64,
+    time: i64,
 }
 fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, AnalysisError> {
-    let start = s
-        .baseline_time
-        .as_deref()
-        .map(crate::calendar::canonical_time)
-        .transpose()
-        .map_err(|e| failure("ANALYSIS_TIME", e))?
-        .unwrap_or_default();
-    let heads=store::rows(c,"SELECT * FROM executerecord WHERE account_id=?1 AND result_staged=0 AND (?2 IS NULL OR id=?2) AND axile_time(created_at)>=?3 AND axile_time(created_at)<=?4 ORDER BY axile_time(created_at),id",&[&s.account_id,&only,&start,&s.last_time.as_deref().unwrap_or("")])?;
+    let start = s.baseline_time.unwrap_or(i64::MIN);
+    let end = s.last_time.unwrap_or(i64::MIN);
+    let heads=store::rows(c,"SELECT * FROM executerecord WHERE account_id=?1 AND result_staged=0 AND (?2 IS NULL OR id=?2) AND created_at_us>=?3 AND created_at_us<=?4 ORDER BY created_at_us,id",&[&s.account_id,&only,&start,&end])?;
     let mut ticks = crate::fact_ticks::TickReader::new(c).map_err(sql)?;
     let mut reader = crate::fact_trades::TradeReader::new(c).map_err(sql)?;
     let mut position_reader = crate::fact_positions::PositionReader::new(c).map_err(sql)?;
     let mut out = Vec::new();
-    for head in heads {
+    for mut head in heads {
         let id = head["id"].as_i64().unwrap();
-        let when = head["created_at"].as_str().unwrap();
+        let when = head["created_at_us"].as_i64().unwrap();
         let prices = ticks.read(id).map_err(sql)?;
         let trades = reader
             .read(id, when, &prices)
@@ -157,7 +167,11 @@ fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, 
             && trades.is_empty()
             && !has_fills
             && (head["display_status"] == "NOOP" || has_symbols && !non_noop);
-        let time = crate::calendar::timestamp_ms(when).map_err(|e| failure("ANALYSIS_TIME", e))?;
+        let time = when;
+        head["created_at"] = json!(iso(when)?);
+        head["execution_time"] = json!(head["execution_time_us"]
+            .as_i64()
+            .map(|v| v as f64 / 1_000_000.0));
         out.push(Record {
             head,
             trades,
@@ -169,30 +183,23 @@ fn records(c: &Connection, s: &State, only: Option<i64>) -> Result<Vec<Record>, 
     Ok(out)
 }
 fn execution_summary(r: &Record) -> Value {
-    json!({"record_id":r.head["id"],"execution_id":r.head["execution_id"],"time_ms":r.time,"created_at":r.head["created_at"],"is_success":r.head["is_success"],"noop":r.noop,"has_transactions":r.trades.iter().any(|t|t.quantity.is_some()),"duration_sec":r.head["execution_time"],"symbol_count":r.trades.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<BTreeSet<_>>().len(),"position_count":r.positions,"positions_present":r.positions.is_some(),"reason":r.head["display_error"],"summary":summary(&r.trades).output()})
+    json!({"record_id":r.head["id"],"execution_id":r.head["execution_id"],"time_ms":ms(r.time),"created_at":r.head["created_at"],"is_success":r.head["is_success"],"noop":r.noop,"has_transactions":r.trades.iter().any(|t|t.quantity.is_some()),"duration_sec":r.head["execution_time"],"symbol_count":r.trades.iter().filter(|t|t.quantity.is_some()).map(|t|&t.symbol).collect::<BTreeSet<_>>().len(),"position_count":r.positions,"positions_present":r.positions.is_some(),"reason":r.head["display_error"],"summary":summary(&r.trades).output()})
 }
 fn events(c: &Connection, s: &State) -> Result<(Vec<Value>, usize), AnalysisError> {
-    let start = s
-        .baseline_time
-        .as_deref()
-        .map(crate::calendar::canonical_time)
-        .transpose()
-        .map_err(|e| failure("ANALYSIS_TIME", e))?
-        .unwrap_or_else(|| s.start.clone());
-    let mut rows=store::rows(c,"SELECT created_at AS time,'换绑' AS tag,CASE WHEN portfolio_id IS NULL THEN '解绑组合' ELSE '组合 #'||portfolio_id END AS text,NULL AS executionId FROM portfolioaccount WHERE account_id=?1 AND axile_time(created_at)>=?2 AND axile_time(created_at)<=?3 UNION ALL SELECT triggered_at,'跳过',CASE WHEN reason_code='BUSY' THEN '执行中' ELSE '休市' END,NULL FROM schedule_skip WHERE account_id=?1 AND axile_time(triggered_at)>=?2 AND axile_time(triggered_at)<=?3",&[&s.account_id,&start,&s.last_time])?;
+    let start = s.baseline_time.unwrap_or(s.start);
+    let mut rows=store::rows(c,"SELECT created_at_us AS time,'换绑' AS tag,CASE WHEN portfolio_id IS NULL THEN '解绑组合' ELSE '组合 #'||portfolio_id END AS text,NULL AS executionId FROM portfolioaccount WHERE account_id=?1 AND created_at_us>=?2 AND created_at_us<=?3 UNION ALL SELECT triggered_at_us,'跳过',CASE WHEN reason_code='BUSY' THEN '执行中' ELSE '休市' END,NULL FROM schedule_skip WHERE account_id=?1 AND triggered_at_us>=?2 AND triggered_at_us<=?3",&[&s.account_id,&start,&s.last_time])?;
     let mut labels = crate::fact_events::EventReader::new(c).map_err(sql)?;
-    for r in store::rows(c,"SELECT id,created_at,execution_id,display_status,task_status,reason_code FROM executerecord WHERE account_id=?1 AND result_staged=0 AND axile_time(created_at)>=?2 AND axile_time(created_at)<=?3",&[&s.account_id,&start,&s.last_time])? {
+    for r in store::rows(c,"SELECT id,created_at_us,execution_id,display_status,task_status,reason_code FROM executerecord WHERE account_id=?1 AND result_staged=0 AND created_at_us>=?2 AND created_at_us<=?3",&[&s.account_id,&start,&s.last_time])? {
         let text=labels.label(r["id"].as_i64().unwrap(),r["display_status"].as_str(),r["task_status"].as_str(),r["reason_code"].as_str()).map_err(sql)?;
-        rows.push(json!({"time":r["created_at"],"tag":"执行","text":text,"executionId":r["execution_id"]}));
+        rows.push(json!({"time":r["created_at_us"],"tag":"执行","text":text,"executionId":r["execution_id"]}));
     }
     let total = rows.len();
     let mut rows = rows;
-    rows.sort_by_cached_key(|v| {
-        std::cmp::Reverse(
-            crate::calendar::canonical_time(v["time"].as_str().unwrap()).unwrap_or_default(),
-        )
-    });
+    rows.sort_by_key(|v| std::cmp::Reverse(v["time"].as_i64().unwrap()));
     rows.truncate(100);
+    for row in &mut rows {
+        row["time"] = json!(iso(row["time"].as_i64().unwrap())?);
+    }
     Ok((rows, total))
 }
 pub(crate) fn chart(
@@ -203,7 +210,7 @@ pub(crate) fn chart(
 ) -> Result<Value, AnalysisError> {
     let s = guard(c, id, version, key)?;
     let points = point_rows(c, &s)?;
-    let mut result = json!({"range":key,"settings":{"backtest_weight_type":"cs","backtest_fee_rate":s.fee_rate},"engine_version":s.engine_version,"backtest_included":true,"baseline":s.baseline_time,"end":s.last_time,"record_count":c.query_row("SELECT count(*) FROM executerecord WHERE account_id=?1 AND result_staged=0",[id],|r|r.get::<_,i64>(0)).map_err(sql)?,"observation_count":s.observations,"used_record_count":s.used,"target_used_record_count":s.target_used,"invalid_asset_count":s.invalid_assets,"skips":{"count":s.skipped,"missing_target":s.missing_target,"missing_ticks":s.missing_price,"first_time":s.skip_first,"last_time":s.skip_last},"target_skips":{"count":s.target_skipped,"missing_target":s.target_missing_target,"missing_ticks":s.target_missing_price,"first_time":s.target_skip_first,"last_time":s.target_skip_last},"sizing_fallback_count":s.fallback_count,"points":points,"bindings":[],"calendar":null});
+    let mut result = json!({"range":key,"settings":{"backtest_weight_type":"cs","backtest_fee_rate":s.fee_rate},"engine_version":s.engine_version,"backtest_included":true,"baseline":optional_iso(s.baseline_time)?,"end":optional_iso(s.last_time)?,"record_count":c.query_row("SELECT count(*) FROM executerecord WHERE account_id=?1 AND result_staged=0",[id],|r|r.get::<_,i64>(0)).map_err(sql)?,"observation_count":s.observations,"used_record_count":s.used,"target_used_record_count":s.target_used,"invalid_asset_count":s.invalid_assets,"skips":{"count":s.skipped,"missing_target":s.missing_target,"missing_ticks":s.missing_price,"first_time":optional_iso(s.skip_first)?,"last_time":optional_iso(s.skip_last)?},"target_skips":{"count":s.target_skipped,"missing_target":s.target_missing_target,"missing_ticks":s.target_missing_price,"first_time":optional_iso(s.target_skip_first)?,"last_time":optional_iso(s.target_skip_last)?},"sizing_fallback_count":s.fallback_count,"points":points,"bindings":[],"calendar":null});
     crate::calendar::enrich(c, id, &mut result).map_err(|e| failure("ANALYSIS_CALENDAR", e))?;
     let records = records(c, &s, None)?;
     let mut days = BTreeMap::<String, Summary>::new();
@@ -233,11 +240,11 @@ pub(crate) fn chart(
             .ok_or_else(|| failure("ANALYSIS_STATE", "contribution has no daily point"))?);
     }
     Ok(
-        json!({"schema_version":1,"account_id":id,"version":version,"range":key,"computed_at":s.computed_at,"data_until":s.last_time,"result":result,"daily_costs":daily,"events":events,"event_count":count,"execution_index":records.iter().map(execution_summary).collect::<Vec<_>>(),"contributions":contributions}),
+        json!({"schema_version":1,"account_id":id,"version":version,"range":key,"computed_at":iso(s.computed_at)?,"data_until":optional_iso(s.last_time)?,"result":result,"daily_costs":daily,"events":events,"event_count":count,"execution_index":records.iter().map(execution_summary).collect::<Vec<_>>(),"contributions":contributions}),
     )
 }
 fn trade_json(t: &Trade, id: i64, index: usize, execution: &Value) -> Value {
-    json!({"record_id":id,"execution_id":execution,"trade_id":index,"symbol":t.symbol,"time":t.time,"day":t.day,"timeEstimated":t.estimated,"side":t.side,"quantity":t.quantity,"price":t.price,"reference":t.reference,"referenceSource":t.reference_source,"value":t.value,"cost":t.cost,"lossBp":t.loss_bp,"fee":t.fee,"feeCurrency":t.fee_currency})
+    json!({"record_id":id,"execution_id":execution,"trade_id":index,"symbol":t.symbol,"time":ms(t.time),"day":t.day,"timeEstimated":t.estimated,"side":t.side,"quantity":t.quantity,"price":t.price,"reference":t.reference,"referenceSource":t.reference_source,"value":t.value,"cost":t.cost,"lossBp":t.loss_bp,"fee":t.fee,"feeCurrency":t.fee_currency})
 }
 fn transaction_rows(c: &Connection, r: &Record) -> Result<Vec<Value>, AnalysisError> {
     crate::fact_transactions::TransactionReader::new(c)
@@ -293,7 +300,7 @@ pub(crate) fn detail(
         .pop()
         .ok_or_else(|| failure("EXECUTION_NOT_FOUND", "执行不属于所选区间"))?;
     let row = execution_row(c, &r, &r.trades)?;
-    let mut header = json!({"record_id":record,"time":r.time,"success":r.head["is_success"]==1,"noop":r.noop,"key":record.to_string(),"execution_id":r.head["execution_id"],"created_at":r.head["created_at"],"is_success":r.head["is_success"],"duration_sec":r.head["execution_time"],"trade_count":r.trades.len(),"symbol_count":row["symbolCount"],"position_count":r.positions,"positions_present":r.positions.is_some(),"reason":r.head["display_error"],"raw_present":255,"has_symbol_results":true});
+    let mut header = json!({"record_id":record,"time":ms(r.time),"success":r.head["is_success"]==1,"noop":r.noop,"key":record.to_string(),"execution_id":r.head["execution_id"],"created_at":r.head["created_at"],"is_success":r.head["is_success"],"duration_sec":r.head["execution_time"],"trade_count":r.trades.len(),"symbol_count":row["symbolCount"],"position_count":r.positions,"positions_present":r.positions.is_some(),"reason":r.head["display_error"],"raw_present":255,"has_symbol_results":true});
     for field in [
         "status",
         "task_status",
@@ -463,12 +470,12 @@ fn cursor(request: &Value, version: &str) -> Result<(String, usize), AnalysisErr
         .ok_or_else(|| failure("INVALID_REQUEST", "invalid cursor offset"))?;
     Ok((scope, offset))
 }
-fn matches(t: &Trade, q: &Value) -> bool {
+fn matches(t: &Trade, q: &Value, window: Option<(i64, i64)>) -> bool {
     if q["day"].as_str().is_some_and(|d| t.day != d) {
         return false;
     }
-    if let Some(start) = q["start"].as_f64() {
-        if t.time <= start || q["end"].as_f64().is_none_or(|end| t.time > end) {
+    if let Some((start, end)) = window {
+        if t.time <= start || t.time > end {
             return false;
         }
     }
@@ -492,23 +499,37 @@ fn selected_records(
     q: &Value,
 ) -> Result<Vec<(Record, Vec<Trade>)>, AnalysisError> {
     let mut selected = Vec::new();
+    let window = q["start"]
+        .as_f64()
+        .map(|start| -> Result<(i64, i64), AnalysisError> {
+            let end = q["end"]
+                .as_f64()
+                .ok_or_else(|| failure("INVALID_REQUEST", "end is required"))?;
+            let convert = |value: f64| -> Result<i64, AnalysisError> {
+                let us = value * 1000.0;
+                if !us.is_finite() || us < i64::MIN as f64 || us >= i64::MAX as f64 {
+                    return Err(failure("INVALID_REQUEST", "invalid millisecond boundary"));
+                }
+                Ok(us.round() as i64)
+            };
+            Ok((convert(start)?, convert(end)?))
+        })
+        .transpose()?;
     for r in records(c, s, q["record_id"].as_i64())? {
         let filtered = r
             .trades
             .iter()
-            .filter(|t| matches(t, q))
+            .filter(|t| matches(t, q, window))
             .cloned()
             .collect::<Vec<_>>();
         let symbol_scope =
             q["symbol"].is_string() || q["symbol_search"].is_string() || q["side"].is_string();
         let window = if let Some(day) = q["day"].as_str() {
-            crate::calendar::local_time(r.head["created_at"].as_str().unwrap())
+            crate::time_us::local_datetime(r.time)
                 .map(|t| t.date().to_string() == day)
                 .unwrap_or(false)
         } else {
-            q["start"].as_f64().is_none_or(|start| {
-                r.time > start && q["end"].as_f64().is_some_and(|end| r.time <= end)
-            })
+            window.is_none_or(|(start, end)| r.time > start && r.time <= end)
         };
         if !filtered.is_empty() || !symbol_scope && window {
             selected.push((r, filtered));
@@ -517,7 +538,7 @@ fn selected_records(
     Ok(selected)
 }
 fn symbol_costs(selected: &[(Record, Vec<Trade>)]) -> Vec<Value> {
-    let mut groups = BTreeMap::<String, (Summary, f64, f64, f64, bool)>::new();
+    let mut groups = BTreeMap::<String, (Summary, i64, f64, f64, bool)>::new();
     for (_, trades) in selected {
         for t in trades {
             let group = groups
@@ -533,7 +554,7 @@ fn symbol_costs(selected: &[(Record, Vec<Trade>)]) -> Vec<Value> {
             }
         }
     }
-    groups.into_iter().map(|(symbol,(summary,time,buy,sell,incomplete))|json!({"symbol":symbol,"lastTime":time,"buy":buy,"sell":sell,"quantityIncomplete":incomplete,"summary":summary.output()})).collect()
+    groups.into_iter().map(|(symbol,(summary,time,buy,sell,incomplete))|json!({"symbol":symbol,"lastTime":ms(time),"buy":buy,"sell":sell,"quantityIncomplete":incomplete,"summary":summary.output()})).collect()
 }
 fn trade_costs(selected: &[(Record, Vec<Trade>)]) -> Vec<Value> {
     selected
@@ -597,17 +618,16 @@ pub(crate) fn costs(
         }
     }
     let (count, data) = if dimension == "execution" {
-        let order = |r: &Record, trades: &[Trade]| {
-            if sort == "cost" {
-                summary(trades).cost.unwrap_or(f64::NEG_INFINITY)
-            } else {
-                r.time
-            }
-        };
         selected.sort_by(|(a, at), (b, bt)| {
-            order(b, bt)
-                .total_cmp(&order(a, at))
-                .then_with(|| b.head["id"].as_i64().cmp(&a.head["id"].as_i64()))
+            (if sort == "cost" {
+                summary(bt)
+                    .cost
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&summary(at).cost.unwrap_or(f64::NEG_INFINITY))
+            } else {
+                b.time.cmp(&a.time)
+            })
+            .then_with(|| b.head["id"].as_i64().cmp(&a.head["id"].as_i64()))
         });
         let count = selected.len();
         let data: Vec<Value> = selected
@@ -638,6 +658,6 @@ pub(crate) fn costs(
             .encode(json!({"version":version,"scope":scope,"offset":offset+limit}).to_string())
     });
     Ok(
-        json!({"version":version,"data_until":s.last_time,"summary":total.output(),"successful":successful,"noop":noop,"count":count,"data":data,"next_cursor":next}),
+        json!({"version":version,"data_until":optional_iso(s.last_time)?,"summary":total.output(),"successful":successful,"noop":noop,"count":count,"data":data,"next_cursor":next}),
     )
 }

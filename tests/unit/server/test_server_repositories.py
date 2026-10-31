@@ -17,15 +17,19 @@ from axile.server.repositories import (
 )
 from tests.conftest import native_store_call
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us
 from tests.unit.server.test_account_control_routes import _build_account
+
+_NOW_US = to_us("2026-10-23T09:00:00+08:00")
 
 
 def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch) -> None:
     monkeypatch.setattr(db, "database_path", lambda: str(native_database))
     with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
-            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) VALUES(1,'p','期货',?,'now','now')",
-            ("def calculate_portfolio(context): return {}",),
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) "
+            "VALUES(1,'p','期货',?,?,?)",
+            ("def calculate_portfolio(context): return {}", _NOW_US, _NOW_US),
         )
     for name in ("first", "second"):
         native_store_call(
@@ -38,8 +42,8 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
         )
     with closing(oracle_connect(native_database)) as connection, connection:
         connection.executemany(
-            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(?,?,'now')",
-            [(1, 1), (2, 1), (1, None)],
+            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(?,?,?)",
+            [(1, 1, _NOW_US), (2, 1, _NOW_US), (1, None, _NOW_US)],
         )
 
     async def scenario():
@@ -54,7 +58,9 @@ def test_latest_binding_respects_explicit_unbinding(native_database, monkeypatch
             await delete_portfolio(1)
         assert exc.value.status_code == 422
         with closing(oracle_connect(native_database)) as connection, connection:
-            connection.execute("INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(2,NULL,'now')")
+            connection.execute(
+                "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(2,NULL,?)", (_NOW_US,)
+            )
         assert (
             json.loads(native_store_call(native_database, "portfolio_query_json", {"op": "get", "portfolio_id": 1}))[
                 "account_id"

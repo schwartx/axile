@@ -3,6 +3,7 @@
 import math
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from datetime import UTC, datetime
 from decimal import Decimal
 
 _COLLECTIONS = {
@@ -46,6 +47,23 @@ _ALIASES = {
     "strategy_weights": "strategy_target",
     "raw_weights": "strategy_target",
 }
+_TIME_FIELDS = {
+    "orders": {"create_time", "update_time"},
+    "trades": {"trade_time"},
+    "account_assets": {"update_time"},
+    "first_tick": {"update_time", "timestamp_datetime"},
+    "first_ticks": {"update_time", "timestamp_datetime"},
+    "termination": {"requested_at", "acked_at", "finished_at"},
+}
+
+
+def _time_evidence(value: object, *, context: str, field: str, native: bool) -> object:
+    if native or field not in _TIME_FIELDS.get(context, ()) or not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value).astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    except (ValueError, OverflowError, OSError):
+        return value
 
 
 def _restore_audit(body: dict) -> None:
@@ -140,7 +158,11 @@ def business_evidence(value: object, *, context: str = "", native: bool = False)
         if context == "input" or any(key in body for key in ("curr_target", "last_target", "strategy_target")):
             _normalize_input(body)
     return {
-        key: business_evidence(item, context=key, native=native or key in _NATIVE_JSON)
+        key: business_evidence(
+            _time_evidence(item, context=context, field=key, native=native),
+            context="first_tick" if context == "first_ticks" else key,
+            native=native or key in _NATIVE_JSON,
+        )
         for key, item in body.items()
         if item is not None or native or context in _TARGETS or key in _COLLECTIONS
     }

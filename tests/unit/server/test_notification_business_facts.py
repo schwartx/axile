@@ -10,6 +10,7 @@ import pytest
 from axile.server._native import _core
 from axile.server.api.routes import account_feishu
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_test_support import build_account
 
@@ -94,7 +95,7 @@ def test_preview_reads_captured_context_from_business_facts(monkeypatch, native_
     assert context["positions"] is None
     assert context["execution"]["execution_time"] == 0.0
     assert context["execution"]["error"] == "部分成交"
-    assert context["execution"]["notified_at"] == record.created_at
+    assert context["execution"]["notified_at"] == utc_time(record.created_at)
     assets.assert_not_awaited()
 
 
@@ -207,5 +208,7 @@ def test_rebuild_keeps_explicit_errors_and_native_order_time(monkeypatch, native
     assert context["symbols"][0]["error"] == error
     assert ("update_time" in context["orders"][0]) == ("update_time" in time_fields)
     if "update_time" in time_fields:
-        assert context["orders"][0]["update_time"] == time_fields["update_time"]
+        assert context["orders"][0]["update_time"] == (
+            utc_time(time_fields["update_time"]) if time_fields["update_time"] is not None else None
+        )
     assert payload == original

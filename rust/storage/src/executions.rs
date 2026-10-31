@@ -17,7 +17,6 @@ const BOOLEAN_FIELDS: &[&str] = &[
     "termination_cancel_unconfirmed",
 ];
 const TEXT_FIELDS: &[&str] = &[
-    "created_at",
     "execution_id",
     "input_id",
     "result_input_id",
@@ -37,9 +36,12 @@ const TEXT_FIELDS: &[&str] = &[
     "termination_reason",
     "termination_mode",
     "termination_trigger",
-    "termination_requested_at",
-    "termination_acked_at",
-    "termination_finished_at",
+];
+const TIME_FIELDS: &[(&str, &str)] = &[
+    ("created_at", "created_at_us"),
+    ("termination_requested_at", "termination_requested_at_us"),
+    ("termination_acked_at", "termination_acked_at_us"),
+    ("termination_finished_at", "termination_finished_at_us"),
 ];
 pub(crate) const SYMBOL_FIELDS: [&str; 5] = [
     "status",
@@ -67,8 +69,11 @@ fn account_exists(connection: &Connection, account_id: i64) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Map<String, Value>, AnalysisError> {
-    let read_error = |error: rusqlite::Error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string());
+pub(crate) fn symbol_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<Map<String, Value>, AnalysisError> {
+    let read_error =
+        |error: rusqlite::Error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string());
     let mut fields = Map::new();
     for name in SYMBOL_FIELDS {
         if let Some(value) = row.get::<_, Option<String>>(name).map_err(read_error)? {
@@ -76,8 +81,11 @@ pub(crate) fn symbol_from_row(row: &rusqlite::Row<'_>) -> Result<Map<String, Val
         }
     }
     if let Some(memory) = row.get::<_, Option<String>>("memory").map_err(read_error)? {
-        fields.insert("memory".into(), serde_json::from_str(&memory)
-            .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?);
+        fields.insert(
+            "memory".into(),
+            serde_json::from_str(&memory)
+                .map_err(|error| AnalysisError::new("EXECUTION_READ_ERROR", error.to_string()))?,
+        );
     }
     let mut normalized = if row.get::<_, String>("node_kind").map_err(read_error)? == "object" {
         crate::business_facts_ops::result_head::normalized_result(&fields)
@@ -103,8 +111,8 @@ fn records(
     let mut symbols: HashMap<i64, Map<String, Value>> = HashMap::new();
     let mut symbol_rows = symbol_statement.query(arguments).map_err(database)?;
     while let Some(row) = symbol_rows.next().map_err(database)? {
-        let fields = symbol_from_row(row)
-        .map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
+        let fields =
+            symbol_from_row(row).map_err(|error| format!("EXECUTION_READ_ERROR: {error}"))?;
         symbols
             .entry(row.get("record_id").map_err(database)?)
             .or_default()
@@ -115,7 +123,8 @@ fn records(
         .chain(INTEGER_FIELDS)
         .chain(BOOLEAN_FIELDS)
         .copied()
-        .chain(std::iter::once("execution_time"))
+        .chain(std::iter::once("execution_time_us"))
+        .chain(TIME_FIELDS.iter().map(|(_, column)| *column))
         .map(|name| format!("r.{name}"))
         .collect::<Vec<_>>()
         .join(",");
@@ -139,6 +148,14 @@ fn records(
                 json!(row.get::<_, Option<String>>(*name).map_err(database)?),
             );
         }
+        for &(name, column) in TIME_FIELDS {
+            let value = row
+                .get::<_, Option<i64>>(column)
+                .map_err(database)?
+                .map(crate::time_us::format)
+                .transpose()?;
+            header.insert(name.into(), json!(value));
+        }
         for &name in INTEGER_FIELDS {
             header.insert(
                 name.into(),
@@ -148,8 +165,9 @@ fn records(
         header.insert(
             "execution_time".into(),
             json!(row
-                .get::<_, Option<f64>>("execution_time")
-                .map_err(database)?),
+                .get::<_, Option<i64>>("execution_time_us")
+                .map_err(database)?
+                .map(|value| value as f64 / 1_000_000.0)),
         );
         for &name in BOOLEAN_FIELDS {
             header.insert(
@@ -241,7 +259,7 @@ mod tests {
             "CREATE TABLE account(id INTEGER PRIMARY KEY);
              INSERT INTO account VALUES(1);
              CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,is_success INTEGER,
-             execution_time REAL,success INTEGER,termination_cancel_attempted INTEGER,
+             execution_time_us INTEGER,success INTEGER,termination_cancel_attempted INTEGER,
              termination_forced INTEGER,termination_cancel_unconfirmed INTEGER,facts_complete INTEGER DEFAULT 1,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_symbol_collection(record_id INTEGER,path TEXT,node_kind TEXT);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,status TEXT,error TEXT,outcome TEXT,outcome_reason TEXT,reason_code TEXT,memory TEXT,node_kind TEXT DEFAULT 'object');
@@ -252,6 +270,13 @@ mod tests {
             connection
                 .execute_batch(&format!(
                     "ALTER TABLE executerecord ADD COLUMN {name} TEXT;"
+                ))
+                .unwrap();
+        }
+        for (_, column) in TIME_FIELDS {
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE executerecord ADD COLUMN {column} INTEGER;"
                 ))
                 .unwrap();
         }
@@ -346,5 +371,39 @@ mod tests {
             })
         );
         assert_eq!(connection.query_row("SELECT count(*) FROM execution_symbol_result WHERE outcome IS NULL AND error IS NULL AND reason_code IS NULL", [], |row| row.get::<_,i64>(0)).unwrap(),3);
+    }
+    #[test]
+    fn public_header_formats_integer_times_without_rewriting_json_memory() {
+        let connection = fixture();
+        connection.execute_batch(
+            "INSERT INTO executerecord(id,account_id,is_success,created_at_us,termination_finished_at_us,execution_time_us)
+             VALUES(1,1,1,-1,1767229200123456,123456);
+             INSERT INTO execution_symbol_collection VALUES(1,'/symbol_results','object');
+             INSERT INTO execution_symbol_result(record_id,path,map_key,status,memory,node_kind)
+             VALUES(1,'/symbol_results/A','A','SUCCEEDED','{\"created_at\":\"unchanged\"}','object');"
+        ).unwrap();
+        let result = page(&connection, 1, 0, 1, None, None).unwrap();
+        assert_eq!(
+            result["data"][0]["created_at"],
+            "1969-12-31T23:59:59.999999Z"
+        );
+        assert_eq!(
+            result["data"][0]["termination_finished_at"],
+            "2026-01-01T01:00:00.123456Z"
+        );
+        assert!(result["data"][0]["termination_requested_at"].is_null());
+        assert_eq!(result["data"][0]["execution_time"], 0.123456);
+        assert!(!result["data"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("created_at_us"));
+        assert_eq!(
+            connection
+                .query_row("SELECT memory FROM execution_symbol_result", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            r#"{"created_at":"unchanged"}"#
+        );
     }
 }

@@ -61,6 +61,7 @@ pub(crate) mod supplements;
 pub mod symbols;
 pub(crate) mod target_ops;
 pub(crate) mod time_check;
+pub(crate) mod time_us;
 pub(crate) mod writer_scope;
 
 use rusqlite::Connection;
@@ -170,21 +171,21 @@ pub(crate) fn trade_fixture() -> Connection {
     let connection = Connection::open_in_memory().unwrap();
     crate::calendar::register_time_function(&connection).unwrap();
     connection.execute_batch(
-            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at TEXT,result_staged INTEGER DEFAULT 0);
+            "CREATE TABLE executerecord(id INTEGER,account_id INTEGER,created_at_us INTEGER,result_staged INTEGER DEFAULT 0);
              CREATE TABLE execution_symbol_result(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER);
              CREATE TABLE execution_symbol_tick(record_id INTEGER,path TEXT,map_key TEXT,ordinal INTEGER,bid_price REAL,ask_price REAL,last_price REAL,book_valid INTEGER);
              CREATE TABLE execution_symbol_sizing(record_id INTEGER,path TEXT,unit_multiplier REAL);
              CREATE TABLE business_trade_collection(record_id INTEGER,path TEXT,parent_path TEXT,state TEXT);
-             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time TEXT,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
+             CREATE TABLE business_trade(record_id INTEGER,collection_path TEXT,ordinal INTEGER,trade_time_us INTEGER,trade_price REAL,trade_volume REAL,order_id TEXT,extra TEXT,fee_currency TEXT);
              CREATE TABLE execution_order(record_id INTEGER,path TEXT,order_id TEXT,ordinal INTEGER,direction TEXT);
-             INSERT INTO executerecord(id,account_id,created_at) VALUES(1,2,'2026-01-01T09:00:00'),(2,2,'2026-01-02T09:00:00'),(3,9,'2026-01-03T09:00:00');
+             INSERT INTO executerecord(id,account_id,created_at_us) VALUES(1,2,1767229200000000),(2,2,1767315600000000),(3,9,1767402000000000);
              INSERT INTO execution_symbol_result VALUES(1,'/symbol_results/A','A',0);
              INSERT INTO execution_symbol_tick VALUES(1,'/symbol_results/A/first_tick','A',0,100,100,100,1);
              INSERT INTO execution_symbol_sizing VALUES(1,'/symbol_results/A/sizing',1);
              INSERT INTO business_trade_collection VALUES(1,'/symbol_results/A/trades','/symbol_results/A','array');
              INSERT INTO business_trade VALUES
-               (1,'/symbol_results/A/trades',0,'invalid',102,1,'1','{\"direction\":\"buy\",\"commission\":0}','CNY'),
-               (1,'/symbol_results/A/trades',1,'2026-01-01T09:00:00',NULL,1,'2','{\"commission\":-0.2}','USD');"
+               (1,'/symbol_results/A/trades',0,NULL,102,1,'1','{\"direction\":\"buy\",\"commission\":0}','CNY'),
+               (1,'/symbol_results/A/trades',1,1767229200000000,NULL,1,'2','{\"commission\":-0.2}','USD');"
         ).unwrap();
     connection
 }

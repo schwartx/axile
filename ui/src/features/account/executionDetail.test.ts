@@ -635,6 +635,19 @@ it('详情头条与品种原因展示后端说明，原始附件保留', () => {
   expect(summary.error).toBe('非交易时段')
 })
 
+it('历史附件时间带空白或损坏时仍可显示详情并保留原始正文', () => {
+  const artifacts = [
+    art('account_snapshot_before', { account_assets: { update_time: ' 2026-01-02T09:30:00.123456+08:00 ' } }),
+    art('account_snapshot', { account_assets: { update_time: 'invalidTtime' } }),
+  ]
+  const original = structuredClone(artifacts)
+  const model = buildExecutionDetail([], artifacts)
+  expect(model.spine.find(node => node.key === 'before')?.time).toBe('09:30:00')
+  expect(model.spine.find(node => node.key === 'after')?.time).toBe('')
+  expect(model.artifacts).toBe(artifacts)
+  expect(artifacts).toEqual(original)
+})
+
 it('详情保留未知原因，不猜测或隐藏诊断信息', () => {
   const model = buildExecutionDetail([], [], null, { status: 'FAILED', error: 'UNKNOWN_CODE' })
   expect(model.conclusion.reason).toBe('UNKNOWN_CODE')

@@ -177,7 +177,7 @@ def test_stale_claim_never_advances_any_state_and_recovery_resumes(account):
     assert not update(account, row)["updated"]
     assert sql(account, "SELECT version,max_id FROM analysis_state ORDER BY range_key") == previous
     core = require_native_store()
-    core.queue_recover(str(account), "25", "equity-ledger-1")
+    core.queue_recover(str(account), "26", "equity-ledger-1")
     receipt = update(account)
     assert receipt["updated"]
     assert_full_replay(account)
@@ -187,7 +187,7 @@ def test_stale_claim_never_advances_any_state_and_recovery_resumes(account):
         {
             "account_id": 1,
             "source_version": receipt["version"],
-            "logic_version": "25",
+            "logic_version": "26",
             "engine_version": "equity-ledger-1",
         },
     )
@@ -444,7 +444,7 @@ def test_old_logic_is_invalidated_and_rebuilt_without_new_facts(account):
     core = require_native_store()
     with pytest.raises(core.NativeError, match="ANALYSIS_VERSION_CHANGED"):
         query(account)
-    core.queue_recover(str(account), "25", "equity-ledger-1")
+    core.queue_recover(str(account), "26", "equity-ledger-1")
     assert update(account)["processed_observations"] == 6
     assert_full_replay(account)
     assert query(account)["contributions"][-1]["gross_pnl"] != 999

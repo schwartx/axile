@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 from axile.server.native_store import native_operation
 from tests.sqlite_oracle import connect as oracle_connect
-from tests.sqlite_oracle import sqlite_oracle
+from tests.sqlite_oracle import sqlite_oracle, to_us
+from tests.sqlite_oracle import utc_time as utc_time
 from tests.unit.server._execution_test_support import account_settings_values, build_account
 
 
@@ -41,7 +42,7 @@ async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Pa
             for account_id in (1, 2):
                 account = build_account(id=account_id, portfolio_id=None)
                 connection.execute(
-                    "INSERT INTO account(id,name,market,trade_channel,remark,brokerage,updated_at,created_at) "
+                    "INSERT INTO account(id,name,market,trade_channel,remark,brokerage,updated_at_us,created_at_us) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (
                         account_id,
@@ -50,8 +51,8 @@ async def runtime_database(path: Path, *, wal: bool = False) -> AsyncIterator[Pa
                         str(account.trade_channel),
                         account.remark,
                         account.brokerage,
-                        account.updated_at,
-                        account.created_at,
+                        to_us(account.updated_at),
+                        to_us(account.created_at),
                     ),
                 )
                 groups = account_settings_values(account).values()

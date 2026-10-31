@@ -7,6 +7,7 @@ import pytest
 from axile.server._native import _core
 from axile.server.execution.execution_summaries import execution_result_view
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import to_us
 from tests.unit.server._business_facts_test_support import read_result, rows, seed_account, sql
 
 _PRIVATE_RULES = {
@@ -16,6 +17,14 @@ _PRIVATE_RULES = {
     "dependency": "0013",
     "codes": {"EXAMPLE_CHANNEL": {"-2019": "保证金不足"}},
 }
+
+
+def _seed_0033_account(path):
+    sql(
+        path,
+        "INSERT INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
+        "VALUES(1,'oracle','期货','ctp','','2026-10-20','2026-10-20')",
+    )
 
 
 def persist(path, **changes):
@@ -86,7 +95,7 @@ def test_parent_attaches_input_and_termination_without_replacing_worker_facts(na
 def test_migration_conflict_rolls_back_version_and_summary(tmp_path):
     path = tmp_path / "conflict.db"
     initialize_native_database(path, revision="0033")
-    seed_account(path)
+    _seed_0033_account(path)
     sql(
         path,
         "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES('orphan','EXECUTION_SUMMARY',2,'{}','t')",
@@ -100,7 +109,9 @@ def test_new_database_rejects_persisted_summary(native_database):
     with pytest.raises(Exception, match="derived from facts"):
         sql(
             native_database,
-            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at) VALUES('x','EXECUTION_SUMMARY',2,'{}','t')",
+            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at_us) "
+            "VALUES('x','EXECUTION_SUMMARY',2,'{}',?)",
+            (to_us("2026-10-28"),),
         )
 
 
@@ -146,7 +157,7 @@ def test_private_patch_discards_backup_and_rejects_restore(native_database, publ
 def test_backup_cleanup_preserves_facts_and_rejects_private_restore(tmp_path, edit_fact):
     path = tmp_path / "summary-backup.db"
     initialize_native_database(path, revision="0033")
-    seed_account(path)
+    _seed_0033_account(path)
     result = {"channel_type": "example_channel", "status": "FAILED", "error": "-2019"}
     sql(
         path,
@@ -179,7 +190,7 @@ def test_backup_cleanup_preserves_facts_and_rejects_private_restore(tmp_path, ed
 def test_legacy_independent_reconciliation_is_rejected_before_dropping_json(tmp_path):
     path = tmp_path / "independent-reconciliation.db"
     initialize_native_database(path, revision="0033")
-    seed_account(path)
+    _seed_0033_account(path)
     result = {"status": "FAILED", "reconciliation": {"independent": "keep"}}
     sql(
         path,
@@ -212,7 +223,7 @@ def test_read_view_uses_frozen_before_observation_and_keeps_unknowns():
 def test_migration_removes_only_derivable_summary(tmp_path, conflict):
     path = tmp_path / "summary.db"
     initialize_native_database(path, revision="0033")
-    seed_account(path)
+    _seed_0033_account(path)
     sql(
         path,
         "INSERT INTO executerecord(account_id,execution_id,is_success,created_at,raw_input,raw_result) "

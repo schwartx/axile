@@ -13,6 +13,7 @@ from tests.conftest import initialize_native_database, native_store_call, requir
 from tests.fixtures.rust_store.data_contract import database_rows, seed_database
 from tests.fixtures.rust_store.schema_contract import database_schema, load_schema, schema_differences
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us
 
 _FIXTURES = Path(__file__).parents[2] / "fixtures/rust_store"
 _TAG_COMMIT = "bc70e4a3785eacedeaf4eadcda5a3109d3a3ffa6"
@@ -136,7 +137,7 @@ def test_fixture_id_move_keeps_parent_facts_and_foreign_keys(tmp_path: Path) -> 
         connection.execute("PRAGMA foreign_keys=ON")
         insert_account(connection, build_account(id=2, portfolio_id=None))
         connection.execute(
-            "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at) VALUES (1,2,'move',0,'2026-10-01')"
+            "INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us) VALUES (1,2,'move',0,0)"
         )
         connection.execute(
             "INSERT INTO execution_order_collection(record_id,path,ordinal,kind,item_count,audit_evidence) "
@@ -313,10 +314,17 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
     data["seed"]["execution_artifact"] = [
         row for row in data["seed"]["execution_artifact"] if row["artifact_type"].upper() != "EXECUTION_SUMMARY"
     ]
+    # 冻结语料的占位时间只在本测试副本中替换；原始材料和 JSON 正文保持不变。
+    for row in data["seed"]["notification_event"]:
+        if row["finished_at"] is not None:
+            row["finished_at"] = "2026-10-01T00:00:00.123456Z"
     with closing(oracle_connect(path)) as connection, connection:
         seed_database(connection, data["seed"])
     assert initialize_native_database(path, revision="0034")["public"] == "0034"
     expected = data["expected"]
+    for row in expected["notification_event"]:
+        if row["finished_at"] is not None:
+            row["finished_at"] = "2026-10-01T00:00:00.123456Z"
     expected["execution_artifact"] = [
         row for row in expected["execution_artifact"] if row["artifact_type"].upper() != "EXECUTION_SUMMARY"
     ]
@@ -350,6 +358,32 @@ def test_nonempty_native_upgrade_matches_frozen_0034_rows(tmp_path: Path) -> Non
         expected[name].sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
     with closing(oracle_connect(path)) as connection, connection:
         actual = database_rows(connection)
+        for table, records in expected.items():
+            fields = {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')}
+            for row in records:
+                for name in list(row):
+                    storage = name.removesuffix("_ms") + "_us"
+                    if storage not in fields or name in fields:
+                        continue
+                    value = row.pop(name)
+                    if value is None:
+                        row[storage] = None
+                    elif name in {"execution_time", "update_timestamp", "retry_at"}:
+                        row[storage] = round(value * 1_000_000)
+                    elif name.endswith("_ms") or name == "timestamp":
+                        row[storage] = value * 1000
+                    else:
+                        try:
+                            row[storage] = to_us(value)
+                        except ValueError:
+                            row[storage] = None
+                            evidence = json.loads(row["audit_evidence"][1])
+                            evidence.setdefault("invalid_fields", {})[name] = value
+                            row["audit_evidence"] = [
+                                "json",
+                                json.dumps(evidence, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+                            ]
+            records.sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False))
 
         def business(name):
             return name not in {"alembic_version", "account_analysis"} and not name.startswith(
@@ -408,8 +442,8 @@ def test_native_target_fixture_preserves_explicit_id_and_empty_weights(tmp_path:
     initialize_native_database(path)
     with closing(oracle_connect(path)) as connection, connection:
         connection.execute(
-            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) "
-            "VALUES (11,'fixture','FUTURES','','now','now')"
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) "
+            "VALUES (11,'fixture','FUTURES','',0,0)"
         )
         insert_account(connection, build_account(id=2, portfolio_id=11))
 

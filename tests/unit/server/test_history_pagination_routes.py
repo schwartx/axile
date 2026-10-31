@@ -17,6 +17,7 @@ from axile.server.api.routes import account as account_routes
 from axile.server.api.routes import account_crud
 from axile.server.db.models import ExecutionArtifact, ExecutionEvent
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import to_us
 from tests.unit.server._execution_test_support import build_account, insert_account
 from tests.unit.server._native_read_views import persist_record_fixture
 
@@ -38,6 +39,10 @@ def _build_app():
     app.include_router(account_routes.router)
     app.dependency_overrides[get_scheduler] = _Scheduler
     return app
+
+
+def _binding_time(identity):
+    return f"2026-10-20T01:00:00.{identity:06d}Z"
 
 
 @pytest.mark.parametrize("path,operation,_table", _ROUTES)
@@ -75,7 +80,7 @@ def _seed(path, name, count):
         return
     if name == "portfolioaccount":
         values = [
-            {"id": identity, "account_id": 1, "portfolio_id": None, "created_at": f"stamp-{identity:04d}"}
+            {"id": identity, "account_id": 1, "portfolio_id": None, "created_at_us": to_us(_binding_time(identity))}
             for identity in range(1, count + 1)
         ]
     else:
@@ -100,6 +105,11 @@ def _seed(path, name, count):
             ).model_dump(mode="json")
             for identity in range(1, count + 1)
         ]
+        fields = ("ts_local_created", "ts_exchange", "ts_persisted") if name == "execution_event" else ("created_at",)
+        for row in values:
+            for field in fields:
+                value = row.pop(field)
+                row[field + "_us"] = to_us(value) if value is not None else None
     engine = sa.create_engine(f"sqlite:///{path}")
     try:
         with engine.begin() as connection:
@@ -133,7 +143,7 @@ def test_history_routes_accept_pagination_bounds_and_apply_limit(path, operation
             assert json.loads(query.call_args.args[1])["skip"] == 0
             if name == "portfolioaccount":
                 assert [item["created_at"] for item in payload["data"]] == [
-                    f"stamp-{identity:04d}" for identity in range(1, 501)
+                    _binding_time(identity) for identity in range(1, 501)
                 ]
             else:
                 assert [item["id"] for item in payload["data"]] == list(range(1, min(count, 500) + 1))
@@ -148,6 +158,6 @@ def test_history_routes_accept_pagination_bounds_and_apply_limit(path, operation
             return
         last = remainder.json()["data"][0]
         if name == "portfolioaccount":
-            assert last["created_at"] == "stamp-0501"
+            assert last["created_at"] == _binding_time(501)
         else:
             assert last["id"] == (1 if name == "executerecord" else 501)

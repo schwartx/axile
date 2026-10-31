@@ -66,7 +66,7 @@ fn insert_event(connection: &Connection, row: &Value) -> Result<bool, AnalysisEr
         connection.execute(
             "INSERT INTO execution_event(execution_id,account_id,channel,algorithm,schema_version,
              event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,
-             client_order_id,ts_local_created,ts_exchange,ts_persisted,seq,details)
+             client_order_id,ts_local_created_us,ts_exchange_us,ts_persisted_us,seq,details)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
             params![
                 text(row, "execution_id")?,
@@ -83,9 +83,12 @@ fn insert_event(connection: &Connection, row: &Value) -> Result<bool, AnalysisEr
                 optional_text(row, "intent_id")?,
                 optional_text(row, "order_id")?,
                 optional_text(row, "client_order_id")?,
-                text(row, "ts_local_created")?,
-                optional_text(row, "ts_exchange")?,
-                text(row, "ts_persisted")?,
+                crate::time_us::parse(text(row, "ts_local_created")?).map_err(invalid)?,
+                optional_text(row, "ts_exchange")?
+                    .map(crate::time_us::parse)
+                    .transpose()
+                    .map_err(invalid)?,
+                crate::time_us::parse(text(row, "ts_persisted")?).map_err(invalid)?,
                 integer(row, "seq")?,
                 object_json(row, "details")?,
             ],
@@ -100,10 +103,10 @@ fn insert_artifact(connection: &Connection, row: &Value) -> Result<bool, Analysi
     }
     inserted(
         connection.execute(
-            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at)
+            "INSERT INTO execution_artifact(execution_id,artifact_type,schema_version,content,created_at_us)
              VALUES(?1,?2,?3,?4,?5)",
             params![text(row, "execution_id")?, text(row, "artifact_type")?.to_ascii_uppercase(),
-                integer(row, "schema_version")?, object_json(row, "content")?, text(row, "created_at")?],
+                integer(row, "schema_version")?, object_json(row, "content")?, crate::time_us::parse(text(row, "created_at")?).map_err(invalid)?],
         ),
         &["execution_artifact.execution_id", "execution_artifact.artifact_type",
             "uq_execution_artifact_execution_type"],
@@ -232,6 +235,7 @@ pub(crate) fn decode_row(row: &Row<'_>, table: &str) -> Result<Value, AnalysisEr
         }
         result.insert((*name).to_owned(), value);
     }
+    crate::time_us::decode_columns(table, &mut result).map_err(invalid)?;
     Ok(Value::Object(result))
 }
 
@@ -250,8 +254,8 @@ fn list(connection: &Connection, request: &Value, table: &str) -> Result<Value, 
         )
         .map_err(sql)?;
     let columns = match table {
-        "execution_event" => "id,execution_id,account_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,client_order_id,ts_local_created,ts_exchange,ts_persisted,seq,details",
-        _ => "id,execution_id,artifact_type,schema_version,content,created_at",
+        "execution_event" => "id,execution_id,account_id,channel,algorithm,schema_version,event_uid,event_type,status,reason_family,reason_code,symbol,intent_id,order_id,client_order_id,ts_local_created_us,ts_exchange_us,ts_persisted_us,seq,details",
+        _ => "id,execution_id,artifact_type,schema_version,content,created_at_us",
     };
     let mut statement = connection
         .prepare(&format!(
@@ -342,11 +346,11 @@ mod tests {
             algorithm TEXT NOT NULL,schema_version INTEGER NOT NULL,event_uid TEXT UNIQUE NOT NULL,
             event_type TEXT NOT NULL,status TEXT NOT NULL,reason_family TEXT NOT NULL,
             reason_code TEXT NOT NULL CHECK(reason_code!='SQL.FAIL'),symbol TEXT,intent_id TEXT,order_id TEXT,client_order_id TEXT,
-            ts_local_created TEXT NOT NULL,ts_exchange TEXT,ts_persisted TEXT NOT NULL,
+            ts_local_created_us INTEGER NOT NULL,ts_exchange_us INTEGER,ts_persisted_us INTEGER NOT NULL,
             seq INTEGER NOT NULL,details JSON NOT NULL);
             CREATE TABLE execution_artifact(id INTEGER PRIMARY KEY,execution_id TEXT NOT NULL,
             artifact_type TEXT NOT NULL,schema_version INTEGER NOT NULL,content JSON NOT NULL,
-            created_at TEXT NOT NULL,UNIQUE(execution_id,artifact_type));",
+            created_at_us INTEGER NOT NULL,UNIQUE(execution_id,artifact_type));",
             )
             .unwrap();
         connection
@@ -355,8 +359,8 @@ mod tests {
     fn event(uid: &str, seq: i64) -> Value {
         json!({"execution_id":"e1","account_id":7,"channel":"ctp","algorithm":"x",
             "schema_version":1,"event_uid":uid,"event_type":"execution_started","status":"INFO",
-            "reason_family":"SYSTEM","reason_code":"started","ts_local_created":"t",
-            "ts_persisted":"t","seq":seq,"details":{}})
+            "reason_family":"SYSTEM","reason_code":"started","ts_local_created":"1970-01-01T00:00:00.000123Z",
+            "ts_persisted":"1970-01-01T00:00:00.000456Z","seq":seq,"details":{}})
     }
 
     #[test]
@@ -368,7 +372,7 @@ mod tests {
         let mut rejected = event("rejected", 2);
         rejected["reason_code"] = json!("SQL.FAIL");
         let artifact = json!({"execution_id":"e1","artifact_type":"standard_input",
-            "schema_version":1,"content":{},"created_at":"t"});
+            "schema_version":1,"content":{},"created_at":"1970-01-01T00:00:00.000789Z"});
         let receipt = persist_batch(
             &connection,
             &[
@@ -380,7 +384,7 @@ mod tests {
                 json!({"kind":"invalid","error":"invalid JSON"}),
                 json!({"kind":"event","row":rejected}),
                 json!({"kind":"artifact","row":{"execution_id":"e1",
-                    "artifact_type":"execution_summary","schema_version":2,"created_at":"t",
+                    "artifact_type":"execution_summary","schema_version":2,"created_at":"1970-01-01T00:00:00.000789Z",
                     "content":{"status":[],"outcome_symbols":[]}}}),
                 json!({"kind":"event","row":event("last",0)}),
             ],
@@ -399,6 +403,39 @@ mod tests {
         assert_eq!(page["count"], 2);
         assert_eq!(page["data"][0]["seq"], 0);
         assert_eq!(page["data"][0]["event_type"], "execution_started");
+    }
+
+    #[test]
+    fn audit_times_use_integer_microseconds_and_leave_json_time_text_unchanged() {
+        let connection = schema();
+        let mut row = event("time", 1);
+        row["ts_exchange"] = json!("1970-01-01T08:00:00.000001+08:00");
+        row["details"] =
+            json!({"created_at":"not-a-time","nested":{"ts_exchange":"old-local-time"}});
+        assert!(insert_event(&connection, &row).unwrap());
+        let stored = connection.query_row(
+            "SELECT typeof(ts_local_created_us),ts_local_created_us,ts_exchange_us,ts_persisted_us FROM execution_event",
+            [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?)),
+        ).unwrap();
+        assert_eq!(stored, ("integer".into(), 123, 1, 456));
+        let decoded = connection
+            .query_row("SELECT * FROM execution_event", [], |r| {
+                decode_row(r, "execution_event")
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.error))
+            })
+            .unwrap();
+        assert_eq!(decoded["ts_exchange"], "1970-01-01T00:00:00.000001Z");
+        assert_eq!(decoded["details"], row["details"]);
+        row["event_uid"] = json!("invalid-time");
+        row["ts_exchange"] = json!("bad-time");
+        assert!(insert_event(&connection, &row).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM execution_event", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

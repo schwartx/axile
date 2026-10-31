@@ -128,21 +128,24 @@ fn finalize_staged_result(
         &request["raw_result"],
     )?;
     {
-        let head = result_head::execution_head_values(
-            &request["raw_result"],
-            Some(is_success),
-        )?;
-        for (name, value) in head.iter().filter(|(name, _)| {
-            name.as_str() == "task_status"
-                || name.as_str() == "result_input_kind"
-                || name.as_str() == "result_input_value"
-                || name.starts_with("termination_")
-                || name.as_str() == "execution_kind"
-                    && request["raw_result"]
-                        .get(name)
-                        .is_some_and(|v| !v.is_null())
-                || (head["task_status"] == "FAILED" && name.as_str() == "display_error")
-        }) {
+        let head = result_head::execution_head_values(&request["raw_result"], Some(is_success))?;
+        let mut fields: Map<String, Value> = head
+            .iter()
+            .filter(|(name, _)| {
+                name.as_str() == "task_status"
+                    || name.as_str() == "result_input_kind"
+                    || name.as_str() == "result_input_value"
+                    || name.starts_with("termination_")
+                    || name.as_str() == "execution_kind"
+                        && request["raw_result"]
+                            .get(name)
+                            .is_some_and(|v| !v.is_null())
+                    || (head["task_status"] == "FAILED" && name.as_str() == "display_error")
+            })
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        crate::time_us::encode_columns("executerecord", &mut fields).map_err(facts_error)?;
+        for (name, value) in &fields {
             let value = match value {
                 Value::Null => rusqlite::types::Value::Null,
                 Value::Bool(v) => rusqlite::types::Value::Integer(i64::from(*v)),
@@ -339,21 +342,27 @@ mod tests {
         let head_columns = result_head::execution_head_values(&json!({}), Some(0))
             .unwrap()
             .keys()
-            .map(|name| format!("\"{name}\""))
+            .map(|name| match name.as_str() {
+                "termination_requested_at" | "termination_acked_at" | "termination_finished_at" => {
+                    format!("\"{name}_us\" INTEGER")
+                }
+                "execution_time" => "execution_time_us INTEGER".into(),
+                _ => format!("\"{name}\""),
+            })
             .collect::<Vec<_>>()
             .join(",");
         connection
             .execute_batch(&format!(
                 "CREATE TABLE executerecord(id INTEGER PRIMARY KEY,account_id INTEGER,execution_id TEXT UNIQUE,
-                 is_success INTEGER,created_at TEXT,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,{head_columns});"
+                 is_success INTEGER,created_at_us INTEGER,input_id TEXT,result_input_id TEXT,facts_complete INTEGER,{head_columns});"
             ))
             .unwrap();
         connection.execute_batch(
             "CREATE TABLE account(id INTEGER PRIMARY KEY);
              INSERT INTO account VALUES(1);
-             INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at,facts_complete,
+             INSERT INTO executerecord(id,account_id,execution_id,is_success,created_at_us,facts_complete,
              result_input_kind,audit_evidence,termination_evidence,termination_kind,termination_cancel_ids_kind)
-             VALUES(9,1,'terminal',0,'first',1,'absent','{}','{}','absent','absent');",
+             VALUES(9,1,'terminal',0,1767229200123456,1,'absent','{}','{}','absent','absent');",
         ).unwrap();
         connection
     }
@@ -368,7 +377,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(row["id"], json!(9));
-        assert_eq!(row["created_at"], json!("first"));
+        assert_eq!(row["created_at"], json!("2026-01-01T01:00:00.123456Z"));
         assert_eq!(row["facts_complete"], json!(true));
     }
 
@@ -388,7 +397,7 @@ mod tests {
     fn failure_after_record_allocation_rolls_back_the_record() {
         let connection = existing_record();
         // 缺少事实表模拟编码或事实插入失败，不能留下未完成的终态头。
-        let request = json!({"account_id":1,"execution_id":null,"created_at":"second",
+        let request = json!({"account_id":1,"execution_id":null,"created_at":"2026-01-01T01:00:01.123456Z",
             "is_success":0,"raw_result":{"inputs":{}},"result_input_id":"new-input"});
         let error = crate::writer_scope::immediate(&connection, || {
             persist_execute_record_in(&connection, &request)
@@ -409,5 +418,35 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, "ACCOUNT_NOT_FOUND");
+    }
+    #[test]
+    fn staged_finalization_writes_integer_termination_times_and_preserves_evidence() {
+        let connection = existing_record();
+        connection.execute_batch(
+            "ALTER TABLE executerecord ADD COLUMN result_staged INTEGER DEFAULT 1;
+             CREATE TABLE execution_termination_cancel_failure(record_id INTEGER,ordinal INTEGER,order_id JSON,audit_evidence JSON);"
+        ).unwrap();
+        let request = json!({
+            "account_id":1, "execution_id":null, "created_at":"2026-01-01T01:00:00.123456Z",
+            "is_success":0, "raw_result":{
+                "status":"TERMINATED", "termination":{
+                    "requested_at":"2026-01-01T09:00:00.123456+08:00",
+                    "finished_at":"2026-01-01T01:00:01.654321Z",
+                    "native":{"finished_at":"leave JSON alone"}
+                }
+            }
+        });
+        crate::writer_scope::immediate(&connection, || {
+            finalize_staged_result(&connection, &json!({"id":9,"result_staged":1}), &request)
+        })
+        .unwrap();
+        let (requested, finished, evidence, staged): (i64, i64, String, i64) = connection.query_row(
+            "SELECT termination_requested_at_us,termination_finished_at_us,termination_evidence,result_staged FROM executerecord WHERE id=9",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))
+        ).unwrap();
+        assert_eq!(requested, 1767229200123456);
+        assert_eq!(finished, 1767229201654321);
+        assert!(evidence.contains("leave JSON alone"));
+        assert_eq!(staged, 0);
     }
 }

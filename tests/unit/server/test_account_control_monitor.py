@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, closing
@@ -24,8 +23,10 @@ from axile.executor.algorithms.utils.clock import clock_now, clock_now_ms
 from axile.server.account_control import monitor as monitor_module
 from axile.server.account_control import providers
 from axile.server.execution import execution_account_control as persistence
+from axile.server.native_store import native_operation_sync
 from tests.sqlite_oracle import sqlite_oracle
 from tests.unit.server._execution_test_support import account_settings_values, build_account
+from tests.unit.server._runtime_db_support import to_us
 
 
 def test_native_session_classification_preserves_raw_audit_fields(native_database):
@@ -37,7 +38,7 @@ def test_native_session_classification_preserves_raw_audit_fields(native_databas
     seed_account(native_database)
     runtime_rows(
         native_database,
-        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_ms,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
+        "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,timezone,started_at_us,status) VALUES('old',1,?,'unknown','unknown','Asia/Shanghai',1,'incomplete')",
         ("catalog-" + "a" * 32,),
     )
     request = {"accounts": [{"account_id": 1, "control_date": "2026-10-27"}]}
@@ -59,8 +60,6 @@ def test_native_session_classification_preserves_raw_audit_fields(native_databas
     ],
 )
 def test_session_context_retains_gaps_in_the_sessions_timezone(native_database, timezone, start, end, day):
-    from datetime import datetime
-
     from axile.server.db.models.account_control_session import AccountControlSession
     from tests.conftest import native_store_call
     from tests.unit.server._business_facts_test_support import seed_account
@@ -70,17 +69,17 @@ def test_session_context_retains_gaps_in_the_sessions_timezone(native_database, 
     runtime_rows(
         native_database,
         "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
-        "timezone,started_at_ms,finished_at_ms,status) VALUES('gap',1,'old','execution','algorithm',?,?,?,'incomplete')",
+        "timezone,started_at_us,finished_at_us,status) VALUES('gap',1,'old','execution','algorithm',?,?,?,'incomplete')",
         (
             timezone,
-            int(datetime.fromisoformat(start).timestamp() * 1000),
-            int(datetime.fromisoformat(end).timestamp() * 1000),
+            to_us(start),
+            to_us(end),
         ),
     )
     runtime_rows(
         native_database,
         "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
-        "timezone,started_at_ms,finished_at_ms,status) VALUES('newer',1,'new','execution','algorithm','Asia/Shanghai',1,2,'closed')",
+        "timezone,started_at_us,finished_at_us,status) VALUES('newer',1,'new','execution','algorithm','Asia/Shanghai',1,2,'closed')",
     )
     result = native_store_call(
         native_database, "control_monitor_inputs", {"accounts": [{"account_id": 1, "control_date": day}]}
@@ -96,7 +95,7 @@ def save_account(path, account):
     groups = account_settings_values(account)
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
-            "INSERT OR REPLACE INTO account(id,name,market,trade_channel,brokerage,created_at,updated_at) "
+            "INSERT OR REPLACE INTO account(id,name,market,trade_channel,brokerage,created_at_us,updated_at_us) "
             "VALUES (?,?,?,?,?,?,?)",
             (
                 account.id,
@@ -104,8 +103,8 @@ def save_account(path, account):
                 account.market,
                 str(account.trade_channel),
                 account.brokerage,
-                account.created_at,
-                account.updated_at,
+                to_us(account.created_at),
+                to_us(account.updated_at),
             ),
         )
         connection.execute(
@@ -119,9 +118,7 @@ def save_account(path, account):
 async def database(monkeypatch):
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "monitor.sqlite"
-        schema = (Path(__file__).parents[2] / "fixtures/rust_store/v0.22.0.sql").read_text()
-        with closing(sqlite3.connect(path)) as connection, connection:
-            connection.executescript("\n".join(re.findall(r"CREATE TABLE .*?;", schema, re.DOTALL)))
+        native_operation_sync("migration_upgrade", {}, database=str(path))
         monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(path))
         monkeypatch.setattr(monitor_module, "sample", lambda _: None)
         monkeypatch.setattr(monitor_module, "wake_pending_quota_warnings", _ignore_warnings)
@@ -355,7 +352,7 @@ def test_late_outcome_updates_an_old_owner_outside_the_monitor_context(monkeypat
             await persistence.flush_account_control_records(executor(old))
             runtime_rows(
                 path,
-                "UPDATE account_control_session SET started_at_ms=1,finished_at_ms=2 WHERE instance_id=?",
+                "UPDATE account_control_session SET started_at_us=1000,finished_at_us=2000 WHERE instance_id=?",
                 (old.instance_id,),
             )
             newer = await persistence.build_account_control_guard(account, "newer")
@@ -425,8 +422,8 @@ def test_warning_from_unknown_source_is_retried_after_its_session_is_visible(mon
             runtime_rows(
                 path,
                 "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
-                "timezone,started_at_ms,status) VALUES('delayed-source',1,?,'execution','algorithm','Asia/Shanghai',?,'active')",
-                (guard.execution_id, clock_now_ms()),
+                "timezone,started_at_us,status) VALUES('delayed-source',1,?,'execution','algorithm','Asia/Shanghai',?,'active')",
+                (guard.execution_id, clock_now_ms() * 1_000),
             )
             for _ in range(2):
                 await monitor.refresh()
@@ -758,9 +755,9 @@ def test_prior_day_gap_does_not_permanently_block_and_known_active_guard_is_not_
             with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "INSERT INTO account_control_session(instance_id,account_id,execution_id,context_kind,source,"
-                    "timezone,started_at_ms,finished_at_ms,status) "
+                    "timezone,started_at_us,finished_at_us,status) "
                     "VALUES ('yesterday',1,'old','execution','algorithm','Asia/Shanghai',?,?,'incomplete')",
-                    (yesterday - 1000, yesterday),
+                    ((yesterday - 1000) * 1_000, yesterday * 1_000),
                 )
             first = await persistence.build_account_control_guard(account, "today")
             assert not first.incomplete_control_dates

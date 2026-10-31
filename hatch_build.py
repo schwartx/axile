@@ -22,8 +22,8 @@ import sys
 spec = importlib.util.spec_from_file_location('_core', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 40:
-    raise RuntimeError('Native extension requires analysis fact schema 40')
+if getattr(module, 'ANALYSIS_FACT_SCHEMA', None) != 41:
+    raise RuntimeError('Native extension requires analysis fact schema 41')
 if getattr(module, 'PUBLIC_HEAD', None) != '0034':
     raise RuntimeError('Native extension requires public migration head 0034')
 required = (

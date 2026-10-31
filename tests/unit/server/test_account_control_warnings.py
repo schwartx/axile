@@ -287,18 +287,18 @@ def test_calling_warning_recovers_as_unknown_without_updating_account_notificati
             await notification_outbox.recover_notifications()
             event = (await rows(path))[0]
             assert event.status == "unknown"
-            assert event.finished_at
+            assert event.finished_at_us
             assert event.error == "服务重启，通知调用结果未知"
             with closing(oracle_connect(path)) as connection:
                 summary = connection.execute(
-                    "SELECT finished_at,event_type,execution_id,account_id,ok,error "
+                    "SELECT finished_at_us,event_type,execution_id,account_id,ok,error "
                     "FROM system_notification_state WHERE id=1"
                 ).fetchone()
                 if fail_summary:
                     assert summary is None
                 else:
                     assert summary == (
-                        event.finished_at,
+                        event.finished_at_us,
                         ACCOUNT_CONTROL_WARNING_EVENT,
                         "interrupted",
                         account.id,

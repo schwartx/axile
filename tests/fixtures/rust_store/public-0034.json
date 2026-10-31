@@ -52,15 +52,15 @@
         "primary_key": true
       },
       {
-        "name": "updated_at",
-        "type": "TEXT",
+        "name": "updated_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -96,27 +96,6 @@
         "primary_key": false
       },
       {
-        "name": "published_version",
-        "type": "INTEGER",
-        "nullable": false,
-        "default": "'0'",
-        "primary_key": false
-      },
-      {
-        "name": "current_snapshot",
-        "type": "TEXT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "previous_snapshot",
-        "type": "TEXT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
         "name": "requested",
         "type": "BOOLEAN",
         "nullable": false,
@@ -138,8 +117,8 @@
         "primary_key": false
       },
       {
-        "name": "retry_at",
-        "type": "FLOAT",
+        "name": "retry_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": "'0'",
         "primary_key": false
@@ -152,22 +131,15 @@
         "primary_key": false
       },
       {
-        "name": "logic_version",
-        "type": "TEXT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "engine_version",
-        "type": "TEXT",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
         "name": "running_token",
         "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "dirty_record",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -203,8 +175,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -254,8 +226,8 @@
         "primary_key": false
       },
       {
-        "name": "observed_at",
-        "type": "TEXT",
+        "name": "observed_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -289,8 +261,8 @@
         "primary_key": false
       },
       {
-        "name": "last_success_at",
-        "type": "TEXT",
+        "name": "last_success_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -489,14 +461,14 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "occurred_at_ms",
+        "name": "occurred_at_us",
         "type": "INTEGER",
         "nullable": false,
         "default": null,
@@ -561,14 +533,14 @@
         "primary_key": false
       },
       {
-        "name": "started_at_ms",
+        "name": "started_at_us",
         "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "finished_at_ms",
+        "name": "finished_at_us",
         "type": "INTEGER",
         "nullable": true,
         "default": null,
@@ -605,8 +577,8 @@
         "primary_key": true
       },
       {
-        "name": "last_success_at",
-        "type": "TEXT",
+        "name": "last_success_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -619,8 +591,8 @@
         "primary_key": false
       },
       {
-        "name": "last_attempt_at",
-        "type": "TEXT",
+        "name": "last_attempt_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -756,22 +728,22 @@
         "primary_key": false
       },
       {
-        "name": "requested_at",
-        "type": "TEXT",
+        "name": "requested_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "last_attempt_at",
-        "type": "TEXT",
+        "name": "last_attempt_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "synchronized_at",
-        "type": "TEXT",
+        "name": "synchronized_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -814,8 +786,8 @@
         "primary_key": false
       },
       {
-        "name": "attempted_at",
-        "type": "TEXT",
+        "name": "attempted_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -863,6 +835,716 @@
         "name": "label",
         "type": "TEXT",
         "nullable": true,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "analysis_contribution_day": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "product",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "gross_pnl",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_missing",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "issues",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trades",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "analysis_contribution_state": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "product",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "initial",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "quantity",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "cash",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_missing",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "issues",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trades",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_quantity",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_initial",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_cash",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "before_issues",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "analysis_day": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "day",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "observed_at_us",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "record_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "execution_id",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "account_daily_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "portfolio_daily_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_portfolio_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_portfolio_daily_return",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "difference",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "sizing_fallback",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "analysis_replay_position": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "mode",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "symbol",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "quantity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "units",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "mark",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      }
+    ],
+    "analysis_state": [
+      {
+        "name": "account_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "range_key",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": true
+      },
+      {
+        "name": "version",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "logic_version",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "engine_version",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "computed_at_us",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fee_rate",
+        "type": "REAL",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "trade_channel",
+        "type": "TEXT",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "max_id",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "start_us",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_time_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "initial_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "baseline_time_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "baseline_id",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "baseline_execution",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "baseline_asset",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "observations",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "invalid_assets",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "used",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_used",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "skipped",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "missing_target",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "missing_price",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "skip_first_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "skip_last_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_skipped",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_missing_target",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_missing_price",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_skip_first_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_skip_last_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "fallback_count",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_start_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_start_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_initialized",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_initialized",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_previous_close",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_previous_close",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_close_day",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_close_day",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "executable_close_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "target_close_equity",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "current_day",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_asset",
+        "type": "REAL",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "last_execution",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "day_participant",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "contribution_time_us",
+        "type": "INTEGER",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "contribution_day",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "contribution_currency",
+        "type": "TEXT",
+        "nullable": true,
+        "default": null,
+        "primary_key": false
+      },
+      {
+        "name": "initial_known",
+        "type": "INTEGER",
+        "nullable": false,
         "default": null,
         "primary_key": false
       }
@@ -1181,8 +1863,8 @@
         "primary_key": false
       },
       {
-        "name": "update_time",
-        "type": "TEXT",
+        "name": "update_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -1253,8 +1935,8 @@
         "primary_key": false
       },
       {
-        "name": "trade_time",
-        "type": "TEXT",
+        "name": "trade_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -1511,8 +2193,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -1609,8 +2291,8 @@
         "primary_key": false
       },
       {
-        "name": "execution_time",
-        "type": "FLOAT",
+        "name": "execution_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -1672,22 +2354,22 @@
         "primary_key": false
       },
       {
-        "name": "termination_requested_at",
-        "type": "TEXT",
+        "name": "termination_requested_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "termination_acked_at",
-        "type": "TEXT",
+        "name": "termination_acked_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "termination_finished_at",
-        "type": "TEXT",
+        "name": "termination_finished_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -1768,6 +2450,13 @@
         "nullable": false,
         "default": "0",
         "primary_key": false
+      },
+      {
+        "name": "result_staged",
+        "type": "INTEGER",
+        "nullable": false,
+        "default": "0",
+        "primary_key": false
       }
     ],
     "execution_artifact": [
@@ -1800,8 +2489,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -1914,22 +2603,22 @@
         "primary_key": false
       },
       {
-        "name": "ts_local_created",
-        "type": "TEXT",
+        "name": "ts_local_created_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "ts_exchange",
-        "type": "TEXT",
+        "name": "ts_exchange_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "ts_persisted",
-        "type": "TEXT",
+        "name": "ts_persisted_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -1973,13 +2662,6 @@
       },
       {
         "name": "extra",
-        "type": "JSON",
-        "nullable": true,
-        "default": null,
-        "primary_key": false
-      },
-      {
-        "name": "reconciliation",
         "type": "JSON",
         "nullable": true,
         "default": null,
@@ -2037,8 +2719,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -2444,22 +3126,22 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "started_at",
-        "type": "TEXT",
+        "name": "started_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "finished_at",
-        "type": "TEXT",
+        "name": "finished_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -2472,8 +3154,8 @@
         "primary_key": false
       },
       {
-        "name": "cancel_requested_at",
-        "type": "TEXT",
+        "name": "cancel_requested_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -2600,22 +3282,22 @@
         "primary_key": false
       },
       {
-        "name": "create_time",
-        "type": "TEXT",
+        "name": "create_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "update_time",
-        "type": "TEXT",
+        "name": "update_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "update_timestamp",
-        "type": "FLOAT",
+        "name": "update_timestamp_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -3510,22 +4192,22 @@
         "primary_key": false
       },
       {
-        "name": "timestamp",
-        "type": "BIGINT",
+        "name": "timestamp_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "update_time",
-        "type": "TEXT",
+        "name": "update_time_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "timestamp_datetime",
-        "type": "TEXT",
+        "name": "timestamp_datetime_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -3598,8 +4280,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "VARCHAR",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -3626,8 +4308,8 @@
         "primary_key": false
       },
       {
-        "name": "finished_at",
-        "type": "VARCHAR",
+        "name": "finished_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -3656,7 +4338,7 @@
         "primary_key": false
       },
       {
-        "name": "occurred_at_ms",
+        "name": "occurred_at_us",
         "type": "INTEGER",
         "nullable": false,
         "default": null,
@@ -3709,7 +4391,7 @@
         "primary_key": false
       },
       {
-        "name": "occurred_at_ms",
+        "name": "occurred_at_us",
         "type": "INTEGER",
         "nullable": false,
         "default": null,
@@ -5238,15 +5920,15 @@
         "primary_key": true
       },
       {
-        "name": "updated_at",
-        "type": "TEXT",
+        "name": "updated_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -5268,8 +5950,8 @@
         "primary_key": false
       },
       {
-        "name": "created_at",
-        "type": "TEXT",
+        "name": "created_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -5305,8 +5987,8 @@
         "primary_key": false
       },
       {
-        "name": "triggered_at",
-        "type": "TEXT",
+        "name": "triggered_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -5363,15 +6045,15 @@
         "primary_key": false
       },
       {
-        "name": "base_scheduled_at",
-        "type": "VARCHAR",
+        "name": "base_scheduled_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
       },
       {
-        "name": "expires_at",
-        "type": "VARCHAR",
+        "name": "expires_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -5405,8 +6087,8 @@
         "primary_key": false
       },
       {
-        "name": "cancel_requested_at",
-        "type": "VARCHAR",
+        "name": "cancel_requested_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -5435,8 +6117,8 @@
         "primary_key": false
       },
       {
-        "name": "scheduled_at",
-        "type": "VARCHAR",
+        "name": "scheduled_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false
@@ -5465,8 +6147,8 @@
         "primary_key": true
       },
       {
-        "name": "finished_at",
-        "type": "VARCHAR",
+        "name": "finished_at_us",
+        "type": "INTEGER",
         "nullable": true,
         "default": null,
         "primary_key": false
@@ -5551,8 +6233,8 @@
         "primary_key": false
       },
       {
-        "name": "calculated_at",
-        "type": "TEXT",
+        "name": "calculated_at_us",
+        "type": "INTEGER",
         "nullable": false,
         "default": null,
         "primary_key": false

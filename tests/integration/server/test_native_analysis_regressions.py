@@ -4,7 +4,7 @@ import asyncio
 import copy
 import json
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,7 @@ from tests.conftest import native_store_call, require_native_store
 from tests.sqlite_oracle import connect as oracle_connect
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
+from tests.unit.server._runtime_db_support import to_us
 
 _NOW = "2026-01-02T09:00:00+08:00"
 _PRECISE = "2026-01-01T09:00:00.000006+08:00"
@@ -141,7 +142,7 @@ def test_lost_publication_receipt_and_old_claim_cannot_change_committed_or_new_w
 def test_cost_interval_keeps_the_trade_at_its_inclusive_microsecond_end(database: Path) -> None:
     _persist(database, _PRECISE, _RESULT)
     core, store, snapshot = _publish(database)
-    end = datetime.fromisoformat(_PRECISE).timestamp() * 1000
+    end = to_us(_PRECISE) / 1000.0
     page = _read(database, snapshot, "costs", dimension="trade", start=end - 1000, end=end)
     assert page["count"] == 1
     assert page["data"][0]["time"] == end
@@ -154,11 +155,12 @@ def test_legacy_time_formats_publish_without_moving_the_trade_day(database: Path
     result["symbol_results"]["A"]["trades"][0]["trade_time"] = "2026-01-01 09:00:00"
     _persist(database, created_at, result)
     core, store, _ = _publish(database)
-    activity = json.loads(core.activity_symbols(store, 1, "2026-01-02", "2026-01-03", "A"))
+    day = datetime.fromisoformat(created_at).astimezone(ZoneInfo("Asia/Shanghai")).date()
+    activity = json.loads(core.activity_symbols(store, 1, day.isoformat(), (day + timedelta(days=1)).isoformat(), "A"))
     trade = activity["data"][0]["trades"][0]
-    assert trade["day"] == "2026-01-01"
+    assert trade["day"] == datetime(2026, 1, 1, 9).astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
     assert trade["timeEstimated"] is False
-    assert trade["time"] == datetime(2026, 1, 1, 9, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000
+    assert trade["time"] == datetime(2026, 1, 1, 9).timestamp() * 1000
 
 
 def test_published_legacy_attempt_and_symbol_match_the_public_execution_display(database: Path) -> None:
@@ -190,25 +192,25 @@ def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts
     symbol["trades"] = [
         {
             "order_id": "o",
-            "trade_time": "2026-01-01T23:59:00",
+            "trade_time": "2026-01-01T23:59:00+08:00",
             "trade_price": 100,
             "trade_volume": 1,
             "extra": {"commission": 0, "commission_asset": "CNY"},
         },
         {
             "order_id": "o",
-            "trade_time": "2026-01-02T00:01:00",
+            "trade_time": "2026-01-02T00:01:00+08:00",
             "trade_volume": 1,
             "extra": {"commission": -0.2, "commission_asset": "USD"},
         },
         {
             "order_id": "o",
-            "trade_time": "2026-01-02T00:02:00",
+            "trade_time": "2026-01-02T00:02:00+08:00",
             "trade_volume": 1,
             "extra": {"commission": 0, "commission_asset": "USD"},
         },
     ]
-    _persist(database, "2026-01-01T23:59:00", result, "old")
+    _persist(database, "2026-01-01T23:59:00+08:00", result, "old")
     for identity, when in (("middle", "2026-01-10T09:00:00"), ("latest", "2026-02-15T09:00:00")):
         current = copy.deepcopy(_RESULT)
         current["symbol_results"]["A"]["trades"][0]["trade_time"] = when
@@ -230,3 +232,16 @@ def test_daily_costs_use_execution_bounds_and_preserve_cross_day_unknown_amounts
         "2026-01-10": 1,
         "2026-02-15": 1,
     }
+
+
+def test_baseline_date_and_cost_selection_keep_shanghai_day(database):
+    for index, when in enumerate(["2026-01-02T00:30:00+08:00", "2026-01-02T01:30:00+08:00"]):
+        result = copy.deepcopy(_RESULT)
+        result["symbol_results"]["A"]["trades"][0]["trade_time"] = when
+        _persist(database, when, result, f"midnight-{index}")
+    _, _, version = _publish(database)
+    chart = _read(database, version, "chart", range="all")
+    assert chart["result"]["points"][0]["observed_at"] == "2026-01-01T16:30:00.000000Z"
+    assert chart["result"]["points"][0]["date"].startswith("2026-01-02T00:30:00")
+    assert all(point["date"][:10] == "2026-01-02" for point in chart["result"]["points"])
+    assert "2026-01-02" in chart["daily_costs"]

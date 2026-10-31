@@ -27,3 +27,8 @@ describe('targetSnapshotText', () => {
     )
   })
 })
+
+
+it('UTC时间按上海时间展示并保留跨日日期', () => {
+  expect(targetSnapshotText({ ...snapshot, calculated_at: '2026-01-01T16:30:00.123456Z' })).toContain('2026-01-02 00:30:00')
+})

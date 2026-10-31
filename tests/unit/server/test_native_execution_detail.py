@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from axile.server._native import _core
 from axile.server.api.routes import account_crud, account_schedule
+from tests.sqlite_oracle import to_us
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_read_oracle import ExecuteRecordDetailPublic
 from tests.unit.server._execution_test_support import build_account, insert_account
@@ -348,9 +349,9 @@ def test_native_detail_preserves_snapshot_and_rejects_foreign_facts(native_datab
     event_context = notification["context"]
     _sql(
         path,
-        "INSERT INTO notification_event(id,account_id,created_at,event_type,context,status) "
+        "INSERT INTO notification_event(id,account_id,created_at_us,event_type,context,status) "
         "VALUES(?,1,?,'execution.finished',?,'pending')",
-        (notification["id"], created_at, json.dumps(event_context)),
+        (notification["id"], to_us(created_at), json.dumps(event_context)),
     )
     record_id = head["id"]
     borrowed_rows, extra_rows = _oracle(

@@ -282,10 +282,21 @@ fn preflight(
     Ok(())
 }
 
+fn window_boundary(value: &Value) -> Result<i64, AnalysisError> {
+    if let Some(ms) = value.as_i64() {
+        return crate::time_us::from_millis(ms).map_err(invalid);
+    }
+    let micros = (value.as_f64().ok_or_else(|| invalid("window boundary"))? * 1000.0).round();
+    if !micros.is_finite() || micros < i64::MIN as f64 || micros >= i64::MAX as f64 {
+        return Err(invalid("window boundary overflows microseconds"));
+    }
+    Ok(micros as i64)
+}
+
 struct Window<'a> {
     request: &'a Value,
-    start: f64,
-    end: f64,
+    start: i64,
+    end: i64,
     zone: Option<Tz>,
 }
 impl<'a> Window<'a> {
@@ -298,18 +309,16 @@ impl<'a> Window<'a> {
             .map_err(invalid)?;
         Ok(Self {
             request,
-            start: request["start_ms"]
-                .as_f64()
-                .ok_or_else(|| invalid("start"))?,
-            end: request["end_ms"].as_f64().ok_or_else(|| invalid("end"))?,
+            start: window_boundary(&request["start_ms"])?,
+            end: window_boundary(&request["end_ms"])?,
             zone,
         })
     }
-    fn time(&self, value: &Value) -> Option<f64> {
+    fn time(&self, value: &Value) -> Option<i64> {
         let raw = value.as_str()?;
         let normalized = raw.replacen(' ', "T", 1);
         if let Ok(parsed) = DateTime::parse_from_rfc3339(&normalized) {
-            return Some(parsed.timestamp_micros() as f64 / 1000.0);
+            return Some(parsed.timestamp_micros());
         }
         let naive = ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H"]
             .iter()
@@ -344,11 +353,10 @@ impl<'a> Window<'a> {
                 })?[1]
                 .as_i64()?
         };
-        Some(naive.and_utc().timestamp_micros() as f64 / 1000.0 - offset as f64 * 1000.0)
-    }
-    fn contains(&self, value: &Value) -> Option<bool> {
-        self.time(value)
-            .map(|time| self.start <= time && time < self.end)
+        naive
+            .and_utc()
+            .timestamp_micros()
+            .checked_sub(offset.checked_mul(1_000_000)?)
     }
     fn coarse(&self, column: &str) -> Result<(String, Vec<SqlValue>), AnalysisError> {
         Ok((
@@ -527,58 +535,46 @@ fn discover(
     budget: &mut Budget,
 ) -> Result<(), AnalysisError> {
     let account = SqlValue::Integer(integer(&snapshot.account, "id")?);
-    let start = SqlValue::Text(text(window.request, "coarse_start")?.to_owned());
-    let end = SqlValue::Text(text(window.request, "coarse_end")?.to_owned());
     let intents = pages(
         connection,
         "execution_intent",
-        "account_id=? AND (created_at<? OR julianday(created_at) IS NULL) AND
-         (finished_at IS NULL OR finished_at>=? OR julianday(finished_at) IS NULL)",
-        &[account.clone(), end, start],
+        "account_id=? AND created_at_us<? AND (finished_at_us IS NULL OR finished_at_us>=?)",
+        &[
+            account.clone(),
+            SqlValue::Integer(window.end),
+            SqlValue::Integer(window.start),
+        ],
         budget,
     )?;
     for row in intents {
-        let start = window.time(&row["created_at"]);
-        let finish = window.time(&row["finished_at"]);
-        let reason = if start.is_none() || (!row["finished_at"].is_null() && finish.is_none()) {
-            "intent_time_unknown"
-        } else if start.is_some_and(|start| start < window.end)
-            && finish.map_or(true, |finish| finish >= window.start)
-        {
-            "intent_overlaps_window"
-        } else {
-            continue;
-        };
         snapshot.select(
             text(&row, "execution_id")?,
             row["execution_id"].clone(),
-            reason,
+            "intent_overlaps_window",
             "execution",
             "unknown",
             budget,
         )?;
     }
     for (table, column, reason) in [
-        ("executerecord", "created_at", "record_created_in_window"),
+        ("executerecord", "created_at_us", "record_created_in_window"),
         (
             "execution_event",
-            "ts_local_created",
+            "ts_local_created_us",
             "execution_event_in_window",
         ),
     ] {
-        let (predicate, mut args) = window.coarse(column)?;
-        args.insert(0, account.clone());
         for row in pages(
             connection,
             table,
-            &format!("account_id=? AND {predicate}"),
-            &args,
+            &format!("account_id=? AND {column}>=? AND {column}<?"),
+            &[
+                account.clone(),
+                SqlValue::Integer(window.start),
+                SqlValue::Integer(window.end),
+            ],
             budget,
         )? {
-            let inside = window.contains(&row[column]);
-            if inside == Some(false) {
-                continue;
-            }
             let key = row["execution_id"]
                 .as_str()
                 .map(str::to_owned)
@@ -586,11 +582,7 @@ fn discover(
             snapshot.select(
                 &key,
                 row["execution_id"].clone(),
-                if inside == Some(true) {
-                    reason
-                } else {
-                    "record_time_unknown"
-                },
+                reason,
                 "execution",
                 "unknown",
                 budget,
@@ -603,11 +595,11 @@ fn discover(
     for row in pages(
         connection,
         "account_control_event",
-        "account_id=? AND occurred_at_ms>=? AND occurred_at_ms<?",
+        "account_id=? AND occurred_at_us>=? AND occurred_at_us<?",
         &[
             account.clone(),
-            SqlValue::Real(window.start),
-            SqlValue::Real(window.end),
+            SqlValue::Integer(window.start),
+            SqlValue::Integer(window.end),
         ],
         budget,
     )? {
@@ -616,11 +608,11 @@ fn discover(
     for row in pages(
         connection,
         "account_control_session",
-        "account_id=? AND started_at_ms<? AND (finished_at_ms IS NULL OR finished_at_ms>=?)",
+        "account_id=? AND started_at_us<? AND (finished_at_us IS NULL OR finished_at_us>=?)",
         &[
             account.clone(),
-            SqlValue::Real(window.end),
-            SqlValue::Real(window.start),
+            SqlValue::Integer(window.end),
+            SqlValue::Integer(window.start),
         ],
         budget,
     )? {
@@ -637,12 +629,12 @@ fn discover(
     )? {
         let start = window.time(&row["bucket_start"]);
         let duration = if row["bucket_type"] == "day" {
-            86_400_000.0
+            86_400_000_000
         } else {
-            60_000.0
+            60_000_000
         };
         if start.map_or(true, |start| {
-            start < window.end && start + duration > window.start
+            start < window.end && start.saturating_add(duration) > window.start
         }) {
             snapshot.select_control(&row, "counter_bucket_context_time_assumed", budget)?;
         }
@@ -1202,14 +1194,14 @@ mod tests {
         connection.execute_batch("CREATE TABLE account(id INTEGER,name TEXT,trade_channel TEXT);
             INSERT INTO account VALUES(7,'account','ctp');
             CREATE TABLE execution_intent(id INTEGER,account_id INTEGER,execution_id TEXT,
-                created_at TEXT,finished_at TEXT,payload JSON);
-            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at TEXT);
-            CREATE TABLE execution_event(id INTEGER,account_id INTEGER,execution_id TEXT,ts_local_created TEXT,details JSON);
+                created_at_us INTEGER,finished_at_us INTEGER,payload JSON);
+            CREATE TABLE executerecord(id INTEGER,account_id INTEGER,execution_id TEXT,created_at_us INTEGER);
+            CREATE TABLE execution_event(id INTEGER,account_id INTEGER,execution_id TEXT,ts_local_created_us INTEGER,details JSON);
             CREATE TABLE execution_artifact(id INTEGER,execution_id TEXT,artifact_type TEXT,content JSON);
             CREATE TABLE account_control_event(id INTEGER,account_id INTEGER,execution_id TEXT,
-                context_kind TEXT,source TEXT,occurred_at_ms INTEGER,metadata JSON,counted BOOLEAN,decision TEXT);
+                context_kind TEXT,source TEXT,occurred_at_us INTEGER,metadata JSON,counted BOOLEAN,decision TEXT);
             CREATE TABLE account_control_session(id INTEGER,account_id INTEGER,execution_id TEXT,
-                context_kind TEXT,source TEXT,started_at_ms INTEGER,finished_at_ms INTEGER);
+                context_kind TEXT,source TEXT,started_at_us INTEGER,finished_at_us INTEGER);
             CREATE TABLE account_control_counter_delta(id INTEGER,account_id INTEGER,execution_id TEXT,
                 context_kind TEXT,source TEXT,bucket_start TEXT,bucket_type TEXT);
             CREATE TABLE execution_input(id TEXT,account_id INTEGER,execution_id TEXT,owner_execution_id TEXT,root_kind TEXT,root_value JSON);
@@ -1221,6 +1213,35 @@ mod tests {
             CREATE TABLE business_asset_position(asset_id TEXT);").unwrap();
         connection
     }
+    #[test]
+    fn discovery_uses_half_open_integer_microseconds_and_preserves_json() {
+        let connection = control_schema();
+        connection
+            .execute_batch(
+                r#"INSERT INTO execution_event VALUES
+            (1,7,'inside',1001,'{"ts_local_created":"not-a-time","nested":{"time":999}}'),
+            (2,7,'at-end',2000,'{}');"#,
+            )
+            .unwrap();
+        let request = json!({"start_ms":1,"end_ms":2,
+            "coarse_start":"1970-01-01","coarse_end":"1970-01-02"});
+        let window = Window::new(&request).unwrap();
+        assert_eq!((window.start, window.end), (1000, 2000));
+        let mut snapshot = Snapshot::new(json!({"id":7}));
+        let mut budget = test_budget();
+        discover(&connection, &mut snapshot, &window, &mut budget).unwrap();
+        assert!(snapshot.executions.contains_key("inside"));
+        assert!(!snapshot.executions.contains_key("at-end"));
+        let events = pages(&connection, "execution_event", "id=1", &[], &mut budget).unwrap();
+        assert_eq!(events[0]["ts_local_created"], "1970-01-01T00:00:00.001001Z");
+        assert_eq!(
+            events[0]["details"],
+            json!({"ts_local_created":"not-a-time","nested":{"time":999}})
+        );
+        assert!(window_boundary(&json!(f64::INFINITY)).is_err());
+        assert!(window_boundary(&json!(i64::MAX)).is_err());
+    }
+
     #[test]
     fn complete_control_only_bundle_is_read_only_and_preserves_operation_context() {
         let connection = control_schema();
@@ -1258,7 +1279,7 @@ mod tests {
             .execute_batch(
                 r#"INSERT INTO account_control_event VALUES(1,7,'e1',
             'execution','algorithm',1,'{}',1,'ALLOWED');
-            INSERT INTO execution_event VALUES(1,7,'e1','t','{"generation":"before"}');"#,
+            INSERT INTO execution_event VALUES(1,7,'e1',1,'{"generation":"before"}');"#,
             )
             .unwrap();
         let reader = storage_connection::open_reader(&path).unwrap();
@@ -1268,7 +1289,7 @@ mod tests {
         // owner 已固定快照；后续来源查询不能混入另一连接刚提交的材料。
         writer.execute_batch(r#"BEGIN IMMEDIATE;
             UPDATE account SET name='after' WHERE id=7;
-            INSERT INTO execution_event VALUES(2,7,'e1','t','{"generation":"after"}');
+            INSERT INTO execution_event VALUES(2,7,'e1',2,'{"generation":"after"}');
             INSERT INTO execution_artifact VALUES(1,'e1','MARKET_SNAPSHOT','{"generation":"after"}');
             COMMIT;"#).unwrap();
         assert_eq!(
@@ -1406,8 +1427,14 @@ mod tests {
             {"context_kind":"account_operation","source":"manual_execution"}
         ]);
         snapshot.classify(&budget).unwrap();
-        assert_eq!(snapshot.operations.keys().cloned().collect::<Vec<_>>(), expected_keys);
-        assert_eq!(snapshot.operations[first]["sources"], json!(["current_orders","manual_execution","instrument_catalog"]));
+        assert_eq!(
+            snapshot.operations.keys().cloned().collect::<Vec<_>>(),
+            expected_keys
+        );
+        assert_eq!(
+            snapshot.operations[first]["sources"],
+            json!(["current_orders", "manual_execution", "instrument_catalog"])
+        );
         assert_eq!(snapshot.operations.len(), 20);
         assert!(snapshot.executions.is_empty());
         let key = "orders-00000000000000000000000000000000";
@@ -1418,9 +1445,17 @@ mod tests {
         assert_eq!(snapshot.executions[key]["context_kind"], "execution");
         let classified = (snapshot.executions.clone(), snapshot.operations.clone());
         snapshot.classify(&budget).unwrap();
-        assert_eq!((snapshot.executions.clone(), snapshot.operations.clone()), classified);
-        snapshot.item_mut("orders-00000000000000000000000000000001").unwrap()["events"] = json!([{}]);
-        assert_eq!(snapshot.classify(&budget).unwrap_err().code, "EVIDENCE_TOO_MANY_EXECUTIONS");
+        assert_eq!(
+            (snapshot.executions.clone(), snapshot.operations.clone()),
+            classified
+        );
+        snapshot
+            .item_mut("orders-00000000000000000000000000000001")
+            .unwrap()["events"] = json!([{}]);
+        assert_eq!(
+            snapshot.classify(&budget).unwrap_err().code,
+            "EVIDENCE_TOO_MANY_EXECUTIONS"
+        );
         assert!(legacy_source("orders-strategy").is_none());
     }
     #[test]

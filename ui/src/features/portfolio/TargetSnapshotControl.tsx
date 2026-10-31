@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import type { ErrorEvidence } from '@/lib/errorInfo'
 import { ErrorNotice } from '@/components/ui/ErrorNotice'
 import { RefreshCw } from 'lucide-react'
@@ -40,7 +41,7 @@ export function TargetSnapshotControl({
   const compactMeta = loading && !snapshot
     ? '目标读取中'
     : snapshot?.calculated_at
-      ? `目标计算于 ${snapshot.calculated_at.replace('T', ' ').slice(11, 16)}`
+      ? `目标计算于 ${shanghaiLabel(snapshot.calculated_at).slice(11, 16)}`
       : readError ? '目标暂不可用' : '目标未计算'
 
   const refreshButton = (

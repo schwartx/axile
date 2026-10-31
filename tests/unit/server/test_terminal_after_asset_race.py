@@ -147,7 +147,9 @@ def test_missing_worker_response_persists_failure_without_inventing_result_asset
             assert json.loads(artifact["content"]) == make_artifact_reference(
                 view="assets_after", input_id=input_id, asset_id=asset_id
             )
-            assert business_evidence(_resolved_artifact(path)["account_assets"]) == business_evidence(_AFTER_ASSETS)
+            assert business_evidence(
+                _resolved_artifact(path)["account_assets"], context="account_assets"
+            ) == business_evidence(_AFTER_ASSETS, context="account_assets")
             late_success = await _append_terminal("success", _WORKER_RESULT)
             assert late_success["record_id"] == record["record_id"]
             assert late_success["is_success"] == 0
@@ -171,7 +173,9 @@ def test_matching_after_observation_reuses_immutable_fact(tmp_path, monkeypatch,
             assert record["is_success"] == int(terminal == "success")
             assert repository.receipt_record(record)["input_id"] == input_id
             result = await repository.read_execution_result(record)
-            assert business_evidence(result["account_assets"]) == business_evidence(_AFTER_ASSETS)
+            assert business_evidence(result["account_assets"], context="account_assets") == business_evidence(
+                _AFTER_ASSETS, context="account_assets"
+            )
             assert _asset_evidence(path) == frozen_evidence
             assert [row["asset_id"] for row in _rows(path, "business_asset_binding")] == [asset_id]
             history = _rows(path, "account_asset_snapshot")
@@ -203,7 +207,9 @@ def test_conflicting_after_observation_rolls_back_terminal_without_overwriting_e
             assert _rows(path, "business_asset_binding") == []
             assert _rows(path, "account_asset_snapshot") == []
             assert _asset_evidence(path) == frozen_evidence
-            assert business_evidence(_resolved_artifact(path)["account_assets"]) == business_evidence(_AFTER_ASSETS)
+            assert business_evidence(
+                _resolved_artifact(path)["account_assets"], context="account_assets"
+            ) == business_evidence(_AFTER_ASSETS, context="account_assets")
 
     asyncio.run(check())
 

@@ -26,9 +26,9 @@ const TERMINATION_FIELDS: &[(&str, &str)] = &[
     ("reason", "text"),
     ("mode", "text"),
     ("trigger", "text"),
-    ("requested_at", "text"),
-    ("acked_at", "text"),
-    ("finished_at", "text"),
+    ("requested_at", "time"),
+    ("acked_at", "time"),
+    ("finished_at", "time"),
     ("cancel_attempted", "boolean"),
     ("forced", "boolean"),
     ("cancel_unconfirmed", "boolean"),
@@ -571,12 +571,14 @@ pub(crate) fn write_result_head(
     is_success: Option<i64>,
 ) -> Result<(), AnalysisError> {
     let head = execution_head_values(result, is_success)?;
-    let assignments = EXECUTION_HEAD_COLUMNS
+    let (head, columns) =
+        super::storage_row(connection, "executerecord", &head, EXECUTION_HEAD_COLUMNS)?;
+    let assignments = columns
         .iter()
         .map(|(name, _)| format!("\"{name}\"=?"))
         .collect::<Vec<_>>()
         .join(",");
-    let mut values = super::bind_columns(&head, EXECUTION_HEAD_COLUMNS)?;
+    let mut values = super::bind_columns(&head, &columns)?;
     values.push(record_id.into());
     let affected = connection
         .execute(
@@ -667,8 +669,12 @@ mod tests {
     #[test]
     fn insert_and_update_advance_once_and_missing_heads_leave_no_cancellations() {
         let connection = Connection::open_in_memory().unwrap();
-        let columns = execution_head_values(&json!({}), None).unwrap().keys()
-            .map(|key| format!("\"{key}\"")).collect::<Vec<_>>().join(",");
+        let columns = execution_head_values(&json!({}), None)
+            .unwrap()
+            .keys()
+            .map(|key| format!("\"{key}\""))
+            .collect::<Vec<_>>()
+            .join(",");
         connection.execute_batch(&format!("CREATE TABLE executerecord(id INTEGER PRIMARY KEY,execution_id TEXT,is_success INTEGER,account_id INTEGER,created_at TEXT,facts_complete INTEGER,{columns});
             CREATE TABLE execution_termination_cancel_failure(record_id INTEGER,ordinal INTEGER,order_id JSON,audit_evidence JSON);
             CREATE TABLE account_analysis(source_version INTEGER); INSERT INTO account_analysis VALUES(0);
@@ -679,19 +685,52 @@ mod tests {
         insert_execution(&connection, &row).unwrap();
         let id = connection.last_insert_rowid();
         write_result_cancellations(&connection, id, &json!({"status":"FAILED"})).unwrap();
-        let version = || connection.query_row("SELECT source_version FROM account_analysis", [], |row| row.get::<_,i64>(0)).unwrap();
+        let version = || {
+            connection
+                .query_row("SELECT source_version FROM account_analysis", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap()
+        };
         assert_eq!(version(), 1);
         let result = json!({"status":"FAILED","termination":{"cancel_failed_order_ids":["same","same",null]}});
         write_result_head(&connection, id, &result, Some(0)).unwrap();
         assert_eq!(version(), 2);
-        assert_eq!(connection.query_row("SELECT facts_complete FROM executerecord WHERE id=?1", [id], |row| row.get::<_,i64>(0)).unwrap(), 1);
-        let error = write_result_head(&connection, id+1, &result, Some(0)).unwrap_err();
-        assert_eq!((error.code.as_str(), error.error.as_str()), ("BUSINESS_FACTS", "执行主记录不存在"));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT facts_complete FROM executerecord WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        let error = write_result_head(&connection, id + 1, &result, Some(0)).unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.error.as_str()),
+            ("BUSINESS_FACTS", "执行主记录不存在")
+        );
         assert_eq!(version(), 2);
-        assert_eq!(connection.query_row("SELECT count(*) FROM execution_termination_cancel_failure", [], |row| row.get::<_,i64>(0)).unwrap(), 3);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM execution_termination_cancel_failure",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            3
+        );
         connection.execute_batch("ROLLBACK").unwrap();
         assert_eq!(version(), 0);
-        assert_eq!(connection.query_row("SELECT count(*) FROM executerecord", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM executerecord", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

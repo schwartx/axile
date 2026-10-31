@@ -29,6 +29,7 @@ from axile.server.execution.worker_backend.worker_responses import _dump_output_
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import utc_time
 from tests.unit.executor.test_execution_engine_lifecycle import _standard_input
 from tests.unit.server._business_analysis_support import _events
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows
@@ -179,7 +180,11 @@ async def _persist_contract_result(output, worker_raw, before_assets, monkeypatc
         resolved = read_view(
             path, "resolve_execution_artifact", {"artifact": after.model_dump(mode="json"), "account_id": 1}
         )
-        assert business_evidence(resolved["account_assets"]) == business_evidence(worker_raw["account_assets"])
+        expected_assets = {
+            **worker_raw["account_assets"],
+            "update_time": utc_time(worker_raw["account_assets"]["update_time"]),
+        }
+        assert business_evidence(resolved["account_assets"]) == business_evidence(expected_assets)
         assert all(item.artifact_type != "execution_summary" for item in stored_artifacts)
         summary = execution_result_view(result, before_assets)
         assert "raw_input" not in table("executerecord").c

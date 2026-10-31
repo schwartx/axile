@@ -1,3 +1,4 @@
+import { shanghaiLabel } from '@/features/history/costs'
 import { catalogEvidence } from '@/features/history/executionErrorAdapter'
 import { executionOutcome, outcomeOf, type OutcomeView } from '@/features/account/executionOutcome'
 import { isDegradedSnapshotSource } from '@/features/account/accountSnapshot'
@@ -194,8 +195,7 @@ function asStr(v: unknown): string {
 
 /** 秒级 ISO 本地时间戳 → `HH:MM:SS`。 */
 function hhmmss(ts: string): string {
-  const t = ts.includes('T') ? ts.split('T')[1] : ts
-  return (t ?? '').slice(0, 8)
+  return ts.includes('T') ? shanghaiLabel(ts).slice(11, 19) : ts.slice(0, 8)
 }
 
 /** 两个本地 ISO 时间戳的秒差（后-前），无法解析时为 null。 */

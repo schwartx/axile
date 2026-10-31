@@ -9,7 +9,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Protocol, cast
 
 
@@ -179,6 +179,18 @@ async def clock_async_sleep(seconds: float, clock: Clock | None = None) -> None:
     await asyncio.sleep(0)
 
 
+def clock_now_us(clock: Clock | None = None) -> int:
+    """读取整数 Unix 微秒；自定义时钟可提供 ``time_us`` 保留源精度。"""
+    resolved = _resolve_clock(clock)
+    if type(resolved) is RealClock:
+        return time.time_ns() // 1_000
+    integer_time = getattr(resolved, "time_us", None)
+    if callable(integer_time):
+        return cast(Callable[[], int], integer_time)()
+    # shortcut: 旧自定义时钟仅有浮点秒，需要精确微秒时实现 time_us。
+    return round(resolved.time() * 1_000_000)
+
+
 def clock_now(clock: Clock | None = None, tz: tzinfo | None = None) -> datetime:
     """
     读取当前 ``datetime``.
@@ -195,10 +207,12 @@ def clock_now(clock: Clock | None = None, tz: tzinfo | None = None) -> datetime:
     datetime
         基于当前时钟时间戳转换得到的时间对象。
     """
-    current_ts = _resolve_clock(clock).time()
+    microseconds = clock_now_us(clock)
     if tz is None:
-        return datetime.fromtimestamp(current_ts)
-    return datetime.fromtimestamp(current_ts, tz=tz)
+        seconds, fraction = divmod(microseconds, 1_000_000)
+        return datetime.fromtimestamp(seconds).replace(microsecond=fraction)
+    current = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=microseconds)
+    return current.astimezone(tz)
 
 
 def clock_now_iso(clock: Clock | None = None, tz: tzinfo | None = None) -> str:
@@ -234,4 +248,4 @@ def clock_now_ms(clock: Clock | None = None) -> int:
     int
         当前 Unix 时间戳，单位为毫秒。
     """
-    return int(_resolve_clock(clock).time() * 1_000)
+    return clock_now_us(clock) // 1_000

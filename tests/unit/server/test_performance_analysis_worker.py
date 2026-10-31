@@ -24,7 +24,7 @@ def manager(monkeypatch):
 
 
 def test_native_capabilities_require_preparation_and_commit_confirmation(monkeypatch):
-    monkeypatch.setattr(analysis._core, "ANALYSIS_FACT_SCHEMA", 40)
+    monkeypatch.setattr(analysis._core, "ANALYSIS_FACT_SCHEMA", 41)
     for name in (
         "analysis_update",
         "account_public",

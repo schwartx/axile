@@ -14,6 +14,7 @@ import pytest
 from axile.executor.order_submissions import OrderSubmissionFact, OrderSubmissionRecorder
 from axile.server import order_submissions as submissions
 from tests.conftest import native_store_call, require_native_store
+from tests.sqlite_oracle import to_us
 from tests.unit.server._execution_test_support import build_account
 from tests.unit.server._native_read_views import persist_record_fixture
 
@@ -111,8 +112,8 @@ def _sql(path: Path, statement: str, parameters: tuple = ()) -> None:
 def database(native_database: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _sql(
         native_database,
-        "INSERT INTO portfolio (id,name,market,custom_calc_py_code,created_at,updated_at) VALUES (1,?,?,?,?,?)",
-        ("transaction-test", "期货", "def calculate_portfolio(context):\n    return {}", _NOW, _NOW),
+        "INSERT INTO portfolio (id,name,market,custom_calc_py_code,created_at_us,updated_at_us) VALUES (1,?,?,?,?,?)",
+        ("transaction-test", "期货", "def calculate_portfolio(context):\n    return {}", to_us(_NOW), to_us(_NOW)),
     )
     account = build_account(
         portfolio_id=1,
@@ -234,9 +235,9 @@ def test_terminal_failure_rolls_back_every_domain(database: Path, frozen: bool, 
         _freeze(database, execution_id)
     _sql(
         database,
-        "INSERT INTO execution_artifact (execution_id,artifact_type,schema_version,content,created_at) "
+        "INSERT INTO execution_artifact (execution_id,artifact_type,schema_version,content,created_at_us) "
         "VALUES (?,'ENVIRONMENT_SNAPSHOT',2,?,?)",
-        (execution_id, json.dumps({"symbol_results": _RESULT["symbol_results"]}), _NOW),
+        (execution_id, json.dumps({"symbol_results": _RESULT["symbol_results"]}), to_us(_NOW)),
     )
     table, event = (
         ("account_asset_snapshot", "INSERT")

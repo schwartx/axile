@@ -1,4 +1,4 @@
-"""冻结 0034 的测试侧 DML 表声明；建库始终使用真实 Rust 迁移。"""
+"""测试侧 DML 类型声明；保留退役分析表供独立计算参照，建库使用真实 Rust 迁移。"""
 
 import json
 from pathlib import Path

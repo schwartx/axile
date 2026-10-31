@@ -442,6 +442,7 @@ pub(crate) fn decode(row: &Row<'_>, table: &str) -> Result<Object, String> {
         };
         item.insert((*name).into(), value);
     }
+    crate::time_us::decode_columns(table, &mut item)?;
     Ok(item)
 }
 pub(crate) fn columns(row: &Object, fields: &[&str], evidence: &Value) -> Result<Object, String> {

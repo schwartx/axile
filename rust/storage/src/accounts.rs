@@ -48,26 +48,26 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("backtest", BACKTEST),
 ];
 const ACCOUNT_SELECT: &str = "SELECT a.id,a.name,a.market,a.trade_channel,a.brokerage,a.remark,
-    a.portfolio_id,a.copied_from_account_id,a.copied_from_account_name,a.updated_at,a.created_at,
+    a.portfolio_id,a.copied_from_account_id,a.copied_from_account_name,a.updated_at_us,a.created_at_us,
     s.connection,s.execution,s.schedule,s.notification,s.backtest";
 const ACCOUNT_FROM: &str = " FROM account a LEFT JOIN account_settings s ON s.account_id=a.id";
 const STATE_SELECT: &str = ",
     CASE WHEN n.account_id IS NOT NULL THEN json_object(
-        'account_id',n.account_id,'last_success_at',n.last_success_at,'execution_id',n.execution_id,
-        'last_attempt_event_type',n.last_attempt_event_type,'last_attempt_at',n.last_attempt_at,
+        'account_id',n.account_id,'last_success_at_us',n.last_success_at_us,'execution_id',n.execution_id,
+        'last_attempt_event_type',n.last_attempt_event_type,'last_attempt_at_us',n.last_attempt_at_us,
         'last_attempt_execution_id',n.last_attempt_execution_id,'last_attempt_ok',n.last_attempt_ok,
         'last_attempt_error',n.last_attempt_error) END,
     CASE WHEN c.account_id IS NOT NULL THEN json_object(
         'account_id',c.account_id,'config_key',c.config_key,'instance_id',c.instance_id,
-        'sequence',c.sequence,'status',c.status,'observed_at',c.observed_at,'message',c.message,
+        'sequence',c.sequence,'status',c.status,'observed_at_us',c.observed_at_us,'message',c.message,
         'error',json(c.error),'label',c.label,'presentation',json(c.presentation),
-        'last_success_at',c.last_success_at,'last_failure',json(c.last_failure),
+        'last_success_at_us',c.last_success_at_us,'last_failure',json(c.last_failure),
         'manually_disconnected',c.manually_disconnected) END,
     CASE WHEN r.account_id IS NOT NULL THEN json_object(
         'id',r.id,'account_id',r.account_id,'revision',r.revision,'status',r.status,
         'reset_worker',r.reset_worker,'create_request_key',r.create_request_key,'attempts',r.attempts,
-        'last_error',r.last_error,'requested_at',r.requested_at,'last_attempt_at',r.last_attempt_at,
-        'synchronized_at',r.synchronized_at) END,
+        'last_error',r.last_error,'requested_at_us',r.requested_at_us,'last_attempt_at_us',r.last_attempt_at_us,
+        'synchronized_at_us',r.synchronized_at_us) END,
     EXISTS(SELECT 1 FROM supplement_group g WHERE g.account_id=a.id AND g.status IN ('active','cancelling'))";
 const STATE_FROM: &str = " LEFT JOIN account_notification_state n ON n.account_id=a.id
     LEFT JOIN account_connection_state c ON c.account_id=a.id
@@ -125,7 +125,14 @@ fn object(text: &str) -> Result<Map<String, Value>, AnalysisError> {
 fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
     let mut data = Map::new();
     for (index, name) in IDENTITY.iter().enumerate() {
-        data.insert((*name).into(), value(row, index)?);
+        data.insert(
+            (*name).into(),
+            if matches!(*name, "created_at" | "updated_at") {
+                json!(crate::time_us::read(row, index).map_err(sql)?)
+            } else {
+                value(row, index)?
+            },
+        );
     }
     let connection: String = row.get(IDENTITY.len()).map_err(sql)?;
     data.insert("account_config".into(), Value::Object(object(&connection)?));
@@ -134,16 +141,29 @@ fn account_row(row: &Row<'_>, states: bool) -> Result<Value, AnalysisError> {
         data.extend(object(&group)?);
     }
     if states {
-        for (offset, name, boolean) in [
-            (0, "notification_state", "last_attempt_ok"),
-            (1, "connection_state", "manually_disconnected"),
-            (2, "runtime_sync", "reset_worker"),
+        for (offset, name, boolean, table) in [
+            (
+                0,
+                "notification_state",
+                "last_attempt_ok",
+                "account_notification_state",
+            ),
+            (
+                1,
+                "connection_state",
+                "manually_disconnected",
+                "account_connection_state",
+            ),
+            (2, "runtime_sync", "reset_worker", "accountruntimesync"),
         ] {
             let raw: Option<String> = row.get(IDENTITY.len() + 5 + offset).map_err(sql)?;
             let mut state = raw
                 .map(|text| object(&text).map(Value::Object))
                 .transpose()?
                 .unwrap_or(Value::Null);
+            if let Some(columns) = state.as_object_mut() {
+                crate::time_us::decode_columns(table, columns).map_err(invalid)?;
+            }
             if let Some(number) = state.get(boolean).and_then(Value::as_i64) {
                 state[boolean] = json!(number != 0);
             }
@@ -260,8 +280,12 @@ pub(crate) fn bind_on(
     ensure_portfolio_on(connection, portfolio_id)?;
     connection
         .execute(
-            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at) VALUES(?1,?2,?3)",
-            params![account_id, portfolio_id, now],
+            "INSERT INTO portfolioaccount(account_id,portfolio_id,created_at_us) VALUES(?1,?2,?3)",
+            params![
+                account_id,
+                portfolio_id,
+                crate::time_us::parse(now).map_err(invalid)?
+            ],
         )
         .map_err(sql)?;
     Ok(())
@@ -312,8 +336,10 @@ fn insert_on(connection: &Connection, data: &Value, now: &str) -> Result<i64, An
         .iter()
         .map(|name| argument(&data[*name]))
         .collect::<Vec<_>>();
-    arguments.push(SqlValue::Text(now.into()));
-    connection.execute("INSERT INTO account(name,market,trade_channel,brokerage,remark,portfolio_id,copied_from_account_id,copied_from_account_name,created_at,updated_at)
+    arguments.push(SqlValue::Integer(
+        crate::time_us::parse(now).map_err(invalid)?,
+    ));
+    connection.execute("INSERT INTO account(name,market,trade_channel,brokerage,remark,portfolio_id,copied_from_account_id,copied_from_account_name,created_at_us,updated_at_us)
         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)", params_from_iter(arguments)).map_err(sql)?;
     let account_id = connection.last_insert_rowid();
     let mut arguments = vec![
@@ -549,8 +575,10 @@ fn patch_on(
     data: &Map<String, Value>,
     now: &str,
 ) -> Result<(), AnalysisError> {
-    let mut columns = vec!["updated_at=?1".to_owned()];
-    let mut arguments = vec![SqlValue::Text(now.into())];
+    let mut columns = vec!["updated_at_us=?1".to_owned()];
+    let mut arguments = vec![SqlValue::Integer(
+        crate::time_us::parse(now).map_err(invalid)?,
+    )];
     for name in IDENTITY.iter().filter(|name| {
         !matches!(
             **name,
@@ -720,10 +748,10 @@ pub fn account_next_run_context(path: &str, request: &Value) -> Result<Value, An
     let account_id = id(request)?;
     crate::with_read_snapshot(Path::new(path), |connection| {
         let account = require_on(connection, account_id)?;
-        let mut statement = connection.prepare("SELECT s.scheduled_at FROM supplement_step s JOIN supplement_group g ON g.id=s.group_id
-            WHERE g.account_id=?1 AND g.status='active' AND s.status='pending' ORDER BY s.scheduled_at").map_err(sql)?;
+        let mut statement = connection.prepare("SELECT s.scheduled_at_us FROM supplement_step s JOIN supplement_group g ON g.id=s.group_id
+            WHERE g.account_id=?1 AND g.status='active' AND s.status='pending' ORDER BY s.scheduled_at_us").map_err(sql)?;
         let times = statement
-            .query_map([account_id], |row| row.get::<_, String>(0))
+            .query_map([account_id], |row| crate::time_us::read(row, 0))
             .map_err(sql)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql)?;
@@ -752,8 +780,8 @@ pub fn account_portfolio_records(path: &str, request: &Value) -> Result<Value, A
                 |row| row.get(0),
             )
             .map_err(sql)?;
-        let mut statement = connection.prepare("SELECT account_id,portfolio_id,created_at FROM portfolioaccount WHERE account_id=?1 ORDER BY id LIMIT ?2 OFFSET ?3").map_err(sql)?;
-        let rows = statement.query_map(params![account_id,limit,skip], |row| Ok(json!({"account_id":row.get::<_,i64>(0)?,"portfolio_id":row.get::<_,Option<i64>>(1)?,"created_at":row.get::<_,String>(2)?}))).map_err(sql)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql)?;
+        let mut statement = connection.prepare("SELECT account_id,portfolio_id,created_at_us FROM portfolioaccount WHERE account_id=?1 ORDER BY id LIMIT ?2 OFFSET ?3").map_err(sql)?;
+        let rows = statement.query_map(params![account_id,limit,skip], |row| Ok(json!({"account_id":row.get::<_,i64>(0)?,"portfolio_id":row.get::<_,Option<i64>>(1)?,"created_at":crate::time_us::read(row,2)?}))).map_err(sql)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sql)?;
         Ok(json!({"data": rows, "count": count}))
     })
 }
@@ -821,18 +849,18 @@ mod tests {
             CREATE TABLE portfolio(id INTEGER PRIMARY KEY);
             CREATE TABLE account(id INTEGER PRIMARY KEY,name TEXT NOT NULL,market TEXT NOT NULL,
                 trade_channel TEXT NOT NULL,brokerage TEXT NOT NULL,remark TEXT,portfolio_id INTEGER REFERENCES portfolio(id),
-                copied_from_account_id INTEGER,copied_from_account_name TEXT,updated_at TEXT NOT NULL,created_at TEXT NOT NULL);
+                copied_from_account_id INTEGER,copied_from_account_name TEXT,updated_at_us INTEGER NOT NULL,created_at_us INTEGER NOT NULL);
             CREATE TABLE account_settings(account_id INTEGER PRIMARY KEY REFERENCES account(id) ON DELETE CASCADE,
                 connection TEXT NOT NULL,execution TEXT NOT NULL,schedule TEXT NOT NULL,notification TEXT NOT NULL,backtest TEXT NOT NULL);
-            CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at TEXT);
+            CREATE TABLE portfolioaccount(id INTEGER PRIMARY KEY,account_id INTEGER,portfolio_id INTEGER,created_at_us INTEGER);
             CREATE TABLE accountruntimesync(id INTEGER PRIMARY KEY,account_id INTEGER UNIQUE,revision INTEGER,
                 status TEXT,reset_worker INTEGER,create_request_key TEXT UNIQUE,attempts INTEGER,last_error TEXT,
-                requested_at TEXT,last_attempt_at TEXT,synchronized_at TEXT);
-            CREATE TABLE account_notification_state(account_id INTEGER PRIMARY KEY,last_success_at TEXT,execution_id TEXT,
-                last_attempt_event_type TEXT,last_attempt_at TEXT,last_attempt_execution_id TEXT,last_attempt_ok INTEGER,last_attempt_error TEXT);
+                requested_at_us INTEGER,last_attempt_at_us INTEGER,synchronized_at_us INTEGER);
+            CREATE TABLE account_notification_state(account_id INTEGER PRIMARY KEY,last_success_at_us INTEGER,execution_id TEXT,
+                last_attempt_event_type TEXT,last_attempt_at_us INTEGER,last_attempt_execution_id TEXT,last_attempt_ok INTEGER,last_attempt_error TEXT);
             CREATE TABLE account_connection_state(account_id INTEGER PRIMARY KEY,config_key TEXT,instance_id TEXT,
-                sequence INTEGER,status TEXT,observed_at TEXT,message TEXT,error TEXT,label TEXT,presentation TEXT,
-                last_success_at TEXT,last_failure TEXT,manually_disconnected INTEGER);
+                sequence INTEGER,status TEXT,observed_at_us INTEGER,message TEXT,error TEXT,label TEXT,presentation TEXT,
+                last_success_at_us INTEGER,last_failure TEXT,manually_disconnected INTEGER);
             CREATE TABLE supplement_group(id TEXT PRIMARY KEY,account_id INTEGER,status TEXT);
             INSERT INTO portfolio VALUES(1);").unwrap();
         connection
@@ -873,6 +901,29 @@ mod tests {
             Some(1)
         );
         assert_eq!(list_on(&connection).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn account_time_is_integer_microseconds_without_touching_connection_json() {
+        let connection = database();
+        let mut input = account();
+        input["account_config"]["observed_at"] = json!("unparsed native time");
+        let id = insert_on(&connection, &input, "2026-10-23T09:00:00.123456+08:00").unwrap();
+        let saved = snapshot_on(&connection, id).unwrap().unwrap();
+        assert_eq!(saved["created_at"], "2026-10-23T01:00:00.123456Z");
+        assert_eq!(saved["account_config"], input["account_config"]);
+        let (kind, stored): (String, i64) = connection
+            .query_row(
+                "SELECT typeof(created_at_us),created_at_us FROM account WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "integer");
+        assert_eq!(
+            stored,
+            crate::time_us::parse("2026-10-23T01:00:00.123456Z").unwrap()
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
-pub(crate) const LOGIC_VERSION: &str = "25";
+pub(crate) const LOGIC_VERSION: &str = "26";
 pub(crate) const TABLES: [&str; 5] = [
     "analysis_state",
     "analysis_replay_position",
@@ -28,15 +28,19 @@ pub(crate) struct State {
     pub version: i64,
     pub logic_version: String,
     pub engine_version: String,
-    pub computed_at: String,
+    #[serde(rename = "computed_at_us")]
+    pub computed_at: i64,
     pub fee_rate: f64,
     pub trade_channel: String,
     pub max_id: i64,
-    pub start: String,
-    pub last_time: Option<String>,
+    #[serde(rename = "start_us")]
+    pub start: i64,
+    #[serde(rename = "last_time_us")]
+    pub last_time: Option<i64>,
     pub last_id: Option<i64>,
     pub initial_equity: Option<f64>,
-    pub baseline_time: Option<String>,
+    #[serde(rename = "baseline_time_us")]
+    pub baseline_time: Option<i64>,
     pub baseline_id: Option<i64>,
     pub baseline_execution: Option<String>,
     pub baseline_asset: Option<f64>,
@@ -47,16 +51,22 @@ pub(crate) struct State {
     pub skipped: i64,
     pub missing_target: i64,
     pub missing_price: i64,
-    pub skip_first: Option<String>,
-    pub skip_last: Option<String>,
+    #[serde(rename = "skip_first_us")]
+    pub skip_first: Option<i64>,
+    #[serde(rename = "skip_last_us")]
+    pub skip_last: Option<i64>,
     pub target_skipped: i64,
     pub target_missing_target: i64,
     pub target_missing_price: i64,
-    pub target_skip_first: Option<String>,
-    pub target_skip_last: Option<String>,
+    #[serde(rename = "target_skip_first_us")]
+    pub target_skip_first: Option<i64>,
+    #[serde(rename = "target_skip_last_us")]
+    pub target_skip_last: Option<i64>,
     pub fallback_count: i64,
-    pub executable_start: Option<String>,
-    pub target_start: Option<String>,
+    #[serde(rename = "executable_start_us")]
+    pub executable_start: Option<i64>,
+    #[serde(rename = "target_start_us")]
+    pub target_start: Option<i64>,
     pub executable_equity: Option<f64>,
     pub target_equity: Option<f64>,
     pub executable_initialized: i64,
@@ -71,7 +81,8 @@ pub(crate) struct State {
     pub last_asset: Option<f64>,
     pub last_execution: Option<String>,
     pub day_participant: i64,
-    pub contribution_time: Option<String>,
+    #[serde(rename = "contribution_time_us")]
+    pub contribution_time: Option<i64>,
     pub contribution_day: Option<String>,
     pub contribution_currency: Option<String>,
     pub initial_known: i64,
@@ -175,7 +186,7 @@ pub(crate) fn update(path: &str, request: &Value) -> Result<Value, AnalysisError
     let now = request["computed_at"]
         .as_str()
         .ok_or_else(|| failure("INVALID_REQUEST", "computed_at is required"))?;
-    crate::calendar::local_time(now).map_err(|e| failure("INVALID_REQUEST", e))?;
+    let now = crate::time_us::parse(now).map_err(|e| failure("INVALID_REQUEST", e))?;
     let stage = Connection::open_in_memory().map_err(sql)?;
     stage
         .execute_batch("PRAGMA foreign_keys=OFF")
@@ -242,7 +253,7 @@ pub(crate) fn update(path: &str, request: &Value) -> Result<Value, AnalysisError
                 put(&writer, table, &row)?;
             }
         }
-        writer.execute("UPDATE account_analysis SET requested=0,running_version=NULL,running_token=NULL,failures=0,retry_at=0,error=NULL,dirty_record=NULL WHERE account_id=?1",[account]).map_err(sql)?;
+        writer.execute("UPDATE account_analysis SET requested=0,running_version=NULL,running_token=NULL,failures=0,retry_at_us=0,error=NULL,dirty_record=NULL WHERE account_id=?1",[account]).map_err(sql)?;
         Ok(
             json!({"updated":true,"version":version,"account_id":account,"processed_observations":processed}),
         )
