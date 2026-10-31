@@ -398,4 +398,73 @@ describe('回放按本地已观察前缀恢复', () => {
     expect(result.orders[key('A', 'a')].execution_id).toBeNull()
     expect(result.ownTrades[0].execution_id).toBeNull()
   })
+
+  test.each([true, false])('完整集合缺席在全播和原生检查点一致，原确认=%s，新实时确认仍可恢复', confirmed => {
+    const source = order('a', { confirmed_book: confirmed })
+    const query = message(2, '/order_set', { scope: { kind: 'account', symbols: [] }, scope_complete: true,
+      synchronized: true, sync_generation: 1, query_basis: { start_seq: 1, request_revision: 1 }, orders: [] })
+    const messages = [message(1, '/order', source), query]
+    const state = { state_through_seq: 2, time_us: 200,
+      orders: { [key('A', 'a')]: { ...source, confirmed_book: false, confirmation_state: 'absent', observed_seq: 1, observed_at_us: 100 } },
+      sync_generation: { A: 1 }, last_set_revision: { A: 1 }, order_change_seq: { [key('A', 'a')]: 1 } }
+    for (const window of [windowOf(messages), windowOf([], state)]) {
+      const before = structuredClone(window)
+      const value = projectReplay(window, { time_us: 200 }).orders[key('A', 'a')]
+      expect(value).toMatchObject({ status: 'unknown', observed_status: 'working', confirmed: false, terminal: false })
+      expect(window).toEqual(before)
+      const next = projectReplay({ ...window, messages: [...window.messages, message(3, '/order', { ...source, confirmed_book: true })] }, { time_us: 300 })
+      expect(next.orders[key('A', 'a')]).toMatchObject({ status: 'working', observed_status: 'working', confirmed: true })
+    }
+  })
+
+  test('缺席只改变显示，不抹掉原始柜台待撤证据', () => {
+    const source = order('a', { status: 'pending_cancel' })
+    const cancel = { command_id: 'c', operation: 'cancel_order', phase: 'error', symbol: 'A', order_id: 'a' }
+    const query = { scope: { symbols: ['A'] }, scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 2, request_revision: 1 }, orders: [] }
+    const full = windowOf([message(1, '/order', source), message(2, '/command', cancel), message(3, '/order_set', query)])
+    const restored = windowOf([], { state_through_seq: 3, time_us: 300,
+      orders: { [key('A', 'a')]: { ...source, confirmed_book: false, confirmation_state: 'absent' } }, commands: { c: cancel } })
+    for (const window of [full, restored]) expect(projectReplay(window, { time_us: 300 }).orders[key('A', 'a')])
+      .toMatchObject({ status: 'unknown', observed_status: 'pending_cancel', confirmed: false, cancel_pending: true })
+  })
+
+  test('重复完整空集合只记录第一次缺席变化，不让相同未知状态膨胀历史', () => {
+    const query = (capture_seq: number) => message(capture_seq, '/order_set', { scope: { symbols: ['A'] },
+      scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: capture_seq - 1, request_revision: capture_seq - 2 }, orders: [] })
+    const messages = [message(1, '/order', order('a')), message(2, '/order', order('b', { confirmed_book: false })), query(3), query(4)]
+    const result = projectReplay(windowOf(messages), { time_us: 400 })
+    expect(result.orderHistory).toHaveLength(4)
+    expect(result.orderHistory.slice(-2).map(value => value.status)).toEqual(['unknown', 'unknown'])
+  })
+
+  test('恢复全部命令后只统一计算一次关联，避免随历史命令重复扫描所有订单', () => {
+    const count = 64, orders: ReplayData = {}, commands: ReplayData = {}
+    let qualityReads = 0
+    for (let index = 0; index < count; index++) {
+      const id = String(index)
+      orders[key('A', id)] = order(id, { status: 'filled', filled_quantity: 10, remaining_quantity: 0, confirmed_book: false })
+      commands[id] = { command_id: id, operation: 'place_order', phase: 'result', symbol: 'A', order_id: id,
+        execution_id: 'E', get field_quality() { qualityReads++; return {} } }
+    }
+    const result = projectReplay(windowOf([], { orders, commands }), { time_us: 0 })
+    expect(result.commands).toHaveLength(count)
+    expect(Object.values(result.orders).every(value => value.execution_id === 'E')).toBe(true)
+    expect(qualityReads).toBeLessThan(count * 20)
+  })
+
+  test('恢复待关联观察不改写输入基线，多次定位仍保留各自前缀', () => {
+    const window = windowOf([], { state_through_seq: 3, time_us: 300,
+      commands: { c: { command_id: 'c', operation: 'place_order', phase: 'result', execution_id: 'E', symbol: 'A', order_id: 'a' } },
+      executions: { E: { execution_id: 'E', start_observed: true, symbols: ['A'] } },
+      trade_accounting: { own_seen_keys: [], market_seen_keys: [], own_records: {}, market_records: {}, own_complete: false,
+        pending: { 'own:observation:1': { market: false, observation: { symbol: 'A', order_id: 'a', quantity: 1,
+          identity_quality: 'weak', trade_key: null, observed_at_us: 100, observed_seq: 1 } } } } })
+    const before = structuredClone(window)
+    for (const time_us of [300, 400, 300]) {
+      expect(projectReplay(window, { time_us }).executionSymbolComplete.E.A).toBe(false)
+      expect(window).toEqual(before)
+    }
+  })
 })

@@ -113,23 +113,31 @@ class Fields:
 
 def capture(owner: object, topic: str, build: Callable[[], dict[str, object]]) -> None:
     """只在开启时构造观察；规范化故障也不能改变交易返回。"""
-    if not recording.replay_enabled(owner):
+    observer = getattr(owner, "_replay_observer", None)
+    if observer is None:
         return
+    generation = getattr(owner, "_replay_sync_generation", None)
     try:
-        recording.observe(owner, topic, build())
+        data = build()
+        if type(generation) is int:
+            data.setdefault("sync_generation", generation)
+        observer(topic, data)
     except Exception:  # noqa: BLE001 - 旁路规范化也必须隔离于交易
-        recording.observe(
-            owner,
-            "/connection",
-            {
-                "source": "ctp.replay",
-                "status": "error",
-                "reason": "normalization_failed",
-                "available": False,
-                "connected": False,
-                "synchronized": False,
-            },
-        )
+        try:
+            observer(
+                "/connection",
+                {
+                    "source": "ctp.replay",
+                    "status": "error",
+                    "reason": "normalization_failed",
+                    "available": False,
+                    "connected": False,
+                    "synchronized": False,
+                    "sync_generation": generation,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 故障观察也只能交付原观察者，不能重新绑定当前录制
+            return
 
 
 def _base(fields: Fields, source: str) -> dict[str, object]:
@@ -428,6 +436,16 @@ def begin_query(owner: object, symbol: str | None) -> dict[str, object] | None:
         return recording.begin_query(owner, [symbol] if symbol else [])
     except Exception:  # noqa: BLE001 - 查询观察不能改变柜台请求
         return None
+
+
+def finish_query(owner: object, token: dict[str, object] | None) -> None:
+    """查询成功或失败后回收未交付证明，不改变交易结果。"""
+    if token is None:
+        return
+    try:
+        recording.finish_query(owner, token)
+    except Exception:  # noqa: BLE001 - 观察清理不能覆盖正常结果或原异常
+        return
 
 
 def order_set(

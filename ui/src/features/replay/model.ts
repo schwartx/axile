@@ -55,14 +55,16 @@ function quote(data: ReplayData, time: number, seq: number, topic = ''): ReplayQ
 function order(data: ReplayData, time: number, seq: number, carry = false): ReplayOrder | null {
   const symbol = symbolOf(data), observedId = text(known(data, 'order_id')), id = observedId ?? `unknown-observation:${seq}`
   if (!symbol) return null
-  const status = text(known(data, 'status')), normalized = status?.toLowerCase()
+  const observedStatus = text(known(data, 'status')), normalized = observedStatus?.toLowerCase()
   const terminal = known(data, 'terminal') === true || terminalStates.has(normalized ?? '')
-  const confirmed = observedId != null && !id.startsWith('unknown-observation:') && !terminal && known(data, 'confirmed_book') === true && status !== 'trigger_wait'
+  const absent = !terminal && known(data, 'confirmation_state') === 'absent'
+  const status = absent ? 'unknown' : observedStatus
+  const confirmed = !absent && observedId != null && !id.startsWith('unknown-observation:') && !terminal && known(data, 'confirmed_book') === true && status !== 'trigger_wait'
   return {
     key: orderKey(symbol, id), order_id: id, symbol,
     price: number(known(data, 'price')), volume: number(known(data, 'quantity')),
     filled_volume: number(known(data, 'filled_quantity')), remaining_volume: number(known(data, 'remaining_quantity')),
-    direction: text(known(data, 'direction')), offset: text(known(data, 'offset')), status,
+    direction: text(known(data, 'direction')), offset: text(known(data, 'offset')), status, observed_status: observedStatus,
     confirmed, terminal, cancel_pending: !terminal && (known(data, 'cancel_pending') === true || normalized === 'pending_cancel'), carry_in: carry,
     execution_id: text(data.execution_id), previous_order_id: text(data.previous_order_id),
     time_us: sourceTime(data, time), capture_seq: seq,
@@ -109,6 +111,8 @@ type ProjectionState = {
   orderFacts: Record<string, ReplayData>
   ownLastFactSeq: Map<string, number>
   commandFacts: Record<string, ReplayData>
+  commandOwners: Map<string, string | null>
+  cancelOrders: Set<string>
 }
 function scopeSymbols(scope: unknown, state: ProjectionState): Set<string> {
   if (Array.isArray(scope)) {
@@ -144,7 +148,7 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   const state: ProjectionState = {
     view, ownSeen, marketSeen, ownFacts: new Map(), marketFacts: new Map(), orderChanges: {}, setRevisions: {}, generations: {}, basis: {}, executions: {}, pending: new Map(),
-    orderFacts: {}, ownLastFactSeq: new Map(), commandFacts: {},
+    orderFacts: {}, ownLastFactSeq: new Map(), commandFacts: {}, commandOwners: new Map(), cancelOrders: new Set(),
   }
   for (const item of rows(base.quotes)) {
     const row = replayObject(item), value = quote(row, view.time_us, integer(row.observed_seq) ?? seq)
@@ -184,7 +188,7 @@ function seed(window: ReplayWindow): ProjectionState {
     }
   }
   for (const [key, raw] of Object.entries(replayObject(accounting.pending))) {
-    const pending = replayObject(raw)
+    const pending = { ...replayObject(raw) }
     state.pending.set(key, pending)
     const observation = replayObject(pending.observation), nested = Object.hasOwn(observation, 'data')
     const data = nested ? replayObject(observation.data) : observation
@@ -195,13 +199,9 @@ function seed(window: ReplayWindow): ProjectionState {
   }
   const commands = rows(base.commands).map(replayObject)
   for (const data of commands) {
-    const id = text(data.command_id) ?? `observation:${integer(data.observed_seq) ?? seq}`
-    state.commandFacts[id] = data
+    rememberCommand(state, data, integer(data.observed_at_us) ?? view.time_us, integer(data.observed_seq) ?? seq)
   }
-  for (const data of commands) {
-    applyCommand(state, data, { schema_version: 1, recording_id: window.recording_id, topic: '/command', data,
-      time_us: integer(data.observed_at_us) ?? view.time_us, capture_seq: integer(data.observed_seq) ?? seq }, true)
-  }
+  bindCommandOwners(state)
   rebuildCancelPending(state)
   if (!view.accountingComplete) warn(state, '账户历史成交覆盖不完整，单次执行按各自记录判断')
   rebuildOrderAmounts(state)
@@ -241,6 +241,8 @@ function updateOrder(state: ProjectionState, data: ReplayData, message: ReplayMe
   if (number(known(incoming, 'remaining_quantity')) != null) merged.observed_remaining_quantity = incoming.remaining_quantity
   merged.confirmed_book = observedId != null && generation != null && (Object.hasOwn(incoming, 'confirmed_book')
     ? known(incoming, 'confirmed_book') === true : raw.confirmed_book === true)
+  merged.confirmation_state = terminalStates.has(text(known(merged, 'status'))?.toLowerCase() ?? '') ? 'terminal'
+    : merged.confirmed_book ? 'confirmed' : 'unknown'
   merged.observed_at_us = message.time_us; merged.observed_seq = message.capture_seq
   state.orderFacts[key] = merged
   const value = order(merged, message.time_us, message.capture_seq)!
@@ -273,13 +275,16 @@ export function replayCommandFailed(data: ReplayData): boolean {
 }
 function cancelPending(state: ProjectionState, value: ReplayOrder): boolean {
   if (value.terminal) return false
-  if (value.status?.toLowerCase() === 'pending_cancel') return true
-  return Object.values(state.commandFacts).some(data => text(known(data, 'command_id')) != null
-    && known(data, 'operation') === 'cancel_order' && known(data, 'symbol') === value.symbol
-    && known(data, 'order_id') === value.order_id && pendingCancelPhases.has(text(known(data, 'phase')) ?? '')
-    && !replayCommandFailed(data))
+  if (text(known(state.orderFacts[value.key] ?? {}, 'status'))?.toLowerCase() === 'pending_cancel') return true
+  return state.cancelOrders.has(value.key)
 }
 function rebuildCancelPending(state: ProjectionState, message?: ReplayMessage) {
+  state.cancelOrders.clear()
+  for (const data of Object.values(state.commandFacts)) {
+    const symbol = text(known(data, 'symbol')), id = text(known(data, 'order_id'))
+    if (symbol && id && text(known(data, 'command_id')) && known(data, 'operation') === 'cancel_order'
+      && pendingCancelPhases.has(text(known(data, 'phase')) ?? '') && !replayCommandFailed(data)) state.cancelOrders.add(orderKey(symbol, id))
+  }
   for (const [key, previous] of Object.entries(state.view.orders)) {
     const pending = cancelPending(state, previous)
     state.orderFacts[key] = { ...state.orderFacts[key], cancel_pending: pending }
@@ -290,18 +295,33 @@ function rebuildCancelPending(state: ProjectionState, message?: ReplayMessage) {
     if (message) state.view.orderHistory.push(value)
   }
 }
-function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayMessage, restoring = false) {
-  const suppliedId = text(data.command_id), id = suppliedId ?? `observation:${message.capture_seq}`
+function rememberCommand(state: ProjectionState, data: ReplayData, time: number, seq: number) {
+  const suppliedId = text(data.command_id), id = suppliedId ?? `observation:${seq}`
   if (!suppliedId) warn(state, '部分操作缺少命令身份，仅展示本次观察')
   const merged = mergeFields(state.commandFacts[id] ?? {}, data)
   state.commandFacts[id] = merged
   const command: ReplayCommand = {
     command_id: id, operation: text(data.operation) ?? 'unknown', phase: text(data.phase) ?? 'unknown',
     symbol: text(data.symbol), order_id: text(data.order_id), price: number(known(data, 'price')), volume: number(known(data, 'quantity')),
-    time_us: message.time_us, capture_seq: message.capture_seq, data: merged,
+    time_us: time, capture_seq: seq, data: merged,
   }
   state.view.commands.push(command)
-  rebuildCancelPending(state, restoring ? undefined : message)
+}
+function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayMessage) {
+  rememberCommand(state, data, message.time_us, message.capture_seq)
+  rebuildCancelPending(state, message)
+  bindCommandOwners(state, message)
+  rebuildOrderAmounts(state, message)
+}
+function bindCommandOwners(state: ProjectionState, message?: ReplayMessage) {
+  state.commandOwners.clear()
+  for (const data of Object.values(state.commandFacts)) {
+    if (known(data, 'operation') !== 'place_order') continue
+    const symbol = text(known(data, 'symbol')), id = text(known(data, 'order_id')), execution = text(known(data, 'execution_id'))
+    if (!symbol || !id || !execution) continue
+    const key = orderKey(symbol, id)
+    state.commandOwners.set(key, !state.commandOwners.has(key) || state.commandOwners.get(key) === execution ? execution : null)
+  }
   for (const value of Object.values(state.view.orders)) {
     const owner = ownerForOrder(state, value.symbol, value.order_id)
     if (owner && !value.execution_id && !['manual', 'external'].includes(text(state.orderFacts[value.key]?.origin) ?? '')) {
@@ -313,7 +333,8 @@ function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayM
     const owner = value.order_id ? ownerForOrder(state, value.symbol, value.order_id) : null
     if (!owner || value.execution_id || ['manual', 'external'].includes(value.origin ?? '')) continue
     const associated = { ...value, execution_id: owner, origin: 'execution' }
-    state.ownFacts.set(key, associated); state.ownLastFactSeq.set(key, message.capture_seq)
+    state.ownFacts.set(key, associated)
+    if (message) state.ownLastFactSeq.set(key, message.capture_seq)
     const index = state.view.ownTrades.findIndex(item => item.key === key)
     if (index >= 0) state.view.ownTrades[index] = associated
     if (validTrade(associated) && associated.order_id) state.pending.delete(`own:trade:${key}`)
@@ -325,17 +346,10 @@ function applyCommand(state: ProjectionState, data: ReplayData, message: ReplayM
     const associated = bindKnownOwner(state, pendingData)
     pending.observation = nested ? { ...observation, data: associated } : associated
   }
-  rebuildOrderAmounts(state, restoring ? undefined : message)
 }
 function ownerForOrder(state: ProjectionState, symbol: string, id: string): string | null {
   if (id.startsWith('unknown-observation:')) return null
-  const owners = new Set<string>()
-  for (const data of Object.values(state.commandFacts)) {
-    if (known(data, 'operation') !== 'place_order' || known(data, 'symbol') !== symbol || known(data, 'order_id') !== id) continue
-    const execution = text(known(data, 'execution_id'))
-    if (execution) owners.add(execution)
-  }
-  return owners.size === 1 ? [...owners][0] : null
+  return state.commandOwners.get(orderKey(symbol, id)) ?? null
 }
 function bindKnownOwner(state: ProjectionState, data: ReplayData): ReplayData {
   if (text(known(data, 'execution_id')) || ['manual', 'external'].includes(text(known(data, 'origin')) ?? '')) return data
@@ -527,10 +541,12 @@ function applyOrderSet(state: ProjectionState, data: ReplayData, message: Replay
     for (const row of scoped) updateOrder(state, { ...row, sync_generation: generation }, message, start)
     const present = new Set(scoped.map(row => text(row.order_id)).filter(Boolean))
     for (const [key, previous] of Object.entries(state.view.orders)) {
-      if (previous.symbol === symbol && previous.confirmed && !present.has(previous.order_id) && (state.orderChanges[key] ?? -1) <= start) {
-        state.view.orders[key] = { ...previous, confirmed: false, status: 'unknown' }
-        state.orderFacts[key] = { ...state.orderFacts[key], confirmed_book: false }
-        state.view.orderHistory.push({ ...state.view.orders[key], time_us: message.time_us, capture_seq: message.capture_seq })
+      if (previous.symbol === symbol && !previous.terminal && !present.has(previous.order_id) && (state.orderChanges[key] ?? -1) <= start) {
+        state.orderFacts[key] = { ...state.orderFacts[key], confirmed_book: false, confirmation_state: 'absent' }
+        if (previous.confirmed || previous.status !== 'unknown') {
+          state.view.orders[key] = { ...previous, confirmed: false, status: 'unknown' }
+          state.view.orderHistory.push({ ...state.view.orders[key], time_us: message.time_us, capture_seq: message.capture_seq })
+        }
       }
     }
   }

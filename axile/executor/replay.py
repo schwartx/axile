@@ -32,6 +32,17 @@ def begin_query(owner: object, scope: list[str]) -> dict[str, object] | None:
         return None
 
 
+def finish_query(owner: object, token: dict[str, object] | None) -> None:
+    """结束查询并释放未交付的覆盖凭据，不改变查询结果。"""
+    recorder = getattr(owner, "_replay_recorder", None)
+    if recorder is None or token is None:
+        return
+    try:
+        recorder.finish_query(token)
+    except Exception:  # noqa: BLE001 - 回收旁路失败不能覆盖业务查询的结果或异常
+        return
+
+
 def observe(owner: object, topic: str, data: Mapping[str, object]) -> None:
     """交付已规范化的允许字段，观察故障不能改变交易结果。"""
     callback = getattr(owner, "_replay_observer", None)

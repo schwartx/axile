@@ -27,6 +27,7 @@ function RecordedFields({ value, context, kind }: { value: ReplayOrder | ReplayT
   const identities = Object.entries(value.native_identity).filter(([, raw]) => typeof raw === 'string' || typeof raw === 'number')
   return <div className="mt-3 border-t border-line pt-3">
     <h3 className="text-[13px] font-semibold text-ink-1">{kind === 'order' ? '委托详情' : '成交详情'} · {value.order_id ?? '尚未关联委托'}</h3>
+    {'observed_status' in value && value.status === 'unknown' && value.observed_status && value.observed_status !== value.status && <p className="mt-2 text-[12px] text-warn">完整委托查询中未出现，当前状态未知；最近观察：{statusLabels[value.observed_status] ?? value.observed_status}。</p>}
     <dl className="mt-2 grid gap-x-8 gap-y-1 text-[12px] text-ink-2 sm:grid-cols-2">
       {rows.map(field => <div key={field.key} className="flex min-w-0 justify-between gap-3"><dt>{field.group ? `${field.group} · ` : ''}{field.label}</dt><dd className="num break-all text-right">{field.text}</dd></div>)}
     </dl>

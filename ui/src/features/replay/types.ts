@@ -101,6 +101,7 @@ export interface ReplayOrder {
   direction: string | null
   offset: string | null
   status: string | null
+  observed_status?: string | null
   confirmed: boolean
   cancel_pending: boolean
   terminal: boolean

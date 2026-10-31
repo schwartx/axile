@@ -37,6 +37,7 @@ class _Session:
     thread: threading.Thread | None = None
     request_revision: int = 0
     queries: dict[int, tuple[int, tuple[str, tuple[str, ...]], int]] = field(default_factory=dict)
+    completed_queries: dict[tuple[str, tuple[str, ...]], tuple[int, int, int]] = field(default_factory=dict)
     next_poll: float = 0.0
     poll_pending: bool = False
 
@@ -235,7 +236,13 @@ class ReplayRecorder:
         self._interest_positions.clear()
         self._tail_trades.clear()
         self._tail_commands.clear()
-        set_replay_observer(self._owner, self.observe)
+
+        def observe_session(topic: str, data: Mapping[str, object]) -> None:
+            with self._condition:
+                if self._session is session and not session.stopping:
+                    self.observe(topic, data)
+
+        set_replay_observer(self._owner, observe_session)
         for execution_id, symbols in self._executions.items():
             self.observe(
                 "/execution",
@@ -326,9 +333,11 @@ class ReplayRecorder:
             ):
                 return None
             session.request_revision += 1
-            if len(session.queries) >= MAX_IDENTITIES:
-                self._stop_locked("replay_query_budget")
-                return None
+            while len(session.queries) + len(session.completed_queries) >= MAX_IDENTITIES:
+                if not session.completed_queries:
+                    self._stop_locked("replay_query_budget")
+                    return None
+                del session.completed_queries[next(iter(session.completed_queries))]
             key = ("symbols", tuple(sorted(set(scope)))) if scope else ("account", ())
             session.queries[session.request_revision] = self._sync_generation, key, session.sequence
             return {
@@ -340,19 +349,57 @@ class ReplayRecorder:
                 },
             }
 
+    def finish_query(self, token: Mapping[str, object] | None) -> None:
+        """释放已退出查询的未完成证明，不撤销已冻结结果的重复观察。"""
+        if not isinstance(token, Mapping):
+            return
+        with self._condition:
+            session = self._session
+            basis = token.get("query_basis")
+            if session is None or not isinstance(basis, Mapping):
+                return
+            revision, start = basis.get("request_revision"), basis.get("start_seq")
+            generation = token.get("sync_generation")
+            issued = session.queries.get(revision) if type(revision) is int else None
+            if (
+                basis.get("recording_id") == session.recording_id
+                and type(generation) is int
+                and generation == self._sync_generation
+                and type(start) is int
+                and issued is not None
+                and issued[0] == generation
+                and issued[2] == start
+            ):
+                del session.queries[revision]
+
     def _normalize_generation_locked(self, topic: str, data: dict[str, object], session: _Session) -> None:
-        if topic not in {"/order", "/order_set", "/connection"}:
+        is_quote = topic.startswith("/quote/")
+        if topic not in {"/order", "/order_set", "/connection"} and not is_quote:
             return
         if topic == "/connection":
             invalidated = any(data.get(key) is False for key in ("synchronized", "ready", "connected", "available"))
             if invalidated:
                 self._sync_generation += 1
                 session.queries.clear()
+                session.completed_queries.clear()
                 self._order_set_revisions.clear()
                 if self._owner is not None:
                     setattr(self._owner, "_replay_sync_generation", self._sync_generation)
                 data["sync_generation"] = self._sync_generation
-        data.setdefault("sync_generation", self._sync_generation)
+        generation = data.setdefault("sync_generation", self._sync_generation)
+        if (topic == "/order" or is_quote) and (type(generation) is not int or generation != self._sync_generation):
+            data["book_valid" if is_quote else "confirmed_book"] = False
+        if generation is not None and (
+            type(generation) is not int or generation < 0 or generation > self._sync_generation
+        ):
+            details = data.get("details", {})
+            data["details"] = {
+                **(details if isinstance(details, dict) else {"source_details": details}),
+                "observed_sync_generation": generation,
+            }
+            data["sync_generation"] = None
+        if is_quote:
+            return
         data.setdefault(
             "scope",
             {"kind": "symbols", "symbols": [data["symbol"]]}
@@ -382,20 +429,28 @@ class ReplayRecorder:
     def _validate_query_locked(self, data: dict[str, object], session: _Session) -> None:
         basis = data.get("query_basis")
         scope = self._scope_key(data.get("scope"))
-        if not isinstance(basis, dict):
+        if not isinstance(basis, dict) or scope is None:
             data["query_basis"] = None
             return
         revision = basis.get("request_revision")
         start = basis.get("start_seq")
         issued = session.queries.get(revision) if type(revision) is int else None
+        completed = session.completed_queries.get(scope)
         if (
             basis.get("recording_id") != session.recording_id
+            or type(data.get("sync_generation")) is not int
             or data.get("sync_generation") != self._sync_generation
             or type(start) is not int
+            or type(revision) is not int
             or issued != (self._sync_generation, scope, start)
+            and completed != (revision, self._sync_generation, start)
         ):
             data["query_basis"] = None
             return
+        session.queries.pop(revision, None)
+        if completed is None or revision > completed[0]:
+            session.completed_queries.pop(scope, None)
+            session.completed_queries[scope] = (revision, self._sync_generation, start)
 
     def _relevant_locked(self, topic: str, data: Mapping[str, object], timestamp: int) -> bool:
         if not topic.startswith(("/quote/", "/market_trade/")):

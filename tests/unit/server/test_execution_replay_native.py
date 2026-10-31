@@ -112,11 +112,17 @@ def test_actual_recorder_pagination_keeps_its_sealed_view(make_recording):
     for _ in range(2_100):
         recorder.observe("/quote/X", quote())
     recorder.end_execution("E1")
-    wait_for(
-        lambda: (
-            replay_manifest(root, 7, "E1")["recordings"] and replay_manifest(root, 7, "E1")["recordings"][0]["parts"]
-        )
-    )
+
+    def sealed_parts_available():
+        try:
+            recordings = replay_manifest(root, 7, "E1")["recordings"]
+        except _core.NativeError as error:
+            if error.args and error.args[0] == "REPLAY_INCOMPLETE":
+                return False
+            raise
+        return recordings and recordings[0]["parts"]
+
+    wait_for(sealed_parts_available)
     first = window(root, "E1", recording_id, TIME, TIME + 100)
     assert len(first["messages"]) == 2_000
     assert first["complete"] is False and first["next_cursor"]
