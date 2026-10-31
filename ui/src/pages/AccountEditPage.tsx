@@ -19,6 +19,8 @@ import { Select } from '@/components/ui/Select'
 import { SymbolTagInput } from '@/components/ui/SymbolTagInput'
 import { ExecutionTimeoutInput } from '@/features/account/ExecutionTimeoutInput'
 import { executionTimeoutError } from '@/features/account/executionTimeout'
+import { ReplayRecordingStatus } from '@/features/replay/ReplayRecordingStatus'
+import { replayRecordingPatch } from '@/features/replay/accountSetting'
 import { LeverageInput } from '@/features/account/LeverageInput'
 import { leverageError } from '@/features/account/leverage'
 import { AccountPageTitle } from '@/features/account/pageHead'
@@ -63,6 +65,7 @@ interface Draft {
   weightPrecision: string
   executionTimeout: string
   writeEmpty: boolean
+  replayRecording: boolean
 }
 
 function sameList(a: string[], b: string[]): boolean {
@@ -84,6 +87,7 @@ function draftOf(acc: Account): Draft {
     weightPrecision: String(acc.weight_precision ?? ''),
     executionTimeout: String(acc.execution_timeout ?? ''),
     writeEmpty: Boolean(acc.write_empty_record),
+    replayRecording: acc.replay_recording_enabled ?? false,
   }
 }
 
@@ -117,6 +121,7 @@ function buildPatch(draft: Draft, acc: Account, showShortLeverage: boolean, defa
   }
   const we = draft.writeEmpty ? 1 : 0
   if (we !== (acc.write_empty_record ?? 0)) patch.write_empty_record = we
+  Object.assign(patch, replayRecordingPatch(draft.replayRecording, acc.replay_recording_enabled))
 
   return patch
 }
@@ -133,6 +138,7 @@ const FIELD_LABEL: Record<string, string> = {
   forbidden_symbols: '禁投',
   risk_symbols: '风险品种',
   write_empty_record: '空仓记录',
+  replay_recording_enabled: '执行回放录制',
 }
 
 function summarize(patch: Partial<Account>, acc: Account, portfolios: PortfolioLite[] | null): string[] {
@@ -147,6 +153,8 @@ function summarize(patch: Partial<Account>, acc: Account, portfolios: PortfolioL
     else if (k === 'portfolio_id') out.push(`组合 ${pname(acc.portfolio_id)}→${pname(patch.portfolio_id)}`)
     else if (k === 'write_empty_record')
       out.push(`空仓记录 ${acc.write_empty_record ? '开' : '关'}→${patch.write_empty_record ? '开' : '关'}`)
+    else if (k === 'replay_recording_enabled')
+      out.push(`执行回放录制 ${acc.replay_recording_enabled ? '开' : '关'}→${patch.replay_recording_enabled ? '开' : '关'}`)
     else if (k === 'execution_notification_code') continue
     else out.push(`${FIELD_LABEL[k] ?? k} 已改`)
   }
@@ -265,7 +273,7 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
     <>
       <div className="flex flex-wrap items-center gap-3">{titleName}</div>
       <div className="mt-3 border-l-2 border-warn/60 bg-warn-tint/50 py-2 pl-3 pr-2 text-[14px] text-ink-2">
-        修改不会立即下单，从下次调仓开始生效。
+        {section === 'portfolio' ? '交易设置从下次调仓生效；回放录制开关保存后独立生效。' : '修改不会立即下单，从下次调仓开始生效。'}
       </div>
       {section === 'leverage' && leverageSynopsis != null && (
         <EditSynopsis>
@@ -599,6 +607,13 @@ export function AccountEditPage({ section = 'basic' }: { section?: EditSection }
         </Row>
         <Row label="空仓写记录" hint="审计留痕">
           <Toggle on={d.writeEmpty} onClick={() => set({ writeEmpty: !d.writeEmpty })} />
+        </Row>
+        <Row label="执行回放录制" hint="默认关闭" top>
+          <div className="flex flex-col gap-2">
+            <Toggle on={d.replayRecording} onClick={() => set({ replayRecording: !d.replayRecording })} ariaLabel="记录执行回放" />
+            <p className="text-[12px] leading-5 text-ink-3">保存后，记录已有连接上的行情和委托过程，供之后回放；开启前的数据不会补录。</p>
+            <ReplayRecordingStatus accountId={accountId} savedEnabled={acc.replay_recording_enabled ?? false} />
+          </div>
         </Row>
         <Row label="执行超时" hint="单次上限" top>
           <div className="flex flex-col gap-1">

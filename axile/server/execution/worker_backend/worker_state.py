@@ -11,7 +11,7 @@ import asyncio
 import threading
 from dataclasses import dataclass, field
 from functools import partial
-from typing import cast
+from typing import Any, cast
 
 from loguru import logger
 
@@ -35,7 +35,7 @@ from axile.server.execution.resident_connection import (
     reuse_resident_connection,
 )
 from axile.server.execution.worker_backend.catalog import RemoteCatalogProvider
-from axile.server.execution.worker_backend.protocol import WorkerTerminationSignal
+from axile.server.execution.worker_backend.protocol import WorkerReplayConfig, WorkerTerminationSignal
 
 
 @dataclass
@@ -66,6 +66,12 @@ class _WorkerBackendState(ResidentConnectionState):
     orders_binding: ConnectionBinding | None = None
     orders_executor: object | None = None
     orders_generation: int = 0
+    replay_config: WorkerReplayConfig | None = None
+    replay_recorder: Any = None
+    replay_lock: threading.RLock = field(default_factory=threading.RLock)
+    replay_error: str | None = None
+    replay_execution_id: str | None = None
+    replay_execution_symbols: tuple[str, ...] = ()
 
 
 def _request_worker_termination(state: _WorkerBackendState, signal: WorkerTerminationSignal) -> None:
@@ -311,6 +317,14 @@ def _resolve_prepared_executor(
 
 def _configure_executor_resources(state: _WorkerBackendState, account: AccountSnapshot, executor: object) -> None:
     """交易和人工查询共用目录资源；只绑定能力，不启动连接。"""
+    from axile.server.execution.worker_backend.replay import (
+        configure_worker_replay,
+        replay_config,
+        sync_worker_replay_connection,
+    )
+
+    state.replay_connection_observer = lambda ready: sync_worker_replay_connection(state, ready)
+    configure_worker_replay(state, replay_config(account))
     if account.trade_channel == TradeChannel.CTP:
         setattr(executor, "logger", getattr(executor, "logger", logger).bind(account_id=account.id))
         from axile.server.execution.catalog_control import catalog_control_scope
@@ -326,6 +340,7 @@ def _configure_executor_resources(state: _WorkerBackendState, account: AccountSn
 
         def observe(observation):
             collector.observe(observation)
+            sync_worker_replay_connection(state, observation.status == "ok")
             book = getattr(executor, "account_orders", None)
             if observation.status == "error" and book is not None:
                 book.invalidate("账户连接异常，委托状态待确认")

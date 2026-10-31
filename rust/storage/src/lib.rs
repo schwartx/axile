@@ -25,6 +25,12 @@ pub mod error;
 pub(crate) mod evidence_ops;
 pub(crate) mod execution_ops;
 pub(crate) mod execution_reads;
+pub(crate) mod execution_replay;
+pub(crate) mod execution_replay_projection;
+#[cfg(feature = "python")]
+mod execution_replay_python;
+pub(crate) mod execution_replay_reader;
+pub(crate) mod execution_replay_recovery;
 pub(crate) mod execution_view;
 pub mod executions;
 pub(crate) mod fact_attempts;

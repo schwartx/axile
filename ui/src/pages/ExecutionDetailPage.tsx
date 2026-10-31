@@ -30,6 +30,7 @@ import { buildSymbolActionStream, type ActionLine } from '@/features/account/act
 import { executionRecordView } from '@/features/account/executionOutcome'
 import { AccountPageTitle } from '@/features/account/pageHead'
 import { EvidenceExportButton } from '@/features/account/EvidenceExportButton'
+import { Link } from '@/components/ui/nav'
 import type { FailureReason } from '@/features/account/failureReason'
 import { PhaseBar } from '@/features/dashboard/PhaseBar'
 import { accountAssetTerms, positionValueLabelOf } from '@/features/dashboard/display'
@@ -593,6 +594,7 @@ export function ExecutionDetailPage() {
             back={{ to: fromPerformance ? performancePath : journalReturn, label: fromPerformance ? '返回实盘绩效' : '返回执行记录' }}
           />
         </div>
+        {executionId && <Link to={`/accounts/${accountId}/executions/${executionId}/replay`} className="inline-flex min-h-10 items-center rounded-chip border border-line px-3 text-[13px] text-accent hover:bg-fill focus-visible:outline-2 focus-visible:outline-accent">执行回放</Link>}
         {executionId && <EvidenceExportButton target={{ kind: 'execution', accountId, executionId }} accountName={item?.name}
           isRunning={isLive || ['QUEUED', 'RUNNING', 'TERMINATING'].includes(status.data?.status ?? '')}
           disabled={status.data != null && status.data.account_id !== accountId} />}

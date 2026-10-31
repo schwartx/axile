@@ -70,6 +70,33 @@ class WorkerTerminationSignal:
 
 
 @dataclass(slots=True)
+class WorkerReplayConfig:
+    """仅携带录制设置与冻结声明，不包含账户凭据。"""
+
+    enabled: bool
+    config_version: int
+    root: str
+    context: dict[str, object]
+    supported: bool
+
+
+@dataclass(slots=True)
+class WorkerReplayControl:
+    """通过独立控制通路更新录制意愿或读取实际状态。"""
+
+    request_id: str
+    config: WorkerReplayConfig | None = None
+
+
+@dataclass(slots=True)
+class WorkerReplayStatus:
+    """回显控制请求身份及录制状态，独立于交易结果。"""
+
+    request_id: str
+    status: dict[str, object]
+
+
+@dataclass(slots=True)
 class WorkerBackendRequest:
     """描述主进程发送给多进程 worker 的请求载荷.
 
@@ -99,6 +126,7 @@ class WorkerBackendRequest:
     execution_id: str | None
     payload: dict[str, object]
     connection_binding: dict[str, object] | None = None
+    replay_config: WorkerReplayConfig | None = None
 
     @classmethod
     def shutdown(cls, request_id: str, reason: str = "manager_shutdown") -> "WorkerBackendRequest":

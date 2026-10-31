@@ -18,6 +18,7 @@ from axile.executor.models.unified_input_support import as_timeout_int
 from axile.executor.models.unified_order import OrderDirection, OrderType, TradeRecord, UnifiedOrder
 from axile.executor.models.unified_output import UnifiedStandardOutput
 from axile.executor.order_input_validation import normalize_order_enums
+from axile.executor.replay_actions import replay_operation
 
 if TYPE_CHECKING:
     from axile.executor.abstract_executor.base import AbstractExecutor
@@ -45,6 +46,11 @@ def _executor(owner: object) -> AbstractExecutor:
 class AbstractExecutorFacadeMixin:
     """承载 AbstractExecutor 的公开 facade 默认实现."""
 
+    def replay_interest_symbols(self) -> dict[str, list[str]]:
+        """只返回缓存关联品种，不生成回放事实或查询交易柜台。"""
+        return {"orders": _executor(self).account_orders.known_symbols(), "positions": []}
+
+    @replay_operation("place_order")
     @controlled_operation(
         "place_order",
         symbol_arg="symbol",
@@ -368,6 +374,7 @@ class AbstractExecutorFacadeMixin:
         _ = symbol
         return None
 
+    @replay_operation("cancel_order")
     @controlled_operation(
         "cancel_order",
         symbol_arg="symbol",

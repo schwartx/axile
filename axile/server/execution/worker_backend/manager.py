@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
@@ -30,6 +31,8 @@ from axile.server.execution.worker_backend.protocol import (
     WorkerBackendErrorPayload,
     WorkerBackendRequest,
     WorkerBackendResponse,
+    WorkerReplayControl,
+    WorkerReplayStatus,
     WorkerTerminationSignal,
 )
 from axile.server.execution.worker_backend.worker import run_worker_backend_loop
@@ -175,6 +178,9 @@ class _WorkerBackendHandle:
     monitor: RemoteMonitor | None = None
     orders: OrdersChannel | None = None
     connection_binding: ConnectionBinding | None = None
+    control_lock: Lock = field(default_factory=Lock)
+    replay_lock: Lock = field(default_factory=Lock)
+    replay_pending: str | None = None
 
 
 class WorkerBackendManager:
@@ -216,7 +222,7 @@ class WorkerBackendManager:
 
     def _spawn_worker(self, account_id: int) -> _WorkerBackendHandle:
         parent_conn, child_conn = self._ctx.Pipe(duplex=True)
-        child_control_conn, parent_control_conn = self._ctx.Pipe(duplex=False)
+        child_control_conn, parent_control_conn = self._ctx.Pipe(duplex=True)
         parent_catalog, child_catalog = self._ctx.Pipe(duplex=True)
         parent_monitor, child_monitor = self._ctx.Pipe(duplex=True)
         parent_orders, child_orders = self._ctx.Pipe(duplex=True)
@@ -256,6 +262,58 @@ class WorkerBackendManager:
             handle = self._workers.get(account_id)
             if handle is not None and handle.catalog is not None:
                 handle.catalog.configure(channel=channel, enabled=enabled, last_execution=latest)
+
+    async def configure_replay(self, account: AccountContext) -> dict[str, object]:
+        """保存意愿后仅通知已有 worker，不创建交易连接。"""
+        return await asyncio.to_thread(self._replay_control_blocking, account, True)
+
+    async def replay_status(self, account: AccountContext) -> dict[str, object]:
+        """通过独立控制通路读取录制状态，不排队等待交易。"""
+        return await asyncio.to_thread(self._replay_control_blocking, account, False)
+
+    def _replay_control_blocking(self, account: AccountContext, update: bool) -> dict[str, object]:
+        from axile.server.execution.worker_backend.replay import replay_config
+
+        config = replay_config(account)
+        fallback: dict[str, object] = {
+            "desired": config.enabled,
+            "state": "disabled" if not config.enabled else "waiting_connection" if config.supported else "unsupported",
+            "config_version": config.config_version,
+            "effective_version": config.config_version if not config.enabled else 0,
+            "recording_id": None,
+            "error": None,
+        }
+        with self._lock:
+            handle = self._workers.get(_require_account_id(account))
+        if handle is None or not self._is_handle_healthy(handle):
+            return fallback
+        if not handle.replay_lock.acquire(timeout=0.5):
+            return fallback | {"state": "starting", "error": "录制控制正在处理，请稍后查询"}
+        try:
+            if handle.replay_pending is not None:
+                self._receive_replay_status(handle)
+            request = WorkerReplayControl(uuid4().hex, config if update else None)
+            handle.replay_pending = request.request_id
+            with handle.control_lock:
+                handle.control_connection.send(request)
+            result = self._receive_replay_status(handle)
+            if config.config_version < result.get("config_version", 0):
+                return result
+            return result | {"desired": config.enabled, "config_version": config.config_version}
+        except (OSError, EOFError, TimeoutError, ValueError):
+            return fallback | {"state": "error", "error": "录制控制状态待确认；交易连接未改变"}
+        finally:
+            handle.replay_lock.release()
+
+    @staticmethod
+    def _receive_replay_status(handle: _WorkerBackendHandle) -> dict[str, object]:
+        if not handle.control_connection.poll(0.5):
+            raise TimeoutError("录制状态确认超时")
+        response = handle.control_connection.recv()
+        expected, handle.replay_pending = handle.replay_pending, None
+        if not isinstance(response, WorkerReplayStatus) or response.request_id != expected:
+            raise ValueError("录制状态确认身份不匹配")
+        return response.status
 
     def _record_catalog_execution(self, account_id: int) -> None:
         """只更新使用时间，避免在途请求的旧快照重新启用已暂停来源。"""
@@ -385,13 +443,14 @@ class WorkerBackendManager:
                 and termination_controller.is_requested()
                 and termination_deadline is None
             ):
-                handle.control_connection.send(
-                    WorkerTerminationSignal(
-                        execution_id=request.execution_id or "",
-                        reason=termination_controller.reason(),
-                        mode=termination_controller.mode(),
+                with getattr(handle, "control_lock", nullcontext()):
+                    handle.control_connection.send(
+                        WorkerTerminationSignal(
+                            execution_id=request.execution_id or "",
+                            reason=termination_controller.reason(),
+                            mode=termination_controller.mode(),
+                        )
                     )
-                )
                 termination_deadline = now + _TERMINATION_GRACE_SECONDS
             if termination_deadline is not None and now >= termination_deadline:
                 return None, True
@@ -465,6 +524,9 @@ class WorkerBackendManager:
         from axile.server.db.models.account import AccountSnapshot
 
         account = AccountSnapshot.model_validate(request.account_payload)
+        from axile.server.execution.worker_backend.replay import replay_config
+
+        request.replay_config = replay_config(account)
         key = connection_config_key(account.trade_channel, account.account_config)
         binding = getattr(handle, "connection_binding", None)
         if binding is None or binding.config_key != key:

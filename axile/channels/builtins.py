@@ -26,12 +26,14 @@ from axile.channels.contracts import (
     ChannelNumberConstraints,
     ChannelPlugin,
     ChannelPortfolioPreset,
+    ChannelReplayCapability,
     ChannelSchedule,
     ChannelSessionWindow,
     ChannelUi,
     ChannelUnits,
     ConnectionProgress,
     ConnectionStepDefinition,
+    ReplayDisplayField,
 )
 from axile.channels.schedule_clock import (
     CN_FUTURES_WINDOWS,
@@ -49,6 +51,64 @@ from axile.executor.models.unified_input_accounts import (
     GMAccountConfig,
     TQAccountConfig,
 )
+
+
+def _ctp_replay_capability() -> ChannelReplayCapability:
+    """声明原生期货观察能力，实际档数和覆盖由录制确认。"""
+    attributes = [
+        "hedge_flag",
+        "native_order_type",
+        "time_condition",
+        "volume_condition",
+        "submit_status",
+        "status_msg",
+    ]
+    identities = [
+        "trading_day",
+        "front_id",
+        "session_id",
+        "order_ref",
+        "exchange_id",
+        "order_sys_id",
+        "trade_id",
+        "request_id",
+    ]
+    return ChannelReplayCapability(
+        supported=True,
+        adapter_version="1",
+        streams={
+            kind: {
+                "availability": "partial",
+                "reason": "waiting_observation",
+                "delivery": delivery,
+                "intermediate_states": "observed_only",
+            }
+            for kind, delivery in (
+                ("depth", "callback"),
+                ("own_order", "callback"),
+                ("own_trade", "callback"),
+                ("position", "query"),
+            )
+        }
+        | {"market_trade": {"availability": "unavailable", "reason": "source_not_provided"}},
+        attributes={"order": attributes, "command": attributes},
+        native_identity={
+            kind: identities
+            for kind in ("quote", "order", "trade", "command", "account_observation", "order_set", "connection")
+        },
+        display={
+            "order": [
+                ReplayDisplayField(
+                    key="hedge_flag",
+                    label="投机／套保",
+                    kind="enum",
+                    values={"1": "投机", "2": "套利", "3": "套保", "5": "做市"},
+                ),
+                ReplayDisplayField(key="status_msg", label="柜台说明"),
+            ]
+        },
+    )
+
 
 _LEVERAGE = ChannelLeverage(min=0, max=125, step=0.1)
 _SINGLE_MAKER = AlgorithmReference(method="SINGLE-MAKER", params={})
@@ -188,6 +248,7 @@ def _ctp_plugin() -> ChannelPlugin:
                 position_value_label="货值",
                 account_connect_lead="填写凭据后可验证账户连接；验证通过仅代表本次接入成功。",
             ),
+            replay=_ctp_replay_capability(),
             connection_steps=_CTP_STEPS,
             connection_validation=ChannelConnectionValidation(
                 notice="使用当前凭据连接柜台，查询账户并确认当日结算；不创建账户、不下单。",

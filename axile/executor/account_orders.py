@@ -112,6 +112,16 @@ class AccountOrderBook:
                 "sampled_at": self.sampled_at,
             }
 
+    def known_symbols(self) -> list[str]:
+        """只读缓存内非终态订单的品种，用于有界采集兴趣，不证明订单状态。"""
+        with self._lock:
+            if len(self._orders) > 8192:
+                raise ValueError("replay_interest_budget")
+            symbols = sorted({order.symbol for order in self._orders.values() if not order.is_completed()})
+            if len(symbols) > 4096:
+                raise ValueError("replay_interest_budget")
+            return symbols
+
     def remember_metadata(self, order_id: str, metadata: dict[str, Any]) -> None:
         """保留订单的执行归属，执行结束后的回报仍可关联原 execution。"""
         with self._lock:

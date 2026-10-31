@@ -1,0 +1,318 @@
+import { describe, expect, test } from 'bun:test'
+import { projectReplay } from '@/features/replay/model'
+import type { ReplayData, ReplayMessage, ReplayWindow } from '@/features/replay/types'
+
+const key = (symbol: string, id: string) => JSON.stringify([symbol, id])
+const message = (capture_seq: number, topic: string, data: ReplayData, time_us = capture_seq * 100): ReplayMessage => ({
+  schema_version: 1, recording_id: 'rec-A', capture_seq, time_us, topic, data,
+})
+function windowOf(messages: ReplayMessage[], state: ReplayData = {}): ReplayWindow {
+  return {
+    recording_id: 'rec-A', window_id: 'window-1', context: { schema_version: 1 }, complete: true,
+    coverage: [{ start_us: 0, end_us: 10_000 }], gaps: [], next_cursor: null, messages,
+    state_before_start: { schema_version: 1, recording_id: 'rec-A', state_through_seq: 0, time_us: 0,
+      trade_accounting: { own_seen_keys: [], market_seen_keys: [], own_records: {}, market_records: {}, own_complete: true,
+        market_complete: true, execution_totals: {} }, ...state },
+  }
+}
+const order = (id: string, rest: ReplayData = {}): ReplayData => ({ symbol: 'A', order_id: id, direction: 'BUY',
+  quantity: 10, filled_quantity: 0, remaining_quantity: 10, price: 98, status: 'working', confirmed_book: true, sync_generation: 1, ...rest })
+const fill = (id: string, quantity: number, rest: ReplayData = {}): ReplayData => ({ symbol: 'A', trade_key: id,
+  identity_quality: 'stable', quantity, price: 99, direction: 'BUY', position_side: 'NET', execution_id: 'exec-1', ...rest })
+
+describe('回放按本地已观察前缀恢复', () => {
+  test('恢复窗前计量后补查同笔不重计，新增稳定成交才增加', () => {
+    const state = {
+      state_through_seq: 2,
+      trade_accounting: { own_seen_keys: ['T1'], market_seen_keys: ['M1'], own_complete: true, market_complete: true,
+        own_records: { T1: { data: fill('T1', 4), first_time_us: 100, first_capture_seq: 1, conflict: false } }, market_records: {},
+        execution_totals: { 'exec-1': { complete: true, by_symbol: { A: { quantity: 4, notional: 396, complete: true } } } } },
+    }
+    const window = windowOf([message(3, '/trade', fill('T1', 4)), message(4, '/trade', fill('T2', 2)),
+      message(4, '/trade', fill('T2', 2))], state)
+    expect(projectReplay(window, { time_us: 300 }).executionTotals['exec-1'].A).toBe(4)
+    const result = projectReplay(window, { time_us: 400 })
+    expect(result.executionTotals['exec-1'].A).toBe(6)
+    expect(result.ownTrades.map(item => item.key)).toEqual(['T1', 'T2'])
+    expect(projectReplay(window, { time_us: 300 }).executionTotals['exec-1'].A).toBe(4)
+  })
+
+  test('观察持仓已含迟到成交时不盲加，只有业务proof对齐才推导', () => {
+    const observation = { scope: { symbols: ['A'] }, scope_complete: true,
+      positions: [{ symbol: 'A', position_side: 'NET', quantity: 4, available_quantity: 1 }],
+      position_basis: { status: 'unverified', proof: null } }
+    const result = projectReplay(windowOf([message(1, '/account_observation', observation), message(2, '/trade', fill('T1', 4))]), { time_us: 200 })
+    expect(Object.values(result.observedPositions)[0].volume).toBe(4)
+    expect(result.derivedPositions).toEqual({})
+    const aligned = { ...observation, position_basis: { status: 'aligned', proof: { kind: 'included_trade_keys', complete: true, included_trade_keys: ['T1'] } } }
+    const next = projectReplay(windowOf([message(1, '/account_observation', aligned), message(2, '/trade', fill('T1', 4)),
+      message(3, '/trade', fill('T2', 2))]), { time_us: 300 })
+    expect(Object.values(next.derivedPositions)[0].volume).toBe(6)
+    expect(Object.values(next.observedPositions)[0].available_volume).toBe(1)
+  })
+
+  test('局部账户观察缺行不清其他品种，partial缺字段不改原生可卖', () => {
+    const first = message(1, '/account_observation', { scope: 'account', scope_complete: true,
+      positions: [{ symbol: 'A', position_side: 'LONG', quantity: 4, available_quantity: 2 },
+        { symbol: 'B', position_side: 'LONG', quantity: 8 }] })
+    const second = message(2, '/account_observation', { scope: { symbols: ['A'] }, scope_complete: false,
+      positions: [{ symbol: 'A', position_side: 'LONG', quantity: 5 }] })
+    const third = message(3, '/account_observation', { scope: { symbols: ['A'] }, scope_complete: true, positions: [] })
+    const atTwo = projectReplay(windowOf([first, second, third]), { time_us: 200 })
+    expect(atTwo.observedPositions[key('A', 'LONG')].available_volume).toBe(2)
+    const after = projectReplay(windowOf([first, second, third]), { time_us: 300 })
+    expect(after.observedPositions[key('A', 'LONG')].volume).toBe(0)
+    expect(after.observedPositions[key('B', 'LONG')].volume).toBe(8)
+  })
+
+  test('请求不当受理，弱身份及有损默认不进入精确计量', () => {
+    const result = projectReplay(windowOf([
+      message(1, '/command', { command_id: 'c1', operation: 'place_order', phase: 'request', symbol: 'A', price: 98, quantity: 10 }),
+      message(2, '/order', order('x', { confirmed_book: null, direction: 'BUY', field_quality: { direction: 'missing' } })),
+      message(3, '/trade', { ...fill('weak', 4), identity_quality: 'weak', trade_key: null }),
+    ]), { time_us: 300 })
+    expect(result.commands.length).toBe(1)
+    expect(result.orders[key('A', 'x')].confirmed).toBe(false)
+    expect(result.orders[key('A', 'x')].direction).toBeNull()
+    expect(result.executionTotals).toEqual({})
+    expect(result.accountingComplete).toBe(false)
+  })
+
+  test('同微秒按seq步进，倒退不泄露未来订单与热力，录制段不可混入', () => {
+    const quote = message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [{ price: 99, quantity: 3 }],
+      book_valid: true, valid_until_us: 1000 }, 100)
+    const window = windowOf([quote, message(2, '/order', order('x'), 100)])
+    const before = projectReplay(window, { time_us: 100, capture_seq: 1 })
+    expect(before.orders).toEqual({})
+    expect(before.quoteHistory.length).toBe(1)
+    expect(projectReplay(window, { time_us: 100, capture_seq: 2 }).orderHistory.length).toBe(1)
+    expect(projectReplay(window, { time_us: 99 }).quoteHistory).toEqual([])
+    const mixed = { ...window, messages: [{ ...quote, recording_id: 'rec-B' }] }
+    expect(() => projectReplay(mixed, { time_us: 100 })).toThrow('其他录制段')
+  })
+
+  test('完整集合只清覆盖前缀，较旧查询不回退并保留查询期间的部分成交', () => {
+    const messages = [message(1, '/order', order('a', { sync_generation: 1 })), message(2, '/order', order('b', { sync_generation: 1 })),
+      message(3, '/order', order('b', { sync_generation: 1, filled_quantity: 6, remaining_quantity: 4, status: 'partially_filled' })),
+      message(4, '/order_set', { scope: { symbols: ['A'] }, scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { start_seq: 2, request_revision: 2 }, orders: [order('b')] }),
+      message(5, '/order_set', { scope: { symbols: ['A'] }, scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { start_seq: 2, request_revision: 1 }, orders: [] })]
+    const result = projectReplay(windowOf(messages), { time_us: 500 })
+    expect(result.orders[key('A', 'a')].confirmed).toBe(false)
+    expect(result.orders[key('A', 'a')].status).toBe('unknown')
+    expect(result.orders[key('A', 'b')].confirmed).toBe(true)
+    expect(result.orders[key('A', 'b')].remaining_volume).toBe(4)
+    expect(result.orderHistory.some(row => row.order_id === 'a' && !row.confirmed)).toBe(true)
+  })
+
+  test('待撤仍在场，断线先失效，旧代回报不复活', () => {
+    const result = projectReplay(windowOf([message(1, '/quote/A', { symbol: 'A', bids: [{ price: 98, quantity: 2 }], asks: [], book_valid: true, valid_until_us: 5000 }, 50),
+      message(2, '/order', order('a', { sync_generation: 1 }), 100),
+      message(3, '/command', { command_id: 'cancel-a', operation: 'cancel_order', phase: 'request', symbol: 'A', order_id: 'a' }, 200),
+      message(4, '/connection', { connected: false, scope: { symbols: ['A'] }, sync_generation: 2 }, 300),
+      message(5, '/order', order('a', { sync_generation: 1 }), 400),
+    ]), { time_us: 400 })
+    expect(result.orderHistory[1].cancel_pending).toBe(true)
+    expect(result.orderHistory[1].confirmed).toBe(true)
+    expect(result.orders[key('A', 'a')].confirmed).toBe(false)
+    expect(result.quoteHistory.at(-1)?.book_valid).toBe(false)
+    expect(result.quoteHistory.at(-1)?.time_us).toBe(300)
+  })
+
+  test('真实checkpoint注解和多品种阶段目标恢复，不用账户历史完整性掩盖单次执行', () => {
+    const state = {
+      state_through_seq: 3, time_us: 300,
+      executions: { E: { start_observed: true, symbols: ['A', 'B'], by_symbol: {
+        A: { target_quantity: 10 }, B: { target_quantity: -2 },
+      } } },
+      orders: { [key('A', 'a')]: { ...order('a'), observed_seq: 2, observed_at_us: 200 } },
+      trade_accounting: { own_complete: false, market_complete: false, own_seen_keys: ['T'], market_seen_keys: [], pending: {},
+        own_records: { T: { data: fill('T', 4, { execution_id: 'E', order_id: 'a' }), first_capture_seq: 3, first_time_us: 300,
+          last_observed_seq: 3, last_observed_time_us: 300, conflict: false } }, market_records: {}, execution_totals: {} },
+    }
+    const result = projectReplay(windowOf([message(4, '/trade', fill('T', 4, { execution_id: 'E', order_id: 'a' }))], state), { time_us: 400 })
+    expect(result.targets).toEqual({ A: 10, B: -2 })
+    expect(result.orders[key('A', 'a')].time_us).toBe(200)
+    expect(result.orders[key('A', 'a')].carry_in).toBe(true)
+    expect(result.executionTotals.E).toEqual({ A: 4, B: 0 })
+    expect(result.executionComplete.E).toBe(true)
+    expect(result.accountingComplete).toBe(false)
+    expect(result.ownTrades.length).toBe(1)
+  })
+
+  test('源业务水位只排除同来源已包含成交，phase目标不证明执行起点', () => {
+    const positions = [{ symbol: 'A', position_side: 'NET', quantity: 4 }]
+    const messages = [
+      message(1, '/execution', { execution_id: 'E', event: 'phase', symbol: 'A', target_quantity: 10 }),
+      message(2, '/account_observation', { scope: ['A'], scope_complete: true, positions,
+        position_basis: { status: 'aligned', proof: { kind: 'source_watermark', source: 'source-1', through: 5 } } }),
+      message(3, '/trade', fill('T', 4, { source: 'source-1', source_seq: 5, execution_id: 'E', order_id: 'a' })),
+      message(4, '/trade', fill('U', 2, { source: 'source-1', source_seq: 6, execution_id: 'E', order_id: 'a' })),
+    ]
+    const result = projectReplay(windowOf(messages), { time_us: 400 })
+    expect(result.executionComplete.E).toBe(false)
+    expect(Object.values(result.derivedPositions)[0].volume).toBe(6)
+    expect(result.targets.A).toBe(10)
+  })
+
+  test('账户scope即使symbols为空也覆盖已知订单盘口及持仓', () => {
+    const account = { kind: 'account', symbols: [] }
+    const messages = [message(1, '/quote/A', { symbol: 'A', book_valid: true, valid_until_us: 10_000,
+      bids: [{ price: 98, quantity: 5 }], asks: [] }), message(2, '/order', order('a')),
+    message(3, '/account_observation', { scope: account, scope_complete: true,
+      positions: [{ symbol: 'B', position_side: 'LONG', quantity: 3, available_quantity: 2, frozen_quantity: 1 }] }),
+    message(4, '/account_observation', { scope: account, scope_complete: true, positions: [] }),
+    message(5, '/order_set', { scope: account, scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 4, request_revision: 1 }, orders: [] }),
+    message(6, '/connection', { scope: account, sync_generation: 2, connected: false })]
+    const result = projectReplay(windowOf(messages), { time_us: 600 })
+    expect(result.observedPositions[key('B', 'LONG')]).toMatchObject({ volume: 0, available_volume: 0, frozen_volume: 0 })
+    expect(result.orders[key('A', 'a')].confirmed).toBe(false)
+    expect(result.quotes.A.book_valid).toBe(false)
+    expect(result.quoteHistory.at(-1)?.time_us).toBe(600)
+  })
+
+  test('阶段start建立单次计量，各执行和品种目标独立，未知A不遮掉有效B', () => {
+    const messages = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['A', 'B'],
+      by_symbol: { A: { target_quantity: 10, algorithm: 'CUSTOM' }, B: { target_quantity: 20 } } }),
+    message(2, '/execution', { execution_id: 'E', phase: 'target', symbol: 'B', target_quantity: 18 }),
+    message(3, '/trade', fill('B1', 2, { symbol: 'B', execution_id: 'E', order_id: 'b' })),
+    message(4, '/trade', fill('A-weak', 4, { execution_id: 'E', identity_quality: 'weak', trade_key: null })),
+    message(5, '/execution', { execution_id: 'F', phase: 'target', symbol: 'A', target_quantity: 99 })]
+    const result = projectReplay(windowOf(messages), { time_us: 500 })
+    expect(result.targetsByExecution.E).toEqual({ A: 10, B: 18 })
+    expect(result.targetsByExecution.F).toEqual({ A: 99 })
+    expect(result.executionSymbolComplete.E).toEqual({ A: false, B: true })
+    expect(result.executionComplete.E).toBe(false)
+    expect(result.executionTotals.E.B).toBe(2)
+  })
+
+  test('窗前weak观察可见且不计量，明确关联清原生pending键而非猜去重', () => {
+    const state = { state_through_seq: 2, time_us: 200,
+      executions: { E: { start_observed: true, symbols: ['A'] } },
+      trade_accounting: { own_complete: false, market_complete: false, own_seen_keys: [], market_seen_keys: [],
+        own_records: {}, market_records: {}, pending: { 'own:observation:2': { market: false,
+          observation: { ...fill('ignored', 4, { identity_quality: 'weak', trade_key: null, execution_id: 'E' }), observed_seq: 2, observed_at_us: 200 } } } } }
+    const window = windowOf([message(3, '/trade', fill('T', 4, { related_capture_seq: 2, execution_id: 'E', order_id: 'a' }))], state)
+    const before = projectReplay(window, { time_us: 200 })
+    expect(before.ownTrades).toHaveLength(1)
+    expect(before.ownTrades[0].key).toBeNull()
+    expect(before.executionSymbolComplete.E.A).toBe(false)
+    const after = projectReplay(window, { time_us: 300 })
+    expect(after.ownTrades.map(row => row.key)).toEqual(['T'])
+    expect(after.executionTotals.E.A).toBe(4)
+    expect(after.executionSymbolComplete.E.A).toBe(true)
+  })
+
+  test('独立成交只取柜台累计与已去重逐笔的max，弱成交使剩余未知', () => {
+    const messages = [message(1, '/order', order('a')),
+      message(2, '/trade', fill('T', 4, { order_id: 'a' })),
+      message(3, '/order', order('a', { status: 'partially_filled', filled_quantity: 4, remaining_quantity: 6 })),
+      message(4, '/trade', fill('T', 4, { order_id: 'a' })),
+      message(5, '/trade', fill('U', 2, { order_id: 'a' })),
+      message(6, '/trade', fill('weak', 2, { trade_key: null, identity_quality: 'weak', order_id: 'a' }))]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 200 }).orders[key('A', 'a')]).toMatchObject({ filled_volume: 4, remaining_volume: 6 })
+    expect(projectReplay(window, { time_us: 400 }).orders[key('A', 'a')]).toMatchObject({ filled_volume: 4, remaining_volume: 6 })
+    expect(projectReplay(window, { time_us: 500 }).orders[key('A', 'a')]).toMatchObject({ filled_volume: 6, remaining_volume: 4 })
+    expect(projectReplay(window, { time_us: 600 }).orders[key('A', 'a')].remaining_volume).toBeNull()
+  })
+
+  test('重复观察不保护旧集合，新成交事实才保护查询期间变化', () => {
+    const first = [message(1, '/order', order('a')), message(2, '/trade', fill('T', 4, { order_id: 'a' }))]
+    const query = { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 2, request_revision: 1 }, orders: [] }
+    const duplicate = projectReplay(windowOf([...first, message(3, '/trade', fill('T', 4, { order_id: 'a' })), message(4, '/order_set', query)]), { time_us: 400 })
+    expect(duplicate.orders[key('A', 'a')].confirmed).toBe(false)
+    const newFact = projectReplay(windowOf([...first, message(3, '/trade', fill('U', 2, { order_id: 'a' })), message(4, '/order_set', query)]), { time_us: 400 })
+    expect(newFact.orders[key('A', 'a')].confirmed).toBe(true)
+    expect(newFact.orders[key('A', 'a')].remaining_volume).toBe(4)
+  })
+
+  test('partial订单保留确认和已知字段，终态及累计回退只保护相应字段', () => {
+    const messages = [message(1, '/order', order('a', { attributes: { original: '保留' } })),
+      message(2, '/order', { symbol: 'A', order_id: 'a', sync_generation: 1, price: 99, attributes: { later: false } }),
+      message(3, '/order', order('a', { status: 'filled', filled_quantity: 10, remaining_quantity: 0 })),
+      message(4, '/order', order('a', { status: 'working', filled_quantity: 1, remaining_quantity: 9, price: 101, attributes: { reason: '迟到补充' } }))]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 200 }).orders[key('A', 'a')]).toMatchObject({ confirmed: true, price: 99,
+      attributes: { later: false }, remaining_volume: 10 })
+    expect(projectReplay(window, { time_us: 400 }).orders[key('A', 'a')]).toMatchObject({ terminal: true, confirmed: false,
+      filled_volume: 10, remaining_volume: 0, price: 101, attributes: { reason: '迟到补充' } })
+  })
+
+  test('扩展属性省略或null保留，显式对象替换而field_quality按字段合并', () => {
+    const messages = [message(1, '/order', order('a', { attributes: { original: true }, native_identity: { original: 'A' }, field_quality: { quantity: 'invalid' } })),
+      message(2, '/order', { symbol: 'A', order_id: 'a', sync_generation: 1, attributes: null, field_quality: { price: 'known' } }),
+      message(3, '/order', { symbol: 'A', order_id: 'a', sync_generation: 1, attributes: {}, native_identity: { replacement: 'B' } }),
+      message(4, '/trade', fill('T', 4, { order_id: 'a', attributes: { original: true }, native_identity: { original: 'A' } })),
+      message(5, '/trade', fill('T', 4, { order_id: 'a', attributes: null })),
+      message(6, '/trade', fill('T', 4, { order_id: 'a', attributes: {}, native_identity: { replacement: 'B' } }))]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 200 }).orders[key('A', 'a')]).toMatchObject({ attributes: { original: true }, native_identity: { original: 'A' }, volume: null })
+    expect(projectReplay(window, { time_us: 300 }).orders[key('A', 'a')].attributes).toEqual({})
+    expect(projectReplay(window, { time_us: 300 }).orders[key('A', 'a')].native_identity).toEqual({ replacement: 'B' })
+    expect(projectReplay(window, { time_us: 500 }).ownTrades[0]).toMatchObject({ attributes: { original: true }, native_identity: { original: 'A' } })
+    expect(projectReplay(window, { time_us: 600 }).ownTrades[0].attributes).toEqual({})
+    expect(projectReplay(window, { time_us: 600 }).ownTrades[0].native_identity).toEqual({ replacement: 'B' })
+  })
+
+  test('placement结果只补归属，不造受理；cancel/error不能错误绑定，未来成交复用证明', () => {
+    const messages = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['A'] }),
+      message(2, '/order', order('a', { execution_id: null, confirmed_book: false })),
+      message(3, '/trade', fill('T', 4, { execution_id: null, order_id: 'a' })),
+      message(4, '/command', { command_id: 'bad', operation: 'cancel_order', phase: 'result', execution_id: 'E', symbol: 'A', order_id: 'a' }),
+      message(5, '/command', { command_id: 'placement', operation: 'place_order', phase: 'result', execution_id: 'E', symbol: 'A', order_id: 'a' }),
+      message(6, '/trade', fill('U', 2, { execution_id: null, order_id: 'a' })),
+      message(7, '/command', { command_id: null, operation: 'place_order', phase: 'error', symbol: 'A' }),
+      message(8, '/order', { symbol: 'A', order_id: null, sync_generation: 1, confirmed_book: true })]
+    const window = windowOf(messages)
+    expect(projectReplay(window, { time_us: 400 }).ownTrades[0].execution_id).toBeNull()
+    const bound = projectReplay(window, { time_us: 600 })
+    expect(bound.orders[key('A', 'a')]).toMatchObject({ execution_id: 'E', confirmed: false, filled_volume: 6, remaining_volume: 4 })
+    expect(bound.executionTotals.E.A).toBe(6)
+    expect(bound.executionSymbolComplete.E.A).toBe(true)
+    const last = projectReplay(window, { time_us: 800 })
+    expect(last.commands.at(-1)?.command_id).toBe('observation:7')
+    expect(last.warnings.some(text => text.includes('命令身份'))).toBe(true)
+    expect(last.orders[key('A', 'unknown-observation:8')].confirmed).toBe(false)
+  })
+
+  test('wrong recording query_basis不清集合，连接新代即使connected也先使旧确认失效', () => {
+    const window = windowOf([message(1, '/order', order('a')),
+      message(2, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { start_seq: 1, request_revision: 1, recording_id: 'rec-B' }, orders: [] }),
+      message(3, '/connection', { connected: true, scope: { kind: 'account', symbols: [] }, sync_generation: 2 })])
+    expect(projectReplay(window, { time_us: 200 }).orders[key('A', 'a')].confirmed).toBe(true)
+    expect(projectReplay(window, { time_us: 300 }).orders[key('A', 'a')].confirmed).toBe(false)
+  })
+
+  test('已保存placement证明不因returned丢失，成交枚举大小写不构成新事实', () => {
+    const messages = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['A'] }),
+      message(2, '/command', { command_id: 'p', operation: 'place_order', phase: 'result', execution_id: 'E', symbol: 'A', order_id: 'a' }),
+      message(3, '/command', { command_id: 'p', phase: 'returned' }),
+      message(4, '/order', order('a', { execution_id: null })),
+      message(5, '/trade', fill('T', 4, { order_id: 'a', execution_id: null, offset: 'OPEN' })),
+      message(6, '/trade', fill('T', 4, { order_id: 'a', execution_id: null, direction: 'buy', position_side: 'net', offset: 'open' })),
+      message(7, '/order_set', { scope: ['A'], scope_complete: true, synchronized: true, sync_generation: 1,
+        query_basis: { start_seq: 5, request_revision: 1 }, orders: [] })]
+    const result = projectReplay(windowOf(messages), { time_us: 700 })
+    expect(result.orders[key('A', 'a')].execution_id).toBe('E')
+    expect(result.orders[key('A', 'a')].confirmed).toBe(false)
+    expect(result.executionSymbolComplete.E.A).toBe(true)
+    expect(result.executionTotals.E.A).toBe(4)
+    expect(result.ownTrades[0].conflict).toBe(false)
+  })
+
+  test('同稳定身份冲突保留原字段且不再给出精确剩余或完成量', () => {
+    const messages = [message(1, '/execution', { execution_id: 'E', phase: 'start', symbols: ['A'] }),
+      message(2, '/order', order('a')),
+      message(3, '/trade', fill('T', 4, { order_id: 'a', execution_id: 'E' })),
+      message(4, '/trade', fill('T', 7, { order_id: 'a', execution_id: 'E', price: 100 }))]
+    const result = projectReplay(windowOf(messages), { time_us: 400 })
+    expect(result.ownTrades[0]).toMatchObject({ quantity: 4, price: 99, conflict: true })
+    expect(result.orders[key('A', 'a')].remaining_volume).toBeNull()
+    expect(result.executionSymbolComplete.E.A).toBe(false)
+  })
+})

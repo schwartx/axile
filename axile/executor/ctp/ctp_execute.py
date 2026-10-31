@@ -32,6 +32,7 @@ from axile.executor.china_futures_session import is_within_possible_china_future
 from axile.executor.connection_presentation import connection_problem
 from axile.executor.connection_state import connection_error_scope, connection_monitor, preserve_connection_failure
 from axile.executor.constants.order_status import OrderStatus
+from axile.executor.ctp import replay as replay_capture
 from axile.executor.ctp.combination import split_combination_position
 from axile.executor.ctp.connection import report_ctp_failure, report_ctp_stage
 from axile.executor.ctp.connection_details import step_details
@@ -377,13 +378,24 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """本地校验完成后记录报单与撤单调用；其他请求不计入报撤。"""
         from axile.executor.account_control.context import controlled_source
 
+        if name in {"ReqOrderInsert", "ReqOrderAction"}:
+            replay_capture.capture(
+                self, "/command", lambda: replay_capture.command(self, name, req, rid, phase="native_request")
+            )
         recorder = getattr(self, "order_submission_recorder", None)
         if name not in {"ReqOrderInsert", "ReqOrderAction"} or recorder is None:
-            return int(getattr(self._trader_api, name)(req, rid))
+            result = int(getattr(self._trader_api, name)(req, rid))
+            if name in {"ReqOrderInsert", "ReqOrderAction"}:
+                replay_capture.capture(
+                    self,
+                    "/command",
+                    lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
+                )
+            return result
         source = None if guard is None else controlled_source(guard, guard.source).value
         front_id = self._front_id if name == "ReqOrderInsert" else int(req.FrontID)
         session_id = self._session_id if name == "ReqOrderInsert" else int(req.SessionID)
-        return recorder.submit(
+        result = recorder.submit(
             lambda: getattr(self._trader_api, name)(req, rid),
             symbol=str(req.InstrumentID),
             order_id=stable_order_id(self._trading_day, front_id, session_id, str(req.OrderRef)),
@@ -392,6 +404,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             source=source,
             operation="cancel_order" if name == "ReqOrderAction" else "place_order",
         )
+        replay_capture.capture(
+            self, "/command", lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result)
+        )
+        return result
 
     def _link_control_request(self, guard, rid, name, req) -> None:
         """在发送前登记有界关联，回调可先于同步调用返回。"""
@@ -441,6 +457,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _on_control_action_error(self, row, info, request_id=None) -> None:
         """撤单拒绝仅按请求身份关联，不能用订单号猜测多次撤单。"""
+        replay_capture.capture(
+            self,
+            "/command",
+            lambda: replay_capture.rejection(row, info, source="ctp.cancel_error", request_id=request_id),
+        )
         detail = insert_error_detail(info)
         if detail is not None:
             rid = request_id or getattr(row, "RequestID", None)
@@ -560,6 +581,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 symbol = leg.get("InstrumentID", "") if isinstance(leg, dict) else getattr(leg, "InstrumentID", "")
                 if symbol:
                     result.append(str(symbol))
+        return result
+
+    def replay_interest_symbols(self) -> dict[str, list[str]]:
+        """既有查询缓存只扩充采集兴趣，不宣称当前持仓或发起补查。"""
+        result = super().replay_interest_symbols()
+        positions = self.connection_records.get("query_positions", [])
+        if len(positions) > 4096:
+            raise ValueError("replay_interest_budget")
+        symbols = sorted(set(self._position_catalog_symbols(positions)))
+        if len(symbols) > 4096:
+            raise ValueError("replay_interest_budget")
+        result["positions"] = symbols
         return result
 
     def _query_catalog(self, symbols: list[str] | None, timeout: float | None) -> list[Instrument]:
@@ -710,7 +743,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 # 查询与实时回报不构成柜台原子快照；合并查询期间到达的成交，
                 # 以交易所、TradeID 去重后再公布恢复屏障。
                 trades = self._recovery_snapshot["trades"]
-                trades.extend(self._convert_trade(row) for row in self._startup_trades)
+                trades.extend(self._convert_trade(row, source=None) for row in self._startup_trades)
                 self._recovery_snapshot["trades"] = list(
                     {(trade.extra.get("exchange_id"), trade.trade_id): trade for trade in trades}.values()
                 )
@@ -719,6 +752,17 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     self.account_orders.activity.observe_trade(trade)
                 self._ready = True
             connection_monitor(self).step("channel_ready", "passed", step_details(self, "channel_ready"))
+            replay_capture.capture(
+                self,
+                "/connection",
+                lambda: {
+                    "source": "ctp.connection",
+                    "status": "connected",
+                    "connected": True,
+                    "ready": True,
+                    "synchronized": True,
+                },
+            )
         except Exception:
             self.close()
             raise
@@ -963,6 +1007,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                         self.logger.warning("主动登出超时: CTP 交易 request_id={}", pending.request_id)
 
     def _disconnected(self, kind, reason):
+        replay_capture.capture(
+            self,
+            "/connection",
+            lambda: {
+                "source": "ctp.connection",
+                "status": "disconnected",
+                "reason": f"{kind}:{reason}",
+                "connected": False,
+                "ready": False,
+                "synchronized": False,
+            },
+        )
         with self._lock:
             if kind == "交易":
                 self._trader_connected = False
@@ -991,6 +1047,20 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _invalidate_connection(self, reason, *, connection_failure=False, label=None, presentation=None):
         """永久撤销就绪状态；保留首个失效原因及其可读错误契约。"""
+        replay_capture.capture(
+            self,
+            "/connection",
+            lambda: {
+                "source": "ctp.connection",
+                "status": "error",
+                "connected": False,
+                "ready": False,
+                "synchronized": False,
+                "available": False,
+                "reason": label or "session_invalid",
+                "error_type": type(reason).__name__,
+            },
+        )
         with self._lock:
             if self._closed:
                 return
@@ -1233,7 +1303,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """
         c = self._config()
         watermark = self.account_orders.begin_sync()
+        replay_query = replay_capture.begin_query(self, None)
         orders = self._query_session_rows("query_orders", "ReqQryOrder", build_query_orders(c))
+        replay_capture.capture(
+            self, "/order_set", lambda: replay_capture.order_set(orders, None, synchronized=False, token=replay_query)
+        )
         for row in orders:
             self._remember_order(row)
             self._catalog_progress("对账记录", throttled=True)
@@ -1256,6 +1330,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if not accounts:
             raise CtpRequestError("会话对账资金查询返回空结果")
         self.connection_records["query_account"] = accounts
+        replay_capture.capture(
+            self,
+            "/account_observation",
+            lambda: replay_capture.account_observation(accounts, positions, source="ctp.recovery_query"),
+        )
         connection_monitor(self).step("query_account", "passed", step_details(self, "query_account"))
         connection_monitor(self).step("channel_ready", "running")
         quotes, quote_errors = self._position_valuation_quotes(positions)
@@ -1284,8 +1363,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self._catalog_progress("对账记录", throttled=True)
         return rows
 
-    def _remember_order(self, row):
+    def _remember_order(self, row, *, source="ctp.order_query"):
         """保存柜台原始会话键及交易所键，供成交和撤单恢复使用。"""
+        replay_capture.capture(self, "/order", lambda: replay_capture.order(row, source=source))
         day = str(getattr(row, "TradingDay", "") or "")
         if day and day != self._trading_day:
             raise CtpRequestError("订单交易日与当前 CTP 会话不一致")
@@ -1306,8 +1386,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._exchange_orders[key] = order
         return order
 
-    def _convert_trade(self, row):
+    def _convert_trade(self, row, *, source="ctp.trade_query"):
         """成交必须由交易所订单键解析会话，禁止回退为当前 SessionID。"""
+        if source is not None:
+            replay_capture.capture(self, "/trade", lambda: replay_capture.trade(self, row, source=source))
         day = str(getattr(row, "TradingDay", "") or "")
         if day and day != self._trading_day:
             raise CtpRequestError("成交交易日与当前 CTP 会话不一致")
@@ -1330,6 +1412,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             front_id=int(order.extra["front_id"]),
             session_id=int(order.extra["session_id"]),
             resolved_order_id=order.order_id,
+        )
+        replay_capture.capture(
+            self, "/trade", lambda: replay_capture.trade(self, row, source="ctp.trade_mapping", order_id=order.order_id)
         )
         return trade.model_copy(update={"order_id": order.order_id})
 
@@ -1464,6 +1549,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             raise CtpRequestError("资金查询返回空结果")
         p = build_query_positions(c)
         positions = self._query("ReqQryInvestorPosition", p)
+        replay_capture.capture(
+            self,
+            "/account_observation",
+            lambda: replay_capture.account_observation(accounts, positions, source="ctp.account_query"),
+        )
         if not self._validation_catalog:
             self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
         quotes, quote_errors = self._position_valuation_quotes(positions)
@@ -1724,7 +1814,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             if self._closed or self._invalid_reason:
                 return
             try:
-                o = self._remember_order(row)
+                o = self._remember_order(row, source="ctp.order_return")
             except CtpRequestError as exc:
                 self._invalidate_connection(str(exc))
                 return
@@ -1738,6 +1828,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._dispatch(self._order_callbacks, o)
 
     def _on_trade(self, row):
+        replay_capture.capture(self, "/trade", lambda: replay_capture.trade(self, row, source="ctp.trade_return"))
         with self._lock:
             if self._closed or self._invalid_reason:
                 return
@@ -1745,7 +1836,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._startup_trades.append(_copy_native_row(row))
                 return
             try:
-                trade = self._convert_trade(row)
+                trade = self._convert_trade(row, source=None)
             except _TradeAssociationPending as exc:
                 # 保留原始帧并阻断新单，允许后到报单补关联。
                 self.logger.error(str(exc))
@@ -1779,7 +1870,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             rows = list(self._unassociated_trades.values())
         for row in rows:
             try:
-                trade = self._convert_trade(row)
+                trade = self._convert_trade(row, source=None)
             except _TradeAssociationPending:
                 continue
             except CtpRequestError as exc:
@@ -1794,6 +1885,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _on_order_insert_error(self, row, info, *, source: str) -> None:
         """把异步报单拒绝关联到稳定订单身份，并推进 REJECTED 终态。"""
+        replay_capture.capture(self, "/order", lambda: replay_capture.rejection(row, info, source=source))
         detail = insert_error_detail(info)
         if detail is None:
             return
@@ -1814,6 +1906,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 return
             self._control_order_result(
                 row, "broker_rejected", {"error_id": error_id, "error_msg": error_msg}, order_id=order_id
+            )
+            replay_capture.capture(
+                self,
+                "/order",
+                lambda: replay_capture.rejection(row, info, source="ctp.reject_mapping", order_id=order_id),
             )
             key = dict(self._order_keys.get(order_id, {}))
             symbol = str(getattr(row, "InstrumentID", "") or key.get("symbol", "") or "")
@@ -1899,7 +1996,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
         r = build_query_orders(self._config(), symbol)
-        orders = [self._remember_order(x) for x in self._query("ReqQryOrder", r)]
+        replay_query = replay_capture.begin_query(self, symbol)
+        rows = self._query("ReqQryOrder", r)
+        replay_capture.capture(
+            self,
+            "/order_set",
+            lambda: replay_capture.order_set(rows, symbol, synchronized=self._ready, token=replay_query),
+        )
+        orders = [self._remember_order(x) for x in rows]
         self._replay_unassociated_trades()
         return [o for o in orders if o.is_active() and (not symbol or o.symbol == symbol)]
 
@@ -1914,7 +2018,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """查询当前交易日柜台委托，包含真实终态。"""
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
+        replay_query = replay_capture.begin_query(self, symbol)
         rows = self._query("ReqQryOrder", build_query_orders(self._config(), symbol))
+        replay_capture.capture(
+            self,
+            "/order_set",
+            lambda: replay_capture.order_set(rows, symbol, synchronized=self._ready, token=replay_query),
+        )
         return [self._remember_order(row) for row in rows]
 
     def _query_recent_trades_impl(self, symbol=None):
@@ -2052,6 +2162,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         return float(minimum) if isinstance(minimum, int | float) and not isinstance(minimum, bool) else 1.0
 
     def _on_quote(self, row):
+        replay_capture.capture(
+            self, f"/quote/{getattr(row, 'InstrumentID', '')}", lambda: replay_capture.quote(self, row)
+        )
         with self._lock:
             if self._closed or self._invalid_reason:
                 return
@@ -2335,6 +2448,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def close(self):
         """按行情、交易顺序幂等释放 API。"""
+        replay_capture.capture(
+            self,
+            "/connection",
+            lambda: {
+                "source": "ctp.connection",
+                "status": "closed",
+                "connected": False,
+                "ready": False,
+                "synchronized": False,
+                "available": False,
+            },
+        )
         connection_monitor(self).close()
         self._instrument_provider.close()
         with self._lock:

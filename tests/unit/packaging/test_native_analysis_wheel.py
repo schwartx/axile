@@ -131,6 +131,9 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         "logging_emit",
         "logging_stats",
         "logging_close",
+        "ExecutionReplayWriter",
+        "execution_replay_manifest",
+        "execution_replay_window",
     } <= set(required)
     assert not {
         "dashboard_inputs",
@@ -163,6 +166,10 @@ def test_wheel_probe_requires_business_freeze_queue_and_migration_entrypoints(
         ("0034", 41, "notifications_get_system_json", "missing required entrypoints"),
         ("0034", 41, "resolve_control_policy", "missing required entrypoints"),
         ("0034", 41, "logging_emit", "missing required entrypoints"),
+        ("0034", 41, "EXECUTION_REPLAY_SCHEMA", "execution replay schema 1"),
+        ("0034", 41, "ExecutionReplayWriter", "missing required entrypoints"),
+        ("0034", 41, "execution_replay_manifest", "missing required entrypoints"),
+        ("0034", 41, "execution_replay_window", "missing required entrypoints"),
     ],
 )
 def test_wheel_probe_checks_migration_head_separately_from_fact_schema(
@@ -184,7 +191,9 @@ def test_wheel_probe_checks_migration_head_separately_from_fact_schema(
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "required" for target in node.targets)
     )
-    module = SimpleNamespace(ANALYSIS_FACT_SCHEMA=fact_schema, PUBLIC_HEAD=head)
+    module = SimpleNamespace(ANALYSIS_FACT_SCHEMA=fact_schema, PUBLIC_HEAD=head, EXECUTION_REPLAY_SCHEMA=1)
+    if missing == "EXECUTION_REPLAY_SCHEMA":
+        del module.EXECUTION_REPLAY_SCHEMA
     for name in required:
         if name != missing:
             setattr(module, name, lambda: None)

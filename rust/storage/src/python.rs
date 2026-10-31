@@ -25,7 +25,7 @@ const EVIDENCE_INPUT_STAGES: [&str; 6] = [
     "portfolio_operation",
 ];
 
-fn raise(error: AnalysisError) -> PyErr {
+pub(crate) fn raise(error: AnalysisError) -> PyErr {
     use std::error::Error;
     Python::attach(|py| {
         let exception = NativeError::new_err((error.code.clone(), error.error.clone()));
@@ -602,6 +602,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EvidenceCancellation>()?;
     crate::control_policy_python::register(m)?;
     crate::logging_python::register(m)?;
+    crate::execution_replay_python::register(m)?;
     m.add_function(wrap_pyfunction!(close_database, m)?)?;
     m.add_function(wrap_pyfunction!(queue_claim, m)?)?;
     register_queue_operations(m)?;

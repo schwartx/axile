@@ -1,0 +1,186 @@
+"""实际 facade/SPI 走原生 MCAP；不连接柜台或发送真实委托。"""
+
+import json
+from types import SimpleNamespace
+
+import pytest
+from openctp_ctp import thosttraderapi as td
+
+from axile.channels.builtins import _ctp_plugin
+from axile.executor.models.unified_order import OrderDirection, OrderType
+from axile.executor.order_submission_context import order_submission_context
+from axile.executor.replay import current_command_id
+from axile.server._native import _core
+from axile.server.execution_replay.recorder import ReplayRecorder
+from axile.server.execution_replay.service import replay_manifest, replay_window
+from tests.unit.executor.ctp.test_connection_recovery import ScriptedBroker
+
+
+@pytest.fixture
+def recording(monkeypatch, tmp_path):
+    assert getattr(_core, "EXECUTION_REPLAY_SCHEMA", None) == 1, "需要本次源码构建的真实原生回放模块"
+    broker = ScriptedBroker(monkeypatch)
+    broker.start()
+    executor = broker.executor
+    executor._ensure_instrument_symbols(["ag2612"])
+    monkeypatch.setattr(executor, "_require_new_order_ready", lambda *_: None)
+    monkeypatch.setattr(executor, "_get_ctp_session_block_reason", lambda *_: None)
+    monkeypatch.setattr(executor, "_validate_order_quote", lambda *_: None)
+    context = _ctp_plugin().descriptor.replay.model_dump(mode="json")
+    context["stream_defaults"] = context.pop("streams")
+    context["channel"] = "ctp"
+    now = [1_793_404_800_000_000]
+    root = tmp_path / "replay"
+    recorder = ReplayRecorder(17, root, context, now_us=lambda: now[0])
+    recorder.attach(executor)
+    recorder.configure(True, 1)
+    recording_id = recorder.status()["recording_id"]
+    recorder.begin_execution("E-early", ["ag2612"])
+    yield SimpleNamespace(
+        broker=broker, executor=executor, recorder=recorder, now=now, root=root, recording_id=recording_id
+    )
+    recorder.close()
+    executor.close()
+
+
+def finish_and_read(recording):
+    recording.now[0] += 1
+    recording.recorder.observe("/execution", {"execution_id": "E-early", "symbol": "ag2612", "target_quantity": 1})
+    status = recording.recorder.close()
+    assert status["state"] == "disabled", status
+    manifest = replay_manifest(recording.root, 17, "E-early")
+    assert any(item["recording_id"] == recording.recording_id for item in manifest["recordings"])
+    request = {
+        "recording_id": recording.recording_id,
+        "start_us": recording.now[0],
+        "end_us": recording.now[0] + 1,
+    }
+    state = replay_window(recording.root, 17, "E-early", request)["state_before_start"]
+    request["start_us"] -= 1
+    messages = replay_window(recording.root, 17, "E-early", request)["messages"]
+    return state, messages
+
+
+def test_facade_reentrant_fill_keeps_native_order_and_execution_ownership(recording):
+    broker, executor = recording.broker, recording.executor
+    delivered = []
+    executor.register_trade_callback(delivered.append)
+    before_queries = {name: getattr(broker.trader, name).call_count for name in broker.rows}
+
+    def accept(request, _rid):
+        row = SimpleNamespace(
+            **(
+                vars(broker.order)
+                | {
+                    "OrderRef": request.OrderRef,
+                    "SessionID": executor._session_id,
+                    "OrderSysID": "early-order",
+                    "OrderPriceType": td.THOST_FTDC_OPT_LimitPrice,
+                    "LimitPrice": 9000,
+                    "CombOffsetFlag": td.THOST_FTDC_OF_Open,
+                }
+            )
+        )
+        trade = SimpleNamespace(
+            **(
+                vars(broker.trade)
+                | {
+                    "OrderRef": request.OrderRef,
+                    "OrderSysID": "early-order",
+                    "TradeID": "EARLY",
+                    "Direction": td.THOST_FTDC_D_Buy,
+                    "OffsetFlag": td.THOST_FTDC_OF_Open,
+                }
+            )
+        )
+        broker.trader_spi.OnRtnOrder(row)
+        broker.trader_spi.OnRtnTrade(trade)
+        return 0
+
+    broker.trader.ReqOrderInsert.side_effect = accept
+    with order_submission_context({"execution_id": "E-early"}):
+        order = executor.place_order("ag2612", OrderDirection.BUY, OrderType.LIMIT, 1, 9000)
+    assert len(delivered) == 1 and delivered[0].order_id == order.order_id
+    assert broker.trader.ReqOrderInsert.call_count == 1
+    assert {name: getattr(broker.trader, name).call_count for name in broker.rows} == before_queries
+    state, messages = finish_and_read(recording)
+    commands = [event for event in messages if event["topic"] == "/command"]
+    public_request = next(event for event in commands if event["data"].get("phase") == "request")
+    native_request = next(event for event in commands if event["data"].get("phase") == "native_request")
+    result = next(event for event in commands if event["data"].get("phase") == "result")
+    assert native_request["data"]["command_id"] == public_request["data"]["command_id"]
+    assert native_request["data"]["order_id"] == order.order_id
+    assert native_request["data"]["request_id"] is not None
+    trade_event = next(event for event in messages if event["topic"] == "/trade")
+    assert trade_event["capture_seq"] < result["capture_seq"]
+    accounting = state["trade_accounting"]
+    key = "ctp:17:20260909:SHFE:ag2612:EARLY"
+    assert accounting["own_seen_keys"] == [key]
+    assert accounting["own_records"][key]["data"]["execution_id"] == "E-early"
+    assert accounting["execution_totals"]["E-early"]["by_symbol"]["ag2612"]["quantity"] == 1
+
+
+def test_async_cancel_error_without_command_identity_stays_observable(recording):
+    broker, executor = recording.broker, recording.executor
+    row = SimpleNamespace(
+        **(
+            vars(broker.order)
+            | {
+                "OrderRef": "12",
+                "SessionID": executor._session_id,
+                "OrderSysID": "working-order",
+                "OrderStatus": td.THOST_FTDC_OST_NoTradeQueueing,
+                "VolumeTraded": 0,
+                "OrderPriceType": td.THOST_FTDC_OPT_LimitPrice,
+                "LimitPrice": 9000,
+            }
+        )
+    )
+    broker.trader_spi.OnRtnOrder(row)
+    assert current_command_id() is None
+    broker.trader_spi.OnErrRtnOrderAction(row, SimpleNamespace(ErrorID=31, ErrorMsg="cancel rejected"))
+    state, messages = finish_and_read(recording)
+    error = next(event for event in messages if event["data"].get("source") == "ctp.cancel_error")
+    assert error["topic"] == "/command"
+    assert error["data"]["command_id"] is None
+    assert error["data"]["error_id"] == 31
+    assert any(data.get("source") == "ctp.cancel_error" for data in state["commands"].values())
+    order_id = f"20260909:7:{executor._session_id}:12"
+    order = state["orders"][json.dumps(["ag2612", order_id], separators=(",", ":"))]
+    assert order["status"] == "working"
+    assert order["confirmed_book"] is True
+
+
+@pytest.mark.parametrize("exit_kind", ["invalidate", "close"])
+def test_connection_exit_clears_native_order_confirmation_and_quote_validity(recording, exit_kind):
+    broker, executor = recording.broker, recording.executor
+    row = SimpleNamespace(
+        **(
+            vars(broker.order)
+            | {"OrderStatus": td.THOST_FTDC_OST_NoTradeQueueing, "VolumeTraded": 0, "LimitPrice": 9000}
+        )
+    )
+    broker.trader_spi.OnRtnOrder(row)
+    recording.recorder.observe(
+        "/quote/ag2612",
+        {
+            "symbol": "ag2612",
+            "bids": [{"price": 9000, "quantity": 1}],
+            "asks": [{"price": 9001, "quantity": 1}],
+            "book_valid": True,
+            "valid_until_us": recording.now[0] + 3_000_000,
+        },
+    )
+    generation = recording.recorder._sync_generation
+    if exit_kind == "close":
+        executor.close()
+    else:
+        executor._invalidate_connection("native identity invalid")
+    assert recording.recorder._sync_generation == generation + 1
+    state, messages = finish_and_read(recording)
+    connection = next(event["data"] for event in messages if event["topic"] == "/connection")
+    assert all(connection[field] is False for field in ("connected", "ready", "available", "synchronized"))
+    assert connection["sync_generation"] == generation + 1
+    order = state["orders"][json.dumps(["ag2612", "20260909:7:1:10"], separators=(",", ":"))]
+    assert order["confirmed_book"] is False
+    assert state["quotes"]["ag2612"]["book_valid"] is False
