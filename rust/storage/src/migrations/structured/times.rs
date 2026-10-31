@@ -196,11 +196,12 @@ fn check_trigger(
     }
     let fields = rows(
         connection,
-        &format!("PRAGMA table_info({})", quote(owner)),
+        &format!("PRAGMA table_xinfo({})", quote(owner)),
         [],
     )?;
     let mut assignments = fields
         .iter()
+        .filter(|column| value(column, "hidden") == &Value::from(0))
         .map(|column| Ok(format!("{}=NULL", quote(text(column, "name")?))))
         .collect::<Result<Vec<_>>>()?;
     for alias in ["rowid", "_rowid_", "oid"] {

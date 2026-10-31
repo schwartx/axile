@@ -336,6 +336,67 @@ def test_safe_rowid_fields_and_aliases_remain_distinct(published_database, witho
 
 
 @pytest.mark.parametrize("kind", ["VIRTUAL", "STORED"])
+@pytest.mark.parametrize("alias", ["rowid", "_rowid_", "oid"])
+def test_generated_rowid_alias_shadow_preserves_safe_trigger(published_database, alias, kind):
+    at = "2026-07-01T09:00:00.123456Z"
+    opaque = b'{ "created_at": "not-a-time", "nested": {"trade_time": "unchanged"} }'
+    definition = (
+        "CREATE TRIGGER generated_alias_audit AFTER UPDATE OF status ON notification_event "
+        f"BEGIN INSERT INTO custom_trigger_audit VALUES(NEW.sequence,NEW.{alias}); END"
+    )
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute(
+            f"ALTER TABLE notification_event ADD COLUMN {alias} INTEGER GENERATED ALWAYS AS (sequence+1) {kind}"
+        )
+        connection.execute(
+            "INSERT INTO notification_event(sequence,id,account_id,created_at,event_type,context,status) "
+            "VALUES(7,'generated-shadow',1,?,'custom.fixture',?,'pending')",
+            (at, opaque),
+        )
+        connection.execute("CREATE TABLE custom_trigger_audit(sequence INTEGER,alias_value INTEGER)")
+        connection.execute(definition)
+        connection.execute("UPDATE notification_event SET status=status")
+        assert connection.execute("SELECT * FROM custom_trigger_audit").fetchall() == [(7, 8)]
+        original_alias = next(
+            row for row in connection.execute("PRAGMA table_xinfo(notification_event)") if row[1] == alias
+        )
+    for ordinal, (operation, request, revision) in enumerate(
+        [
+            ("migration_upgrade", {}, "0034"),
+            ("migration_downgrade", {"public": "0033"}, "0033"),
+            ("migration_upgrade", {}, "0034"),
+        ]
+    ):
+        assert native_store_call(published_database, operation, request)["public"] == revision
+        _core.close_database(str(published_database))
+        with closing(sqlite3.connect(published_database)) as connection, connection:
+            assert connection.execute("SELECT * FROM custom_trigger_audit").fetchall() == [(7, 8)] * (ordinal + 1)
+            assert (
+                next(row for row in connection.execute("PRAGMA table_xinfo(notification_event)") if row[1] == alias)
+                == original_alias
+            )
+            assert connection.execute(
+                f"SELECT sequence,{alias},context,typeof(context) FROM notification_event"
+            ).fetchall() == [(7, 8, opaque, "blob")]
+            assert connection.execute(
+                "SELECT sql FROM sqlite_schema WHERE name='generated_alias_audit'"
+            ).fetchone() == (definition,)
+            connection.execute("UPDATE notification_event SET status=status")
+            assert connection.execute("SELECT * FROM custom_trigger_audit").fetchall() == [(7, 8)] * (ordinal + 2)
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute("UPDATE notification_event SET sequence=8")
+        connection.execute("UPDATE notification_event SET status=status")
+        assert connection.execute(f"SELECT sequence,{alias},context FROM notification_event").fetchone() == (
+            8,
+            9,
+            opaque,
+        )
+        assert connection.execute("SELECT * FROM custom_trigger_audit").fetchall() == [(7, 8)] * 4 + [(8, 9)]
+
+
+@pytest.mark.parametrize("kind", ["VIRTUAL", "STORED"])
 @pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
 def test_safe_generated_columns_recompute_and_preserve_json(published_database, kind, populated):
     at = "2026-07-01T09:00:00.123456Z"
