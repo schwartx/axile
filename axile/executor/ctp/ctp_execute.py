@@ -111,13 +111,14 @@ from axile.executor.order_volume_limits import (
     ensure_order_volume_allowed,
 )
 from axile.executor.quote_diagnostics import QuoteDiagnostics
-from axile.executor.replay import capture_receipt
+from axile.executor.replay import capture_command_receipt, capture_receipt
 from axile.executor.session_closed import COMMON_SESSION_CLOSED, SESSION_CLOSED_MESSAGE
 from axile.executor.termination_cleanup import cleanup_query_allowed
 from axile.executor.trading_calendar import CHINA_CALENDAR_ID, ShinnyTradingCalendar
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _ValueT = TypeVar("_ValueT")
+_MISSING = object()
 
 
 class CtpRequestError(RuntimeError):
@@ -379,9 +380,13 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         """本地校验完成后记录报单与撤单调用；其他请求不计入报撤。"""
         from axile.executor.account_control.context import controlled_source
 
+        receipt = capture_command_receipt(self)
         if name in {"ReqOrderInsert", "ReqOrderAction"}:
             replay_capture.capture(
-                self, "/command", lambda: replay_capture.command(self, name, req, rid, phase="native_request")
+                self,
+                "/command",
+                lambda: replay_capture.command(self, name, req, rid, phase="native_request"),
+                receipt=receipt,
             )
         recorder = getattr(self, "order_submission_recorder", None)
         if name not in {"ReqOrderInsert", "ReqOrderAction"} or recorder is None:
@@ -391,6 +396,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                     self,
                     "/command",
                     lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
+                    receipt=receipt,
                 )
             return result
         source = None if guard is None else controlled_source(guard, guard.source).value
@@ -406,7 +412,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             operation="cancel_order" if name == "ReqOrderAction" else "place_order",
         )
         replay_capture.capture(
-            self, "/command", lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result)
+            self,
+            "/command",
+            lambda: replay_capture.command(self, name, req, rid, phase="native_return", result=result),
+            receipt=receipt,
         )
         return result
 
@@ -738,15 +747,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             connection_monitor(self).step("market_login", "passed", step_details(self, "market_login"))
             if not self._validation_catalog:
                 self._instrument_provider.bind(self._query_catalog, channel="ctp")
+            replay_receipt = capture_receipt(self)
             replay_query = replay_capture.begin_query(self, None)
             try:
-                self._reconcile_session(replay_query)
+                self._reconcile_session(replay_query, receipt=replay_receipt)
                 with self._lock:
                     self._require_active_connection()
                     # 查询与实时回报不构成柜台原子快照；合并查询期间到达的成交，
                     # 以交易所、TradeID 去重后再公布恢复屏障。
                     trades = self._recovery_snapshot["trades"]
-                    trades.extend(self._convert_trade(row, source=None) for row in self._startup_trades)
+                    trades.extend(
+                        self._convert_trade(row, source=None, receipt=receipt) for row, receipt in self._startup_trades
+                    )
                     self._recovery_snapshot["trades"] = list(
                         {(trade.extra.get("exchange_id"), trade.trade_id): trade for trade in trades}.values()
                     )
@@ -760,6 +772,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                         lambda: replay_capture.order_set(
                             self._recovery_snapshot["orders"], None, synchronized=True, token=replay_query
                         ),
+                        receipt=replay_receipt,
                     )
                     replay_capture.capture(
                         self,
@@ -1305,7 +1318,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 and self._market_connected
             )
 
-    def _reconcile_session(self, replay_query):
+    def _reconcile_session(self, replay_query, *, receipt):
         """就绪前取得当前交易日完整查询快照，并恢复旧会话的订单关联。
 
         Notes
@@ -1317,7 +1330,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         watermark = self.account_orders.begin_sync()
         orders = self._query_session_rows("query_orders", "ReqQryOrder", build_query_orders(c))
         replay_capture.capture(
-            self, "/order_set", lambda: replay_capture.order_set(orders, None, synchronized=False, token=replay_query)
+            self,
+            "/order_set",
+            lambda: replay_capture.order_set(orders, None, synchronized=False, token=replay_query),
+            receipt=receipt,
         )
         for row in orders:
             self._remember_order(row)
@@ -1328,7 +1344,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         trades = self._query_session_rows("query_trades", "ReqQryTrade", build_query_trades(c, ""))
         converted_trades = []
         for row in trades:
-            converted_trades.append(self._convert_trade(row))
+            converted_trades.append(self._convert_trade(row, receipt=receipt))
             self._catalog_progress("对账记录", throttled=True)
         self.connection_records["query_trades"] = trades
         connection_monitor(self).step("query_trades", "passed", step_details(self, "query_trades"))
@@ -1345,6 +1361,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self,
             "/account_observation",
             lambda: replay_capture.account_observation(accounts, positions, source="ctp.recovery_query"),
+            receipt=receipt,
         )
         connection_monitor(self).step("query_account", "passed", step_details(self, "query_account"))
         connection_monitor(self).step("channel_ready", "running")
@@ -1396,10 +1413,14 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self._exchange_orders[key] = order
         return order
 
-    def _convert_trade(self, row, *, source="ctp.trade_query"):
+    def _convert_trade(self, row, *, source="ctp.trade_query", receipt=_MISSING):
         """成交必须由交易所订单键解析会话，禁止回退为当前 SessionID。"""
+        if receipt is _MISSING:
+            receipt = capture_command_receipt(self)
         if source is not None:
-            replay_capture.capture(self, "/trade", lambda: replay_capture.trade(self, row, source=source))
+            replay_capture.capture(
+                self, "/trade", lambda: replay_capture.trade(self, row, source=source), receipt=receipt
+            )
         day = str(getattr(row, "TradingDay", "") or "")
         if day and day != self._trading_day:
             raise CtpRequestError("成交交易日与当前 CTP 会话不一致")
@@ -1412,7 +1433,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             order = self._exchange_orders.get(key)
         if order is None or key in self._ambiguous_exchange_orders:
             with self._lock:
-                self._unassociated_trades[self._native_trade_key(row)] = _copy_native_row(row)
+                self._unassociated_trades[self._native_trade_key(row)] = _copy_native_row(row), receipt
             if key in self._ambiguous_exchange_orders:
                 raise CtpRequestError(f"CTP 成交缺少唯一可验证的订单关联: {key}")
             raise _TradeAssociationPending(f"CTP 成交缺少唯一可验证的订单关联: {key}")
@@ -1424,7 +1445,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             resolved_order_id=order.order_id,
         )
         replay_capture.capture(
-            self, "/trade", lambda: replay_capture.trade(self, row, source="ctp.trade_mapping", order_id=order.order_id)
+            self,
+            "/trade",
+            lambda: replay_capture.trade(self, row, source="ctp.trade_mapping", order_id=order.order_id),
+            receipt=receipt,
         )
         return trade.model_copy(update={"order_id": order.order_id})
 
@@ -1552,6 +1576,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def get_account_assets(self):
+        receipt = capture_command_receipt(self)
         c = self._config()
         a = build_query_account(c)
         accounts = self._query("ReqQryTradingAccount", a)
@@ -1563,6 +1588,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
             self,
             "/account_observation",
             lambda: replay_capture.account_observation(accounts, positions, source="ctp.account_query"),
+            receipt=receipt,
         )
         if not self._validation_catalog:
             self._ensure_instrument_symbols(self._position_catalog_symbols(positions))
@@ -1842,15 +1868,18 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
         self._dispatch(self._order_callbacks, o)
 
     def _on_trade(self, row):
-        replay_capture.capture(self, "/trade", lambda: replay_capture.trade(self, row, source="ctp.trade_return"))
+        receipt = capture_receipt(self)
+        replay_capture.capture(
+            self, "/trade", lambda: replay_capture.trade(self, row, source="ctp.trade_return"), receipt=receipt
+        )
         with self._lock:
             if self._closed or self._invalid_reason:
                 return
             if not self._ready:
-                self._startup_trades.append(_copy_native_row(row))
+                self._startup_trades.append((_copy_native_row(row), receipt))
                 return
             try:
-                trade = self._convert_trade(row, source=None)
+                trade = self._convert_trade(row, source=None, receipt=receipt)
             except _TradeAssociationPending as exc:
                 # 保留原始帧并阻断新单，允许后到报单补关联。
                 self.logger.error(str(exc))
@@ -1882,9 +1911,9 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
     def _replay_unassociated_trades(self):
         with self._lock:
             rows = list(self._unassociated_trades.values())
-        for row in rows:
+        for row, receipt in rows:
             try:
-                trade = self._convert_trade(row, source=None)
+                trade = self._convert_trade(row, source=None, receipt=receipt)
             except _TradeAssociationPending:
                 continue
             except CtpRequestError as exc:
@@ -1899,7 +1928,10 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _on_order_insert_error(self, row, info, *, source: str) -> None:
         """把异步报单拒绝关联到稳定订单身份，并推进 REJECTED 终态。"""
-        replay_capture.capture(self, "/order", lambda: replay_capture.rejection(row, info, source=source))
+        receipt = capture_receipt(self)
+        replay_capture.capture(
+            self, "/order", lambda: replay_capture.rejection(row, info, source=source), receipt=receipt
+        )
         detail = insert_error_detail(info)
         if detail is None:
             return
@@ -1925,6 +1957,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self,
                 "/order",
                 lambda: replay_capture.rejection(row, info, source="ctp.reject_mapping", order_id=order_id),
+                receipt=receipt,
             )
             key = dict(self._order_keys.get(order_id, {}))
             symbol = str(getattr(row, "InstrumentID", "") or key.get("symbol", "") or "")
@@ -1976,6 +2009,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def reconcile_terminal_order(self, symbol: str, order_id: str):
         """查询单订单终态；查不到时返回 None，不把缺失当成已撤。"""
+        receipt = capture_command_receipt(self)
         validate_instrument(symbol)
         r = build_query_orders(self._config(), symbol)
         matched = None
@@ -1986,6 +2020,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self,
                 "/order_set",
                 lambda: replay_capture.order_set(rows, symbol, synchronized=self._ready, token=replay_query),
+                receipt=receipt,
             )
             for row in rows:
                 order = self._remember_order(row)
@@ -2029,13 +2064,15 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     @override
     def _query_trades_impl(self, symbol, order_id):
+        receipt = capture_command_receipt(self)
         validate_instrument(symbol, allow_all=True)
         r = build_query_trades(self._config(), symbol)
-        ts = [self._convert_trade(x) for x in self._query("ReqQryTrade", r)]
+        ts = [self._convert_trade(x, receipt=receipt) for x in self._query("ReqQryTrade", r)]
         return [x for x in ts if x.order_id == order_id]
 
     def _query_recent_orders_impl(self, symbol=None):
         """查询当前交易日柜台委托，包含真实终态。"""
+        receipt = capture_command_receipt(self)
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
         replay_query = replay_capture.begin_query(self, symbol)
@@ -2045,6 +2082,7 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
                 self,
                 "/order_set",
                 lambda: replay_capture.order_set(rows, symbol, synchronized=self._ready, token=replay_query),
+                receipt=receipt,
             )
             return [self._remember_order(row) for row in rows]
         finally:
@@ -2052,10 +2090,11 @@ class CTPExecutor(CatalogExecutionMixin, AbstractExecutor, UnifiedCallbackClient
 
     def _query_recent_trades_impl(self, symbol=None):
         """查询当前交易日柜台逐笔成交，沿用完整订单身份关联。"""
+        receipt = capture_command_receipt(self)
         if symbol is not None:
             validate_instrument(symbol, allow_all=True)
         rows = self._query("ReqQryTrade", build_query_trades(self._config(), symbol or ""))
-        return [self._convert_trade(row) for row in rows]
+        return [self._convert_trade(row, receipt=receipt) for row in rows]
 
     @override
     def get_tick_size(self, symbol):

@@ -115,7 +115,7 @@ export function ExecutionReplayPage() {
   }, [windowData, symbol])
   const requestedSeek = pendingSeek.current?.recording === recordingId && pendingSeek.current?.symbol === symbol ? pendingSeek.current.time_us : null
   const initialCursor = useMemo(() => range && requestedSeek != null && requestedSeek >= range.start_us && requestedSeek < range.end_us ? { time_us: requestedSeek } : { time_us: range?.start_us ?? 0, capture_seq: Number(windowData?.state_before_start?.state_through_seq ?? 0) }, [range, requestedSeek, windowData?.state_before_start])
-  const currentCursor = useMemo(() => windowData && range && cursorWindow !== windowData.window_id ? initialCursor : cursor, [windowData, range, cursorWindow, initialCursor, cursor])
+  const currentCursor = useMemo(() => windowData && range && (cursorWindow !== windowData.window_id || requestedSeek != null) ? initialCursor : cursor, [windowData, range, cursorWindow, requestedSeek, initialCursor, cursor])
   const projected = useMemo(() => {
     try { return { value: windowData ? projectReplay(windowData, currentCursor, symbol) : null, error: null } }
     catch (cause) { return { value: null, error: cause instanceof Error ? cause : new Error(String(cause)) } }
@@ -132,14 +132,14 @@ export function ExecutionReplayPage() {
   }, [])
   useEffect(() => {
     if (!windowData) { setPlaying(false); setSelectedOrder(null); return }
-    if (range && cursorWindow !== windowData.window_id) {
+    if (range && (cursorWindow !== windowData.window_id || requestedSeek != null)) {
       setPlaying(false); setSelectedOrder(null)
       setCursorWindow(windowData.window_id)
       setCursor(initialCursor)
       pendingSeek.current = null
       if (continuePlayback.current === windowData.recording_id) { continuePlayback.current = null; if (!document.hidden) setPlaying(true) }
     }
-  }, [windowData, range, initialCursor, cursorWindow])
+  }, [windowData, range, initialCursor, cursorWindow, requestedSeek])
 
   const pauseAndSeek = useCallback((timeUs: number) => {
     continuePlayback.current = null
@@ -252,8 +252,8 @@ export function ExecutionReplayPage() {
           <p className="num ml-auto text-[12px] text-ink-2"><time>{replayTime(navigationTime, true)}</time><span className="ml-3 text-ink-3">{projection ? `观察 #${projection.capture_seq}` : '状态尚未恢复'}</span></p>
         </div>
         <label className="mt-3 block text-[12px] text-ink-2" htmlFor="replay-time">{seekDraft == null ? '录制定位 · 同一微秒可逐事件查看' : `准备定位 ${replayTime(seekDraft, true)} · 松开后读取`}</label>
-        <input id="replay-time" type="range" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} onChange={event => { setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + Number(event.target.value)) }} onPointerUp={() => { if (seekDraft != null) seekRecording(seekDraft) }} onKeyUp={() => { if (seekDraft != null) seekRecording(seekDraft) }} onBlur={() => { if (seekDraft != null) seekRecording(seekDraft) }} aria-valuetext={`${replayTime(seekDraft ?? navigationTime, true)}${projection ? `，观察 ${projection.capture_seq}` : '，状态尚未恢复'}`} className="mt-1 min-h-8 w-full cursor-pointer accent-accent focus-visible:outline-2 focus-visible:outline-accent" />
-        <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-ink-3"><span className="num">{replayTime(range.start_us, true, false)} — {replayTime(range.end_us, true, false)}</span><div className="flex items-center gap-2"><button type="button" className={buttonClass} onClick={() => moveWindow(-1)} disabled={!canPrevWindow}><ChevronLeft size={13} />上一窗口</button><label>窗口 <select value={windowDuration} aria-label="窗口时长" className={selectClass} onChange={event => { setPlaying(false); setWindowDuration(event.target.value); setRange(replayRange(recording.coverage, range.start_us, Number(event.target.value) * 1_000_000)) }}>{['2', '5', '10', '20'].map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label><button type="button" className={buttonClass} onClick={() => moveWindow(1)} disabled={!canNextWindow}>下一窗口<ChevronRight size={13} /></button></div></div>
+        <input id="replay-time" type="range" min={0} max={Math.max(1, (currentCoverage?.end_us ?? range.end_us) - (currentCoverage?.start_us ?? range.start_us) - 1)} step={1} value={Math.max(0, (seekDraft ?? navigationTime) - (currentCoverage?.start_us ?? range.start_us))} onChange={event => { continuePlayback.current = null; setPlaying(false); setSeekDraft((currentCoverage?.start_us ?? range.start_us) + Number(event.target.value)) }} onPointerUp={() => { if (seekDraft != null) seekRecording(seekDraft) }} onKeyUp={() => { if (seekDraft != null) seekRecording(seekDraft) }} onBlur={() => { if (seekDraft != null) seekRecording(seekDraft) }} aria-valuetext={`${replayTime(seekDraft ?? navigationTime, true)}${projection ? `，观察 ${projection.capture_seq}` : '，状态尚未恢复'}`} className="mt-1 min-h-8 w-full cursor-pointer accent-accent focus-visible:outline-2 focus-visible:outline-accent" />
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-ink-3"><span className="num">{replayTime(range.start_us, true, false)} — {replayTime(range.end_us, true, false)}</span><div className="flex items-center gap-2"><button type="button" className={buttonClass} onClick={() => moveWindow(-1)} disabled={!canPrevWindow}><ChevronLeft size={13} />上一窗口</button><label>窗口 <select value={windowDuration} aria-label="窗口时长" className={selectClass} onChange={event => { continuePlayback.current = null; setPlaying(false); setWindowDuration(event.target.value); setRange(replayRange(recording.coverage, range.start_us, Number(event.target.value) * 1_000_000)) }}>{['2', '5', '10', '20'].map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label><button type="button" className={buttonClass} onClick={() => moveWindow(1)} disabled={!canNextWindow}>下一窗口<ChevronRight size={13} /></button></div></div>
       </>}
       {projection && windowData && !loaded.loading && <>
         {warnings.length > 0 && <div className="mt-3 border-t border-line pt-3 text-[12px] leading-5 text-warn" role="status">{warnings.map(warning => <p key={warning}>{warning}</p>)}</div>}

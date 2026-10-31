@@ -840,8 +840,12 @@ fn select_cursor(
     if let Some(encoded) = &request.cursor {
         return resume_cursor(encoded, request, account_id, execution, view, &context_hash);
     }
-    let checkpoint = view
+    let first_window_part = view
         .parts
+        .iter()
+        .position(|part| part.start_us < request.end_us && part.end_us > request.start_us)
+        .map_or(view.parts.len(), |index| index + 1);
+    let checkpoint = view.parts[..first_window_part]
         .iter()
         .rposition(|part| {
             part.checkpoint_through_seq == 0
@@ -1358,6 +1362,71 @@ mod tests {
         let cursor = select_cursor(&request, 1, "7", &view).unwrap();
         assert_eq!(cursor.parts.len(), 2);
         assert_eq!(cursor.parts[0].checkpoint_through_seq, 0);
+    }
+
+    #[test]
+    fn quiet_window_does_not_depend_on_a_future_part_checkpoint() {
+        use crate::execution_replay::ExecutionReplayWriter;
+        let root = std::env::temp_dir().join(format!(
+            "axile-quiet-window-checkpoint-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut writer =
+            ExecutionReplayWriter::new(&root, 1, "quiet", r#"{"schema_version":1}"#).unwrap();
+        for (seq, time) in [(1, 100), (2, 120_000_100)] {
+            if seq == 2 {
+                writer.poll(60_000_100).unwrap();
+            }
+            writer
+                .append(
+                    &json!({"schema_version":1,"recording_id":"quiet","capture_seq":seq,
+                        "time_us":time,"topic":"/execution","data":{"execution_id":"7",
+                            "phase":"started","symbols":["A"]}})
+                    .to_string(),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let request = r#"{"recording_id":"quiet","start_us":101,"end_us":102}"#;
+        let before = window(&root, 1, "7", request).unwrap();
+        assert_eq!(before["coverage"], json!([{"start_us":101,"end_us":102}]));
+        assert_eq!(before["state_before_start"]["state_through_seq"], 1);
+        assert_eq!(before["messages"], json!([]));
+        assert_eq!(before["complete"], true);
+
+        fs::remove_file(root.join("account-1/1970-01-01/recording-quiet-000002.mcap")).unwrap();
+        let advertised = manifest(&root, 1, "7").unwrap();
+        assert_eq!(
+            advertised["recordings"][0]["coverage"],
+            json!([{"start_us":100,"end_us":60_000_100}])
+        );
+        let after = window(&root, 1, "7", request).unwrap();
+        assert_eq!(after["coverage"], before["coverage"]);
+        assert_eq!(after["state_before_start"], before["state_before_start"]);
+        assert_eq!(after["messages"], json!([]));
+        assert_eq!(after["complete"], true);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_before_a_window_remains_usable_before_its_part_starts() {
+        let view = RecordingView {
+            metadata: Some(metadata()),
+            parts: vec![part(2, 2, 3, 4, 200, Some(100))],
+        };
+        for end_us in [180, 210] {
+            let request = WindowRequest {
+                recording_id: "A".into(),
+                start_us: 150,
+                end_us,
+                symbols: vec![],
+                cursor: None,
+            };
+            let cursor = select_cursor(&request, 1, "7", &view).unwrap();
+            assert_eq!(cursor.parts.len(), 1);
+            assert_eq!(cursor.parts[0].part, 2);
+        }
     }
 
     #[test]

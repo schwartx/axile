@@ -405,11 +405,11 @@ def command(
 
 def link_cancel_request(owner: object, request_id: int, symbol: str, order_id: str) -> None:
     """在原生调用前保存本次录制内的精确撤单请求关联。"""
-    observer = getattr(owner, "_replay_observer", None)
+    receipt = recording.capture_command_receipt(owner)
     command_id = recording.current_command_id()
-    generation = getattr(owner, "_replay_sync_generation", None)
-    if observer is None or not command_id or type(generation) is not int:
+    if receipt is None or not command_id or type(receipt.sync_generation) is not int:
         return
+    observer, generation = receipt
     try:
         with getattr(owner, "_lock"):
             links = getattr(owner, "_replay_cancel_request_links", None)
@@ -424,8 +424,8 @@ def link_cancel_request(owner: object, request_id: int, symbol: str, order_id: s
             while len(links) > 512:
                 links.popitem(last=False)
     except Exception:  # noqa: BLE001 - 回放关联失败不能阻止撤单请求
-        recording.observe(
-            owner, "/connection", {"source": "ctp.replay", "available": False, "reason": "cancel_link_failed"}
+        recording.observe_receipt(
+            receipt, "/connection", {"source": "ctp.replay", "available": False, "reason": "cancel_link_failed"}
         )
 
 

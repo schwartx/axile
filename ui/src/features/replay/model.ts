@@ -96,12 +96,13 @@ function position(data: ReplayData, time: number): ReplayPosition | null {
   }
 }
 
+type TradeFact = ReplayTrade & { data: ReplayData }
 type ProjectionState = {
   view: ReplayProjection
   ownSeen: Set<string>
   marketSeen: Set<string>
-  ownFacts: Map<string, ReplayTrade>
-  marketFacts: Map<string, ReplayTrade>
+  ownFacts: Map<string, TradeFact>
+  marketFacts: Map<string, TradeFact>
   orderChanges: Record<string, number>
   setRevisions: Record<string, number>
   setObservations: Record<string, [number, number, number]>
@@ -204,8 +205,11 @@ function seed(window: ReplayWindow): ProjectionState {
       const record = replayObject(raw), data = replayObject(record.data)
       const value = trade(data, integer(record.first_time_us) ?? view.time_us, integer(record.first_capture_seq) ?? seq)
       if (value?.key) {
-        value.conflict = record.conflict === true; output.set(value.key, value); visible.push(value)
+        value.conflict = record.conflict === true; output.set(value.key, { ...value, data }); visible.push(value)
         if (output === state.ownFacts) state.ownLastFactSeq.set(value.key, integer(record.last_fact_seq) ?? value.capture_seq)
+      } else if (data.identity_quality === 'stable' && text(data.trade_key)) {
+        state.pending.set(`${output === state.ownFacts ? 'own' : 'market'}:trade:${data.trade_key}`, { market: output === state.marketFacts, observation: record })
+        if (output === state.ownFacts) view.accountingComplete = false
       }
     }
   }
@@ -357,8 +361,9 @@ function bindCommandOwners(state: ProjectionState) {
   for (const [key, value] of state.ownFacts) {
     const owner = value.order_id ? ownerForOrder(state, value.symbol, value.order_id) : null
     if (!owner || value.execution_id || ['manual', 'external'].includes(value.origin ?? '')) continue
-    const associated = { ...value, execution_id: owner, origin: 'execution' }
-    state.ownFacts.set(key, associated)
+    const { data, ...projected } = value
+    const associated = { ...projected, execution_id: owner, origin: 'execution' }
+    state.ownFacts.set(key, { ...associated, data: bindKnownOwner(state, data) })
     const index = state.view.ownTrades.findIndex(item => item.key === key)
     if (index >= 0) state.view.ownTrades[index] = associated
     if (validTrade(associated) && associated.order_id) state.pending.delete(`own:trade:${key}`)
@@ -384,8 +389,32 @@ const validTrade = (value: ReplayTrade) => !value.conflict && value.quantity != 
   && value.price != null && Number.isFinite(value.quantity * value.price)
 function applyTrade(state: ProjectionState, data: ReplayData, message: ReplayMessage, market: boolean) {
   if (!market) data = bindKnownOwner(state, data)
-  const value = trade(data, message.time_us, message.capture_seq)
-  if (!value) { warn(state, '成交观察缺少品种'); return }
+  const prefix = market ? 'market' : 'own', facts = market ? state.marketFacts : state.ownFacts
+  const key = data.identity_quality === 'stable' ? text(data.trade_key) : null
+  const previous = key ? facts.get(key) : undefined
+  const pending = key ? replayObject(state.pending.get(`${prefix}:trade:${key}`)?.observation) : {}
+  const raw = previous?.data ?? replayObject(pending.data ?? pending), mergedData = mergeFields(raw, data)
+  for (const [field, value] of Object.entries(raw)) {
+    const quality = replayObject(data.field_quality)[field]
+    if (value != null && known(raw, field) != null && (quality === 'missing' || quality === 'invalid')) {
+      mergedData[field] = value
+      mergedData.field_quality = { ...replayObject(mergedData.field_quality), [field]: 'known' }
+    }
+  }
+  let conflict = previous?.conflict === true || pending.conflict === true
+  for (const field of ['symbol', 'quantity', 'price', 'direction', 'position_side', 'offset']) {
+    if (known(raw, field) != null && known(data, field) != null && !sameTradeFact(field, raw[field], data[field])) {
+      conflict = true; mergedData[field] = raw[field]
+    }
+  }
+  const time = previous?.time_us ?? integer(pending.first_time_us) ?? message.time_us
+  const seq = previous?.capture_seq ?? integer(pending.first_capture_seq) ?? message.capture_seq
+  const value = trade(mergedData, time, seq)
+  if (!value) {
+    if (!market) state.view.accountingComplete = false
+    if (key) state.pending.set(`${prefix}:trade:${key}`, { market, observation: { data: mergedData, first_time_us: time, first_capture_seq: seq, conflict } })
+    warn(state, '成交观察缺少品种'); return
+  }
   const visible = market ? state.view.marketTrades : state.view.ownTrades
   if (!value.key) {
     if (!market) state.view.accountingComplete = false
@@ -395,39 +424,24 @@ function applyTrade(state: ProjectionState, data: ReplayData, message: ReplayMes
     if (!market) rebuildOrderAmounts(state, message)
     return
   }
-  const seen = market ? state.marketSeen : state.ownSeen, facts = market ? state.marketFacts : state.ownFacts
-  const previous = facts.get(value.key)
-  let merged = value
+  const seen = market ? state.marketSeen : state.ownSeen
+  const merged = { ...value, conflict }
   if (previous) {
-    merged = { ...previous }
-    for (const field of ['attributes', 'native_identity'] as const) {
-      if (data[field] != null) merged[field] = replayObject(data[field])
-    }
-    for (const field of ['price', 'quantity', 'order_id', 'direction', 'position_side', 'offset', 'source', 'source_seq', 'execution_id', 'origin', 'granularity'] as const) {
-      if (value[field] != null) Object.assign(merged, { [field]: value[field] })
-    }
-    for (const field of ['symbol', 'quantity', 'price', 'direction', 'position_side', 'offset'] as const) {
-      if (previous[field] != null && value[field] != null && !sameTradeFact(field, previous[field], value[field])) {
-        merged.conflict = true
-        Object.assign(merged, { [field]: previous[field] })
-      }
-    }
     const index = visible.findIndex(item => item.key === value.key)
     if (index >= 0) visible[index] = merged
-  } else if (!seen.has(value.key)) visible.push(value)
+  } else if (!seen.has(value.key) || !visible.some(item => item.key === value.key)) visible.push(merged)
   if (validTrade(merged)) seen.add(value.key)
   else { if (!market) state.view.accountingComplete = false; warn(state, '部分成交事实无效或冲突，数量待确认') }
-  facts.set(value.key, merged)
+  facts.set(value.key, { ...merged, data: mergedData })
   if (!market && (!previous || ['symbol', 'price', 'quantity', 'direction', 'position_side', 'offset', 'order_id'].some(field =>
-    !sameTradeFact(field, previous[field as keyof ReplayTrade], merged[field as keyof ReplayTrade])))) state.ownLastFactSeq.set(value.key, message.capture_seq)
-  const prefix = market ? 'market' : 'own'
+    !sameTradeFact(field, known(raw, field) ?? null, known(mergedData, field) ?? null)))) state.ownLastFactSeq.set(value.key, message.capture_seq)
   if (integer(data.related_capture_seq) != null) {
     state.pending.delete(`${prefix}:observation:${data.related_capture_seq}`)
     const index = visible.findIndex(item => item.key == null && item.capture_seq === data.related_capture_seq)
     if (index >= 0) visible.splice(index, 1)
   }
   if (!validTrade(merged) || (!market && (!merged.order_id || (!merged.execution_id && !['manual', 'external'].includes(merged.origin ?? ''))))) {
-    state.pending.set(`${prefix}:trade:${value.key}`, { market, observation: { ...data, execution_id: merged.execution_id } })
+    state.pending.set(`${prefix}:trade:${value.key}`, { market, observation: { ...mergedData, execution_id: merged.execution_id } })
   } else state.pending.delete(`${prefix}:trade:${value.key}`)
   if (!market) rebuildOrderAmounts(state, message)
 }

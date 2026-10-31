@@ -20,6 +20,7 @@ MAX_QUEUE_BYTES = 16 * 1024 * 1024
 MAX_IDENTITIES = 4_096
 TAIL_US = 5_000_000
 _TERMINAL = frozenset({"filled", "canceled", "rejected", "expired"})
+_TRADE_FIELDS = ("symbol", "price", "quantity", "direction", "position_side", "offset", "order_id")
 
 
 @dataclass
@@ -96,7 +97,7 @@ class ReplayRecorder:
         self._terminal_orders: set[tuple[str, str]] = set()
         self._order_set_revisions: dict[str, int] = {}
         self._order_set_observation: dict[str, tuple[int, int, int]] = {}
-        self._trade_orders: dict[str, tuple[str, str] | None] = {}
+        self._trade_facts: dict[str, dict[str, object]] = {}
         self._order_executions: dict[tuple[str, str], str] = {}
         self._order_origins: dict[tuple[str, str], str] = {}
         self._command_metadata: dict[str, dict[str, str]] = {}
@@ -235,7 +236,7 @@ class ReplayRecorder:
         self._terminal_orders.clear()
         self._order_set_revisions.clear()
         self._order_set_observation.clear()
-        self._trade_orders.clear()
+        self._trade_facts.clear()
         self._order_executions.clear()
         self._order_origins.clear()
         self._command_metadata.clear()
@@ -553,7 +554,7 @@ class ReplayRecorder:
                 len(self._terminal_orders),
                 len(self._order_set_revisions),
                 len(self._order_set_observation),
-                len(self._trade_orders),
+                len(self._trade_facts),
                 len(self._order_executions),
                 len(self._order_origins),
                 len(self._command_metadata),
@@ -619,11 +620,41 @@ class ReplayRecorder:
         trade = data.get("trade_key")
         if data.get("identity_quality") != "stable" or not isinstance(trade, str):
             return
-        key = self._order_key(data)
-        previous = self._trade_orders.get(trade)
-        if key is not None and key != previous and self._session is not None:
+        previous = self._trade_facts.get(trade, {})
+        before = self._known_trade_facts(previous)
+        incoming_quality = data.get("field_quality")
+        incoming_quality = incoming_quality if isinstance(incoming_quality, dict) else {}
+        previous_quality = previous.get("field_quality")
+        previous_quality = previous_quality if isinstance(previous_quality, dict) else {}
+        quality = {**previous_quality, **incoming_quality}
+        merged = {**previous, "field_quality": quality}
+        for name in _TRADE_FIELDS:
+            value = data.get(name)
+            if name in before and incoming_quality.get(name) in {"missing", "invalid"}:
+                quality[name] = "known"
+                continue
+            if value is None:
+                continue
+            if name in {"direction", "position_side", "offset"} and isinstance(value, str):
+                value = value.casefold()
+            if name in before and name != "order_id" and value != before[name]:
+                continue
+            merged[name] = value
+        self._trade_facts[trade] = merged
+        after = self._known_trade_facts(merged)
+        key = self._order_key(after)
+        if key is not None and before != after and self._session is not None:
             self._order_changes[key] = self._session.sequence
-            self._trade_orders[trade] = key
+
+    @staticmethod
+    def _known_trade_facts(data: dict[str, object]) -> dict[str, object]:
+        quality = data.get("field_quality")
+        quality = quality if isinstance(quality, dict) else {}
+        return {
+            field: data[field]
+            for field in _TRADE_FIELDS
+            if data.get(field) is not None and quality.get(field) not in {"missing", "invalid"}
+        }
 
     def _order_scope_symbols_locked(self, scope: tuple[str, tuple[str, ...]], rows: list[dict]) -> set[str]:
         if scope[0] == "symbols":

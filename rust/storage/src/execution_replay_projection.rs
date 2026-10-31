@@ -987,7 +987,7 @@ impl Projection {
             .filter(|order| order["symbol"].as_str() == Some(symbol))
         {
             order["confirmed_book"] = Value::Bool(false);
-            if !terminal(order) {
+            if !terminal(order) && order["confirmation_state"] != "absent" {
                 order["confirmation_state"] = json!(reason);
             }
         }
@@ -1389,7 +1389,12 @@ fn trade_fact_changed(previous: &Map<String, Value>, current: &Map<String, Value
     ]
     .iter()
     .any(|field| {
-        let (previous, current) = (previous.get(*field), current.get(*field));
+        let previous = previous
+            .get(*field)
+            .filter(|value| !value.is_null() && known(previous, field));
+        let current = current
+            .get(*field)
+            .filter(|value| !value.is_null() && known(current, field));
         match (previous, current) {
             (Some(previous), Some(current)) => !same_fact(field, previous, current),
             (None, None) => false,
@@ -2774,6 +2779,50 @@ mod tests {
     }
 
     #[test]
+    fn known_trade_quality_enrichment_protects_inflight_orders() {
+        for field in ["price", "quantity", "direction", "position_side", "offset"] {
+            for quality in ["missing", "invalid"] {
+                let mut state = Projection::new("r");
+                state
+                    .apply(&message(1, "/order", order("O", 10.0)))
+                    .unwrap();
+                let mut original = trade("T", 1.0);
+                original["field_quality"] = json!({field:quality});
+                state.apply(&message(2, "/trade", original)).unwrap();
+                let mut enriched = trade("T", 1.0);
+                enriched["field_quality"] = json!({field:"known"});
+                state.apply(&message(3, "/trade", enriched)).unwrap();
+                state
+                    .apply(&message(
+                        4,
+                        "/order_set",
+                        complete_set(json!(["A"]), Vec::new(), 2, 1),
+                    ))
+                    .unwrap();
+                let value = state.snapshot().unwrap();
+                assert_eq!(value["orders"][compound("A", "O")]["confirmed_book"], true);
+                assert_eq!(value["order_change_seq"][compound("A", "O")], 3);
+                assert_eq!(
+                    value["trade_accounting"]["own_records"]["T"]["last_fact_seq"],
+                    3
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_unknown_trade_fields_do_not_advance_physical_evidence() {
+        let mut original = trade("T", 1.0);
+        original["field_quality"] = json!({"quantity":"missing"});
+        let first = merge_trade_record(None, original.as_object().unwrap(), 1, 101);
+        let mut duplicate = trade("T", 2.0);
+        duplicate["field_quality"] = json!({"quantity":"invalid"});
+        let repeated = merge_trade_record(Some(&first), duplicate.as_object().unwrap(), 2, 102);
+        assert_eq!(repeated["last_fact_seq"], 1);
+        assert!(trade_amount(&repeated).is_none());
+    }
+
+    #[test]
     fn cancel_context_does_not_take_ownership_of_an_unassociated_external_order() {
         let mut state = Projection::new("r");
         let mut unassociated = trade("T", 4.0);
@@ -2956,6 +3005,64 @@ mod tests {
         let value = state.snapshot().unwrap();
         assert_eq!(value["orders"][compound("A", "O")]["status"], "canceled");
         assert_eq!(value["orders"][compound("A", "O")]["cancel_pending"], false);
+    }
+
+    #[test]
+    fn order_absence_survives_invalidation_until_a_fresh_row() {
+        for (topic, invalidation) in [
+            (
+                "/connection",
+                json!({"scope":["A"],"connected":false,"sync_generation":1}),
+            ),
+            (
+                "/connection",
+                json!({"scope":["A"],"connected":false,"sync_generation":2}),
+            ),
+            (
+                "/connection",
+                json!({"scope":["A"],"connected":true,"sync_generation":2}),
+            ),
+            (
+                "/order",
+                json!({"symbol":"A","order_id":"P","status":"working","sync_generation":2}),
+            ),
+        ] {
+            for recovery in ["/order", "/order_set"] {
+                let mut state = Projection::new("r");
+                state
+                    .apply(&message(1, "/order", order("O", 10.0)))
+                    .unwrap();
+                state
+                    .apply(&message(
+                        2,
+                        "/order_set",
+                        complete_set(json!(["A"]), Vec::new(), 1, 1),
+                    ))
+                    .unwrap();
+                state
+                    .apply(&message(3, topic, invalidation.clone()))
+                    .unwrap();
+                let mut state = Projection::restore(state.snapshot().unwrap()).unwrap();
+                let key = compound("A", "O");
+                let absent = &state.snapshot().unwrap()["orders"][&key];
+                assert_eq!(absent["confirmed_book"], false);
+                assert_eq!(absent["confirmation_state"], "absent");
+
+                let generation = state.sync_generation["A"];
+                let mut row = order("O", 10.0);
+                row["sync_generation"] = json!(generation);
+                let mut data = if recovery == "/order" {
+                    row
+                } else {
+                    complete_set(json!(["A"]), vec![row], 3, 2)
+                };
+                data["sync_generation"] = json!(generation);
+                state.apply(&message(4, recovery, data)).unwrap();
+                let restored = &state.snapshot().unwrap()["orders"][&key];
+                assert_eq!(restored["confirmed_book"], true);
+                assert_eq!(restored["confirmation_state"], "confirmed");
+            }
+        }
     }
 
     #[test]

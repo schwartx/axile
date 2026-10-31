@@ -7,7 +7,6 @@ from typing import NamedTuple
 from uuid import uuid4
 
 ReplayObserver = Callable[[str, Mapping[str, object]], None]
-_command_id: ContextVar[str | None] = ContextVar("replay_command_id", default=None)
 _MISSING = object()
 
 
@@ -16,6 +15,11 @@ class ReplayReceipt(NamedTuple):
 
     observer: ReplayObserver
     sync_generation: int | None
+
+
+_command_context: ContextVar[tuple[str | None, ReplayReceipt | None] | None] = ContextVar(
+    "replay_command_context", default=None
+)
 
 
 def capture_receipt(owner: object | None) -> ReplayReceipt | None:
@@ -84,7 +88,14 @@ def observe(owner: object, topic: str, data: Mapping[str, object]) -> None:
 
 def current_command_id() -> str | None:
     """返回当前同步报撤调用的观察身份。"""
-    return _command_id.get()
+    context = _command_context.get()
+    return context[0] if context is not None else None
+
+
+def capture_command_receipt(owner: object | None) -> ReplayReceipt | None:
+    """沿用公共报撤入口身份；直接调用渠道时才现场固定身份。"""
+    context = _command_context.get()
+    return context[1] if context is not None else capture_receipt(owner)
 
 
 @contextmanager
@@ -94,19 +105,21 @@ def replay_command(
     """覆盖报撤调用及装饰器拒绝，异常原样传播且不保存异常文本。"""
     if receipt is _MISSING:
         receipt = capture_receipt(owner)
-    if not isinstance(receipt, ReplayReceipt):
-        yield None
-        return
-    identity = uuid4().hex
-    token = _command_id.set(identity)
-    base = {**data, "command_id": identity, "operation": operation}
-    observe_receipt(receipt, "/command", {**base, "phase": "request"})
+    receipt = receipt if isinstance(receipt, ReplayReceipt) else None
+    identity = uuid4().hex if receipt is not None else None
+    token = _command_context.set((identity, receipt))
     try:
-        yield identity
-    except BaseException as error:
-        observe_receipt(receipt, "/command", {**base, "phase": "error", "error_type": type(error).__name__})
-        raise
-    else:
-        observe_receipt(receipt, "/command", {**base, "phase": "returned"})
+        if receipt is None:
+            yield None
+            return
+        base = {**data, "command_id": identity, "operation": operation}
+        observe_receipt(receipt, "/command", {**base, "phase": "request"})
+        try:
+            yield identity
+        except BaseException as error:
+            observe_receipt(receipt, "/command", {**base, "phase": "error", "error_type": type(error).__name__})
+            raise
+        else:
+            observe_receipt(receipt, "/command", {**base, "phase": "returned"})
     finally:
-        _command_id.reset(token)
+        _command_context.reset(token)

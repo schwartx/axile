@@ -66,6 +66,7 @@ class _WorkerBackendState(ResidentConnectionState):
     orders_binding: ConnectionBinding | None = None
     orders_executor: object | None = None
     orders_generation: int = 0
+    replay_connection_ready: bool = False
     replay_config: WorkerReplayConfig | None = None
     replay_resources: tuple[object, dict[str, object], bool] | None = None
     replay_recorder: Any = None

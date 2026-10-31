@@ -286,12 +286,12 @@ def test_connection_teardown_and_startup_publish_in_the_same_lock_order(starting
         def __getattr__(self, name):
             return getattr(original_lock, name)
 
-    def capture(owner, topic, build):
+    def capture(owner, topic, build, **kwargs):
         data = build()
         if owner is executor and topic == "/order_set" and data.get("synchronized") is True:
             ready_barrier.set()
             assert allow_ready.wait(2)
-        original_capture(owner, topic, lambda: data)
+        original_capture(owner, topic, lambda: data, **kwargs)
         if owner is executor and topic == "/connection" and data.get("status") == final_status:
             teardown_observed.set()
 

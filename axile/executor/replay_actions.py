@@ -48,7 +48,8 @@ def replay_operation[**P, R](operation: str) -> Callable[[Callable[P, R]], Calla
             owner = args[0] if args else None
             receipt = capture_receipt(owner)
             if receipt is None:
-                return function(*args, **kwargs)
+                with replay_command(owner, operation, {}, receipt=None):
+                    return function(*args, **kwargs)
             arguments = call_signature.bind_partial(*args, **kwargs).arguments
             fields = {
                 key: _intent_value(arguments[key])

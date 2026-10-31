@@ -633,6 +633,26 @@ describe('回放按本地已观察前缀恢复', () => {
     }
   })
 
+  test.each(['account', 'other-symbol'])('缺席后%s失联及另一订单进入新代次，不恢复旧单状态', scope => {
+    const source = order('a'), next = order('b', { sync_generation: 2 })
+    const messages = [message(1, '/order', source), message(2, '/order_set', {
+      scope: { kind: 'account', symbols: [] }, scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 1, request_revision: 1 }, orders: [],
+    }), message(3, '/connection', { scope: scope === 'account' ? 'account' : { symbols: ['B'] }, connected: false, sync_generation: 2 }),
+    message(4, '/order', next)]
+    const checkpoint = { state_through_seq: 4, time_us: 400, sync_generation: { A: 2 }, orders: {
+      [key('A', 'a')]: { ...source, confirmed_book: false, confirmation_state: 'absent', observed_seq: 1, observed_at_us: 100 },
+      [key('A', 'b')]: { ...next, observed_seq: 4, observed_at_us: 400 },
+    } }
+    for (const window of [windowOf(messages), windowOf([], checkpoint)]) {
+      const value = projectReplay(window, { time_us: 400 })
+      expect(value.orders[key('A', 'a')]).toMatchObject({ status: 'unknown', observed_status: 'working', confirmed: false, terminal: false })
+      expect(value.orders[key('A', 'b')]).toMatchObject({ status: 'working', confirmed: true })
+      const recovered = projectReplay({ ...window, messages: [...window.messages, message(5, '/order', { ...source, sync_generation: 2 })] }, { time_us: 500 })
+      expect(recovered.orders[key('A', 'a')]).toMatchObject({ status: 'working', confirmed: true })
+    }
+  })
+
   test('缺席只改变显示，不抹掉原始柜台待撤证据', () => {
     const source = order('a', { status: 'pending_cancel' })
     const cancel = { command_id: 'c', operation: 'cancel_order', phase: 'error', symbol: 'A', order_id: 'a' }
@@ -742,6 +762,47 @@ describe('回放按本地已观察前缀恢复', () => {
     if (source === 'command') expect(view.orders[key('A', 'O')]).toMatchObject({ execution_id: 'E', origin: 'execution' })
     expect(view.ownTrades[0].execution_id).toBe('E')
     expect(view.executionTotals.E.A).toBe(1)
+  })
+
+  test.each(['symbol', 'price', 'quantity', 'direction', 'position_side', 'offset', 'order_id'].flatMap(field =>
+    ['missing', 'invalid'].flatMap(quality => ['quality-only-known', 'omitted-quality', 'known-rejects-invalid'].map(mode => ({ field, quality, mode }))))
+  )('成交质量合并保持原生水位：$field / $quality / $mode', ({ field, quality, mode }) => {
+    const original = fill('T', 1, { order_id: 'a', offset: 'OPEN', field_quality: { [field]: mode === 'known-rejects-invalid' ? 'known' : quality } })
+    const completion: ReplayData = { trade_key: 'T', identity_quality: 'stable', execution_id: 'exec-1',
+      ...(mode === 'quality-only-known' ? { field_quality: { [field]: 'known' } }
+        : { [field]: original[field], ...(mode === 'known-rejects-invalid' ? { field_quality: { [field]: 'invalid' } } : {}) }) }
+    const query = message(4, '/order_set', { scope: { symbols: ['A'] }, scope_complete: true, synchronized: true, sync_generation: 1,
+      query_basis: { start_seq: 2, request_revision: 1 }, orders: [] })
+    const prefix = [message(1, '/order', order('a')), message(2, '/trade', original)]
+    const suffix = [message(3, '/trade', completion), query]
+    const mid = { state_through_seq: 2, time_us: 200, orders: { [key('A', 'a')]: order('a') },
+      sync_generation: { A: 1 }, order_change_seq: { [key('A', 'a')]: 2 }, trade_accounting: {
+        own_complete: true, own_records: { T: { data: original, first_time_us: 200, first_capture_seq: 2, last_fact_seq: 2 } },
+      } }
+    for (const window of [windowOf([...prefix, ...suffix]), windowOf(suffix, mid)]) {
+      const value = projectReplay(window, { time_us: 400 }), transaction = value.ownTrades.find(row => row.key === 'T')!
+      expect(value.orders[key('A', 'a')].confirmed).toBe(mode === 'quality-only-known')
+      expect(transaction.quantity).toBe(field === 'quantity' && mode === 'omitted-quality' ? null : 1)
+      expect(transaction.price).toBe(field === 'price' && mode === 'omitted-quality' ? null : 99)
+      expect(transaction.conflict).toBe(false)
+    }
+  })
+
+  test('稳定成交尚无品种时保留原始事实，后续只补品种仍可全播或从检查点恢复', () => {
+    const original = fill('T', 1, { symbol: null, order_id: 'a' })
+    const first = message(1, '/trade', original)
+    const completion = message(2, '/trade', { symbol: 'A', trade_key: 'T', identity_quality: 'stable' })
+    const checkpoint = { state_through_seq: 1, time_us: 100, trade_accounting: { own_complete: false, own_seen_keys: ['T'],
+      own_records: { T: { data: original, first_time_us: 100, first_capture_seq: 1, last_fact_seq: 1 } }, pending: {},
+    } }
+    expect(projectReplay(windowOf([first]), { time_us: 100 }).accountingComplete).toBe(false)
+    for (const window of [windowOf([first, completion]), windowOf([completion], checkpoint)]) {
+      const value = projectReplay(window, { time_us: 200 })
+      expect(value.ownTrades).toHaveLength(1)
+      expect(value.ownTrades[0]).toMatchObject({ symbol: 'A', quantity: 1, price: 99, order_id: 'a' })
+      expect(value.accountingComplete).toBe(false)
+      expect(value.executionTotals['exec-1'].A).toBe(1)
+    }
   })
 
   test.each(['new', 'identity', 'quantity', 'price'])('真实成交或身份变化仍保护查询期间的订单 %s', change => {

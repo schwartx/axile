@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from axile.executor.replay import (
+    capture_command_receipt,
     capture_receipt,
     current_command_id,
     observe_receipt,
@@ -234,3 +235,20 @@ def test_direct_context_keeps_its_observer_and_generation_after_owner_changes():
     assert [event["phase"] for event in first] == ["request", "returned"]
     assert {event["sync_generation"] for event in first} == {1}
     assert second == []
+
+
+def test_command_receipt_distinguishes_no_context_from_a_disabled_nested_operation():
+    owner = SimpleNamespace(_replay_observer=lambda *_args: None, _replay_sync_generation=1)
+    original = capture_receipt(owner)
+    assert capture_command_receipt(owner) == original
+    with replay_command(owner, "cancel_order", {}, receipt=original) as identity:
+        owner._replay_observer = lambda *_args: None
+        owner._replay_sync_generation = 2
+        assert capture_command_receipt(owner) == original
+        with replay_command(owner, "cancel_order", {}, receipt=None):
+            assert current_command_id() is None
+            assert capture_command_receipt(owner) is None
+        assert current_command_id() == identity
+        assert capture_command_receipt(owner) == original
+    assert capture_command_receipt(owner) == capture_receipt(owner)
+    assert capture_command_receipt(owner) != original

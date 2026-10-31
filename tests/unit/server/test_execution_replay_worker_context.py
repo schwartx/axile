@@ -11,6 +11,7 @@ from axile.executor.connection_state import ConnectionMonitor
 from axile.server._native import _core
 from axile.server.core import db
 from axile.server.db.models.account import Account, AccountCreate, AccountSnapshot
+from axile.server.execution.resident_connection import disconnect_resident_executor
 from axile.server.execution.worker_backend import replay, worker_state
 from axile.server.execution_replay.service import replay_manifest
 from tests.unit.server.test_execution_replay_native import wait_for
@@ -203,6 +204,7 @@ def test_missing_or_mismatched_binding_does_not_attach_control_context_to_a_new_
     selected = replay.current_replay_config(runtime.old)
     unbound = Executor(runtime.old)
     unbound.ready = True
+    unbound._connection_monitor.succeeded()
     runtime.state.executor, runtime.state.connected_once = unbound, True
     replay.configure_worker_replay(runtime.state, selected)
     recorder = runtime.state.replay_recorder
@@ -259,3 +261,86 @@ def test_hot_control_does_not_wait_for_connection_resource_lock(runtime):
     thread.join(1)
     assert completed_while_locked and not thread.is_alive()
     assert results[0]["desired"] is False
+
+
+@pytest.mark.parametrize("initially_recording", [False, True])
+def test_enabling_after_connection_failure_waits_for_actual_recovery(runtime, initially_recording):
+    account = runtime.update(replay_recording_enabled=initially_recording)
+    replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+    executor = runtime.resolve(account)
+    assert runtime.state.connected_once
+    assert not runtime.state.connection_collector.needs_reconciliation
+    if initially_recording:
+        wait_for(lambda: replay.worker_replay_status(runtime.state)["state"] == "recording")
+
+    executor.ready = False
+    executor._connection_monitor.failed(ConnectionError("fixture connection lost"))
+    assert runtime.state.connection_collector.needs_reconciliation
+    if initially_recording:
+        wait_for(lambda: replay.worker_replay_status(runtime.state)["state"] == "waiting_connection")
+        account = runtime.update(replay_recording_enabled=False)
+        replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+        wait_for(lambda: replay.worker_replay_status(runtime.state)["state"] == "disabled")
+
+    account = runtime.update(replay_recording_enabled=True)
+    replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+    recorder = runtime.state.replay_recorder
+    assert recorder.status()["state"] == "waiting_connection"
+    assert recorder._owner is None
+    assert getattr(executor, "_replay_observer", None) is None
+    if not initially_recording:
+        assert not list(runtime.root.rglob("*.mcap"))
+
+    executor.ready = True
+    executor._connection_monitor.succeeded()
+    wait_for(lambda: recorder.status()["state"] == "recording")
+    assert recorder._owner is executor
+    assert runtime.resolve(account) is executor
+    assert not runtime.state.connection_collector.needs_reconciliation
+
+
+def test_enabling_after_recovery_observed_while_disabled_reuses_connection(runtime):
+    account = runtime.update(replay_recording_enabled=False)
+    replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+    executor = runtime.resolve(account)
+    executor.ready = False
+    executor._connection_monitor.failed(ConnectionError("fixture connection lost"))
+    executor.ready = True
+    executor._connection_monitor.succeeded()
+    assert runtime.state.replay_recorder is None
+
+    account = runtime.update(replay_recording_enabled=True)
+    replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+    recorder = runtime.state.replay_recorder
+    wait_for(lambda: recorder.status()["state"] == "recording")
+    assert recorder._owner is executor
+
+
+def test_enabling_during_manual_disconnect_does_not_reattach_the_closing_executor(runtime):
+    account = runtime.update(replay_recording_enabled=False)
+    replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+    executor = runtime.resolve(account)
+    entered, release = threading.Event(), threading.Event()
+
+    def logout():
+        entered.set()
+        assert release.wait(3)
+
+    executor.graceful_logout = logout
+    disconnect = threading.Thread(
+        target=disconnect_resident_executor,
+        args=(runtime.state,),
+        kwargs={"close": lambda _executor: None},
+    )
+    disconnect.start()
+    try:
+        assert entered.wait(1)
+        account = runtime.update(replay_recording_enabled=True)
+        replay.configure_worker_replay(runtime.state, replay.current_replay_config(account))
+        recorder = runtime.state.replay_recorder
+        assert recorder.status()["state"] == "waiting_connection"
+        assert recorder._owner is None
+    finally:
+        release.set()
+        disconnect.join(1)
+        assert not disconnect.is_alive()

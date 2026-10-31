@@ -121,6 +121,7 @@ def test_enable_mid_execution_registers_carry_in_before_starting_recorder(monkey
     state = worker._WorkerBackendState(
         account_id=1, executor=executor, connected_once=True, replay_resources=(executor, {"channel": "external"}, True)
     )
+    replay.sync_worker_replay_connection(state, True)
     replay.begin_worker_replay_execution(state, "execution", ("A",))
     assert state.replay_recorder is None
     replay.configure_worker_replay(state, config(True, 1))

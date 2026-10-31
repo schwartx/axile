@@ -387,6 +387,73 @@ def test_actual_second_loss_rejects_query_proof_without_global_sync(make_recordi
     assert baseline["quotes"]["X"]["book_valid"] is False
 
 
+@pytest.mark.parametrize("invalidation", ["disconnect", "generation"])
+@pytest.mark.parametrize("recovery", ["order", "order_set"])
+def test_actual_order_absence_survives_invalidation_until_a_fresh_row(make_recording, invalidation, recovery):
+    recorder, now, root, recording_id = make_recording()
+    recorder.begin_execution("E", ["X"])
+    order = {
+        "symbol": "X",
+        "order_id": "O",
+        "status": "working",
+        "quantity": 10,
+        "filled_quantity": 0,
+        "remaining_quantity": 10,
+        "confirmed_book": True,
+    }
+    now[0] += 1
+    recorder.observe("/order", order)
+    token = recorder.begin_query(["X"])
+    assert token is not None
+    now[0] += 1
+    recorder.observe(
+        "/order_set",
+        {
+            **token,
+            "scope": {"kind": "symbols", "symbols": ["X"]},
+            "scope_complete": True,
+            "synchronized": True,
+            "orders": [],
+        },
+    )
+    now[0] += 1
+    recorder.observe(
+        "/connection",
+        {"connected": False, "scope": {"kind": "symbols", "symbols": ["X" if invalidation == "disconnect" else "Y"]}},
+    )
+    if invalidation == "generation":
+        now[0] += 1
+        recorder.observe("/order", {**order, "order_id": "P"})
+    after_invalidation = now[0] + 1
+    now[0] += 2
+    if recovery == "order":
+        recorder.observe("/order", order)
+    else:
+        token = recorder.begin_query(["X"])
+        assert token is not None
+        recorder.observe(
+            "/order_set",
+            {
+                **token,
+                "scope": {"kind": "symbols", "symbols": ["X"]},
+                "scope_complete": True,
+                "synchronized": True,
+                "orders": [order],
+            },
+        )
+    finished(recorder)
+    baseline = window(root, "E", recording_id, after_invalidation, TIME + 100)["state_before_start"]
+    absent = baseline["orders"]['["X","O"]']
+    assert baseline["sync_generation"]["X"] == 2
+    assert absent["status"] == "working"
+    assert absent["confirmed_book"] is False
+    assert absent["confirmation_state"] == "absent"
+    restored = window(root, "E", recording_id, now[0] + 1, TIME + 100)["state_before_start"]["orders"]['["X","O"]']
+    assert restored["confirmed_book"] is True
+    assert restored["confirmation_state"] == "confirmed"
+    assert_mcap_files(root)
+
+
 def test_actual_symbol_directory_covers_earlier_and_later_nested_symbols(make_recording):
     recorder, now, root, recording_id = make_recording({"schema_version": 1, "instrument": {}})
     recorder.observe(

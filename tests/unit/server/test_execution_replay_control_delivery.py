@@ -56,6 +56,7 @@ def runtime(native_database, monkeypatch):
     def spawn(enabled=False):
         state = worker._WorkerBackendState(account_id=account.id, executor=SimpleNamespace(), connected_once=True)
         worker_state._configure_executor_resources(state, account, state.executor)
+        replay.sync_worker_replay_connection(state, True)
         if enabled:
             replay.configure_worker_replay(state, replay.replay_config(account))
             eventually(lambda: state.replay_recorder.status()["state"] == "recording")

@@ -109,10 +109,12 @@ def bind_worker_replay_resources(state: Any, account: AccountContext, executor: 
 def sync_worker_replay_connection(state: Any, ready: bool | None = None) -> None:
     """只绑定已有连接；控制线程无需等待交易资源锁。"""
     with state.replay_lock:
+        if ready is not None:
+            state.replay_connection_ready = ready
         if state.replay_recorder is None or state.replay_config is None:
             return
         try:
-            connected = state.connected_once and not state.disconnected if ready is None else ready
+            connected = state.replay_connection_ready and not state.disconnected
             owner, context, supported = state.replay_resources or (
                 None,
                 state.replay_config.context,
