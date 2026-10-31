@@ -12,6 +12,7 @@ from axile.server import connection_events, connection_runtime, connection_state
 from axile.server.db.models.account import Account
 from axile.server.db.models.account_connection import AccountConnectionState
 from axile.server.db.models.account_order import AccountOrdersPublic
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._native_read_views import connection_view
 
 
@@ -129,14 +130,15 @@ def test_public_history_does_not_advertise_a_live_session_or_credentials():
         account_id=value.id,
         config_key=binding(value).config_key,
         status="ok",
-        observed_at="old-success",
-        last_success_at="last-access",
+        observed_at="2026-10-20T09:00:00+08:00",
+        last_success_at="2026-10-20T08:59:00+08:00",
         manually_disconnected=True,
         last_failure={"observed_at": "failed", "message": "old failure", "error": {"technical_detail": "original"}},
     )
     detail = connection_view(value, detail=True)
     assert detail.status == "disconnected" and not detail.worker_alive
-    assert detail.last_success_at == "last-access" and detail.last_failure.message == "old failure"
+    assert detail.last_success_at == utc_time("2026-10-20T08:59:00+08:00")
+    assert detail.last_failure.message == "old failure"
     assert detail.error is None and detail.presentation is None
     assert "private-password" not in detail.model_dump_json()
     assert "private-webhook" not in detail.model_dump_json()

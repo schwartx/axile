@@ -11,6 +11,7 @@ from axile.server._native import _core
 from axile.server.execution import records
 from axile.server.target_weight_snapshots import append_target_weight_snapshot, get_latest_account_target_snapshot
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us
 from tests.unit.server._business_facts_test_support import persist_result, rows, seed_account, sql
 from tests.unit.server._native_read_views import read_execution_input, read_execution_result, receipt_record
 
@@ -20,8 +21,9 @@ def database(native_database, monkeypatch):
     seed_account(native_database)
     sql(
         native_database,
-        "INSERT INTO portfolio(id,name,market,custom_calc_py_code,status,updated_at,created_at) "
-        "VALUES(1,'事实测试','期货','def calculate_portfolio(context): return {}','normal','now','now')",
+        "INSERT INTO portfolio(id,name,market,custom_calc_py_code,status,updated_at_us,created_at_us) "
+        "VALUES(1,'事实测试','期货','def calculate_portfolio(context): return {}','normal',?,?)",
+        (to_us("2026-10-20"), to_us("2026-10-20")),
     )
     monkeypatch.setattr("axile.server.core.db.database_path", lambda: str(native_database))
     return native_database

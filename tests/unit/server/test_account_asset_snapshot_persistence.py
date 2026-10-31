@@ -40,7 +40,7 @@ def test_success_record_persists_matching_asset_snapshot(native_database, monkey
         assert snapshot["account_id"] == 51
         assert snapshot["execution_id"] == "exec-assets-51"
         assert snapshot["source"] == "execution"
-        assert snapshot["created_at"] == record.created_at
+        assert snapshot["created_at_us"] == records[0]["created_at_us"]
         bindings = rows(native_database, "business_asset_binding")
         assert len(bindings) == 1
         assert bindings[0]["record_id"] == record.id

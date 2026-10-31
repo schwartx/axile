@@ -21,6 +21,7 @@ from axile.executor.account_control.models import (
 from axile.server.db.models import Account
 from axile.server.db.models.base import now_ms, now_str
 from tests.fixtures.rust_store.oracle_tables import table
+from tests.sqlite_oracle import to_us
 
 
 def _build_account() -> Account:
@@ -99,8 +100,8 @@ def test_account_control_tables_use_explicit_columns_and_unique_uids(native_data
         "counted",
         "outcome",
         "event_uid",
-        "created_at",
-        "occurred_at_ms",
+        "created_at_us",
+        "occurred_at_us",
         "id",
     }
     assert delta_columns["operation"] == "TEXT"
@@ -118,6 +119,7 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                 for key, value in account.model_dump(mode="json").items()
                 if key in table("account").c and key != "id"
             }
+            account_values.update(created_at_us=to_us(account.created_at), updated_at_us=to_us(account.updated_at))
             inserted = await session.execute(table("account").insert().values(**account_values))
             account.id = inserted.inserted_primary_key[0]
             await session.commit()
@@ -170,8 +172,8 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                     operation="place_order",
                     symbol="rb2610",
                     metadata={},
-                    created_at=now_str(),
-                    occurred_at_ms=now_ms(),
+                    created_at_us=to_us(now_str()),
+                    occurred_at_us=now_ms() * 1000,
                     decision=AccountControlDecision.ALLOWED,
                     counted=True,
                     outcome="submitted",
@@ -186,8 +188,8 @@ def test_account_control_tables_enforce_unique_delta_uid_and_event_uid(native_da
                     operation="cancel_order",
                     symbol="ag2612",
                     metadata={},
-                    created_at=now_str(),
-                    occurred_at_ms=now_ms(),
+                    created_at_us=to_us(now_str()),
+                    occurred_at_us=now_ms() * 1000,
                     decision=AccountControlDecision.BLOCKED,
                     counted=False,
                     outcome="policy_blocked",

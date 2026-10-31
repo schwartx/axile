@@ -269,9 +269,10 @@ def test_tq_input_keeps_lots_weight_empty_and_null_roles_separate(native_databas
 def test_tq_before_assets_keep_their_own_observation_time_and_source(native_database) -> None:
     observation = {**_tq_assets(), "update_time": "2026-10-19T20:59:58+08:00", "source": "worker_pre_execution"}
 
-    assert business_evidence(
-        _sqlite_round_trip(native_database, "assets", {"account_assets": observation}, input_owner=True)
-    ) == business_evidence({"before_account_assets": observation})
+    restored = _sqlite_round_trip(native_database, "assets", {"account_assets": observation}, input_owner=True)
+    assert business_evidence(restored["before_account_assets"], context="account_assets") == business_evidence(
+        observation, context="account_assets"
+    )
 
 
 def test_tq_symbols_keep_multiplier_night_time_and_independent_root_views(native_database) -> None:

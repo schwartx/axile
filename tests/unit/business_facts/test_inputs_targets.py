@@ -14,6 +14,7 @@ from axile.server.target_weight_snapshots import (
 )
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import to_us
 from tests.unit.server import _native_read_views as repository
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
@@ -42,7 +43,9 @@ def _seed_portfolio(path):
     seed_account(path)
     sql(
         path,
-        "INSERT INTO portfolio (id,name,market,custom_calc_py_code,created_at,updated_at) VALUES (2,'oracle','期货','','2026-10-20','2026-10-20')",
+        "INSERT INTO portfolio (id,name,market,custom_calc_py_code,created_at_us,updated_at_us) "
+        "VALUES (2,'oracle','期货','',?,?)",
+        (to_us("2026-10-20"), to_us("2026-10-20")),
     )
 
 

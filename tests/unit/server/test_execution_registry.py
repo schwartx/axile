@@ -16,6 +16,7 @@ from axile.domain.execution import (
 )
 from axile.server.execution import registry as execution_registry
 from tests.fixtures.rust_store.execution_rows import ExecuteRecord
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._native_read_views import status_view
 
 
@@ -244,9 +245,9 @@ def test_registry_helper_functions_cover_status_serialization(
         "account_id": 1,
         "execution_kind": None,
         "status": ExecutionTaskStatus.FAILED,
-        "created_at": "2026-03-22T17:00:00",
+        "created_at": utc_time("2026-03-22T17:00:00"),
         "started_at": None,
-        "finished_at": "2026-03-22T17:00:00",
+        "finished_at": utc_time("2026-03-22T17:00:00"),
         "error": None,
         "output_status": None,
         # 柔和版保留展示结论三元组。

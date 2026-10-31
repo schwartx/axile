@@ -10,6 +10,7 @@ from axile.server.core import db
 from axile.server.db.models import Account, AccountNotificationState, AccountSnapshot, AccountUpdate
 from axile.server.execution import notification_state
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._execution_test_support import insert_account
 from tests.unit.server._native_read_views import account_view
 
@@ -59,7 +60,9 @@ def test_settings_persist_patch_and_snapshot_are_independent(native_database):
         AccountUpdate(name="invalid", weight_precision=-1, cron_expr="bad cron")
     assert loaded.name == "账户"
     assert loaded.weight_precision == 0.01
-    native_store_call(native_database, "account_update", {"account_id": 1, "patch": patch, "now": "updated"})
+    native_store_call(
+        native_database, "account_update", {"account_id": 1, "patch": patch, "now": "2026-09-30T12:00:00"}
+    )
     account = stored_account(native_database)
     assert account.long_leverage == 3
     assert account.execution_notification_code is None
@@ -76,7 +79,7 @@ def test_success_state_only_advances_and_deleted_account_is_ignored(monkeypatch,
     notification_state.record_notification_result(1, "exec-old", "2026-09-30T10:00:00", True, None)
     account = stored_account(native_database)
     assert account.notification_state.execution_id == "exec-new"
-    assert account.notification_state.last_success_at == "2026-09-30T10:01:00"
+    assert account.notification_state.last_success_at == utc_time("2026-09-30T10:01:00")
     native_store_call(native_database, "account_delete", {"account_id": 1})
     replacement = native_store_call(
         native_database, "account_create", {"account": account_data(), "now": "2026-09-30T10:01:30"}

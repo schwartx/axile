@@ -8,6 +8,7 @@ from copy import deepcopy
 import pytest
 
 from scripts.business_facts_contract import business_evidence
+from tests.sqlite_oracle import utc_time
 from tests.unit.server._business_facts_test_support import (
     freeze_input,
     persist_result,
@@ -135,8 +136,8 @@ def test_custom_order_occurrences_keep_native_identity_scope_and_snapshot_order(
         ["待成交", "已成交", "已成交"]
     )
     assert business_evidence(snapshots[0]["order_id"]) == business_evidence("9007199254740993")
-    assert business_evidence(snapshots[0]["create_time"]) == business_evidence("2026-10-20T00:00:00.123456+08:00")
-    assert business_evidence(snapshots[0]["update_time"]) == business_evidence("2026-10-19T16:00:01.000Z")
+    assert snapshots[0]["create_time"] == utc_time("2026-10-20T00:00:00.123456+08:00")
+    assert snapshots[0]["update_time"] == utc_time("2026-10-19T16:00:01.000Z")
     assert business_evidence(snapshots[0]["price"]) == business_evidence(3210.125)
     assert business_evidence(snapshots[0]["value_conversion"]) == business_evidence(_conversion())
     assert business_evidence(len(loaded["execution_order"])) == business_evidence(8)
@@ -203,7 +204,7 @@ def test_custom_trades_keep_duplicate_ids_symbols_days_and_root_evidence(native_
     assert business_evidence([row["extra"]["trading_day"] for row in nested]) == business_evidence(
         ["20261020", "20261020", "20261019"]
     )
-    assert business_evidence(nested[2]["trade_time"]) == business_evidence("2026-10-19T16:00:00.000Z")
+    assert nested[2]["trade_time"] == utc_time("2026-10-19T16:00:00.000Z")
     assert business_evidence(len(loaded["business_trade"])) == business_evidence(6)
 
 
@@ -315,7 +316,12 @@ def test_custom_before_and_after_assets_are_independent_observations(native_data
     actual, loaded = _sql_round_trip(native_database, {"account_assets": after})
     actual["before_account_assets"] = read_before_assets(native_database, receipt["input_id"])
 
-    assert business_evidence(actual) == business_evidence({"account_assets": after, "before_account_assets": before})
+    assert business_evidence({key: value for key, value in actual.items() if key != "before_account_assets"}) == (
+        business_evidence({"account_assets": after})
+    )
+    assert business_evidence(actual["before_account_assets"], context="account_assets") == business_evidence(
+        before, context="account_assets"
+    )
     snapshots = loaded["business_asset_snapshot"]
     assert business_evidence(len(snapshots)) == business_evidence(2)
     assert business_evidence({row["scope"] for row in snapshots}) == business_evidence({"before", "after"})

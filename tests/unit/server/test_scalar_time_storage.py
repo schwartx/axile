@@ -14,6 +14,7 @@ import pytest
 
 from axile.server._native import _core
 from tests.conftest import initialize_native_database, native_store_call
+from tests.sqlite_oracle import to_us
 
 
 @pytest.mark.parametrize("host_timezone", ["UTC", "Asia/Shanghai", "America/New_York"])
@@ -263,3 +264,123 @@ def test_safe_custom_sql_and_opaque_json_survive_upgrade_downgrade_upgrade(publi
         connection.execute("UPDATE editable_view SET guard=3 WHERE id=1")
         assert connection.execute("SELECT guard FROM account").fetchone() == (3,)
         assert connection.execute("SELECT account_id FROM custom_trigger_audit").fetchall() == [(1,)]
+
+
+@pytest.mark.parametrize("alias", ["rowid", "_rowid_", "oid"])
+def test_safe_rowid_trigger_survives_upgrade_downgrade_upgrade(published_database, alias):
+    definition = (
+        f"CREATE TRIGGER rowid_audit AFTER UPDATE OF {alias} ON account "
+        f"BEGIN INSERT INTO custom_trigger_audit VALUES(NEW.{alias}); END"
+    )
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute("CREATE TABLE custom_trigger_audit(account_id INTEGER)")
+        connection.execute(definition)
+    for ordinal, (operation, request, revision) in enumerate(
+        [
+            ("migration_upgrade", {}, "0034"),
+            ("migration_downgrade", {"public": "0033"}, "0033"),
+            ("migration_upgrade", {}, "0034"),
+        ]
+    ):
+        assert native_store_call(published_database, operation, request)["public"] == revision
+        _core.close_database(str(published_database))
+        with closing(sqlite3.connect(published_database)) as connection, connection:
+            assert connection.execute("SELECT account_id FROM custom_trigger_audit").fetchall() == [(1,)] * ordinal
+            assert connection.execute("SELECT sql FROM sqlite_schema WHERE name='rowid_audit'").fetchone() == (
+                definition,
+            )
+            # 同值更新仍触发 UPDATE OF，避免修改主键引入无关外键变化。
+            connection.execute(f"UPDATE account SET {alias}={alias} WHERE id=1")
+            assert connection.execute("SELECT account_id FROM custom_trigger_audit").fetchall() == [(1,)] * (
+                ordinal + 1
+            )
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("without_rowid", [False, True], ids=["shadowed_alias", "without_rowid"])
+def test_safe_rowid_fields_and_aliases_remain_distinct(published_database, without_rowid):
+    aliases = ["rowid"] if without_rowid else ["rowid", "oid"]
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        if without_rowid:
+            connection.execute("CREATE TABLE custom_owner(rowid INTEGER PRIMARY KEY,value INTEGER) WITHOUT ROWID")
+            connection.execute("INSERT INTO custom_owner VALUES(7,10)")
+        else:
+            connection.execute("CREATE TABLE custom_owner(id INTEGER PRIMARY KEY,rowid INTEGER,value INTEGER)")
+            connection.execute("INSERT INTO custom_owner VALUES(1,7,10)")
+        connection.execute("CREATE TABLE custom_trigger_audit(alias TEXT,value INTEGER)")
+        for alias in aliases:
+            connection.execute(
+                f"CREATE TRIGGER audit_{alias} AFTER UPDATE OF {alias} ON custom_owner "
+                f"BEGIN INSERT INTO custom_trigger_audit VALUES('{alias}',NEW.{alias}); END"
+            )
+    for ordinal, (operation, request, revision) in enumerate(
+        [
+            ("migration_upgrade", {}, "0034"),
+            ("migration_downgrade", {"public": "0033"}, "0033"),
+            ("migration_upgrade", {}, "0034"),
+        ]
+    ):
+        assert native_store_call(published_database, operation, request)["public"] == revision
+        _core.close_database(str(published_database))
+        with closing(sqlite3.connect(published_database)) as connection, connection:
+            assert connection.execute("SELECT count(*) FROM custom_trigger_audit").fetchone() == (
+                ordinal * len(aliases),
+            )
+            assert connection.execute("SELECT rowid,value FROM custom_owner").fetchone() == (7, 10)
+            for alias in aliases:
+                connection.execute(f"UPDATE custom_owner SET {alias}={alias}")
+            assert connection.execute("SELECT alias,value FROM custom_trigger_audit").fetchall() == [
+                (alias, 7 if alias == "rowid" else 1) for _ in range(ordinal + 1) for alias in aliases
+            ]
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+@pytest.mark.parametrize("kind", ["VIRTUAL", "STORED"])
+@pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
+def test_safe_generated_columns_recompute_and_preserve_json(published_database, kind, populated):
+    at = "2026-07-01T09:00:00.123456Z"
+    opaque = b'{ "created_at": "not-a-time", "nested": {"trade_time": "unchanged"} }'
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        connection.execute(
+            f"ALTER TABLE notification_event ADD COLUMN guard INTEGER GENERATED ALWAYS AS (sequence+1) {kind}"
+        )
+        if populated:
+            connection.execute(
+                "INSERT INTO notification_event(sequence,id,account_id,created_at,event_type,context,status) "
+                "VALUES(7,'generated',1,?,'custom.fixture',?,'pending')",
+                (at, opaque),
+            )
+        original_guard = next(
+            row for row in connection.execute("PRAGMA table_xinfo(notification_event)") if row[1] == "guard"
+        )
+    for operation, request, revision in [
+        ("migration_upgrade", {}, "0034"),
+        ("migration_downgrade", {"public": "0033"}, "0033"),
+        ("migration_upgrade", {}, "0034"),
+    ]:
+        assert native_store_call(published_database, operation, request)["public"] == revision
+        _core.close_database(str(published_database))
+        with closing(sqlite3.connect(published_database)) as connection:
+            assert (
+                next(row for row in connection.execute("PRAGMA table_xinfo(notification_event)") if row[1] == "guard")
+                == original_guard
+            )
+            schema = connection.execute("SELECT sql FROM sqlite_schema WHERE name='notification_event'").fetchone()[0]
+            assert f"GENERATED ALWAYS AS (sequence+1) {kind}" in schema
+            expected = [(7, 8, opaque, "blob")] if populated else []
+            assert connection.execute(
+                "SELECT sequence,guard,context,typeof(context) FROM notification_event"
+            ).fetchall() == (expected)
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with closing(sqlite3.connect(published_database)) as connection, connection:
+        if not populated:
+            connection.execute(
+                "INSERT INTO notification_event(sequence,id,account_id,created_at_us,event_type,context,status) "
+                "VALUES(7,'generated',1,?,'custom.fixture',?,'pending')",
+                (to_us(at), opaque),
+            )
+        connection.execute("UPDATE notification_event SET sequence=8 WHERE id='generated'")
+        assert connection.execute(
+            "SELECT sequence,guard,context,typeof(context) FROM notification_event"
+        ).fetchall() == [(8, 9, opaque, "blob")]

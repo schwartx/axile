@@ -50,8 +50,8 @@ def test_account_control_event_schema_supports_audit_drill_down_queries(native_d
         "counted",
         "outcome",
         "event_uid",
-        "created_at",
-        "occurred_at_ms",
+        "created_at_us",
+        "occurred_at_us",
         "id",
     }
     assert delta_columns == {
@@ -76,31 +76,31 @@ def test_account_control_event_schema_supports_audit_drill_down_queries(native_d
         "execution_id",
         "symbol",
         "metadata",
-        "occurred_at_ms",
+        "occurred_at_us",
     } <= event_columns
 
     assert index_columns["ix_account_control_event_account_date_created"] == (
         "account_id",
         "control_date",
-        "created_at",
+        "created_at_us",
     )
     assert index_columns["ix_account_control_event_execution_seq"] == ("execution_id", "seq")
     assert index_columns["ix_account_control_event_account_date_symbol_created"] == (
         "account_id",
         "control_date",
         "symbol",
-        "created_at",
+        "created_at_us",
     )
     assert index_columns["ix_account_control_event_account_operation_occurred"] == (
         "account_id",
         "operation",
-        "occurred_at_ms",
+        "occurred_at_us",
     )
     assert index_columns["ix_account_control_event_account_symbol_operation_occurred"] == (
         "account_id",
         "symbol",
         "operation",
-        "occurred_at_ms",
+        "occurred_at_us",
     )
 
 

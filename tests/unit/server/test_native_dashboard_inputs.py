@@ -8,6 +8,7 @@ import pytest
 from axile.server._native import _core
 from axile.server.performance_analysis import ENGINE_VERSION, LOGIC_VERSION
 from tests.conftest import native_store_call
+from tests.sqlite_oracle import to_us, utc_time
 from tests.unit.server._business_facts_test_support import persist_result
 from tests.unit.server._execution_test_support import build_account, insert_account
 
@@ -38,17 +39,18 @@ def _target(path, portfolio_id, payload):
 @pytest.fixture
 def dashboard_database(native_database):
     path = native_database
+    created_at = to_us("2026-10-20")
     with closing(sqlite3.connect(path)) as connection, connection:
         connection.executemany(
-            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at,updated_at) "
-            "VALUES (?,'dashboard','期货','def calculate_portfolio(context): return {}','2026-10-20','2026-10-20')",
-            [(7,), (8,)],
+            "INSERT INTO portfolio(id,name,market,custom_calc_py_code,created_at_us,updated_at_us) "
+            "VALUES (?,'dashboard','期货','def calculate_portfolio(context): return {}',?,?)",
+            [(identity, created_at, created_at) for identity in (7, 8)],
         )
         for account_id in (1, 2, 3):
             insert_account(connection, build_account(id=account_id))
         connection.executemany(
-            "INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at) VALUES (?,?,?,'2026-10-20')",
-            [(1, 1, 7), (2, 2, 7), (3, 2, None)],
+            "INSERT INTO portfolioaccount(id,account_id,portfolio_id,created_at_us) VALUES (?,?,?,?)",
+            [(1, 1, 7, created_at), (2, 2, 7, created_at), (3, 2, None, created_at)],
         )
     for snapshot_id, account_id, assets in [
         (1, 1, {"total_asset": 100, "positions": []}),
@@ -118,7 +120,7 @@ def test_dashboard_inputs_selection_and_asset_decoder_parity(dashboard_database)
     assert expected[2]["availability"] == {"cash": "null", "equity": "value", "market_value": "absent"}
     assert [position["symbol"] for position in expected[2]["positions"]] == ["Z", "A"]
     assert expected[2]["positions"][0]["audit_evidence"]["invalid_fields"] == {"market_value": "bad"}
-    assert result["1"]["latest"]["created_at"] == "2026-10-18T00:00:00"
+    assert result["1"]["latest"]["created_at"] == utc_time("2026-10-18T00:00:00")
     assert result["1"]["target_weights"] == {}
     assert result["1"]["portfolio_id"] == 7
     assert result["2"]["portfolio_id"] is None

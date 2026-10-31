@@ -43,6 +43,7 @@ from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call
 from tests.fixtures.rust_store.supplement_rows import SupplementGroup, SupplementStep
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import utc_time
 from tests.unit.server import _native_read_views as fact_repository
 from tests.unit.server._business_facts_test_support import freeze_input, persist_result, rows, sql
 from tests.unit.server._execution_test_support import build_account
@@ -228,11 +229,14 @@ def _resolve_pointer(document: dict, pointer: str):
 
 
 def _stable_context(context: dict) -> dict:
-    """预览自带测试标记和历史通知时点，其余业务内容逐字段比较。"""
+    """去掉预览标记，已知通知投影时间统一 UTC 后逐字段比较。"""
     result = deepcopy(context)
     result.pop("is_test", None)
     result["execution"].pop("is_test", None)
     result["execution"].pop("notified_at", None)
+    result["assets"]["update_time"] = utc_time(result["assets"]["update_time"])
+    for trade in result["default_feishu_variables"]["trades"]:
+        trade["dt"] = utc_time(trade["dt"])
     return result
 
 
@@ -263,10 +267,10 @@ def test_roundtrip_preview_matches_prior_notification_semantics_without_channel(
     assert context["positions"][0]["market_value"] is None
     assert business_evidence(context["trades"][0]["trade_value"]) == business_evidence(35000.125)
     assert business_evidence(context["orders"][0]["update_time"]) == business_evidence(
-        payload["symbol_results"]["rb2610"]["orders"][0]["update_time"]
+        utc_time(payload["symbol_results"]["rb2610"]["orders"][0]["update_time"])
     )
     assert business_evidence(context["execution"]["error"]) == business_evidence(_TECHNICAL_ERROR)
-    assert business_evidence(context["execution"]["notified_at"]) == business_evidence(_CREATED)
+    assert business_evidence(context["execution"]["notified_at"]) == business_evidence(utc_time(_CREATED))
     channel.assert_not_awaited()
 
 
@@ -573,8 +577,12 @@ def test_preterminal_input_and_both_asset_roles_are_exportable_without_result(fa
     assert business_evidence(artifacts["trade_rules_snapshot"]["futures_close_policy"]) == business_evidence(
         _preterminal_input()["futures_close_policy"]
     )
-    assert business_evidence(artifacts["account_snapshot_before"]["account_assets"]) == business_evidence(before)
-    assert business_evidence(artifacts["account_snapshot"]["account_assets"]) == business_evidence(after)
+    assert business_evidence(
+        artifacts["account_snapshot_before"]["account_assets"], context="account_assets"
+    ) == business_evidence(before, context="account_assets")
+    assert business_evidence(
+        artifacts["account_snapshot"]["account_assets"], context="account_assets"
+    ) == business_evidence(after, context="account_assets")
     assert business_evidence(artifacts["account_snapshot"]["business_facts_ref"]["input_id"]) == business_evidence(
         input_id
     )
@@ -650,10 +658,12 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
     assert business_evidence(item.input) == business_evidence(_preterminal_input())
     assert item.record is None and item.artifacts == []
     observations = {row["asset_id"]: row for row in item.asset_observations}
-    assert business_evidence(observations[input_asset_fact_id(input_id)]["account_assets"]) == business_evidence(before)
     assert business_evidence(
-        observations[f"input:{input_id}:/after_account_assets"]["account_assets"]
-    ) == business_evidence(after)
+        observations[input_asset_fact_id(input_id)]["account_assets"], context="account_assets"
+    ) == business_evidence(before, context="account_assets")
+    assert business_evidence(
+        observations[f"input:{input_id}:/after_account_assets"]["account_assets"], context="account_assets"
+    ) == business_evidence(after, context="account_assets")
     assert all(row["input_id"] == input_id for row in observations.values())
     if with_target_event:
         decision = item.events[0]["details"]["decision"]
@@ -669,12 +679,12 @@ def test_pending_frozen_input_is_exported_even_without_artifact(facts_database, 
             assert json.loads(archive.read(f"executions/{_EXECUTION}/record.json")) is None
             assets = json.loads(archive.read(f"executions/{_EXECUTION}/asset-observations.json"))
             assets = {row["asset_id"]: row for row in assets}
-            assert business_evidence(assets[input_asset_fact_id(input_id)]["account_assets"]) == business_evidence(
-                before
-            )
             assert business_evidence(
-                assets[f"input:{input_id}:/after_account_assets"]["account_assets"]
-            ) == business_evidence(after)
+                assets[input_asset_fact_id(input_id)]["account_assets"], context="account_assets"
+            ) == business_evidence(before, context="account_assets")
+            assert business_evidence(
+                assets[f"input:{input_id}:/after_account_assets"]["account_assets"], context="account_assets"
+            ) == business_evidence(after, context="account_assets")
             manifest = json.loads(archive.read("manifest.json"))
             coverage = manifest["executions"][0]["coverage"]
             assert business_evidence(coverage["coverage"]) == business_evidence("provisional")

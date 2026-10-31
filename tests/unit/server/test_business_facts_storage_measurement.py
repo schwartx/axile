@@ -30,6 +30,7 @@ from scripts.benchmark_business_fact_storage import (
 )
 from scripts.business_facts_contract import business_evidence
 from tests.sqlite_oracle import connect as oracle_connect
+from tests.sqlite_oracle import to_us, utc_time
 
 
 def test_frozen_fixture_is_reproducible_and_matches_occurrence_counts(tmp_path):
@@ -221,13 +222,20 @@ def test_lifecycle_hashes_use_native_audit_pages_and_reject_incomplete_evidence(
     }
     with closing(oracle_connect(native_database)) as connection, connection:
         connection.execute(
-            "INSERT INTO executerecord(account_id,execution_id,created_at,is_success) VALUES(1,?,?,0)",
-            (execution_id, created),
+            "INSERT INTO executerecord(account_id,execution_id,created_at_us,is_success) VALUES(1,?,?,0)",
+            (execution_id, to_us(created)),
         )
-        for table, row in (("execution_artifact", artifact), ("execution_event", event)):
+        for table, row, time_fields in (
+            ("execution_artifact", artifact, ("created_at",)),
+            ("execution_event", event, ("ts_local_created", "ts_exchange", "ts_persisted")),
+        ):
+            stored_row = dict(row)
+            for field in time_fields:
+                value = stored_row.pop(field)
+                stored_row[f"{field}_us"] = to_us(value) if value is not None else None
             connection.execute(
-                f"INSERT INTO {table} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
-                tuple(json.dumps(value) if isinstance(value, dict) else value for value in row.values()),
+                f"INSERT INTO {table} ({','.join(stored_row)}) VALUES ({','.join('?' for _ in stored_row)})",
+                tuple(json.dumps(value) if isinstance(value, dict) else value for value in stored_row.values()),
             )
     if partial:
         read = native_store.native_operation
@@ -246,9 +254,10 @@ def test_lifecycle_hashes_use_native_audit_pages_and_reject_incomplete_evidence(
             "execution_id": execution_id,
             "type": artifact["artifact_type"],
             "content": artifact["content"],
-            "created_at": created,
+            "created_at": utc_time(created),
         }
+        expected_event = {**event, "ts_local_created": utc_time(created), "ts_persisted": utc_time(created)}
         assert asyncio.run(_lifecycle_hashes(None, "typed")) == {
             "artifacts": hashlib.sha256(semantic_hash(expected_artifact).encode()).hexdigest(),
-            "events": hashlib.sha256(semantic_hash(event).encode()).hexdigest(),
+            "events": hashlib.sha256(semantic_hash(expected_event).encode()).hexdigest(),
         }

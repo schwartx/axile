@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 from scripts.business_facts_contract import business_evidence
 from tests.conftest import initialize_native_database, native_store_call, require_native_store
-from tests.sqlite_oracle import register_time_function
+from tests.sqlite_oracle import register_time_function, to_us, utc_time
 from tests.unit.server._native_read_views import read_view
 
 _CREATED_AT = "2026-01-02T09:30:00.123456+08:00"
@@ -616,7 +616,7 @@ def _seed_notification_outbox_evidence(connection):
             "event_type": "account_control.warning" if variant == "wrong-event-type" else "execution.finished",
             "context": event_context,
             "status": ("pending", "calling", "succeeded", "failed", "unknown")[ordinal % 5],
-            "finished_at": None if ordinal < 2 else "native-outbox-finished-time",
+            "finished_at": None if ordinal < 2 else "2026-01-02T09:31:00.654321+08:00",
             "error": "frozen delivery error" if ordinal == 3 else None,
         }
     events[699] = {
@@ -627,7 +627,7 @@ def _seed_notification_outbox_evidence(connection):
         "event_type": "execution.finished",
         "context": _captured_notification_context("synthetic-notification-orphan"),
         "status": "unknown",
-        "finished_at": "native-orphan-time",
+        "finished_at": "2026-01-02T09:32:00.654321+08:00",
         "error": "frozen unknown delivery",
     }
     for row in events.values():
@@ -648,7 +648,7 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
             identities = (
                 connection.execute(
                     sa.text(
-                        "SELECT id, account_id, execution_id, created_at, is_success FROM executerecord ORDER BY id"
+                        "SELECT id, account_id, execution_id, created_at_us, is_success FROM executerecord ORDER BY id"
                     )
                 )
                 .mappings()
@@ -656,7 +656,10 @@ async def test_migration_preserves_historical_evidence_and_record_identity(tmp_p
             )
             assert business_evidence([dict(row) for row in identities]) == business_evidence(
                 [
-                    {key: source[key] for key in ("id", "account_id", "execution_id", "created_at", "is_success")}
+                    {
+                        **{key: source[key] for key in ("id", "account_id", "execution_id", "is_success")},
+                        "created_at_us": to_us(source["created_at"]),
+                    }
                     for source in expected.values()
                 ]
             )
@@ -813,11 +816,15 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
             target_children = connection.execute(sa.select(child).order_by(child.c.map_key.desc())).mappings().all()
             for source in expected_targets:
                 head = target_heads[source["id"]]
-                assert business_evidence(
-                    {key: head[key] for key in source if key not in {"raw_weights", "normalized_weights"}}
-                ) == business_evidence(
-                    {key: value for key, value in source.items() if key not in {"raw_weights", "normalized_weights"}}
-                )
+                expected_head = {
+                    **{
+                        key: value
+                        for key, value in source.items()
+                        if key not in {"raw_weights", "normalized_weights", "calculated_at"}
+                    },
+                    "calculated_at_us": to_us(source["calculated_at"]),
+                }
+                assert business_evidence({key: head[key] for key in expected_head}) == business_evidence(expected_head)
                 weights = {}
                 for role in ("raw_weights", "normalized_weights"):
                     assert head[f"{role}_kind"] in {"null", "mapping"}
@@ -845,9 +852,11 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
             snapshot = heads.get(source["id"])
             assert snapshot is not None
             assert snapshot["asset_fact_id"] is not None
-            assert business_evidence({key: snapshot[key] for key in source if key != "assets"}) == business_evidence(
-                {key: value for key, value in source.items() if key != "assets"}
-            )
+            expected_head = {
+                **{key: value for key, value in source.items() if key not in {"assets", "created_at"}},
+                "created_at_us": to_us(source["created_at"]),
+            }
+            assert business_evidence({key: snapshot[key] for key in expected_head}) == business_evidence(expected_head)
             assert snapshot["asset_fact_id"] in observations
         unavailable = observations[heads[102]["asset_fact_id"]]
         assert unavailable["account_snapshot_id"] == 102
@@ -862,15 +871,16 @@ async def test_migration_preserves_manual_asset_and_target_snapshot_semantics(tm
         with engine.begin() as connection:
             metadata = sa.MetaData()
             metadata.reflect(connection, only=["account_asset_snapshot", "target_weight_snapshot"])
-            for name, expected in (
-                ("account_asset_snapshot", expected_assets),
-                ("target_weight_snapshot", expected_targets),
+            for name, expected, time_field in (
+                ("account_asset_snapshot", expected_assets, "created_at"),
+                ("target_weight_snapshot", expected_targets, "calculated_at"),
             ):
                 restored = {
                     row["id"]: dict(row) for row in connection.execute(sa.select(metadata.tables[name])).mappings()
                 }
                 for source in expected:
-                    _assert_same_evidence(source, restored[source["id"]], f"{name}/{source['id']}/roundtrip")
+                    expected_row = {**source, time_field: utc_time(source[time_field])}
+                    _assert_same_evidence(expected_row, restored[source["id"]], f"{name}/{source['id']}/roundtrip")
     finally:
         engine.dispose()
 
@@ -997,7 +1007,15 @@ async def test_migration_notification_references_require_matching_frozen_busines
                 row["sequence"]: dict(row)
                 for row in connection.execute(sa.select(metadata.tables["notification_event"])).mappings()
             }
-            _assert_same_evidence(original_events, events, "outbox-after-upgrade")
+            expected_events = {
+                sequence: {
+                    **{key: value for key, value in event.items() if key not in {"created_at", "finished_at"}},
+                    "created_at_us": to_us(event["created_at"]),
+                    "finished_at_us": to_us(event["finished_at"]) if event["finished_at"] is not None else None,
+                }
+                for sequence, event in original_events.items()
+            }
+            _assert_same_evidence(expected_events, events, "outbox-after-upgrade")
             for record_id, source in records.items():
                 captured = extensions[record_id]["server_notification_context"]
                 assert "$axile_notification_context" not in captured
@@ -1028,7 +1046,15 @@ async def test_migration_notification_references_require_matching_frozen_busines
                 row["sequence"]: dict(row)
                 for row in connection.execute(sa.select(metadata.tables["notification_event"])).mappings()
             }
-            _assert_same_evidence(original_events, events, "outbox-after-downgrade")
+            expected_events = {
+                sequence: {
+                    **event,
+                    "created_at": utc_time(event["created_at"]),
+                    "finished_at": utc_time(event["finished_at"]) if event["finished_at"] is not None else None,
+                }
+                for sequence, event in original_events.items()
+            }
+            _assert_same_evidence(expected_events, events, "outbox-after-downgrade")
     finally:
         engine.dispose()
 

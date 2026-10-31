@@ -194,15 +194,29 @@ fn check_trigger(
     }) {
         return Ok(());
     }
-    let assignments = rows(
+    let fields = rows(
         connection,
         &format!("PRAGMA table_info({})", quote(owner)),
         [],
-    )?
-    .iter()
-    .map(|column| Ok(format!("{}=NULL", quote(text(column, "name")?))))
-    .collect::<Result<Vec<_>>>()?
-    .join(",");
+    )?;
+    let mut assignments = fields
+        .iter()
+        .map(|column| Ok(format!("{}=NULL", quote(text(column, "name")?))))
+        .collect::<Result<Vec<_>>>()?;
+    for alias in ["rowid", "_rowid_", "oid"] {
+        let declared = fields
+            .iter()
+            .any(|column| text(column, "name").is_ok_and(|name| name.eq_ignore_ascii_case(alias)));
+        // Bare aliases avoid SQLite treating an unavailable quoted name as a string.
+        if !declared
+            && connection
+                .prepare(&format!("SELECT {alias} FROM {} LIMIT 0", quote(owner)))
+                .is_ok()
+        {
+            assignments.push(format!("{alias}=NULL"));
+        }
+    }
+    let assignments = assignments.join(",");
     let mut seen = false;
     for statement in [
         format!("EXPLAIN INSERT INTO {} DEFAULT VALUES", quote(owner)),
@@ -334,23 +348,30 @@ fn table_sql(source: &str, table: &Table, temporary: &str, upgrade: bool) -> Res
 }
 
 fn copy_rows(connection: &Connection, table: &Table, temporary: &str, upgrade: bool) -> Result<()> {
-    let mut select = connection
-        .prepare(&format!("SELECT * FROM {}", quote(table.name)))
-        .map_err(sql)?;
-    let names = select
-        .column_names()
+    let names = rows(
+        connection,
+        &format!("PRAGMA table_info({})", quote(table.name)),
+        [],
+    )?
+    .iter()
+    .map(|column| text(column, "name").map(str::to_owned))
+    .collect::<Result<Vec<_>>>()?;
+    let column_list = names
         .iter()
-        .map(|name| (*name).to_owned())
-        .collect::<Vec<_>>();
+        .map(|name| quote(name))
+        .collect::<Vec<_>>()
+        .join(",");
+    // Copy writable columns in table order; generated columns are recomputed.
+    let mut select = connection
+        .prepare(&format!(
+            "SELECT {column_list} FROM {} NOT INDEXED",
+            quote(table.name)
+        ))
+        .map_err(sql)?;
     let mut insert = connection
         .prepare(&format!(
-            "INSERT INTO {} ({}) VALUES ({})",
+            "INSERT INTO {} ({column_list}) VALUES ({})",
             quote(temporary),
-            names
-                .iter()
-                .map(|name| quote(name))
-                .collect::<Vec<_>>()
-                .join(","),
             vec!["?"; names.len()].join(",")
         ))
         .map_err(sql)?;
@@ -490,6 +511,11 @@ fn convert(connection: &Connection, upgrade: bool) -> Result<()> {
     for sequence in sequences {
         let name = text(&sequence, "name")?;
         if tables.iter().any(|table| table.name == name) {
+            // Rebuilding an empty table does not create its sqlite_sequence row.
+            connection.execute(
+                "INSERT INTO sqlite_sequence(name,seq) SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name=?1)",
+                (name, integer(&sequence, "seq")?),
+            ).map_err(sql)?;
             connection
                 .execute(
                     "UPDATE sqlite_sequence SET seq=?2 WHERE name=?1",
@@ -514,6 +540,36 @@ pub(super) fn downgrade(connection: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_table_keeps_deleted_id_high_water_through_round_trip() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE account(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+             INSERT INTO account VALUES(92,'1970-01-01T00:00:00Z','1970-01-01T00:00:00Z');
+             DELETE FROM account;"
+        ).unwrap();
+        for direction in [true, false, true] {
+            convert(&connection, direction).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT seq FROM sqlite_sequence WHERE name='account'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                92
+            );
+        }
+        connection
+            .execute(
+                "INSERT INTO account(created_at_us,updated_at_us) VALUES(0,0)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(connection.last_insert_rowid(), 93);
+    }
 
     #[test]
     fn scalar_rebuild_preserves_opaque_json_blobs_sequences_and_dependencies() {

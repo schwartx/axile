@@ -43,7 +43,7 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -551,20 +551,31 @@ async def _write_target(item: dict, sessions) -> None:
         await append_target_weight_snapshot(session, **options)
 
 
+def _timestamp_us(value: str) -> int:
+    """Keep frozen instants exact while naive fixtures follow the host timezone."""
+    delta = datetime.fromisoformat(value).astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)
+    return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
 async def _verify_records(sessions, items: list[dict], layout: str) -> str:
     if sessions is None:
         from axile.server._native import _core
         from axile.server.core.db import database_path
 
         with sqlite3.connect(database_path()) as connection:
+            microseconds = any(
+                row[1] == "created_at_us" for row in connection.execute("PRAGMA table_info(executerecord)")
+            )
+            time_column = "created_at_us" if microseconds else "created_at"
             rows = {
                 row[1]: {"id": row[0], "account_id": 1, "created_at": row[2]}
-                for row in connection.execute("SELECT id,execution_id,created_at FROM executerecord")
+                for row in connection.execute(f"SELECT id,execution_id,{time_column} FROM executerecord")
             }
         digest = hashlib.sha256()
         for item in items:
             record = rows.get(item["execution_id"])
-            if record is None or record["created_at"] != item["created_at"]:
+            expected_time = _timestamp_us(item["created_at"]) if microseconds else item["created_at"]
+            if record is None or record["created_at"] != expected_time:
                 raise AssertionError("terminal record identity/timestamp was not preserved")
             detail = json.loads(_core.execution_record_detail(_core.Store(database_path()), 1, record["id"]))
             evidence = {"input": detail["input"], "result": detail["result"]}
@@ -885,8 +896,11 @@ def _run_writes(items: list[dict], sessions, path: Path, scope: str) -> tuple[di
     phases = {name: [] for name in ("target", "pre_order_audit", "post_order_audit", "terminal", "complete")}
     wal_peak = 0
     for item in items:
-        fixed_time = datetime.fromisoformat(item["created_at"]).timestamp()
-        with patch.object(get_default_clock(), "time", return_value=fixed_time):
+        fixed_us = _timestamp_us(item["created_at"])
+        with (
+            patch.object(get_default_clock(), "time", return_value=fixed_us / 1_000_000),
+            patch.object(time, "time_ns", return_value=fixed_us * 1000),
+        ):
             _write_fixture_row(item, sessions, scope, phases)
         wal = Path(str(path) + "-wal")
         wal_peak = max(wal_peak, wal.stat().st_size if wal.exists() else 0)
